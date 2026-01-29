@@ -27,9 +27,9 @@ on:
         options:
           - 'yes'
           - 'no'
-  pull_request:
-    branches:
-      - main
+  # pull_request:
+  #   branches:
+  #     - main
 
 permissions:
   contents: read
@@ -76,10 +76,16 @@ jobs:
       # The flags used here for `bazel build` need to be the same as that used for `bazel test`
       # below. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
-      - run: bazel build --config=ci_cpu //...
+      - run: bazel build --config=ci_cpu -c opt //...
       # Run Bazel test.
       # The flags used here for `bazel test` need to be the same as that used for `bazel build`
       # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
-      - run: bazel test --config=ci_cpu //...
+      - run: bazel test --config=ci_cpu -c opt --profile=cpu_profile.json.gz //... --cache_test_results=no
+
+      - name: Upload profile data
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-profile-data
+          path: cpu_profile.json.gz
 

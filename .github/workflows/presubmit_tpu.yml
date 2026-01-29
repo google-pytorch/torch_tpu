@@ -77,9 +77,14 @@ jobs:
       # The flags used here for `bazel build` need to be the same as that used for `bazel test`
       # below. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
-      - run: bazel build --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+      - run: bazel build --config=ci_tpu --//:build_type=oss -c opt --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
       # Run Bazel test.
       # The flags used here for `bazel test` need to be the same as that used for `bazel build`
       # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
-      - run: bazel test --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+      - run: bazel test --config=ci_tpu --//:build_type=oss -c opt --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --profile=tpu_profile.json.gz //... --cache_test_results=no
+      - name: Upload profile data
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpu-profile-data
+          path: tpu_profile.json.gz

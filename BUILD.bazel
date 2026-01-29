@@ -12,13 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(
     default_visibility = PACKAGE_DEFAULT_VISIBILITY,
+)
+
+string_flag(
+    name = "build_type",
+    build_setting_default = "google3",
+    values = [
+        "google3",
+        "oss",
+    ],
 )
 
 alias(

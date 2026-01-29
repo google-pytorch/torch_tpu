@@ -19,6 +19,11 @@ package(
     default_applicable_licenses = ["//:license"],
 )
 
+config_setting(
+    name = "torch_tpu_oss",
+    flag_values = {"//:build_type": "oss"},
+)
+
 pytype_strict_library(
     name = "module_registry",
     srcs = ["module_registry.py"],
@@ -122,11 +127,16 @@ torch_tpu_py_test(
     args = [
         "--torch_tpu_device=tpu",
         "--print_op_inputs=1",
-        "--max_samples_per_op_dtype=20",  # Prevent long test run time.
-    ],
+    ] + select({
+        ":torch_tpu_oss": ["--max_samples_per_op_dtype=5"],
+        "//conditions:default": [],
+    }),
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
     main = "ops_test.py",
-    shard_count = 50,
+    shard_count = select({
+        ":torch_tpu_oss": 20,
+        "//conditions:default": 50,
+    }),
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
@@ -152,15 +162,20 @@ torch_tpu_py_test(
     args = [
         "--torch_tpu_device=tpu",
         "--compute_grad=True",
-        "--max_samples_per_op_dtype=20",  # Prevent long test run time.
-    ],
+    ] + select({
+        ":torch_tpu_oss": ["--max_samples_per_op_dtype=1"],
+        "//conditions:default": [],
+    }),
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
     main = "ops_test.py",
-    shard_count = 50,
+    shard_count = select({
+        ":torch_tpu_oss": 20,
+        "//conditions:default": 50,
+    }),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        # "oss_ready_tpu",  # Will re-enable this slow test until we have a proper way to speed it up.
+        "oss_ready_tpu",  # Will re-enable this slow test until we have a proper way to speed it up.
         "requires-tpu-v5lite",
     ],
     deps = [
@@ -236,17 +251,23 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--torch_tpu_device=xla_cpu",
-        "--max_samples_per_op_dtype=3",  # Reduce test samples as XLA:CPU is not a priority.
-    ],
+    ] + select({
+        ":torch_tpu_oss": ["--max_samples_per_op_dtype=5"],
+        "//conditions:default": ["--max_samples_per_op_dtype=3"],
+    }),
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
     main = "ops_test.py",
-    shard_count = 25,
+    shard_count = select({
+        ":torch_tpu_oss": 20,
+        "//conditions:default": 25,
+    }),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         # This test takes almost 30 minutes to run in the OSS CI, which
         # uses just one machine for each build for now. It's not essential
         # for the OSS release, so we skip it for OSS.
+        "oss_ready_cpu",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -274,13 +295,16 @@ torch_tpu_py_test(
     ],
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
     main = "ops_test.py",
-    shard_count = 50,
+    shard_count = select({
+        ":torch_tpu_oss": 20,
+        "//conditions:default": 50,
+    }),
     tags = [
-        # "oss_ready_tpu",  # Will re-enable this slow test until we have a proper way to speed it up.
-        "requires-tpu-v5lite",
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "oss_ready_tpu",  # Will re-enable this slow test until we have a proper way to speed it up.
+        "requires-tpu-v5lite",
     ],
     deps = [
         ":dynamism_test_utils",
