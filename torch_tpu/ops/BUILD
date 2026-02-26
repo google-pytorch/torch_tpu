@@ -280,11 +280,30 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "ldexp",
+    srcs = ["ldexp.cc"],
+    hdrs = ["ldexp.h"],
+    deps = [
+        ":op_builder_utils",
+        "//torch_tpu/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:chlo_builder",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "binary_aten_kernels",
     srcs = ["binary_aten_kernels.cc"],
     hdrs = ["binary_aten_kernels.h"],
     deps = [
         ":binary",
+        ":ldexp",
         ":nullary_aten_kernels",
         ":op_builder_utils",
         ":op_names",
