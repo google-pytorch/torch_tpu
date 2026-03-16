@@ -13,8 +13,7 @@
 # limitations under the License.
 
 load("@rules_license//rules:license.bzl", "license")
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 licenses(["notice"])
 
@@ -30,7 +29,7 @@ license(
 
 exports_files(["LICENSE"])
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "torch_tpu",
     srcs = [
         "__init__.py",

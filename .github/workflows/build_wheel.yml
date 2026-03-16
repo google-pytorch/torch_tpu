@@ -134,8 +134,23 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@7f5ca0c263a81ed09ea276524c1b9192f1304e3c
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Check Wheel Integrity
+        run: |
+          bazel test //:wheel_integrity_test
       - name: Run tests
         shell: bash
         run: |
+          set +e
+          # We don't use 'set -e' here so we can catch the failure and provide guidance.
           bazel test ${{ matrix.extra_flags }} \
             -- $(bazel query 'kind("(py_test|torch_tpu_py_test) rule", attr(tags, "${{ matrix.tag }}", //...))')
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            # Color the guidance in red for better visibility in logs.
+            RED='\033[0;31m'
+            NC='\033[0m'
+            printf "${RED}::error::Tests failed! If the failure is an 'ImportError' or 'ModuleNotFoundError' related to internal packages (like 'tests' or 'torch_tpu'):${NC}\n"
+            printf "${RED}::notice::1. For test helpers (e.g. from //tests), ensure it is a 'torch_tpu_py_library' so it redirects to the wheel.${NC}\n"
+            printf "${RED}::notice::2. For core api code (e.g. from //torch_tpu), add the library to wheel deps 'all_torch_tpu_files' in //ci/wheel/BUILD.bazel.${NC}\n"
+            exit $EXIT_CODE
+          fi

@@ -16,6 +16,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@pypi//:requirements.bzl", "all_requirements")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//ci:integrity.bzl", "wheel_integrity_test")
 
 package(
     default_visibility = PACKAGE_DEFAULT_VISIBILITY,
@@ -55,28 +56,6 @@ filegroup(
     srcs = glob(["dist/*.whl"]),
 )
 
-# Wheel deps not included with the wheel that are needed for testing.
-genrule(
-    name = "wheel_extra_test_deps",
-    testonly = True,
-    srcs = [
-        "//tests/distributed:distributed_utils",
-        "//tests:dynamism_test_utils",
-        "//tests:error_testing",
-        "//tests:op_testing",
-        "//tests/compile:stablehlo_compile_testing",
-        "//shims/etils/epath",
-        "//shims/safetensors",
-        "//shims/torch:pytorch",
-        "//shims/torch:tensorboard_support",
-        "//shims/torch:testing_internal",
-        "//torch_tpu/_internal/utils:test_fixtures",
-    ],
-    outs = ["wheel_extra_test_deps.zip"],
-    cmd = "$(location @bazel_tools//tools/zip:zipper) c $@ $(SRCS)",
-    tools = ["@bazel_tools//tools/zip:zipper"],
-)
-
 py_import(
     name = "torch_tpu_py_import",
     testonly = True,
@@ -84,7 +63,6 @@ py_import(
         "//:use_prebuilt_wheel": ":local_wheel_file",
         "//conditions:default": "//ci/wheel:torch_tpu_wheel",
     }),
-    zip_deps = [":wheel_extra_test_deps"],
     # Add requirements coming from pip_parse from workspace
     deps = all_requirements,
 )
@@ -96,4 +74,17 @@ genrule(
         ":wheel_test_enabled": "echo 'WHEEL_TEST IS ENABLED (Matched)' > $@",
         "//conditions:default": "echo 'WHEEL_TEST IS NOT ENABLED (Did not match)' > $@",
     }),
+)
+
+# Integrity check for wheel dependencies of OSS tests.
+# This ensures that all internal libraries required by tests are
+# accounted for in the wheel.
+wheel_integrity_test(
+    name = "wheel_integrity_test",
+    allowed_targets = [
+        "//ci/wheel:all_torch_tpu_files",
+    ],
+    tests = [
+        "//...",
+    ],
 )

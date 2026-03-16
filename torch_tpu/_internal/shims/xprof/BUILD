@@ -14,8 +14,7 @@
 
 """Shim for xprof modules."""
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -24,17 +23,17 @@ package(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "traceme",
     srcs = ["traceme.py"],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "xprof_analysis_client",
     srcs = ["xprof_analysis_client.py"],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "xprof_session",
     srcs = ["xprof_session.py"],
 )

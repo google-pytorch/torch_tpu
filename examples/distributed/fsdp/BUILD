@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -37,7 +36,7 @@ torch_tpu_py_test(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "fsdp_worker",
     srcs = ["fsdp_worker.py"],
     deps = [
@@ -48,7 +47,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "model",
     srcs = [
         "model.py",

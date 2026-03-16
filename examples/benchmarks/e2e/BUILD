@@ -12,17 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 load("//shims/mpm:genmpm.bzl", "genmpm")
 load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "benchmark_utils",
     srcs = ["benchmark_utils.py"],
     deps = [
@@ -38,7 +37,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "mlcompass_utils",
     srcs = ["mlcompass_utils.py"],
     deps = [
@@ -49,7 +48,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "performance_utils",
     testonly = 1,
     srcs = ["performance_utils.py"],
@@ -72,7 +71,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "quality_utils",
     testonly = 1,
     srcs = ["quality_utils.py"],
@@ -88,7 +87,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "test_utils",
     testonly = 1,
     srcs = ["test_utils.py"],
@@ -187,7 +186,7 @@ genmpm(
     deps = [":model_quality_benchmarks_with_runfiles"],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "layer_configs",
     testonly = True,
     srcs = ["layer_configs.py"],
@@ -329,7 +328,7 @@ torch_tpu_py_test(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "benchmark_function_db",
     testonly = 1,
     srcs = ["benchmark_function_db.py"],
@@ -339,7 +338,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "model_utils",
     srcs = ["model_utils.py"],
     deps = [

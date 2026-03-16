@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "utils",
     srcs = ["utils.py"],
     deps = [

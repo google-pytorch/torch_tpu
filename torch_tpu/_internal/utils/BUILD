@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -22,7 +21,7 @@ package(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "device_utils",
     srcs = ["device_utils.py"],
     deps = [
@@ -38,7 +37,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "modeling_hf",
     srcs = ["modeling_hf.py"],
     data = [
@@ -51,7 +50,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "utils",
     srcs = ["utils.py"],
     tags = [
@@ -88,7 +87,7 @@ torch_tpu_py_test(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "benchmarking",
     srcs = ["benchmarking.py"],
     deps = [
@@ -98,7 +97,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "tracer_utils",
     srcs = ["tracer_utils.py"],
     deps = [
@@ -107,7 +106,7 @@ pytype_strict_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "test_fixtures",
     testonly = True,
     srcs = ["test_fixtures.py"],
