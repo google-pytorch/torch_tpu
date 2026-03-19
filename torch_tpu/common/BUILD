@@ -442,18 +442,44 @@ torch_tpu_cc_library(
     ] + add_internal_filesystem_dependencies(),
 )
 
+torch_tpu_cc_library(
+    name = "error_utils_test_helper",
+    hdrs = ["error_utils_test_helper.h"],
+    # This is needed, so that the build system places this header in the build directory, changing
+    # the value of `__FILE__` macro.
+    #
+    # For example: given a Bazel project rooted at `torch_tpu/` directory, the value of `__FILE__`
+    # macro inside `error_utils_test_helper.h` would be:
+    #
+    #   - WITHOUT `include_prefix`:
+    #       torch_tpu/common/error_utils_test_helper.h
+    #
+    #   - WITH `include_prefix`:
+    #       bazel-out/.../torch_tpu/common/testing/error_utils_test_helper.h
+    #
+    # Since this header will be used to show that the normalization of paths in the build directory
+    # works, we add the `include_prefix` below.
+    include_prefix = "torch_tpu/common/testing",
+    deps = [
+        ":error_utils",
+        "@com_google_absl//absl/status",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "error_utils_cpp_context_test",
     srcs = [
         "error_utils_cpp_context_test.cc",
-        "error_utils_test_helper.h",
     ],
     tags = [
         "oss_ready_cpu",
     ],
     deps = [
         ":error_utils",
+        ":error_utils_test_helper",
+        ":macro_utils",
         ":status_builder",
+        ":utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

@@ -110,7 +110,7 @@ namespace torch_tpu {
       static const bool _checked = [&] {                                       \
         ::torch_tpu::internal::CheckTtKernelArgList(                           \
             ::torch_tpu::internal::KernelArgCheckerContext{                    \
-                __FILE__, __LINE__, _func_sig,                                 \
+                TT_NORMALIZED_FILE, __LINE__, _func_sig,                       \
                 ::torch_tpu::internal::ParseArgTypesOrEmpty(_func_sig),        \
                 TT_ARGS_AS_STRINGS_(__VA_ARGS__)} __VA_OPT__(, ) __VA_ARGS__); \
         return true;                                                           \

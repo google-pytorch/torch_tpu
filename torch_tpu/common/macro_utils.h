@@ -66,6 +66,16 @@
 #define TT_ARGS_AS_STRINGS_(...) \
   ::torch_tpu::internal::ArgsAsStrings(#__VA_ARGS__)
 
+// Path normalized __FILE__ macro replacement.
+//
+// Prefer this macro over __FILE__ mainly if it will get dumped to the user.
+// This macro calls `NormalizeIfInsideBuildDirectory()` function with
+// `__FILE__` as argument.
+//
+// See `NormalizeIfInsideBuildDirectory()` for more details.
+#define TT_NORMALIZED_FILE \
+  ::torch_tpu::internal::NormalizeIfInsideBuildDirectory(__FILE__)
+
 namespace torch_tpu {
 namespace internal {
 
@@ -166,6 +176,34 @@ inline constexpr bool kDebugMode = true;
 // Splits a comma-separated string into a vector of items, each trimmed of
 // whitespace.
 std::vector<std::string_view> ArgsAsStrings(std::string_view csv_string);
+
+// Normalize `path`, if it's inside the build directory (e.g. starts with
+// "bazel-out/"), to be relative to whichever of the 2 is present in the path:
+//
+//   - "third_party/py/torch_tpu/" directory
+//   - "torch_tpu/" directory
+//
+// As an example, this function translates (1) into (2):
+//
+//   1.
+//   bazel-out/k8-fastbuild/bin/torch_tpu/ops/_virtual_includes/op_builder_utils/torch_tpu/ops/op_builder_utils.h
+//
+//   2.
+//   torch_tpu/ops/op_builder_utils.h
+//
+// If `path` does not starts with "bazel-out" directory, and contains either
+// "third_party/py/torch_tpu/" or "torch_tpu/" directory, this function returns
+// `path` untouched.
+//
+// In some situations the build system uses a combination of -I and symlinks to
+// allow the use of shorter paths to header files. In these cases, the
+// `__FILE__` macro inside a header will expand to a path similar to the above
+// format.
+//
+// To make it easier for developers to find the file in different build
+// environments, we normalize the header location to be relative to the repo
+// root instead.
+const char* NormalizeIfInsideBuildDirectory(const char* path);
 
 }  // namespace internal
 }  // namespace torch_tpu

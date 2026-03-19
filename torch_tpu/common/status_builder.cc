@@ -16,7 +16,6 @@
 
 #include "torch_tpu/common/status_builder.h"
 
-#include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -154,40 +153,13 @@ std::string GetRootOpNamePayload(const absl::Status& status) {
   return std::string(payload.value());
 }
 
-// Translates paths like
-// bazel-out/k8-fastbuild/bin/torch_tpu/ops/_virtual_includes/op_builder_utils/torch_tpu/ops/op_builder_utils.h
-// to torch_tpu/ops/op_builder_utils.h.
-//
-// In some situations the build system uses a combination of -I and symlinks to
-// allow the use of shorter paths to header files. In these cases, the __FILE__
-// macro inside a header will expand to a path similar to the above format.
-//
-// To make it easier for developers to find the file in different build
-// environments, we normalize the header location to be relative to the repo
-// root instead.
-std::string NormalizeRepoFilePath(std::string_view file) {
-  // We assume that the last instance of torch_tpu is the repo root; this will
-  // fail if there is ever a torch_tpu subdirectory nested within the repo root,
-  // but this assumption is less likely than the possibility that the repo will
-  // exist in a directory that has torch_tpu somewhere else (e.g. when the
-  // header is somewhere under bazel-out/ or bazel-gen/).
-  const std::string_view kTorchTpuDir = "/torch_tpu/";
-  const auto pos = file.rfind(kTorchTpuDir);
-  if (pos == std::string::npos) {
-    return std::string(file);
-  }
-  return std::string(file.substr(pos + 1));
-}
-
 absl::Status MaybeAddCppSourceLoc(absl::Status status,
                                   const std::string_view file, const int line,
                                   const std::string_view function) {
   if (!CppStackTracesEnabled() || status.ok()) return status;
 
-  const std::string normalized_path = NormalizeRepoFilePath(file);
   auto old_context = status.GetPayload(kCppErrorTraceUrl);
-  absl::Cord new_context(
-      absl::StrCat(normalized_path, ":", line, ": ", function, "()\n"));
+  absl::Cord new_context(absl::StrCat(file, ":", line, ": ", function, "()\n"));
   if (old_context.has_value()) {
     new_context.Prepend(std::move(old_context).value());
   }

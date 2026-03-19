@@ -330,12 +330,7 @@ absl::Status MaybeAddCppSourceLoc(absl::Status status, std::string_view file,
 [[nodiscard]] std::string GetMessageWithCppErrorTrace(
     const absl::Status& status);
 
-// Normalize the string path relative to the repo root to be independent of
-// the file system location.
-std::string NormalizeRepoFilePath(std::string_view file);
-
 }  // namespace internal
-
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_COMMON_STATUS_BUILDER_H_
