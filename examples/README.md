@@ -1,6 +1,11 @@
 # TorchTPU Examples
 
-`torch_tpu/examples` contains high-quality examples for using [TorchTPU](https://github.com/google-ml-infra/torch_tpu). Our goal is to provide examples of varying complexity that incrementally demonstrate how to use `torch_tpu`—from a "Hello World" introduction to scaling PyTorch workloads on TPUs with eager and compile modes. The provided examples are intended to demonstrate functionality and have not been optimized for TPU performance.
+`torch_tpu/examples` contains high-quality examples for using
+[TorchTPU](https://github.com/google-pytorch/torch_tpu). Our goal is to provide
+examples of varying complexity that incrementally demonstrate how to use
+`torch_tpu`—from a "Hello World" introduction to scaling PyTorch workloads on
+TPUs with eager and compile modes. The provided examples are intended to
+demonstrate functionality and have not been optimized for TPU performance.
 
 To initialize the TPU device and run a simple operation:
 
