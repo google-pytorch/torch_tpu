@@ -18,6 +18,7 @@ load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 
 licenses(["notice"])
 
+# TESTING
 package(
     default_applicable_licenses = [":license"],
     default_visibility = ["//:__subpackages__"],
@@ -28,7 +29,11 @@ license(
     package_name = "torch_tpu",
 )
 
-exports_files(["LICENSE"])
+exports_files([
+    "LICENSE",
+    "something.py",
+    "__init__.py",
+])
 
 pytype_strict_library(
     name = "torch_tpu",
