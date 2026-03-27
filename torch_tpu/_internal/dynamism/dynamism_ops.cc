@@ -28,6 +28,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Support/LLVM.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -123,11 +124,14 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetPadModule(
                         GetPaddingOpBuilder(std::move(dimension_indices),
                                             std::move(upper_bounds)));
     TT_ASSIGN_OR_RETURN(auto padded_op, op_builder(input_op));
-    results.push_back(padded_op);
+    auto result = padded_op;
     for (auto dynamic_dimension : shape.dynamic_dimensions()) {
-      results.push_back(mlir::stablehlo::GetDimensionSize(
-          input_op, dynamic_dimension.dimension));
+      auto dim_size = mlir::stablehlo::GetDimensionSize(
+          input_op, dynamic_dimension.dimension);
+      result = mlir::stablehlo::SetDimensionSize(result, dim_size,
+                                                 dynamic_dimension.dimension);
     }
+    results.push_back(result);
   }
   mlir::func::Return(fb, results);
   auto module = mb.build();

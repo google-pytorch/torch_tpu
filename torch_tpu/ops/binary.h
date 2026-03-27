@@ -70,7 +70,6 @@ TT_COMPARISON_BUILDER_(BuildGeShlo, mlir::stablehlo::ComparisonDirection::GE);
 TT_COMPARISON_BUILDER_(BuildGtShlo, mlir::stablehlo::ComparisonDirection::GT);
 TT_COMPARISON_BUILDER_(BuildLeShlo, mlir::stablehlo::ComparisonDirection::LE);
 TT_COMPARISON_BUILDER_(BuildLtShlo, mlir::stablehlo::ComparisonDirection::LT);
-TT_COMPARISON_BUILDER_(BuildNeShlo, mlir::stablehlo::ComparisonDirection::NE);
 // go/keep-sorted end
 
 // This macro is not needed anywhere else.
@@ -97,6 +96,9 @@ absl::StatusOr<mlir::MlirOp> BuildComplexShlo(mlir::MlirOp real_op,
 // (preserving the sign bit) but unsigned integers use a logical right shift.
 absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
                                                         mlir::MlirOp rhs_op);
+
+absl::StatusOr<mlir::MlirOp> BuildNeShlo(mlir::MlirOp lhs_op,
+                                         mlir::MlirOp rhs_op);
 
 }  // namespace torch_tpu
 

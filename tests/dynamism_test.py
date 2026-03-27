@@ -174,7 +174,15 @@ class DynamismTest(parameterized.TestCase):
     for act, expected in zip(act, expected):
       utils.assert_close(act.to("cpu"), expected, rtol=1e-5, atol=1e-5)
 
-  @parameterized.product(dtype=op_testing.all_xla_supported_dtypes())
+  # TODO: b/449736443 - Bug in XLA:TPU handling of 64-bit types?
+  @parameterized.product(
+      dtype=list(
+          filter(
+              lambda x: x not in [torch.complex64, torch.float64, torch.int64],
+              op_testing.all_xla_supported_dtypes(),
+          ),
+      )
+  )
   def test_elementwise_unary_op_one_dimension_dynamic(self, dtype):
     mark_dynamic = lambda x: dynamism.mark_dynamic(x, 0, 2, 20)
     args = (torch.rand(5, 3, dtype=torch.float32).to(dtype),)

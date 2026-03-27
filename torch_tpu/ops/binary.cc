@@ -114,4 +114,18 @@ absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
   return stablehlo::ShiftRightArithmetic(lhs, rhs);
 }
 
+// TODO(unda): Add a bug
+// The lowering for NE with boolean types is incorrect with dynamic shapes.
+absl::StatusOr<mlir::MlirOp> BuildNeShlo(mlir::MlirOp lhs_op,
+                                         mlir::MlirOp rhs_op) {
+  TT_ASSIGN_OR_RETURN((auto [lhs, rhs]),
+                      ApplyBroadcastIfNeeded(lhs_op, rhs_op));
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  if (IsBooleanType(lhs_type)) {
+    mlir::MlirOp not_rhs = stablehlo::Not(rhs);
+    return stablehlo::Select(lhs, not_rhs, rhs);
+  }
+  return stablehlo::Compare(lhs, rhs, mlir::stablehlo::ComparisonDirection::NE);
+}
+
 }  // namespace torch_tpu

@@ -47,9 +47,11 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_cache.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
@@ -62,7 +64,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
 
@@ -394,33 +396,35 @@ absl::StatusOr<mlir::MlirOp> Traversal::GetMlirOpForProcessedBuffer(
 
 namespace {
 
+mlir::RankedTensorType BufferToType(mlir::MLIRContext& context,
+                                    const DeviceBufferRef& buffer_ref) {
+  mlir::stablehlo::Dimensions dims;
+  dims.reserve(buffer_ref.dimensions().size());
+  for (int64_t dim : buffer_ref.dimensions()) {
+    dims.push_back(mlir::stablehlo::DimensionInfo{.size = dim});
+  }
+  // Overwrite with dynamic info if exists.
+  mlir::Value bound_op = nullptr;  // Placeholder value
+  for (auto& dynamic_dim : buffer_ref.dynamic_dimensions()) {
+    dims[dynamic_dim.dimension].size = dynamic_dim.upper_bound;
+    dims[dynamic_dim.dimension].boundOp = bound_op;
+  }
+  return mlir::stablehlo::getRankedTensorType(
+      dims, mlir::getElementType(context, buffer_ref.element_type()));
+}
+
 mlir::MlirOp BufferToArgument(mlir::func::FunctionBuilder& fb,
                               const DeviceBufferRef& input) {
+  mlir::RankedTensorType input_type = BufferToType(fb.getContext(), input);
+  ABSL_VLOG(3) << "[BufferToArgument] input_type: "
+               << ToString((mlir::Type)input_type);
   if (input.state() == DeviceBufferRefState::kZeroSize) {
-    auto type = makeTensorType(fb.getContext(), input.dimensions(),
-                               input.element_type());
     // In compiled mode we can still have zero-sized tensors as explicit
     // inputs and we handle those here.
-    return MakeConstant(fb, mlir::ArrayRef<int64_t>{}, type);
+    return MakeConstant(fb, mlir::ArrayRef<int64_t>{}, input_type);
   }
-  Dimensions dimensions = CopyIntVector(input.dimensions());
-  // If input has bounded dynamic dimensions, we assume we will receive an
-  // input padded to the upper bound, along with the dimension sizes.
-  // We use a set_dimension_size op to
-  // convert to a dynamic tensor and use that downstream.
-  for (const auto& dynamic_dim : input.dynamic_dimensions()) {
-    dimensions[dynamic_dim.dimension] = dynamic_dim.upper_bound;
-  }
-  auto type = makeTensorType(fb.getContext(), dimensions, input.element_type());
-  auto dimension_size_type =
-      makeTensorType(fb.getContext(), {}, mlir::ElementType::I32);
-  auto result = mlir::func::Argument(fb, type);
-  for (const auto& dynamic_dim : input.dynamic_dimensions()) {
-    mlir::MlirOp dimension_size = mlir::func::Argument(fb, dimension_size_type);
-    result = mlir::stablehlo::SetDimensionSize(result, dimension_size,
-                                               dynamic_dim.dimension);
-  }
-  return result;
+
+  return mlir::func::Argument(fb, input_type);
 }
 
 }  // namespace
