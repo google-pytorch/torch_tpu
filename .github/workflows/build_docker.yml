@@ -1,0 +1,78 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Build and Push Docker Image
+
+on:
+  workflow_dispatch:
+  # Add pul_request trigger for testing
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 9 * * *' # 1 AM PST
+
+# Cancel old jobs when they are replaced by new runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Don't cancel in-progress jobs for main branch
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+permissions:
+  contents: read
+  id-token: write # Required for Workload Identity Federation OIDC token exchange
+
+jobs:
+  build-and-push:
+    name: "Build and Push Torch TPU Docker image"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - id: auth
+        name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: 'ml-velocity-actions-wif'
+          workload_identity_provider: 'projects/441500361089/locations/global/workloadIdentityPools/github-actions-pool/providers/google-pytorch-torch-tpu'
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-docker.pkg.dev --quiet
+
+      - name: Build Docker Image
+        run: |
+          echo "Building Torch-TPU image locally over Ubuntu Linux..."
+          # The local script defaults to tag 'torch-tpu-local'
+          bash docker/build_image.sh . torch-tpu-local
+
+      - name: Tag and Push Images to AR
+        # if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          DOCKER_TAG_DATE="nightly-$(date +%Y%m%d)"
+          DOCKER_TAG_LATEST="nightly-latest"
+          AR_REPO="us-docker.pkg.dev/ml-oss-artifacts-transient/torch-tpu-docker-container/torch-tpu"
+
+          echo "Tagging for date specifically: ${AR_REPO}:${DOCKER_TAG_DATE}"
+          docker tag torch-tpu-local "${AR_REPO}:${DOCKER_TAG_DATE}"
+          
+          echo "Tagging as rolling latest: ${AR_REPO}:${DOCKER_TAG_LATEST}"
+          docker tag torch-tpu-local "${AR_REPO}:${DOCKER_TAG_LATEST}"
+
+          echo "Pushing images to Artifact Registry..."
+          docker push "${AR_REPO}:${DOCKER_TAG_DATE}"
+          docker push "${AR_REPO}:${DOCKER_TAG_LATEST}"
