@@ -14,8 +14,7 @@
 
 """Shim for pyglib modules."""
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -24,7 +23,7 @@ package(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "build_data",
     srcs = ["build_data.py"],
 )

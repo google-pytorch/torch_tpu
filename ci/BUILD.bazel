@@ -11,3 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//tools/build_defs/testing:bzl_library.bzl", "bzl_library")
+
+package(
+    default_visibility = PACKAGE_DEFAULT_VISIBILITY,
+)
+
+exports_files(["integrity.bzl"])
+
+bzl_library(
+    name = "integrity_bzl",
+    srcs = ["integrity.bzl"],
+    deps = [
+        "@bazel_skylib//rules:common_settings",
+    ],
+)

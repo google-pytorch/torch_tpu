@@ -25,7 +25,7 @@ load(
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test")
+load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -66,6 +66,46 @@ def adjust_cc_options(copts, features):
     # Therefore we must explicitly disable it here.
     features.append("-use_header_modules")
     return copts, features
+
+def torch_tpu_py_library(name, deps = [], redirect_to_wheel = None, **kwargs):
+    """Creates a Python library for torch_tpu with automated wheel redirection.
+
+    Args:
+        name: The name of the library.
+        deps: The dependencies of the library.
+        redirect_to_wheel: Whether to redirect this library to the wheel. If None,
+            the macro will decide based on the package name.
+        **kwargs: Any additional arguments.
+    """
+
+    # In OSS, this library redirects to the wheel import when wheel testing is enabled.
+    # This prevents duplication and eliminates the need for manual extras lists.
+    actual_deps = deps
+
+    if redirect_to_wheel == None:
+        pkg = native.package_name()
+
+        # Only core libraries packaged in the wheel should redirect.
+        # Test helpers, examples, and google benchmarks stay as source.
+        redirect_to_wheel = pkg.startswith("third_party/py/torch_tpu/_internal") or \
+                            pkg.startswith("third_party/py/torch_tpu/api") or \
+                            pkg == "third_party/py/torch_tpu"
+
+    if redirect_to_wheel:
+        native.alias(
+            name = name,
+            actual = select({
+                "//torch_tpu:wheel_test_enabled": "//torch_tpu:torch_tpu_py_import",
+                "//conditions:default": ":" + name + "_source",
+            }),
+        )
+        name = name + "_source"
+
+    pytype_strict_library(
+        name = name,
+        deps = actual_deps,
+        **kwargs
+    )
 
 def torch_tpu_cc_library(name, copts = None, features = None, **kwargs):
     """Creates a C++ library for torch_tpu.
@@ -399,13 +439,7 @@ def torch_tpu_py_test(
 
     current_deps = kwargs.pop("deps", [])
 
-    # copybara:uncomment all_deps = current_deps + deps_to_add
-    # copybara:comment_begin(oss-only)
-    all_deps = select({
-        "//:wheel_test_enabled": ["//:torch_tpu_py_import"],
-        "//conditions:default": current_deps + deps_to_add,
-    })
-    # copybara:comment_end
+    all_deps = current_deps + deps_to_add
 
     if platform:
         rule = py_platform_test
@@ -414,6 +448,19 @@ def torch_tpu_py_test(
         rule = pytype_strict_contrib_test
     else:
         rule = py_test
+
+    if any([tag.startswith("oss_ready_") for tag in (tags or [])]):
+        # copybara:comment_begin(oss-only)
+        native.filegroup(
+            name = name + "_validation",
+            srcs = all_deps,
+            tags = ["manual", "wheel_validation"],
+            visibility = ["//visibility:private"],
+        )
+
+        # copybara:comment_end
+        pass
+
     rule(
         name = name,
         args = args,

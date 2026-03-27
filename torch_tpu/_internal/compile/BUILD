@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_test")
-load("//shims/py_rules:pytype.bzl", "pytype_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -21,7 +20,7 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pytype_library(
+torch_tpu_py_library(
     name = "tpu_backend",
     srcs = [
         "__init__.py",
