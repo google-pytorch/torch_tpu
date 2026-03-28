@@ -24,7 +24,7 @@ from examples.benchmarks.e2e import performance_utils
 # CUDA only has EAGER and COMPILED run modes. Other run modes are applicable to
 # TPU only.
 CUDA_RUN_MODES = (
-    benchmark_utils.RunMode.EAGER,
+    benchmark_utils.RunMode.EAGER_DEFAULT,
     benchmark_utils.RunMode.COMPILED,
 )
 
