@@ -29,6 +29,15 @@ CUDA_RUN_MODES = (
 )
 
 
+def get_base_test_name(
+    test_method_name: str, microbenchmark_name: str | None
+) -> str:
+  """Returns the base test name by removing the microbenchmark name suffix."""
+  if not microbenchmark_name:
+    return test_method_name
+  return test_method_name.removesuffix(f"_{microbenchmark_name}")
+
+
 class BenchmarkTest(parameterized.TestCase):
   """Tests for end-to-end performance benchmarks."""
 
@@ -72,9 +81,14 @@ class BenchmarkTest(parameterized.TestCase):
           f"Run mode {config.run_mode} not applicable to platform {platform}"
       )
 
+    # MlCompass only looks for base test name after the benchmark run.
+    base_test_name = get_base_test_name(
+        self._testMethodName, microbenchmark_name
+    )
+
     performance_utils.run_benchmark(
         config=config,
-        test_method_name=self._testMethodName,
+        test_method_name=base_test_name,
         benchmark_name=benchmark_name,
         microbenchmark_name=microbenchmark_name,
     )
