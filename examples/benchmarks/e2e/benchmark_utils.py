@@ -150,13 +150,24 @@ class BenchmarkResultInterface(abc.ABC):
 
 
 class RunMode(enum.Enum):
-  """The mode to run the benchmark in."""
+  """The mode to run the benchmark in.
 
-  EAGER = "eager"  # Run the model in eager mode with O1 XLA optimizations.
+  Make sure that no entry is a prefix of the other. Run mode name is appended
+  to test names, and MLCompass runs tests based on a prefix match, it can lead
+  to duplicate entries. For e.g., test_model_eager will match both
+  test_model_eager and test_model_eager_optimized. Hence, we use
+  eager_default and eager_optimized.
+  """
+
+  EAGER_DEFAULT = (  # Run the model in eager mode with O1 XLA optimizations.
+      "eager_default"
+  )
   EAGER_OPTIMIZED = (  # Run the model in eager mode with O2 XLA optimizations.
       "eager_optimized"
   )
-  DEFER_NEVER = "defer_never"  # Run the model in eager mode with DeferNever.
+  DEFER_NEVER_ONLY = (  # Run the model in eager mode with DeferNever.
+      "defer_never_only"
+  )
   DEFER_NEVER_AND_LAUNCH_BLOCKING = (  # Run the model in eager mode with DeferNeverAndLaunchBlocking.
       "defer_never_and_launch_blocking"
   )
