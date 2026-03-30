@@ -12,3 +12,4 @@ user.bazelrc
 .*.un~
 # Wheel files
 wheel
+__pycache__/

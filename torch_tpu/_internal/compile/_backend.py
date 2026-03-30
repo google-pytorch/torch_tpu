@@ -30,18 +30,27 @@ The `torch.compile()` function has the following relevant arguments:
     Disables the compilation. No ops for us.
 """
 
+import contextlib
 from collections.abc import Sequence
+from contextlib import ExitStack
 import functools
 import operator
 from typing import Any, Callable, List, TypeAlias
+
 from absl import logging
 import torch
+import torch._functorch.config as functorch_config
 from torch._dynamo.backends.common import aot_autograd
 from torch._dynamo.utils import dynamo_timed
+from torch._functorch._aot_autograd.schemas import (
+    SerializableAOTDispatchCompiler,
+)
 from torch._inductor.fx_passes import post_grad
+from torch._inductor.output_code import OutputCode
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
-from torch._subclasses.fake_tensor import unset_fake_temporarily
+from torch._subclasses.fake_tensor import FakeTensorMode, unset_fake_temporarily
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
@@ -122,12 +131,15 @@ UNSET_GRAPH_HELPER_STR = (
 )
 
 
-class _TorchTpuCompiledExecutable:
+class _TorchTpuCompiledExecutable(OutputCode):
   """A callable for a TorchTPU compiled executable.
 
   This class is returned to dynamo and stored in the dynamo cache. Any time an
   FX graph being traced by dynamo satisfies the guards setup to produce this
   executable, a call to the __call__ method is made.
+
+  Inherits from OutputCode so that aot_autograd's bundled cache
+  infrastructure can recognize this as a cacheable compiled artifact.
   """
 
   def __init__(
@@ -178,6 +190,10 @@ class _TorchTpuCompiledExecutable:
   ) -> Any:
     if output_shapes is None:
       output_shapes = []
+    # aot_autograd with SerializableAOTDispatchCompiler passes args as a
+    # single list: fn([t1, t2, ...]). Unwrap when we detect this pattern.
+    if len(args) == 1 and isinstance(args[0], list):
+      args = tuple(args[0])
     executable_args = self._filter_tensor_args(args)
     outputs = tpu_torch_compile.execute(
         self._executable, executable_args, output_shapes
@@ -189,18 +205,19 @@ class _TorchTpuCompiledExecutable:
     return outputs
 
   def _filter_tensor_args(
-      self, args: tuple[Any, ...]
+      self, args: tuple[Any, ...] | list[Any]
   ) -> tuple[torch.Tensor, ...]:
     """Filters out non-tensor arguments (e.g., concrete integers)."""
     if self._tensor_arg_indices is None:
-      # Pre-compute indices for filtering out non-tensor args once.
-      # Assume args will have the same structure for subsequent calls.
       self._tensor_arg_indices = tuple(
           i for i, arg in enumerate(args) if isinstance(arg, torch.Tensor)
       )
 
     if len(self._tensor_arg_indices) == len(args):
       return args
+
+    if not self._tensor_arg_indices:
+      return ()
 
     filtered = operator.itemgetter(*self._tensor_arg_indices)(args)
     if len(self._tensor_arg_indices) == 1:
@@ -215,6 +232,18 @@ class _TorchTpuCompiledExecutable:
         (serialized, self._reconstruct_fx_outputs_fn),
     )
 
+  def prepare_for_serialization(self):
+    pass
+
+  def post_compile(self, example_inputs, constants, graph_kwargs):
+    pass
+
+  def wrap_post_compile(self, example_inputs, constants, graph_kwargs):
+    pass
+
+  def set_triton_bundle(self, triton_bundle):
+    pass
+
 
 def _unpickle_compiled_executable(
     serialized_bytes: bytes,
@@ -226,6 +255,31 @@ def _unpickle_compiled_executable(
       executable=executable,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
   )
+
+
+@contextlib.contextmanager
+def _serialization_context(enable: bool = False):
+  """Optionally configure the environment for aot_autograd serialization.
+
+  When enabled, sets up a TracingContext with a FakeTensorMode + ShapeEnv
+  and enables bundled_autograd_cache so that AOTAutogradCache can generate
+  cache keys and attach .serialize() to the compiled function.
+  """
+  if not enable:
+    yield
+    return
+
+  with ExitStack() as stack:
+    if torch._guards.TracingContext.try_get() is None:
+      fake_mode = FakeTensorMode(shape_env=ShapeEnv())
+      stack.enter_context(
+          torch._guards.tracing(torch._guards.TracingContext(fake_mode))
+      )
+
+    stack.enter_context(
+        functorch_config.patch("bundled_autograd_cache", True),
+    )
+    yield
 
 
 def _split_str_for_logging(text, limit=13000) -> Sequence[str]:
@@ -265,12 +319,13 @@ def _log_gm_and_inputs(
 
 
 class TpuBackend:
-  """TPU backend for torch.compile() integratation."""
+  """TPU backend for torch.compile() integration."""
 
   def __init__(
       self,
       debug: bool = False,
       dynamism: bool = False,
+      enable_serialization: bool = False,
   ):
     """Initializes the TPU backend.
 
@@ -278,9 +333,14 @@ class TpuBackend:
       debug (bool): If True, enable debug logging and save a dump of the fx
         graph.
       dynamism (bool): If True, enable dynamism.
+      enable_serialization: If True, enable the aot_autograd bundled
+        cache so that .serialize() is attached to compiled functions.
+        This allows compilation artifacts to be saved/loaded without
+        re-running aot_autograd.
     """
     self._debug = debug
     self._dynamism = dynamism
+    self._enable_serialization = enable_serialization
     # Stores information about each compiled executable.
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[_TorchTpuCompiledExecutable] = []
@@ -318,14 +378,21 @@ class TpuBackend:
     if has_symints:
       compiler = dynamic_compiler.DynamicCompiler(self)
     else:
-      compiler = functools.partial(self._compile_graph_module)
+      if self._enable_serialization:
+        compiler = SerializableAOTDispatchCompiler(
+            output_code_ty=_TorchTpuCompiledExecutable,
+            compiler_fn=functools.partial(self._compile_graph_module),
+        )
+      else:
+        compiler = functools.partial(self._compile_graph_module)
 
-    return aot_autograd(
-        fw_compiler=compiler,
-        # This is to avoid inplace generating graph modules that contains
-        # inplace update.
-        keep_inference_input_mutations=False,
-    )(graph_module, example_inputs)
+    with _serialization_context(self._enable_serialization):
+      return aot_autograd(
+          fw_compiler=compiler,
+          # This is to avoid inplace generating graph modules that contains
+          # inplace update.
+          keep_inference_input_mutations=False,
+      )(graph_module, example_inputs)
 
   def _compile_graph_module(
       self,
@@ -335,8 +402,7 @@ class TpuBackend:
     """Compiles the graph_module with the given inputs for TPU.
 
     torch.compile() will generate a graph_module and call this function to
-    finish
-    the compilation.
+    finish the compilation.
 
     Args:
       graph_module: The FX graph module to compile.
