@@ -31,6 +31,12 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "spmd_context",
+    srcs = ["spmd_context.py"],
+    deps = ["//torch_tpu/_internal:spmd_context_impl"],
+)
+
+pytype_strict_library(
     name = "gpu_env",
     srcs = ["gpu_env.py"],
     deps = [
@@ -61,6 +67,7 @@ pybind_extension(
     srcs = ["tpu_distributed.cc"],
     common_lib_packages = [
         "torch_tpu/common",
+        "torch_tpu/ops",
     ],
     wrap_py_init = True,
     deps = [

@@ -73,6 +73,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/python_context.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -259,7 +260,8 @@ absl::Status CheckAllToAllShapeConsistency(
 
 // Returns the OpSplitMode to use for collectives.
 OpSplitMode GetCollectiveSplitMode() {
-  if (absl::GetFlag(FLAGS_torch_tpu_internal_materialize_collective_tensors)) {
+  if (!IsInSpmdRegion() &&
+      absl::GetFlag(FLAGS_torch_tpu_internal_materialize_collective_tensors)) {
     return OpSplitMode::kSplitBoth;
   }
   return OpSplitMode::kNone;

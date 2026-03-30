@@ -410,7 +410,8 @@ class DeferredOp {
         aliased_input_indices_(std::move(aliased_input_indices)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
-        split_mode_(split_mode),
+        in_spmd_region_(IsInSpmdRegion()),
+        split_mode_(CalculateSplitMode(split_mode, inputs_, in_spmd_region_)),
         subgraph_(std::move(subgraph)) {
     static std::atomic_int64_t g_creation_index = 0;
     absl::flat_hash_set<const DeferredOp*> unique_deferred_ops;
@@ -494,6 +495,9 @@ class DeferredOp {
   // split into subgraphs for compilation.
   [[nodiscard]] OpSplitMode split_mode() const { return split_mode_; }
 
+  // Returns true if the op was emitted in an SPMD region.
+  [[nodiscard]] bool in_spmd_region() const { return in_spmd_region_; }
+
   // Returns the name of the custom kernel, if this DeferredOp is a custom
   // kernel. Otherwise, returns an empty string.
   std::string_view custom_kernel_name() const {
@@ -530,6 +534,33 @@ class DeferredOp {
   }
 
  private:
+  static OpSplitMode CalculateSplitMode(
+      OpSplitMode split_mode, const std::vector<DeviceBufferRef>& inputs,
+      bool is_in_spmd_region) {
+    bool needs_split_before = false;
+    for (const auto& input : inputs) {
+      if (const auto* deferred_input = input.deferred_op()) {
+        if (is_in_spmd_region != deferred_input->in_spmd_region()) {
+          needs_split_before = true;
+          break;
+        }
+      }
+    }
+
+    if (!needs_split_before) {
+      return split_mode;
+    }
+
+    switch (split_mode) {
+      case OpSplitMode::kNone:
+        return OpSplitMode::kSplitBefore;
+      case OpSplitMode::kSplitAfter:
+        return OpSplitMode::kSplitBoth;
+      default:
+        return split_mode;
+    }
+  }
+
   // The name of the deferred op.
   OpName op_name_;
   // The MlirOpBuilder that will be used to compile the deferred op.
@@ -570,6 +601,9 @@ class DeferredOp {
   // A global index of the creation of this DeferredOp (created atomically for
   // thread safety). Lower means earlier.
   int64_t creation_index_ = 0;
+
+  // Whether the op was emitted in an SPMD region.
+  const bool in_spmd_region_ = false;
 
   // The split mode of the DeferredOp, which determines how the op is split into
   // subgraphs for compilation.

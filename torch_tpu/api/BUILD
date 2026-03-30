@@ -147,6 +147,7 @@ pybind_extension(
     srcs = ["device_rt.cc"],
     common_lib_packages = [
         "torch_tpu/common",
+        "torch_tpu/ops",
     ],
     py_deps = [
         "//shims/torch:pytorch",

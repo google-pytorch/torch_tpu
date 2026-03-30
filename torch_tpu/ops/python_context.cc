@@ -320,4 +320,17 @@ std::string GetRootOpName(const std::optional<OpName> current_op_name) {
                                      : "";
 }
 
+// This assumes that regions won't launch threads within an SPMD region.
+thread_local int spmd_region_nesting_level = 0;
+
+bool IsInSpmdRegion() { return spmd_region_nesting_level > 0; }
+
+void EnterSPMDRegion() { spmd_region_nesting_level++; }
+
+void ExitSPMDRegion() {
+  if (spmd_region_nesting_level > 0) {
+    spmd_region_nesting_level--;
+  }
+}
+
 }  // namespace torch_tpu

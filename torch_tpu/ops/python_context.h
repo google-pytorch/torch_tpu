@@ -303,6 +303,13 @@ class ScopedPythonContextProvider {
 [[nodiscard]] mlir::Location MakeMlirLocation(
     mlir::MLIRContext& ctx, const PythonContext& python_context);
 
+// Returns true if currently inside an SPMD context via SetSPMDContext()
+bool IsInSpmdRegion();
+
+// Sets or unsets the thread-local SPMD context. Supports nesting.
+void EnterSPMDRegion();
+void ExitSPMDRegion();
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_python_context_H_

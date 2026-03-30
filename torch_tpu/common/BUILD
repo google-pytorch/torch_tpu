@@ -693,6 +693,7 @@ pywrap_library(
         "//torch_tpu/_internal:compiler_options_impl",
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:execution_mode_impl",
+        "//torch_tpu/_internal:spmd_context_impl",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/distributed:tpu_distributed",

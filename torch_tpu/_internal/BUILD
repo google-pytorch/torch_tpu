@@ -141,4 +141,29 @@ pybind_extension(
     ],
 )
 
+# This library is not used directly, but is needed for go/cclean.
+torch_tpu_cc_library(
+    name = "spmd_context_impl_build",
+    srcs = ["spmd_context_impl.cc"],
+    deps = [
+        "//shims/pybind11",
+        "//torch_tpu/ops:python_context",
+    ],
+)
+
+pybind_extension(
+    name = "spmd_context_impl",
+    srcs = [
+        "spmd_context_impl.cc",
+    ],
+    common_lib_packages = [
+        "torch_tpu/common",
+        "torch_tpu/ops",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//torch_tpu/ops:python_context",
+    ],
+)
+
 torch_tpu_package_end()

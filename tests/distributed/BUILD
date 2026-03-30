@@ -474,4 +474,26 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "spmd_context_test",
+    srcs = ["spmd_context_test.py"],
+    env = {
+        "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT": "/tmp/spmd_context_test",
+    },
+    tags = [
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/distributed:spmd_context",
+        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+        "//torch_tpu/_internal/sync",
+        "//torch_tpu/api",
+    ],
+)
+
 torch_tpu_package_end()
