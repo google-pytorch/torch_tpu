@@ -26,8 +26,9 @@ def custom_compiler_options(options: dict[str, str]):
       and the value is the option value.  In addition, we also support these
       special options: "xla_optimization_level": the XLA optimization level.
       Valid options are 'O0', 'O1', 'O2', 'O3'. "xla_memory_fitting_level": the
-      XLA memory fitting level. Valid options are 'O0', 'O1', 'O2', 'O3'. See
-      EffortLevel in
+      XLA memory fitting level. Valid options are 'O0', 'O1', 'O2', 'O3'.
+      "xla_allow_excess_precision": whether to allow excess precision. Valid
+      options are "true", "false". See more details of the flags in
       https://github.com/openxla/xla/blob/main/xla/xla.proto for more details.
 
   For example:

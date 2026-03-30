@@ -32,6 +32,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "torch_tpu/common/fingerprint_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -136,9 +137,11 @@ absl::StatusOr<SharedLoadedExecutable> Compile(
     xla::PjRtClient& client, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options);
 
-// Returns the compiler options for the current host/thread and the given graph
-// compilation mode. Returns an error if the replica count for compilation
-// cannot be determined.
+// Returns the compile option overrides for the current thread, as set in
+// the user Python code and environment variables. This should only be called
+// in the main thread creating the materialization tasks, but not in the worker
+// threads for materialization. The compiler setting in Python is ever
+// changing. The worker threads running async would get incorrect values.
 //
 // The options are constructed from the following sources, in order of
 // precedence:
@@ -149,16 +152,30 @@ absl::StatusOr<SharedLoadedExecutable> Compile(
 //    PushCompilerOptionOverrides() (or via the custom_compiler_options context
 //    manager in Python); with nested custom_compiler_options contexts, the
 //    innermost context takes precedence,
-//  - hard-coded default compiler options,
-//  - the global device count,
-//  - debug options set via environment variable XLA_FLAGS,
+//  - debug options set via environment variable XLA_FLAGS.
 //
 // The format of TORCH_TPU_INTERNAL_XLA_OPTIONS is a space-separated list of
 // key=value pairs, e.g. "xla_optimization_level=O1
 // xla_tpu_enable_deduplicated_calls=AUTO".
 // Valid options for TORCH_TPU_INTERNAL_XLA_OPTIONS are documented on
 // https://openxla.org/xla/flags_guidance
-absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(CompilationMode mode);
+CompilerOptionOverrides GetActiveCompilerOptionOverrides();
+
+// Returns a fingerprint of the given compiler option overrides only, excluding
+// the compiler settings left to default value.
+FingerprintType FingerprintCompilerOptions(
+    const CompilerOptionOverrides& overrides);
+
+// Returns the full compiler options for the current host/thread and the given
+// graph compilation mode by updating the following default setting with the
+// compiler options overrides:
+//  - hard-coded default compiler options,
+//  - the global device count.
+//
+// Returns an error if the replica count for compilation cannot be determined.
+absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(
+    CompilationMode mode,
+    std::optional<CompilerOptionOverrides> overrides = std::nullopt);
 
 // Pushes the compile option overrides for the current thread on to the
 // custom compiler option stack. Thread-safe.

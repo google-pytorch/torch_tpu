@@ -129,6 +129,9 @@ struct MaterializationTask {
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
   xla::Promise<void> completion_promise;
   MaterializationMode materialization_mode = MaterializationMode::kSplitGraph;
+  // A snapshot of the active compiler option overrides captured on the main
+  // thread when enqueuing the task.
+  std::optional<CompilerOptionOverrides> compiler_option_overrides;
 };
 
 using MaterializationJob = std::variant<ExecutionTask, MaterializationTask>;
@@ -274,11 +277,14 @@ class MaterializationWorker {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing " << nodes.size()
                  << " nodes for materialization";
     auto [promise, future] = xla::MakePromise<void>();
+    // Snapshot the compiler options for the materialization threads to use.
+    auto overrides = GetActiveCompilerOptionOverrides();
     absl::MutexLock lock(materialize_mu_);
     materialize_jobs_.push(
         MaterializationTask{.nodes_to_materialize = std::move(nodes),
                             .completion_promise = std::move(promise),
-                            .materialization_mode = materialization_mode});
+                            .materialization_mode = materialization_mode,
+                            .compiler_option_overrides = std::move(overrides)});
     return future;
   }
 
@@ -486,8 +492,10 @@ class MaterializationWorker {
       absl::StatusOr<CompiledKernel> compiled_kernel;
       {
         tsl::profiler::TraceMe t("CompileTraversal");
-        TT_ASSIGN_OR_RETURN(compiled_kernel,
-                            split_traversal.Compile(compilation_mode));
+        TT_ASSIGN_OR_RETURN(
+            compiled_kernel,
+            split_traversal.Compile(compilation_mode,
+                                    task.compiler_option_overrides));
       }
 
       // Mark all outputs of the split as scheduled/materialized.

@@ -176,6 +176,7 @@ torch_tpu_cc_library(
     deps = [
         ":env_vars",
         ":error_utils",
+        ":fingerprint_utils",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/base:no_destructor",
