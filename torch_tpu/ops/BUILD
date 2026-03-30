@@ -429,23 +429,26 @@ torch_tpu_cc_test(
     name = "custom_kernels_test",
     srcs = ["custom_kernels_test.cc"],
     tags = [
+        "oss_ready_tpu",
         "requires-tpu-v5lite",
     ],
     deps = [
         ":custom_kernels",
         ":op_builder_utils",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/pjrt:pjrt_init",
+        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings:string_view",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:IR",
+        # "//torch_tpu/api",  # buildcleaner: keep
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/pjrt:pjrt_init",
+        "@stablehlo//:register",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:func_builder",
         "@stablehlo//:mlir_builder",
-        "@stablehlo//:register",
+        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 

@@ -45,6 +45,7 @@ torch_tpu_py_test(
     name = "pallas_communication_test",
     srcs = ["pallas_communication_test.py"],
     tags = [
+        "oss_ready_tpu",
         "requires-tpu-v5lite:8",
     ],
     deps = [
