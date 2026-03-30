@@ -51,7 +51,6 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:op_builder_utils",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
         "@llvm-project//mlir:Support",
         "@stablehlo//:chlo_builder",
         "@stablehlo//:mlir_builder",

@@ -29,12 +29,15 @@ common --incompatible_strict_action_env=true
 # Enable passing through TPU envvars by default for convenience.
 common --config=tpu_envvars
 
-# Use C++17 by default, but not for `.c` files. Clang 18
+# Use C++20 by default, but not for `.c` files. Clang 18
 # gives an error when C files use it.
-build --per_file_copt=.*[.](cc|cpp|hpp)$@-std=c++17
-# Let warnings about C++20 slide, we'll use C++20 eventually.
-build --per_file_copt=.*@-Wno-c++20-extensions
-build --per_file_copt=.*@-Wno-c++20-designator
+build --per_file_copt=.*[.](cc|cpp|hpp)$@-std=c++20
+
+# Force onednn (and its bundled spdlog/fmt) to compile in C++17 mode 
+# to avoid C++20 consteval bugs in older library versions.
+# build --per_file_copt=.*external/.*[.](cc|cpp|hpp|cxx)$@-std=c++17
+build --per_file_copt=.*external/onednn/.*[.](cc|cpp|hpp|cxx)$@-std=c++17
+build --per_file_copt=.*external/llvm-project/.*[.](cc|cpp|hpp|cxx)$@-std=c++17
 
 # ===== Start spammy C++ compile warning disables =====
 # Some low-level legacy glibc macros are used in lots of
@@ -61,7 +64,12 @@ build --per_file_copt=.*external/.*@-w
 
 # ===== End spammy C++ compile warning disables ===
 
-build --action_env=BAZEL_CXXOPTS="-std=c++17"
+build --action_env=BAZEL_CXXOPTS="-std=c++20"
+common --enable_platform_specific_config
+build --repo_env=LLVM_VERSION=20
+build --repo_env=SYSROOT_DIST=linux_glibc_2_31
+
+
 
 # The disk cache uses local disk as a "remote" cache backend, which can
 # significantly speed up builds across server restarts and analysis cache

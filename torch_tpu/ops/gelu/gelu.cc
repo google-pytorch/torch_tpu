@@ -17,20 +17,15 @@
 #include "torch_tpu/ops/gelu/gelu.h"
 
 #include <cmath>
+#include <numbers>
 
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-
-// In order to remain compatible with C++17, we define these constants locally
-// instead of using them from std::numbers. Their values are copied from C++20
-#define TT_PI 3.141592653589793238462643383279502
-#define TT_SQRT2 1.414213562373095048801688724209698
 
 namespace torch_tpu {
 
@@ -44,7 +39,8 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildGeluApproximateShlo(mlir::MlirOp input_op) {
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_sqrt_2_div_pi = MakeConstantLike(input_op, std::sqrt(2.0 / TT_PI));
+  auto k_sqrt_2_div_pi =
+      MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
   auto k_0_044715 = MakeConstantLike(input_op, 0.044715);
   auto k_3_0 = MakeConstantLike(input_op, 3.0);
 
@@ -61,7 +57,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeluApproximateShlo(mlir::MlirOp input_op) {
 absl::StatusOr<mlir::MlirOp> BuildGeluNoneShlo(mlir::MlirOp input_op) {
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_sqrt_2 = MakeConstantLike(input_op, TT_SQRT2);
+  auto k_sqrt_2 = MakeConstantLike(input_op, std::numbers::sqrt2);
 
   auto div_sqrt_2 = stablehlo::Div(input_op, k_sqrt_2);
   auto erf_out = chlo::Erf(div_sqrt_2);
@@ -89,7 +85,7 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
   auto k_3_0 = MakeConstantLike(input_op, 3.0);
   // kBeta = sqrt(2/pi)
-  auto kBeta = MakeConstantLike(input_op, std::sqrt(2.0 / TT_PI));
+  auto kBeta = MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
   auto kKappa = MakeConstantLike(input_op, 0.044715);
 
   // 1. Recompute 'k' (inner) and tanh(k) used in the forward pass
@@ -139,9 +135,10 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
 //   PDF(x) = (1 / sqrt(2*pi)) * exp(-x^2 / 2)
 absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputNoneShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
-  auto kAlpha = MakeConstantLike(input_op, 1.0 / TT_SQRT2);
+  auto kAlpha = MakeConstantLike(input_op, 1.0 / std::numbers::sqrt2);
   // kBeta = 1 / sqrt(2 * pi)
-  auto kBeta = MakeConstantLike(input_op, 1.0 / std::sqrt(2.0 * TT_PI));
+  auto kBeta =
+      MakeConstantLike(input_op, 1.0 / std::sqrt(2.0 * std::numbers::pi));
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
   auto k_neg_0_5 = MakeConstantLike(input_op, -0.5);
