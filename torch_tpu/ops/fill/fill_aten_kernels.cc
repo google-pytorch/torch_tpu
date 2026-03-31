@@ -25,8 +25,10 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -36,8 +38,10 @@
 namespace torch_tpu {
 
 at::Tensor& AtenZero_(at::Tensor& self) {
-  TT_KERNEL(OpName::kZero_, _, (self),
-            { return AtenFillScalar_(self, at::Scalar(0)); });
+  TT_KERNEL(OpName::kZero_, _, (self), {
+    AtenFillScalar_(self, at::Scalar(0));
+    return self;
+  });
 }
 
 at::Tensor& AtenFillTensor_(at::Tensor& self, const at::Tensor& fill_value) {
@@ -49,10 +53,9 @@ at::Tensor& AtenFillTensor_(at::Tensor& self, const at::Tensor& fill_value) {
                        ConvertTo<mlir::ElementType>(out_aten_type));
 
     // Check size.
-    int64_t fill_value_dims_size = fill_value.sizes().size();
-    TT_CHECK_THROW(fill_value_dims_size == 0, error::kInvalidArgument)
-        << "only supports 0-dimension value tensor but got tensor with "
-        << fill_value_dims_size << " dimensions.";
+    TT_CHECK_THROW(fill_value.numel() == 1, error::kInvalidArgument)
+        << "only supports 1-element value tensor but got tensor with "
+        << fill_value.numel() << " elements.";
 
     auto sizes = self.sizes();
 
@@ -68,7 +71,7 @@ at::Tensor& AtenFillTensor_(at::Tensor& self, const at::Tensor& fill_value) {
     TT_ASSIGN_OR_THROW(
         auto result_buf,
         DispatchOp<1>(OpName::kFill_Tensor, std::move(op_builder),
-                      /*inputs=*/{fill_value},
+                      /*inputs=*/fill_value,
                       {.out_dtype = out_mlir_element_type,
                        .out_dims = sizes,
                        .op_param_cache_keys = OpParamCacheKeys::Empty()}));
@@ -78,32 +81,10 @@ at::Tensor& AtenFillTensor_(at::Tensor& self, const at::Tensor& fill_value) {
 }
 
 at::Tensor& AtenFillScalar_(at::Tensor& self, const at::Scalar& fill_value) {
-  TT_KERNEL(OpName::kFill_Scalar, param_keys, (self, fill_value), {
-    auto out_aten_type = self.scalar_type();
-    // Note that we fill the tensor with its own scalar type, not the
-    // fill_value's type.
-    TT_ASSIGN_OR_THROW(mlir::ElementType out_mlir_element_type,
-                       ConvertTo<mlir::ElementType>(out_aten_type));
-
-    auto sizes = self.sizes();
-
-    auto op_builder =
-        [sizes = CopyIntVector(sizes), fill_value, out_mlir_element_type](
-            mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
-      TT_ASSIGN_OR_RETURN(
-          auto constant,
-          MakeConstant(builder, fill_value, out_mlir_element_type, sizes));
-      return constant;
-    };
-
-    TT_ASSIGN_OR_THROW(
-        auto result_buf,
-        DispatchOp<0>(OpName::kFill_Scalar, std::move(op_builder),
-                      /*inputs=*/{},
-                      {.out_dtype = out_mlir_element_type,
-                       .out_dims = sizes,
-                       .op_param_cache_keys = std::move(param_keys)}));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), self));
+  TT_KERNEL(OpName::kFill_Scalar, _, (self, IgnoreInCacheKey(fill_value)), {
+    TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                       MakeTensor(fill_value, self.scalar_type()));
+    AtenFillTensor_(self, value_tensor);
     return self;
   });
 }

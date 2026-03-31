@@ -34,6 +34,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -85,12 +86,6 @@ absl::StatusOr<ScatterOp> ParseScatterOp(std::string_view reduction_op) {
   }
 }
 
-at::Tensor TensorFromValue(const at::Tensor& self, const at::Scalar& value) {
-  auto promoted_type = at::result_type(self, value);
-  return at::full_like(self, value, promoted_type, std::nullopt, self.device(),
-                       std::nullopt, std::nullopt);
-}
-
 }  // namespace
 
 at::Tensor& AtenScatterSrcOut(const at::Tensor& self, int64_t dim,
@@ -112,7 +107,8 @@ at::Tensor& AtenScatterValueOut(const at::Tensor& self, int64_t dim,
   TT_KERNEL(
       OpName::kScatterValueOut, _,
       (self, IgnoreInCacheKey(dim), index, IgnoreInCacheKey(value), out), {
-        auto value_tensor = TensorFromValue(self, value);
+        TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                           MakeTensor(value, self.scalar_type()));
         TT_ASSIGN_OR_THROW(
             DeviceBufferRef result,
             Scatter(OpName::kScatterValueOut, self, dim, index, value_tensor));
@@ -148,7 +144,8 @@ at::Tensor& AtenScatterValueReduceOut(const at::Tensor& self, int64_t dim,
             (self, IgnoreInCacheKey(dim), index, IgnoreInCacheKey(value),
              IgnoreInCacheKey(reduction_op), out),
             {
-              auto value_tensor = TensorFromValue(self, value);
+              TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                                 MakeTensor(value, self.scalar_type()));
               TT_ASSIGN_OR_THROW(ScatterOp scatter_op,
                                  ParseScatterOp(reduction_op));
               TT_ASSIGN_OR_THROW(DeviceBufferRef result,

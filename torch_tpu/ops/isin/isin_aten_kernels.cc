@@ -22,7 +22,6 @@
 #include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/native/Resize.h"
-#include "ATen/ops/full.h"
 #include "ATen/ops/promote_types.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
@@ -32,6 +31,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/isin/isin.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -74,39 +74,6 @@ absl::StatusOr<DeviceBufferRef> AtenIsInHelper(OpName op_name,
                         .op_param_cache_keys = std::move(param_keys)});
 }
 
-absl::StatusOr<DeviceBufferRef> AtenIsInHelper(OpName op_name,
-                                               const at::Tensor& elements,
-                                               const at::Scalar& test_element,
-                                               bool assume_unique, bool invert,
-                                               OpParamCacheKeys& param_keys) {
-  ABSL_VLOG(1) << "AtenIsInHelper assume_unique=" << assume_unique
-               << " invert=" << invert;
-
-  at::ScalarType computation_scalar_type =
-      at::promote_types(elements.scalar_type(), test_element.type());
-  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
-  auto op_builder = [assume_unique, invert, test_element](
-                        mlir::MlirOp elements) -> absl::StatusOr<mlir::MlirOp> {
-    mlir::MlirBuilder& builder = elements.getBuilder();
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp test_element,
-                        MakeConstant(builder, test_element));
-    test_element = mlir::stablehlo::Reshape(test_element, {1});
-    return BuildIsInShlo(elements, test_element, assume_unique, invert);
-  };
-
-  absl::Span<const int64_t> output_dims = elements.sizes();
-  mlir::ElementType output_dtype =
-      mlir::ElementType::PRED;  // The output is always Boolean.
-
-  return DispatchOp<1>(op_name, std::move(op_builder), elements,
-                       {.out_dtype = output_dtype,
-                        .out_dims = output_dims,
-                        .computation_dtype = computation_dtype,
-                        .op_param_cache_keys = std::move(param_keys)});
-}
-
 }  // namespace
 
 at::Tensor& AtenIsInScalarTensorOut(const at::Scalar& element,
@@ -117,8 +84,8 @@ at::Tensor& AtenIsInScalarTensorOut(const at::Scalar& element,
             (IgnoreInCacheKey(element), test_elements,
              IgnoreInCacheKey(assume_unique), IgnoreInCacheKey(invert), out),
             {
-              at::Tensor wrapper_scalar_tensor =
-                  at::full({}, element).to(test_elements.device());
+              TT_ASSIGN_OR_THROW(at::Tensor wrapper_scalar_tensor,
+                                 MakeTensor(element, out.scalar_type()));
 
               // Resize the output tensor to the shape we expect it to be, an
               // empty tensor for hosting a scalar.
@@ -154,10 +121,12 @@ at::Tensor& AtenIsInTensorScalarOut(const at::Tensor& elements,
   TT_KERNEL(
       OpName::kIsInTensorScalarOut, param_keys,
       (elements, test_element, assume_unique, invert, out), {
-        TT_ASSIGN_OR_THROW(
-            auto result_buf,
-            AtenIsInHelper(OpName::kIsInTensorScalarOut, elements, test_element,
-                           assume_unique, invert, param_keys));
+        TT_ASSIGN_OR_THROW(at::Tensor test_element_tensor,
+                           MakeTensor(test_element, elements.scalar_type()));
+        TT_ASSIGN_OR_THROW(auto result_buf,
+                           AtenIsInHelper(OpName::kIsInTensorScalarOut,
+                                          elements, test_element_tensor,
+                                          assume_unique, invert, param_keys));
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
         return out;
       });
