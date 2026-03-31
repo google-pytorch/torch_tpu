@@ -148,9 +148,15 @@ using SharedDeviceBufferList = absl_nonnull std::shared_ptr<DeviceBufferList>;
 // connected. Subgraphs can be merged when an operation takes inputs from
 // multiple subgraphs.
 // Each subgraph maintains its own queue of deferred operations.
+// TODO(bawilson): factor this into a separate file.
 class Subgraph : public std::enable_shared_from_this<Subgraph> {
  public:
+  // Constructs a subgraph, but does not register it with the subgraph
+  // registry.
   Subgraph() = default;
+
+  // Creates a new subgraph and registers it with the subgraph registry.
+  static std::shared_ptr<Subgraph> Create();
 
   // Pushes a deferred node onto this subgraph's queue.
   void push(std::weak_ptr<DeviceBufferList> device_buffer);
@@ -176,6 +182,37 @@ class Subgraph : public std::enable_shared_from_this<Subgraph> {
   absl::Mutex mu_;
   std::shared_ptr<Subgraph> parent_ ABSL_GUARDED_BY(mu_);
   std::vector<std::weak_ptr<DeviceBufferList>> queue_ ABSL_GUARDED_BY(mu_);
+};
+
+// A global singleton registry of all Subgraphs that currently exist.
+// TODO(bawilson): factor this into a separate file.
+class SubgraphRegistry {
+ public:
+  // Returns the singleton registry instance.
+  [[nodiscard]] static SubgraphRegistry& GetInstance();
+
+  // Constructs a new, empty subgraph and registers it with the registry.
+  // In single-subgraph mode, returns the only subgraph in the registry,
+  // creating it first if the registry is empty.
+  absl_nonnull std::shared_ptr<Subgraph> InitSubgraph();
+
+  // Merges all subgraphs in the registry into a single subgraph.
+  // If the registry is empty, creates a new empty subgraph and returns it.
+  absl_nonnull std::shared_ptr<Subgraph> MergeAll();
+
+ private:
+  SubgraphRegistry();
+  // SubgraphRegistry is neither copyable nor movable.
+  SubgraphRegistry(const SubgraphRegistry&) = delete;
+  SubgraphRegistry& operator=(const SubgraphRegistry&) = delete;
+  SubgraphRegistry(SubgraphRegistry&&) = delete;
+  SubgraphRegistry& operator=(SubgraphRegistry&&) = delete;
+
+  // Optional mode to merge all subgraphs into a single subgraph.
+  bool single_subgraph_mode_ = false;
+
+  absl::Mutex mu_;
+  std::vector<std::weak_ptr<Subgraph>> subgraphs_ ABSL_GUARDED_BY(mu_);
 };
 
 // A DeviceBufferRef is a reference to an element in a DeviceBufferList.

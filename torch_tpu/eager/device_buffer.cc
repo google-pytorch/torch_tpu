@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/flags/flag.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -40,7 +41,9 @@
 #include "c10/core/Device.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/util/accumulate.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
@@ -57,6 +60,9 @@
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
+
+ABSL_FLAG(bool, torch_tpu_single_subgraph_mode, false,
+          "If true, all Subgraphs will be merged into a single subgraph.");
 
 namespace torch_tpu {
 
@@ -167,6 +173,84 @@ std::vector<SharedDeviceBufferList> Subgraph::GetLeafNodes() {
   std::vector<SharedDeviceBufferList> leaf_nodes;
   PruneAndReturnLeafNodes(leaf_nodes);
   return leaf_nodes;
+}
+
+SubgraphRegistry::SubgraphRegistry() {
+  single_subgraph_mode_ = absl::GetFlag(FLAGS_torch_tpu_single_subgraph_mode);
+  if (single_subgraph_mode_) {
+    subgraphs_.reserve(1);
+  }
+}
+
+SubgraphRegistry& SubgraphRegistry::GetInstance() {
+  static SubgraphRegistry* const registry = new SubgraphRegistry();
+  return *registry;
+}
+
+absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::InitSubgraph() {
+  TT_MUTEX_LOCK(lock, mu_);
+  std::shared_ptr<Subgraph> subgraph;
+
+  if (single_subgraph_mode_ && !subgraphs_.empty()) {
+    // In single subgraph mode, we only actually create a new subgraph if there
+    // are no other non-expired subgraphs.
+    subgraph = subgraphs_[0].lock();
+    if (subgraph) {
+      return subgraph;
+    } else {
+      subgraphs_.clear();
+    }
+  }
+
+  subgraph = std::make_shared<Subgraph>();
+  if (subgraphs_.size() >= subgraphs_.capacity()) {
+    // Try to free up capacity by pruning down to just the live subgraphs.
+    subgraphs_.erase(std::remove_if(subgraphs_.begin(), subgraphs_.end(),
+                                    [](std::weak_ptr<Subgraph>& weak_subgraph) {
+                                      return weak_subgraph.lock() == nullptr;
+                                    }),
+                     subgraphs_.end());
+  }
+  subgraphs_.push_back(subgraph);  // intentional copy
+  return subgraph;
+}
+
+absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MergeAll() {
+  TT_MUTEX_LOCK(lock, mu_);
+  // Find the first non-expired subgraph.
+  std::shared_ptr<Subgraph> root;
+  auto it = subgraphs_.begin();
+  while (it != subgraphs_.end()) {
+    root = it->lock();
+    if (root) break;
+    ++it;
+  }
+  if (it == subgraphs_.end()) {
+    // All subgraphs are expired. Create a new one and register it as the only
+    // subgraph.
+    subgraphs_.clear();
+    auto subgraph = std::make_shared<Subgraph>();
+    subgraphs_.push_back(subgraph);  // intentional copy
+    return subgraph;
+  }
+
+  // Merge all other subgraphs into the root subgraph.
+  ++it;
+  for (; it != subgraphs_.end(); ++it) {
+    if (auto subgraph = it->lock()) {
+      Subgraph::Merge(root, subgraph);
+    }
+  }
+
+  // Make the root subgraph the only subgraph in the registry and return it.
+  ABSL_CHECK(root);  // CRASH_OK=satisfying ClangTidy
+  subgraphs_.clear();
+  subgraphs_.push_back(root);  // intentional copy
+  return root;
+}
+
+std::shared_ptr<Subgraph> Subgraph::Create() {
+  return SubgraphRegistry::GetInstance().InitSubgraph();
 }
 
 size_t DeviceBufferList::size_bytes(int64_t index) const {
@@ -429,6 +513,17 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   int64_t num_outputs = output_shapes.size();
 
   std::shared_ptr<Subgraph> subgraph = nullptr;
+
+  if (IsDistributedOp(op_name)) {
+    // Each distributed op acts as a barrier; all prior operations (connected or
+    // not) that were created before it must be considered part of the same
+    // graph so that proper ordering is maintained.
+    // Otherwise, two independent collective operations could be isolated in
+    // disconnected subgraphs, and different rank processes could have different
+    // orderings of these subgraphs, leading to a deadlock.
+    subgraph = SubgraphRegistry::GetInstance().MergeAll();
+  }
+
   for (const auto& input : inputs) {
     if (input.state() == DeviceBufferRefState::kDeferred) {
       auto input_subgraph = input.device_buffer_list()->subgraph();
@@ -445,7 +540,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   }
 
   if (!subgraph) {
-    subgraph = std::make_shared<Subgraph>();
+    subgraph = Subgraph::Create();
   }
 
   // Create the DeferredOp.

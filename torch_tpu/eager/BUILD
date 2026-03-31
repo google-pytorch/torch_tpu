@@ -29,6 +29,7 @@ torch_tpu_cc_test(
     deps = [
         ":device_buffer",
         "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:shape",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",

@@ -18,12 +18,14 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -42,7 +44,7 @@ absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
   return DynamicMlirOpResults{};
 }
 
-TEST(DeviceBufferTest, SubgraphMerging) {
+TEST(SubgraphTest, SubgraphMerging) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -76,7 +78,7 @@ TEST(DeviceBufferTest, SubgraphMerging) {
   EXPECT_EQ(rep1, rep3);
 }
 
-TEST(DeviceBufferTest, GetLeafNodesInvalidPopping) {
+TEST(SubgraphTest, GetLeafNodesInvalidPopping) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -108,7 +110,7 @@ TEST(DeviceBufferTest, GetLeafNodesInvalidPopping) {
   EXPECT_EQ(leaves[0], node2);
 }
 
-TEST(DeviceBufferTest, GetLeafNodesStopPopping) {
+TEST(SubgraphTest, GetLeafNodesStopPopping) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -159,7 +161,7 @@ TEST(DeviceBufferTest, GetLeafNodesStopPopping) {
   EXPECT_EQ(leaves[0], node3);
 }
 
-TEST(DeviceBufferTest, DeferredOpSubgraphDereference) {
+TEST(SubgraphTest, DeferredOpSubgraphDereference) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -192,6 +194,145 @@ TEST(DeviceBufferTest, LayoutHint) {
 
   ASSERT_TRUE(ref.layout_hint().has_value());
   EXPECT_EQ(ref.layout_hint().value(), my_hint);
+}
+
+TEST(SubgraphTest, MergeAll) {
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create two unrelated deferred nodes.
+  auto refs_a_or = DeviceBufferList::CreateDeferred(
+      OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(refs_a_or.ok());
+  auto ref_a = refs_a_or.value()[0];
+  const auto* ref_a_deferred_op = ref_a.deferred_op();
+  ASSERT_NE(ref_a_deferred_op, nullptr);
+
+  auto refs_b_or = DeviceBufferList::CreateDeferred(
+      OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(refs_b_or.ok());
+  auto ref_b = refs_b_or.value()[0];
+  const auto* ref_b_deferred_op = ref_b.deferred_op();
+  ASSERT_NE(ref_b_deferred_op, nullptr);
+
+  // The subgraphs should be distinct; they haven't been merged.
+  EXPECT_NE(ref_a_deferred_op->subgraph()->Find(),
+            ref_b_deferred_op->subgraph()->Find());
+
+  // Merge all subgraphs.
+  auto merged_subgraph = SubgraphRegistry::GetInstance().MergeAll();
+
+  // Both nodes should now be in this merged subgraph.
+  EXPECT_EQ(ref_a_deferred_op->subgraph()->Find(), merged_subgraph);
+  EXPECT_EQ(ref_b_deferred_op->subgraph()->Find(), merged_subgraph);
+}
+
+TEST(SubgraphTest, DistributedCollectivesInSameSubgraph) {
+  ScopedPythonContextCapturer capturer(OpName::kDistributedAllReduce);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create two unrelated deferred nodes, but use the name for a distributed
+  // collective.
+  auto refs_a_or = DeviceBufferList::CreateDeferred(
+      OpName::kDistributedAllReduce, DummyBuilder, {},
+      OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(refs_a_or.ok());
+  auto ref_a = refs_a_or.value()[0];
+  const auto* ref_a_deferred_op = ref_a.deferred_op();
+  ASSERT_NE(ref_a_deferred_op, nullptr);
+
+  // Record the representative subgraph for ref_a before creating ref_b.
+  const auto* ref_a_subgraph_before =
+      ref_a_deferred_op->subgraph()->Find().get();
+
+  auto refs_b_or = DeviceBufferList::CreateDeferred(
+      OpName::kDistributedAllReduce, DummyBuilder, {},
+      OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(refs_b_or.ok());
+  auto ref_b = refs_b_or.value()[0];
+  const auto* ref_b_deferred_op = ref_b.deferred_op();
+  ASSERT_NE(ref_b_deferred_op, nullptr);
+
+  const auto* ref_a_subgraph_after =
+      ref_a_deferred_op->subgraph()->Find().get();
+  auto* ref_b_subgraph_after = ref_b_deferred_op->subgraph()->Find().get();
+
+  // ref_a should still have the same subgraph.
+  EXPECT_EQ(ref_a_subgraph_before, ref_a_subgraph_after);
+
+  // ref_b should have been merged into the same subgraph as ref_a.
+  EXPECT_EQ(ref_b_subgraph_after, ref_a_subgraph_after);
+
+  // Both nodes should be leaf nodes in this subgraph, and the older leaf node
+  // should be first.
+  std::vector<const DeviceBufferList*> actual_leaf_nodes_ptrs;
+  for (const auto& leaf_node : ref_b_subgraph_after->GetLeafNodes()) {
+    actual_leaf_nodes_ptrs.push_back(leaf_node.get());
+  }
+  EXPECT_THAT(actual_leaf_nodes_ptrs,
+              testing::ElementsAre(ref_a.device_buffer_list().get(),
+                                   ref_b.device_buffer_list().get()));
+}
+
+TEST(SubgraphTest, CollectivesMergeNonCollectives) {
+  ScopedPythonContextCapturer capturer(OpName::kDistributedAllReduce);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create 3 disconnected ops in a pattern of [collective, non-collective,
+  // collective]
+  auto collective_refs_a_or = DeviceBufferList::CreateDeferred(
+      OpName::kDistributedAllReduce, DummyBuilder, {},
+      OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(collective_refs_a_or.ok());
+  auto collective_ref_a = collective_refs_a_or.value()[0];
+  const auto* collective_ref_a_deferred_op = collective_ref_a.deferred_op();
+  ASSERT_NE(collective_ref_a_deferred_op, nullptr);
+  const auto* collective_ref_a_subgraph_before =
+      collective_ref_a_deferred_op->subgraph()->Find().get();
+
+  auto non_collective_refs_b_or = DeviceBufferList::CreateDeferred(
+      OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(non_collective_refs_b_or.ok());
+  auto non_collective_ref_b = non_collective_refs_b_or.value()[0];
+  const auto* non_collective_ref_b_deferred_op =
+      non_collective_ref_b.deferred_op();
+  ASSERT_NE(non_collective_ref_b_deferred_op, nullptr);
+
+  // The collective and non-collective ops should be in different subgraphs
+  // initially.
+  EXPECT_NE(collective_ref_a_deferred_op->subgraph()->Find(),
+            non_collective_ref_b_deferred_op->subgraph()->Find());
+
+  auto collective_refs_c_or = DeviceBufferList::CreateDeferred(
+      OpName::kDistributedAllReduce, DummyBuilder, {},
+      OpParamCacheKeys::Empty(), {shape});
+  ASSERT_TRUE(collective_refs_c_or.ok());
+  auto collective_ref_c = collective_refs_c_or.value()[0];
+  const auto* collective_ref_c_deferred_op = collective_ref_c.deferred_op();
+  ASSERT_NE(collective_ref_c_deferred_op, nullptr);
+
+  // Creating collective ref_c should merge all three ops into the same
+  // subgraph, which should be the same as the representative subgraph for
+  // ref_a before merging.
+  EXPECT_EQ(collective_ref_a_deferred_op->subgraph()->Find().get(),
+            collective_ref_a_subgraph_before);
+  EXPECT_EQ(non_collective_ref_b_deferred_op->subgraph()->Find().get(),
+            collective_ref_a_subgraph_before);
+  EXPECT_EQ(collective_ref_c_deferred_op->subgraph()->Find().get(),
+            collective_ref_a_subgraph_before);
+
+  // All three nodes should be leaf nodes in this subgraph, and should be
+  // returned in the order they were created.
+  std::vector<const DeviceBufferList*> actual_leaf_nodes_ptrs;
+  for (const auto& leaf_node :
+       collective_ref_a_deferred_op->subgraph()->Find()->GetLeafNodes()) {
+    actual_leaf_nodes_ptrs.push_back(leaf_node.get());
+  }
+  EXPECT_THAT(
+      actual_leaf_nodes_ptrs,
+      testing::ElementsAre(collective_ref_a.device_buffer_list().get(),
+                           non_collective_ref_b.device_buffer_list().get(),
+                           collective_ref_c.device_buffer_list().get()));
 }
 
 }  // namespace

@@ -587,6 +587,26 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
 // "add.out(...)" in their code. This should be used for error reporting.
 [[nodiscard]] std::string_view ToBaseName(OpName op_name);
 
+// Returns true if the op is a distributed op.
+[[nodiscard]] inline bool IsDistributedOp(OpName op_name) {
+  switch (op_name) {
+    case OpName::kDistributedAllGather:
+    case OpName::kDistributedAllGatherIntoTensor:
+    case OpName::kDistributedAllReduce:
+    case OpName::kDistributedAllToAll:
+    case OpName::kDistributedAllToAllSingle:
+    case OpName::kDistributedBarrier:
+    case OpName::kDistributedBroadcast:
+    case OpName::kDistributedReduceScatter:
+    case OpName::kDistributedReduceScatterTensor:
+    case OpName::kDistributedReduceScatterTensorCoalesced:
+    case OpName::kDistributedScatter:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_OP_NAMES_H_
