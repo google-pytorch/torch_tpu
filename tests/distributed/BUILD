@@ -37,6 +37,8 @@ torch_tpu_py_test(
     name = "single_tpu_pg_test",
     srcs = ["single_tpu_pg_test.py"],
     tags = [
+        # "Skipped CI on v7 TPU: 'RuntimeError: expected exactly one TPU device per PyTorch process.' occurs because v7 TPU exposes 2 addressable cores per chip, but manual process group init expects exactly 1 TPU device per process."
+        "excluded-on-tpu-v7x",
         "requires-tpu-v5lite",
     ],
     deps = [

@@ -798,7 +798,11 @@ torch_tpu_py_test(
     srcs = ["dynamism_test.py"],
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
     main = "dynamism_test.py",
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        # "Skipped CI on v7 TPU: Fatal crash in XLA XPrecisionCombineEmitter on v7 TPU due to SublaneBytes alignment assertion (32 vs 512) for dynamic int64 shapes."
+        "excluded-on-tpu-v7x",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",

@@ -225,6 +225,9 @@ common:ci_tpu --config=ci_tpu_base
 
 common:ci_tpu_nightly --config=ci_tpu_base
 
+common:ci_tpu_on_tpu_v7x --config=ci_tpu_base
+common:ci_tpu_on_tpu_v7x --test_tag_filters=-notest_oss,-nobuild_oss,-notap,-excluded-on-tpu-v7x
+
 # Setting TPU support true for profiler trace.
 build --define=with_tpu_support=true
 
