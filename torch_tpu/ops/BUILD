@@ -464,7 +464,7 @@ sh_test(
         "@pypi_libtpu//:whl",
     ],
     tags = [
-        "oss_ready_tpu",
+        "requires-tpu-v5lite",
     ],
 )
 # copybara:comment_end
