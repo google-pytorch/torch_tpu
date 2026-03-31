@@ -421,7 +421,7 @@ class MaterializationWorker {
       // pending-materialization state.
       TT_ASSIGN_OR_RETURN(
           DeviceBufferRef output_ref,
-          DeviceBufferList::MakePlaceholder(shape.dimensions(), shape.dtype()));
+          DeviceBufferList::MakePlaceholder(shape.Dimensions(), shape.Dtype()));
       TT_RETURN_IF_ERROR(output_ref.device_buffer_list()->SetAsMaterialized());
       outputs.push_back(std::move(output_ref));
     }

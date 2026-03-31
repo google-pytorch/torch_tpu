@@ -88,7 +88,7 @@ TEST_F(MaterializeTest, AddLeafNodes) {
       -> absl::StatusOr<DynamicMlirOpResults> {
     if (!inputs.empty()) return DynamicMlirOpResults{inputs[0]};
     return DynamicMlirOpResults{
-        BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
+        BuildFillUninitialized(builder, shape.Dtype(), shape.Dimensions())};
   };
 
   ASSERT_OK_AND_ASSIGN(
@@ -129,7 +129,7 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
       -> absl::StatusOr<DynamicMlirOpResults> {
     if (!inputs.empty()) return DynamicMlirOpResults{inputs[0]};
     return DynamicMlirOpResults{
-        BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
+        BuildFillUninitialized(builder, shape.Dtype(), shape.Dimensions())};
   };
 
   // Create a graph: a -> b, a -> c, b -> d.

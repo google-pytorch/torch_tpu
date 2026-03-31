@@ -36,13 +36,13 @@ absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape) {
 
 std::string ToString(const Shape& s) {
   std::ostringstream os;
-  for (auto d : s.dimensions()) {
+  for (auto d : s.Dimensions()) {
     os << d << "x";
   }
-  os << ToShortString(s.dtype());
-  if (!s.dynamic_dimensions().empty()) {
+  os << ToShortString(s.Dtype());
+  if (!s.DynamicDimensions().empty()) {
     os << "[";
-    for (auto d : s.dynamic_dimensions()) {
+    for (auto d : s.DynamicDimensions()) {
       os << d.dimension << ":" << d.lower_bound << ":" << d.upper_bound << ",";
     }
     os << "]";

@@ -101,19 +101,19 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetPadModule(
   // Add a function parameter for each input shape.
   for (int i = 0; i < shapes.size(); ++i) {
     const Shape& shape = shapes[i];
-    auto type = makeTensorType(mlir_context, shape.dimensions(), shape.dtype());
+    auto type = makeTensorType(mlir_context, shape.Dimensions(), shape.Dtype());
     // Zero-sized tensors are not passed to the executable.
     if (type.getNumElements() == 0) {
       continue;
     }
     auto input_op = mlir::func::Argument(fb, type);
-    if (shape.dynamic_dimensions().empty()) {
+    if (shape.DynamicDimensions().empty()) {
       results.push_back(input_op);
       continue;
     }
     Indices dimension_indices;
     Dimensions upper_bounds;
-    for (auto dynamic_dimension : shape.dynamic_dimensions()) {
+    for (auto dynamic_dimension : shape.DynamicDimensions()) {
       dimension_indices.push_back(dynamic_dimension.dimension);
       upper_bounds.push_back(dynamic_dimension.upper_bound);
     }
@@ -124,7 +124,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetPadModule(
                                             std::move(upper_bounds)));
     TT_ASSIGN_OR_RETURN(auto padded_op, op_builder(input_op));
     results.push_back(padded_op);
-    for (auto dynamic_dimension : shape.dynamic_dimensions()) {
+    for (auto dynamic_dimension : shape.DynamicDimensions()) {
       results.push_back(mlir::stablehlo::GetDimensionSize(
           input_op, dynamic_dimension.dimension));
     }

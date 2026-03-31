@@ -505,10 +505,10 @@ TEST(ComputeInverseViewOperation, RealToRealLargerSize) {
   EXPECT_EQ(inverse_view_operation->base_transform, expected.base_transform);
   EXPECT_EQ(inverse_view_operation->bitcast_view, expected.bitcast_view);
   EXPECT_EQ(inverse_view_operation->stages, expected.stages);
-  EXPECT_EQ(inverse_view_operation->final_shape.dimensions(),
-            expected.final_shape.dimensions());
-  EXPECT_EQ(inverse_view_operation->final_shape.dtype(),
-            expected.final_shape.dtype());
+  EXPECT_EQ(inverse_view_operation->final_shape.Dimensions(),
+            expected.final_shape.Dimensions());
+  EXPECT_EQ(inverse_view_operation->final_shape.Dtype(),
+            expected.final_shape.Dtype());
 }
 
 TEST(ComputeInverseViewOperation, RealToRealSmallerSize) {
@@ -607,10 +607,10 @@ TEST(ComputeInverseViewOperation, BoolToLargerSize) {
   EXPECT_EQ(inverse_view_operation->base_transform, expected.base_transform);
   EXPECT_EQ(inverse_view_operation->bitcast_view, expected.bitcast_view);
   EXPECT_EQ(inverse_view_operation->stages, expected.stages);
-  EXPECT_EQ(inverse_view_operation->final_shape.dimensions(),
-            expected.final_shape.dimensions());
-  EXPECT_EQ(inverse_view_operation->final_shape.dtype(),
-            expected.final_shape.dtype());
+  EXPECT_EQ(inverse_view_operation->final_shape.Dimensions(),
+            expected.final_shape.Dimensions());
+  EXPECT_EQ(inverse_view_operation->final_shape.Dtype(),
+            expected.final_shape.Dtype());
 }
 
 TEST(ComputeInverseViewOperation, ByteToBool) {

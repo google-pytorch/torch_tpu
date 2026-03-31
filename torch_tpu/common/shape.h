@@ -49,25 +49,25 @@ struct BoundedDynamicDimension {
 class Shape {
  public:
   Shape() = default;
-  Shape(Dimensions dimensions, mlir::ElementType dtype)
+  Shape(torch_tpu::Dimensions dimensions, mlir::ElementType dtype)
       : Shape(std::move(dimensions), dtype, {}) {}
-  Shape(Dimensions dimensions, mlir::ElementType dtype,
+  Shape(torch_tpu::Dimensions dimensions, mlir::ElementType dtype,
         absl::InlinedVector<BoundedDynamicDimension, 1> dynamic_dimensions)
       : dimensions_(std::move(dimensions)),
         dtype_(dtype),
         dynamic_dimensions_(std::move(dynamic_dimensions)) {}
 
-  const Dimensions& dimensions() const { return dimensions_; }
-  Dimensions& dimensions() { return dimensions_; }
+  const torch_tpu::Dimensions& Dimensions() const { return dimensions_; }
+  torch_tpu::Dimensions& Dimensions() { return dimensions_; }
 
-  mlir::ElementType dtype() const { return dtype_; }
-  void set_dtype(mlir::ElementType dtype) { dtype_ = dtype; }
+  mlir::ElementType Dtype() const { return dtype_; }
+  void SetDtype(mlir::ElementType dtype) { dtype_ = dtype; }
 
-  const absl::InlinedVector<BoundedDynamicDimension, 1>& dynamic_dimensions()
+  const absl::InlinedVector<BoundedDynamicDimension, 1>& DynamicDimensions()
       const {
     return dynamic_dimensions_;
   }
-  absl::InlinedVector<BoundedDynamicDimension, 1>& dynamic_dimensions() {
+  absl::InlinedVector<BoundedDynamicDimension, 1>& DynamicDimensions() {
     return dynamic_dimensions_;
   }
 
@@ -77,7 +77,7 @@ class Shape {
   }
 
  private:
-  Dimensions dimensions_;
+  torch_tpu::Dimensions dimensions_;
   mlir::ElementType dtype_;
   // We choose 1 as the inlined size because most Shapes are not dynamic, and
   // most dynamic Shapes are dynamic in 1 dimension only, so this allows for

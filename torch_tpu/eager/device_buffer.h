@@ -897,8 +897,8 @@ class DeviceBufferList {
     }
     layout_hints_.resize(shapes_.size());
     ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (materialized)] Created. Dims: "
-                 << ToString(shapes_[0].dimensions())
-                 << ", Type: " << ToString(shapes_[0].dtype())
+                 << ToString(shapes_[0].Dimensions())
+                 << ", Type: " << ToString(shapes_[0].Dtype())
                  << ", PjRtBuffer: " << buffer_address
                  << ", Should await: " << future.has_value();
   }
@@ -937,8 +937,8 @@ class DeviceBufferList {
     shapes_.emplace_back(std::move(dimensions), element_type);
     layout_hints_.resize(shapes_.size());
     ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (bufferless)] Created. Dims: "
-                 << ToString(shapes_[0].dimensions())
-                 << ", Type: " << ToString(shapes_[0].dtype());
+                 << ToString(shapes_[0].Dimensions())
+                 << ", Type: " << ToString(shapes_[0].Dtype());
   }
 
   // The data backing the DeviceBufferList.

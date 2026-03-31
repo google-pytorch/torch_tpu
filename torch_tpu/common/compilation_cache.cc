@@ -489,7 +489,7 @@ CompilationCache::GetOrCreateCacheEntry(
   bool create_dynamic_entry =
       !skip_dynamic_lookup_and_compilation &&
       std::any_of(input_shapes.begin(), input_shapes.end(), [](const Shape& s) {
-        return !s.dynamic_dimensions().empty();
+        return !s.DynamicDimensions().empty();
       });
   if (create_dynamic_entry) {
     auto dynamism_metadata = ShapeDynamismMetadata(input_shapes);
@@ -556,7 +556,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
     std::vector<Shape> fixed_shape_inputs;
     fixed_shape_inputs.reserve(input_shapes.size());
     for (const auto& shape : input_shapes) {
-      fixed_shape_inputs.emplace_back(shape.dimensions(), shape.dtype());
+      fixed_shape_inputs.emplace_back(shape.Dimensions(), shape.Dtype());
     }
     TT_ASSIGN_OR_RETURN(CompiledKernel padding_kernel,
                         GetOrCompile(padding_cache_key, fixed_shape_inputs,
