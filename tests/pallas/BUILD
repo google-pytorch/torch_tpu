@@ -44,6 +44,8 @@ torch_tpu_py_test(
     # TODO(b/497890629): Enable in OSS
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "exclusive",
+        "oss_ready_tpu",
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -52,11 +54,13 @@ torch_tpu_py_test(
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
+        "//tests/distributed:distributed_utils",
         "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/distributed:tpu_env",
+        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "//torch_tpu/_internal/utils",
+        "//torch_tpu/api",
         "@pypi//jax",
     ],
 )
