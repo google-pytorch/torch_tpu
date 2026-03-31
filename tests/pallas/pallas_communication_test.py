@@ -22,11 +22,14 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.export
 import torch
+from torch import distributed as dist
 import torch.multiprocessing as mp
+from torch_tpu import api
 from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import tpu_distributed
-from torch_tpu._internal.distributed import tpu_env
+from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
+from tests.distributed import distributed_utils
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 P = jax.sharding.PartitionSpec
@@ -77,8 +80,8 @@ def jax_kernel(global_input, mesh):
   return global_output
 
 
-def roll_torch_pallas(world_size, rank, input_local):
-  del rank
+def roll_torch_pallas(input_local):
+  world_size = dist.get_world_size()
 
   mesh = jax.make_mesh([world_size], ("x",))
   partition_spec = P("x")
@@ -94,7 +97,10 @@ def roll_torch_pallas(world_size, rank, input_local):
   return output_local
 
 
-def run(rank, world_size):
+def run():
+  _ = api.tpu_device()
+  dist.init_process_group(backend="tpu_dist")
+
   device = "tpu"
   num_per_device = 8
 
@@ -113,7 +119,7 @@ def run(rank, world_size):
   src_device_id = (device_id + num_devices - 1) % num_devices
   y_expected = generate_input(src_device_id, num_per_device)
 
-  y = roll_torch_pallas(world_size, rank, x)
+  y = roll_torch_pallas(x)
 
   logging.info("device_id = %d, src_device_id = %d", device_id, src_device_id)
   logging.info("device_id = %d, x = %s", device_id, x.cpu())
@@ -128,10 +134,9 @@ class TestPallasCommunicationKernels(absltest.TestCase):
 
   def test_kernel_communication(self):
 
-    tpu_env.run_in_workers(
-        8,
-        run,
-        worker_args=(),
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(run, world_size=8),
     )
 
 
