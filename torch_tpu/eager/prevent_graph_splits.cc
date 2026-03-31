@@ -16,6 +16,7 @@
 
 #include "torch_tpu/eager/prevent_graph_splits.h"
 
+#include <algorithm>
 #include <cstddef>
 
 #include "absl/base/no_destructor.h"
