@@ -41,7 +41,6 @@ torch_tpu_py_test(
     name = "annotations_test",
     srcs = ["annotations_test.py"],
     tags = [
-        "oss_ready_tpu",
         "requires-tpu-v5lite",
     ],
     deps = [
@@ -59,7 +58,6 @@ torch_tpu_py_test(
     name = "layout_hint_compile_test",
     srcs = ["layout_hint_compile_test.py"],
     tags = [
-        "oss_ready_tpu",
         "requires-tpu-v5lite",
     ],
     deps = [

@@ -425,8 +425,6 @@ torch_tpu_cc_test(
     # TODO(b/497890629): Enable in OSS
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
-        # Do not add tag "oss_ready_tpu" here. Instead, use "oss_custom_kernels_test" below to
-        # run tests in TPU CI.
         # To initialize PjRt, we need to explicitly set environment variable TPU_LIBRARY_PATH to
         # point to libtpu.so for C++ tests before starting running the tests, which is not needed
         # for Python tests.
@@ -462,9 +460,6 @@ sh_test(
     data = [
         ":custom_kernels_test",
         "@pypi_libtpu//:whl",
-    ],
-    tags = [
-        "oss_ready_tpu",
     ],
 )
 # copybara:comment_end

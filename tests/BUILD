@@ -583,9 +583,6 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cpu",
     ],
-    tags = [
-        "oss_ready_tpu",
-    ],
     deps = [
         ":error_testing",
         "//shims/absl_py/testing:absltest",
@@ -881,7 +878,6 @@ torch_tpu_py_test(
     name = "allocator_repro_test",
     srcs = ["allocator_repro_test.py"],
     tags = [
-        "oss_ready_tpu",
         "requires-tpu-v5lite",
     ],
     deps = [

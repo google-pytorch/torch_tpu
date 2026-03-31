@@ -49,7 +49,6 @@ torch_tpu_py_test(
     name = "copy_test",
     srcs = ["copy_test.py"],
     tags = [
-        "oss_ready_tpu",
         "requires-tpu-v5lite",
     ],
     deps = [
