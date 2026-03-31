@@ -248,6 +248,8 @@ class TpuBackend:
         donate_args=donate_args,
         layouts=[
             tpu_torch_compile.get_device_layout_if_materialized(example_input)
+            if isinstance(example_input, torch.Tensor)
+            else None
             for example_input in example_inputs
         ],
     )
@@ -347,7 +349,8 @@ class TpuBackend:
       if layouts is None:
         layouts = [None] * len(placeholder_args)
       for arg, layout in zip(placeholder_args, layouts, strict=True):
-        tpu_torch_compile.set_layout_hint(arg, layout)
+        if isinstance(arg, torch.Tensor):
+          tpu_torch_compile.set_layout_hint(arg, layout)
 
       # Use debug info format when TORCH_TRACE is set so the artifact has
       # human-readable MLIR with source location annotations.
