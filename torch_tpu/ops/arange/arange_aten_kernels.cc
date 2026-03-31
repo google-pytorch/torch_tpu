@@ -28,14 +28,19 @@
 #include "mlir/IR/Types.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/native/RangeUtils.h"
+#include "ATen/native/Resize.h"
 #include "c10/core/ScalarType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/common/shape.h"
+#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/arange/arange.h"
 #include "torch_tpu/ops/macros/kernel.h"
-#include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -163,36 +168,6 @@ absl::StatusOr<int64_t> GetArangeNumElements(
   return num_elements;
 }
 
-absl::StatusOr<MlirNullaryOpBuilder> GetArangeOpBuilder(
-    const int64_t num_elements, const at::Scalar start, const at::Scalar step,
-    const at::ScalarType output_dtype) {
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=conversion error of
-                        // output_dtype is first surfaced by the empty()
-                        // operation.
-      const auto output_mlir_type, ConvertTo<mlir::ElementType>(output_dtype));
-
-  return [num_elements, output_mlir_type, start,
-          step](mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=output_mlir_type comes from a
-                          // successful conversion of output_dtype to
-                          // ElementType.
-        const mlir::Type mlir_type,
-        GetMlirType(builder.getContext(), output_mlir_type));
-
-    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=dtype of at::Scalar that comes
-                          // from Python can always be converted to an
-                          // ElementType.
-        const auto start_constant, MakeConstant(builder, start));
-    TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=dtype of at::Scalar that comes
-                          // from Python can always be converted to an
-                          // ElementType.
-        const auto step_constant, MakeConstant(builder, step));
-
-    return torch_tpu::BuildArangeOp(num_elements, mlir_type, start_constant,
-                                    step_constant);
-  };
-}
-
 }  // namespace
 
 at::Tensor& AtenArangeStartOut(const at::Scalar& start, const at::Scalar& end,
@@ -203,15 +178,36 @@ at::Tensor& AtenArangeStartOut(const at::Scalar& start, const at::Scalar& end,
     TT_ASSIGN_OR_THROW(const auto num_elements,
                        GetArangeNumElements(start, end, step, output_dtype));
 
-    TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=inner checks are all
-                         // infeasible.
-        auto op_builder,
-        GetArangeOpBuilder(num_elements, start, step, output_dtype));
+    TT_ASSIGN_OR_THROW(auto output_mlir_type,
+                       ConvertTo<mlir::ElementType>(output_dtype));
 
-    TT_THROW_IF_ERROR(  // ERROR_COV_INFEASIBLE=inner checks are all
-                        // infeasible.
-        ApplyNullaryOpOut(out, OpName::kArangeStartOut, std::move(op_builder),
-                          output_dtype, {num_elements}, std::move(param_keys)));
+    TT_ASSIGN_OR_THROW(at::Tensor start_tensor,
+                       MakeTensor(start, output_dtype));
+    TT_ASSIGN_OR_THROW(at::Tensor step_tensor, MakeTensor(step, output_dtype));
+
+    auto op_builder = [num_elements,
+                       output_mlir_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [start_op, step_op] = inputs;
+      TT_ASSIGN_OR_RETURN(
+          const mlir::Type mlir_type,
+          GetMlirType(start_op.getBuilder().getContext(), output_mlir_type));
+
+      return torch_tpu::BuildArangeOp(num_elements, mlir_type, start_op,
+                                      step_op);
+    };
+
+    at::native::resize_output(out, {num_elements});
+
+    TT_ASSIGN_OR_THROW(
+        auto result_buffer,
+        DispatchOp<2>(OpName::kArangeStartOut, std::move(op_builder),
+                      {start_tensor, step_tensor},
+                      {.out_dtype = output_mlir_type,
+                       .out_dims = {num_elements},
+                       .op_param_cache_keys = std::move(param_keys)}));
+
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffer), out));
   });
   return out;
 }

@@ -24,9 +24,9 @@ torch_tpu_cc_library(
     srcs = ["baddbmm_aten_kernels.cc"],
     hdrs = ["baddbmm_aten_kernels.h"],
     deps = [
+        ":baddbmm",
         "//shims/torch:aten_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
-        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
@@ -38,16 +38,28 @@ torch_tpu_cc_library(
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
-        "//torch_tpu/ops:precision_context",
-        "//torch_tpu/ops/bmm",
         "//torch_tpu/ops/macros:kernel",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "baddbmm",
+    srcs = ["baddbmm.cc"],
+    hdrs = ["baddbmm.h"],
+    deps = [
+        "//torch_tpu/ops:binary",
+        "//torch_tpu/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Support",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
     ],
 )
 

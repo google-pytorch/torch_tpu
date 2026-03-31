@@ -54,12 +54,18 @@ absl::StatusOr<mlir::MlirOp> BuildScatterShlo(
                << ", index_type: " << mlir::debugString(index_type)
                << ", scatter_op: " << FormatParamCacheKey(scatter_op);
 
-  TT_RET_CHECK(self_type.getRank() == src_type.getRank(),
-               error::kInvalidArgument)
-      << "self and src must have the same rank";
   TT_RET_CHECK(self_type.getRank() == index_type.getRank(),
                error::kInvalidArgument)
       << "self and index must have the same rank";
+
+  if (src_type.getRank() == 0) {
+    TT_ASSIGN_OR_RETURN(src, BroadcastIfNeeded(src, index_type.getShape()));
+    src_type = GetTensorTypeOrDie(src);
+  }
+
+  TT_RET_CHECK(self_type.getRank() == src_type.getRank(),
+               error::kInvalidArgument)
+      << "self and src must have the same rank";
 
   // If arguments are scalars, temporarily reshape them to rank 1.
   bool are_scalars = self_type.getRank() == 0;

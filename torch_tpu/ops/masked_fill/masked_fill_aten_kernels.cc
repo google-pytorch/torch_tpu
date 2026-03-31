@@ -29,6 +29,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -41,40 +42,13 @@ namespace torch_tpu {
 
 namespace {
 
-absl::StatusOr<DeviceBufferRef> MaskedFillScalar(const OpName op_name,
-                                                 const at::Tensor& input,
-                                                 const at::Tensor& mask,
-                                                 const at::Scalar& scalar,
-                                                 OpParamCacheKeys param_keys) {
-  const Dimensions output_dims = CopyIntVector(input.sizes());
-  TT_ASSIGN_OR_RETURN(const auto output_mlir_dtype,
-                      ConvertTo<mlir::ElementType>(input.scalar_type()));
-
-  auto op_builder = [scalar,
-                     output_mlir_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto& [input, mask] = inputs;
-    mlir::MlirBuilder& builder = input.getBuilder();
-    TT_ASSIGN_OR_RETURN(auto scalar_op, MakeConstant(builder, scalar));
-    // masked_fill(input, mask, value) == where(mask, value, input)
-    return BuildWhereShlo(mask, scalar_op, input, output_mlir_dtype);
-  };
-
-  const auto elem_type = output_mlir_dtype;
-  return DispatchOp<2>(op_name, std::move(op_builder), {input, mask},
-                       {.out_dtype = elem_type,
-                        .out_dims = output_dims,
-                        .op_param_cache_keys = std::move(param_keys)});
-}
-
 absl::StatusOr<DeviceBufferRef> MaskedFillTensor(const OpName op_name,
                                                  const at::Tensor& input,
                                                  const at::Tensor& mask,
-                                                 const at::Tensor& value) {
-  for (const int64_t dim : value.sizes()) {
-    TT_RET_CHECK(dim == 1, error::kInvalidArgument)
-        << "only supports 1-element value tensors";
-  }
+                                                 const at::Tensor& value,
+                                                 OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(value.numel() == 1, error::kInvalidArgument)
+      << "only supports 1-element value tensors";
 
   TT_ASSIGN_OR_RETURN(const auto output_mlir_type,
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
@@ -89,11 +63,10 @@ absl::StatusOr<DeviceBufferRef> MaskedFillTensor(const OpName op_name,
     return BuildWhereShlo(mask, value, input, output_mlir_type);
   };
 
-  const auto elem_type = output_mlir_type;
   return DispatchOp<3>(op_name, std::move(op_builder), {input, mask, value},
-                       {.out_dtype = elem_type,
+                       {.out_dtype = output_mlir_type,
                         .out_dims = output_dims,
-                        .op_param_cache_keys = OpParamCacheKeys::Empty()});
+                        .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -101,9 +74,11 @@ absl::StatusOr<DeviceBufferRef> MaskedFillTensor(const OpName op_name,
 at::Tensor& AtenMaskedFill_Scalar(at::Tensor& self, const at::Tensor& mask,
                                   const at::Scalar& value) {
   TT_KERNEL(OpName::kMaskedFill_Scalar, param_keys, (self, mask, value), {
+    TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                       MakeTensor(value, self.scalar_type()));
     TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
-                       MaskedFillScalar(OpName::kMaskedFill_Scalar, self, mask,
-                                        value, std::move(param_keys)));
+                       MaskedFillTensor(OpName::kMaskedFill_Scalar, self, mask,
+                                        value_tensor, std::move(param_keys)));
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), self));
 
     return self;
@@ -113,9 +88,9 @@ at::Tensor& AtenMaskedFill_Scalar(at::Tensor& self, const at::Tensor& mask,
 at::Tensor& AtenMaskedFill_Tensor(at::Tensor& self, const at::Tensor& mask,
                                   const at::Tensor& value) {
   TT_KERNEL(OpName::kMaskedFill_Tensor, _, (self, mask, value), {
-    TT_ASSIGN_OR_THROW(
-        DeviceBufferRef result_buf,
-        MaskedFillTensor(OpName::kMaskedFill_Tensor, self, mask, value));
+    TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
+                       MaskedFillTensor(OpName::kMaskedFill_Tensor, self, mask,
+                                        value, OpParamCacheKeys::Empty()));
     TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), self));
     return self;
   });

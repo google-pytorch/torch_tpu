@@ -98,6 +98,12 @@ absl::StatusOr<mlir::MlirOp> BuildComplexShlo(mlir::MlirOp real_op,
 absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
                                                         mlir::MlirOp rhs_op);
 
+absl::StatusOr<mlir::MlirOp> BuildFloorDivShlo(mlir::MlirOp lhs_op,
+                                               mlir::MlirOp rhs_op);
+
+absl::StatusOr<mlir::MlirOp> BuildRemainderShlo(mlir::MlirOp lhs_op,
+                                                mlir::MlirOp rhs_op);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_BINARY_H_

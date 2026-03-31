@@ -254,6 +254,7 @@ torch_tpu_cc_library(
     deps = [
         ":op_builder_utils",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:macro_utils",
         "@com_google_absl//absl/status:statusor",
@@ -298,6 +299,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/macros:kernel",
         "//torch_tpu/ops/macros:logging",
         "//torch_tpu/ops/resize:resize_aten_kernels",
+        "//torch_tpu/ops/round",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",

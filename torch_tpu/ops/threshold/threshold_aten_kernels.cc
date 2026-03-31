@@ -22,13 +22,13 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/ops/scalar_tensor.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -43,9 +43,9 @@ namespace {
 absl::StatusOr<mlir::MlirOp> BuildThresholdShlo(mlir::MlirOp input,
                                                 mlir::MlirOp threshold,
                                                 mlir::MlirOp value) {
-  TT_ASSIGN_OR_RETURN(auto condition, BuildLeShlo(input, threshold));
+  TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(input, threshold));
   TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(input));
-  return BuildWhereShlo(condition, value, input, out_dtype);
+  return BuildWhereShlo(condition, input, value, out_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildThresholdBackwardShlo(
@@ -67,6 +67,12 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
         << "threshold is not implemented for bool type";
     TT_CHECK_THROW(!self.is_complex(), error::kUnimplemented)
         << "threshold is not implemented for complex types";
+
+    TT_ASSIGN_OR_THROW(at::Tensor threshold_tensor,
+                       MakeTensor(threshold, self.scalar_type()));
+    TT_ASSIGN_OR_THROW(at::Tensor value_tensor,
+                       MakeTensor(value, self.scalar_type()));
+
     TT_ASSIGN_OR_THROW(
         auto result_buf,
         (DispatchOp<3>(
@@ -74,8 +80,7 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
             [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
               return BuildThresholdShlo(inputs[0], inputs[1], inputs[2]);
             },
-            {self, at::scalar_tensor(threshold, self.options()),
-             at::scalar_tensor(value, self.options())},
+            {self, threshold_tensor, value_tensor},
             {.out_dtype =
                  ConvertTo<mlir::ElementType>(out.scalar_type()).value(),
              .out_dims = self.sizes(),
@@ -97,6 +102,10 @@ at::Tensor& AtenThresholdBackwardGradInput(const at::Tensor& grad_output,
             << "threshold is not implemented for bool type";
         TT_CHECK_THROW(!self.is_complex(), error::kUnimplemented)
             << "threshold is not implemented for complex types";
+
+        TT_ASSIGN_OR_THROW(at::Tensor threshold_tensor,
+                           MakeTensor(threshold, self.scalar_type()));
+
         TT_ASSIGN_OR_THROW(
             auto result_buf,
             (DispatchOp<3>(OpName::kThresholdBackwardGradInput,
@@ -104,8 +113,7 @@ at::Tensor& AtenThresholdBackwardGradInput(const at::Tensor& grad_output,
                              return BuildThresholdBackwardShlo(
                                  inputs[0], inputs[1], inputs[2]);
                            },
-                           {grad_output, self,
-                            at::scalar_tensor(threshold, self.options())},
+                           {grad_output, self, threshold_tensor},
                            {.out_dtype = ConvertTo<mlir::ElementType>(
                                              grad_input.scalar_type())
                                              .value(),

@@ -18,183 +18,60 @@
 
 #include <utility>
 
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "ATen/core/ATen_fwd.h"
-#include "torch_tpu/common/aten_utils.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/native/Resize.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/ops/addmv/addmv.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "torch_tpu/ops/precision_context.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+
 namespace {
 
-namespace stablehlo = mlir::stablehlo;
+absl::StatusOr<DeviceBufferRef> Addmv(
+    const OpName op_name, const at::Tensor& self, const at::Tensor& mat,
+    const at::Tensor& vec, const at::Tensor& beta, const at::Tensor& alpha,
+    at::ScalarType out_dtype, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const auto out_mlir_dtype,
+                      ConvertTo<mlir::ElementType>(out_dtype));
 
-// Matrix-vector dot product helper.
-mlir::MlirOp MatVecDot(mlir::MlirOp mat_op, mlir::MlirOp vec_op, double alpha,
-                       mlir::ElementType out_dtype,
-                       mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType mat_type = GetTensorTypeOrDie(mat_op);
-  const mlir::RankedTensorType vec_type = GetTensorTypeOrDie(vec_op);
+  at::ScalarType computation_scalar_type =
+      c10::promoteTypes(self.scalar_type(), mat.scalar_type());
+  computation_scalar_type =
+      c10::promoteTypes(computation_scalar_type, vec.scalar_type());
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      ConvertTo<mlir::ElementType>(computation_scalar_type));
 
-  // TODO: XLA doesn't support matmuls with i64, so we convert them to f64.
-  const bool is_any_i64 = mat_type.getElementType().isInteger(64) ||
-                          vec_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    mat_op = stablehlo::ConvertElementType(mat_op, mlir::ElementType::F64);
-    vec_op = stablehlo::ConvertElementType(vec_op, mlir::ElementType::F64);
-  }
-
-  // After matmul, we want the result back in the original type, so we specify
-  // the preferred element type to be the output type.
-  mlir::MlirOp mv_op = stablehlo::DotGeneral(
-      mat_op, vec_op,
-      /*dotDimsAttr=*/
-      stablehlo::DotDimensionNumbersAttr::get(
-          &mat_op.getContext(), /*lhs_batch_dimensions=*/{},
-          /*rhs_batch_dimensions=*/{}, /*lhs_contracting_dimensions=*/{1},
-          /*rhs_contracting_dimensions=*/{0}),
-      /*precisionConfig=*/
-      stablehlo::PrecisionConfigAttr::get(&mat_op.getContext(),
-                                          {precision, precision}));
-
-  // Cast the matmul result back to the original type right away. CPU behavior
-  // expects the computation to be lossy not precise.
-  if (is_any_i64) {
-    mv_op = stablehlo::ConvertElementType(mv_op, out_dtype);
-  }
-  return mv_op;
-}
-
-absl::StatusOr<mlir::MlirOp> BuildAddmvShloBetaZero(
-    mlir::MlirOp mat_op, mlir::MlirOp vec_op, double alpha,
-    mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, alpha, out_dtype, precision);
-  mlir::MlirOp alpha_op = MakeConstantLike(mv_op, alpha);
-  return stablehlo::Mul(alpha_op, mv_op);
-}
-
-absl::StatusOr<mlir::MlirOp> BuildAddmvShlo(
-    mlir::MlirOp self_op, mlir::MlirOp mat_op, mlir::MlirOp vec_op, double beta,
-    double alpha, mlir::ElementType out_dtype,
-    mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, alpha, out_dtype, precision);
-
-  mlir::MlirOp alpha_op = MakeConstantLike(mv_op, alpha);
-  mlir::MlirOp beta_op = MakeConstantLike(self_op, beta);
-  auto bias_op = stablehlo::Mul(beta_op, self_op);
-  TT_ASSIGN_OR_RETURN(bias_op, BroadcastIfNeeded(bias_op, mv_op));
-  mv_op = stablehlo::Mul(alpha_op, mv_op);
-  return stablehlo::Add(bias_op, mv_op);
-}
-
-absl::StatusOr<DeviceBufferRef> Addmv(const at::Tensor& self,
-                                      const at::Tensor& mat,
-                                      const at::Tensor& vec,
-                                      const at::Scalar& beta,
-                                      const at::Scalar& alpha, at::Tensor& out,
-                                      OpParamCacheKeys& param_keys) {
-  TT_ASSIGN_OR_RETURN(const auto out_dtype,
-                      ConvertTo<mlir::ElementType>(out.scalar_type()));
-
-  const auto current_precision = PrecisionContext::GetPrecision();
-  TT_ASSIGN_OR_RETURN(param_keys,
-                      *OpParamCacheKeys::Builder(std::move(param_keys))
-                           .SetParam("precision", current_precision));
-
-  Dimensions result_shape = {mat.size(0)};
-  DispatchOpOptions<1> options = {.out_dtype = out_dtype,
-                                  .out_dims = result_shape,
-                                  .op_param_cache_keys = std::move(param_keys)};
-
-  // If beta is zero, the content of self is not used, so we can skip it.
-  // Because beta is zero, PyTorch will pass an uninitialized tensor to self as
-  // an optimization because anything multiplied by zero is zero. We don't allow
-  // reading from uninitialized tensors (at::empty) at the moment, so instead of
-  // dispatching to ternary op, we dispatch to binary op without self.
-  if (beta.toDouble() == 0.0) {
-    auto op_builder = [alpha, out_dtype,
-                       current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-        -> absl::StatusOr<mlir::MlirOp> {
-      auto& [mat_op, vec_op] = inputs;
-      return BuildAddmvShloBetaZero(mat_op, vec_op, alpha.toDouble(), out_dtype,
-                                    current_precision);
-    };
-    TT_ASSIGN_OR_RETURN(auto result_buf,
-                        DispatchOp<2>(OpName::kAddmvOut, std::move(op_builder),
-                                      {mat, vec}, std::move(options)));
-    return result_buf;
-  }
-
-  auto op_builder = [beta, alpha, out_dtype, result_shape,
-                     current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto& [self_op, mat_op, vec_op] = inputs;
-    return BuildAddmvShlo(self_op, mat_op, vec_op, beta.toDouble(),
-                          alpha.toDouble(), out_dtype, current_precision);
+  auto op_builder = [computation_dtype](FixedSizeSpan<mlir::MlirOp, 5> inputs) {
+    auto& [self, mat, vec, beta, alpha] = inputs;
+    return BuildAddmvShlo(self, mat, vec, beta, alpha, computation_dtype);
   };
-  TT_ASSIGN_OR_RETURN(auto result_buf,
-                      DispatchOp<3>(OpName::kAddmvOut, std::move(op_builder),
-                                    {self, mat, vec}, std::move(options)));
-  return result_buf;
-}
 
-absl::Status CheckAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
-                              const at::Tensor& vec, const at::Scalar& beta,
-                              const at::Scalar& alpha) {
-  TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
-      << "the dtype of the first argument cannot be bool";
+  const Dimensions out_dims = CopyIntVector(self.sizes());
 
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
-                 // before dtype check.
-      !IsBool(mat), error::kInvalidArgument)
-      << "the dtype of the second argument cannot be bool";
-  TT_RET_CHECK(mat.dim() == 2, error::kInvalidArgument)
-      << "expected the second argument to be a matrix (2D tensor), got "
-      << mat.dim() << "D tensor";
-
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
-                 // before dtype check.
-      !IsBool(vec), error::kInvalidArgument)
-      << "the dtype of the third argument cannot be bool";
-  TT_RET_CHECK(vec.dim() == 1, error::kInvalidArgument)
-      << "expected the third argument to be a vector (1D tensor), got "
-      << vec.dim() << "D tensor";
-
-  TT_RET_CHECK(!IsBool(alpha) && !IsComplex(alpha), error::kInvalidArgument)
-      << "expected the dtype of alpha to be neither complex nor bool, got "
-      << ToString(alpha.type());
-
-  TT_RET_CHECK(!IsBool(beta) && !IsComplex(beta), error::kInvalidArgument)
-      << "expected the dtype of beta to be neither complex nor bool, got "
-      << ToString(beta.type());
-
-  TT_RET_CHECK(mat.size(1) == vec.size(0), error::kInvalidArgument)
-      << "expected the last dimension of the second argument (matrix of size ["
-      << absl::StrJoin(mat.sizes(), /* separator= */ ", ")
-      << "]) to match the first dimension of the third argument (vector of "
-         "size ["
-      << absl::StrJoin(vec.sizes(), /* separator= */ ", ") << "]), got "
-      << mat.size(1) << " vs " << vec.size(0);
-
-  return absl::OkStatus();
+  return DispatchOp<5>(op_name, std::move(op_builder),
+                       {self, mat, vec, beta, alpha},
+                       {.out_dtype = out_mlir_dtype,
+                        .out_dims = out_dims,
+                        .computation_dtype = computation_dtype,
+                        .op_param_cache_keys = std::move(param_keys)});
 }
 
 }  // namespace
@@ -202,13 +79,21 @@ absl::Status CheckAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
 at::Tensor& AtenAddmvOut(const at::Tensor& self, const at::Tensor& mat,
                          const at::Tensor& vec, const at::Scalar& beta,
                          const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddmvOut, param_keys, (self, mat, vec, beta, alpha, out), {
-    TT_THROW_IF_ERROR(CheckAddmvInputs(self, mat, vec, beta, alpha));
-    TT_ASSIGN_OR_THROW(auto result_buf,
-                       Addmv(self, mat, vec, beta, alpha, out, param_keys));
-    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
-    return out;
-  });
+  TT_KERNEL(
+      OpName::kAddmvOut, param_keys,
+      (self, mat, vec, IgnoreInCacheKey(beta), IgnoreInCacheKey(alpha), out), {
+        TT_ASSIGN_OR_THROW(at::Tensor beta_tensor,
+                           MakeTensor(beta, self.scalar_type()));
+        TT_ASSIGN_OR_THROW(at::Tensor alpha_tensor,
+                           MakeTensor(alpha, self.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            auto result_buffer,
+            Addmv(OpName::kAddmvOut, self, mat, vec, beta_tensor, alpha_tensor,
+                  out.scalar_type(), std::move(param_keys)));
+        TT_THROW_IF_ERROR(
+            AssignBufferToAtTensor(std::move(result_buffer), out));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu

@@ -24,28 +24,29 @@
 #include "ATen/core/ATen_fwd.h"
 #include "c10/core/ScalarType.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/common/shape.h"
+#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/hardtanh/hardtanh.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "torch_tpu/ops/unary_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 namespace {
 
-// Helper for building the hardtanh op.
+// Helper for checking hardtanh op inputs.
 //
 // Enforces precondition type checks to remain consistent with the CPU
-// implementation, converts the min and max values to MLIR constants and creates
-// the MLIR builder function for the hardtanh operation along with the necessary
-// cache keys based on the operation's parameters.
-//
-// Returns an MlirUnaryOpBuilder that builds the hardtanh op.
-absl::StatusOr<MlirUnaryOpBuilder> AtenHardtanhHelper(
-    const at::Tensor& self, const at::Scalar& min_val,
-    const at::Scalar& max_val) {
+// implementation.
+absl::Status CheckHardtanhInputs(const at::Tensor& self,
+                                 const at::Scalar& min_val,
+                                 const at::Scalar& max_val) {
   // Our StableHLO implementation supports these types but PT CPU kernels do
   // not, and we want to have a consistent behavior across the backends.
   TT_RET_CHECK(!c10::isComplexType(self.scalar_type()), error::kInvalidArgument)
@@ -58,20 +59,7 @@ absl::StatusOr<MlirUnaryOpBuilder> AtenHardtanhHelper(
                error::kInvalidArgument)
       << "hardtanh: cannot do hardtanh on an unsigned type with negative "
          "limits.";
-
-  return [min_val,
-          max_val](mlir::MlirOp input_op) -> absl::StatusOr<mlir::MlirOp> {
-    mlir::MlirBuilder& builder = input_op.getBuilder();
-    const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-
-    // Create constants for min_val and max_val from at::Scalar
-    mlir::MlirOp min_val_op = MakeScalarConstant(builder, min_val.toDouble(),
-                                                 input_type.getElementType());
-    mlir::MlirOp max_val_op = MakeScalarConstant(builder, max_val.toDouble(),
-                                                 input_type.getElementType());
-
-    return BuildHardtanhShlo(input_op, min_val_op, max_val_op);
-  };
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -79,23 +67,58 @@ absl::StatusOr<MlirUnaryOpBuilder> AtenHardtanhHelper(
 at::Tensor AtenHardtanh(const at::Tensor& self, const at::Scalar& min_val,
                         const at::Scalar& max_val) {
   TT_KERNEL(OpName::kHardtanh, param_keys, (self, min_val, max_val), {
-    TT_ASSIGN_OR_THROW(auto op_builder,
-                       AtenHardtanhHelper(self, min_val, max_val));
-    TT_ASSIGN_OR_THROW(auto result,
-                       UnaryOp(self, OpName::kHardtanh, std::move(op_builder),
-                               {.op_param_cache_keys = std::move(param_keys)}));
-    return result;
+    TT_THROW_IF_ERROR(CheckHardtanhInputs(self, min_val, max_val));
+
+    TT_ASSIGN_OR_THROW(at::Tensor min_tensor,
+                       MakeTensor(min_val, self.scalar_type()));
+    TT_ASSIGN_OR_THROW(at::Tensor max_tensor,
+                       MakeTensor(max_val, self.scalar_type()));
+
+    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [input_op, min_val_op, max_val_op] = inputs;
+      return BuildHardtanhShlo(input_op, min_val_op, max_val_op);
+    };
+
+    TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_ASSIGN_OR_THROW(
+        auto result_buffer,
+        DispatchOp<3>(OpName::kHardtanh, std::move(op_builder),
+                      {self, min_tensor, max_tensor},
+                      {.out_dtype = out_dtype,
+                       .out_dims = CopyIntVector(self.sizes()),
+                       .op_param_cache_keys = std::move(param_keys)}));
+    return MakeTensor(std::move(result_buffer));
   });
 }
 
 at::Tensor& AtenHardtanh_(at::Tensor& self, const at::Scalar& min_val,
                           const at::Scalar& max_val) {
   TT_KERNEL(OpName::kHardtanh_, param_keys, (self, min_val, max_val), {
-    TT_ASSIGN_OR_THROW(auto op_builder,
-                       AtenHardtanhHelper(self, min_val, max_val));
-    TT_THROW_IF_ERROR(
-        UnaryOpInPlace(self, OpName::kHardtanh_, std::move(op_builder),
-                       {.op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(CheckHardtanhInputs(self, min_val, max_val));
+
+    TT_ASSIGN_OR_THROW(at::Tensor min_tensor,
+                       MakeTensor(min_val, self.scalar_type()));
+    TT_ASSIGN_OR_THROW(at::Tensor max_tensor,
+                       MakeTensor(max_val, self.scalar_type()));
+
+    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [input_op, min_val_op, max_val_op] = inputs;
+      return BuildHardtanhShlo(input_op, min_val_op, max_val_op);
+    };
+
+    TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_ASSIGN_OR_THROW(
+        auto result_buffer,
+        DispatchOp<3>(OpName::kHardtanh_, std::move(op_builder),
+                      {self, min_tensor, max_tensor},
+                      {.out_dtype = out_dtype,
+                       .out_dims = CopyIntVector(self.sizes()),
+                       .op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffer), self));
     return self;
   });
 }
@@ -103,11 +126,29 @@ at::Tensor& AtenHardtanh_(at::Tensor& self, const at::Scalar& min_val,
 at::Tensor& AtenHardtanhOut(const at::Tensor& self, const at::Scalar& min_val,
                             const at::Scalar& max_val, at::Tensor& out) {
   TT_KERNEL(OpName::kHardtanhOut, param_keys, (self, min_val, max_val, out), {
-    TT_ASSIGN_OR_THROW(auto op_builder,
-                       AtenHardtanhHelper(self, min_val, max_val));
-    TT_THROW_IF_ERROR(
-        UnaryOpOut(self, out, OpName::kHardtanhOut, std::move(op_builder),
-                   {.op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(CheckHardtanhInputs(self, min_val, max_val));
+
+    TT_ASSIGN_OR_THROW(at::Tensor min_tensor,
+                       MakeTensor(min_val, self.scalar_type()));
+    TT_ASSIGN_OR_THROW(at::Tensor max_tensor,
+                       MakeTensor(max_val, self.scalar_type()));
+
+    auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [input_op, min_val_op, max_val_op] = inputs;
+      return BuildHardtanhShlo(input_op, min_val_op, max_val_op);
+    };
+
+    TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
+                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+    TT_ASSIGN_OR_THROW(
+        auto result_buffer,
+        DispatchOp<3>(OpName::kHardtanhOut, std::move(op_builder),
+                      {self, min_tensor, max_tensor},
+                      {.out_dtype = out_dtype,
+                       .out_dims = CopyIntVector(out.sizes()),
+                       .op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffer), out));
     return out;
   });
 }

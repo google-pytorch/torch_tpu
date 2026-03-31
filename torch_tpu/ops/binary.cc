@@ -19,6 +19,7 @@
 #include "absl/status/statusor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/DebugStringHelper.h"
+#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -112,6 +113,43 @@ absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
     return stablehlo::ShiftRightLogical(lhs, rhs);
   }
   return stablehlo::ShiftRightArithmetic(lhs, rhs);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildFloorDivShlo(mlir::MlirOp lhs_op,
+                                               mlir::MlirOp rhs_op) {
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs_op);
+  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs_op);
+
+  if (lhs_type.getElementType().isInteger() &&
+      rhs_type.getElementType().isInteger()) {
+    // Identity: floor(a/b) = trunc(a/b) - ((a^b < 0 && a%b != 0) ? 1 : 0)
+    // For now, let's convert to float, floor, and back to avoid complex
+    // integer logic.
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp float_lhs,
+                        CastIfNeeded(lhs_op, mlir::ElementType::F32));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp float_rhs,
+                        CastIfNeeded(rhs_op, mlir::ElementType::F32));
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp div_op,
+                        BuildDivShlo(float_lhs, float_rhs));
+    mlir::MlirOp floored = stablehlo::Floor(div_op);
+    TT_ASSIGN_OR_RETURN(
+        mlir::ElementType target_dtype,
+        ConvertTo<mlir::ElementType>(lhs_type.getElementType()));
+    return CastIfNeeded(floored, target_dtype);
+  }
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp div_op, BuildDivShlo(lhs_op, rhs_op));
+  return stablehlo::Floor(div_op);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildRemainderShlo(mlir::MlirOp lhs_op,
+                                                mlir::MlirOp rhs_op) {
+  // remainder(a, b) = a - floor(a/b)*b
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp floor_div,
+                      BuildFloorDivShlo(lhs_op, rhs_op));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp floor_div_times_rhs,
+                      BuildMulShlo(floor_div, rhs_op));
+  return BuildSubShlo(lhs_op, floor_div_times_rhs);
 }
 
 }  // namespace torch_tpu
