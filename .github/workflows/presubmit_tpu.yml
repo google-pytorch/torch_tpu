@@ -82,4 +82,5 @@ jobs:
       # The flags used here for `bazel test` need to be the same as that used for `bazel build`
       # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
+      - run: apt install -y zip
       - run: bazel test --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...

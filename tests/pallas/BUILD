@@ -41,9 +41,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "pallas_communication_test",
     srcs = ["pallas_communication_test.py"],
-    # TODO(b/497890629): Enable in OSS
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    env = {
+        "ACCELERATOR_TYPE": "v5litepod-8",  # Needed for OSS.
+    },
+    shard_count = 1,
     tags = [
+        "exclusive",  # copybara:comment(oss-only)
         "requires-tpu-v5lite:8",
     ],
     deps = [
