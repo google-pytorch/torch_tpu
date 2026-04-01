@@ -687,12 +687,12 @@ pywrap_library(
     name = "pywrap_torch_tpu",
     extra_deps = [
         ":torch_rpath_flags",
+        "//shims/torch:torch_python",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
         "//torch_tpu/_internal:compiler_options_impl",
         "//torch_tpu/_internal:env",
-        "//torch_tpu/_internal:execution_mode_impl",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/distributed:tpu_distributed",

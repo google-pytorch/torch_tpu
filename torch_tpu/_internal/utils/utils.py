@@ -28,7 +28,6 @@ from typing import Any, Callable, Sequence, TextIO, TypeAlias
 import numpy as np
 import torch
 from torch.utils import _pytree
-from torch_tpu._internal import execution_mode
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -662,6 +661,8 @@ def format_model(
     result += tracer._pformat() + "\n"  # pylint: disable=protected-access
 
   if shlo:
+    from torch_tpu._internal import execution_mode  # pylint: disable=g-import-not-at-top
+
     if isinstance(model, torch.fx.GraphModule):
       exported = torch.export.export(model, args=(*input_tensors,))
       shlo = torch_tpu_export.exported_to_mlir(exported)

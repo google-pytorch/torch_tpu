@@ -25,13 +25,17 @@ import torch
 from torch._dynamo.backends import inductor
 import torch._dynamo.backends.registry as backend_registry
 import torch.distributed
-# For torch.compile() "tpu" backend registration.
-import torch_tpu._internal.compile  # pylint: disable=unused-import
-from torch_tpu._internal.distributed import tpu_distributed
 # For monkeypatching torch.autograd.Variable._execution_engine.
+import torch_tpu._internal.compile  # pylint: disable=unused-import
 import torch_tpu._internal.sync  # pylint: disable=unused-import
 from torch_tpu.api import _device_module
 
+try:
+  from torch_tpu._internal.distributed import tpu_distributed  # pylint: disable=g-import-not-at-top
+
+  _TPU_DISTRIBUTED_AVAILABLE = True
+except ImportError:
+  _TPU_DISTRIBUTED_AVAILABLE = False
 
 _INIT_LOCK = threading.Lock()
 
@@ -82,6 +86,7 @@ def _init_device_impl(device: str) -> torch.device:
   if (
       device == "tpu"
       and not torch.distributed.is_initialized()
+      and _TPU_DISTRIBUTED_AVAILABLE
       and len(tpu_distributed.all_global_device_ids()) > 1
   ):
     # Looks like we are running in a distributed setup.
@@ -163,7 +168,6 @@ def _default_tpu_compile(*args, **kwargs):
 
 # TODO(b/492505722): Update internal usage of torch.compile.
 torch.compile = _default_tpu_compile
-
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [

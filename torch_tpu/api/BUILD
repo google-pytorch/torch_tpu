@@ -36,7 +36,7 @@ pytype_strict_library(
         "//shims/torch:pytorch",
         "//torch_tpu",  # buildcleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
+        "//torch_tpu/_internal/distributed:tpu_distributed",  # buildcleaner: keep
         "//torch_tpu/_internal/sync",
     ],
 )

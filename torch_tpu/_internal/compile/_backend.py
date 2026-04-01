@@ -43,7 +43,6 @@ from torch._logging._internal import trace_log
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
-from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
 
@@ -270,6 +269,11 @@ class TpuBackend:
     Returns:
       A function that executes the compiled graph on the TPU.
     """
+    # This lazy-import is required to avoid importing libaoti_custom_ops.so
+    # during initialization via the api -> compile -> backend -> export ->
+    # execution_mode import chain.
+    from torch_tpu._internal import export as torch_tpu_export  # pylint: disable=g-import-not-at-top
+
     if logging.vlog_is_on(logging.DEBUG):
       logging.debug(
           "[TpuBackend.compile_graph_module] Graph:\n%s",

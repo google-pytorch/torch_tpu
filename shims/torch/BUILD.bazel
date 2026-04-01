@@ -81,6 +81,18 @@ cc_library(
 )
 
 cc_library(
+    name = "torch_python",
+    deps = select({
+        ":use_local_torch": [
+            "@local_torch//:libtorch_python",
+        ],
+        "//conditions:default": [
+            "@pypi_torch//:libtorch_python",
+        ],
+    }),
+)
+
+cc_library(
     name = "aten",
     deps = select({
         ":use_local_torch": [
