@@ -129,7 +129,7 @@ struct ExecutionTask {
 struct MaterializationTask {
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
   xla::Promise<void> completion_promise;
-  MaterializationMode materialization_mode = MaterializationMode::kSplitGraph;
+  MaterializationMode materialization_mode = MaterializationMode::kSplitSafe;
 };
 
 using MaterializationJob = std::variant<ExecutionTask, MaterializationTask>;
@@ -430,8 +430,7 @@ class MaterializationWorker {
                      /* msg_prefix= */ "  Input node");
 
     ABSL_VLOG(1) << "[MaterializationWorker] Getting leaf nodes";
-    std::vector<SharedDeviceBufferList> all_nodes =
-        std::move(task.nodes_to_materialize);
+    std::vector<SharedDeviceBufferList> all_nodes = task.nodes_to_materialize;
     {
       tsl::profiler::TraceMe t("AddLeafNodes");
       AddLeafNodes(all_nodes);
@@ -465,26 +464,18 @@ class MaterializationWorker {
                  << GetGraphviz(*traversal);
 
     std::vector<Traversal> traversals;
-
-    if (task.materialization_mode == MaterializationMode::kSplitGraph) {
-      // Split the traversal while nodes are still in the deferred state.
-      ABSL_VLOG(1) << "[MaterializationWorker] Splitting traversal";
-      {
-        tsl::profiler::TraceMe t("SplitTraversal");
-        // TODO(bawilson): don't require leaf nodes to be materialized
-        absl::flat_hash_set<const DeviceBufferList*> required_outputs;
-        for (const auto& node : all_nodes) {
-          required_outputs.insert(node.get());
-        }
-        TT_ASSIGN_OR_RETURN(traversals, SplitTraversal(std::move(*traversal),
-                                                       required_outputs));
+    ABSL_VLOG(1) << "[MaterializationWorker] Splitting traversal";
+    {
+      absl::flat_hash_set<const DeviceBufferList*> required_outputs;
+      for (const auto& node : task.nodes_to_materialize) {
+        required_outputs.insert(node.get());
       }
-
-      ABSL_VLOG(1) << "[MaterializationWorker] Split traversal into "
-                   << traversals.size() << " traversals";
-    } else {
-      traversals.push_back(std::move(*traversal));
+      TT_ASSIGN_OR_RETURN(
+          traversals, SplitTraversal(std::move(*traversal), required_outputs,
+                                     task.materialization_mode));
     }
+    ABSL_VLOG(1) << "[MaterializationWorker] Split traversal into "
+                 << traversals.size() << " traversals";
 
     TT_RETURN_IF_ERROR(
         PropagateBoundedDynamism(absl::MakeSpan(traversals), mlir_context));

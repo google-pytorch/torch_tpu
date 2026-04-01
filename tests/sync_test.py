@@ -42,8 +42,9 @@ class SyncTest(absltest.TestCase):
     # y was materialized, but may not be ready yet.
     self.assertTrue(sync.is_materialized(y))
 
-    # z was materialized because it is a leaf node. It may not be ready yet.
-    self.assertTrue(sync.is_materialized(z))
+    # z was not materialized because it was dispatched after the synchronized
+    # tensor.
+    self.assertFalse(sync.is_materialized(z))
 
   def test_sync_no_wait_list(self):
     x = torch.ones(10, device=api.tpu_device())
@@ -81,10 +82,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(y))
     self.assertTrue(sync.is_ready(y))
 
-    # z was materialized because it is a leaf node.
-    # However, z may not be ready yet; the wait only applies to the target (y),
-    # and z is materialized after.
-    self.assertTrue(sync.is_materialized(z))
+    # z was not materialized because it was dispatched after the synchronized
+    # tensor.
+    self.assertFalse(sync.is_materialized(z))
 
   def test_sync_and_wait_list(self):
     x = torch.ones(10, device=api.tpu_device())

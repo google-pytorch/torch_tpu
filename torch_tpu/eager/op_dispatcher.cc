@@ -49,14 +49,17 @@
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
-#include "torch_tpu/common/utils.h"
+#include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/materialize_new.h"
+#include "torch_tpu/eager/split_traversal.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/copy_from/cpu_to_tpu.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -453,8 +456,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
       op_window.Append(*op);
       if (op_window.FindRepeatedSequence()) {
         auto materialization_mode = (detect_repeated_ops == "aggressive")
-                                        ? MaterializationMode::kFullGraph
-                                        : MaterializationMode::kSplitGraph;
+                                        ? MaterializationMode::kFuseAll
+                                        : MaterializationMode::kSplitSafe;
         TT_RETURN_IF_ERROR(
             Materialize(results[0].device_buffer_list(), materialization_mode));
       }

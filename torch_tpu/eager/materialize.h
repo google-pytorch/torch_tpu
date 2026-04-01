@@ -26,6 +26,7 @@
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/split_traversal.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. Typically, this will contain a DeferredOp, which describes the
@@ -50,8 +51,6 @@
 
 namespace torch_tpu {
 
-enum class MaterializationMode { kFullGraph, kSplitGraph };
-
 // Executes all deferred nodes in the list, and updates them in place.  No-op
 // for nodes that are already materialized, or are entirely zero-sized
 // buffers. Optional parameter split_traversal can be set to false to avoid
@@ -60,7 +59,7 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 // graph is empty/meta.
 absl::Status Materialize(
     absl::Span<const SharedDeviceBufferList> nodes,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationMode mode = MaterializationMode::kSplitSafe);
 
 // Materializes all of the buffers and connected leaf nodes in-place.
 // This materializes all DeviceBufferLists referenced which are not already
@@ -68,19 +67,19 @@ absl::Status Materialize(
 // Errors if any of the buffers are empty.
 absl::Status Materialize(
     absl::Span<const DeviceBufferRef> buffer_refs,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationMode mode = MaterializationMode::kSplitSafe);
 
 // Materializes the given node in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const SharedDeviceBufferList& node,
-    MaterializationMode mode = MaterializationMode::kSplitGraph) {
+    MaterializationMode mode = MaterializationMode::kSplitSafe) {
   return Materialize(absl::Span<const SharedDeviceBufferList>(&node, 1), mode);
 }
 
 // Materializes the given buffer in-place. Delegates to the span overload.
 inline absl::Status Materialize(
     const DeviceBufferRef& buffer_ref,
-    MaterializationMode mode = MaterializationMode::kSplitGraph) {
+    MaterializationMode mode = MaterializationMode::kSplitSafe) {
   return Materialize(absl::Span<const DeviceBufferRef>(&buffer_ref, 1), mode);
 }
 

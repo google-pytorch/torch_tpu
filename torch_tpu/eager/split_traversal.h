@@ -26,6 +26,17 @@
 
 namespace torch_tpu {
 
+// FuseAll:     The entire graph for the traversal is executed as a single unit.
+//              The resulting executable may be multi-output.
+// SplitSafe:   the graph is split into as many traversals as necessary to
+//              ensure that all tensors are executed in dispatch order, with no
+//              risk of later out-of-order re-execution.
+//              There will be exactly one output per split traversal, and the
+//              returned traversals will be in dispatch order.
+// SplitCustom: the graph is split according to the flags set in
+//              split_traversal.cc.
+enum class MaterializationMode { kFuseAll, kSplitSafe, kSplitCustom };
+
 // This function splits a given traversal into multiple traversals by applying
 // materialization heuristics for determining internal materialization/split
 // points. The returned traversals are guaranteed to have only one output, and
@@ -33,7 +44,8 @@ namespace torch_tpu {
 // This function returns traversals in topological order.
 absl::StatusOr<std::vector<Traversal>> SplitTraversal(
     Traversal traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationMode mode);
 
 }  // namespace torch_tpu
 

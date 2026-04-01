@@ -25,8 +25,10 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation_cache.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -132,59 +134,73 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
         BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
   };
 
-  // Create a graph: a -> b, a -> c, c -> d.
-  // b and d are leaf nodes in the connected subgraph.
-  // a and c are internal nodes, but a has fanout, so
-  // it will be materialized.
-
-  // Node a
+  // Create a graph (letter indicates creation order):
+  //    / -> b -> c (has Tensor)
+  //  a ---> d -> e (has Tensor)
   ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_a,
                        DeviceBufferList::CreateDeferred(
                            OpName::kEmpty, builder,
                            /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape}));
   DeviceBufferRef ref_a = refs_a[0];
 
-  // Node b (depends on a)
   ASSERT_OK_AND_ASSIGN(
       std::vector<DeviceBufferRef> refs_b,
       DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_a},
                                        OpParamCacheKeys::Empty(), {shape}));
   DeviceBufferRef ref_b = refs_b[0];
 
-  // Node c (depends on a)
   ASSERT_OK_AND_ASSIGN(
       std::vector<DeviceBufferRef> refs_c,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_a},
+      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_b},
                                        OpParamCacheKeys::Empty(), {shape}));
   DeviceBufferRef ref_c = refs_c[0];
 
-  // Node d (depends on c)
+  // Create a tensor for c to reflect how this would actually be used
+  // (a leaf node with no tensors would ordinarily be dropped immediately).
+  at::Tensor c = MakeTensor(ref_c);
+
   ASSERT_OK_AND_ASSIGN(
       std::vector<DeviceBufferRef> refs_d,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_c},
+      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_a},
                                        OpParamCacheKeys::Empty(), {shape}));
   DeviceBufferRef ref_d = refs_d[0];
+
+  ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_e,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, builder, {ref_d},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  DeviceBufferRef ref_e = refs_e[0];
+  // Create a tensor for e to reflect how this would actually be used
+  // (a leaf node with no tensors would ordinarily be dropped immediately).
+  at::Tensor e = MakeTensor(ref_e);
 
   EXPECT_EQ(ref_a.state(), DeviceBufferRefState::kDeferred);
   EXPECT_EQ(ref_b.state(), DeviceBufferRefState::kDeferred);
   EXPECT_EQ(ref_c.state(), DeviceBufferRefState::kDeferred);
   EXPECT_EQ(ref_d.state(), DeviceBufferRefState::kDeferred);
+  EXPECT_EQ(ref_e.state(), DeviceBufferRefState::kDeferred);
 
-  // Materializing d should materialize d (requested) and b (leaf).
-  // Intermediate nodes a and b should remain deferred.
+  // Materialize d. This should trace the entire graph from the leaf nodes
+  // c and e.
   EXPECT_EQ(Materialize(ref_d), absl::OkStatus());
 
   // a is materialized as it has fanout > 1.
   EXPECT_EQ(ref_a.state(), DeviceBufferRefState::kMaterialized);
 
-  // c remains deferred as it is an internal node not requested for
-  // materialization.
-  EXPECT_EQ(ref_c.state(), DeviceBufferRefState::kDeferred);
+  // b is not materialized; it is only internal to the graph of c, and has
+  // neither fanout nor a live Tensor.
+  EXPECT_EQ(ref_b.state(), DeviceBufferRefState::kDeferred);
 
-  // b and d are materialized: d is the requested target, and b is a leaf in the
-  // subgraph discovered during the traversal from d.
-  EXPECT_EQ(ref_b.state(), DeviceBufferRefState::kMaterialized);
+  // c is materialized by SafeMaterializationRule; it was dispatched before d
+  // and has a live Tensor, so it must be materialized.
+  EXPECT_EQ(ref_c.state(), DeviceBufferRefState::kMaterialized);
+
+  // d is materialized because it was the explicit target of Materialize().
   EXPECT_EQ(ref_d.state(), DeviceBufferRefState::kMaterialized);
+
+  // e is not materialized because it was dispatched after the last required
+  // node (d).
+  EXPECT_EQ(ref_e.state(), DeviceBufferRefState::kDeferred);
 }
 
 }  // namespace

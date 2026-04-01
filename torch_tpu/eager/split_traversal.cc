@@ -46,25 +46,17 @@ ABSL_FLAG(bool, torch_tpu_internal_reexecution_heuristic, true,
 ABSL_FLAG(bool, torch_tpu_internal_stale_heuristic, true,
           "Use a materialization heuristic that materializes around the stale "
           "regions of a graph.");
-ABSL_FLAG(bool, torch_tpu_internal_safe_materialization_rule, true,
-          "Use a set of materialization heuristics that ensures nodes are "
-          "dropped or materialized sequentially.");
 
 namespace torch_tpu {
 
 namespace {
 
-// Config struct indicating which materialization heuristics are enabled.
-struct EnabledHeuristics {
+// Config struct indicating which materialization heuristic flags are enabled.
+struct CustomHeuristics {
   void Initialize() {
-    if (absl::GetFlag(FLAGS_torch_tpu_internal_safe_materialization_rule)) {
-      safe_rule = true;
-    } else {
-      reexecution =
-          absl::GetFlag(FLAGS_torch_tpu_internal_reexecution_heuristic);
-      fanout = absl::GetFlag(FLAGS_torch_tpu_internal_fanout_heuristic);
-      stale = absl::GetFlag(FLAGS_torch_tpu_internal_stale_heuristic);
-    }
+    reexecution = absl::GetFlag(FLAGS_torch_tpu_internal_reexecution_heuristic);
+    fanout = absl::GetFlag(FLAGS_torch_tpu_internal_fanout_heuristic);
+    stale = absl::GetFlag(FLAGS_torch_tpu_internal_stale_heuristic);
 
     initialized = true;
   }
@@ -72,14 +64,7 @@ struct EnabledHeuristics {
   // Whether the heuristics have been initialized.
   bool initialized = false;
 
-  // If torch_tpu_internal_safe_materialization_rule is enabled, then use the
-  // safe materialization rule and ignore the other heuristics.
-  bool safe_rule = false;
-
-  // Otherwise, use heuristics a la carte as indicated.
   bool reexecution = false;
-  bool forced_split = true;      // always enabled
-  bool dynamic_op_split = true;  // always enabled
   bool fanout = false;
   bool stale = false;
 };
@@ -90,36 +75,31 @@ struct EnabledHeuristics {
 [[nodiscard]] absl::flat_hash_set<const DeviceBufferList* absl_nonnull>
 ApplyAllMaterializationHeuristicsOn(
     const Traversal& traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs) {
-  static EnabledHeuristics enabled_heuristics;
-  if (!enabled_heuristics.initialized) {
-    enabled_heuristics.Initialize();
-  }
-
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationMode mode) {
   absl::flat_hash_set<const DeviceBufferList*> nodes_to_materialize =
       required_outputs;
-  if (enabled_heuristics.safe_rule) {
+  if (mode == MaterializationMode::kSplitSafe) {
     auto safe_rule = SafeMaterializationRule(required_outputs);
     safe_rule(traversal, nodes_to_materialize);
-  } else {
-    {
-      tsl::profiler::TraceMe t("LocalHeuristics");
-      for (const auto& node : traversal.execution_order()) {
-        if (enabled_heuristics.reexecution) {
-          ReexecutionHeuristic(*node, nodes_to_materialize);
-        }
-        if (enabled_heuristics.forced_split) {
-          ForcedSplitHeuristic(*node, nodes_to_materialize);
-        }
-        if (enabled_heuristics.dynamic_op_split) {
-          DynamicOpSplitHeuristic(*node, nodes_to_materialize);
-        }
-        if (enabled_heuristics.fanout) {
-          FanoutHeuristic(*node, nodes_to_materialize);
-        }
-        if (enabled_heuristics.stale) {
-          StaleHeuristic(*node, nodes_to_materialize);
-        }
+  } else if (mode == MaterializationMode::kSplitCustom) {
+    tsl::profiler::TraceMe t("LocalHeuristics");
+    static CustomHeuristics enabled_heuristics;
+    if (!enabled_heuristics.initialized) {
+      enabled_heuristics.Initialize();
+    }
+
+    for (const auto& node : traversal.execution_order()) {
+      if (enabled_heuristics.reexecution) {
+        ReexecutionHeuristic(*node, nodes_to_materialize);
+      }
+      ForcedSplitHeuristic(*node, nodes_to_materialize);
+      DynamicOpSplitHeuristic(*node, nodes_to_materialize);
+      if (enabled_heuristics.fanout) {
+        FanoutHeuristic(*node, nodes_to_materialize);
+      }
+      if (enabled_heuristics.stale) {
+        StaleHeuristic(*node, nodes_to_materialize);
       }
     }
   }
@@ -130,9 +110,16 @@ ApplyAllMaterializationHeuristicsOn(
 
 absl::StatusOr<std::vector<Traversal>> SplitTraversal(
     Traversal traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs) {
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationMode mode) {
   ABSL_VLOG(1) << ">>> SplitTraversal " << traversal.execution_order().size();
   tsl::profiler::TraceMe t("SplitTraversal");
+  std::vector<Traversal> traversals;
+
+  if (mode == MaterializationMode::kFuseAll) {
+    traversals.push_back(std::move(traversal));
+    return traversals;
+  }
 
   // Reorder the nodes in the traversal to prefer materializing the
   // earliest-dispatched output DeferredOps first. This results in a
@@ -140,12 +127,10 @@ absl::StatusOr<std::vector<Traversal>> SplitTraversal(
   // is organized for eager execution.
   traversal.SortByCreationOrder();
 
-  std::vector<Traversal> traversals;
-
   // Here we collect a set of materialization nodes internal to the input
   // `traversal`.
   absl::flat_hash_set<const DeviceBufferList*> materialization_nodes_set =
-      ApplyAllMaterializationHeuristicsOn(traversal, required_outputs);
+      ApplyAllMaterializationHeuristicsOn(traversal, required_outputs, mode);
 
   if (materialization_nodes_set.size() <= required_outputs.size()) {
     // Shortcut in the simple case where there is no internal materialization
