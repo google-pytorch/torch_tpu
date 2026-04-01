@@ -30,6 +30,12 @@ pytype_strict_library(
     ],
 )
 
+pytype_strict_library(
+    name = "multihost_wrapper",
+    srcs = ["multihost_wrapper.py"],
+    deps = ["//shims/absl_py/logging"],
+)
+
 torch_tpu_py_test(
     name = "singlehost_wrapper_v7x_test",
     srcs = ["singlehost_wrapper_test.py"],
@@ -60,6 +66,16 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "multihost_wrapper_test",
+    srcs = ["multihost_wrapper_test.py"],
+    strict = True,
+    deps = [
+        ":multihost_wrapper",
+        "//shims/absl_py/testing:absltest",
     ],
 )
 

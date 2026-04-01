@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 64
-MODEL_DIM = 128
+MODEL_DIM = 256
 
 RANDOM_SEED = 4242
 
@@ -52,10 +52,11 @@ def worker_fn() -> None:
   We rely on torch.manual_seed() to seed the random dataloader and model
   initializations, so that we get the same outputs in both cases.
   """
-  rank = int(os.environ["RANK"])
-  logger.info("Worker function started, rank: %d", rank)
+  rank = int(os.environ.get("RANK", -1))
+  local_rank = int(os.environ.get("LOCAL_RANK", -1))
 
   _ = api.tpu_device()
+
   dist.init_process_group(backend="tpu_dist")
 
   # Run the non-distributed variant on a single CPU, for reference output.
@@ -67,21 +68,33 @@ def worker_fn() -> None:
     with torch.no_grad():
       data = fake_dataloader_read()
       reference_output = mymodel(data)
-    logger.info("rank: %d, reference_output: %s", rank, reference_output)
 
   # Run on multiple TPUs using Tensor Parallelism.
   torch.manual_seed(RANDOM_SEED)
   mymodel_tp = model.MyModel(dmodel=MODEL_DIM, use_tp=True)
   mymodel_tp.to(device="tpu")
   mymodel_tp.eval()
+
+  import time
+
   with torch.no_grad():
     data = fake_dataloader_read().to(device="tpu")
+
+    start_time = time.time()
     tpu_tp_output = mymodel_tp(data)
     tpu_tp_output = tpu_tp_output.cpu()
-  logger.info("rank: %d, tpu_tp_output: %s", rank, tpu_tp_output)
+    step_time = time.time() - start_time
+
+  logger.info(
+      "rank: %d, step_time: %f s, tpu_tp_output: %s",
+      rank,
+      step_time,
+      tpu_tp_output,
+  )
 
   # Assert TPU outputs on rank=0 match the reference outputs.
   if rank == 0:
+    logger.info("Comparing TPU output with reference output...")
     utils.assert_close(
         actual=tpu_tp_output,
         expected=reference_output,
@@ -89,8 +102,11 @@ def worker_fn() -> None:
         atol=7e-2,
         check_value=utils.CheckValueMode.LOOSE,
     )
+    logger.info("Comparison successful.")
 
+  logger.info("Destroying process group...")
   dist.destroy_process_group()
+  logger.info("Worker function finished.")
 
 
 if __name__ == "__main__":

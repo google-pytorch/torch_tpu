@@ -23,6 +23,11 @@ package(
 torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
+    env = {
+        "JOB_COMPLETION_INDEX": "0",
+        "TORCH_TPU_TOPOLOGY": "2,2,2",
+        "TPU_WORKER_HOSTNAMES": "localhost",
+    },
     main = "launch.py",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
@@ -32,7 +37,8 @@ torch_tpu_py_test(
     deps = [
         ":tp_worker",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//tests/distributed:distributed_utils",
+        "//torch_tpu/_internal/distributed/launchers:multihost_wrapper",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )

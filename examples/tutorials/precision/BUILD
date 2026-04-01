@@ -1,4 +1,3 @@
-#!/bin/bash
 # Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,10 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A script to run the tensor parallel worker using standard torchrun.
+load("//build_files:build_defs.bzl", "torch_tpu_package_end")
+load("//shims/pynball:build_defs.bzl", "ipynb_deps")
 
-# Detect and export TPU configuration dynamically.
-eval $(python3 -m torch_tpu._internal.distributed.launchers.singlehost_wrapper)
-export TORCH_TPU_TOPOLOGY TORCH_TPU_SLICEBUILDER_ADDRESSES WORLD_SIZE
+package(
+    default_applicable_licenses = ["//:license"],
+    default_visibility = ["//:__subpackages__"],
+)
 
-python3 -m torch.distributed.run --nproc_per_node=$WORLD_SIZE ./tp_worker.py
+ipynb_deps(
+    name = "precision_tutorial_deps",
+    srcs = ["precision_tutorial.ipynb"],
+    pytype = False,
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu/api",
+    ],
+)
+
+torch_tpu_package_end()

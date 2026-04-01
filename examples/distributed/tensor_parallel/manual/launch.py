@@ -14,17 +14,18 @@
 
 """A test runner for the tensor parallel example."""
 
-from torch.google import distributed as gdist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.distributed.launchers import multihost_wrapper
 from examples.distributed.tensor_parallel.manual import tp_worker
+from tests.distributed import distributed_utils
 
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 
 def main(_):
-  singlehost_wrapper.prepare_tpu_environment()
-  gdist.torchrun(tp_worker.worker_fn, nproc_per_node=8)()
+  world_size = 8
+  multihost_wrapper.prepare_tpu_environment()
+  distributed_utils.dist_run(world_size, tp_worker.worker_fn)
 
 
 if __name__ == "__main__":
