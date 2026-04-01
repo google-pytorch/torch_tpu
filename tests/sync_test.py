@@ -14,12 +14,12 @@
 
 import os
 import re
-import tempfile
 
 from absl.testing import absltest
 import torch
 from torch_tpu import api
 from torch_tpu._internal import sync
+from torch_tpu._internal.utils import utils
 
 
 class SyncTest(absltest.TestCase):
@@ -346,6 +346,51 @@ digraph {
 
     # Verify that the MLIR string contains the expected operations
     self.assertIn("stablehlo.add", mlir_str)
+
+  def test_sync_cpu_tensor_non_blocking(self):
+    x = torch.ones(10, device=api.tpu_device())
+    y = x + 1
+
+    cpu_tensor = torch.empty(10, pin_memory=True)
+    cpu_tensor.copy_(y, non_blocking=True)
+
+    sync.synchronize(cpu_tensor, wait=True)
+
+    utils.assert_close(cpu_tensor, torch.ones(10) * 2)
+
+  def test_sync_tpu_and_cpu_pinned_tensor(self):
+    x = torch.ones(10, device=api.tpu_device())
+    y = x + 1
+
+    cpu_tensor = torch.empty(10, pin_memory=True)
+    cpu_tensor.copy_(y, non_blocking=True)
+
+    sync.synchronize([y, cpu_tensor], wait=True)
+
+    utils.assert_close(cpu_tensor, torch.ones(10) * 2)
+
+  def test_sync_two_cpu_pinned_tensors(self):
+    x1 = torch.ones(10, device=api.tpu_device())
+    y1 = x1 + 1
+    x2 = torch.ones(10, device=api.tpu_device())
+    y2 = x2 + 2
+
+    cpu_tensor1 = torch.empty(10, pin_memory=True)
+    cpu_tensor2 = torch.empty(10, pin_memory=True)
+
+    cpu_tensor1.copy_(y1, non_blocking=True)
+    cpu_tensor2.copy_(y2, non_blocking=True)
+
+    sync.synchronize([cpu_tensor1, cpu_tensor2], wait=True)
+
+    utils.assert_close(cpu_tensor1, torch.ones(10) * 2)
+    utils.assert_close(cpu_tensor2, torch.ones(10) * 3)
+
+  def test_sync_non_pinned_cpu_tensor_fails(self):
+    cpu_tensor = torch.ones(10)  # Not pinned
+
+    with self.assertRaisesRegex(RuntimeError, "Tensor is not on pinned memory"):
+      sync.synchronize(cpu_tensor, wait=True)
 
 
 if __name__ == "__main__":

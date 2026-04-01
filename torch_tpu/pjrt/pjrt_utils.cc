@@ -234,9 +234,8 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
 }
 
 absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
-                                 void* dst_ptr, bool non_blocking) {
-  size_t buffer_expected_bytes = buffer_ref.size_bytes();
-  if (buffer_expected_bytes == 0) {
+                                 const at::Tensor& tensor, bool non_blocking) {
+  if (buffer_ref.size_bytes() == 0) {
     return absl::OkStatus();
   }
 
@@ -251,7 +250,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
       buffer_expected_dims);
 
   auto literal = std::make_unique<xla::MutableBorrowingLiteral>(
-      static_cast<char*>(dst_ptr), xla_shape);
+      static_cast<char*>(tensor.data_ptr()), xla_shape);
   xla::Future<> future = buffer->ToLiteral(literal.get());
 
   if (non_blocking) {
@@ -260,10 +259,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
         ABSL_LOG(ERROR) << "Async D2H ToLiteral transfer failed: " << s;
       }
     });
-    MarkStreamActive(static_cast<c10::DeviceIndex>(
-                         buffer->device()->local_hardware_id().value()),
-                     future);
-    return absl::OkStatus();
+    return MarkStreamActive(tensor, future);
   } else {
     return future.Await();
   }

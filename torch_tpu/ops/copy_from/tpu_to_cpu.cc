@@ -98,8 +98,8 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   if (can_copy_directly) {
     // Store the status first, so that we can translate the OpenXLA OOM error
     // message if needed.
-    absl::Status status = TpuMemcpyDtoHDirect(materialized_src_buf,
-                                              dest.data_ptr(), non_blocking);
+    absl::Status status =
+        TpuMemcpyDtoHDirect(materialized_src_buf, dest, non_blocking);
     TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
         std::move(status), dest.scalar_type(), src.sizes()));
     return absl::OkStatus();

@@ -16,6 +16,8 @@
 
 #include "torch_tpu/pjrt/pjrt_state.h"
 
+#include <cstddef>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,7 +29,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "ATen/core/TensorBody.h"
 #include "c10/core/Device.h"
+#include "c10/core/TensorImpl.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_types.h"
@@ -131,10 +135,28 @@ absl::StatusOr<xla::PjRtClient::HostAllocator*> GetHostAllocator() {
   return client->GetHostAllocator();
 }
 
+namespace {
+
+struct TensorHash {
+  size_t operator()(const at::Tensor& t) const {
+    return std::hash<at::TensorImpl*>()(t.unsafeGetTensorImpl());
+  }
+};
+
+struct TensorEqual {
+  bool operator()(const at::Tensor& lhs, const at::Tensor& rhs) const {
+    return lhs.unsafeGetTensorImpl() == rhs.unsafeGetTensorImpl();
+  }
+};
+
+}  // namespace
+
+using TensorToFutureMap =
+    absl::flat_hash_map<at::Tensor, xla::Future<void>, TensorHash, TensorEqual>;
+
 struct StreamState {
   absl::Mutex mutex;
-  absl::flat_hash_map<c10::DeviceIndex, std::vector<xla::Future<void>>>
-      pending_futures ABSL_GUARDED_BY(mutex);
+  TensorToFutureMap pending_futures ABSL_GUARDED_BY(mutex);
 };
 
 StreamState& GetStreamState() {
@@ -142,10 +164,17 @@ StreamState& GetStreamState() {
   return *state;
 }
 
-void MarkStreamActive(c10::DeviceIndex device_index, xla::Future<void> future) {
+absl::Status MarkStreamActive(const at::Tensor& tensor,
+                              xla::Future<void> future) {
   StreamState& state = GetStreamState();
   TT_MUTEX_LOCK(lock, state.mutex);
-  state.pending_futures[device_index].push_back(std::move(future));
+  auto [it, inserted] =
+      state.pending_futures.emplace(tensor, std::move(future));
+  if (!inserted) {
+    return TT_ERROR(error::kInternal)
+           << "Duplicate future registered for the same tensor";
+  }
+  return absl::OkStatus();
 }
 
 // Blocks the calling thread until all previously enqueued operations on the
@@ -156,21 +185,39 @@ void MarkStreamActive(c10::DeviceIndex device_index, xla::Future<void> future) {
 void SynchronizeStream(c10::DeviceIndex device_index) {
   StreamState& state = GetStreamState();
   TT_MUTEX_LOCK(lock, state.mutex);
-  auto it = state.pending_futures.find(device_index);
-  if (it == state.pending_futures.end()) {
-    // No pending futures for this device.
-    return;
-  }
-  for (auto& future : it->second) {
-    if (future.IsValid()) {
+  std::vector<at::Tensor> to_erase;
+  for (const auto& [tensor, future] : state.pending_futures) {
+    if (tensor.device().index() == device_index && future.IsValid()) {
       absl::Status s = future.Await();
       if (!s.ok()) {
         ABSL_LOG(ERROR) << "Stream synchronization failed for device "
                         << static_cast<int>(device_index) << ": " << s;
       }
+      to_erase.push_back(tensor);
     }
   }
-  it->second.clear();
+  for (const auto& tensor : to_erase) {
+    state.pending_futures.erase(tensor);
+  }
+}
+
+absl::Status SynchronizeHostPinnedTensors(
+    const std::vector<at::Tensor>& tensors) {
+  StreamState& state = GetStreamState();
+  TT_MUTEX_LOCK(lock, state.mutex);
+  for (const at::Tensor& tensor : tensors) {
+    auto it = state.pending_futures.find(tensor);
+    if (it != state.pending_futures.end()) {
+      if (it->second.IsValid()) {
+        absl::Status s = it->second.Await();
+        state.pending_futures.erase(it);
+        if (!s.ok()) {
+          return s;
+        }
+      }
+    }
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace torch_tpu

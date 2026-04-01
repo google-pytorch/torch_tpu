@@ -21,6 +21,7 @@
 #include "ATen/core/TensorBody.h"
 #include "torch/csrc/autograd/python_variable.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
+#include "torch/headeronly/core/DeviceType.h"
 #include "torch_tpu/_internal/sync/sync.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -29,6 +30,7 @@
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
+#include "torch_tpu/pjrt/pjrt_state.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
@@ -39,25 +41,20 @@ using BufferRefToVarMap = absl::flat_hash_map<DeviceBufferRef, std::string>;
 
 namespace {
 
-bool AllTensorsAreOnDevice(absl::Span<const at::Tensor> tensors) {
-  for (const at::Tensor& tensor : tensors) {
-    if (tensor.device().type() != GetPrivateUse1DeviceType()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
   std::vector<at::Tensor> tpu_tensors;
-  absl::Span<const at::Tensor> tensors_span = absl::MakeConstSpan(tensors);
-  if (!AllTensorsAreOnDevice(tensors)) {
-    for (const at::Tensor& tensor : tensors) {
-      if (tensor.device().type() == GetPrivateUse1DeviceType()) {
-        tpu_tensors.push_back(tensor);
+  std::vector<at::Tensor> cpu_pinned_tensors;
+
+  for (const at::Tensor& tensor : tensors) {
+    if (tensor.device().type() == at::kCPU) {
+      if (!IsTpuPinnedPtr(tensor.data_ptr())) {
+        TT_THROW_IF_ERROR(TT_ERROR(error::kInvalidArgument)
+                          << "Tensor is not on pinned memory");
       }
+      cpu_pinned_tensors.push_back(tensor);
+    } else if (tensor.device().type() == GetPrivateUse1DeviceType()) {
+      tpu_tensors.push_back(tensor);
     }
-    tensors_span = absl::MakeConstSpan(tpu_tensors);
   }
 
   if (wait) {
@@ -83,11 +80,12 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
 
     py::gil_scoped_release release;
     // SynchronizeTensors is GetMaterialized + wait
-    TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span));
+    TT_THROW_IF_ERROR(SynchronizeTensors(tpu_tensors));
+    TT_THROW_IF_ERROR(SynchronizeHostPinnedTensors(cpu_pinned_tensors));
   } else {
     // GetMaterialized returns DeviceBufferRefs for the views, but we don't
     // return them to Python.
-    TT_THROW_IF_ERROR(GetMaterialized(tensors_span));
+    TT_THROW_IF_ERROR(GetMaterialized(tpu_tensors));
   }
 }
 

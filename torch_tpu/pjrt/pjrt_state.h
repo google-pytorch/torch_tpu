@@ -18,8 +18,11 @@
 #define TORCH_TPU_PJRT_PJRT_STATE_H_
 
 #include <string>
+#include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "ATen/core/ATen_fwd.h"
 #include "c10/core/Device.h"
 #include "torch_tpu/eager/device_types.h"
 #include "xla/future.h"
@@ -62,11 +65,15 @@ absl::StatusOr<tsl::AllocatorStats> GetAllocatorStats();
 // Returns the PjRt host allocator from the PjRt client.
 absl::StatusOr<xla::PjRtClient::HostAllocator*> GetHostAllocator();
 
-// Updates the tracked future for the given device.
-void MarkStreamActive(c10::DeviceIndex device_index, xla::Future<void> future);
+absl::Status MarkStreamActive(const at::Tensor& tensor,
+                              xla::Future<void> future);
 
 // Blocks until all pending operations on the given device have completed.
 void SynchronizeStream(c10::DeviceIndex device_index);
+
+// Blocks until pending operations on the given tensor have completed.
+absl::Status SynchronizeHostPinnedTensors(
+    const std::vector<at::Tensor>& tensors);
 
 }  // namespace torch_tpu
 

@@ -51,6 +51,7 @@ torch_tpu_cc_library(
     srcs = ["pjrt_state.cc"],
     hdrs = ["pjrt_state.h"],
     deps = [
+        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:utils",

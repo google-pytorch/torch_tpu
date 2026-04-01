@@ -47,7 +47,8 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
 
 // Copies the data from the device directly into the provided host buffer.
 absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
-                                 void* dst_ptr, bool non_blocking = false);
+                                 const at::Tensor& tensor,
+                                 bool non_blocking = false);
 
 // The result of executing a PjRtExecutable, which may produce multiple non-null
 // PjRtBuffers.
