@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+test_var123 = 123
+
 """Micro benchmarks for common ML layers."""
 
 from collections.abc import Callable, Sequence
