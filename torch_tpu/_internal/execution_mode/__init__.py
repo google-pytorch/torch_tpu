@@ -15,7 +15,6 @@
 from contextlib import contextmanager
 from typing import Set, TypeAlias
 
-import torch
 from torch_tpu._internal import execution_mode_impl
 from torch_tpu._internal.execution_mode_impl import get_eager_mode
 from torch_tpu._internal.execution_mode_impl import set_eager_mode
