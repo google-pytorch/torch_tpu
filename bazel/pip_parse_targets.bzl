@@ -45,11 +45,19 @@ def define_extra_torch_targets():
         ],
     )
 
+    ALLOWED_LIBS = [
+        "libc10",
+        "libtorch_cpu",
+        "libtorch_python",
+    ]
     lib_targets = []
     for lib in native.glob(["site-packages/torch/lib/lib*.so*"]):
         basename = paths.basename(lib)
         so_offset = basename.find(".so")
         target_name = basename[:so_offset]
+
+        if target_name not in ALLOWED_LIBS:
+            continue
 
         # NOTE: Some of the libs depend on each other, however, which depend
         # on which depends on the torch version and build. Unfortunately, we
