@@ -199,7 +199,6 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["model_coverage_hf_test.py"],
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 6,
     tags = [
         "cpu:4",
@@ -260,7 +259,6 @@ torch_tpu_py_test(
     srcs = ["model_coverage_timm_test.py"],
     data = ["data/goldfish.jpg"],
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 6,
     tags = [
         "noasan",  # TODO: fix the test in asan mode.

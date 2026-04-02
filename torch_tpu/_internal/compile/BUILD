@@ -160,7 +160,6 @@ torch_tpu_py_test(
     name = "trace_autograd_ops_test",
     srcs = ["trace_autograd_ops_test.py"],
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = "true",
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.

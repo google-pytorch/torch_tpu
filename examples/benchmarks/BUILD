@@ -33,7 +33,6 @@ torch_tpu_py_test(
     },
     main = "ml_layers_test.py",
     notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 4,
     strict = True,
     tags = [
@@ -116,7 +115,6 @@ torch_tpu_py_test(
     },
     main = "ml_layers_test.py",
     notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 4,
     strict = True,
     tags = [

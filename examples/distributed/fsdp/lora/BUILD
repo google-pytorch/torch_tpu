@@ -24,7 +24,6 @@ torch_tpu_py_test(
     name = "launch",
     srcs = ["launch.py"],
     main = "launch.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "noasan",
         "nomsan",

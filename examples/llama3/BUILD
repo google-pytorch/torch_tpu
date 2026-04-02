@@ -24,7 +24,6 @@ torch_tpu_py_test(
     name = "llama3_2_example",
     srcs = ["llama3_2_example.py"],
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
@@ -43,7 +42,6 @@ torch_tpu_py_test(
     name = "llama3_2_1b_hf_pipe_example",
     srcs = ["llama3_2_1b_hf_pipe_example.py"],
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",  # Needed to access remote files.
         "requires-tpu-v5lite",
@@ -83,7 +81,6 @@ torch_tpu_py_test(
     ],
     main = "llama3_2_1b_random_data_training_test.py",
     notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "requires-gpu-sm100-full-only",
@@ -121,7 +118,6 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "llama3_2_1b_random_data_training_test.py",
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # Matches the CUDA version of the test for a fair comparison.
         "requires-net:external",
@@ -155,7 +151,6 @@ torch_tpu_py_test(
     ],
     main = "llama3_2_1b_random_data_training_test.py",
     notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "requires-gpu-sm100-full-only",
@@ -188,7 +183,6 @@ torch_tpu_py_test(
     main = "llama3_2_1b_training_test.py",
     nobuild = "This test doesn't build.",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "requires-accel-hbm",
@@ -225,7 +219,6 @@ torch_tpu_py_test(
     linking_mode = "static",
     main = "llama3_2_1b_training_test.py",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # Matches the CUDA version of the test for a fair comparison.
         "requires-accel-hbm",
@@ -262,7 +255,6 @@ torch_tpu_py_test(
     main = "llama3_2_1b_training_test.py",
     nobuild = "This test doesn't build.",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "requires-gpu-sm100-full-only",
@@ -297,7 +289,6 @@ torch_tpu_py_test(
     timeout = "eternal",  # This causes the test to be skipped on TAP.
     srcs = ["llama3_2_1b_training_peft_test.py"],
     notap = "slow test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",
         "nofastbuild",  # Measures performance.

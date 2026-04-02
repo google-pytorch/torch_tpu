@@ -29,7 +29,6 @@ torch_tpu_py_test(
         "TPU_WORKER_HOSTNAMES": "localhost",
     },
     main = "launch.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.

@@ -23,7 +23,6 @@ torch_tpu_py_test(
     name = "hello_world_llm_eager_test",
     srcs = ["hello_world_llm_eager_test.py"],
     notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "no-sandbox",  # Bazel's linux-sandbox restricts write access to your home directory for downloading weights.
         "requires-net:external",
