@@ -11,3 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
+bzl_library(
+    name = "torch_local_repo_bzl",
+    srcs = [
+        "link_libraries.sh",
+        "torch_local_defs.bzl",
+        "torch_local_repo.bzl",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+exports_files([
+    "link_libraries.sh",
+    "torch_local_defs.bzl",
+])
