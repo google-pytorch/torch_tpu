@@ -62,10 +62,23 @@ jobs:
       image: ${{ matrix.job_info.container }}
     steps:
       - run: echo "Start running tests."
+
+      # Prerequisites: bazel-diff requires Git, Bazel >= 3.3.0 and Java >= 8.
+      # https://github.com/Tinder/bazel-diff/tree/16.0.0?tab=readme-ov-file#prerequisites
+      # As of 2026-04, our Docker container has Git 2.34.1, Bazel 7.4.1 and Java 21.0.10.
+
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@v5
+
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace inside this ephemeral container, instead of
+      # hardcoding the specific path `/__w/torch_tpu/torch_tpu` which is brittle.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory '*'
+
       # Enable remote connections.
       # Step 2: Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
@@ -73,13 +86,71 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      # Run Bazel build.
-      # The flags used here for `bazel build` need to be the same as that used for `bazel test`
-      # below. Otherwise, the remote cache benefits of the build step are lost and the test step has
-      # to redo that work.
-      - run: bazel build --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
-      # Run Bazel test.
-      # The flags used here for `bazel test` need to be the same as that used for `bazel build`
-      # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
-      # to redo that work.
-      - run: bazel test --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+      - name: Download bazel-diff
+        run: |
+          # https://github.com/Tinder/bazel-diff/issues/320: Latest releases are missing
+          # bazel-diff_deploy.jar.
+          # Explicitly pin to last version with bazel-diff_deploy.jar, which is v16.0.0.
+          # The -f flag ensures curl fails immediately on a 404 error.
+          curl -fLo /tmp/bazel-diff.jar https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
+      - name: Generate Base Hashes
+        run: |
+          # We use a fallback to 'main' in case this is run via workflow_dispatch instead of a PR
+          BASE_REF=${{ github.base_ref || 'main' }}
+          git fetch --depth=1 origin $BASE_REF
+          git checkout origin/$BASE_REF
+          java -jar /tmp/bazel-diff.jar generate-hashes -w $GITHUB_WORKSPACE $GITHUB_WORKSPACE/base_hashes.json
+
+      - name: Generate PR Hashes
+        run: |
+          git checkout ${{ github.sha }}
+          java -jar /tmp/bazel-diff.jar generate-hashes -w $GITHUB_WORKSPACE $GITHUB_WORKSPACE/pr_hashes.json
+
+      - name: Determine Impacted Targets
+        run: |
+          java -jar /tmp/bazel-diff.jar get-impacted-targets \
+            -sh $GITHUB_WORKSPACE/base_hashes.json \
+            -fh $GITHUB_WORKSPACE/pr_hashes.json \
+            -o $GITHUB_WORKSPACE/impacted_targets.txt
+
+      - name: Run Impacted CPU Builds and Tests
+        run: |
+          if [ -s $GITHUB_WORKSPACE/impacted_targets.txt ]; then
+            TARGET_COUNT=$(wc -l < $GITHUB_WORKSPACE/impacted_targets.txt)
+            echo "Found $TARGET_COUNT impacted target(s)."
+
+            echo "--- Impacted Targets List ---"
+            cat $GITHUB_WORKSPACE/impacted_targets.txt
+            echo "-----------------------------"
+
+            # Run Bazel build.
+            # The flags used here for `bazel build` need to be the same as that used for `bazel test`
+            # below. Otherwise, the remote cache benefits of the build step are lost and the test step has
+            # to redo that work.
+            bazel build --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --target_pattern_file=$GITHUB_WORKSPACE/impacted_targets.txt
+
+            # Run Bazel test.
+            # Temporarily disable Bash's "exit on error" so we can manually evaluate Bazel's exit code
+            set +e
+
+            # Run Bazel test.
+            # The flags used here for `bazel test` need to be the same as that used for `bazel build`
+            # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
+            # to redo that work.
+            bazel test --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --target_pattern_file=$GITHUB_WORKSPACE/impacted_targets.txt
+            BAZEL_EXIT_CODE=$?
+
+            # Re-enable "exit on error"
+            set -e
+
+            # Evaluate the Bazel Exit Code
+            if [ $BAZEL_EXIT_CODE -eq 4 ]; then
+              echo "Bazel returned Exit Code 4 (No tests found). This means bazel-diff found targets, but our --test_tag_filters successfully filtered them all out for this runner. Treating as success!"
+              exit 0
+            elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
+              echo "Bazel test failed with exit code $BAZEL_EXIT_CODE."
+              exit $BAZEL_EXIT_CODE
+            fi
+          else
+            echo "No tests impacted by these changes. Skipping Bazel entirely!"
+          fi
