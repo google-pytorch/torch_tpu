@@ -20,6 +20,7 @@ package(
     default_visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
+        "//shims/torchtitan:__subpackages__",
     ],
 )
 
