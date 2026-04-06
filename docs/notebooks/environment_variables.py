@@ -82,6 +82,7 @@ def _(mo):
     | :--- | :--- |
     | `TORCH_SHOW_CPP_STACKTRACES` | Enriches Python `RuntimeError` with massive C++ backtraces from ATen and the TorchTPU backend. |
     | `TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS` | Enables expensive internal debug checks and invariant validation (e.g., catching out-of-bounds indices). |
+    | `TPU_LAUNCH_BLOCKING` | Forces synchronous TPU execution, similar to `CUDA_LAUNCH_BLOCKING`. Useful for pinpointing the exact line causing an error. |
 
     ### **Snippet: C++ Stacktraces**
     Setting this variable makes it much easier to diagnose errors that occur deep within the C++ backend or XLA. Instead of a simple Python `RuntimeError`, you'll receive a detailed `C++ CapturedTraceback` showing exact execution frames.
@@ -143,6 +144,33 @@ def _(os, safe_init):
       y.cpu()
     except Exception as e:
       print(f"\nCaught Expected Debug Exception: {e}")
+
+  _run()
+  return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+  mo.md(r"""
+    ### **Snippet: Launch Blocking (Synchronous Execution)**
+    Setting `TPU_LAUNCH_BLOCKING=1` forces the host to wait for the TPU to complete each operation before proceeding. This is identical to `CUDA_LAUNCH_BLOCKING` and is essential for debugging `NaN`s or other numerical errors, as it ensures the error is reported on the line that actually caused it, rather than at the next synchronization point.
+    """)
+  return
+
+
+@app.cell
+def _(os, safe_init):
+  def _run():
+    # RESTART KERNEL BEFORE RUNNING
+    import torch
+
+    os.environ["TPU_LAUNCH_BLOCKING"] = "1"
+    device_sync = safe_init()
+
+    # Run operations synchronously
+    x = torch.ones((10, 10), device=device_sync)
+    y = x + 1
+    print("Executed operations synchronously with TPU_LAUNCH_BLOCKING=1.")
 
   _run()
   return
@@ -391,6 +419,7 @@ def _(mo):
     | `TORCH_TPU_TOPOLOGY` | Cloud | `import torch` | `2x2x1`, `2x2x4`, `4x4x4`, etc. |
     | `TPU_CHIPS_PER_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |
     | `TPU_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |
+    | `TPU_LAUNCH_BLOCKING` | Debug | `api.tpu_device()` | `0` (False), `1` (True) |
     | `TPU_PROCESS_ADDRESSES` | Cloud | `N/A` (Set by GCE) | `10.0.0.1:8471,10.0.0.2:8471` |
     | `TPU_PROCESS_PORT` | Cloud | `N/A` (Set by GCE) | `8471`, `<port_number>` |
     | `TPU_VISIBLE_CHIPS` | Cloud | `N/A` (Set by GCE) | `0`, `0,1`, `0,1,2,3` |
