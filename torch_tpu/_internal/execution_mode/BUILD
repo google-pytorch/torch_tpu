@@ -28,7 +28,6 @@ pytype_strict_library(
         "__init__.py",
     ],
     deps = [
-        "//shims/torch:pytorch",
         "//torch_tpu/_internal:execution_mode_impl",
     ],
 )

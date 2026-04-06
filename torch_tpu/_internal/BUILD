@@ -29,7 +29,6 @@ torch_tpu_cc_library(
     srcs = ["execution_mode_impl.cc"],
     deps = [
         "//shims/pybind11",
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/eager:eager_mode",
@@ -47,7 +46,6 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/eager:eager_mode",
@@ -63,7 +61,6 @@ torch_tpu_cc_library(
     srcs = ["compiler_options_impl.cc"],
     deps = [
         "//shims/pybind11",
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
@@ -79,7 +76,6 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
@@ -116,7 +112,6 @@ torch_tpu_cc_library(
     srcs = ["testing.cc"],
     deps = [
         "//shims/pybind11",
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/eager:op_dispatcher",
@@ -133,7 +128,6 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/eager:op_dispatcher",

@@ -51,6 +51,9 @@ def define_extra_torch_targets():
         so_offset = basename.find(".so")
         target_name = basename[:so_offset]
 
+        if target_name in ["libaoti_custom_ops", "libtorchbind_test", "libjitbackend_test", "libbackend_with_compiler"]:
+            continue
+
         # NOTE: Some of the libs depend on each other, however, which depend
         # on which depends on the torch version and build. Unfortunately, we
         # can't inspect them during this build phase, so can't automatically

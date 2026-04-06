@@ -94,7 +94,6 @@ torch_tpu_cc_library(
     deps = [
         ":compiled_mode",
         "//shims/pybind11",
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
@@ -125,13 +124,9 @@ pybind_extension(
     common_lib_packages = [
         "torch_tpu/common",
     ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
     wrap_py_init = True,
     deps = [
         ":compiled_mode",
-        "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",

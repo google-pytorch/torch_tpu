@@ -89,9 +89,6 @@ pybind_extension(
     common_lib_packages = [
         "torch_tpu/common",
     ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
     wrap_py_init = True,
     deps = [
         ":sync_cc",
