@@ -25,7 +25,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":device_buffer",
         ":tensor_to_buffer",
@@ -62,7 +61,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":device_buffer",
         ":materialize",

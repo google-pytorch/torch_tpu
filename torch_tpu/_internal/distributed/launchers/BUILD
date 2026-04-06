@@ -41,7 +41,6 @@ torch_tpu_py_test(
     srcs = ["singlehost_wrapper_test.py"],
     main = "singlehost_wrapper_test.py",
     nopresubmit = "long Forge queue",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = True,
     tags = [
         "requires-tpu-v7x:4",  # Must use for testing v7x.
@@ -58,7 +57,6 @@ torch_tpu_py_test(
     name = "singlehost_wrapper_v5e_test",
     srcs = ["singlehost_wrapper_test.py"],
     main = "singlehost_wrapper_test.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = True,
     tags = ["requires-tpu-v5lite:8"],
     deps = [

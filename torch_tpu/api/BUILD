@@ -94,7 +94,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "xla_cuda_module_test",
     srcs = ["xla_cuda_module_test.py"],
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = True,
     tags = ["requires-gpu-sm60-only"],
     deps = [

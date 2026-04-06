@@ -27,7 +27,6 @@ torch_tpu_py_test(
         "--xla_jf_conv_full_precision",  # Use highest precision for matmuls for tests only.
     ],
     main = "launch.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "noasan",
         "requires-mem:28g",

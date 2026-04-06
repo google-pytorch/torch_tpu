@@ -59,7 +59,6 @@ pytype_strict_binary(
 torch_tpu_py_test(
     name = "scaled_dot_product_attention_kernels_test",
     srcs = ["scaled_dot_product_attention_kernels_test.py"],
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         # TODO(b/493270350): Investigate if the test should be enabled for asan.
         "noasan",

@@ -22,7 +22,6 @@ torch_tpu_py_test(
     name = "inception",
     srcs = ["inception.py"],
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",

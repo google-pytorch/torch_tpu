@@ -229,7 +229,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",  # Needs PjRt client.
     ],
@@ -262,7 +261,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",  # Needs PjRt client.
     ],
@@ -291,7 +289,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",  # Needs PjRt client.
     ],
@@ -317,7 +314,6 @@ torch_tpu_cc_test(
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     nopresubmit = "long Forge queue",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5p:4",  # Needs PjRt client and multiple devices.
     ],
@@ -344,7 +340,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",  # Needs PjRt client.
     ],
@@ -372,7 +367,6 @@ torch_tpu_cc_test(
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     nopresubmit = "long Forge queue",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5p:4",  # Needs PjRt client and multiple devices.
     ],
@@ -399,7 +393,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",  # Needs PjRt client.
     ],
@@ -427,7 +420,6 @@ torch_tpu_cc_test(
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     nopresubmit = "long Forge queue",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5p:4",  # Needs PjRt client and multiple devices.
     ],
@@ -653,7 +645,6 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "environment_test",
     srcs = ["environment_test.cc"],
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":env_vars",
         ":environment",
@@ -836,7 +827,6 @@ torch_tpu_cc_test(
     srcs = ["compilation_cache_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":cache_key",
         ":compilation",
@@ -886,7 +876,6 @@ torch_tpu_cc_test(
     srcs = ["compilation_parse_xla_options_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -913,7 +902,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -945,7 +933,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",  # Requires remote file access.
         "requires-tpu-v5lite",
@@ -977,7 +964,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",  # Requires remote file access.
         "requires-tpu-v5lite",
@@ -1024,7 +1010,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":cache_key",
         ":dimension_types",
