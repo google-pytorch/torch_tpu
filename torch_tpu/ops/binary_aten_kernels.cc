@@ -45,6 +45,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
@@ -494,11 +495,50 @@ absl::Status CheckSubInputs(const at::Tensor& self, const at::Tensor& other) {
 // NOLINTEND
 at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, alpha, out), {
-    TT_ASSIGN_OR_THROW(auto op_builder, AtenAddHelper(self, other, alpha));
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(op_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
+  bool alpha_is_one = false;
+  if (alpha.isIntegral(/*include_bool=*/false)) {
+    alpha_is_one = (alpha.toLong() == 1);
+  } else if (alpha.isFloatingPoint()) {
+    alpha_is_one = (alpha.toDouble() == 1.0);
+  } else if (alpha.isBoolean()) {
+    alpha_is_one = (alpha.toBool() == true);
+  }
+
+  auto promoted_alpha = PromoteScalar(alpha);
+
+  auto op_builder = [alpha_is_one](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<MlirOpResults<1>> {
+    auto [self_op, other_op, alpha_op] = inputs;
+    if (alpha_is_one) {
+      TT_ASSIGN_OR_RETURN(auto result, BuildAddShlo(self_op, other_op));
+      return MlirOpResults<1>{result};
+    }
+    const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
+    auto other_element_type = other_type.getElementType();
+    auto converted_alpha =
+        mlir::stablehlo::ConvertElementType(alpha_op, other_element_type);
+
+    TT_ASSIGN_OR_RETURN(auto mul_op, BuildMulShlo(other_op, converted_alpha));
+    TT_ASSIGN_OR_RETURN(auto result, BuildAddShlo(self_op, mul_op));
+    return MlirOpResults<1>{result};
+  };
+
+  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
+    TT_THROW_IF_ERROR(param_keys.SetParam("alpha_is_one", alpha_is_one));
+    TT_ASSIGN_OR_THROW(auto alpha_tensor, promoted_alpha.GetTensor());
+    TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
+                       ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+    TT_ASSIGN_OR_THROW(
+        auto result,
+        (DispatchOp<3>(op_builder,
+                       /*inputs=*/{self, other, alpha_tensor},
+                       /*options=*/
+                       {.out_dtype = output_dtype,
+                        .out_dims = out.sizes(),
+                        .op_param_cache_keys = std::move(param_keys)})));
+
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(result, out));
     return out;
   });
 }
