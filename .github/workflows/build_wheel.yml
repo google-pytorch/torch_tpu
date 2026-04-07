@@ -135,3 +135,40 @@ jobs:
       - name: Run tests
         shell: bash
         run: bazel test ${{ matrix.extra_flags }} //...
+
+  cpu_wheel_regression_test:
+    name: Run CPU wheel regression test
+    if: github.event_name != 'schedule'
+    needs: build_wheels
+    runs-on: linux-x86-n2-16
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      options: --privileged
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download Wheel from GCS
+        run: |
+          mkdir dist
+          gcloud storage cp "${{ needs.build_wheels.outputs.gcs-path }}/*.whl" dist/
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v1
+      - name: Setup CUDA Virtual Environment and Run Regression Test
+        shell: bash
+        run: |
+          uv venv venv_cuda
+          source venv_cuda/bin/activate
+          # Install dependencies
+          uv pip install pytest expecttest
+          # Install the built wheel
+          uv pip install dist/*.whl --index-url=https://pypi.org/simple
+          # Verify that we are pulling in the expected torch version
+          if ! uv pip freeze | grep cuda; then
+            echo "ERROR: CUDA-enabled torch version was not found!"
+            exit 1
+          fi
+          # Run the regression test
+          cp torch_tpu/api/xla_cpu_module_test.py /tmp/
+          cd /tmp
+          pytest xla_cpu_module_test.py
