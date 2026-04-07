@@ -56,7 +56,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "multi_tpu_test",
     srcs = ["multi_tpu_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
     tags = [
         "exclusive",  # copybara:comment(oss-only)
         "noasan",  # TODO(b/497035517): fix the test in asan mode.

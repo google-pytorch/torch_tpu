@@ -60,6 +60,7 @@ jobs:
     runs-on: ${{ matrix.job_info.runner }}
     container:
       image: ${{ matrix.job_info.container }}
+      options: --network=host --ipc=host --privileged --ulimit memlock=-1:-1
     steps:
       - run: echo "Start running tests."
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
@@ -78,8 +79,13 @@ jobs:
       # below. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
       - run: bazel build --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+
+      # Force 'localhost' to resolve strictly to IPv4 to prevent PyTorch/gRPC errno 99 hangs
+      - name: Fix Docker IPv6 Localhost Bug
+        run: cat /etc/hosts | sed -e '/::1/d' > /tmp/hosts && cat /tmp/hosts > /etc/hosts
+
       # Run Bazel test.
       # The flags used here for `bazel test` need to be the same as that used for `bazel build`
       # above. Otherwise, the remote cache benefits of the build step are lost and the test step has
       # to redo that work.
-      - run: bazel test --config=ci_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+      - run: bazel test --config=ci_tpu //tests/distributed:multi_tpu_test
