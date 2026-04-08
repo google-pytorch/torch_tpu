@@ -241,9 +241,7 @@ void CheckScalarInput() {
                 // DO NOT ADD NEW ENTRIES TO THIS LIST.
                 // TODO: make this list empty.
                 // go/keep-sorted start
-      kOpName == OpName::kAdd ||                         //
-      kOpName == OpName::kAddOut ||                      //
-      kOpName == OpName::kAddReluOut ||                  //
+
       kOpName == OpName::kAddReluScalar ||               //
       kOpName == OpName::kAddReluTensor ||               //
       kOpName == OpName::kAddRelu_Scalar ||              //
@@ -348,8 +346,6 @@ void CheckScalarInput() {
       kOpName == OpName::kSoftmaxBackwardDataOut ||      //
       kOpName == OpName::kSoftplusBackwardGradInput ||   //
       kOpName == OpName::kSoftplusOut ||                 //
-      kOpName == OpName::kSub ||                         //
-      kOpName == OpName::kSubOut ||                      //
       kOpName == OpName::kThresholdBackwardGradInput ||  //
       kOpName == OpName::kThresholdOut ||                //
       kOpName == OpName::kVar ||                         //
