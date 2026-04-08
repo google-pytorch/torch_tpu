@@ -14,13 +14,55 @@
 
 """Repository rule for local PyTorch development."""
 
-def _torch_local_repo_impl(ctx):
-    # We use TORCH_SOURCE to specify the path (e.g., /home/user/pytorch)
-    torch_path = ctx.os.environ.get("TORCH_SOURCE", "")
+def _create_shadow_tree(rctx, torch_path):
+    """Creates a shadow tree of symlinks to the PyTorch source directory."""
+
+    # Source Directory Mode (Shadow Tree)
+    # We create a shadow tree so we can safely delete PyTorch's internal BUILD files.
+    # List of directories to symlink from source to the Bazel repository root. Including 'tools'
+    # and 'cmake' is essential as many PyTorch internal files load .bzl files from those roots.
+    dirs_to_link = [
+        "c10",
+        "aten",
+        "torch",
+        "torchgen",
+        "include",
+        "third_party",
+        "build",
+        "tools",
+        "cmake",
+    ]
+    for d in dirs_to_link:
+        src_dir = "{source}/{dir}".format(source = torch_path, dir = d)
+
+        # Only symlink if the directory exists in the source
+        if rctx.path(src_dir).exists:
+            dest_dir = "site-packages/{dir}".format(dir = d)
+
+            # Ensure the destination directory exists before copying.
+            rctx.execute(["mkdir", "-p", dest_dir])
+
+            # cp -as creates a shadow tree:
+            # it mirrors the directory structure (real directories) but symlinks all files.
+            rctx.execute(["cp", "-as", src_dir + "/.", dest_dir + "/"])
+
+            # Break the documented infinite symlink loop in ittapi
+            # if it exists in the linked tree.
+            # Bazel's internal file tracker fails if it encounters this loop.
+            if d == "third_party":
+                rctx.execute(["rm", "-rf", "site-packages/third_party/ittapi/rust/ittapi-sys/c-library"])
+
+    # Special handling for libraries in 'torch/lib' or 'build/lib'
+    # We ensure 'torch/lib' exists and symlink all found .so files.
+    rctx.execute([rctx.path(rctx.attr._link_libraries_sh), torch_path, "site-packages"])
+
+def _torch_local_repo_impl(rctx):
+    # We use TORCH_SOURCE to specify the path (e.g., /home/user/pytorch or <path_to_pytorch_wheel>.whl)
+    torch_path = rctx.getenv("TORCH_SOURCE", "")
 
     if not torch_path:
         # Fallback for when the env var isn't set (e.g. non-local analysis)
-        ctx.file("BUILD.bazel", """
+        rctx.file("BUILD.bazel", """
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 package(default_visibility = ["//visibility:public"])
 cc_library(name = "torch_headers")
@@ -28,43 +70,66 @@ cc_library(name = "libc10")
 cc_library(name = "libtorch_cpu")
 cc_library(name = "libtorch_python")
 cc_library(name = "torch_libs")
+cc_library(name = "torch")
 """)
         return
 
-    # 1. Create a "Shadow Tree" using symbolic links
-    # OLD WAY: ctx.symlink("lib", "lib") -> Only saw lib/include
-    # NEW WAY: cp -sr -> Symlinks EVERYTHING (c10, aten, torch/csrc, third_party...)
-    # This allows Bazel to see the files needed for Source Layout builds.
-    ctx.execute(["bash", "-c", "cp -sr {}/* .".format(torch_path)])
+    # Handle Wheel Extraction (.whl) vs Directory Symlinking
+    if torch_path.endswith(".whl"):
+        # Bazel 7.x doesn't support the 'type = "whl"' argument in rctx.extract,
+        # and it strictly checks extensions. We symlink to .zip internally.
+        rctx.symlink(torch_path, "_torch_internal_archive.zip")
+        rctx.execute(["mkdir", "-p", "site-packages"])
+        rctx.extract("_torch_internal_archive.zip", output = "site-packages")
+    else:
+        _create_shadow_tree(rctx, torch_path)
 
-    # 2. Surgically remove the conflicting BUILD files
-    # Since we are using our own root BUILD file, we must hide PyTorch's internal
-    # BUILD files so Bazel doesn't treat subdirectories as separate packages.
-    # Since these are symlinks, this deletes the link in the sandbox, not the source file.
-    ctx.execute(["bash", "-c", """
-        find . -name "BUILD" -delete
-        find . -name "BUILD.bazel" -delete
-    """])
-    ctx.execute(["bash", "-c", """
-        if [ -d torch/include ]; then
-            rm -rf c10 aten torch/headeronly torch/csrc
-            find torch -maxdepth 1 -name '*.h' -delete
-        fi
-        if [ -d include ] && [ -d torch/include ]; then
-            rm -rf include
-        fi
-    """])
+    # Early Validation: Ensure we actually found the core libraries.
+    # This prevents obscure "missing input file" errors later in the build.
+    if not rctx.path("site-packages/torch/lib/libc10.so").exists:
+        fail("\n" + "=" * 80 +
+             "\nERROR: Could not find PyTorch libraries (libc10.so) in provided TORCH_SOURCE." +
+             "\n" +
+             "\nPath searched: {path}".format(path = torch_path) +
+             "\n" +
+             "\nThis usually happens if:" +
+             "\n1. TORCH_SOURCE points to the wrong directory." +
+             "\n2. PyTorch has not been built yet" +
+             "\n    (run 'python setup.py develop' or 'build' in the pytorch repo)." +
+             "\n3. The build artifacts are in an unexpected location." +
+             "\n" + "=" * 80 + "\n")
 
-    # 3. Link our custom BUILD file to the root
-    ctx.symlink(ctx.attr.build_file_content, "BUILD.bazel")
+    # Remove the conflicting BUILD files. Since we are using our own root BUILD file,
+    # we must hide PyTorch's internal BUILD files so Bazel doesn't treat subdirectories
+    # as separate packages.
+    rctx.execute(["find", "site-packages", "(", "-name", "BUILD", "-o", "-name", "BUILD.bazel", ")", "-delete"])
+
+    # Create the dynamic BUILD file.
+    is_source = not torch_path.endswith(".whl")
+    rctx.file(
+        "BUILD.bazel",
+        content = """# Generated by torch_local_repo
+load("{defs}", "define_torch_local")
+
+package(default_visibility = ["//visibility:public"])
+
+define_torch_local(is_source_mode = {is_source})
+""".format(
+            defs = str(rctx.attr._torch_local_defs),
+            is_source = "True" if is_source else "False",
+        ),
+    )
 
 torch_local_repo = repository_rule(
     implementation = _torch_local_repo_impl,
     environ = ["TORCH_SOURCE"],  # Triggers rebuild if this var changes
     attrs = {
-        "build_file_content": attr.label(
-            default = "//shims/torch:torch_local.BUILD",
-            doc = "The BUILD file to use for the local torch repo",
+        "_torch_local_defs": attr.label(
+            default = ":torch_local_defs.bzl",
+            allow_single_file = True,
+        ),
+        "_link_libraries_sh": attr.label(
+            default = ":link_libraries.sh",
             allow_single_file = True,
         ),
     },
