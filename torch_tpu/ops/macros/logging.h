@@ -269,10 +269,6 @@ void CheckScalarInput() {
       kOpName == OpName::kEqScalarOut ||                 //
       kOpName == OpName::kExponential_ ||                //
       kOpName == OpName::kFill_Scalar ||                 //
-      kOpName == OpName::kForeachAddList ||              //
-      kOpName == OpName::kForeachAddTensor ||            //
-      kOpName == OpName::kForeachAdd_List ||             //
-      kOpName == OpName::kForeachAdd_Tensor ||           //
       kOpName == OpName::kForeachAddcdivScalar ||        //
       kOpName == OpName::kForeachAddcdivScalarList ||    //
       kOpName == OpName::kForeachAddcdiv_Scalar ||       //
@@ -289,26 +285,24 @@ void CheckScalarInput() {
       kOpName == OpName::kForeachClampMinScalarList ||   //
       kOpName == OpName::kForeachClampMin_Scalar ||      //
       kOpName == OpName::kForeachClampMin_ScalarList ||  //
-      kOpName == OpName::kForeachDivScalar ||            //
-      kOpName == OpName::kForeachDivScalarList ||        //
-      kOpName == OpName::kForeachDiv_Scalar ||           //
-      kOpName == OpName::kForeachDiv_ScalarList ||       //
       kOpName == OpName::kForeachLerpScalar ||           //
       kOpName == OpName::kForeachLerpScalarList ||       //
       kOpName == OpName::kForeachLerp_Scalar ||          //
       kOpName == OpName::kForeachLerp_ScalarList ||      //
+      kOpName == OpName::kForeachMaximumScalar ||        //
+      kOpName == OpName::kForeachMaximumScalarList ||    //
+      kOpName == OpName::kForeachMaximum_Scalar ||       //
+      kOpName == OpName::kForeachMaximum_ScalarList ||   //
+      kOpName == OpName::kForeachMinimumScalar ||        //
+      kOpName == OpName::kForeachMinimumScalarList ||    //
+      kOpName == OpName::kForeachMinimum_Scalar ||       //
+      kOpName == OpName::kForeachMinimum_ScalarList ||   //
       kOpName == OpName::kForeachNormScalar ||           //
       kOpName == OpName::kForeachPowScalar ||            //
       kOpName == OpName::kForeachPowScalarAndTensor ||   //
       kOpName == OpName::kForeachPowScalarList ||        //
       kOpName == OpName::kForeachPow_Scalar ||           //
       kOpName == OpName::kForeachPow_ScalarList ||       //
-      kOpName == OpName::kForeachSubList ||              //
-      kOpName == OpName::kForeachSubScalar ||            //
-      kOpName == OpName::kForeachSubScalarList ||        //
-      kOpName == OpName::kForeachSub_List ||             //
-      kOpName == OpName::kForeachSub_Scalar ||           //
-      kOpName == OpName::kForeachSub_ScalarList ||       //
       kOpName == OpName::kGe ||                          //
       kOpName == OpName::kGeScalarOut ||                 //
       kOpName == OpName::kGt ||                          //
