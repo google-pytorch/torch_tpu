@@ -27,6 +27,7 @@ dependencies = [
     "portpicker",
     "tensorboard",
     "frozendict",
+    "immutabledict",
 ]
 
 [project.optional-dependencies]
