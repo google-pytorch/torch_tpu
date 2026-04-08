@@ -127,6 +127,18 @@ class PjrtBackend {
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
 };
 
+// Records a fence over the async d2h copies already enqueued on the device.
+int64_t RecordEventSnapshot(c10::DeviceIndex device_index);
+
+// Blocks until the event snapshot has completed.
+absl::Status WaitEventSnapshot(int64_t event_id);
+
+// Returns whether the event snapshot has completed.
+absl::StatusOr<bool> QueryEventSnapshot(int64_t event_id);
+
+// Releases the event snapshot. Safe to call multiple times.
+void ReleaseEventSnapshot(int64_t event_id);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_PJRT_PJRT_STATE_H_

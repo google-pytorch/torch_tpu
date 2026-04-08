@@ -17,6 +17,7 @@
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -225,14 +226,28 @@ void PjrtBackend::Shutdown() {
 
 namespace {
 struct StreamState {
+  using SharedFuture = std::shared_ptr<xla::Future<void>>;
+
   absl::Mutex mutex;
-  absl::flat_hash_map<c10::DeviceIndex, std::vector<xla::Future<void>>>
+  absl::flat_hash_map<c10::DeviceIndex, std::vector<SharedFuture>>
       pending_futures ABSL_GUARDED_BY(mutex);
+  absl::flat_hash_map<int64_t, std::vector<SharedFuture>> event_snapshots
+      ABSL_GUARDED_BY(mutex);
+  int64_t next_snapshot_id ABSL_GUARDED_BY(mutex) = 1;
 };
 
 StreamState& GetStreamState() {
   static absl::NoDestructor<StreamState> state;
   return *state;
+}
+
+void PruneCompletedFutures(std::vector<StreamState::SharedFuture>& futures) {
+  futures.erase(std::remove_if(futures.begin(), futures.end(),
+                               [](const StreamState::SharedFuture& future) {
+                                 return future == nullptr ||
+                                        !future->IsValid() || future->IsReady();
+                               }),
+                futures.end());
 }
 }  // namespace
 
@@ -240,7 +255,9 @@ void PjrtBackend::MarkStreamActive(c10::DeviceIndex device_index,
                                    xla::Future<void> future) {
   StreamState& state = GetStreamState();
   absl::MutexLock lock(state.mutex);
-  state.pending_futures[device_index].push_back(std::move(future));
+  auto& futures = state.pending_futures[device_index];
+  PruneCompletedFutures(futures);
+  futures.push_back(std::make_shared<xla::Future<void>>(std::move(future)));
 }
 
 // Blocks the calling thread until all previously enqueued operations on the
@@ -257,8 +274,8 @@ void PjrtBackend::SynchronizeStream(c10::DeviceIndex device_index) {
     return;
   }
   for (auto& future : it->second) {
-    if (future.IsValid()) {
-      absl::Status s = future.Await();
+    if (future != nullptr && future->IsValid()) {
+      absl::Status s = future->Await();
       if (!s.ok()) {
         ABSL_LOG(ERROR) << "Stream synchronization failed for device "
                         << static_cast<int>(device_index) << ": " << s;
@@ -266,6 +283,66 @@ void PjrtBackend::SynchronizeStream(c10::DeviceIndex device_index) {
     }
   }
   it->second.clear();
+}
+
+int64_t RecordEventSnapshot(c10::DeviceIndex device_index) {
+  StreamState& state = GetStreamState();
+  absl::MutexLock lock(state.mutex);
+  const int64_t event_id = state.next_snapshot_id++;
+  auto it = state.pending_futures.find(device_index);
+  std::vector<StreamState::SharedFuture> futures =
+      it != state.pending_futures.end()
+          ? it->second
+          : std::vector<StreamState::SharedFuture>{};
+  state.event_snapshots.emplace(event_id, std::move(futures));
+  return event_id;
+}
+
+absl::Status WaitEventSnapshot(int64_t event_id) {
+  std::vector<StreamState::SharedFuture> futures;
+  {
+    StreamState& state = GetStreamState();
+    absl::MutexLock lock(state.mutex);
+    auto it = state.event_snapshots.find(event_id);
+    if (it == state.event_snapshots.end()) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Unknown event snapshot id: " << event_id;
+    }
+    futures = it->second;
+  }
+
+  for (auto& future : futures) {
+    if (future != nullptr && future->IsValid()) {
+      TT_RETURN_IF_ERROR(future->Await());
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<bool> QueryEventSnapshot(int64_t event_id) {
+  std::vector<StreamState::SharedFuture> futures;
+  {
+    StreamState& state = GetStreamState();
+    absl::MutexLock lock(state.mutex);
+    auto it = state.event_snapshots.find(event_id);
+    if (it == state.event_snapshots.end()) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Unknown event snapshot id: " << event_id;
+    }
+    futures = it->second;
+  }
+  for (const auto& future : futures) {
+    if (future != nullptr && future->IsValid() && !future->IsReady()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ReleaseEventSnapshot(int64_t event_id) {
+  StreamState& state = GetStreamState();
+  absl::MutexLock lock(state.mutex);
+  state.event_snapshots.erase(event_id);
 }
 
 }  // namespace torch_tpu

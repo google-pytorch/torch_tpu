@@ -24,8 +24,7 @@ class StreamsTest(absltest.TestCase):
   def test_stream(self):
     """Tests basic usage of streams and events.
 
-    Because they are dummy methods no functionality is tested here.
-    This test only checks that the APIs can be used without throwing an error.
+    Stream routing is still lightweight, but event recording should be usable.
     """
     _ = api.tpu_device()
     default_stream = torch.tpu.default_stream()
@@ -111,7 +110,7 @@ class StreamsTest(absltest.TestCase):
         future.result()
 
   def test_event_partially_implemented(self):
-    """Tests that unimplemented event methods raise NotImplementedError."""
+    """Tests that timing/ipc event methods remain unimplemented."""
     _ = api.tpu_device()
     e = torch.tpu.Event()
     expected_msg = (
@@ -119,11 +118,47 @@ class StreamsTest(absltest.TestCase):
         ' a feature request describing your use case.'
     )
     with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
-      e.query()
-    with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
       e.elapsed_time(e)
     with self.assertRaisesWithLiteralMatch(NotImplementedError, expected_msg):
       e.ipc_handle()
+
+  def test_event_records_nonblocking_copy(self):
+    _ = api.tpu_device()
+
+    size = 1024 * 1024
+    t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+
+    t_cpu.copy_(t_tpu, non_blocking=True)
+    event = torch.tpu.Event()
+    event.record()
+    event.synchronize()
+
+    self.assertTrue(event.query())
+    utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
+
+  def test_event_snapshot_can_be_released_and_reused(self):
+    _ = api.tpu_device()
+
+    size = 1024 * 1024
+    first_t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
+    first_t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+    second_t_tpu = torch.full((size,), 2.0, device='tpu', dtype=torch.float32)
+    second_t_cpu = torch.empty(size, device='cpu', pin_memory=True)
+
+    event = torch.tpu.Event()
+
+    first_t_cpu.copy_(first_t_tpu, non_blocking=True)
+    event.record()
+    event.synchronize()
+    utils.assert_close(first_t_cpu, torch.ones(size, dtype=torch.float32))
+
+    second_t_cpu.copy_(second_t_tpu, non_blocking=True)
+    event.record()
+    event.synchronize()
+    utils.assert_close(
+        second_t_cpu, torch.full((size,), 2.0, dtype=torch.float32)
+    )
 
 
 if __name__ == '__main__':
