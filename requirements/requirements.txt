@@ -2387,9 +2387,9 @@ tqdm==4.67.1 \
     #   huggingface-hub
     #   tensorflow-datasets
     #   transformers
-transformers==4.55.4 \
-    --hash=sha256:574a30559bc273c7a4585599ff28ab6b676e96dc56ffd2025ecfce2fd0ab915d \
-    --hash=sha256:df28f3849665faba4af5106f0db4510323277c4bb595055340544f7e59d06458
+transformers==5.0.0rc3 \
+    --hash=sha256:383fad27f4f73092d330e45fae384681e5c8521e1dc1cf6cb1a297780e68bf2d \
+    --hash=sha256:a0315b92b7e087617ade42ec9e6e92ee7620541cc5d6a3331886c52cbe306f5c
     # via torch-tpu (pyproject.toml)
 treescope==0.1.10 \
     --hash=sha256:20f74656f34ab2d8716715013e8163a0da79bdc2554c16d5023172c50d27ea95 \
