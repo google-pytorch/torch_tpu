@@ -45,6 +45,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
@@ -128,42 +129,83 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
 
 namespace {
 
-absl::StatusOr<MlirBinaryOpBuilder> AtenAddHelper(const at::Tensor& self,
-                                                  const at::Tensor& other,
-                                                  const at::Scalar& alpha) {
-  bool alpha_is_one = false;
-  if (alpha.isIntegral(/*include_bool=*/false)) {
-    alpha_is_one = (alpha.toLong() == 1);
-  } else if (alpha.isFloatingPoint()) {
-    alpha_is_one = (alpha.toDouble() == 1.0);
-  } else if (alpha.isBoolean()) {
-    alpha_is_one = (alpha.toBool() == true);
-  } else {
-    // TODO: add support to complex alpha on TPU.
-    TT_ASSIGN_OR_RETURN(const auto alpha_element_type,
-                        internal::ToElementType(alpha.type()));
-    return TT_ERROR(error::kUnimplemented)
-           << ToString(alpha_element_type)
-           << " alpha value is not yet supported";
-  }
-
+absl::StatusOr<mlir::MlirOp> BuildAddSubWithAlpha(mlir::MlirOp self_op,
+                                                  mlir::MlirOp other_op,
+                                                  mlir::MlirOp alpha_op,
+                                                  bool alpha_is_one,
+                                                  bool is_sub) {
   if (alpha_is_one) {
-    return BuildAddShlo;
+    if (is_sub) {
+      return BuildSubShlo(self_op, other_op);
+    } else {
+      return BuildAddShlo(self_op, other_op);
+    }
   }
+  const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
+  auto other_element_type = other_type.getElementType();
+  auto converted_alpha =
+      mlir::stablehlo::ConvertElementType(alpha_op, other_element_type);
+  TT_ASSIGN_OR_RETURN(auto mul_op, BuildMulShlo(other_op, converted_alpha));
 
-  auto op_builder = [alpha](
-                        mlir::MlirOp self_op,
-                        mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(auto alpha_op, MakeConstantLike(other_op, alpha));
-    const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
-    auto other_element_type = other_type.getElementType();
-    alpha_op = stablehlo::ConvertElementType(alpha_op, other_element_type);
-    TT_ASSIGN_OR_RETURN(auto mul_op, BuildMulShlo(other_op, alpha_op));
-
+  if (is_sub) {
+    return BuildSubShlo(self_op, mul_op);
+  } else {
     return BuildAddShlo(self_op, mul_op);
+  }
+}
+
+inline bool IsAlphaOne(const at::Scalar& alpha) {
+  if (alpha.isIntegral(/*include_bool=*/false)) {
+    return alpha.toLong() == 1;
+  } else if (alpha.isFloatingPoint()) {
+    return alpha.toDouble() == 1.0;
+  } else if (alpha.isBoolean()) {
+    return alpha.toBool() == true;
+  }
+  return false;
+}
+
+absl::Status DispatchAddSubWithAlphaOut(const at::Tensor& self,
+                                        const at::Tensor& other,
+                                        const at::Tensor& alpha_tensor,
+                                        bool alpha_is_one, at::Tensor& out,
+                                        bool is_sub, bool apply_relu,
+                                        OpParamCacheKeys param_keys) {
+  auto op_builder = [alpha_is_one, is_sub,
+                     apply_relu](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<MlirOpResults<1>> {
+    auto [self_op, other_op, alpha_op] = inputs;
+    TT_ASSIGN_OR_RETURN(auto result,
+                        BuildAddSubWithAlpha(self_op, other_op, alpha_op,
+                                             alpha_is_one, is_sub));
+    if (apply_relu) {
+      TT_ASSIGN_OR_RETURN(auto zero_op,
+                          MakeConstantLike(result, at::Scalar(0)));
+      result = mlir::stablehlo::Max(result, zero_op);
+    }
+    return MlirOpResults<1>{result};
   };
 
-  return std::move(op_builder);
+  TT_RETURN_IF_ERROR(param_keys.SetParam("alpha_is_one", alpha_is_one));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
+
+  at::ScalarType promoted_scalar_type = at::result_type(self, other);
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      internal::ToElementType(promoted_scalar_type));
+
+  TT_ASSIGN_OR_RETURN(
+      auto result,
+      (DispatchOp<3>(op_builder,
+                     /*inputs=*/{self, other, alpha_tensor},
+                     /*options=*/
+                     {.out_dtype = output_dtype,
+                      .out_dims = out.sizes(),
+                      .computation_dtype = computation_dtype,
+                      .op_param_cache_keys = std::move(param_keys)})));
+
+  TT_RETURN_IF_ERROR(AssignBufferToAtTensor(result, out));
+  return absl::OkStatus();
 }
 
 struct DivOpOptions {
@@ -494,31 +536,31 @@ absl::Status CheckSubInputs(const at::Tensor& self, const at::Tensor& other) {
 // NOLINTEND
 at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, alpha, out), {
-    TT_ASSIGN_OR_THROW(auto op_builder, AtenAddHelper(self, other, alpha));
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(op_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
+  bool alpha_is_one = IsAlphaOne(alpha);
+  auto promoted_alpha = PromoteScalar(alpha);
+
+  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
+    TT_ASSIGN_OR_THROW(auto alpha_tensor, promoted_alpha.GetTensor());
+    TT_THROW_IF_ERROR(DispatchAddSubWithAlphaOut(
+        self, other, alpha_tensor, alpha_is_one, out, /*is_sub=*/false,
+        /*apply_relu=*/false, std::move(param_keys)));
     return out;
   });
 }
 
 at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
                            const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddReluOut, param_keys, (self, other, alpha, out), {
-    TT_ASSIGN_OR_THROW(auto add_builder, (AtenAddHelper(self, other, alpha)));
-    auto add_relu_builder =
-        [add_builder = std::move(add_builder)](
-            mlir::MlirOp self_op,
-            mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-      TT_ASSIGN_OR_RETURN(auto add_op, add_builder(self_op, other_op));
-      return BuildReluShlo(add_op);
-    };
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(add_relu_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
-    return out;
-  });
+  bool alpha_is_one = IsAlphaOne(alpha);
+  auto promoted_alpha = PromoteScalar(alpha);
+
+  TT_KERNEL(
+      OpName::kAddReluOut, param_keys, (self, other, promoted_alpha, out), {
+        TT_ASSIGN_OR_THROW(auto alpha_tensor, promoted_alpha.GetTensor());
+        TT_THROW_IF_ERROR(DispatchAddSubWithAlphaOut(
+            self, other, alpha_tensor, alpha_is_one, out, /*is_sub=*/false,
+            /*apply_relu=*/true, std::move(param_keys)));
+        return out;
+      });
 }
 
 at::Tensor AtenAddReluScalar(const at::Tensor& self, const at::Scalar& other,
@@ -1097,12 +1139,15 @@ at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenSubOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kSubOut, param_keys, (self, other, alpha, out), {
+  bool alpha_is_one = IsAlphaOne(alpha);
+  auto promoted_alpha = PromoteScalar(alpha);
+
+  TT_KERNEL(OpName::kSubOut, param_keys, (self, other, promoted_alpha, out), {
     TT_THROW_IF_ERROR(CheckSubInputs(self, other));
-    TT_ASSIGN_OR_THROW(auto op_builder, AtenAddHelper(self, other, -alpha));
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(op_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
+    TT_ASSIGN_OR_THROW(auto alpha_tensor, promoted_alpha.GetTensor());
+    TT_THROW_IF_ERROR(DispatchAddSubWithAlphaOut(
+        self, other, alpha_tensor, alpha_is_one, out, /*is_sub=*/true,
+        /*apply_relu=*/false, std::move(param_keys)));
     return out;
   });
 }
