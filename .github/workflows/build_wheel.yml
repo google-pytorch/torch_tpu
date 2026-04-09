@@ -72,7 +72,8 @@ jobs:
         run: echo "gcs_path=gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}" >> $GITHUB_OUTPUT
       - name: Build wheel
         run: |
-          bazel build --config=remote_caching_readonly --config=remote_execution_readonly //ci/wheel:torch_tpu_wheel --define WHEEL_VERSION_EXTRAS=.dev$(date +%Y%m%d%H%M%S)
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          bazel build --config=remote_caching_readonly --config=remote_execution_readonly //ci/wheel:torch_tpu_wheel --define WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S).g${COMMIT_SHORT}"
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
       - name: Upload wheel to GCS for wheel testing
