@@ -132,3 +132,13 @@ py_wheel(
         ":torch_tpu_package_end",
     ],
 )
+
+py_test(
+    name = "xla_cpu_module_wheel_test",
+    srcs = ["//torch_tpu/api:xla_cpu_module_test.py"],
+    main = "//torch_tpu/api:xla_cpu_module_test.py",
+    tags = ["manual"],
+    deps = [
+        "//:torch_tpu_py_import",
+    ],
+)
