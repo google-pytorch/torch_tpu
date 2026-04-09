@@ -37,6 +37,7 @@ pytype_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile/fx_passes:lift_constants_to_inputs",
         "//torch_tpu/_internal/compile/fx_passes:rewrite_stateless_rng_ops",
         "//torch_tpu/_internal/export",
         "//torch_tpu/_internal/utils",

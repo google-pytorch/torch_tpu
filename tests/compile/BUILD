@@ -44,6 +44,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
+    notest_oss = "b/493050035 -- revisit once distributed tests are fixed in OSS",
     tags = [
         "requires-tpu-v5lite",
     ],
