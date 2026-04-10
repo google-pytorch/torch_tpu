@@ -129,9 +129,14 @@ jobs:
           mkdir dist
           gcloud storage cp "${{ needs.build_wheels.outputs.gcs-path }}/*.whl" dist/
       - name: Wait For Connection
-        uses: google-ml-infra/actions/ci_connection@7f5ca0c263a81ed09ea276524c1b9192f1304e3c
+        uses: google-ml-infra/actions/ci_connection@main
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run tests
         shell: bash
         run: bazel test ${{ matrix.extra_flags }} //...
+      - name: Run CPU Wheel Regression Test
+        if: matrix.name == 'CPU'
+        shell: bash
+        run: |
+          bazel test --config=wheel_test_tpu //ci/wheel:xla_cpu_module_wheel_test --test_output=all --//:test_wheel=True --verbose_failures --subcommands
