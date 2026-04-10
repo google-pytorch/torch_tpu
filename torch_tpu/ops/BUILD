@@ -444,7 +444,7 @@ torch_tpu_cc_test(
     # TPU_LIBRARY_PATH to point to libtpu.so for C++ tests before starting
     # running the tests, which is not needed for Python tests.
     # TODO(b/497890629): Run this test in OSS CI instead of using the hack
-    notest_oss = "Use oss_custom_kernels_test instead in OSS CI",
+    nobuild_oss = "Use oss_custom_kernels_test instead in OSS CI",
     tags = [
         "requires-tpu-v5lite",
     ],

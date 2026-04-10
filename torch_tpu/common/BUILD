@@ -812,7 +812,7 @@ torch_tpu_cc_test(
     srcs = ["compilation_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Do not enable this in OSS, instead use `oss_compilation_test` to run tests in the OSS TPU CI.",
+    nobuild_oss = "Do not enable this in OSS, instead use `oss_compilation_test` to run tests in the OSS TPU CI.",
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -833,7 +833,7 @@ torch_tpu_cc_test(
     srcs = ["compilation_cache_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":cache_key",
         ":compilation",
@@ -883,7 +883,7 @@ torch_tpu_cc_test(
     srcs = ["compilation_parse_xla_options_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -1021,7 +1021,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     deps = [
         ":cache_key",
         ":dimension_types",

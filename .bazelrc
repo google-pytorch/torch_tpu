@@ -200,7 +200,6 @@ common:helion_public_caching_readwrite --remote_upload_local_results=true
 common:helion_public_caching_readwrite --google_default_credentials
 
 # Settings specific to CI runs.
-common:ci --build_tests_only
 common:ci --config=remote_execution_readwrite
 common:ci --config=resultstore_base
 common:ci --remote_download_minimal

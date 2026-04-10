@@ -203,8 +203,8 @@ torch_tpu_py_test(
     srcs = ["qwen3_0_6b_forward_test.py"],
     args = ["--device=tpu"],
     main = "qwen3_0_6b_forward_test.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -225,8 +225,8 @@ torch_tpu_py_test(
     srcs = ["qwen3_0_6b_forward_test.py"],
     args = ["--device=cuda"],
     main = "qwen3_0_6b_forward_test.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "ignore_for_dep=third_party.torch_tpu.api",
         "requires-gpu-sm70-only",  # v100 has 16 or 32 GB HBM.
@@ -249,8 +249,8 @@ torch_tpu_py_test(
     srcs = ["qwen3_0_6b_forward_test.py"],
     args = ["--device=xla_cuda"],
     main = "qwen3_0_6b_forward_test.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-gpu-sm80-only",
     ],
@@ -274,8 +274,8 @@ torch_tpu_py_test(
     srcs = ["qwen3_0_6b_custom_sampling_test.py"],
     args = ["--device=tpu"],
     main = "qwen3_0_6b_custom_sampling_test.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     nopresubmit = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
@@ -301,8 +301,8 @@ torch_tpu_py_test(
     srcs = ["qwen3_0_6b_custom_sampling_test.py"],
     args = ["--device=cuda"],
     main = "qwen3_0_6b_custom_sampling_test.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "slow example",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "ignore_for_dep=third_party.torch_tpu.api",
         "local",

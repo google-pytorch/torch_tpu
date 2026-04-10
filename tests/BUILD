@@ -46,7 +46,7 @@ torch_tpu_py_test(
     srcs = ["module_registry_test.py"],
     data = ["//tests/compile:data/goldfish.jpg"],
     env = {"ASAN_OPTIONS": "detect_leaks=0"},  # TODO: fix the leak.
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 6,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.

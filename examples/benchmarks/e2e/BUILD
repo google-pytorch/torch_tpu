@@ -111,8 +111,8 @@ torch_tpu_py_test(
     # This allows us to use a single .par file for remote cluster execution.
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 4,
     strict = True,
     tags = [
@@ -206,8 +206,8 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["layer_performance_benchmarks.py"],
     main = "layer_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 8,
     strict = True,
     tags = [
@@ -255,8 +255,8 @@ torch_tpu_py_test(
         "cpp_link.mem": "16g",
     },
     main = "layer_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 2,
     strict = True,
     tags = [
@@ -289,8 +289,8 @@ torch_tpu_py_test(
     # This allows us to use a single .par file for remote cluster execution.
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
@@ -320,8 +320,8 @@ torch_tpu_py_test(
         "cpp_link.mem": "16g",
     },
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Frequently causes Forge OOM.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 2,
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
