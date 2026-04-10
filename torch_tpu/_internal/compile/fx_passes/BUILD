@@ -28,4 +28,12 @@ pytype_strict_library(
     ],
 )
 
+pytype_strict_library(
+    name = "lift_constants_to_inputs",
+    srcs = ["lift_constants_to_inputs.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()

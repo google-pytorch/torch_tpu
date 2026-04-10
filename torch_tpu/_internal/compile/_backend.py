@@ -46,11 +46,13 @@ from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.fx_passes import lift_constants_to_inputs
 from torch_tpu._internal.compile.fx_passes import rewrite_stateless_rng_ops
 from torch_tpu._internal.utils import utils
 
 GraphTransformObserver = graph_transform_observer.GraphTransformObserver
 rewrite_stateless_rng_ops = rewrite_stateless_rng_ops.rewrite_stateless_rng_ops
+lift_constants_to_inputs = lift_constants_to_inputs.lift_constants_to_inputs
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
 
@@ -120,6 +122,7 @@ class _TorchTpuCompiledExecutable:
   def __init__(
       self,
       executable: tpu_torch_compile.PjRtLoadedExecutable,
+      additional_inputs: Sequence[torch.Tensor],
       reconstruct_fx_outputs_fn: (
           Callable[[Sequence[torch.Tensor]], Sequence[torch.Tensor]] | None
       ),
@@ -128,12 +131,15 @@ class _TorchTpuCompiledExecutable:
 
     Args:
       executable: The result returned by `tpu_torch_compile.compile_mlir`.
+      additional_inputs: A sequence of `torch.Tensor`s that must be provided to
+        the executable in addition to user provided arguments.
       reconstruct_fx_outputs_fn: An optional callable that transforms the output
         from the TPU executable back to the output structure expected by
         PyTorch. The existing use case is to re-insert `None` values into the
         output list if they were filtered out during MLIR conversion.
     """
     self._executable = executable
+    self._additional_inputs = additional_inputs
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
     self._tensor_arg_indices = None
     self._graph_module_debug_str: str | None = None
@@ -174,7 +180,7 @@ class _TorchTpuCompiledExecutable:
       device_module = torch.tpu
 
     # rewrite_stateless_rng_ops pass adds rng_state as the last argument.
-    args = (*args, device_module.get_rng_state())
+    args = (*args, device_module.get_rng_state(), *self._additional_inputs)
 
     executable_args = self._filter_tensor_args(args)
     outputs = tpu_torch_compile.execute(self._executable, executable_args)
@@ -211,18 +217,22 @@ class _TorchTpuCompiledExecutable:
     serialized = tpu_torch_compile.serialize_executable(self._executable)
     return (
         _unpickle_compiled_executable,
-        (serialized, self._reconstruct_fx_outputs_fn),
+        (serialized, self._additional_inputs, self._reconstruct_fx_outputs_fn),
     )
 
 
 def _unpickle_compiled_executable(
     serialized_bytes: bytes,
-    reconstruct_fx_outputs_fn,
+    additional_inputs: Sequence[torch.Tensor],
+    reconstruct_fx_outputs_fn: (
+        Callable[[Sequence[torch.Tensor]], Sequence[torch.Tensor]] | None
+    ),
 ) -> _TorchTpuCompiledExecutable:
   """Reconstruct a _TorchTpuCompiledExecutable from serialized bytes."""
   executable = tpu_torch_compile.load_serialized_executable(serialized_bytes)
   return _TorchTpuCompiledExecutable(
       executable=executable,
+      additional_inputs=additional_inputs,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
   )
 
@@ -361,9 +371,25 @@ class TpuBackend:
     # `rewrite_stateless_rng_ops` pass adds rng_state as the last argument.
     # TODO(cnchan): Use ByteTensor when rng_state across backend APIs are
     # consistent.
+
+    lifted_constants = GraphTransformObserver(
+        graph_module, "lift_constants_to_inputs"
+    ).apply_graph_pass(lift_constants_to_inputs)
+
+    _log_gm_and_inputs(
+        "_compile_graph_module", "Post FX Passes", graph_module, example_inputs
+    )
+
+    # TODO(aarfaian): Calling `.to('tpu')` below is only needed before PyTorch
+    # 2.12. Clean this up once internal and OSS dependencies point to later
+    # versions.
+    with unset_fake_temporarily():
+      lifted_constants = [c.to("tpu") for c in lifted_constants]
+
     example_inputs = [
         *example_inputs,
         torch.zeros([16], dtype=torch.uint8),  # rng_state placeholder
+        *lifted_constants,
     ]
 
     graph_module.recompile()
@@ -440,6 +466,7 @@ class TpuBackend:
     executable = _TorchTpuCompiledExecutable(
         executable=cached_executable,
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
+        additional_inputs=lifted_constants,
     )
 
     self._compiled_executables.append(executable)

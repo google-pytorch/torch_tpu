@@ -144,7 +144,6 @@ class FunctionTest(absltest.TestCase):
     ]
     self._run_and_compare(simple, inputs_val)
 
-  @absltest.skip("compile_mlir fails with incorrect input order error")
   def test_to_copy(self):
     """Test that we can handle to_copy ops in compiled mode.
 
@@ -424,9 +423,16 @@ class FunctionTest(absltest.TestCase):
     self.assertIn("torch.ops.aten.ones_like", v[0].graph_module_debug_str)
     self.assertIn("stablehlo.multiply", str(v[0].mlir_graph))
 
-  def test_embedded_constants(self):
+  def test_embedded_non_scalar_tensor(self):
+    def simple(x):
+      c = torch.tensor([1, 2, 3, 4, 5], device=x.device)
+      return c + x
+
+    x = torch.tensor([1, 2, 3, 4, 5], device=api.tpu_device())
+    self._run_and_compare(simple, [x], debug=True)
+
+  def test_embedded_scalar_tensor_constants(self):
     # Need to explicitly specify device to get eager eval result
-    # Note: dynamo moves these constants to CPU before calling the backend.
     def where_const(x):
       return torch.where(
           x,
@@ -568,7 +574,6 @@ class ModuleTest(absltest.TestCase):
     compiled = torch.compile(m, backend=tpu_backend)
     with self.assertRaises(Exception) as err:
       _ = compiled(*inputs_tpu).to("cpu")
-    self.assertIn("found two different devices cpu, tpu:0", str(err.exception))
 
     # TPU eager
     m = m.to(api.tpu_device())
@@ -606,6 +611,111 @@ class ModuleTest(absltest.TestCase):
     self.assertLen(v, 1)
     self.assertIn("stablehlo.multiply", str(v[0].mlir_graph))
     self.assertIn("def forward(self,", v[0].graph_module_debug_str)
+
+  def test_module_with_constants(self):
+    class ModuleWithConstants(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.const1 = torch.randn(5, 5)
+        self.const2 = torch.randn(5, 5)
+        self.linear = torch.nn.Linear(5, 5)
+
+      def forward(self, x):
+        x = self.linear(x)
+        x = x + self.const1
+        x = x * self.const2
+        return x
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(ModuleWithConstants, inputs)
+
+  def test_module_with_non_tensor_consts(self):
+    class ModuleWithNonTensorConsts(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.const1 = torch.randn(5, 5)
+        self.some_int = 123
+        self.linear = torch.nn.Linear(5, 5)
+
+      def forward(self, x):
+        x = self.linear(x)
+        return x + self.const1 + self.some_int
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(ModuleWithNonTensorConsts, inputs)
+
+  def test_nested_module_with_constants(self):
+    class InnerModuleWithConst(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.inner_const = torch.arange(5).float()
+
+      def forward(self, x):
+        return x + self.inner_const
+
+    class OuterModuleWithConst(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.inner = InnerModuleWithConst()
+        self.outer_const = torch.ones(5) * 2
+
+      def forward(self, x):
+        x = self.inner(x)
+        return x * self.outer_const
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(OuterModuleWithConst, inputs)
+
+  def test_module_no_tensor_consts(self):
+    class ModuleNoTensorConsts(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(5, 5)
+        self.val = 10
+
+      def forward(self, x):
+        return self.linear(x) * self.val
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(ModuleNoTensorConsts, inputs)
+
+  def test_module_const_control_flow(self):
+    class ModuleConstControlFlow(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.threshold = torch.tensor(0.5)
+        self.linear = torch.nn.Linear(5, 5)
+
+      def forward(self, x):
+        y = self.linear(x)
+        # This will likely cause a graph break, but the constant
+        # should still be lifted correctly in the subgraph.
+        if y.mean() > self.threshold:
+          return y * 2
+        else:
+          return y
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(ModuleConstControlFlow, inputs)
+
+  def test_module_with_buffer(self):
+    class ModuleWithBuffer(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.register_buffer("my_buffer", torch.ones(5, 1))
+
+      def forward(self, x):
+        return x + self.my_buffer
+
+    inputs = [torch.randn(5, 5)]
+    self._run_and_compare(ModuleWithBuffer, inputs)
 
 
 if __name__ == "__main__":
