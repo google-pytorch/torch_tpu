@@ -47,10 +47,10 @@ using SharedLoadedExecutableFuture =
     std::shared_future<absl::StatusOr<SharedLoadedExecutable>>;
 
 // Holds the futures for a dynamic kernel adapter. These are lightweight
-// executables, e.g. padding ops.
-// TODO(unda): Add postamble (i.e. slice / relayout).
+// executables, e.g. padding and slicing ops.
 struct DynamicKernelAdapter {
   SharedLoadedExecutableFuture preamble;
+  SharedLoadedExecutableFuture postamble;
 };
 
 // Holds the futures for a compiled kernel. For static kernels, only the

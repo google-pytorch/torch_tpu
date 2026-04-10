@@ -91,7 +91,6 @@ class KVCacheDynamismTest(parameterized.TestCase):
     self.device = api.tpu_device()
     torch.manual_seed(42)
 
-  @absltest.skip("b/498564738")
   def test_bd_with_reshape_from_matmul_op(self):
     """Reshape is called from the structured delegate matmul op on bounded dynamic input."""
     batch_size = 1

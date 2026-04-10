@@ -22,7 +22,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 
@@ -38,7 +39,18 @@ namespace torch_tpu {
 //   ([3, 5], [], [8, 2, 2])
 //   -> ([10, 5], i32, [], [8, 5, 7], i32, i32)
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetPadModule(
-    mlir::MLIRContext& mlir_context, absl::Span<const Shape> shapes);
+    mlir::MLIRContext& mlir_context,
+    absl::Span<const Dimensions> dimensions_vec,
+    absl::Span<const Dimensions> padded_dimensions_vec,
+    absl::Span<const mlir::ElementType> input_dtypes);
+
+// This module performs a slice from the dynamic output padded shape to the
+// actual shape.
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetSliceModule(
+    mlir::MLIRContext& mlir_context,
+    absl::Span<const Dimensions> dimensions_vec,
+    absl::Span<const Dimensions> padded_dimensions_vec,
+    absl::Span<const mlir::ElementType> input_dtypes);
 
 }  // namespace torch_tpu
 

@@ -159,7 +159,7 @@ TEST(DynamismOpsTest, GetTraversalOutputDimensionsWithBoundedInput) {
   EXPECT_EQ(output_to_dims.dims[0].size, 5);
   EXPECT_EQ(output_to_dims.dims[0].boundOpDim, -1);
   EXPECT_EQ(output_to_dims.dims[1].size, 100);
-  EXPECT_EQ(output_to_dims.dims[1].boundOpDim, 1);
+  EXPECT_EQ(output_to_dims.dims[1].boundOpDim, -1);
 }
 
 }  // namespace

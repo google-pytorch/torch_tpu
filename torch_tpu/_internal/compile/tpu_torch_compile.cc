@@ -40,6 +40,7 @@
 #include "torch_tpu/_internal/compile/compiled_mode.h"
 #include "torch_tpu/_internal/dynamism/dynamism_ops.h"
 #include "torch_tpu/common/compilation.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
@@ -280,55 +281,57 @@ std::shared_ptr<ContextedModule> PyGetPadModuleMlir(
   context->appendDialectRegistry(registry);
   context->loadAllAvailableDialects();
 
-  std::vector<Shape> shapes;
-  shapes.reserve(tensor_info.size());
+  std::vector<Dimensions> dimensions_vec;
+  dimensions_vec.reserve(tensor_info.size());
+  std::vector<Dimensions> padded_dimensions_vec;
+  padded_dimensions_vec.reserve(tensor_info.size());
+  std::vector<mlir::ElementType> dtypes;
+  dtypes.reserve(tensor_info.size());
   for (int64_t i = 0; i < tensor_info.size(); ++i) {
     const auto& info = tensor_info[i];
-    Shape shape;
-    shape.dimensions().assign(info.first.begin(), info.first.end());
+    Dimensions dims(info.first.begin(), info.first.end());
+    Dimensions padded_dims = dims;
+    dimensions_vec.push_back(dims);
     TT_ASSIGN_OR_THROW(mlir::ElementType element_type,
                        internal::ToElementType(info.second));
-    shape.set_dtype(element_type);
+    dtypes.push_back(element_type);
 
     if (i < bounds_list.size()) {
-      const auto& dims = bounds_list[i].first;
+      const auto& indices = bounds_list[i].first;
       const auto& bounds = bounds_list[i].second;
-      if (!bounds.empty() && !dims.empty()) {
-        TT_CHECK_THROW(dims.size() == bounds.size(), error::kInvalidArgument)
+      if (!bounds.empty() && !indices.empty()) {
+        TT_CHECK_THROW(indices.size() == bounds.size(), error::kInvalidArgument)
             << "dimension indices and upper bounds must have the same size, "
-            << "got " << dims.size() << " and " << bounds.size();
-        for (size_t j = 0; j < dims.size(); ++j) {
-          const int64_t dim_index = dims[j];
+            << "got " << indices.size() << " and " << bounds.size();
+        for (size_t j = 0; j < indices.size(); ++j) {
+          const int64_t dim_index = indices[j];
           const int64_t dim_upper_bound = bounds[j];
-          TT_CHECK_THROW(
-              dim_index >= 0 && dim_index < shape.dimensions().size(),
-              error::kInvalidArgument)
-              << "dimension index must be within bounds [0, "
-              << shape.dimensions().size() - 1 << "], got " << dim_index
-              << " for input tensor " << i << " with shape "
-              << ToString(shape.dimensions());
+          TT_CHECK_THROW(dim_index >= 0 && dim_index < dims.size(),
+                         error::kInvalidArgument)
+              << "dimension index must be within bounds [0, " << dims.size() - 1
+              << "], got " << dim_index << " for input tensor " << i
+              << " with shape " << ToString(dims);
 
-          const int64_t dim_size = shape.dimensions()[dim_index];
+          const int64_t dim_size = dims[dim_index];
           TT_CHECK_THROW(dim_upper_bound >= dim_size, error::kInvalidArgument)
               << "upper bound must be greater than or equal to the static "
                  "shape's dimension size, got upper bound "
               << dim_upper_bound << " for dimension " << dim_index
-              << " for input tensor " << i << " with shape "
-              << ToString(shape.dimensions());
+              << " for input tensor " << i << " with shape " << ToString(dims);
 
-          shape.dynamic_dimensions().push_back(
-              {dim_index, dim_size, dim_upper_bound});
+          padded_dims[dim_index] = dim_upper_bound;
         }
       }
     }
-    shapes.push_back(shape);
+    padded_dimensions_vec.push_back(padded_dims);
   }
 
-  TT_ASSIGN_OR_THROW(mlir::OwningOpRef<mlir::ModuleOp> module,
-                     GetPadModule(*context, shapes));
+  TT_ASSIGN_OR_THROW(
+      mlir::OwningOpRef<mlir::ModuleOp> module,
+      GetPadModule(*context, dimensions_vec, padded_dimensions_vec, dtypes));
 
-  return std::make_shared<torch_tpu::ContextedModule>(std::move(context),
-                                                      std::move(module));
+  return std::make_shared<ContextedModule>(std::move(context),
+                                           std::move(module));
 }
 
 py::bytes PySerializeExecutable(const SharedLoadedExecutable& executable) {

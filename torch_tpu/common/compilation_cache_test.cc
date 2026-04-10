@@ -183,8 +183,8 @@ TEST_F(CompilationCacheTest, GetOrCompileLogsOnMiss) {
           testing::HasSubstr("Dumping StableHLO module due to cache miss")));
 
   log.StartCapturingLogs();
-  auto result = cache.GetOrCompile(key, input_shapes, std::move(builder),
-                                   std::move(*options_or));
+  auto result = cache.GetOrCompile(key, input_shapes, /*output_shapes=*/{},
+                                   std::move(builder), std::move(*options_or));
 
   // Clean up.
   cache.SetDumpOnCacheMissMode(initial_mode);
@@ -237,7 +237,7 @@ TEST_F(CompilationCacheInitTest, OptionsApplied) {
   // FAILED_PRECONDITION.
   auto key = DummyKey();
   auto status_or = cache.GetOrCompile(
-      key, /*input_shapes=*/{},
+      key, /*input_shapes=*/{}, /*output_shapes=*/{},
       /*computation_builder=*/
       [](mlir::MLIRContext&) { return mlir::OwningOpRef<mlir::ModuleOp>(); },
       /*compile_options=*/std::make_unique<xla::CompileOptions>());

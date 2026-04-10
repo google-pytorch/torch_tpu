@@ -61,10 +61,12 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
 
@@ -532,7 +534,38 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     TT_RET_CHECK(ref_to_op_map.contains(output), error::kInternal)
         << "output DeviceBufferRef was not found in ref_to_op map: "
         << output.DebugString();
-    results.push_back(ref_to_op_map.at(output));
+    mlir::MlirOp output_op = ref_to_op_map.at(output);
+
+    mlir::RankedTensorType op_type = GetTensorTypeOrDie(output_op);
+    if (!op_type.hasStaticShape()) {
+      mlir::stablehlo::Dimensions dims = GetDimensions(output_op);
+      Dimensions static_dims;
+      static_dims.reserve(dims.size());
+      for (const auto& dim : dims) {
+        static_dims.push_back(dim.size);
+      }
+      mlir::RankedTensorType current_type = op_type;
+      for (int i = 0; i < op_type.getRank(); ++i) {
+        if (op_type.isDynamicDim(i)) {
+          Dimensions current_shape = CopyIntVector(current_type.getShape());
+          current_shape[i] = static_dims[i];
+          mlir::RankedTensorType next_type = makeTensorType(
+              fb.getContext(), current_shape, current_type.getElementType());
+
+          auto cst = MakeScalarConstant(
+              fb, static_cast<int32_t>(static_dims[i]), mlir::ElementType::I32);
+
+          auto loc = output_op.getBuilder().getLoc();
+          auto set_dim_size_op = mlir::stablehlo::SetDimensionSizeOp::create(
+              output_op.getBuilder().getOpBuilder(), loc, next_type,
+              output_op.getValue(), cst.getValue(), i);
+          output_op =
+              mlir::MlirOp(output_op.getBuilder(), set_dim_size_op.getResult());
+          current_type = next_type;
+        }
+      }
+    }
+    results.push_back(output_op);
   }
   ABSL_VLOG(1) << "[Traversal::BuildMlirModule] Built a total of "
                << ref_to_op_map.size() << " MlirOps, returning "
@@ -557,6 +590,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   return module;
 }
 
+namespace {
+std::vector<Shape> GetShapes(absl::Span<const DeviceBufferRef> buffers) {
+  std::vector<Shape> shapes;
+  shapes.reserve(buffers.size());
+  for (const auto& buffer : buffers) {
+    Shape shape(CopyIntVector(buffer.dimensions()), buffer.element_type());
+    for (const auto& dynamic_dim : buffer.dynamic_dimensions()) {
+      shape.dynamic_dimensions().push_back(dynamic_dim);
+    }
+    shapes.push_back(std::move(shape));
+  }
+  return shapes;
+}
+}  // namespace
+
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     CompilationMode compilation_mode) const {
   // Prepare a computation builder closure to be called on a cache miss.  Okay
@@ -567,21 +615,14 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         return BuildMlirModule(mlir_context);
       };
   ABSL_VLOG(1) << "[Compile] cache_key: " << cache_key();
-  std::vector<Shape> input_shapes;
-  input_shapes.reserve(inputs_.size());
-  for (const auto& input : inputs_) {
-    Shape input_shape(CopyIntVector(input.dimensions()), input.element_type());
-    for (const auto& dynamic_dim : input.dynamic_dimensions()) {
-      input_shape.dynamic_dimensions().push_back(dynamic_dim);
-    }
-    input_shapes.push_back(std::move(input_shape));
-  }
+  std::vector<Shape> input_shapes = GetShapes(inputs_);
+  std::vector<Shape> output_shapes = GetShapes(outputs_);
 
   TT_ASSIGN_OR_RETURN(UniqueCompileOptions compile_options,
                       MakeCompilerOptions(compilation_mode));
 
   return CompilationCache::GetInstance().GetOrCompile(
-      cache_key(), input_shapes, std::move(final_op_builder),
+      cache_key(), input_shapes, output_shapes, std::move(final_op_builder),
       std::move(compile_options));
 }
 

@@ -53,6 +53,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fingerprint_utils.h"
@@ -725,16 +726,20 @@ struct DimensionBounds {
   int64_t upper = -1;
 };
 
+Dimensions FromUpperBounds(absl::Span<const DimensionBounds> bounds, int index,
+                           int length);
+
 // The metadata necessary to check if a static graph is compatible with a
 // BoundedDynamicCacheEntry.
 class ShapeDynamismMetadata {
  public:
-  // Create ShapeDynamismMetadata using the given input shapes and its dynamic
-  // dimension annotations.
-  explicit ShapeDynamismMetadata(absl::Span<const Shape> shapes);
+  // Create ShapeDynamismMetadata using the given input and output shapes their
+  // dynamic dimension annotations.
+  explicit ShapeDynamismMetadata(absl::Span<const Shape> input_shapes,
+                                 absl::Span<const Shape> output_shapes);
 
-  // Check if the static part of the given shapes is compatible with these shape
-  // dynamism bounds. This ignores dynamic annotations.
+  // Check if the static part of the given shapes is compatible with the input
+  // shape dynamism bounds. This ignores dynamic annotations.
   bool IsStaticShapeCompatible(absl::Span<const Shape> shapes) const;
 
   [[nodiscard]] const std::vector<DimensionBounds>& input_dimension_bounds()
@@ -742,19 +747,26 @@ class ShapeDynamismMetadata {
     return input_dimension_bounds_;
   }
 
-  // Returns a list of shapes just like input_shapes, but dimension sizes
-  // replaced with the upper bounds from the shape dynamism bounds. This ignores
-  // dynamic annotations.
-  std::vector<Shape> GetPaddingShapes(absl::Span<const Shape> shapes) const;
+  [[nodiscard]] const std::vector<DimensionBounds>& output_dimension_bounds()
+      const {
+    return output_dimension_bounds_;
+  }
 
   // Returns a cache key for the pad module with the given input shapes. This
   // ignores dynamic annotations.
   CompilationCacheKey GetPadModuleCacheKey(
       absl::Span<const Shape> shapes) const;
 
+  // Returns a cache key for the slice module with the given output shapes.
+  // This ignores dynamic annotations.
+  CompilationCacheKey GetSliceModuleCacheKey(
+      absl::Span<const Shape> shapes) const;
+
  private:
   // The lower and upper bounds of each dimension in the graph's inputs.
   std::vector<DimensionBounds> input_dimension_bounds_;
+  // The lower and upper bounds of each dimension in the graphs's outputs.
+  std::vector<DimensionBounds> output_dimension_bounds_;
 };
 // A GraphSignature holds all information necessary to uniquely identify and
 // describe a graph of DeferredOps.

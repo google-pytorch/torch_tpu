@@ -714,8 +714,6 @@ absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,
     it_find->lower_bound = lower_bound;
     it_find->upper_bound = upper_bound;
   } else {
-    TT_RET_CHECK(shape.dynamic_dimensions().empty(), error::kInvalidArgument)
-        << "only one dynamic dimension is supported per tensor";
     shape.dynamic_dimensions().push_back({.dimension = dimension,
                                           .lower_bound = lower_bound,
                                           .upper_bound = upper_bound});

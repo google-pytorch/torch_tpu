@@ -711,6 +711,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -769,6 +770,7 @@ torch_tpu_cc_library(
     deps = [
         ":cache_key",
         ":compilation",
+        ":dimension_types",
         ":env_vars",
         ":error_utils",
         ":shape",
@@ -799,6 +801,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
         "@tsl//tsl/platform:numbers",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt:pjrt_client",

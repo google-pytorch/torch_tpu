@@ -16,6 +16,7 @@
 
 #include "torch_tpu/_internal/dynamism/dynamism.h"
 
+#include <algorithm>
 #include <cstdint>
 
 #include "absl/log/absl_log.h"
@@ -41,6 +42,17 @@ absl::StatusOr<at::Tensor> MarkDynamic(const at::Tensor& tensor,
 
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
                       GetBufferFromAtTensor(tensor));
+
+  auto dynamic_dimensions = buffer_ref.dynamic_dimensions();
+  auto it_find = std::find_if(
+      dynamic_dimensions.begin(), dynamic_dimensions.end(),
+      [dimension](const BoundedDynamicDimension& dynamic_dimension) {
+        return dynamic_dimension.dimension == dimension;
+      });
+  TT_RET_CHECK(
+      it_find != dynamic_dimensions.end() || dynamic_dimensions.empty(),
+      error::kInvalidArgument)
+      << "only one dynamic dimension is supported per tensor";
   TT_RETURN_IF_ERROR(
       buffer_ref.MarkDynamic(dimension, lower_bound, upper_bound));
 
