@@ -139,6 +139,30 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
       for future in exp_futures:
         self.assertEqual(future.result(), 7.389056)
 
+  def test_excess_precision_cache_conflict(self):
+    """Tests excess precision flag."""
+    device = api.tpu_device()
+    input_tensor = torch.tensor(
+        [-1.3594, 5.6875],
+        dtype=torch.bfloat16,
+        device=device,
+    )
+
+    def compute():
+      return input_tensor.pow(2).sum(-1)
+
+    with compiler.custom_compiler_options(
+        {"xla_allow_excess_precision": "false"}
+    ):
+      with compiler.custom_compiler_options(
+          {"xla_allow_excess_precision": "true"}
+      ):
+        self.assertEqual(compute().cpu().item(), 34.25)
+      # Ensure it does not reuse the compiled cache when exiting the context
+      # as the compiler setting changed.
+      self.assertEqual(compute().cpu().item(), 34.00)
+    self.assertEqual(compute().cpu().item(), 34.25)
+
 
 if __name__ == "__main__":
   absltest.main()

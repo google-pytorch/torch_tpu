@@ -183,7 +183,8 @@ class Traversal {
   // be a single executable future. For bounded dynamic graphs, this will
   // in addition contain futures for dynamic adapters.
   absl::StatusOr<CompiledKernel> Compile(
-      CompilationMode compilation_mode) const;
+      CompilationMode compilation_mode,
+      std::optional<CompilerOptionOverrides> overrides = std::nullopt) const;
 
   // Returns true if any input to the traversal has bounded dynamic dimensions
   // marked.

@@ -54,6 +54,7 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fingerprint_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -564,7 +565,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
 }
 
 absl::StatusOr<CompiledKernel> Traversal::Compile(
-    CompilationMode compilation_mode) const {
+    CompilationMode compilation_mode,
+    std::optional<CompilerOptionOverrides> overrides) const {
   // Prepare a computation builder closure to be called on a cache miss.  Okay
   // to capture this here since CompilationCache::GetOrCompile() will call this
   // builder before the function returns and in the same thread it is invoked.
@@ -583,11 +585,25 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
     input_shapes.push_back(std::move(input_shape));
   }
 
-  TT_ASSIGN_OR_RETURN(UniqueCompileOptions compile_options,
-                      MakeCompilerOptions(compilation_mode));
+  CompilationCacheKey augmented_key = cache_key();
+  if (overrides.has_value()) {
+    // Compute the compiler options fingerprint for the overrides.
+    const FingerprintType options_fp =
+        FingerprintCompilerOptions(overrides.value());
+    // Augment the shapeless cache key with the fingerprint of the compiler
+    // options. This ensures that the same graph compiled with different
+    // options (e.g., different optimization levels or excess precision
+    // settings) will have distinct entries in the cache.
+    augmented_key.shapeless_key.key =
+        FingerprintCat(augmented_key.shapeless_key.key, options_fp);
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      UniqueCompileOptions compile_options,
+      MakeCompilerOptions(compilation_mode, std::move(overrides)));
 
   return CompilationCache::GetInstance().GetOrCompile(
-      cache_key(), input_shapes, std::move(final_op_builder),
+      augmented_key, input_shapes, std::move(final_op_builder),
       std::move(compile_options));
 }
 

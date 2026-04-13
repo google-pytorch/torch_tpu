@@ -18,6 +18,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <stack>
 #include <string>
 #include <string_view>
@@ -38,6 +39,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fingerprint_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/client/executable_build_options.h"
@@ -53,6 +55,8 @@ namespace torch_tpu {
 constexpr std::string_view kOptimizationLevelOption = "xla_optimization_level";
 constexpr std::string_view kMemoryFittingLevelOption =
     "xla_memory_fitting_level";
+constexpr std::string_view kAllowExcessPrecisionOption =
+    "xla_allow_excess_precision";
 
 namespace {
 absl_nonnull std::unique_ptr<mlir::MLIRContext> MakeMlirContext() {
@@ -141,8 +145,7 @@ GetMutableCompileOptionOverridesStack() {
 
 // Returns the compile option overrides for the current thread, as set in
 // the user Python code. Thread-safe.
-[[nodiscard]] static CompilerOptionOverrides
-GetCompilerOptionOverridesFromPython() {
+[[nodiscard]] CompilerOptionOverrides static GetCompilerOptionOverridesFromPython() {
   const auto& stack = GetMutableCompileOptionOverridesStack();
   if (stack.empty()) {
     return {};
@@ -173,6 +176,18 @@ void PopCompilerOptionOverrides() {
       << "Attempted to pop empty compiler option overrides stack. This is a "
          "bug in TorchTPU.";
   stack.pop();
+}
+
+// Fingerprints the given compiler option overrides into a single 64-bit value.
+// This is used as part of the compilation cache key.
+FingerprintType FingerprintCompilerOptions(
+    const CompilerOptionOverrides& overrides) {
+  FingerprintType fp = overrides.size();
+  for (const auto& [key, value] : overrides) {
+    fp = FingerprintCat(fp,
+                        FingerprintCat(Fingerprint(key), Fingerprint(value)));
+  }
+  return fp;
 }
 
 static absl::StatusOr<xla::ExecutionOptions::EffortLevel> ParseEffortLevel(
@@ -279,8 +294,10 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
   return is_tpu;
 }
 
+// Return the overrides based on the compilation mode.
 static CompilerOptionOverrides MakeCompilerOptionOverrides(
-    const bool is_tpu, const CompilationMode mode) {
+    const bool is_tpu, const CompilationMode mode,
+    std::optional<CompilerOptionOverrides> explicit_overrides) {
   CompilerOptionOverrides overrides;
   if (is_tpu && mode == CompilationMode::kFastCompile) {
     // Use O1 for the eager mode and the default optimization level (O2) for
@@ -292,9 +309,9 @@ static CompilerOptionOverrides MakeCompilerOptionOverrides(
     // between autofdo and optimization level.
     overrides["xla_tpu_autofdo"] = "false";
   }
-  UpdateMap(overrides, GetCompilerOptionOverridesFromPython());
-  // When merging the overrides, the environment variable takes precedence.
-  UpdateMap(overrides, GetCompilerOptionOverridesFromEnvVar());
+  if (explicit_overrides.has_value()) {
+    UpdateMap(overrides, std::move(*explicit_overrides));
+  }
   return overrides;
 }
 
@@ -330,6 +347,19 @@ absl::Status ApplyCompilerOptionOverrides(
     } else if (key == kMemoryFittingLevelOption) {
       TT_ASSIGN_OR_RETURN(const auto level, ParseEffortLevel(value));
       compile_options.executable_build_options.set_memory_fitting_level(level);
+    } else if (key == kAllowExcessPrecisionOption) {
+      bool enabled;
+      if (value == "true") {
+        enabled = true;
+      } else if (value == "false") {
+        enabled = false;
+      } else {
+        return TT_ERROR(error::kInvalidArgument)
+               << "invalid value for " << kAllowExcessPrecisionOption << ": "
+               << value << ". Expected 'true' or 'false'.";
+      }
+      compile_options.executable_build_options.mutable_debug_options()
+          ->set_xla_allow_excess_precision(enabled);
     } else {
       // Apply a new override by replacing the entry with the same key, if
       // present, or by appending the new (key, value) pair at the end fo the
@@ -366,7 +396,15 @@ absl::Status ApplyCompilerOptionOverrides(
   return absl::OkStatus();
 }
 
-absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(CompilationMode mode) {
+CompilerOptionOverrides GetActiveCompilerOptionOverrides() {
+  // When merging the overrides, the environment variable takes precedence.
+  CompilerOptionOverrides overrides = GetCompilerOptionOverridesFromEnvVar();
+  UpdateMap(overrides, GetCompilerOptionOverridesFromPython());
+  return overrides;
+}
+
+absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(
+    CompilationMode mode, std::optional<CompilerOptionOverrides> overrides) {
   auto compile_options = std::make_unique<xla::CompileOptions>();
   // Call mutable_debug_options to parse XLA_FLAGS into compile options.
   compile_options->executable_build_options.mutable_debug_options();
@@ -376,9 +414,12 @@ absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(CompilationMode mode) {
   TT_ASSIGN_OR_RETURN(const bool is_tpu, SetTpuOptions(*compile_options));
 
   // Finally, override the default flags if needed.
-  TT_RETURN_IF_ERROR(ApplyCompilerOptionOverrides(
-      MakeCompilerOptionOverrides(is_tpu, mode), *compile_options));
-  return compile_options;
+  auto merged_overrides =
+      MakeCompilerOptionOverrides(is_tpu, mode, std::move(overrides));
+  TT_RETURN_IF_ERROR(ApplyCompilerOptionOverrides(std::move(merged_overrides),
+                                                  *compile_options));
+
+  return std::move(compile_options);
 }
 
 }  // namespace torch_tpu
