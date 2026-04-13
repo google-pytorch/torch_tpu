@@ -418,6 +418,7 @@ def fx_to_mlir(
     module: torch.fx.GraphModule,
     args: list[torch.Tensor | Any],
     print_config: MlirPrintConfig = MlirPrintConfig.MLIR_PRETTY,
+    sync_rng_state: bool = False,
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's defer mode.
 
@@ -432,6 +433,7 @@ def fx_to_mlir(
     args: A list of input arguments to trace the module. These will be run
       through an FX graph interpreter to identify the graph's output tensors.
     print_config: The desired MLIR output format.
+    sync_rng_state: Whether to synchronize TPU RNG state before FX tracing.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -467,7 +469,7 @@ def fx_to_mlir(
   #
   # Safe state after sync:
   # [Old Graph Executed] | (Concrete RNG State) ---> [Clean FX Tracing Graph]
-  if argument_tensors:
+  if sync_rng_state and argument_tensors:
     sync.synchronize(
         torch.get_device_module(argument_tensors[0].device).get_rng_state(),
         wait=True,

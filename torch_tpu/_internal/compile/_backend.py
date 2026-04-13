@@ -125,6 +125,7 @@ class _TorchTpuCompiledExecutable:
           Callable[[Sequence[Any], Sequence[torch.Tensor]], Sequence[Any]]
           | None
       ),
+      uses_rng_state: bool = False,
   ):
     """Initializes the compiled executable wrapper.
 
@@ -137,6 +138,7 @@ class _TorchTpuCompiledExecutable:
     """
     self._executable = executable
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
+    self._uses_rng_state = uses_rng_state
     self._tensor_arg_indices = None
     self._graph_module_debug_str: str | None = None
     self._mlir_graph: str | None = None
@@ -162,21 +164,22 @@ class _TorchTpuCompiledExecutable:
     self._mlir_graph = value
 
   def __call__(self, *args):
-    # Find the device module based on tensor arguments. This is a mitigation
-    # for when torch.compile is run on xla_cpu or xla_gpu devices, and
-    # referencing api.tpu_device() would trigger a circular dependency.
-    # Remove this once api.tpu_device() becomes the canonical way to get the
-    # only TorchTPU device.
     device_module = None
-    for arg in args:
-      if isinstance(arg, torch.Tensor):
-        device_module = torch.get_device_module(arg.device)
-        break
-    if device_module is None:
-      device_module = torch.tpu
+    if self._uses_rng_state:
+      # Find the device module based on tensor arguments. This is a mitigation
+      # for when torch.compile is run on xla_cpu or xla_gpu devices, and
+      # referencing api.tpu_device() would trigger a circular dependency.
+      # Remove this once api.tpu_device() becomes the canonical way to get the
+      # only TorchTPU device.
+      for arg in args:
+        if isinstance(arg, torch.Tensor):
+          device_module = torch.get_device_module(arg.device)
+          break
+      if device_module is None:
+        device_module = torch.tpu
 
-    # rewrite_stateless_rng_ops pass adds rng_state as the last argument.
-    args = (*args, device_module.get_rng_state())
+      # rewrite_stateless_rng_ops pass adds rng_state as the last argument.
+      args = (*args, device_module.get_rng_state())
 
     executable_args = self._filter_tensor_args(args)
     outputs = tpu_torch_compile.execute(self._executable, executable_args)
@@ -184,9 +187,11 @@ class _TorchTpuCompiledExecutable:
     if self._reconstruct_fx_outputs_fn is not None:
       outputs = self._reconstruct_fx_outputs_fn(args, outputs)
 
-    # rewrite_stateless_rng_ops pass adds updated rng_state as the last output.
-    *outputs, rng_state = outputs
-    device_module.set_rng_state(rng_state)
+    if self._uses_rng_state:
+      # rewrite_stateless_rng_ops pass adds updated rng_state as the last
+      # output.
+      *outputs, rng_state = outputs
+      device_module.set_rng_state(rng_state)
     return outputs
 
   def _filter_tensor_args(
@@ -213,19 +218,21 @@ class _TorchTpuCompiledExecutable:
     serialized = tpu_torch_compile.serialize_executable(self._executable)
     return (
         _unpickle_compiled_executable,
-        (serialized, self._reconstruct_fx_outputs_fn),
+        (serialized, self._reconstruct_fx_outputs_fn, self._uses_rng_state),
     )
 
 
 def _unpickle_compiled_executable(
     serialized_bytes: bytes,
     reconstruct_fx_outputs_fn,
+    uses_rng_state: bool = False,
 ) -> _TorchTpuCompiledExecutable:
   """Reconstruct a _TorchTpuCompiledExecutable from serialized bytes."""
   executable = tpu_torch_compile.load_serialized_executable(serialized_bytes)
   return _TorchTpuCompiledExecutable(
       executable=executable,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
+      uses_rng_state=uses_rng_state,
   )
 
 
@@ -356,17 +363,23 @@ class TpuBackend:
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
 
-    # Rewrite stateless RNG ops.
-    GraphTransformObserver(
-        graph_module, "rewrite_stateless_rng_ops"
-    ).apply_graph_pass(rewrite_stateless_rng_ops)
-    # `rewrite_stateless_rng_ops` pass adds rng_state as the last argument.
-    # TODO(cnchan): Use ByteTensor when rng_state across backend APIs are
-    # consistent.
-    example_inputs = [
-        *example_inputs,
-        torch.zeros([16], dtype=torch.uint8),  # rng_state placeholder
-    ]
+    uses_rng_state = any(
+        node.op == "call_function"
+        and node.target == torch.ops.aten.native_dropout.default
+        for node in graph_module.graph.nodes
+    )
+    if uses_rng_state:
+      # Rewrite stateless RNG ops only for graphs that actually need it.
+      GraphTransformObserver(
+          graph_module, "rewrite_stateless_rng_ops"
+      ).apply_graph_pass(rewrite_stateless_rng_ops)
+      # `rewrite_stateless_rng_ops` pass adds rng_state as the last argument.
+      # TODO(cnchan): Use ByteTensor when rng_state across backend APIs are
+      # consistent.
+      example_inputs = [
+          *example_inputs,
+          torch.zeros([16], dtype=torch.uint8),  # rng_state placeholder
+      ]
 
     graph_module.recompile()
 
@@ -415,6 +428,7 @@ class TpuBackend:
             graph_module,
             placeholder_args,
             print_config=print_config,
+            sync_rng_state=uses_rng_state,
         )
 
     # Emit StableHLO artifact for tlparse when TORCH_TRACE is set.
@@ -442,6 +456,7 @@ class TpuBackend:
     executable = _TorchTpuCompiledExecutable(
         executable=cached_executable,
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
+        uses_rng_state=uses_rng_state,
     )
 
     self._compiled_executables.append(executable)
