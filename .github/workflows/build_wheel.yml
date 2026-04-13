@@ -124,14 +124,6 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v5
-      - name: Download Wheel from GCS
-        run: |
-          mkdir dist
-          gcloud storage cp "${{ needs.build_wheels.outputs.gcs-path }}/*.whl" dist/
-      - name: Wait For Connection
-        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
-        with:
-          halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run tests
         shell: bash
         run: bazel test ${{ matrix.extra_flags }} //...
