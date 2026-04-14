@@ -113,10 +113,16 @@ class ModelCoverageHFTest(parameterized.TestCase):
           f" {_MODEL_SIZES_TO_RUN.value}."
       )
 
-  def _create_inputs(self, provider: str, module_name: str):
+  def _create_inputs(
+      self, provider: str, module_name: str, *, load_weights: bool = True
+  ):
     module_spec = self.module_registry.get_module_spec(
-        provider, module_name, load_weights=True
+        provider, module_name, load_weights=load_weights
     )
+    if module_spec.preprocessor_factory is None:
+      _, kwargs = module_spec.sample_inputs_factory()
+      return kwargs
+
     tokenizer = module_spec.preprocessor_factory()
     prompt = (
         "Despite the heavy rain and strong winds forecasted for the afternoon,"
@@ -131,9 +137,10 @@ class ModelCoverageHFTest(parameterized.TestCase):
       *,
       device=torch.device("cpu"),
       is_training=False,
+      load_weights=True,
   ):
     module_spec = self.module_registry.get_module_spec(
-        provider, module_name, load_weights=True
+        provider, module_name, load_weights=load_weights
     )
     with device:
       model = module_spec.module_factory()
@@ -192,12 +199,22 @@ class ModelCoverageHFTest(parameterized.TestCase):
           rtol=6e-3,
           atol=1e-3,
       ),
+      dict(
+          testcase_name="transformers/google/gemma-3-270m-random-weights",
+          provider="transformers",
+          module_name="google/gemma-3-270m",
+          model_size=ModelSize.TINY,
+          load_weights=False,
+          rtol=2e-2,
+          atol=5e-2,
+      ),
   )
   def test_hf_transformers_training(
       self,
       provider: str,
       module_name: str,
       model_size: ModelSize,
+      load_weights: bool = True,
       rtol: float | None = None,
       atol: float | None = None,
   ) -> None:
@@ -206,8 +223,12 @@ class ModelCoverageHFTest(parameterized.TestCase):
     # To reduce memory pressure, we first conduct a training step on CPU and
     # garbage collect the model and other objects we no longer need before doing
     # the train step on TPU.
-    cpu_model, _ = self._create_model(provider, module_name, is_training=True)
-    cpu_inputs = self._create_inputs(provider, module_name)
+    cpu_model, _ = self._create_model(
+        provider, module_name, is_training=True, load_weights=load_weights
+    )
+    cpu_inputs = self._create_inputs(
+        provider, module_name, load_weights=load_weights
+    )
     cpu_optimizer = torch.optim.SGD(cpu_model.parameters(), lr=0.01)
     cpu_losses = []
     for _ in range(_NUM_TRAIN_STEPS):
@@ -217,7 +238,11 @@ class ModelCoverageHFTest(parameterized.TestCase):
     gc.collect()
 
     tpu_model, tpu_compiled_model = self._create_model(
-        provider, module_name, device=self.tpu_device, is_training=True
+        provider,
+        module_name,
+        device=self.tpu_device,
+        is_training=True,
+        load_weights=load_weights,
     )
     tpu_inputs = {k: v.to(self.tpu_device) for k, v in cpu_inputs.items()}
     tpu_optimizer = torch.optim.SGD(tpu_model.parameters(), lr=0.01)
@@ -280,12 +305,22 @@ class ModelCoverageHFTest(parameterized.TestCase):
           rtol=5e-4,
           atol=1e-2,
       ),
+      dict(
+          testcase_name="transformers/google/gemma-3-270m-random-weights",
+          provider="transformers",
+          module_name="google/gemma-3-270m",
+          model_size=ModelSize.TINY,
+          load_weights=False,
+          rtol=6e-2,
+          atol=3e-1,
+      ),
   )
   def test_hf_transformers_inference(
       self,
       provider: str,
       module_name: str,
       model_size: ModelSize,
+      load_weights: bool = True,
       rtol: float | None = None,
       atol: float | None = None,
   ) -> None:
@@ -294,8 +329,12 @@ class ModelCoverageHFTest(parameterized.TestCase):
     # To reduce memory pressure, we first conduct inference on CPU and garbage
     # collect the model and other objects we no longer need before doing work
     # on the TPU.
-    cpu_model, _ = self._create_model(provider, module_name)
-    cpu_inputs = self._create_inputs(provider, module_name)
+    cpu_model, _ = self._create_model(
+        provider, module_name, load_weights=load_weights
+    )
+    cpu_inputs = self._create_inputs(
+        provider, module_name, load_weights=load_weights
+    )
     with torch.inference_mode():
       cpu_out = cpu_model(**cpu_inputs)
     cpu_ppl = _calculate_perplexity(cpu_out.logits, cpu_inputs["input_ids"])
@@ -303,18 +342,19 @@ class ModelCoverageHFTest(parameterized.TestCase):
     gc.collect()
 
     _, tpu_compiled_model = self._create_model(
-        provider, module_name, device=self.tpu_device
+        provider, module_name, device=self.tpu_device, load_weights=load_weights
     )
     tpu_inputs = {k: v.to(self.tpu_device) for k, v in cpu_inputs.items()}
     with torch.inference_mode():
       tpu_out = tpu_compiled_model(**tpu_inputs)
     tpu_ppl = _calculate_perplexity(tpu_out.logits, tpu_inputs["input_ids"])
 
-    self.assertLess(
-        tpu_ppl,
-        _PERPLEXITY_THRESHOLD,
-        "TPU produced garbage results (high perplexity).",
-    )
+    if load_weights:
+      self.assertLess(
+          tpu_ppl,
+          _PERPLEXITY_THRESHOLD,
+          "TPU produced garbage results (high perplexity).",
+      )
     utils.assert_close(
         actual=tpu_ppl,
         expected=cpu_ppl,
