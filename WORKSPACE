@@ -45,7 +45,6 @@ load("//bazel:wheel_version.bzl", "torch_tpu_version_repo")
 torch_tpu_deps_repo(
     name = "torch_tpu_deps",
     pyproject_toml = "//:pyproject.toml",
-    requirements_txt = "//requirements:requirements.txt",
 )
 
 torch_tpu_version_repo(

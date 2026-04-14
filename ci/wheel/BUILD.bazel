@@ -120,7 +120,7 @@ py_wheel(
     # HERMETIC Python set to 3.12
     python_requires = ">=3.12",
     python_tag = "cp312",
-    requires = FILTERED_REQUIRES + TORCH_REQ,
+    requires = WHEEL_REQUIRES,
     strip_path_prefixes = ["ci/wheel/remapped_pywrap_binaries_pkg"],
     summary = "TPU/XLA support for PyTorch",
     tags = ["manual"],
