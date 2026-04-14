@@ -209,24 +209,24 @@ test:ci --test_output=errors
 
 # Settings specific to CPU CI runs.
 common:ci_cpu --config=ci
-common:ci_cpu --build_tag_filters=-nobuild_oss,-requires-gpu,-requires-tpu
+common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu
 
-# Exclude anything with `-notest_oss` or `-nobuild_oss`
-common:ci_cpu --test_tag_filters=-nobuild_oss,-notest_oss,-requires-gpu,-requires-tpu
+# Exclude anything with `-notap` or `-nobuild`
+common:ci_cpu --test_tag_filters=-nobuild,-notap,-requires-gpu,-requires-tpu
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
-common:ci_tpu_base --build_tag_filters=-nobuild_oss,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4
+common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4
 common:ci_tpu_base --spawn_strategy=standalone,local
 
 common:ci_tpu --config=ci_tpu_base
-common:ci_tpu --test_tag_filters=requires-tpu,-notest_oss,-nobuild_oss
+common:ci_tpu --test_tag_filters=requires-tpu,-notap,-nobuild
 
 common:ci_tpu_on_v6 --config=ci_tpu_base
-common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notest_oss,-nobuild_oss,-fails-on-tpu-v6
+common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notap,-nobuild,-fails-on-tpu-v6
 
 common:ci_tpu_on_v7 --config=ci_tpu_base
-common:ci_tpu_on_v7 --test_tag_filters=requires-tpu,-notest_oss,-nobuild_oss,-fails-on-tpu-v7
+common:ci_tpu_on_v7 --test_tag_filters=requires-tpu,-notap,-nobuild,-fails-on-tpu-v7
 common:ci_tpu_on_v7 --local_test_jobs=1
 # Bypass the libtpu multi-process lock. Otherwise, we have to explicitly delete
 # /tmp/libtpu_lockfile to clean up the dirty state of previous crashed jobs to
@@ -283,6 +283,6 @@ test:wheel_test_tpu --spawn_strategy=local
 # We need to re-specify all of these tag filters because when specified more
 # than once, they don't compose and we want to be able to also exclude
 # wheel_test_excluded
-common:wheel_test_cpu --test_tag_filters=-nobuild_oss,-notest_oss,-requires-gpu,-requires-tpu,-wheel_test_excluded
+common:wheel_test_cpu --test_tag_filters=-nobuild,-notap,-requires-gpu,-requires-tpu,-wheel_test_excluded
 
-common:wheel_test_tpu --test_tag_filters=requires-tpu,-notest_oss,-nobuild_oss,-wheel_test_excluded
+common:wheel_test_tpu --test_tag_filters=requires-tpu,-notap,-nobuild,-wheel_test_excluded

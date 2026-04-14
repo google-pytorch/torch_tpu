@@ -127,11 +127,10 @@ def _is_cuda_test(tags):
             return True
     return False
 
-# Tags that should propagate to the build_test target
-# TODO(b/495860371): Switch to a set when we are using bazel >= 7.7
-_BUILD_TEST_ALLOWED_TAGS = [
-    "nobuild_oss",
-]
+# Tags that should propagate to the build_test target.
+_BUILD_TEST_ALLOWED_TAGS = (
+    "nobuild",
+)
 
 def _sort_inplace(a_list):
     """Sorts a list in place and returns it."""
@@ -142,7 +141,7 @@ def _sort_inplace(a_list):
 
 def _check_and_adjust_test_tags(
         name,
-        is_oss,  # @unused - TODO: use this to determine whether to add a build_test.
+        is_oss,
         size,
         timeout,
         nobuild,
@@ -162,7 +161,8 @@ def _check_and_adjust_test_tags(
             cannot yet run the .bzl tests in OSS.
         size: The size of the test.
         timeout: The timeout of the test.
-        nobuild: If given as a string, will not generate a build_test for the test.
+        nobuild: If given as a string, will not generate a build_test for the test. This implies
+            nobuild_oss.
         notap: If given as a string, the test will be excluded from TAP, the string will be used
             as the reason, and a build_test named `<name>_build_test` will be added for the test
             to ensure it is buildable. This implies notest_oss.
@@ -192,6 +192,9 @@ def _check_and_adjust_test_tags(
         normalize the list for easy testing.
     """
 
+    if "notap" in tags:  # NOTAP_OK=for implementing notap logic
+        fail("notap must be passed as an argument to torch_tpu_cc_test, not as a tag.")
+
     # Adjust tags for nobuild.
     if nobuild != None:
         # Enforce that nobuild is a non-empty string.
@@ -207,7 +210,10 @@ def _check_and_adjust_test_tags(
         if type(nobuild_oss) != "string" or not nobuild_oss:
             fail("nobuild_oss must be a non-empty string documenting why the test " +
                  "should be skipped in OSS build.")
-        tags.append("nobuild_oss")
+
+        # nobuild_oss should only affect the OSS build.
+        if is_oss and "nobuild" not in tags:
+            tags.append("nobuild")
 
         # We want to allow both notest_oss and nobuild_oss to be set because
         # sometimes the reason for disabling build is different from the reason
@@ -225,22 +231,22 @@ def _check_and_adjust_test_tags(
         if type(notest_oss) != "string" or not notest_oss:
             fail("notest_oss must be a non-empty string documenting why the test " +
                  "should be skipped in OSS tests.")
-        tags.append("notest_oss")
+
+        # notest_oss should only affect the OSS build.
+        if is_oss:
+            tags.append("notap")  # NOTAP_OK=for implementing notest_oss logic
 
     # Adjust tags for notap.
     #
     # Whether to skip the test in local `blaze test //torch_tpu/...` runs.
     skip_local = False
-    if "notap" in tags:  # NOTAP_OK=for implementing notap logic
-        fail("notap must be passed as an argument to torch_tpu_cc_test, not as a tag.")
     if notap != None:
         # Enforce that notap is a non-empty string.
         if type(notap) != "string" or not notap:
             fail("notap must be a non-empty string documenting why the test " +
                  "should be skipped on TAP.")
-        tags.append("notap")  # NOTAP_OK=for implementing notap logic
-        if "notest_oss" not in tags:
-            tags.append("notest_oss")  # notap implies notest_oss.
+        if "notap" not in tags:  # NOTAP_OK=for implementing notap logic
+            tags.append("notap")  # NOTAP_OK=for implementing notap logic
 
         if nopresubmit != None:
             fail("notap and nopresubmit cannot both be set.")
@@ -251,15 +257,13 @@ def _check_and_adjust_test_tags(
         fail("Tests with size 'enormous' or timeout 'eternal' are always skipped by TAP. " +
              "Please add a 'notap' argument to torch_tpu_*_test() to make the fact explicit.")
 
-    # Add a build_test for notap and notest_oss test unless nobuild is set.
-    # Targets with notest_oss cannot be built in OSS because flag `--build_tests_only` is active.
+    # Add a build_test for a notap test unless nobuild is set.
+    # Targets with notap cannot be built in OSS because flag `--build_tests_only` is active.
     # Instead of removing `--build_tests_only` to include all unused binaries/libraries in OSS
-    # builds, we generate a companion _build_test target for notest_oss tests.
-    # TODO: Trim the unnecessary _build_test targets in the internal build.
-    create_build_test = False
+    # builds, we generate a companion _build_test target for notap tests.
+    create_build_test = "notap" in tags and "nobuild" not in tags  # NOTAP_OK=for implementing notap logic
     build_test_tags = []
-    if ("notap" in tags or "notest_oss" in tags) and nobuild == None:  # NOTAP_OK=for implementing notap logic
-        create_build_test = True
+    if create_build_test:
         build_test_tags = [tag for tag in tags if tag in _BUILD_TEST_ALLOWED_TAGS]
 
         # The torch_tpu.cuda build only runs tests with requires-gpu-* tags.
@@ -381,7 +385,8 @@ def torch_tpu_cc_test(
             definitions and increase accelerator utilization by reducing test run time.
         shuffle_tests: Whether to shuffle the test cases.
         fail_if_no_test_linked: Whether to fail if no tests are linked.
-        nobuild: If given as a string, will not generate a build_test for the test.
+        nobuild: If given as a string, will not generate a build_test for the test. This implies
+            nobuild_oss.
         notap: If given as a string, the test will be excluded from TAP, the string will be used
             as the reason, and a build_test named `<name>_build_test` will be added for the test
             to ensure it is buildable. This implies notest_oss.
@@ -497,7 +502,8 @@ def torch_tpu_py_test(
         platform: The platform to run the test on. Useful for tests on GPU as the
             requires-gpu-* tags are deprecated. If this is set, generates a py_platform_test
             as opposed to a py_test.
-        nobuild: If given as a string, will not generate a build_test for the test.
+        nobuild: If given as a string, will not generate a build_test for the test. This implies
+            nobuild_oss.
         notap: If given as a string, the test will be excluded from TAP, the string will be used
             as the reason, and a build_test named `<name>_build_test` will be added for the test
             to ensure it is buildable. This implies notest_oss.

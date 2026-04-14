@@ -45,7 +45,7 @@ def _test_notap(ctx):
 
     asserts.true(
         env,
-        tags == ["manual", "notap", "notest_oss"],  # NOTAP_OK=tests
+        tags == ["manual", "notap"],  # NOTAP_OK=tests
         "tags: %s" % tags,
     )
     asserts.true(env, result.create_build_test)
@@ -86,8 +86,8 @@ def _test_nolocal(ctx):
     asserts.false(env, result.create_build_test)
     return unittest.end(env)
 
-def _test_nobuild_oss(ctx):
-    """Tests the nobuild_oss parameter."""
+def _test_internal_nobuild_oss(ctx):
+    """Tests the nobuild_oss parameter in internal builds."""
 
     env = unittest.begin(ctx)
     tags = []
@@ -97,17 +97,32 @@ def _test_nobuild_oss(ctx):
         tags = tags,
     )
 
-    asserts.true(env, tags == ["nobuild_oss", "notest_oss"], "tags: %s" % tags)
-    asserts.true(env, result.create_build_test)
-    asserts.true(
-        env,
-        result.build_test_tags == ["nobuild_oss"],
-        "result.build_test_tags: %s" % result.build_test_tags,
-    )
+    asserts.true(env, tags == [], "tags: %s" % tags)
+
+    # In an internal build, nobuild_oss has no effect and thus does not make
+    # it necessary to generate a build_test.
+    asserts.false(env, result.create_build_test)
     return unittest.end(env)
 
-def _test_notest_oss(ctx):
-    """Tests the notest_oss parameter."""
+def _test_oss_nobuild_oss(ctx):
+    """Tests the nobuild_oss parameter in OSS."""
+
+    env = unittest.begin(ctx)
+    tags = []
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        nobuild_oss = "reason",
+        tags = tags,
+    )
+
+    asserts.true(env, tags == ["nobuild", "notap"], "tags: %s" % tags)  # NOTAP_OK=tests
+
+    # In an OSS build, nobuild_oss should disable generating the build_test.
+    asserts.false(env, result.create_build_test)
+    return unittest.end(env)
+
+def _test_internal_notest_oss(ctx):
+    """Tests the notest_oss parameter in internal builds."""
 
     env = unittest.begin(ctx)
     tags = []
@@ -117,12 +132,32 @@ def _test_notest_oss(ctx):
         tags = tags,
     )
 
-    asserts.true(env, tags == ["notest_oss"], "tags: %s" % tags)
+    asserts.true(env, tags == [], "tags: %s" % tags)
+
+    # In an internal build, notest_oss has no effect and thus does not make
+    # it necessary to generate a build_test.
+    asserts.false(env, result.create_build_test)
+    return unittest.end(env)
+
+def _test_oss_notest_oss(ctx):
+    """Tests the notest_oss parameter in OSS."""
+
+    env = unittest.begin(ctx)
+    tags = []
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notest_oss = "reason",
+        tags = tags,
+    )
+
+    asserts.true(env, tags == ["notap"], "tags: %s" % tags)  # NOTAP_OK=tests
+
+    # In an OSS build, notest_oss should enable generating the build_test.
     asserts.true(env, result.create_build_test)
     asserts.true(
         env,
         result.build_test_tags == [],
-        "result.build_test_tags: %s" % result.build_test_tags,
+        "build_test_tags: %s" % result.build_test_tags,
     )
     return unittest.end(env)
 
@@ -139,7 +174,7 @@ def _test_cuda_build_test(ctx):
 
     asserts.true(
         env,
-        tags == ["manual", "notap", "notest_oss", "requires-gpu-a100"],  # NOTAP_OK=tests
+        tags == ["manual", "notap", "requires-gpu-a100"],  # NOTAP_OK=tests
         "tags: %s" % tags,
     )
     asserts.true(env, result.create_build_test)
@@ -150,13 +185,57 @@ def _test_cuda_build_test(ctx):
     )
     return unittest.end(env)
 
-nobuild_test = unittest.make(_test_nobuild)
-notap_test = unittest.make(_test_notap)
-nopresubmit_test = unittest.make(_test_nopresubmit)
-nolocal_test = unittest.make(_test_nolocal)
-nobuild_oss_test = unittest.make(_test_nobuild_oss)
-notest_oss_test = unittest.make(_test_notest_oss)
+def _test_internal_notap_nobuild(ctx):
+    """Tests using both notap and nobuild in internal builds."""
+    env = unittest.begin(ctx)
+    tags = []
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = False,
+        notap = "reason",
+        nobuild = "reason",
+        tags = tags,
+    )
+
+    asserts.true(
+        env,
+        tags == ["manual", "nobuild", "notap"],  # NOTAP_OK=tests
+        "tags: %s" % tags,
+    )
+    asserts.false(env, result.create_build_test)
+    return unittest.end(env)
+
+def _test_oss_notest_oss_nobuild_oss(ctx):
+    """Tests using both notest_oss and nobuild_oss in OSS builds."""
+    env = unittest.begin(ctx)
+    tags = []
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        notest_oss = "reason1",
+        nobuild_oss = "reason2",
+        tags = tags,
+    )
+
+    asserts.true(
+        env,
+        tags == ["nobuild", "notap"],  # NOTAP_OK=tests
+        "tags: %s" % tags,
+    )
+    asserts.false(env, result.create_build_test)
+    return unittest.end(env)
+
+# go/keep-sorted start
 cuda_build_test = unittest.make(_test_cuda_build_test)
+internal_nobuild_oss_test = unittest.make(_test_internal_nobuild_oss)
+internal_notap_nobuild_test = unittest.make(_test_internal_notap_nobuild)
+internal_notest_oss_test = unittest.make(_test_internal_notest_oss)
+nobuild_test = unittest.make(_test_nobuild)
+nolocal_test = unittest.make(_test_nolocal)
+nopresubmit_test = unittest.make(_test_nopresubmit)
+notap_test = unittest.make(_test_notap)
+oss_nobuild_oss_test = unittest.make(_test_oss_nobuild_oss)
+oss_notest_oss_nobuild_oss_test = unittest.make(_test_oss_notest_oss_nobuild_oss)
+oss_notest_oss_test = unittest.make(_test_oss_notest_oss)
+# go/keep-sorted end
 
 def build_defs_test_suite(name):
     """Creates a test suite for build_defs.bzl, which will run all tests in this file.
@@ -170,13 +249,20 @@ def build_defs_test_suite(name):
         tests.append(":" + name)
 
     tests = []
-    add_test(tests, nobuild_test, name + "_nobuild")
-    add_test(tests, notap_test, name + "_notap")
-    add_test(tests, nopresubmit_test, name + "_nopresubmit")
-    add_test(tests, nolocal_test, name + "_nolocal")
-    add_test(tests, nobuild_oss_test, name + "_nobuild_oss")
-    add_test(tests, notest_oss_test, name + "_notest_oss")
+
+    # go/keep-sorted start
     add_test(tests, cuda_build_test, name + "_cuda_build_test")
+    add_test(tests, internal_nobuild_oss_test, name + "_internal_nobuild_oss")
+    add_test(tests, internal_notap_nobuild_test, name + "_internal_notap_nobuild")
+    add_test(tests, internal_notest_oss_test, name + "_internal_notest_oss")
+    add_test(tests, nobuild_test, name + "_nobuild")
+    add_test(tests, nolocal_test, name + "_nolocal")
+    add_test(tests, nopresubmit_test, name + "_nopresubmit")
+    add_test(tests, notap_test, name + "_notap")
+    add_test(tests, oss_nobuild_oss_test, name + "_oss_nobuild_oss")
+    add_test(tests, oss_notest_oss_nobuild_oss_test, name + "_oss_notest_oss_nobuild_oss")
+    add_test(tests, oss_notest_oss_test, name + "_oss_notest_oss")
+    # go/keep-sorted end
 
     native.test_suite(
         name = name,
