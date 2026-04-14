@@ -807,10 +807,10 @@ class GraphSignature {
   };
 
   // Adds an operation to the graph using a lambda to stream inputs and outputs.
-  // aliased_inputs are the indices within the streamed inputs of the tensors
+  // donated_inputs are the indices within the streamed inputs of the tensors
   // that are aliased. Returns the topological index of the first output.
   int AddOp(OpName op_name, const OpParamCacheKeys& op_param_cache_keys,
-            absl::Span<const int64_t> aliased_inputs,
+            absl::Span<const int64_t> donated_inputs,
             absl::FunctionRef<void(OpSignatureBuilder&)> builder);
 
   // Specifies which tensors are graph outputs.
@@ -834,9 +834,9 @@ class GraphSignature {
 
   absl::InlinedVector<int, 8> graph_output_indices_;
 
-  // Two graphs are equal only if they alias their root arguments in the same
+  // Two graphs are equal only if they donate their root arguments in the same
   // way.
-  absl::InlinedVector<int, 8> aliased_input_indices_;
+  absl::InlinedVector<int, 8> donated_indices_;
 
   // Two graphs are equal only if they have the same number of tensors,
   // and all tensors have the same dimensions and element types.
@@ -863,8 +863,8 @@ class GraphSignature {
   // output for each node.
   absl::InlinedVector<int, 8> op_outputs_indices_{0};
 
-  // Keep track of which inputs are aliased to avoid duplicates.
-  absl::flat_hash_set<int> aliased_input_indices_set_;
+  // Keep track of which inputs are donated to avoid duplicates.
+  absl::flat_hash_set<int> donated_indices_set_;
 };
 
 }  // namespace torch_tpu

@@ -406,11 +406,11 @@ class DeferredOp {
              OpParamCacheKeys op_param_cache_keys,
              std::shared_ptr<Subgraph> subgraph,
              OpSplitMode split_mode = OpSplitMode::kNone,
-             Indices aliased_input_indices = {})
+             Indices donated_indices = {})
       : op_name_(op_name),
         op_builder_(std::move(op_builder)),
         inputs_(std::move(inputs)),
-        aliased_input_indices_(std::move(aliased_input_indices)),
+        donated_indices_(std::move(donated_indices)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
         split_mode_(split_mode),
@@ -528,8 +528,8 @@ class DeferredOp {
   // Returns the subgraph this op belongs to.
   std::shared_ptr<Subgraph> subgraph() const { return subgraph_; }
 
-  [[nodiscard]] absl::Span<const int64_t> aliased_input_indices() const {
-    return aliased_input_indices_;
+  [[nodiscard]] absl::Span<const int64_t> donated_indices() const {
+    return donated_indices_;
   }
 
  private:
@@ -542,10 +542,10 @@ class DeferredOp {
   // long as this DeferredOp exists.
   std::vector<DeviceBufferRef> inputs_;
 
-  // The indices of the inputs that should be aliased as outputs. This is only
+  // The indices of the inputs that should be donated. This is only
   // used for custom kernels, and only when the DeferredOp directly depends on
   // an input to the overall MLIR module.
-  Indices aliased_input_indices_;
+  Indices donated_indices_;
 
   // The cache keys for the op parameters. These are used to ensure that the
   // compilation cache does not reuse a cached compiled op if there are
@@ -724,7 +724,7 @@ class DeviceBufferList {
       std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
       std::vector<Shape> output_shapes,
       OpSplitMode split_mode = OpSplitMode::kNone,
-      Indices aliased_input_indices = {});
+      Indices donated_indices = {});
 
   // Creates a DeviceBufferList as if by using the torch.empty() operation
   // with fill_uninitialized_memory=True.

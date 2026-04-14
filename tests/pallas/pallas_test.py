@@ -110,6 +110,12 @@ class TestPallasKernels(absltest.TestCase):
     super().setUp()
     self.device = api.tpu_device()
 
+  def _assert_donated(self, x: torch.Tensor):
+    with self.assertRaisesRegex(
+        RuntimeError, "INVALID_ARGUMENT: Buffer has been deleted or donated"
+    ):
+      x.cpu()
+
   def test_kernel_single_output_decorator(self):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
@@ -208,22 +214,21 @@ class TestPallasKernels(absltest.TestCase):
     utils.assert_close(actual_add, expected_add)
     utils.assert_close(actual_sub, expected_sub)
 
-  def test_kernel_input_output_aliasing(self):
+  def test_kernel_input_output_donating(self):
 
-    aliasing_add_vectors = pallas.custom_jax_kernel(
+    donating_add_vectors = pallas.custom_jax_kernel(
         add_vectors_jax,
         name="add_vectors",
-        input_output_aliases={0: 0},
         donate_argnums=(0,),
     )
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
     expected = torch.add(x, y).to("cpu")
-    actual = aliasing_add_vectors(x, y).to("cpu")
+    actual = donating_add_vectors(x, y).to("cpu")
     utils.assert_close(actual, expected)
-    # x should be aliased by the output
-    utils.assert_close(x.to("cpu"), actual)
-    # y should not be aliased
+    # x should be donated by the output
+    self._assert_donated(x)
+    # y should not be donated
     expected_y = torch.tensor(
         [0.4, 0.5, 0.6], dtype=torch.float32, device="cpu"
     )
@@ -231,31 +236,19 @@ class TestPallasKernels(absltest.TestCase):
 
   def test_kernel_donation_invalidates_deferred_op(self):
 
-    aliasing_add_vectors = pallas.custom_jax_kernel(
+    donating_add_vectors = pallas.custom_jax_kernel(
         add_vectors_jax,
         name="add_vectors",
-        input_output_aliases={0: 0},
         donate_argnums=(0,),
     )
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
 
-    # Create a deferred op that depends on the pre-donation value of x.
-    pre_x_sum = x.sum()
-
-    # Run the aliasing operation, consuming the pre-donation value of x.
-    z = aliasing_add_vectors(x, y)
+    # Run the donating operation, consuming the pre-donation value of x.
+    z = donating_add_vectors(x, y)
     z.cpu()  # force execution
 
-    # The pre-donation value of x can no longer be used if we are in deferred
-    # mode.
-    if _is_deferred_mode():
-      with self.assertRaisesRegex(
-          RuntimeError, "INVALID_ARGUMENT: Buffer has been deleted or donated"
-      ):
-        pre_x_sum.cpu()
-    else:
-      pre_x_sum.cpu()
+    self._assert_donated(x)
 
   def test_pallas_kernel_compiled_mode(self):
 
@@ -324,30 +317,29 @@ class TestPallasKernels(absltest.TestCase):
     utils.assert_close(x_grad_actual, x_grad_expected)
     utils.assert_close(y_grad_actual, y_grad_expected)
 
-  def test_kernel_input_output_aliasing_compiled_mode(self):
+  def test_kernel_input_output_donating_compiled_mode(self):
 
-    aliasing_add_vectors = pallas.custom_jax_kernel(
+    donating_add_vectors = pallas.custom_jax_kernel(
         add_vectors_jax,
         name="add_vectors",
-        input_output_aliases={0: 0},
         donate_argnums=(0,),
     )
 
-    torch_aliasing_add_vectors = torch.library.custom_op(
-        "pallas::aliasing_add_vectors",
-        lambda x, y: aliasing_add_vectors(x, y).clone(),
-        mutates_args=("x",),
-        schema="(Tensor(a!) x, Tensor y) -> Tensor",
+    torch_donating_add_vectors = torch.library.custom_op(
+        "pallas::donating_add_vectors",
+        lambda x, y: donating_add_vectors(x, y).clone(),
+        mutates_args=(),
+        schema="(Tensor x, Tensor y) -> Tensor",
         device_types=["tpu"],
     )
-    torch_aliasing_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
+    torch_donating_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
 
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
 
     @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
-    def aliased_add_vectors_sum(x, y):
-      return torch_aliasing_add_vectors(x, y).sum()
+    def donated_add_vectors_sum(x, y):
+      return torch_donating_add_vectors(x, y).sum()
 
     expected_updated_x = torch.add(
         torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="cpu"),
@@ -355,27 +347,26 @@ class TestPallasKernels(absltest.TestCase):
     )
     expected_sum = expected_updated_x.sum()
 
-    actual_sum = aliased_add_vectors_sum(x, y)
+    actual_sum = donated_add_vectors_sum(x, y)
     utils.assert_close(actual_sum.to("cpu"), expected_sum)
-    utils.assert_close(x.to("cpu"), expected_updated_x)
+    self._assert_donated(x)
 
   def test_kernel_compiled_mode_donation_invalidates_deferred_op(self):
 
-    aliasing_add_vectors = pallas.custom_jax_kernel(
+    donating_add_vectors = pallas.custom_jax_kernel(
         add_vectors_jax,
         name="add_vectors",
-        input_output_aliases={0: 0},
         donate_argnums=(0,),
     )
 
-    torch_aliasing_add_vectors = torch.library.custom_op(
-        "pallas::aliasing_add_vectors",
-        lambda x, y: aliasing_add_vectors(x, y).clone(),
-        mutates_args=("x",),
-        schema="(Tensor(a!) x, Tensor y) -> Tensor",
+    torch_donating_add_vectors = torch.library.custom_op(
+        "pallas::donating_add_vectors",
+        lambda x, y: donating_add_vectors(x, y).clone(),
+        mutates_args=(),
+        schema="(Tensor x, Tensor y) -> Tensor",
         device_types=["tpu"],
     )
-    torch_aliasing_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
+    torch_donating_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
 
     # These tensors are intentionally 2D as it triggers the flatten -> unflatten
     # behaviour (b/479542146).
@@ -387,12 +378,12 @@ class TestPallasKernels(absltest.TestCase):
 
     tpu_backend = compile.TpuBackend(debug=True)
 
-    # Run an aliasing compiled operation.
+    # Run a donating compiled operation.
     @torch.compile(fullgraph=True, dynamic=False, backend=tpu_backend)
-    def aliased_add_vectors_sum(x, y):
-      return torch_aliasing_add_vectors(x, y).sum()
+    def donated_add_vectors_sum(x, y):
+      return torch_donating_add_vectors(x, y).sum()
 
-    _ = aliased_add_vectors_sum(x, y)
+    _ = donated_add_vectors_sum(x, y)
 
     executables = tpu_backend._compiled_executables
     self.assertLen(executables, 1)
@@ -404,10 +395,7 @@ class TestPallasKernels(absltest.TestCase):
     # The pre-donation value of x can no longer be used if we are in deferred
     # mode.
     if _is_deferred_mode():
-      with self.assertRaisesRegex(
-          RuntimeError, "INVALID_ARGUMENT: Buffer has been deleted or donated"
-      ):
-        pre_x_sum.cpu()
+      self._assert_donated(pre_x_sum)
     else:
       pre_x_sum.cpu()
 
@@ -415,20 +403,19 @@ class TestPallasKernels(absltest.TestCase):
       self,
   ):
 
-    aliasing_add_vectors = pallas.custom_jax_kernel(
+    donating_add_vectors = pallas.custom_jax_kernel(
         add_vectors_jax,
         name="add_vectors",
-        input_output_aliases={0: 0},
         donate_argnums=(0,),
     )
-    torch_aliasing_add_vectors = torch.library.custom_op(
-        "pallas::aliasing_add_vectors",
-        lambda x, y: aliasing_add_vectors(x, y).clone(),
-        mutates_args=("x",),
-        schema="(Tensor(a!) x, Tensor y) -> Tensor",
+    torch_donating_add_vectors = torch.library.custom_op(
+        "pallas::donating_add_vectors",
+        lambda x, y: donating_add_vectors(x, y).clone(),
+        mutates_args=(),
+        schema="(Tensor x, Tensor y) -> Tensor",
         device_types=["tpu"],
     )
-    torch_aliasing_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
+    torch_donating_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
 
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
@@ -438,7 +425,7 @@ class TestPallasKernels(absltest.TestCase):
       # This op uses x but does not donate it.
       x_sum = x.sum()
       # This op donates x.
-      z = torch_aliasing_add_vectors(x, y)
+      z = torch_donating_add_vectors(x, y)
 
       return x_sum, z
 
@@ -466,7 +453,7 @@ class TestPallasKernels(absltest.TestCase):
   def test_jax_kernel_wrapper_with_donation(self):
     """Test a kernel wrapper with a donated argument."""
 
-    @pallas.custom_jax_kernel(input_output_aliases={0: 0}, donate_argnums=(0,))
+    @pallas.custom_jax_kernel(donate_argnums=(0,))
     def add_fn(x, y):
       return jax.numpy.add(x, y)
 
@@ -475,8 +462,7 @@ class TestPallasKernels(absltest.TestCase):
     expected = torch.add(x, y).to("cpu")
     actual = add_fn(x, y).to("cpu")
     utils.assert_close(actual, expected)
-    # x should be aliased by the output.
-    utils.assert_close(x.cpu(), expected)
+    self._assert_donated(x)
 
   def test_jax_kernel_with_trace_time_conditional(self):
     """Test a kernel wrapper that has a trace time conditional.
@@ -537,6 +523,68 @@ class TestPallasKernels(absltest.TestCase):
 
     none = wrapper(None)
     self.assertIsNone(none)
+
+  # The following aliasing tests are for the deprecated input_output_aliases
+  # so are not comprehensive.
+  def test_kernel_input_output_aliases(self):
+
+    alised_add_vectors = pallas.custom_jax_kernel(
+        add_vectors_jax,
+        input_output_aliases={0: 0},
+    )
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
+    expected_x = torch.add(x, y).to("cpu")
+    actual_x = alised_add_vectors(x, y).to("cpu")
+    utils.assert_close(actual_x, expected_x)
+    utils.assert_close(x.to("cpu"), expected_x)
+
+  def test_kernel_input_output_aliasing_compiled_mode(self):
+
+    aliasing_add_vectors = pallas.custom_jax_kernel(
+        add_vectors_jax,
+        name="add_vectors",
+        input_output_aliases={0: 0},
+    )
+
+    torch_aliasing_add_vectors = torch.library.custom_op(
+        "pallas::aliasing_add_vectors",
+        lambda x, y: aliasing_add_vectors(x, y).clone(),
+        mutates_args=("x",),
+        schema="(Tensor(a!) x, Tensor y) -> Tensor",
+        device_types=["tpu"],
+    )
+    torch_aliasing_add_vectors.register_fake(lambda x, _: torch.empty_like(x))
+
+    x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def aliased_add_vectors_sum(x, y):
+      return torch_aliasing_add_vectors(x, y).sum()
+
+    expected_updated_x = torch.add(
+        torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device="cpu"),
+        torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device="cpu"),
+    )
+    expected_sum = expected_updated_x.sum()
+
+    actual_sum = aliased_add_vectors_sum(x, y)
+    utils.assert_close(actual_sum.to("cpu"), expected_sum)
+    utils.assert_close(x.to("cpu"), expected_updated_x)
+
+  def test_inconsistent_donate_and_aliases_raises_error(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        "donate_argnums must be None or the same as the keys of"
+        " input_output_aliases.",
+    ):
+      pallas.custom_jax_kernel(
+          add_vectors_jax,
+          name="add_vectors",
+          input_output_aliases={0: 0},
+          donate_argnums=(1,),
+      )
 
 
 if __name__ == "__main__":

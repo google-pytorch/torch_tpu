@@ -66,20 +66,12 @@ std::vector<at::Tensor> PyCallCustomKernel(
     const c10::string_view name, const c10::string_view kernel_key,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
-    // Cannot use absl::flat_hash_map here because it is not supported by
-    // pybind11.
-    // NOLINTNEXTLINE(google3-runtime-unneeded-pointer-stability-check)
-    const std::unordered_map<int64_t, int64_t>& input_output_aliases) {
+    // Use std::vector as pybind has built-in support for it.
+    const std::vector<int64_t>& donate_argnums  // INT_VEC_OK
+) {
   TT_KERNEL(
       OpName::kCustomKernel, op_param_cache_keys,
-      (name, kernel_key, inputs, output_shapes, input_output_aliases), {
-        Indices aliased_input_indices;
-        absl::flat_hash_map<int64_t, int64_t> output_to_input_alias_map;
-        for (const auto& [input_index, output_index] : input_output_aliases) {
-          aliased_input_indices.push_back(input_index);
-          output_to_input_alias_map[output_index] = input_index;
-        }
-
+      (name, kernel_key, inputs, output_shapes, donate_argnums), {
         auto custom_op_builder = [name = std::string(name),
                                   kernel_key = std::string(kernel_key)](
                                      absl::Span<const mlir::MlirOp> inputs,
@@ -105,15 +97,11 @@ std::vector<at::Tensor> PyCallCustomKernel(
             .out_dims_list = output_dims_list,
             .computation_dtype = std::nullopt,
             .op_param_cache_keys = std::move(op_param_cache_keys)};
-        if (!input_output_aliases.empty()) {
-          // If there are any aliased input/output pairs, we need to materialize
-          // both before and after this deferred op to ensure the donation
-          // behavior proceeds correctly.
-          options.split_mode = OpSplitMode::kSplitBoth;
-          // Note that this DeferredOp needs its inputs to be marked with
-          // jax.buffer_donor if they are leaf inputs to the MLIR module.
-          options.aliased_input_indices = std::move(aliased_input_indices);
-        }
+
+        // Note that this DeferredOp needs its inputs to be marked with
+        // jax.buffer_donor if they are leaf inputs to the MLIR module.
+        options.donated_indices.assign(donate_argnums.begin(),
+                                       donate_argnums.end());
 
         absl::StatusOr<std::vector<DeviceBufferRef>> results_status =
             DispatchOp<kDynamicSize, kDynamicSize>(std::move(custom_op_builder),
@@ -124,17 +112,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
         for (auto i = 0; i < results.size(); ++i) {
-          if (output_to_input_alias_map.contains(i)) {
-            // Assign the computed output to the input, and then copy the input
-            // tensor to use as the output tensor as well.
-            const auto input_index = output_to_input_alias_map[i];
-            TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(results[i]),
-                                                     inputs[input_index]));
-            result_tensors.push_back(inputs[input_index]);  // intentional copy
-          } else {
-            // Non-aliased outputs are made into new tensors.
-            result_tensors.push_back(MakeTensor(std::move(results[i])));
-          }
+          result_tensors.push_back(MakeTensor(std::move(results[i])));
         }
         return result_tensors;
       });
@@ -153,11 +131,7 @@ PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::arg("name"), py::arg("kernel_key"),
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
-        py::arg("input_output_aliases")
-        // Cannot use absl::flat_hash_map here because it is not supported
-        // by pybind11.
-        // NOLINTNEXTLINE(google3-runtime-unneeded-pointer-stability-check)
-        = std::unordered_map<int64_t, int64_t>());
+        py::arg("donate_argnums") = std::vector<int64_t>{});  // INT_VEC_OK
 }
 
 }  // namespace torch_tpu

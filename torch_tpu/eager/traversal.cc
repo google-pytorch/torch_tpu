@@ -313,7 +313,7 @@ CompilationCacheKey Traversal::BuildCacheKey() const {
     const DeferredOp& deferred_op = *maybe_deferred_op;
 
     graph.AddOp(deferred_op.op_name(), deferred_op.op_param_cache_keys(),
-                deferred_op.aliased_input_indices(),
+                deferred_op.donated_indices(),
                 [&](GraphSignature::OpSignatureBuilder& op) {
                   for (const DeviceBufferRef& op_input : deferred_op.inputs()) {
                     op.AddInput(tensor_index_map.at(op_input));
@@ -475,7 +475,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   // Identify which inputs are donated.
   // Deduplicate by the mlir::Value, not by the DeviceBufferRef, to avoid false
   // negatives for no-op DeferredOps that get created by CopyTpuToTpu.
-  llvm::DenseSet<mlir::Value> aliased_inputs;
+  llvm::DenseSet<mlir::Value> donated_values;
 
   // Build an MlirOp for each deferred op in execution_order ordering, so that
   // inputs are built before their outputs.
@@ -497,9 +497,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
       deferred_inputs.push_back(mlir_op);
     }
 
-    // Get the MlirOps for all aliased inputs.
-    for (int64_t aliased_input_index : deferred_op.aliased_input_indices()) {
-      aliased_inputs.insert(deferred_inputs[aliased_input_index].getValue());
+    // Get the MlirOps for all donated inputs.
+    for (int64_t donated_input_index : deferred_op.donated_indices()) {
+      donated_values.insert(deferred_inputs[donated_input_index].getValue());
     }
 
     // Build the MlirOp.
@@ -547,17 +547,17 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   mlir::func::Return(fb, results);
   auto module = mb.build();
 
-  // Identify which inputs to the Traversal are aliased.
+  // Identify which inputs to the Traversal are donated.
   Indices donated_inputs;
-  if (!aliased_inputs.empty()) {
+  if (!donated_values.empty()) {
     for (int64_t i = 0; i < inputs.size(); ++i) {
       mlir::MlirOp input_op = ref_to_op_map[inputs[i]];
-      if (aliased_inputs.contains(input_op.getValue())) {
+      if (donated_values.contains(input_op.getValue())) {
         donated_inputs.push_back(i);
       }
     }
   }
-  if (!donated_inputs.empty()) {
+  if (!donated_values.empty()) {
     AnnotateBufferDonations(module.get(), donated_inputs);
   }
   return module;

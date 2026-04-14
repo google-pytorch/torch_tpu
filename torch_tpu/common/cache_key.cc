@@ -357,7 +357,7 @@ CompilationCacheKey ShapeDynamismMetadata::GetPadModuleCacheKey(
 
     const int padded_tensor_index = graph.AddOp(
         OpName::kPadUninitialized_, OpParamCacheKeys::Empty(),
-        /*aliased_inputs=*/{}, [&](GraphSignature::OpSignatureBuilder& op) {
+        /*donated_inputs=*/{}, [&](GraphSignature::OpSignatureBuilder& op) {
           op.AddInput(i);
           op.AddOutput(padded_dimensions, shape.dtype());
         });
@@ -370,7 +370,7 @@ CompilationCacheKey ShapeDynamismMetadata::GetPadModuleCacheKey(
             *OpParamCacheKeysBuilder().SetParam("dimension_index", d));
 
         const int dim_size_index = graph.AddOp(
-            OpName::kGetDimensionSize, params, /*aliased_inputs=*/{},
+            OpName::kGetDimensionSize, params, /*donated_inputs=*/{},
             [i](GraphSignature::OpSignatureBuilder& op) {
               op.AddInput(i);
               op.AddOutput({1}, mlir::ElementType::I32);
@@ -418,7 +418,7 @@ int GraphSignature::OpSignatureBuilder::AddOutput(
 
 int GraphSignature::AddOp(
     OpName op_name, const OpParamCacheKeys& op_param_cache_keys,
-    absl::Span<const int64_t> aliased_inputs,
+    absl::Span<const int64_t> donated_inputs,
     absl::FunctionRef<void(OpSignatureBuilder&)> builder) {
   if (!has_ops_) {
     has_ops_ = true;
@@ -439,11 +439,11 @@ int GraphSignature::AddOp(
 
   op_inputs_starts_.push_back(op_inputs_indices_.size());
 
-  for (int64_t aliased_input : aliased_inputs) {
+  for (int64_t donated_input : donated_inputs) {
     int op_input_index =
-        op_inputs_indices_[first_input_vec_index + aliased_input];
-    if (aliased_input_indices_set_.insert(op_input_index).second) {
-      aliased_input_indices_.push_back(op_input_index);
+        op_inputs_indices_[first_input_vec_index + donated_input];
+    if (donated_indices_set_.insert(op_input_index).second) {
+      donated_indices_.push_back(op_input_index);
     }
   }
 
@@ -457,15 +457,13 @@ void GraphSignature::AddGraphOutput(int index) {
 }
 
 CompilationCacheKey GraphSignature::cache_key() const {
-  auto sorted_aliased_input_indices = aliased_input_indices_;
-  std::sort(sorted_aliased_input_indices.begin(),
-            sorted_aliased_input_indices.end());
+  auto sorted_donated_indices = donated_indices_;
+  std::sort(sorted_donated_indices.begin(), sorted_donated_indices.end());
 
   const ShapelessKey shapeless_key = {FingerprintCat(
       graph_output_indices_, tensor_dimensions_starts_, tensor_element_types_,
-      sorted_aliased_input_indices, op_inputs_starts_, op_inputs_indices_,
-      op_names_, op_param_cache_keys_starts_, op_param_cache_keys_,
-      op_outputs_indices_)};
+      sorted_donated_indices, op_inputs_starts_, op_inputs_indices_, op_names_,
+      op_param_cache_keys_starts_, op_param_cache_keys_, op_outputs_indices_)};
   const DimensionsKey dimensions_key(tensor_dimensions_);
   return {
       .shapeless_key = shapeless_key,

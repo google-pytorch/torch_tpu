@@ -117,7 +117,7 @@ struct DispatchOpOptions {
   std::optional<mlir::ElementType> computation_dtype;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
-  Indices aliased_input_indices = {};
+  Indices donated_indices = {};
 };
 
 // Specialization for the case where the number of outputs is unknown at compile
@@ -132,7 +132,7 @@ struct DispatchOpOptions<kDynamicSize> {
   std::optional<mlir::ElementType> computation_dtype;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
-  Indices aliased_input_indices = {};
+  Indices donated_indices = {};
 };
 
 // Specialization for the case where the number of outputs is 1.
@@ -146,7 +146,7 @@ struct DispatchOpOptions<1> {
   std::optional<mlir::ElementType> computation_dtype;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
-  Indices aliased_input_indices = {};
+  Indices donated_indices = {};
 };
 
 namespace internal {

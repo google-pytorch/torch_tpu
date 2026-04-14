@@ -428,7 +428,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
       DeviceBufferList::CreateDeferred(
           op_name, std::move(op_builder), std::move(inputs),
           std::move(options.op_param_cache_keys), std::move(output_shapes),
-          options.split_mode, std::move(options.aliased_input_indices)));
+          options.split_mode, std::move(options.donated_indices)));
 
   auto eager_mode = GetEagerMode();
   if ((eager_mode == EagerMode::kDeferNever) ||

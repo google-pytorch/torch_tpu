@@ -18,8 +18,9 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
-from collections.abc import Mapping
-from typing import Any, Callable, Sequence
+import pathlib
+from typing import Any, Callable, Mapping, Sequence
+import warnings
 from absl import logging
 import frozendict
 import torch
@@ -239,6 +240,7 @@ class JaxCallable:
       mesh: jax.sharding.Mesh | None = None,
       input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       static_argnums: tuple[int, ...] = (),
+      donate_argnums: Sequence[int] | None = None,
       input_output_aliases: Mapping[int, int] | None = None,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
@@ -263,9 +265,11 @@ class JaxCallable:
         partition specs for each input tensor.
       static_argnums: Tuple of argument positions that are compile-time
         constants.
-      input_output_aliases: A mapping of input indices to output indices that
-        alias each input. See docs for jax.experimental.pallas.pallas_call.
+      donate_argnums: Indices of arguments to donate. See `jax.jit`.
+      input_output_aliases: Indices of arguments to alias. This is deprecated
+        and will be removed soon.
     """
+
     self.name = name
     self.trace_key = trace_key
     self.output_shapes = {}  # cache output shapes per kernel specialization
@@ -273,9 +277,28 @@ class JaxCallable:
     self.input_partition_specs = input_partition_specs
     self.static_argnums = static_argnums
     self.exported = jax.export.export(jit_fn, platforms=["tpu"])
-    self.input_output_aliases = (
-        dict(input_output_aliases) if input_output_aliases is not None else {}
-    )
+    if input_output_aliases is not None:
+      warnings.warn(
+          "input_output_aliases is deprecated and will be removed soon. Please"
+          " use donate_argnums instead.",
+          DeprecationWarning,
+          skip_file_prefixes=(str(pathlib.Path(__file__).parent),),
+      )
+      self.input_output_aliases = dict(input_output_aliases)
+      # If donate_argnums is also provided, it must match.
+      if donate_argnums is not None and self.input_output_aliases.keys() != set(
+          donate_argnums
+      ):
+        raise ValueError(
+            "donate_argnums must be None or the same as the keys of"
+            " input_output_aliases."
+        )
+      self.donate_argnums = list(self.input_output_aliases.keys())
+    else:
+      self.donate_argnums = (
+          list(donate_argnums) if donate_argnums is not None else []
+      )
+      self.input_output_aliases = {}
 
     logging.debug("Creating JAX callable: %s", self)
 
@@ -339,8 +362,12 @@ class JaxCallable:
         kernel_key,
         inputs=tensor_args,
         output_shapes=output_shapes,
-        input_output_aliases=self.input_output_aliases,
+        donate_argnums=self.donate_argnums,
     )
+
+    for in_idx, out_idx in self.input_output_aliases.items():
+      args[in_idx].copy_(results[out_idx])
+
     return out_tree.unflatten(results)
 
 
@@ -348,6 +375,7 @@ def custom_jax_kernel(
     jax_fn: Callable[..., Any] | None = None,
     name: str | None = None,
     static_argnums: tuple[int, ...] = (),
+    donate_argnums: Sequence[int] | None = None,
     input_output_aliases: Mapping[int, int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
@@ -384,9 +412,9 @@ def custom_jax_kernel(
       name if not provided.
     static_argnums: Tuple of argument positions that are compile-time constants.
       These args can be non-tensors and are used for caching by value.
-    input_output_aliases: A mapping of input indices to output indices that
-      alias each input. Optional, default is no aliasing. This must match the
-      settings of `donate_argnums` and/or `donate_argnames` in jit_kwargs.
+    donate_argnums: The arguments to donate.
+    input_output_aliases: Indices of arguments to alias. This is deprecated and
+      will be removed soon.
     mesh: If using a distributed kernel, provide the device mesh.
     input_partition_specs: If using a distributed kernel, provide the input
       partition specs for each input tensor.
@@ -422,6 +450,7 @@ def custom_jax_kernel(
         mesh=mesh,
         input_partition_specs=input_partition_specs,
         static_argnums=static_argnums,
+        donate_argnums=donate_argnums,
         input_output_aliases=input_output_aliases,
     )
 
