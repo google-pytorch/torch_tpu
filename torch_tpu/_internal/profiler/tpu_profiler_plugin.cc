@@ -152,6 +152,8 @@ void TpuKinetoProfilerSession::start() {
   opts.set_host_tracer_level(2);
   // python_tracer_level: 0=disabled, 1=enabled.
   opts.set_python_tracer_level(0);
+  // Enable HLO proto capture for compiler orchestration events.
+  opts.set_enable_hlo_proto(true);
 
   // TODO(b/500368753): Introduce custom config parsing.
 
