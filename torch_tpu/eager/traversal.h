@@ -56,7 +56,7 @@
 //   - kMaterialized: the DeviceBufferRef references a materialized PjRtBuffer.
 //                    This PjRtBuffer must be passed to the final compiled
 //                    PjRtLoadedExecutable as an argument at execution time.
-//   - kZeroSize:     the DeviceBufferRef represents zero data. This means it
+//   - Zero-sized:    the DeviceBufferRef represents zero data. This means it
 //                    functions as a constant. This is an input/leaf node, but
 //                    is not an argument, and will be "baked in" to the final
 //                    compiled executable rather than passed in as a parameter.
@@ -236,8 +236,6 @@ class Traversal {
   //
   // Properties:
   //   - All tensors (if any) in inputs are unique
-  //   - No tensor in inputs is a deferred node (kDeferred state); only
-  //     kMaterialized, kZeroSized, and kPlaceholder.
   //   - All tensors (if any) in execution_order are unique.
   //   - All tensors (if any) in execution_order are deferred nodes (kDeferred
   //   state).
@@ -267,7 +265,7 @@ class Traversal {
 
   // The inputs to the Traversal are all DeviceBufferRefs which are leaf nodes
   // in the graph. This includes arguments (kMaterialized or kPlaceholder)
-  // zero-sized constants (kZeroSized).
+  // and zero-sized constants.
   std::vector<DeviceBufferRef> inputs_;
   // In eager mode, zero-sized constants are treated as graph inputs.
   // In compiled mode, these may not necessarily be graph inputs as the inputs

@@ -377,7 +377,7 @@ absl::Status Traversal::ValidateAndReorderInputs(
     // marked as used then they are not "true" inputs and we can handle them
     // separately. This allows us to maintain the invariant that FX graph and
     // our own traversed inputs are always the same.
-    if (!used && input.state() == DeviceBufferRefState::kZeroSize) {
+    if (!used && input.num_elements() == 0) {
       non_input_zero_sized_consts_.push_back(input);
       continue;
     }
@@ -404,7 +404,7 @@ namespace {
 
 mlir::MlirOp BufferToArgument(mlir::func::FunctionBuilder& fb,
                               const DeviceBufferRef& input) {
-  if (input.state() == DeviceBufferRefState::kZeroSize) {
+  if (input.num_elements() == 0) {
     auto type = makeTensorType(fb.getContext(), input.dimensions(),
                                input.element_type());
     // In compiled mode we can still have zero-sized tensors as explicit
@@ -632,9 +632,6 @@ void StreamInputDebug(
     absl::flat_hash_map<DeviceBufferRef, size_t>& buffer_to_index) {
   StreamBufferRefDebug(os, input, buffer_index);
   switch (input.state()) {
-    case DeviceBufferRefState::kZeroSize:
-      os << " <- zero-sized constant";
-      break;
     case DeviceBufferRefState::kMaterialized:
       os << " <- input " << arg_index++ << " (materialized)";
       break;
@@ -829,9 +826,6 @@ std::string GraphvizVertexParams(
     }
     os << ToString(ref.element_type()) << ToString(ref.dimensions());
     switch (ref.state()) {
-      case DeviceBufferRefState::kZeroSize:
-        os << " (zero-sized constant)";
-        break;
       case DeviceBufferRefState::kMaterialized:
         os << " (materialized)";
         break;

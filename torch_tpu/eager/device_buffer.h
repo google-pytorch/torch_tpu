@@ -88,14 +88,12 @@
 //     executed. It contains a list of DeviceBufferRefs that represent the
 //     inputs to the operation.
 //
-// While "materialized" and "deferred" are the most common states, two special
-// "dataless" cases also exist:
-//   - A tensor that represents zero bytes, e.g. `torch.tensor([])`, doesn't
-//     need either a physical buffer or a deferred operation; it's just nothing.
-//   - To support full-graph compiled mode, we know the shapes and dtypes of
-//     inputs in advance, but we need to trace the FX graph without real data.
-//     For this, we define a "placeholder" state, which represents a tensor that
-//     will be provided in the future when the compiled function is executed.
+// While "materialized" and "deferred" are the most common states, A special
+// "dataless" cases also exists. To support full-graph compiled mode, we know
+// the shapes and dtypes of inputs in advance, but we need to trace the FX graph
+// without real data. For this, we define a "placeholder" state, which
+// represents a tensor that will be provided in the future when the compiled
+// function is executed.
 //
 // This is generally a low-level implementation detail that should be invisible
 // to most users of PyTorch or libtorch; the at::Tensors at the surface level
@@ -109,10 +107,7 @@
 namespace torch_tpu {
 
 // The current evaluation state of a referenced buffer in a DeviceBufferList.
-// Valid state transitions are:
-//   kDeferred -> kMaterialized: executing a deferred op.
-//   kZeroSize -> kMaterialized: providing a zero-sized PjRtBuffer (pointless,
-//                               but harmless).
+// kDeferred may transition to kMaterialized when the deferred op is executed.
 // kMaterialized is an absorbing state. Once the data exists, it is immutable.
 // kPlaceholder DeviceBufferRefs cannot change state; they can be used for
 // compilation, but later executions will use different kMaterialized buffers.
@@ -121,8 +116,6 @@ enum class DeviceBufferRefState {
   kMaterialized,
   // The reference is to a deferred operation that has not been applied.
   kDeferred,
-  // The reference represents a zero-element tensor.
-  kZeroSize,
   // The reference represents a tensor for the purposes of compiled mode, but
   // doesn't actually have any data on-device. All compiled mode leaf inputs
   // must be placeholders, but eager mode tensors should never be placeholders.
@@ -812,9 +805,8 @@ class DeviceBufferList {
 
   [[nodiscard]] bool IsMaterializedOrZeroState() const {
     for (auto i = 0; i < size(); ++i) {
-      auto s = state(i);
-      if (s != DeviceBufferRefState::kMaterialized &&
-          s != DeviceBufferRefState::kZeroSize) {
+      if (state(i) != DeviceBufferRefState::kMaterialized &&
+          size_bytes(i) != 0) {
         return false;
       }
     }

@@ -68,6 +68,14 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   ABSL_VLOG(1) << "[AtenCopyFrom] TPU -> CPU copy path for "
                << ToString(src, "src");
 
+  if (src.numel() == 0) {
+    // Shortcut: no data to move, just set dest's storage to an empty
+    // c10::StorageImpl.
+    at::Tensor empty_dest = at::empty(dest.sizes(), dest.options());
+    dest.unsafeGetTensorImpl()->set_storage_keep_dtype(empty_dest.storage());
+    return absl::OkStatus();
+  }
+
   // Materialize if deferred, no-op if already materialized.
   // If src is a view, this will materialize both the base buffer and the
   // ephemeral view buffer.
@@ -76,13 +84,6 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     return GetMaterialized(src);
   }());
 
-  if (materialized_src_buf.state() == DeviceBufferRefState::kZeroSize) {
-    // Shortcut: no data to move, just set dest's storage to an empty
-    // c10::StorageImpl.
-    at::Tensor empty_dest = at::empty(dest.sizes(), dest.options());
-    dest.unsafeGetTensorImpl()->set_storage_keep_dtype(empty_dest.storage());
-    return absl::OkStatus();
-  }
   ABSL_CHECK_EQ(materialized_src_buf.state(),  // CRASH_OK
                 DeviceBufferRefState::kMaterialized)
       << "expected materialized buffer after GetMaterialized";
