@@ -1,0 +1,11 @@
+diff --git a/python/private/python_register_toolchains.bzl b/python/private/python_register_toolchains.bzl
+--- a/python/private/python_register_toolchains.bzl
++++ b/python/private/python_register_toolchains.bzl
+@@ -95,2 +95,7 @@
+     python_version = full_version(version = python_version, minor_mapping = minor_mapping)
++    print("DEBUG: rules_python: requesting registration for name=%s version=%s" % (name, python_version))
++    if python_version not in tool_versions:
++        print("WARNING: rules_python: Skipping registration for version '%s' as it is missing from tool_versions metadata." % python_version)
++        return struct(impl_repos = [])
++
+     python_version_kind = kwargs.pop("python_version_kind", "")

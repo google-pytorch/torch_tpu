@@ -18,6 +18,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_test.bzl", "py_test")
+load("@rules_shell//shell:sh_test.bzl", _sh_test = "sh_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "use_pywrap_rules",
@@ -26,6 +27,8 @@ load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test")
+
+sh_test = _sh_test
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -724,6 +727,8 @@ def _get_subpackage_targets_named(name):
         # Allow the include matching results to be empty.
         allow_empty = True,
     ):
+        if subpackage == "oss":
+            continue
         target_path = "//{}/{}:{}".format(current_package, subpackage, name)
         targets.append(target_path)
     return targets

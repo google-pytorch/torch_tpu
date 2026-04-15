@@ -15,6 +15,7 @@
 load(
     "//build_files:build_defs.bzl",
     "oss_target",
+    "sh_test",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",

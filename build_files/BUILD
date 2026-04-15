@@ -41,6 +41,7 @@ bzl_library(
         "//torch_tpu/google/build_rules:py_platform_test_bzl",
         "@rules_cc//cc:core_rules",
         "@rules_python//python:py_test_bzl",
+        "@rules_shell//shell:rules_bzl",
         "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     ],
 )

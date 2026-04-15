@@ -1,0 +1,32 @@
+--- a/third_party/rules_cc_toolchain/toolchain_config.bzl	2026-03-26 17:53:13.000000000 +0000
++++ b/third_party/rules_cc_toolchain/toolchain_config.bzl	2026-04-22 05:56:01.000000000 +0000
+@@ -18,6 +18,13 @@
+ # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++load("@rules_cc//cc/toolchains:cc_toolchain_config_info.bzl", _CcToolchainConfigInfo = "CcToolchainConfigInfo")
++load("@rules_cc//cc:defs.bzl", _CcInfo = "CcInfo")
++
++# Robust lookups
++CcInfo = _CcInfo or getattr(cc_common, "CcInfo", None)
++CcToolchainConfigInfo = _CcToolchainConfigInfo or getattr(cc_common, "CcToolchainConfigInfo", None)
++
+ # SOFTWARE.
+ 
+ load(
+--- a/cc/tests/cpu/BUILD	2026-03-26 17:53:13.000000000 +0000
++++ b/cc/tests/cpu/BUILD	2026-04-22 05:56:01.000000000 +0000
+@@ -1,3 +1,5 @@
++load("@rules_python//python:defs.bzl", "py_binary", "py_test")
++
+ # Copyright 2025 Google LLC
+ #
+ # Licensed under the Apache License, Version 2.0 (the "License");
+--- a/cc/sanitizers/tests/BUILD	2026-03-26 17:53:13.000000000 +0000
++++ b/cc/sanitizers/tests/BUILD	2026-04-22 05:56:01.000000000 +0000
+@@ -1,3 +1,5 @@
++load("@rules_cc//cc:defs.bzl", "cc_test")
++
+ 
+ #############################################
+ # Sanitizers

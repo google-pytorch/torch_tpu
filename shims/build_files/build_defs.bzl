@@ -14,6 +14,10 @@
 
 """Shim for build_defs."""
 
+load("@rules_shell//shell:sh_test.bzl", _sh_test = "sh_test")
+
+sh_test = _sh_test
+
 def add_internal_filesystem_dependencies():
     return []
 

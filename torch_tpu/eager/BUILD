@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "oss_target", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "oss_target", "sh_test", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],

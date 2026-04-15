@@ -10,7 +10,7 @@ common --check_visibility=false
 # while we have 3.12 configured.
 common --repo_env=HERMETIC_PYTHON_VERSION=3.12
 
-common --enable_bzlmod=false --enable_workspace=true
+common --enable_bzlmod=true --enable_workspace=true
 
 # Enable usage of pywrap rules for pybind_extension.
 common --repo_env=USE_PYWRAP_RULES=1
@@ -140,7 +140,7 @@ build:faster --jobs=HOST_CPUS*20
 # Skip checking if an e.g. genrule output was changed manually.
 build:faster --experimental_check_output_files=false
 # Bazel 9 feature: skip checking files on the local host.
-# build:faster --experimental_check_external_other_files=false
+build:faster --experimental_check_external_other_files=false
 
 # Config to aid debugging.
 # "standalone" means "local" -- run things locally so its easier to
@@ -273,9 +273,6 @@ common:remote_execution_readonly --google_default_credentials
 common:remote_execution_readonly --jobs=200
 common:remote_execution_readonly --remote_timeout=3600
 common:remote_execution_readonly --test_timeout=3600
-# This define is probably vestigial, but it's not entirely clear.
-# Revisit removing this with Bazel 9.
-common:remote_execution_readonly --define=EXECUTOR=remote
 common:remote_execution_readonly --remote_executor=grpcs://remotebuildexecution.googleapis.com
 common:remote_execution_readonly --extra_execution_platforms="@ml_build_config_platform//:platform"
 

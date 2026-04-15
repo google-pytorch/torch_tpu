@@ -42,20 +42,20 @@ http_archive(
 load("//bazel:wheel_deps.bzl", "torch_tpu_deps_repo")
 load("//bazel:wheel_version.bzl", "torch_tpu_version_repo")
 
-torch_tpu_deps_repo(
-    name = "torch_tpu_deps",
-    pyproject_toml = "//:pyproject.toml",
-    requirements_txt = "//requirements:requirements.txt",
-)
+# torch_tpu_deps_repo(
+#     name = "torch_tpu_deps",
+#     pyproject_toml = "//:pyproject.toml",
+#     requirements_txt = "//requirements:requirements.txt",
+# )
 
-torch_tpu_version_repo(
-    name = "torch_tpu_version",
-    pyproject_toml = "//:pyproject.toml",
-)
+# torch_tpu_version_repo(
+#     name = "torch_tpu_version",
+#     pyproject_toml = "//:pyproject.toml",
+# )
 
-load("//bazel:xla_repo.bzl", "xla_repo")
+# load("//bazel:xla_repo.bzl", "xla_repo")
 
-xla_repo()
+# xla_repo()
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 
@@ -86,13 +86,13 @@ load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains"
 
 python_init_toolchains()
 
-load("//bazel:pip_parse.bzl", "torch_tpu_pip_parse")
-
-torch_tpu_pip_parse()
-
-load("@pypi//:requirements.bzl", "install_deps")
-
-install_deps()
+# load("//bazel:pip_parse.bzl", "torch_tpu_pip_parse")
+#
+# torch_tpu_pip_parse()
+#
+# load("@pypi//:requirements.bzl", "install_deps")
+#
+# install_deps()
 
 load("@xla//:workspace2.bzl", "xla_workspace2")
 

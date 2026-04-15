@@ -1,0 +1,183 @@
+module(name = "torch_tpu")
+
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "rules_foreign_cc", version = "0.12.0")
+bazel_dep(name = "rules_go", version = "0.53.0")
+bazel_dep(name = "abseil-cpp", version = "20240722.0", repo_name = "com_google_absl")
+bazel_dep(name = "googletest", version = "1.15.2", repo_name = "com_google_googletest")
+bazel_dep(name = "protobuf", version = "28.2", repo_name = "com_google_protobuf")
+bazel_dep(name = "grpc", version = "1.70.1", repo_name = "com_github_grpc_grpc")
+single_version_override(
+    module_name = "grpc",
+    patch_cmds = [
+        "sed -i 's/native.cc_library/cc_library/g' bazel/cc_grpc_library.bzl",
+        "sed -i '1i load(\"@rules_cc//cc:cc_library.bzl\", \"cc_library\")' bazel/cc_grpc_library.bzl",
+        "find bazel/ -name \"*.bzl\" -exec sed -i 's/providers = \\[\"files_to_run\"\\]/providers = \\[\\]/g' {} +",
+    ],
+    version = "1.70.1",
+)
+
+archive_override(
+    module_name = "rules_foreign_cc",
+    patch_args = ["-p1"],
+    patch_cmds = [
+        "sed -i 's/, dev_dependency = True//' MODULE.bazel",
+        "grep -rl \"incompatible_use_toolchain_transition\" . | xargs sed -i '/incompatible_use_toolchain_transition =/d' || true",
+        "find . -name \"*.bzl\" | xargs grep -l \"CcInfo\" | xargs sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' || true",
+    ],
+    sha256 = "a2e6fb56e649c1ee79703e99aa0c9d13c6cc53c8d7a0cbb8797ab2888bbc99a3",
+    strip_prefix = "rules_foreign_cc-0.12.0",
+    urls = ["https://github.com/bazelbuild/rules_foreign_cc/releases/download/0.12.0/rules_foreign_cc-0.12.0.tar.gz"],
+)
+
+archive_override(
+    module_name = "rules_go",
+    patch_args = ["-p1"],
+    patch_cmds = [
+        "echo 'bazel_dep(name = \"rules_cc\", version = \"0.0.9\")' >> MODULE.bazel",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' go/private/rules/cgo.bzl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' go/private/actions/archive.bzl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' go/private/rules/binary.bzl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' go/private/rules/cross.bzl",
+    ],
+    sha256 = "b78f77458e77162f45b4564d6b20b6f92f56431ed59eaaab09e7819d1d850313",
+    urls = ["https://github.com/bazelbuild/rules_go/releases/download/v0.53.0/rules_go-v0.53.0.zip"],
+)
+
+# Matching JAX/XLA's rules_python version and configuration.
+bazel_dep(name = "rules_python", version = "1.8.5", repo_name = "rules_python")
+single_version_override(
+    module_name = "rules_python",
+    patch_strip = 1,
+    patches = [
+        "//bazel/patches/rules_python:rules_python_pip_version.patch",
+        "//bazel/patches/rules_python:rules_python_freethreaded.patch",
+        "//bazel/patches/rules_python:rules_python_versions.patch",
+        "//bazel/patches/rules_python:rules_python_scope.patch",
+        "//bazel/patches/rules_python:rules_python_debug.patch",
+    ],
+    version = "1.8.5",
+)
+
+# Explicitly configure the python extension.
+# We strict-pin to 3.11 and 3.12 to avoid the 3.14.0b2 registration crash.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.defaults(
+    python_version = "3.12",
+    python_version_env = "HERMETIC_PYTHON_VERSION",
+)
+python.toolchain(python_version = "3.11")
+python.toolchain(python_version = "3.12")
+
+# We list only the specific repos we need to avoid triggering auto-discovery
+# of other versions in the hub.
+use_repo(python, "python_3_11", "python_3_12", "python_versions")
+
+bazel_dep(name = "rules_ml_toolchain")
+bazel_dep(name = "xla")
+
+archive_override(
+    module_name = "rules_ml_toolchain",
+    patch_args = ["-p1"],
+    patch_cmds = [
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")\\nload(\"@rules_cc//cc/toolchains:cc_toolchain_config_info.bzl\", \"CcToolchainConfigInfo\")' third_party/rules_cc_toolchain/toolchain_config.bzl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"CcInfo\")' cc/sysroots/collect_cc_libraries.bzl",
+        "sed -i '1i load(\"@rules_python//python:defs.bzl\", \"py_binary\", \"py_test\")' cc/tests/cpu/BUILD",
+        "sed -i \"s/\\\"cc_test\\\")/\\\"cc_test\\\", \\\"cc_import\\\")/g\" cc/tests/cpu/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_test\")' cc/sanitizers/tests/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_binary\", \"cc_test\")' cc/tests/gpu/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_test\")' cc/tests/gpu/sycl/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_binary\", \"cc_test\")' gpu/tests/BUILD.bazel",
+        "sed -i '1i load(\"@rules_python//python:defs.bzl\", \"py_binary\")' py/rules_pywrap/BUILD.bazel",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_toolchain\")' cc/impls/linux_aarch64_linux_aarch64/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_toolchain\")' cc/impls/linux_x86_64_linux_aarch64/BUILD",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_library\", \"cc_test\")' gpu/cuda/build_defs.bzl.tpl",
+        "sed -i \"s/native.cc_library/cc_library/g\" gpu/cuda/build_defs.bzl.tpl",
+        "sed -i \"s/native.cc_test/cc_test/g\" gpu/cuda/build_defs.bzl.tpl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_library\")' gpu/sycl/build_defs.bzl.tpl",
+        "sed -i \"s/native.cc_library/cc_library/g\" gpu/sycl/build_defs.bzl.tpl",
+        "sed -i '1i load(\"@rules_cc//cc:defs.bzl\", \"cc_library\")' gpu/nccl/build_defs.bzl.tpl",
+        "sed -i \"s/native.cc_library/cc_library/g\" gpu/nccl/build_defs.bzl.tpl",
+    ],
+    sha256 = "9bd46bc5e06a56a9335897be630d4b820c678281aa88302518c250921338ad22",
+    strip_prefix = "rules_ml_toolchain-40efd07eb8e6565e506562f36d7dc43cd83e5b32",
+    urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/40efd07eb8e6565e506562f36d7dc43cd83e5b32.tar.gz"],
+)
+
+archive_override(
+    module_name = "xla",
+    patch_args = ["-p1"],
+    patch_cmds = [
+        "sed -i '/@tsl\\/\\/:bazel_issue_21519/d' xla/tsl/platform/default/rules_cc.bzl",
+        "sed -i '/plugin_flags =/d' xla/tsl/platform/default/build_config.bzl",
+        "sed -i 's/if create_grpc_library:/if create_grpc_library or has_services:/' xla/tsl/platform/default/build_config.bzl",
+    ],
+    patches = ["//bazel/patches/xla:xla_cc_info.patch"],
+    sha256 = "e18f6c76a56dacd4b8958be2b3d8730329cbe4de4461f1124d1ecbb2262b5d8c",
+    strip_prefix = "xla-61ddf312a72d2146c600983479214f59dc365178",
+    urls = ["https://github.com/openxla/xla/archive/61ddf312a72d2146c600983479214f59dc365178.tar.gz"],
+)
+
+# Bridge XLA dependencies into the main repo mapping
+tsl_extension = use_extension("@xla//third_party/extensions:tsl.bzl", "tsl_extension")
+use_repo(tsl_extension, "tsl")
+
+llvm = use_extension("@xla//third_party/extensions:llvm.bzl", "llvm_extension")
+use_repo(llvm, "llvm-project")
+
+third_party = use_extension("@xla//third_party/extensions:third_party.bzl", "third_party_ext")
+use_repo(
+    third_party,
+    "dlpack",
+    "eigen_archive",
+    "gloo",
+    "nanobind",
+    "shardy",
+    "stablehlo",
+    "triton",
+)
+
+rbe_config = use_extension("@xla//third_party/extensions:rbe_config.bzl", "rbe_config_ext")
+use_repo(rbe_config, "ml_build_config_platform")
+
+python_version_ext = use_extension("@xla//third_party/extensions:python_version.bzl", "python_version_ext")
+use_repo(python_version_ext, "python_version_repo")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    extra_hub_aliases = {
+        "torch": [
+            "torch_headers",
+            "torch_libs",
+        ],
+    },
+    extra_pip_args = [
+        "--index-url",
+        "https://pypi.org/simple",
+        "--extra-index-url",
+        "https://download.pytorch.org/whl/cpu",
+    ],
+    hub_name = "pypi",
+    python_version = "3.12",
+    requirements_lock = "//requirements:requirements.txt",
+    whl_modifications = {
+        "@pypi_mods//:torch.json": "torch",
+    },
+)
+pip.whl_mods(
+    # Note: We use @torch_tpu instead of @// because this is evaluated in the context of the wheel repo.
+    additive_build_content = """
+load("@torch_tpu//bazel:pip_parse_targets.bzl", "define_extra_torch_targets")
+define_extra_torch_targets()
+""",
+    hub_name = "pypi_mods",
+    whl_name = "torch",
+)
+use_repo(pip, "pypi", "pypi_mods", "pypi_torch")
+
+internal_deps = use_extension("//bazel:extension.bzl", "internal_deps")
+use_repo(internal_deps, "torch_tpu_deps", "torch_tpu_version")
