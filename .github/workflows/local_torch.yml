@@ -1,0 +1,184 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI - Build and Test against PyTorch Repo
+
+on:
+  # Enable remote connections. Add a workflow dispatch to enable halting.
+  # See go/ml-github-actions:connect#enable-workflow-dispatch.
+  workflow_dispatch:
+    inputs:
+      halt-for-connection:
+        description: 'Should this workflow run wait for a remote connection?'
+        type: choice
+        default: 'no'
+        options:
+          - 'yes'
+          - 'no'
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    # Stagger the schedule by 30 minutes to reduce contention with other nightly workflows.
+    # Run every 4 hours every day in UTC (starts at 00:30, 04:30, etc.).
+    - cron: "30 */4 * * *"
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+# Cancel old jobs when they are replaced by new runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Don't cancel in-progress jobs for main branch.
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+jobs:
+  build_wheel_with_local_pytorch:
+    name: "Build Wheel on ${{ matrix.job_info.runner }}"
+    # Run nightly, or on PRs explicitly tagged with 'ci:local-torch'.
+    if: >-
+      github.event_name == 'schedule' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:local-torch')
+    strategy:
+      matrix:
+        job_info: [
+          {
+            runner: "linux-x86-ct6e-180-8tpu",
+            bazel_config: "ci_tpu_on_v6",
+          },
+          {
+            runner: "linux-x86-tpu7x-224-4tpu",
+            bazel_config: "ci_tpu_on_v7",
+          }
+        ]
+    # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
+    # workflow is required.
+    # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
+    runs-on: ${{ matrix.job_info.runner }}
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+    steps:
+      # Checkout torch_tpu into its own subdirectory: ${{ github.workspace }}/torch_tpu
+      - name: Checkout TorchTPU
+        uses: actions/checkout@v5
+        with:
+          path: torch_tpu
+
+      # Enable remote connections. Add a waiting step.
+      # See go/ml-github-actions:connect#add-waiting-step.
+      - name: Wait for Connection
+        uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Determine PyTorch Ref
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          # Default to the head of branch 'viable/strict'. Postsubmit uses a pinned version.
+          if [ "${{ github.event_name }}" == "push" ]; then
+            source ci/env/pytorch_revision.env
+            echo "PYTORCH_REF=$PYTORCH_COMMIT" >> $GITHUB_ENV
+            echo "Using pinned PyTorch commit: $PYTORCH_COMMIT"
+          else
+            echo "PYTORCH_REF=refs/heads/viable/strict" >> $GITHUB_ENV
+            echo "Using PyTorch branch viable/strict."
+          fi
+
+      # Checkout upstream PyTorch into a parallel subdirectory: ${{ github.workspace }}/pytorch
+      - name: Checkout PyTorch Head
+        uses: actions/checkout@v5
+        with:
+          repository: pytorch/pytorch
+          path: pytorch
+          ref: ${{ env.PYTORCH_REF }}
+          submodules: recursive  # Required because PyTorch heavily relies on submodules.
+          fetch-depth: 1  # Only fetch the latest commit.
+
+      # Set up Local PyTorch.
+      - name: Compile Local PyTorch
+        working-directory: ${{ github.workspace }}/pytorch
+        run: |
+          # 1. Install Build Tools.
+          pip install uv
+          uv pip install --system cmake ninja wheel
+          uv pip install --system -r requirements.txt
+
+          # 2. Fix PATH: Ensure the runner can find locally installed binaries.
+          # System package managers often drop binaries (like cmake/ninja) into user-local directory
+          # (typically /root/.local/bin/). We expose it so the PyTorch build system doesn't crash.
+          export PATH="/root/.local/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
+
+          # 3. Deep clean PyTorch's internal build cache to force a fresh CMake run.
+          rm -rf build/ dist/
+
+          # 4. Configure PyTorch Build Options.
+          # Disable massive C++ subsystems we don't need (CUDA, ROCm, test binaries).
+          export USE_CUDA=0
+          export USE_ROCM=0
+          export BUILD_TEST=0
+          # Explicitly force Ninja to use all available cores on the massive TPU runners.
+          export MAX_JOBS=$(nproc)
+
+          # 5. Build PyTorch Binary Distribution Wheel
+          # Building a wheel forces CMake to gather every single header, library and generated file,
+          # resolve all symlinks, and package them into `torch/include` and `torch/lib` folder
+          # structures.
+          uv build --wheel --no-build-isolation
+
+          # 6. Install the Wheel.
+          # Unpack a pristine, symlink-free `torch` folder right into the runner's `site-packages` /
+          # `dist-packages` directory so Bazel can locate it later.
+          uv pip install --system dist/torch*.whl
+
+          echo "SUCCESS: PyTorch is fully compiled and installed in the system!"
+
+      - name: Export PyTorch Location
+        run: |
+          # Ask Python to find the directory containing the installed 'torch' folder.
+          # E.g., /usr/local/lib/python3.12/dist-packages
+          TORCH_DIR=$(python -c "import torch, os; print(os.path.dirname(os.path.dirname(torch.__file__)))")
+          echo "TORCH_SOURCE=$TORCH_DIR" >> $GITHUB_ENV
+          echo "Saved PyTorch location to global env: $TORCH_DIR"
+
+      # Build the TorchTPU wheel against the local PyTorch
+      - name: Build TorchTPU wheel
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          bazel build -c opt //ci/wheel:torch_tpu_wheel \
+            --define TORCH_SOURCE=local \
+            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
+
+      # Verify the TorchTPU wheel installs correctly in isolation.
+      # Installing the wheel into an ephemeral and isolated virtual environment to prove the wheel
+      # is valid without polluting the global environment and shadowing the source code during Bazel
+      # tests.
+      - name: Verify Wheel Installation
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          uv run --isolated --with bazel-bin/ci/wheel/torch_tpu-*.whl \
+            python -c "import torch_tpu; print('Successfully installed TorchTPU against local PyTorch!')"
+
+      - name: Run Bazel Tests
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          bazel test //... \
+            --config=${{ matrix.job_info.bazel_config }} \
+            --config=no_rbe \
+            --google_default_credentials=true \
+            --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
+            --define TORCH_SOURCE=local \
+            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
