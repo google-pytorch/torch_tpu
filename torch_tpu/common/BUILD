@@ -37,6 +37,20 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "context_manager",
+    srcs = ["context_manager.cc"],
+    hdrs = ["context_manager.h"],
+    deps = [
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "unique_file_descriptor",
     srcs = ["unique_file_descriptor.cc"],
     hdrs = ["unique_file_descriptor.h"],

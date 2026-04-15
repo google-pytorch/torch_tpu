@@ -165,6 +165,7 @@ torch_tpu_cc_library(
     deps = [
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
+        "//torch_tpu/common:context_manager",
         "@stablehlo//:stablehlo_ops",
     ],
 )
