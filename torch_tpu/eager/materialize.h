@@ -110,7 +110,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
 // PjRtBuffers will not be ready until the executable reaches the front of the
 // materialization queue, is Executed, and the execution completes.
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
-    SharedLoadedExecutable executable, std::vector<DeviceBufferRef> inputs,
+    SharedLoadedExecutable executable, std::vector<DeviceBufferRef> arguments,
     absl::Span<const Shape> output_shapes, std::string_view task_name = "");
 
 // Sets the output nodes as error.

@@ -41,7 +41,8 @@ namespace {
 // key, but much more prone to collisions.
 inline std::size_t QuickHash(const Traversal& t) {
   size_t seed = 0;
-  HashCombine(seed, t.inputs().size());
+  HashCombine(seed, t.arguments().size());
+  HashCombine(seed, t.zero_sized_constants().size());
   HashCombine(seed, t.execution_order().size());
   HashCombine(seed, t.outputs().size());
   if (!t.outputs().empty()) {

@@ -70,17 +70,33 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<Traversal> Traversal::Create(
-    std::vector<DeviceBufferRef> outputs,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        stopping_points) {
-  ABSL_VLOG(1) << "[Traversal::Create] creating Traversal";
-  tsl::profiler::TraceMe t([] { return "Traversal::Create"; });
+namespace {
 
-  // This will contain the traversal inputs.
-  std::vector<DeviceBufferRef> inputs;
-  // This will contain a topological sort of the internal traversal nodes.
-  std::vector<SharedDeviceBufferList> execution_order;
+// Temporary working memory for Traversal::Create.
+// Discarded after the depth-first walk of the graph is complete.
+struct TraversalCreateState {
+  explicit TraversalCreateState(
+      const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+          stopping_points)
+      : stopping_points(stopping_points) {}
+
+  // Initializes the stack with output nodes that have deferred ops.
+  // Non-deferred output nodes are added directly to arguments or zero sized
+  // constants in Parts.
+  void InitializeStack(Traversal::Parts& parts);
+
+  // Pops the top node from the stack and processes it, updating the Parts
+  // as needed.
+  absl::Status ProcessTopOfStack(Traversal::Parts& parts);
+
+  // Processes a single node input, adding it to the appropriate section of the
+  // Parts and pushing it onto the stack if necessary.
+  void ProcessNodeInput(Traversal::Parts& parts, const DeviceBufferRef& input);
+
+  // Stopping points for the traversal. These are treated as inputs to the
+  // graph, regardless of whether they have a deferred op or not.
+  const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+      stopping_points;
   // A stack of deferred nodes to process in depth first, by traversing reverse
   // edges.
   std::stack<SharedDeviceBufferList> stack;
@@ -92,9 +108,11 @@ absl::StatusOr<Traversal> Traversal::Create(
   absl::flat_hash_map<const DeviceBufferList*, Color> visited_deferred;
   // Tracks inputs already visited.
   absl::flat_hash_set<DeviceBufferRef> visited_inputs;
+};
 
+void TraversalCreateState::InitializeStack(Traversal::Parts& parts) {
   // Populate the stack with the nodes feeding the graph outputs.
-  for (const auto& output : outputs) {
+  for (const auto& output : parts.outputs) {
     // If the output node has a deferred op, then we must consider it for the
     // DFS traversal; otherwise, it is an input and we store it as such.
     auto& node = output.device_buffer_list();
@@ -105,86 +123,119 @@ absl::StatusOr<Traversal> Traversal::Create(
       }
     } else {
       if (visited_inputs.insert(output).second) {
-        inputs.push_back(output);
+        parts.arguments.push_back(output);
       }
     }
   }
+}
 
-  while (!stack.empty()) {
-    auto node = stack.top();
+void TraversalCreateState::ProcessNodeInput(Traversal::Parts& parts,
+                                            const DeviceBufferRef& input) {
+  const auto& input_node = input.device_buffer_list();
+  // If the input doesn't have a deferred op, then it is an input to the
+  // graph.
+  // Stopping points are also treated as inputs, regardless of whether they
+  // have a deferred op or not.
+  if (!input.deferred_op() || stopping_points.contains(input_node.get())) {
+    // Deduplicate graph inputs.
+    if (!visited_inputs.insert(input).second) return;
 
-    // If a node has already been fully processed, then skip it. This happens
-    // for node C in the following graph if the nodes initially pushed on the
-    // stack are [A, C, B]: at the time we process B, we push node C on the
-    // stack again [A, C, B, C], to later rediscover the 1st instance of C on
-    // the stack that by then will be marked as kBlack.
-    //
-    // A -> B -> C
-    // |         ^
-    //  \_______/
-    //
-    if (auto it = visited_deferred.find(node.get());
-        it != visited_deferred.end() && it->second == Color::kBlack) {
-      stack.pop();
-      continue;
+    if (input.state() == DeviceBufferRefState::kZeroSize) {
+      parts.zero_sized_constants.push_back(input);
+    } else {
+      parts.arguments.push_back(input);
     }
-
-    const DeferredOp* deferred_op = node->deferred_op();
-    TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
-        << "Expected a deferred op";
-
-    size_t prev_stack_size = stack.size();
-    for (const auto& input : deferred_op->inputs()) {
-      auto& input_node = input.device_buffer_list();
-      // If the prev node has a deferred op, then we must consider it for the
-      // DFS traversal; otherwise, it is an input and we store it as such.
-      if (input_node->deferred_op()) {
-        // If the input node hasn't been visited yet, then push it on the stack
-        // and mark it as gray.
-        if (auto it = visited_deferred.find(input_node.get());
-            it == visited_deferred.end()) {
-          // We found a new deferred node, however if it is a stopping point
-          // then need to treat it as a traversal input.
-          if (!stopping_points.contains(input_node.get())) {
-            // Not a stopping point, add the newly discovered node to the stack.
-            stack.push(input_node);
-            visited_deferred.insert(
-                std::make_pair(input_node.get(), Color::kGray));
-          } else {
-            // A stopping point. Treat it as a graph input.
-            if (visited_inputs.insert(input).second) {
-              inputs.push_back(input);
-            }
-          }
-
-        } else if (it->second == Color::kGray) {
-          // A rediscovered gray node is pushed on the stack, again.
-          stack.push(input_node);
-        }
-
-      } else {
-        // A node without a deferred op is always treated as a graph input.
-        if (visited_inputs.insert(input).second) {
-          inputs.push_back(input);
-        }
-      }
-    }
-
-    // If we are done with this node, i.e., it didn't lead to adding more (gray)
-    // nodes to the stack, then we can remove it from the stack and add it to
-    // the execution order.
-    bool node_is_fully_processed = (stack.size() == prev_stack_size);
-    if (node_is_fully_processed) {
-      // Double check that node is still a reference to the top of the stack.
-      ABSL_CHECK(!stack.empty());        // CRASH_OK
-      ABSL_CHECK_EQ(stack.top(), node);  // CRASH_OK
-      visited_deferred.find(node.get())->second = Color::kBlack;
-      execution_order.push_back(node);
-      stack.pop();
-    }
+    return;
   }
-  auto traversal = Traversal(std::move(inputs), std::move(execution_order),
-                             std::move(outputs));
+
+  // The node has a deferred op and is not a stopping point.
+  // Have we already finished processing this node?
+  if (auto it = visited_deferred.find(input_node.get());
+      it != visited_deferred.end() && it->second == Color::kBlack) {
+    // We've already fully processed this node, so we don't need to add it
+    // to the stack again.
+    return;
+  }
+
+  // This is either a newly discovered deferred node, or a rediscovered but
+  // not yet fully processed node.
+  // Push it on the stack and (re-)mark it as gray.
+  stack.push(input_node);
+  visited_deferred[input_node.get()] = Color::kGray;
+}
+
+absl::Status TraversalCreateState::ProcessTopOfStack(Traversal::Parts& parts) {
+  TT_RET_CHECK(!stack.empty(), error::kOutOfRange) << "DFS stack is empty";
+  auto node = stack.top();
+
+  // If a node has already been fully processed, then skip it. This happens
+  // for node C in the following graph if the nodes initially pushed on the
+  // stack are [A, C, B]: at the time we process B, we push node C on the
+  // stack again [A, C, B, C], to later rediscover the 1st instance of C on
+  // the stack that by then will be marked as kBlack.
+  //
+  // A -> B -> C
+  // |         ^
+  //  \_______/
+  //
+  if (auto it = visited_deferred.find(node.get());
+      it != visited_deferred.end() && it->second == Color::kBlack) {
+    stack.pop();
+    return absl::OkStatus();
+  }
+
+  const DeferredOp* deferred_op = node->deferred_op();
+  TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
+      << "Expected a deferred op";
+
+  size_t prev_stack_size = stack.size();
+  for (const auto& input : deferred_op->inputs()) {
+    ProcessNodeInput(parts, input);
+  }
+
+  // If we are done with this node, i.e., it didn't lead to adding more (gray)
+  // nodes to the stack, then we can remove it from the stack and add it to
+  // the execution order.
+  bool node_is_fully_processed = (stack.size() == prev_stack_size);
+  if (node_is_fully_processed) {
+    // Double check that node is still a reference to the top of the stack.
+    ABSL_CHECK(!stack.empty());        // CRASH_OK
+    ABSL_CHECK_EQ(stack.top(), node);  // CRASH_OK
+    visited_deferred.find(node.get())->second = Color::kBlack;
+    parts.execution_order.push_back(node);
+    stack.pop();
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<Traversal> Traversal::Create(
+    std::vector<DeviceBufferRef> outputs,
+    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+        stopping_points) {
+  ABSL_VLOG(1) << "[Traversal::Create] creating Traversal";
+  tsl::profiler::TraceMe t([] { return "Traversal::Create"; });
+
+  // Create a Traversal::Parts object and initialize it with the outputs.
+  // We will populate the arguments, zero_sized_constants, and execution_order
+  // as we traverse the graph.
+  Traversal::Parts parts{.outputs = std::move(outputs)};
+
+  // Initialize the working memory for the traversal creation, using the
+  // stopping points to identify deferred graph inputs.
+  TraversalCreateState state(stopping_points);
+  state.InitializeStack(parts);
+
+  // Use the working memory to run the DFS, updating the Parts as we go.
+  while (!state.stack.empty()) {
+    TT_RETURN_IF_ERROR(state.ProcessTopOfStack(parts));
+  }
+
+  // Create the Traversal object from the populated Parts.
+  auto traversal = Traversal(
+      std::move(parts.arguments), std::move(parts.zero_sized_constants),
+      std::move(parts.execution_order), std::move(parts.outputs));
 #ifndef NDEBUG
   if (auto status = traversal.Validate(); !status.ok()) {
     LogLines(traversal.DebugString());
@@ -213,8 +264,9 @@ absl::StatusOr<Traversal> Traversal::CreateFromLinearRegion(
   ABSL_VLOG(1) << "[Traversal::CreateFromLinearRegion] Creating Traversal";
   tsl::profiler::TraceMe t([] { return "Traversal::CreateFromLinearRegion"; });
 
-  // This will contain the traversal inputs.
-  std::vector<DeviceBufferRef> inputs;
+  // arguments and zero_sized_constants will contain the traversal inputs.
+  std::vector<DeviceBufferRef> arguments;
+  std::vector<DeviceBufferRef> zero_sized_constants;
   // This will contain the traversal outputs.
   std::vector<DeviceBufferRef> outputs;
   // This will contain a sort of the internal traversal nodes.
@@ -228,7 +280,8 @@ absl::StatusOr<Traversal> Traversal::CreateFromLinearRegion(
   {
     TT_ASSIGN_OR_RETURN(Traversal tmp_traversal, Create(region));
     execution_order = std::move(tmp_traversal.execution_order_);
-    inputs = std::move(tmp_traversal.inputs_);
+    arguments = std::move(tmp_traversal.arguments_);
+    zero_sized_constants = std::move(tmp_traversal.zero_sized_constants_);
   }
 
   // Set of all buffers consumed as inputs by ops within the region.
@@ -271,8 +324,9 @@ absl::StatusOr<Traversal> Traversal::CreateFromLinearRegion(
     }
   }
 
-  auto traversal = Traversal(std::move(inputs), std::move(execution_order),
-                             std::move(outputs));
+  auto traversal =
+      Traversal(std::move(arguments), std::move(zero_sized_constants),
+                std::move(execution_order), std::move(outputs));
 #ifndef NDEBUG
   if (auto status = traversal.Validate(); !status.ok()) {
     LogLines(traversal.DebugString());
@@ -287,22 +341,17 @@ CompilationCacheKey Traversal::BuildCacheKey() const {
   // We will be building a GraphSignature object as a simplified
   // representation of the Traversal graph for the purposes of hashing.
   GraphSignature graph;
-  // TODO(aarfaian): the concept between true and de-facto inputs (stemming from
-  // the fact that eager mode always treats zero-sized constants as inputs,
-  // where compile mode may not necessarily behave the same) needs to be
-  // revisited with regard to variable naming here and throughout the rest of
-  // the Traversal implementation.
 
   absl::flat_hash_map<DeviceBufferRef, int> tensor_index_map;
 
   // Add all inputs to tensor-indexed properties.
-  for (const DeviceBufferRef& input : inputs()) {
-    tensor_index_map[input] =
-        graph.AddInput(input.dimensions(), input.element_type());
+  for (const DeviceBufferRef& argument : arguments()) {
+    tensor_index_map[argument] =
+        graph.AddInput(argument.dimensions(), argument.element_type());
   }
-  for (const DeviceBufferRef& zsc : non_input_zero_sized_consts()) {
-    tensor_index_map[zsc] =
-        graph.AddInput(zsc.dimensions(), zsc.element_type());
+  for (const DeviceBufferRef& zero_sized_constant : zero_sized_constants_) {
+    tensor_index_map[zero_sized_constant] = graph.AddInput(
+        zero_sized_constant.dimensions(), zero_sized_constant.element_type());
   }
 
   for (const SharedDeviceBufferList& node : execution_order()) {
@@ -335,58 +384,73 @@ CompilationCacheKey Traversal::BuildCacheKey() const {
   return graph.cache_key();
 }
 
-absl::Status Traversal::ValidateAndReorderInputs(
-    std::vector<DeviceBufferRef> inputs) {
-  ABSL_VLOG(1) << "[Traversal::ValidateAndReorderInputs] validating "
-                  "consistency of provided inputs";
-  // Check to make sure that inputs (the argument) is just a reordering of
-  // inputs_ (the previous list of inputs).
-  // Build a hashmap of the previous inputs, and mark all of them as unused.
-  absl::flat_hash_map<DeviceBufferRef, bool> prev_inputs;
-  for (const DeviceBufferRef& prev_input : inputs_) {
-    // By construction, Traversal::inputs_ should be unique.
+absl::Status Traversal::ValidateAndReorderArguments(
+    std::vector<DeviceBufferRef> arguments) {
+  ABSL_VLOG(1) << "[Traversal::ValidateAndReorderArguments] validating "
+                  "consistency of provided arguments";
+  // Every previous non-zero-sized argument must be present in the new
+  // arguments.
+  // Every previous zero-sized constant may be provided as a new argument, or
+  // can be excluded.
+  // New arguments (zero-sized or not) can be freely added; no DeferredOp will
+  // use them, but there's no cost to providing an unused value.
+  absl::flat_hash_map<DeviceBufferRef, bool> is_new_argument;
+  for (const DeviceBufferRef& prev_argument : arguments_) {
+    // By construction, Traversal::arguments_ should be unique.
     ABSL_CHECK(  // CRASH_OK
-        prev_inputs.insert_or_assign(prev_input, false).second)
-        << "Traversal::inputs_ has a duplicate input: "
-        << prev_input.DebugString();
+        is_new_argument.insert_or_assign(prev_argument, false).second)
+        << "Traversal::arguments_ has a duplicate argument: "
+        << prev_argument.DebugString();
+  }
+  for (const DeviceBufferRef& prev_zsc : zero_sized_constants_) {
+    // By construction, Traversal::zero_sized_constants_ should be unique, and
+    // should be a disjoint set from arguments_.
+    ABSL_CHECK(  // CRASH_OK
+        is_new_argument.insert_or_assign(prev_zsc, false).second)
+        << "Traversal::zero_sized_constants_ has a duplicate input: "
+        << prev_zsc.DebugString();
   }
 
-  // Checks that all provided inputs are non-deferred, are non-duplicates, and
-  // marks them as used.
-  for (const DeviceBufferRef& input : inputs) {
-    TT_RET_CHECK(input.state() != DeviceBufferRefState::kDeferred,
+  // Check that all provided arguments are non-deferred, are non-duplicates,
+  // and mark them as used.
+  for (const DeviceBufferRef& new_argument : arguments) {
+    TT_RET_CHECK(new_argument.state() != DeviceBufferRefState::kDeferred,
                  error::kInvalidArgument)
-        << "found a deferred input, which is not allowed: "
-        << input.DebugString();
-    auto it = prev_inputs.find(input);
-    if (it == prev_inputs.end()) {
-      // Allow unused inputs.
-      continue;
+        << "found a deferred argument, which is not allowed: "
+        << new_argument.DebugString();
+    if (auto it = is_new_argument.find(new_argument);
+        it != is_new_argument.end()) {
+      // Make sure the new arguments don't contain duplicates.
+      TT_RET_CHECK(!it->second, error::kInvalidArgument)
+          << "identified a duplicate argument: " << new_argument.DebugString();
+      it->second = true;
+    } else {
+      // arguments contains an input that wasn't present in the original graph.
+      // This is allowed; it'll just be an unused input in the graph.
+      is_new_argument[new_argument] = true;
     }
-    TT_RET_CHECK(!it->second, error::kInvalidArgument)
-        << "identified a duplicate input: " << input.DebugString();
-    it->second = true;
   }
 
-  // Check that all previous inputs are included in the new inputs.
-  for (const auto& [input, used] : prev_inputs) {
-    // If the graph has any zero-sized constants the traversal will include
-    // these as inputs by default. However, in compiled mode these inputs may
-    // not necessarily be included in the set of inputs expected by the FX
-    // graph. If we run across any zero-sized constants here that aren't already
-    // marked as used then they are not "true" inputs and we can handle them
-    // separately. This allows us to maintain the invariant that FX graph and
-    // our own traversed inputs are always the same.
-    if (!used && input.state() == DeviceBufferRefState::kZeroSize) {
-      non_input_zero_sized_consts_.push_back(input);
-      continue;
-    }
-    TT_RET_CHECK(used, error::kInvalidArgument)
-        << "identified an input that was not provided: " << input.DebugString();
+  // Check that the previous arguments are a subset of the new arguments.
+  for (const auto& prev_argument : arguments_) {
+    auto it = is_new_argument.find(prev_argument);
+    TT_RET_CHECK(it != is_new_argument.end() && it->second,
+                 error::kInvalidArgument)
+        << "previous argument not found in new arguments: "
+        << prev_argument.DebugString();
   }
-  inputs_ = std::move(inputs);
-  ABSL_VLOG(1) << "[Traversal::ValidateAndReorderInputs] New inputs are valid. "
-                  "Reordering inputs to match.";
+
+  // If an input that was previously a zero-sized constant has been promoted to
+  // an argument, it will no longer be considered a constant.
+  std::erase_if(zero_sized_constants_,
+                [&is_new_argument](const DeviceBufferRef& zsc) {
+                  auto it = is_new_argument.find(zsc);
+                  return it != is_new_argument.end() && it->second;
+                });
+  arguments_ = std::move(arguments);
+  ABSL_VLOG(1)
+      << "[Traversal::ValidateAndReorderArguments] New arguments are valid. "
+         "Reordering arguments to match.";
   return absl::OkStatus();
 }
 
@@ -404,13 +468,6 @@ namespace {
 
 mlir::MlirOp BufferToArgument(mlir::func::FunctionBuilder& fb,
                               const DeviceBufferRef& input) {
-  if (input.state() == DeviceBufferRefState::kZeroSize) {
-    auto type = makeTensorType(fb.getContext(), input.dimensions(),
-                               input.element_type());
-    // In compiled mode we can still have zero-sized tensors as explicit
-    // inputs and we handle those here.
-    return MakeConstant(fb, mlir::ArrayRef<int64_t>{}, type);
-  }
   Dimensions dimensions = CopyIntVector(input.dimensions());
   // If input has bounded dynamic dimensions, we assume we will receive an
   // input padded to the upper bound, along with the dimension sizes.
@@ -446,7 +503,9 @@ const PythonContext* absl_nullable Traversal::GetPythonContext() const {
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context) const {
   // Read the traversal's values.
-  absl::Span<const DeviceBufferRef> inputs = this->inputs();
+  absl::Span<const DeviceBufferRef> arguments = this->arguments();
+  absl::Span<const DeviceBufferRef> zero_sized_constants =
+      this->zero_sized_constants();
   absl::Span<const SharedDeviceBufferList> execution_order =
       this->execution_order();
   absl::Span<const DeviceBufferRef> outputs = this->outputs();
@@ -461,20 +520,23 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   // Add a function parameter for each argument DeviceBufferRef.
   RefToOpMap ref_to_op_map;
   ABSL_VLOG(2) << "[Traversal::BuildMlirModule] building MLIR ops for "
-               << inputs.size() << " inputs";
-  for (const DeviceBufferRef& input : inputs) {
-    ref_to_op_map[input] = BufferToArgument(fb, input);
+               << arguments.size() << " arguments";
+  for (const DeviceBufferRef& argument : arguments) {
+    // In eager mode, zero-sized tensors will only be constants, but in compiled
+    // mode FX may specify that a zero-sized tensor should be an argument.
+    // As such, arguments are always mlir::func::Argument ops, even if they are
+    // zero-sized.
+    ref_to_op_map[argument] = BufferToArgument(fb, argument);
   }
-
-  for (const DeviceBufferRef& zsc : non_input_zero_sized_consts()) {
+  ABSL_VLOG(2) << "[Traversal::BuildMlirModule] building MLIR ops for "
+               << zero_sized_constants.size() << " zero-sized constants";
+  for (const DeviceBufferRef& zsc : zero_sized_constants) {
     auto type =
         makeTensorType(mlir_context, zsc.dimensions(), zsc.element_type());
     ref_to_op_map[zsc] = MakeConstant(fb, mlir::ArrayRef<int64_t>{}, type);
   }
 
   // Identify which inputs are donated.
-  // Deduplicate by the mlir::Value, not by the DeviceBufferRef, to avoid false
-  // negatives for no-op DeferredOps that get created by CopyTpuToTpu.
   llvm::DenseSet<mlir::Value> donated_values;
 
   // Build an MlirOp for each deferred op in execution_order ordering, so that
@@ -547,11 +609,11 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   mlir::func::Return(fb, results);
   auto module = mb.build();
 
-  // Identify which inputs to the Traversal are donated.
+  // Identify which arguments to the Traversal are donated.
   Indices donated_inputs;
-  if (!donated_values.empty()) {
-    for (int64_t i = 0; i < inputs.size(); ++i) {
-      mlir::MlirOp input_op = ref_to_op_map[inputs[i]];
+  if (!donated_inputs.empty()) {
+    for (int64_t i = 0; i < arguments.size(); ++i) {
+      mlir::MlirOp input_op = ref_to_op_map[arguments[i]];
       if (donated_values.contains(input_op.getValue())) {
         donated_inputs.push_back(i);
       }
@@ -573,21 +635,22 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         return BuildMlirModule(mlir_context);
       };
   ABSL_VLOG(1) << "[Compile] cache_key: " << cache_key();
-  std::vector<Shape> input_shapes;
-  input_shapes.reserve(inputs_.size());
-  for (const auto& input : inputs_) {
-    Shape input_shape(CopyIntVector(input.dimensions()), input.element_type());
-    for (const auto& dynamic_dim : input.dynamic_dimensions()) {
-      input_shape.dynamic_dimensions().push_back(dynamic_dim);
+  std::vector<Shape> argument_shapes;
+  argument_shapes.reserve(arguments_.size());
+  for (const auto& argument : arguments_) {
+    Shape arg_shape(CopyIntVector(argument.dimensions()),
+                    argument.element_type());
+    for (const auto& dynamic_dim : argument.dynamic_dimensions()) {
+      arg_shape.dynamic_dimensions().push_back(dynamic_dim);
     }
-    input_shapes.push_back(std::move(input_shape));
+    argument_shapes.push_back(std::move(arg_shape));
   }
 
   TT_ASSIGN_OR_RETURN(UniqueCompileOptions compile_options,
                       MakeCompilerOptions(compilation_mode));
 
   return CompilationCache::GetInstance().GetOrCompile(
-      cache_key(), input_shapes, std::move(final_op_builder),
+      cache_key(), argument_shapes, std::move(final_op_builder),
       std::move(compile_options));
 }
 
@@ -699,8 +762,12 @@ std::string Traversal::DebugString() const {
   size_t buffer_index = 0;
   absl::flat_hash_map<DeviceBufferRef, size_t> buffer_to_index;
   os << "Inputs:\n";
-  for (const auto& input : inputs_) {
-    StreamInputDebug(os, input, arg_index, buffer_index, buffer_to_index);
+  for (const auto& arg : arguments_) {
+    StreamInputDebug(os, arg, arg_index, buffer_index, buffer_to_index);
+  }
+  for (const auto& zero_sized_constant : zero_sized_constants_) {
+    StreamInputDebug(os, zero_sized_constant, arg_index, buffer_index,
+                     buffer_to_index);
   }
   os << "Execution Order:\n";
   for (const SharedDeviceBufferList& node : execution_order_) {
@@ -855,9 +922,12 @@ absl::Status Traversal::Validate() const {
   size_t buffer_index = 0;
   absl::flat_hash_map<DeviceBufferRef, size_t> buffer_to_index;
 
-  // Get buffers from the traversal's inputs.
-  for (const auto& input : inputs_) {
-    buffer_to_index[input] = buffer_index++;
+  // Get buffers from the traversal's arguments and zero-sized constants.
+  for (const auto& argument : arguments_) {
+    buffer_to_index[argument] = buffer_index++;
+  }
+  for (const auto& zero_sized_constant : zero_sized_constants_) {
+    buffer_to_index[zero_sized_constant] = buffer_index++;
   }
 
   // Validate internal buffers.
@@ -897,8 +967,8 @@ absl::Status Traversal::Validate() const {
 }
 
 bool Traversal::IsBoundedDynamic() const {
-  for (const DeviceBufferRef& input : inputs_) {
-    if (!input.dynamic_dimensions().empty()) {
+  for (const DeviceBufferRef& argument : arguments_) {
+    if (!argument.dynamic_dimensions().empty()) {
       return true;
     }
   }
@@ -909,9 +979,18 @@ absl::StatusOr<std::string> GetGraphviz(
     const Traversal& traversal,
     const absl::flat_hash_map<DeviceBufferRef, std::string>&
         buffer_ref_to_python_var) {
+  std::vector<DeviceBufferRef> inputs;
+  inputs.reserve(traversal.arguments().size() +
+                 traversal.zero_sized_constants().size());
+  for (const auto& argument : traversal.arguments()) {
+    inputs.push_back(argument);
+  }
+  for (const auto& zero_sized_constant : traversal.zero_sized_constants()) {
+    inputs.push_back(zero_sized_constant);
+  }
   TT_ASSIGN_OR_RETURN(
       GraphvizGraph graph,
-      GraphvizGraph::Create(traversal.inputs(), traversal.execution_order()));
+      GraphvizGraph::Create(inputs, traversal.execution_order()));
 
   std::string result =
       "Graphviz string: (try pasting in http://graphviz/ to see the graph)\n"

@@ -366,24 +366,37 @@ std::string DeviceBufferRef::DebugString() const {
 
 DeviceBufferRefState DeviceBufferList::state(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
-  // If a DeferredOp would produce only zero-sized tensors, we can avoid ever
-  // materializing it.
-  // If a DeferredOp produces a mix of zero-sized and non-zero-sized tensors, we
-  // only need to execute it if the non-zero-sized tensors are required;
-  // this will also produce some zero-sized PjRtBuffers that can be ignored.
-  // In either case, we identify zero-sized tensors as kZeroSize (even if a
-  // DeferredOp or PjRtBuffer happens to exist for it).
+  // In eager mode, we try to avoid materializing zero-sized PjRtBuffers.
+  // However, we may need to materialize them in two cases:
+  //   1. A DeferredOp produces both zero-sized and non-zero-sized tensors.
+  //      If this gets executed, then we have the zero-sized PjRtBuffer anyway.
+  //   2. In compiled mode, FX may expect to provide a zero-sized tensor as an
+  //      input. To align with this, we will materialize all inputs (even those
+  //      that are zero-sized).
+  if (std::holds_alternative<MaterializedBuffers>(data_)) {
+    return DeviceBufferRefState::kMaterialized;
+  }
+  // If a DeviceBufferRef is zero sized, then it can be treated as a constant
+  // by downstream operations.
+  // For example, even if a DeviceBufferList has a DeferredOp, calling .cpu() on
+  // a zero-sized output will not force materialization.
   for (int64_t dim : shapes_[index].dimensions()) {
     if (dim == 0) {
       return DeviceBufferRefState::kZeroSize;
     }
   }
+  // If a DeviceBufferRef is not zero-sized and has a DeferredOp, then it is
+  // deferred. Anything which requires the value of the buffer will need to
+  // materialize it first.
   if (std::holds_alternative<DeferredOp>(data_)) {
     return DeviceBufferRefState::kDeferred;
   }
-  if (std::holds_alternative<MaterializedBuffers>(data_)) {
-    return DeviceBufferRefState::kMaterialized;
-  }
+  // A DeviceBufferRef that represents a non-zero amount of data but does not
+  // have either a materialized buffor, or a DeferredOp describing how to
+  // compute it, is a placeholder.
+  // This is only used for arguments to tracing an FX graph in compiled mode,
+  // where the argument's actual data will be provided at later calls to the
+  // compiled function.
   return DeviceBufferRefState::kPlaceholder;
 }
 

@@ -78,8 +78,8 @@
 // not the graph relationship between them.
 // Additionally, DAG traversal orderings are not unique. To ensure that the
 // Python-level input ordering is aligned with the PjRtLoadedExecutable
-// argument ordering, we need to explicitly reorder the list of inputs, using
-// ValidateAndReorderInputs. Once reordered, the compilation can use
+// argument ordering, we need to explicitly reorder the list of arguments, using
+// ValidateAndReorderArguments. Once reordered, the compilation can use
 // BuildMlirFunction.
 // Because compiled mode does not immediately execute the compiled executable,
 // it is valid to compile using compilation placeholder inputs, and
@@ -142,17 +142,25 @@ class Traversal {
     return *cache_key_;
   }
 
-  // Validates that the provided inputs are a valid reordering of the
-  // Traversal's inputs, and if they are, overwrites the previous inputs_ with
+  // Validates that the provided arguments are a valid reordering of the
+  // Traversal's arguments and/or zero_sized_constants, and if they are,
+  // overwrites the previous arguments_ with
   // these new inputs. This is used by compiled_mode.cc to align argument
   // ordering between Python and PjRt interfaces.
-  // The provided inputs must be the same set of DeviceBufferRefs as the
-  // existing inputs_, but may be in a different order.
-  absl::Status ValidateAndReorderInputs(std::vector<DeviceBufferRef> inputs);
+  // The provided arguments must include all prior non-zero-sized arguments; it
+  // may or may not include zero-sized DeviceBufferRefs.
+  absl::Status ValidateAndReorderArguments(
+      std::vector<DeviceBufferRef> arguments);
 
-  // Returns the graph inputs (non-deferred leaf nodes).
-  [[nodiscard]] absl::Span<const DeviceBufferRef> inputs() const {
-    return inputs_;
+  // Returns the graph arguments that should be used to call an executable
+  // compiled from this traversal.
+  [[nodiscard]] absl::Span<const DeviceBufferRef> arguments() const {
+    return arguments_;
+  }
+  // Returns any zero-sized tensors which are baked into the compiled executable
+  // as constants.
+  [[nodiscard]] absl::Span<const DeviceBufferRef> zero_sized_constants() const {
+    return zero_sized_constants_;
   }
 
   // Returns a topological sort of the deferred ops in the graph needed for
@@ -191,7 +199,8 @@ class Traversal {
 
   // The core components of a Traversal, returned by IntoParts().
   struct Parts {
-    std::vector<DeviceBufferRef> inputs;
+    std::vector<DeviceBufferRef> arguments;
+    std::vector<DeviceBufferRef> zero_sized_constants;
     std::vector<SharedDeviceBufferList> execution_order;
     std::vector<DeviceBufferRef> outputs;
   };
@@ -200,8 +209,8 @@ class Traversal {
   // invalid) Traversal behind. This is used once the invariants upheld by the
   // Traversal are no longer required.
   [[nodiscard]] Parts IntoParts() {
-    return {std::move(inputs_), std::move(execution_order_),
-            std::move(outputs_)};
+    return {std::move(arguments_), std::move(zero_sized_constants_),
+            std::move(execution_order_), std::move(outputs_)};
   }
 
   // Returns the Python context for the Traversal.
@@ -226,29 +235,38 @@ class Traversal {
  private:
   // Private constructor, only called by Traversal::Create().
   // Definitions:
-  //   - inputs:    non-deferred nodes in the graph. These are always leaf
-  //                nodes, as only deferred nodes can have input edges.
-  //   - execution_order: deferred nodes in the graph. These may be leaf nodes
-  //   (for
-  //                nullary ops), but are more commonly branch or root nodes.
-  //   - outputs:   the final outputs of the computation. These can be any
-  //                nodes in the graph, but are most commonly root nodes.
+  //   - arguments:            the arguments to the Traversal. At runtime, these
+  //                           must be provided as materialized PjRtBuffers to
+  //                           invoke the compiled executable.
+  //   - zero_sized_constants: zero-sized tensors that are baked into the
+  //                           compiled executable as constants.
+  //   - execution_order:      deferred nodes in the graph. These may be leaf
+  //                           nodes (for nullary ops), but are more commonly
+  //                           branch or root nodes.
+  //   - outputs:              the final outputs of the computation. These can
+  //                           be any nodes in the graph, but are most commonly
+  //                           branch or root nodes.
   //
   // Properties:
-  //   - All tensors (if any) in inputs are unique
-  //   - No tensor in inputs is a deferred node (kDeferred state); only
-  //     kMaterialized, kZeroSized, and kPlaceholder.
+  //   - All tensors (if any) in arguments are unique
+  //   - All tensors (if any) in zero_sized_constants are unique
+  //   - No tensor appears in both arguments and zero_sized_constants.
+  //   - All tensors (if any) in zero_sized_constants are zero-sized.
   //   - All tensors (if any) in execution_order are unique.
   //   - All tensors (if any) in execution_order are deferred nodes (kDeferred
   //   state).
-  //   - Each deferred node in execution_order only depends on tensors in inputs
-  //     and/or lower-indexed execution_order nodes.
+  //   - Each deferred node in execution_order only depends on tensors in
+  //     arguments, zero_sized_constants, and/or lower-indexed execution_order
+  //     nodes.
   //   - All tensors in outputs are unique, and there is at least one output.
-  //   - Each tensor in outputs is present in either inputs or execution_order.
-  Traversal(std::vector<DeviceBufferRef> inputs,
+  //   - Each tensor in outputs is present in arguments, zero_sized_constants,
+  //     or execution_order.
+  Traversal(std::vector<DeviceBufferRef> arguments,
+            std::vector<DeviceBufferRef> zero_sized_constants,
             std::vector<SharedDeviceBufferList> execution_order,
             std::vector<DeviceBufferRef> outputs)
-      : inputs_(std::move(inputs)),
+      : arguments_(std::move(arguments)),
+        zero_sized_constants_(std::move(zero_sized_constants)),
         execution_order_(std::move(execution_order)),
         outputs_(std::move(outputs)) {}
 
@@ -257,24 +275,19 @@ class Traversal {
   // Validates that the traversal is sound.
   absl::Status Validate() const;
 
-  // Returns zero-sized constants that are not explicit inputs in compiled mode.
-  // In eager mode, this will return an empty span as zero-sized constants are
-  // always considered to be graph inputs.
-  [[nodiscard]] absl::Span<const DeviceBufferRef> non_input_zero_sized_consts()
-      const {
-    return non_input_zero_sized_consts_;
-  }
+  // The arguments to the Traversal are the values that need to be provided
+  // when invoking the compiled executable.
+  // In eager mode, this will be all materialized inputs; zero-sized tensors
+  // will be baked into the compiled executable as constants.
+  // In compiled mode, these will either be placeholder inputs, or (in some
+  // cases) zero-sized tensors provided as inputs to the FX graph.
+  std::vector<DeviceBufferRef> arguments_;
 
-  // The inputs to the Traversal are all DeviceBufferRefs which are leaf nodes
-  // in the graph. This includes arguments (kMaterialized or kPlaceholder)
-  // zero-sized constants (kZeroSized).
-  std::vector<DeviceBufferRef> inputs_;
-  // In eager mode, zero-sized constants are treated as graph inputs.
-  // In compiled mode, these may not necessarily be graph inputs as the inputs
-  // are what is dictated by the FX graph. In order to maintain the input
-  // equivalency invariant between our traversal and the FX graph we track these
-  // separately. This will only be populated in compiled mode.
-  std::vector<DeviceBufferRef> non_input_zero_sized_consts_;
+  // In eager mode, zero-sized tensors are constants; their value never changes
+  // (always "no data"). In compiled mode, zero-sized tensors can either be
+  // constants, or they may be placeholder inputs.
+  std::vector<DeviceBufferRef> zero_sized_constants_;
+
   // A execution_order traversal of the deferred ops in the graph.
   // Each op only depends on arguments, constants, and lower-indexed ops.
   std::vector<SharedDeviceBufferList> execution_order_;

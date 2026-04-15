@@ -287,7 +287,7 @@ absl::Status MaterializationWorker::MaterializeQueue(
 
   struct ExecutionTask {
     std::string name;
-    std::vector<DeviceBufferRef> inputs;
+    std::vector<DeviceBufferRef> arguments;
     std::vector<DeviceBufferRef> outputs;
     CompiledKernel compiled_kernel;
     std::vector<SharedDeviceBufferList> execution_order;
@@ -336,7 +336,7 @@ absl::Status MaterializationWorker::MaterializeQueue(
     Traversal::Parts traversal_parts = traversal.IntoParts();
     execution_tasks.push_back(ExecutionTask{
         .name = std::move(name),
-        .inputs = std::move(traversal_parts.inputs),
+        .arguments = std::move(traversal_parts.arguments),
         .outputs = std::move(traversal_parts.outputs),
         .compiled_kernel = std::move(compiled_kernel),
         .execution_order = std::move(traversal_parts.execution_order)});
@@ -364,12 +364,12 @@ absl::Status MaterializationWorker::MaterializeQueue(
 
     ABSL_VLOG(1) << "[MaterializationWorker] Executing region "
                  << execution_task.name
-                 << " inputs: " << execution_task.inputs.size()
+                 << " argument count: " << execution_task.arguments.size()
                  << " outputs: " << execution_task.outputs.size();
 
-    TT_RETURN_IF_ERROR(
-        ExecuteMaterializationJob(execution_task.inputs, execution_task.outputs,
-                                  executables, execution_task.name));
+    TT_RETURN_IF_ERROR(ExecuteMaterializationJob(
+        execution_task.arguments, execution_task.outputs, executables,
+        execution_task.name));
 
     ABSL_VLOG(1)
         << "[MaterializationWorker] Marking region ops as executed: task="

@@ -118,7 +118,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
                       Traversal::Create(std::move(result_refs)),
                       _.SetPrepend() << "failed to traverse graph: ");
   TT_RETURN_IF_ERROR(
-      traversal.ValidateAndReorderInputs(std::move(argument_refs)))
+      traversal.ValidateAndReorderArguments(std::move(argument_refs)))
           .SetPrepend()
       << "failed to validate and reorder inputs: ";
   TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
