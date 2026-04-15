@@ -27,10 +27,10 @@ def _create_shadow_tree(rctx, torch_path):
         "torch",
         "torchgen",
         "include",
-        "third_party",
         "build",
         "tools",
         "cmake",
+        "functorch",
     ]
     for d in dirs_to_link:
         src_dir = "{source}/{dir}".format(source = torch_path, dir = d)
@@ -47,11 +47,18 @@ def _create_shadow_tree(rctx, torch_path):
             # TODO(ecalubaquib): Remove GNU specific cp command with starlark portable solution.
             rctx.execute(["cp", "-as", src_dir + "/.", dest_dir + "/"])
 
+    # Link specific third-party subdirectories needed for PyTorch.
+    # By default, we link common dependencies, but users can override this in the
+    # repository rule attributes to avoid conflicts (e.g. with absl or protobuf).
+    for d in rctx.attr.third_party_dirs:
+        src_dir = "{source}/third_party/{dir}".format(source = torch_path, dir = d)
+        if rctx.path(src_dir).exists:
+            dest_dir = "site-packages/third_party/{dir}".format(dir = d)
+            rctx.execute(["mkdir", "-p", dest_dir])
+            rctx.execute(["cp", "-as", src_dir + "/.", dest_dir + "/"])
+
             # Break the documented infinite symlink loop in ittapi if it exists.
-            # Upstream 'ittapi' (used by PyTorch third_party/ittapi) contains a recursive symlink in
-            # its Rust bindings. Bazel's file-system tracker cannot handle
-            # circular symlinks and will hang or fail during analysis.
-            if d == "third_party":
+            if d == "ittapi":
                 rctx.execute(["rm", "-rf", "site-packages/third_party/ittapi/rust/ittapi-sys/c-library"])
 
     # Special handling for libraries in 'torch/lib' or 'build/lib'
@@ -128,6 +135,10 @@ torch_local_repo = repository_rule(
     implementation = _torch_local_repo_impl,
     environ = ["TORCH_SOURCE"],  # Triggers rebuild if this var changes
     attrs = {
+        "third_party_dirs": attr.string_list(
+            default = ["fmt", "onnx", "pybind11", "kineto", "ittapi"],
+            doc = "Subdirectories inside third_party/ to symlink. Selective to avoid absl/protobuf conflicts.",
+        ),
         "_torch_local_defs": attr.label(
             default = ":torch_local_defs.bzl",
             allow_single_file = True,

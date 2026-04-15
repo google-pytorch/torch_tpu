@@ -70,8 +70,12 @@ cc_library(
     ] + select({
         ":use_local_torch": [
             "@local_torch//:libc10",
+            "@local_torch//:libshm",
+            "@local_torch//:libtorch",
             "@local_torch//:libtorch_cpu",
+            "@local_torch//:libtorch_global_deps",
             "@local_torch//:libtorch_python",
+            "@rules_python//python/cc:current_py_cc_libs",
         ],
         "//conditions:default": [
             "@pypi_torch//:libc10",
@@ -85,6 +89,7 @@ cc_library(
     deps = select({
         ":use_local_torch": [
             "@local_torch//:libc10",
+            "@local_torch//:libtorch",
             "@local_torch//:libtorch_cpu",
         ],
         "//conditions:default": [
@@ -112,6 +117,20 @@ cc_library(
         "//conditions:default": [
             "@pypi//torch:torch_headers",
             "@rules_python//python/cc:current_py_cc_headers",
+        ],
+    }),
+)
+
+cc_library(
+    name = "torch_python",
+    deps = select({
+        ":use_local_torch": [
+            "@local_torch//:libtorch_python",
+            "@rules_python//python/cc:current_py_cc_libs",
+        ],
+        "//conditions:default": [
+            "@pypi//torch:torch_headers",
+            "@rules_python//python/cc:current_py_cc_libs",
         ],
     }),
 )

@@ -144,6 +144,7 @@ def define_torch_local(name, is_source_mode = True):
         srcs = native.glob(py_library_source_mapping([
             "torch/**/*",
             "torchgen/**/*",
+            "functorch/**/*",
         ])),
     )
     py_library(
@@ -152,6 +153,7 @@ def define_torch_local(name, is_source_mode = True):
         srcs = native.glob(py_library_source_mapping([
             "torch/**/*.py",
             "torchgen/**/*.py",
+            "functorch/**/*.py",
         ])),
         data = native.glob(py_library_source_mapping([
             "torch/**/*.so*",
@@ -165,6 +167,7 @@ def define_torch_local(name, is_source_mode = True):
             "torchgen/**/*.pyi",
             "torchgen/**/*.yaml",
             "torchgen/**/*.json",
+            "functorch/**/*.pyi",
         ])),
         imports = ["site-packages"],
         experimental_venvs_site_packages = "@rules_python//python/config_settings:venvs_site_packages",
@@ -176,5 +179,7 @@ def define_torch_local(name, is_source_mode = True):
             "@pypi//numpy",
             "@pypi//sympy",
             "@pypi//typing_extensions",
+            "@pypi//setuptools",
+            "@pypi//filelock",
         ],
     )
