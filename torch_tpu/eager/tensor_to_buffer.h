@@ -83,11 +83,10 @@ absl::StatusOr<DeviceBufferRef> GetBaseBufferFromStorage(
 //
 // If the tensor is a view, then the returned DeviceBufferRef will always be
 // in the kDeferred state, with a DeferredOp that will convert the inner
-// contiguous base buffer into the view's layout, unless the view is zero-sized,
-// in which case it will be kZeroSize.
+// contiguous base buffer into the view's layout.
 //
 // The returned value may be in any DeviceBufferRefState, including
-// kMaterialized, kDeferred, kZeroSize, and kPlaceholder. Callers are
+// kMaterialized, kDeferred, and kPlaceholder. Callers are
 // responsible for handling any unexpected states; for example, erroring on a
 // kPlaceholder state before calling a PjRtLoadedExecutable.
 absl::StatusOr<DeviceBufferRef> GetBufferFromAtTensor(const at::Tensor& tensor);

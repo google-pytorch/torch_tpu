@@ -304,21 +304,6 @@ void DebugDeferredOpState(std::ostream& os, const DeferredOp& deferred_op) {
   os << "deferred, op_name: " << deferred_op.op_name();
 }
 
-void DebugMonostate(std::ostream& os, absl::Span<const int64_t> dimensions) {
-  bool is_zero_size = false;
-  for (int64_t dim : dimensions) {
-    if (dim == 0) {
-      is_zero_size = true;
-      break;
-    }
-  }
-  if (is_zero_size) {
-    os << "zero_size";
-  } else {
-    os << "placeholder";
-  }
-}
-
 // Logs the data variant state with one of these formats:
 //   materialized, pjrt_buffer addr 0x1234567890, on_device_shape: f32[8,16]
 //   materialized, pjrt_buffer addr 0x1234567890, deleted
@@ -334,7 +319,7 @@ void DebugDataState(std::ostream& os,
   } else if (buffers != nullptr) {
     DebugMaterializedState(os, *buffers);
   } else {
-    DebugMonostate(os, dimensions);
+    os << "placeholder";
   }
 }
 
@@ -366,18 +351,6 @@ std::string DeviceBufferRef::DebugString() const {
 
 DeviceBufferRefState DeviceBufferList::state(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
-  // If a DeferredOp would produce only zero-sized tensors, we can avoid ever
-  // materializing it.
-  // If a DeferredOp produces a mix of zero-sized and non-zero-sized tensors, we
-  // only need to execute it if the non-zero-sized tensors are required;
-  // this will also produce some zero-sized PjRtBuffers that can be ignored.
-  // In either case, we identify zero-sized tensors as kZeroSize (even if a
-  // DeferredOp or PjRtBuffer happens to exist for it).
-  for (int64_t dim : shapes_[index].dimensions()) {
-    if (dim == 0) {
-      return DeviceBufferRefState::kZeroSize;
-    }
-  }
   if (std::holds_alternative<DeferredOp>(data_)) {
     return DeviceBufferRefState::kDeferred;
   }
@@ -405,8 +378,7 @@ int64_t DeviceBufferList::num_elements(int64_t index) const {
 
 absl::Status DeviceBufferList::Synchronize() const {
   for (auto i = 0; i < size(); ++i) {
-    if (state(i) == DeviceBufferRefState::kZeroSize ||
-        state(i) == DeviceBufferRefState::kPlaceholder) {
+    if (state(i) == DeviceBufferRefState::kPlaceholder) {
       continue;
     }
     TT_ASSIGN_OR_RETURN(auto* pjrt_buffer, GetOrMaterializeBuffer(i));
@@ -655,20 +627,8 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateEmpty(
 
 absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateZeroSize(
     Dimensions dimensions, mlir::ElementType element_type) {
-  bool is_zero_sized = false;
-  for (int64_t dim : dimensions) {
-    if (dim == 0) {
-      is_zero_sized = true;
-      break;
-    }
-  }
-  TT_RET_CHECK(is_zero_sized, error::kInvalidArgument)
-      << "CreateZeroSize requires a zero-sized tensor, but got: "
-      << ToString(dimensions);
-  // Can't use make_shared because the constructor is private.
-  auto device_buffer = std::shared_ptr<DeviceBufferList>(
-      new DeviceBufferList(std::move(dimensions), element_type));
-  return DeviceBufferRef(std::move(device_buffer), 0);
+  return DeviceBufferList::CreateConstant(
+      /*cpu_tensor_data=*/{}, std::move(dimensions), element_type);
 }
 
 absl::StatusOr<DeviceBufferRef> DeviceBufferList::MakePlaceholder(

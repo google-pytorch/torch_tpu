@@ -158,10 +158,11 @@ absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>> GetRootArgs(
         root_args.push_back(pjrt_buffer);
         break;
       }
-      case DeviceBufferRefState::kZeroSize:
-        // Zero-sized constants are not arguments.
-        break;
       case DeviceBufferRefState::kPlaceholder:
+        if (input.num_elements() == 0) {
+          // Zero-sized constants are not arguments.
+          break;
+        }
         return TT_ERROR(error::kInternal)
                << "Materialize was called on a placeholder tensor. This "
                   "should never happen.\nkPlaceholder tensors should only "
@@ -670,7 +671,8 @@ absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
     // Node is not deferred; check to make sure it doesn't have any placeholder
     // buffers.
     for (int i = 0; i < node->size(); ++i) {
-      TT_RET_CHECK(node->state(i) != DeviceBufferRefState::kPlaceholder,
+      TT_RET_CHECK(node->state(i) != DeviceBufferRefState::kPlaceholder ||
+                       node->num_elements(i) == 0,
                    error::kInternal)
           << "Materialize was called on a placeholder tensor. This should "
              "never happen.\nkPlaceholder tensors should only appear in "
@@ -688,13 +690,14 @@ absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
   absl::flat_hash_set<SharedDeviceBufferList> unique_deferred_nodes;
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
   for (const DeviceBufferRef& buffer_ref : buffer_refs) {
+    // Only materialize the DeviceBufferLists we actually need.
+    // If a multi-output deferred op produces zero-sized buffer_refs, we
+    // don't need to materialize the op, unless we also need a non-zero
+    // sized output for a different buffer_ref from that same node.
+    if (buffer_ref.num_elements() == 0) continue;
+
     switch (buffer_ref.state()) {
       case DeviceBufferRefState::kMaterialized:
-      case DeviceBufferRefState::kZeroSize:
-        // Only materialize the DeviceBufferLists we actually need.
-        // If a multi-output deferred op produces zero-sized buffer_refs, we
-        // don't need to materialize the op, unless we also need a non-zero
-        // sized output for a different buffer_ref from that same node.
         continue;
       case DeviceBufferRefState::kDeferred: {
         if (unique_deferred_nodes.insert(buffer_ref.device_buffer_list())

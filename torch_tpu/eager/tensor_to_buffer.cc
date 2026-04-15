@@ -198,7 +198,7 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                       ConvertTo<mlir::ElementType>(tensor.scalar_type()));
   ABSL_CHECK_EQ(result_buf.element_type(), tensor_element_type);  // CRASH_OK
 
-  if (result_buf.state() == DeviceBufferRefState::kZeroSize) {
+  if (result_buf.num_elements() == 0) {
     // Writing 0 elements is a no-op.
     return absl::OkStatus();
   }
