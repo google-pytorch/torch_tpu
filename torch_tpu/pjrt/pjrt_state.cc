@@ -163,7 +163,8 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
+    if (GetEnvOnce<kWorldSizeEnvVar>().has_value() &&
+        GetEnvOnce<kRankEnvVar>().has_value()) {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "InitializeDistributedEnvironment failed: ";
@@ -239,7 +240,8 @@ bool PjrtBackend::IsInitialized() const {
 }
 
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
-  if (!EnsureInitialized().ok()) {
+  if (const absl::Status s = EnsureInitialized(); !s.ok()) {
+    ABSL_LOG(ERROR) << "PjrtBackend::GetClient failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);
@@ -247,7 +249,8 @@ xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
 }
 
 xla::PjRtDevice* absl_nullable PjrtBackend::GetDevice() {
-  if (!EnsureInitialized().ok()) {
+  if (const absl::Status s = EnsureInitialized(); !s.ok()) {
+    ABSL_LOG(ERROR) << "PjrtBackend::GetDevice failed to initialize: " << s;
     return nullptr;
   }
   absl::ReaderMutexLock lock(mutex_);
