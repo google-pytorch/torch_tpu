@@ -58,9 +58,8 @@ class ResNet50TVTest(absltest.TestCase):
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
     if _DEVICE.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-      self.device = api.tpu_device()
+      self.device = torch.device("tpu")
     elif _DEVICE.value == "cuda":
       self.device = torch.device("cuda")
     else:

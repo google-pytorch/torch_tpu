@@ -18,7 +18,6 @@ import sys
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 from examples.qwen3.impl import qwen3
 
@@ -54,7 +53,7 @@ def main(argv):
   print(output_cpu)
 
   print("TPU")
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   model.to(tpu_device)
   tensor_in = tensor_in.to(tpu_device)
   output_tpu = model(tensor_in).to("cpu")

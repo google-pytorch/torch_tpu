@@ -98,9 +98,8 @@ def _get_model_and_tokenizer(model_id: str, device: Device) -> Tuple[
   model_dir = _get_model_path(model_id)
 
   if device == Device.TPU:
-    from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-    device = api.tpu_device()
+    device = torch.device("tpu")
   elif device == Device.CUDA:
     if not torch.cuda.is_available():
       raise RuntimeError("CUDA requested but not available.")

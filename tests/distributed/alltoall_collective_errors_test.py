@@ -21,7 +21,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from tests import error_testing as et
 from tests.distributed import distributed_utils
@@ -30,7 +29,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 
 def run_all_to_all_single_dtype_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   input_tensor = torch.ones((1, 2), dtype=torch.float64, device="tpu")
   output_tensor = torch.empty((1, 2), dtype=torch.int64, device="tpu")
@@ -41,7 +39,6 @@ def run_all_to_all_single_dtype_error() -> None:
 
 
 def run_all_to_all_single_invalid_tensor_size_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   input_tensor = torch.ones((1, 2), dtype=torch.int64, device="tpu")
   output_tensor = torch.empty((1, 2), dtype=torch.int64, device="tpu")
@@ -55,7 +52,6 @@ def run_all_to_all_single_invalid_tensor_size_error() -> None:
 
 
 def run_all_to_all_single_invalid_split_sizes_size_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   input_tensor = torch.ones((8, 2), dtype=torch.int64, device="tpu")
   output_tensor = torch.empty((8, 2), dtype=torch.int64, device="tpu")
@@ -73,7 +69,6 @@ def run_all_to_all_single_invalid_split_sizes_size_error() -> None:
 
 
 def run_all_to_all_single_invalid_split_sizes_sum_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   input_tensor = torch.ones((8, 2), dtype=torch.int64, device="tpu")
   output_tensor = torch.empty((8, 2), dtype=torch.int64, device="tpu")
@@ -130,7 +125,6 @@ class AllToAllSingleCollectiveErrorsTest(absltest.TestCase):
 
 
 def run_all_to_all_unequal_tensor_list_size_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device = "tpu"
@@ -150,7 +144,6 @@ def run_all_to_all_unequal_tensor_list_size_error() -> None:
 
 
 def run_all_to_all_wrong_num_input_tensors_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device = "tpu"
@@ -172,7 +165,6 @@ def run_all_to_all_wrong_num_input_tensors_error() -> None:
 
 
 def run_all_to_all_unequal_input_tensor_shape_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device = "tpu"
@@ -193,7 +185,6 @@ def run_all_to_all_unequal_input_tensor_shape_error() -> None:
 
 
 def run_all_to_all_unequal_input_output_tensor_shape_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device = "tpu"

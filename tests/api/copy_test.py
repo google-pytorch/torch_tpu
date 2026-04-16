@@ -14,7 +14,7 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal.utils import utils
 
 
@@ -22,7 +22,7 @@ class CopyTest(absltest.TestCase):
 
   def test_copy_tpu_to_cpu_direct(self):
     """Verifies direct copy to contiguous, matching destination."""
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     size = (4, 4)
     t_tpu = torch.randn(size, device=device)
     t_cpu = torch.empty(size, device='cpu', pin_memory=True)
@@ -35,7 +35,7 @@ class CopyTest(absltest.TestCase):
 
   def test_copy_tpu_to_cpu_fallback_non_contiguous(self):
     """Verifies the fallback path when destination is non-contiguous."""
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     t_tpu = torch.randn((4, 4), device=device)
     t_cpu = torch.empty((4, 8), device='cpu', pin_memory=True)[:, ::2]
 
@@ -49,7 +49,7 @@ class CopyTest(absltest.TestCase):
 
   def test_copy_tpu_to_cpu_fallback_dtype_mismatch(self):
     """Verifies the fallback path when there is a dtype mismatch."""
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     t_tpu = torch.randn((4, 4), device=device, dtype=torch.float32)
     t_cpu = torch.empty(
         (4, 4), device='cpu', dtype=torch.float64, pin_memory=True

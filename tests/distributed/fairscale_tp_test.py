@@ -26,12 +26,10 @@ import torch
 from torch import distributed as dist
 from torch import nn
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
 
 RowParallelLinear = layers.RowParallelLinear
 ColumnParallelLinear = layers.ColumnParallelLinear
@@ -130,7 +128,6 @@ def run_forward_tp(device="tpu") -> None:
     device: The device to run the tensor parallel model on (e.g., "tpu",
       "cuda").
   """
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])

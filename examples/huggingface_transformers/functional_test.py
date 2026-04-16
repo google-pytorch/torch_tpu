@@ -51,9 +51,8 @@ class AllTest(absltest.TestCase):
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
     if _DEVICE.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-      torch.set_default_device(api.tpu_device())
+      torch.set_default_device(torch.device("tpu"))
     elif _DEVICE.value == "cuda":
       torch.set_default_device(torch.device("cuda"))
     else:

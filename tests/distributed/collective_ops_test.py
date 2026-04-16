@@ -51,7 +51,7 @@ if __name__ == "__main__":  # We are in the parent process.
 import torch  # pylint: disable=g-import-not-at-top
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
+
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
@@ -74,7 +74,6 @@ def _test_wrapper(
     *args: Positional arguments for the test function.
     **kwargs: Keyword arguments for the test function.
   """
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   try:
     test_fn(*args, **kwargs)
@@ -452,7 +451,6 @@ def run_broadcast_objects() -> None:
 
 def run_send_recv() -> None:
   """Tests point-to-point blocking send and recv functionality."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -477,7 +475,6 @@ def run_send_recv() -> None:
 
 def run_isend_irecv() -> None:
   """Tests point-to-point asynchronous isend and irecv functionality."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -514,7 +511,6 @@ def run_isend_irecv() -> None:
 
 def run_send_recv_same_tag():
   """Tests send and recv with the same tag for different src and dst ranks."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   rank = dist.get_rank()

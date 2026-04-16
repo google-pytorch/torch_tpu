@@ -181,9 +181,8 @@ def _(mo):
 @app.cell
 def _():
   import torch_tpu
-  from torch_tpu import api
 
-  device = api.tpu_device()
+  device = torch.device("tpu")
   print(f"Executing on: {device}")
   return (device,)
 

@@ -14,20 +14,20 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 
 
 class RngTest(absltest.TestCase):
 
   def test_get_rng_state_metadata(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     state = torch.tpu.get_rng_state(device)
     self.assertEqual(state.device.type, "cpu")
     self.assertEqual(state.dtype, torch.uint8)
     self.assertEqual(state.shape, (16,))
 
   def test_set_rng_state(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     initial_state = torch.tpu.get_rng_state(device)
 
     # Change the state by generating some random numbers.
@@ -41,7 +41,7 @@ class RngTest(absltest.TestCase):
     self.assertTrue(torch.equal(initial_state, restored_state))
 
   def test_manual_seed(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     torch.tpu.manual_seed_all(42)
     state1 = torch.tpu.get_rng_state(device)
 
@@ -54,7 +54,7 @@ class RngTest(absltest.TestCase):
     self.assertFalse(torch.equal(state1, state3))
 
   def test_generator_metadata(self):
-    g = torch.Generator(device=api.tpu_device())
+    g = torch.Generator(device=torch.accelerator.current_accelerator())
     g.manual_seed(42)
     state = g.get_state()
     self.assertEqual(state.device.type, "cpu")
@@ -62,7 +62,7 @@ class RngTest(absltest.TestCase):
     self.assertEqual(state.shape, (16,))
 
   def test_generator_set_get_state(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     g = torch.Generator(device=device)
     g.manual_seed(42)
     state1 = g.get_state()
@@ -78,7 +78,7 @@ class RngTest(absltest.TestCase):
     self.assertTrue(torch.equal(state1, state3))
 
   def test_generator_manual_seed(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     g = torch.Generator(device=device)
 
     g.manual_seed(42)
@@ -88,7 +88,7 @@ class RngTest(absltest.TestCase):
     self.assertTrue(torch.equal(val1, val2))
 
   def test_set_rng_state_error_tpu(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     state = torch.tpu.get_rng_state(device).to(device)
     with self.assertRaisesRegex(
         RuntimeError, "expect rng state to be a torch.ByteTensor"
@@ -96,7 +96,7 @@ class RngTest(absltest.TestCase):
       torch.tpu.set_rng_state(state, device)
 
   def test_generator_set_state_error_tpu(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     g = torch.Generator(device=device)
     state = g.get_state().to(device)
     with self.assertRaisesRegex(

@@ -29,7 +29,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 _TPU = flags.DEFINE_bool("tpu", False, "Also run on TPU.")
@@ -185,7 +184,7 @@ def main(argv):
   print(prediction)
 
   print("TPU")
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   model = model.to(tpu_device)
   dense_input_tpu = dense_input.to(tpu_device)
   sparse_input_tpu = sparse_input.to(tpu_device)

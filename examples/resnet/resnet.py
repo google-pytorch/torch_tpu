@@ -19,7 +19,6 @@ import sys
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 from examples.resnet.impl import resnet
 
@@ -49,7 +48,7 @@ def main(argv):
   model.eval()
 
   # Initialize an XLA device to use for SHLO tracing in format_model.
-  _ = api.tpu_device() if _TPU.value else api._xla_cpu_device()
+  _ = torch.device("tpu") if _TPU.value else torch.device("xla_cpu")
 
   # Run CPU Model.
   input_tensor = rand([1, 3, 224, 224])
@@ -69,7 +68,7 @@ def main(argv):
 
   # Run TPU Model.
   if _TPU.value:
-    tpu_device = api.tpu_device()
+    tpu_device = torch.device("tpu")
     model.to(tpu_device)
     output_tpu = model(input_tensor.to(tpu_device)).to("cpu")
     utils.assert_close(

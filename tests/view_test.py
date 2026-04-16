@@ -21,6 +21,7 @@ from typing import Callable, Tuple
 
 from absl.testing import absltest
 import torch
+import torch.accelerator
 from torch_tpu import api
 from torch_tpu._internal.utils import utils
 

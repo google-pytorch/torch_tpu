@@ -69,9 +69,8 @@ class SingleAcceleratorTest(parameterized.TestCase):
 
     # Identify accelerator device (tpu, or cuda)
     if _DEVICE.value == "tpu" and not hasattr(self, "acc_device"):
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-      self.acc_device = api.tpu_device()
+      self.acc_device = torch.device("tpu")
     elif _DEVICE.value == "cuda":
       self.acc_device = torch.device("cuda")
     else:

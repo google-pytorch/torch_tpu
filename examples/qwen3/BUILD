@@ -39,8 +39,8 @@ torch_tpu_py_test(
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -60,7 +60,7 @@ torch_tpu_py_test(
         "//shims/profile_cpu:python_tracer",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "@pypi//transformers",
     ],
 )
@@ -88,11 +88,11 @@ torch_tpu_py_test(
         "//shims/profile_cpu:python_tracer",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
     ],
@@ -123,11 +123,11 @@ torch_tpu_py_test(
         "//shims/profile_cpu:python_tracer",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
     ],
@@ -163,8 +163,8 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -185,7 +185,6 @@ torch_tpu_py_test(
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compiler_options",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -206,8 +205,8 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -225,7 +224,7 @@ torch_tpu_py_test(
     ],
     deps = [
         "//shims/absl_py/logging",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
         "//examples/huggingface_transformers:model_configs",
         "//shims/absl_py/flags",
@@ -252,8 +251,8 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
         "@xla//xla/stream_executor:cuda_platform",
@@ -280,8 +279,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -307,8 +306,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -319,7 +318,6 @@ ipynb_deps(
     pytype = False,
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -330,7 +328,6 @@ ipynb_deps(
     pytype = False,
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )

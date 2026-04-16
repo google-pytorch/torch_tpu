@@ -21,7 +21,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from tests import error_testing as et
@@ -31,7 +30,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 
 def run_all_gather_dtype_error() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   input_tensor = torch.ones((1, 2), dtype=torch.float64, device="tpu")
@@ -46,7 +44,6 @@ def run_all_gather_dtype_error() -> None:
 
 
 def run_all_gather_wrong_num_tensors() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   input_tensor = torch.ones((1, 2), dtype=torch.float32, device="tpu")
   output_tensors = [torch.empty((1, 2), dtype=torch.float32, device="tpu")]
@@ -60,7 +57,6 @@ def run_all_gather_wrong_num_tensors() -> None:
 
 
 def run_all_gather_dispatch_failure() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   input_tensor = torch.ones((1, 2), dtype=torch.float32, device="tpu")

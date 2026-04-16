@@ -16,7 +16,6 @@ from typing import Final
 from absl import app
 import torch
 import torch.nn as nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 TPU_DEVICE_TYPE: Final[str] = "tpu"
@@ -38,7 +37,7 @@ class SimpleNN(nn.Module):
 
 
 def main(argv):
-  tpu_d: torch.device | None = api.tpu_device()
+  tpu_d: torch.device | None = torch.device("tpu")
   if tpu_d is None:
     return
   print(

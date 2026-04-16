@@ -18,7 +18,6 @@ import time
 
 from absl import app
 import torch
-from torch_tpu import api
 from examples.paths import XM_HOME
 import transformers
 
@@ -32,7 +31,7 @@ def main(argv):
   del argv  # Unused
 
   # Initialize TorchTPU
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
 
   # TODO(b/437527594): right now seeds don't work in torch tpu, but setting it
   # here for now so we don't forget later.

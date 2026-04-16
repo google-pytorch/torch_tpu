@@ -28,6 +28,7 @@ filegroup(
     srcs = glob(["**/*.py"]),
     tags = ["ignore_srcs"],
     visibility = ["//visibility:private"],
+    deps = ["//torch_tpu"],
 )
 
 torch_tpu_package_end()

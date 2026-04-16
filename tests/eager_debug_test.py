@@ -14,7 +14,6 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal import execution_mode
 
 
@@ -24,7 +23,6 @@ class EagerDebugTest(absltest.TestCase):
   def test_failing_op_raises_in_correct_location(self):
     """Test that failing ops are not deferred."""
     # Act
-    _ = api.tpu_device()
     execution_mode.set_eager_mode(
         execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
     )

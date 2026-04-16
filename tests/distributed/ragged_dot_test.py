@@ -20,7 +20,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
@@ -43,7 +42,6 @@ def manual_ragged_dot(x, w, gs):
 
 def run_ragged_dot_local_test(compile_test: bool = False) -> None:
   """Runs ragged_dot independently on each rank."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
 

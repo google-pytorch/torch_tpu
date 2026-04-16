@@ -17,7 +17,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from tests import error_testing as et
 from tests.distributed import distributed_utils
@@ -26,7 +25,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 def run_scatter_wrong_number_inputs(num_inputs: int) -> None:
   """Runs scatter with number of inputs not equal to process group size."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -48,7 +46,6 @@ def run_scatter_wrong_shape_output(
     output_shape: list[int],
 ) -> None:
   """Runs scatter with differently-shaped input and output tensors."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -69,7 +66,6 @@ def run_scatter_mismatch_input_shapes(
     mismatch_shape: list[int],
 ) -> None:
   """Runs scatter with one input having a different shape than the others."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])

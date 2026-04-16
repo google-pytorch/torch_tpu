@@ -17,7 +17,6 @@
 import time
 
 import torch
-from torch_tpu import api
 from examples.mingpt.impl import mingpt
 
 GPT = mingpt.GPT
@@ -88,7 +87,7 @@ def run_mingpt_with_default_params():
   config.block_size = 1024
   common_dtype = torch.float32
   torch.manual_seed(42)
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   preheat_times, real_times = run_mingpt(
       config,
       common_dtype,

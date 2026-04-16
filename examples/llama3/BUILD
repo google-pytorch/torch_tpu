@@ -34,8 +34,8 @@ torch_tpu_py_test(
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -53,7 +53,7 @@ torch_tpu_py_test(
         "//shims/absl_py:app",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//transformers",
     ],
@@ -66,7 +66,7 @@ pytype_strict_library(
         "//examples:paths",
         "//shims/etils/epath",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "@pypi//datasets",
         "@pypi//tqdm",
         "@pypi//transformers",
@@ -95,13 +95,13 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
     ],
@@ -133,13 +133,13 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
     ],
@@ -167,13 +167,13 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
@@ -203,12 +203,12 @@ torch_tpu_py_test(
         "//shims/etils/epath",
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//datasets",
         "@pypi//matplotlib:pkg",
@@ -240,12 +240,12 @@ torch_tpu_py_test(
         "//shims/etils/epath",
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//datasets",
         "@pypi//matplotlib:pkg",
@@ -277,12 +277,12 @@ torch_tpu_py_test(
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//datasets",
         "@pypi//matplotlib:pkg",
@@ -312,7 +312,6 @@ torch_tpu_py_test(
         "//shims/etils/epath",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//datasets",
         "@pypi//peft",
         "@pypi//transformers",

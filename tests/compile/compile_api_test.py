@@ -16,7 +16,7 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
@@ -51,8 +51,12 @@ class CompileApiTest(absltest.TestCase):
 
   def test_build_mlir(self):
     with eager_mode_defer_all():
-      x = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      y = torch.ones(10, device='cpu').to(device=api.tpu_device())
+      x = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      y = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
       z = x + y
     result_tensors = [z]
     argument_tensors = [x, y]
@@ -66,9 +70,15 @@ class CompileApiTest(absltest.TestCase):
 
   def test_extra_input_to_build_mlir(self):
     with eager_mode_defer_all():
-      x = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      y = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      extra = torch.ones(10, device='cpu').to(device=api.tpu_device())
+      x = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      y = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      extra = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
       z = x + y
     result_tensors = [z]
     argument_tensors = [x, y, extra]
@@ -79,8 +89,12 @@ class CompileApiTest(absltest.TestCase):
 
   def test_missing_input_to_build_mlir(self):
     with eager_mode_defer_all():
-      x = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      y = torch.ones(10, device='cpu').to(device=api.tpu_device())
+      x = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      y = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
       z = x + y
     result_tensors = [z]
     argument_tensors = [x]
@@ -93,14 +107,14 @@ class CompileApiTest(absltest.TestCase):
 
   def test_compile_backend_defaults_to_tpu(self):
     with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=api.tpu_device())
+      x = torch.ones(10, device=torch.accelerator.current_accelerator())
       torch.compile(lambda arg: arg + 1)(x)
 
       mock_lookup_backend.assert_called_with('tpu')
 
   def test_global_compile_decorator_backend_defaults_to_tpu(self):
     with get_mock_lookup_backend() as mock_lookup_backend:
-      x = torch.ones(10, device=api.tpu_device())
+      x = torch.ones(10, device=torch.accelerator.current_accelerator())
       global_compile_plus_one(x)
 
       mock_lookup_backend.assert_called_with('tpu')
@@ -127,13 +141,19 @@ class CompileApiTest(absltest.TestCase):
       return x + 1
 
     for _ in range(10):
-      torch.compile(f)(torch.randn(1, 5, device=api.tpu_device()))
+      torch.compile(f)(
+          torch.randn(1, 5, device=torch.accelerator.current_accelerator())
+      )
     self.assertEqual(num_calls, 1)
 
   def test_execute_with_output_shapes(self):
     with eager_mode_defer_all():
-      x = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      y = torch.ones(10, device='cpu').to(device=api.tpu_device())
+      x = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      y = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
       z = x + y
 
     mlir = tpu_torch_compile.build_mlir([z], [x, y])
@@ -145,8 +165,12 @@ class CompileApiTest(absltest.TestCase):
 
   def test_execute_with_smaller_output_shapes(self):
     with eager_mode_defer_all():
-      x = torch.ones(10, device='cpu').to(device=api.tpu_device())
-      y = torch.ones(10, device='cpu').to(device=api.tpu_device())
+      x = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
+      y = torch.ones(10, device='cpu').to(
+          device=torch.accelerator.current_accelerator()
+      )
       z = x + y
 
     mlir = tpu_torch_compile.build_mlir([z], [x, y])
@@ -175,7 +199,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_make_constant_tensor(self):
     # Arrange
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     x = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='cpu')
 
     # Act
@@ -204,7 +228,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_make_constant_bool_tensor(self):
     # Arrange
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     x = torch.tensor(
         [[False, True], [True, False]], dtype=torch.bool, device='cpu'
     )
@@ -249,7 +273,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_make_constant_complex_tensor(self):
     # Arrange
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     x_real = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='cpu')
     x_imag = torch.tensor([[5, 6], [7, 8]], dtype=torch.float32, device='cpu')
     x = torch.complex(x_real, x_imag)
@@ -280,7 +304,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_assign_constant_tensor(self):
     # Arrange
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     cpu_src = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='cpu')
     tpu_dst = torch.empty_like(cpu_src, device=tpu_device)
 
@@ -310,7 +334,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_assign_constant_tensor_non_contiguous(self):
     # Arrange
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     cpu_src = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='cpu')
     # tpu_dst is non-contiguous, but has the right shape and dtype.
     tpu_dst = torch.empty(3, 2, dtype=torch.float32, device=tpu_device)[1:3, :]

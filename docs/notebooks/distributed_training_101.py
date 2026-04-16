@@ -63,7 +63,6 @@ def _():
   import torch.nn as nn
   import torch.optim as optim
   from torch.nn.parallel import DistributedDataParallel as DDP
-  from torch_tpu import api
   import torch.distributed as dist
 
   class ToyModel(nn.Module):
@@ -96,7 +95,7 @@ def _(DDP, ToyModel, api, dist, nn, optim, torch):
   def main():
     # 1. Discover hardware for this process
     # This also registers the "tpu_dist" backend
-    device = api.tpu_device()
+    device = torch.device("tpu")
 
     # 2. Initialize process group with tpu_dist backend
     if not dist.is_initialized():

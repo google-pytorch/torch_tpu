@@ -29,7 +29,6 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint import state_dict
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
@@ -61,7 +60,6 @@ def _create_sharded_model(device_mesh, seed):
 
 def _init_test_env(seed):
   rank = int(os.environ["RANK"])
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = dist.get_world_size()
   device_mesh = dt.init_device_mesh("tpu", (world_size,))

@@ -19,16 +19,10 @@ import time
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.compile import tpu_torch_compile
 
 
 class CompilationCacheStressTest(absltest.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    # Initialize the TPU device to register torch.tpu.
-    api.tpu_device()
 
   def test_eviction_does_not_affect_inflight_compilation(self):
     """Eviction should not affect in-flight compilations."""

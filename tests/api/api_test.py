@@ -16,13 +16,13 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 
 
 class ApiTest(absltest.TestCase):
 
   def test_api_availability(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     # Lazy init: shouldn't be initialized yet.
     self.assertFalse(getattr(torch, device.type).is_initialized())
 

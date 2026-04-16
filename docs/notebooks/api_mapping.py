@@ -32,7 +32,7 @@ def _(mo):
   mo.md(r"""
     # **API Mapping Table: `torch.cuda` → `torch.tpu`**
 
-    Once the backend is initialized via `api.tpu_device()`, TorchTPU registers a dedicated Python module: **`torch.tpu`**. This module is designed as a drop-in replacement for the standard `torch.cuda` API.
+    Once the backend is initialized via `torch.device("tpu")`, TorchTPU registers a dedicated Python module: **`torch.tpu`**. This module is designed as a drop-in replacement for the standard `torch.cuda` API.
 
     Use this reference to quickly translate CUDA-based code to TorchTPU.
     """)
@@ -49,8 +49,8 @@ def _(mo):
     | `torch.cuda.is_available()` | `torch.tpu.is_available()` | Checks if the TPU backend is ready. |
     | `torch.cuda.device_count()` | `torch.tpu.device_count()` | Number of devices assigned to the process. |
     | `torch.cuda.current_device()` | `torch.tpu.current_device()` | Returns the active core index. |
-    | `torch.cuda.get_device_properties()` | *(Implicit in `api.tpu_device()`)* | Hardware metadata via PjRt logs. |
-    | `torch.cuda.set_device(rank)` | Handled automatically by `api.tpu_device()` | Backend init is automatic. |
+    | `torch.cuda.get_device_properties()` | *(Implicit in `torch.device("tpu")`)* | Hardware metadata via PjRt logs. |
+    | `torch.cuda.set_device(rank)` | Handled automatically by `torch.device("tpu")` | Backend init is automatic. |
     """)
   return
 
@@ -58,12 +58,11 @@ def _(mo):
 @app.cell
 def device_queries():
   import torch
-  from torch_tpu import api
   import tpu_utils  # Only used in Marimo notebooks
 
   # Initialize hardware
   device = tpu_utils.safe_init()  # Only used in Marimo notebooks
-  # device = api.tpu_device()   # Use this for non-notebooks
+  # device = torch.device("tpu")   # Use this for non-notebooks
 
   print(f"torch.tpu.is_available():    {torch.tpu.is_available()}")
   print(f"torch.accelerator.is_available(): {torch.accelerator.is_available()}")

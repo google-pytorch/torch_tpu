@@ -21,8 +21,8 @@ import time
 from absl import logging
 from absl.testing import absltest
 import torch
+import torch.accelerator
 from torch.autograd import profiler
-from torch_tpu import api as tpu_api
 from torch_tpu._internal import sync as tpu_sync
 
 
@@ -86,7 +86,7 @@ class ProfilerIntegrationTest(absltest.TestCase):
 
   def test_native_profiler(self):
     """Tests the StartTrace and StopTrace functionality integrated with PyTorch Kineto."""
-    device = tpu_api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     a = torch.ones((16, 16)).to(device)
     b = torch.ones((16, 16)).to(device)
@@ -150,7 +150,7 @@ class ProfilerIntegrationTest(absltest.TestCase):
       )
 
   def test_automatic_xplane_path(self):
-    device = tpu_api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     a = torch.ones((16, 16)).to(device)
     b = torch.ones((16, 16)).to(device)
@@ -188,7 +188,7 @@ class ProfilerIntegrationTest(absltest.TestCase):
 
   def test_full_pipeline_profiling(self):
     cpu_device = torch.device("cpu")
-    tpu_device = tpu_api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
 
     model_tpu = ComplexLoopedModel().to(tpu_device)
     model_cpu = ComplexLoopedModel().to(cpu_device)

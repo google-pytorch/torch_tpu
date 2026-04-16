@@ -18,7 +18,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 _TPU = flags.DEFINE_bool("tpu", False, "Also run on TPU.")
@@ -74,7 +73,7 @@ def main(argv):
   if _TPU.value:
     try:
       print("Evaluating on TPU vs CPU ...")
-      tpu = api.tpu_device()
+      tpu = torch.accelerator.current_accelerator()
       sparse_model.to(tpu)
       output_tpu = sparse_model(input_tensor.to(tpu)).to("cpu")
       utils.assert_close(

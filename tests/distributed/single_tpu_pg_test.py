@@ -20,7 +20,7 @@ from absl import logging
 from absl.testing import absltest
 import portpicker
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal.distributed import tpu_distributed
 
 
@@ -29,7 +29,7 @@ class SingleTpuPGTest(absltest.TestCase):
   def test_init_pg(self):
     """Test registration and initialization call from PyTorch."""
 
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     logging.info("TPU device: %s", device)
     logging.info("global_device_id: %s", tpu_distributed.global_device_id())
     logging.info(
@@ -54,7 +54,7 @@ class SingleTpuPGTest(absltest.TestCase):
   def test_manual_pg(self):
     """Test manual/explicit ProcessGroup creation."""
 
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     logging.info("TPU device: %s", device)
 
     store = torch.distributed.TCPStore(

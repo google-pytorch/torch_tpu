@@ -24,10 +24,7 @@ ipynb_deps(
     name = "precision_tutorial_deps",
     srcs = ["precision_tutorial.ipynb"],
     pytype = False,
-    deps = [
-        "//shims/torch:pytorch",
-        "//torch_tpu/api",
-    ],
+    deps = ["//shims/torch:pytorch"],
 )
 
 torch_tpu_package_end()
