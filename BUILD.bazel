@@ -85,7 +85,7 @@ genrule(
     testonly = True,
     srcs = [
         "//shims/etils",
-        "//tests:device_module_testing",
+        "//tests/device:device_module_testing",
         "//shims/etils/epath",
         "//shims/safetensors",
         "//shims/torch:pytorch",

@@ -21,7 +21,7 @@ from typing import Final
 from unittest import mock
 from absl.testing import absltest
 import torch
-from torch_tpu.api import _device_module
+from torch_tpu._internal.device import _device_module
 
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()
 
@@ -168,7 +168,7 @@ class DeviceModuleBase(absltest.TestCase, metaclass=abc.ABCMeta):
 
     # Test invalid device index logs warning.
     with mock.patch(
-        "torch_tpu.api._device_module.logging.warning"
+        "torch_tpu._internal.device._device_module.logging.warning"
     ) as mock_warning:
       _device_module._rng_validate_device_index(1, 0)
       mock_warning.assert_called_once()

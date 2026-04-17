@@ -53,11 +53,11 @@ pytype_strict_library(
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:hardware",
-        "//torch_tpu/api:_device_module",
     ],
 )
 

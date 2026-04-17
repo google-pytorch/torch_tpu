@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_tpu.api import _device_module
+from torch_tpu._internal.device import _device_module
 from examples.mingpt.impl import mingpt
 
 GPT = mingpt.GPT

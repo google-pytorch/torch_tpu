@@ -675,13 +675,13 @@ pywrap_library(
         "//torch_tpu/_internal:execution_mode_impl",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/_internal/device:_device_ops_backend",
         "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/dynamism:_tpu_torch_dynamism",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",
         "//torch_tpu/_internal/precision:precision_impl",
         "//torch_tpu/_internal/profiler:_profiler_backend",
         "//torch_tpu/_internal/sync:_tpu_torch_sync",
-        "//torch_tpu/api:_device_ops_backend",
     ],
 )
 

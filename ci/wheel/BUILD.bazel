@@ -64,6 +64,7 @@ pytype_strict_library(
     srcs = [
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compiler_options",
+        "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/device_utils",
         "//torch_tpu/_internal/distributed:gpu_env",
         "//torch_tpu/_internal/distributed/launchers:multihost_wrapper",
@@ -80,6 +81,7 @@ pytype_strict_library(
         "//torch_tpu/_internal/shims/xprof:traceme",
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/shims/xprof:xprof_session",
+        "//torch_tpu/_internal/stream:streams",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:benchmarking",
@@ -88,8 +90,6 @@ pytype_strict_library(
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
         "//torch_tpu/api",
-        "//torch_tpu/api:_device_module",
-        "//torch_tpu/api:streams",
     ],
     visibility = ["//visibility:public"],
 )

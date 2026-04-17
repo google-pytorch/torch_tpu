@@ -23,9 +23,8 @@ from absl import logging
 from absl.testing import absltest
 from torch.utils import tensorboard
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import benchmarking
-from torch_tpu.api import _device_ops_backend
-
 
 record_tensorboard_metrics = benchmarking.record_tensorboard_metrics
 METRIC_PROFILES = benchmarking.METRIC_PROFILES

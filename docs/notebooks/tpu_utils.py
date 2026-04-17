@@ -19,7 +19,7 @@ import signal
 import time
 import torch
 from torch_tpu import api
-from torch_tpu.api import _device_module
+from torch_tpu._internal.device import _device_module
 
 _DeviceModule = _device_module.DeviceModule
 

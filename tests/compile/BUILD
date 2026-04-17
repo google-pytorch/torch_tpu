@@ -151,9 +151,8 @@ pytype_strict_library(
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
         "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/_internal/device:_device_ops_backend",  # buildcleaner: keep
         "//torch_tpu/_internal/utils:benchmarking",
-        "//torch_tpu/api",
-        "//torch_tpu/api:_device_ops_backend",  # buildcleaner: keep
     ],
 )
 

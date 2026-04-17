@@ -14,7 +14,6 @@
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -36,62 +35,6 @@ pytype_strict_library(
         "//shims/torch:pytorch",
         "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu:_loader",
-    ],
-)
-
-pytype_strict_library(
-    name = "_device_module",
-    srcs = ["_device_module.py"],
-    deps = [
-        ":_device_ops_backend",
-        ":streams",
-        "//shims/absl_py/logging",
-        "//shims/torch:pytorch",
-        "//torch_tpu/_internal/precision",
-        "//torch_tpu/_internal/utils:hardware",
-        "//torch_tpu/eager:tpu_aten_kernels",
-    ],
-)
-
-pytype_strict_library(
-    name = "streams",
-    srcs = ["streams.py"],
-    deps = [
-        ":_device_ops_backend",
-    ],
-)
-
-pybind_extension(
-    name = "_device_ops_backend",
-    srcs = ["device_rt.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch",
-        "//shims/torch:aten",
-        "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/core:base_headers",
-        "//torch_tpu/common:compilation_cache",
-        "//torch_tpu/common:discovery",
-        "//torch_tpu/common:env_vars",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/distributed/slicebuilder:discovery",
-        "//torch_tpu/eager:device_buffer",
-        "//torch_tpu/eager:device_gen_impl",
-        "//torch_tpu/eager:device_types",
-        "//torch_tpu/eager:tensor_to_buffer",
-        "//torch_tpu/eager:tpu_hooks",
-        "//torch_tpu/pjrt:pjrt_state",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/time",
-        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 

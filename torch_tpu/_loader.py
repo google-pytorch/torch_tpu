@@ -27,9 +27,9 @@ os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 
 # pylint: disable=g-import-not-at-top
 import torch
+from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import hardware
-from torch_tpu.api import _device_module
 
 # pylint: enable=g-import-not-at-top
 
