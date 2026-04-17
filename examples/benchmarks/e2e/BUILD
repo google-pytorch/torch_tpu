@@ -35,11 +35,11 @@ pytype_strict_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/shims/xprof:xprof_session",
         "//torch_tpu/_internal/utils:device_utils",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//numpy",
     ],
 )
@@ -75,7 +75,6 @@ pytype_strict_library(
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/utils:device_utils",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//tensorboardx",
     ],
 )
@@ -94,7 +93,6 @@ pytype_strict_library(
         "//torch_tpu/_internal/distributed:gpu_env",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
     ],
 )
 

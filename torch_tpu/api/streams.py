@@ -16,6 +16,7 @@
 
 from typing import Optional, Self
 from torch_tpu.api import _device_ops_backend
+from . import _device_ops_backend
 
 _NOT_IMPLEMENTED_STREAMS_MSG = (
     'Streams and Events are not fully implemented in TorchTPU. Please file a'

@@ -21,7 +21,7 @@ import jax
 from jax.experimental import pallas as pl
 import jax.export
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal import compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
@@ -115,7 +115,7 @@ class TestPallasKernels(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.device = api.tpu_device()
+    self.device = torch.accelerator.current_accelerator()
 
   def _assert_donated(self, x: torch.Tensor):
     with self.assertRaisesRegex(
