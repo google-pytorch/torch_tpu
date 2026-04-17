@@ -308,6 +308,12 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     "fmod": {
         torch.float32: {"rtol": 2.9e-4, "atol": 4.8e-7},
     },
+    "ldexp": {
+        torch.bfloat16: {"rtol": 7.8e-3, "atol": 8.0},
+        torch.float16: {"rtol": 9.7e-4, "atol": 1},
+        torch.float32: {"rtol": 3.7e-6, "atol": 7.6e-3},
+        torch.float64: {"rtol": 1.5e-8, "atol": 3.5e-5},
+    },
     "lerp": {
         torch.float16: {"rtol": 5e-3, "atol": 3e-3},
     },
@@ -2602,6 +2608,13 @@ class TestOps(TorchTpuTestBase):
         "nn.functional.leaky_relu",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_ldexp(self):
+    self.do_test_op(
+        "ldexp",
+        exclude_dtypes=COMPLEX_DTYPES,
+        exclude_inplace_dtypes=COMPLEX_DTYPES,
     )
 
   def test_lerp(self):

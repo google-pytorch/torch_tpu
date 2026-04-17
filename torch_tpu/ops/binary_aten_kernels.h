@@ -204,6 +204,13 @@ at::Tensor& AtenIrshiftScalar(at::Tensor& self, const at::Scalar& other);
 
 at::Tensor& AtenIrshiftTensor(at::Tensor& self, const at::Tensor& other);
 
+at::Tensor& AtenLdexpOut(const at::Tensor& self, const at::Tensor& other,
+                         at::Tensor& out);
+
+at::Tensor AtenLdexpTensor(const at::Tensor& self, const at::Tensor& other);
+
+at::Tensor& AtenLdexp_(at::Tensor& self, const at::Tensor& other);
+
 at::Tensor& AtenLeScalarOut(const at::Tensor& self, const at::Scalar& other,
                             at::Tensor& out);
 

@@ -720,6 +720,12 @@ std::string_view ToString(OpName op_name) {
       return "layer_norm";
     case OpName::kLayerNormBackward:
       return "native_layer_norm_backward";
+    case OpName::kLdexpOut:
+      return "ldexp.out";
+    case OpName::kLdexpTensor:
+      return "ldexp.Tensor";
+    case OpName::kLdexp_:
+      return "ldexp_";
     case OpName::kLe:
       return "le";
     case OpName::kLeOut:
