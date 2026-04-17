@@ -27,7 +27,10 @@ licenses(["notice"])
 
 package(
     default_applicable_licenses = [":license"],
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = [
+        "//:__subpackages__",
+        "//shims/torchtitan/experiments/tpu:__subpackages__",
+    ],
 )
 
 license(
