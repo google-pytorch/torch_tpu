@@ -34,7 +34,6 @@ pytype_strict_library(
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/api",
         "@pypi//psutil",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
     ],
@@ -79,13 +78,16 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "utils_test",
     srcs = ["utils_test.py"],
+    env = {
+        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
+    },
     deps = [
         ":test_fixtures",
         ":utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -144,7 +146,7 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
     ],
 )
 

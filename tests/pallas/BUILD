@@ -29,11 +29,11 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/jax:pallas",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
     ],
 )
@@ -57,12 +57,12 @@ torch_tpu_py_test(
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
     ],
 )

@@ -24,8 +24,8 @@ from jax.experimental.pallas import tpu as pltpu
 import jax.export
 import torch
 from torch import distributed as dist
+import torch.accelerator
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import pallas
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
@@ -102,7 +102,7 @@ def create_roll_op(world_size, rank):
 
 
 def _run(do_compile):
-  device = api.tpu_device()
+  device = torch.accelerator.current_accelerator()
   dist.init_process_group(backend="tpu_dist")
   world_size = dist.get_world_size()
   rank = dist.get_rank()

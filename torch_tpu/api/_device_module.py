@@ -26,9 +26,8 @@ from absl import logging
 import torch
 import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.utils import hardware
-from torch_tpu.api import _device_ops_backend
-from torch_tpu.api import streams
-
+from . import _device_ops_backend
+from . import streams
 
 # TODO: add more dtypes here. Initial list was chosen arbitrarily.
 _AMP_SUPPORTED_DTYPES = (
