@@ -37,7 +37,6 @@ from torch.distributed.fsdp import StateDictType
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.fsdp import fsdp_worker as fsdp_tp_worker
@@ -48,7 +47,6 @@ log_utils.log_to_stderr()
 
 
 def worker_fn() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend='tpu_dist')
 
   rank = dist.get_rank()
