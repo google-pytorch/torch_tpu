@@ -60,8 +60,22 @@ absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
 
   // Defined as LogN(x) = log(x) / log(N):
   mlir::MlirOp log_op = stablehlo::Log(computation_input_op);
-  mlir::MlirOp value_n = MakeScalarConstant(builder, n, computation_type);
-  mlir::MlirOp log_of_n = stablehlo::Log(value_n);
+
+  mlir::MlirOp log_of_n;
+  if (computation_scalar_type == at::ScalarType::ComplexDouble) {
+    log_of_n = MakeScalarConstant(
+        builder, std::complex<double>(std::log(n), 0.0), computation_type);
+  } else if (computation_scalar_type == at::ScalarType::ComplexFloat) {
+    log_of_n = MakeScalarConstant(
+        builder, std::complex<float>(std::log(n), 0.0f), computation_type);
+  } else if (computation_scalar_type == at::ScalarType::Double) {
+    log_of_n = MakeScalarConstant(builder, static_cast<double>(std::log(n)),
+                                  computation_type);
+  } else {
+    log_of_n = MakeScalarConstant(builder, static_cast<float>(std::log(n)),
+                                  computation_type);
+  }
+
   mlir::MlirOp result_op = mlir::chlo::BroadcastDiv(log_op, log_of_n);
 
   return mlir::stablehlo::ConvertElementType(result_op, default_dtype);

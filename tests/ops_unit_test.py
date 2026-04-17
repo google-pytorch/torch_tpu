@@ -3094,6 +3094,21 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         # the default dtype was float32.
         res.to("cpu")
 
+  def test_log2_complex64(self):
+    """Tests log2 with complex64 dtype, ensuring denormalized real part bug doesn't regress."""
+    x_cpu = torch.tensor([1.0 + 2.0j, 3.0 - 4.0j], dtype=torch.complex64)
+    x_tpu = x_cpu.to(api.tpu_device())
+
+    golden = torch.log2(x_cpu)
+    result = torch.log2(x_tpu).cpu()
+
+    self.assert_close(
+        golden_result=golden,
+        torch_tpu_result=result,
+        rtol=2e-4,
+        atol=2e-4,
+    )
+
   @parameterized.product(dtype=[torch.float32, torch.bfloat16])
   def test_hardsigmoid(self, dtype):
     # Generate deterministic inputs spanning the boundaries (-3 and 3)
