@@ -51,12 +51,24 @@ from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.utils import utils
 
-_ENABLE_COMPILED_MODE_DYNAMISM = flags.DEFINE_boolean(
+_ENABLE_COMPILED_MODE_DYNAMISM = flags.DEFINE_boolean(  #
     "torch_tpu_internal_compiled_mode_dynamism",
     False,
     "This is a temporary dev flag as the feature is not ready for production "
     "use. Once ready, this flag will be removed along with assertion check on "
     "SymInt.",
+)
+
+flags.DEFINE_string(
+    "torch_tpu_test1",
+    "some_value",
+    "If set, dump the FX graph and MLIR in the given directory.",
+)
+
+flags.DEFINE_string(
+    "torch_tpu_internal_test1",
+    "some_value",
+    "If set, dump the FX graph and MLIR in the given directory.",
 )
 
 GraphTransformObserver = graph_transform_observer.GraphTransformObserver
