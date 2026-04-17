@@ -19,7 +19,6 @@ import unittest
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 

@@ -15,7 +15,6 @@
 from absl.testing import absltest
 import torch
 from torch.testing._internal.distributed.fake_pg import FakeStore
-from torch_tpu import api
 
 
 class DTensorTest(absltest.TestCase):
@@ -26,7 +25,6 @@ class DTensorTest(absltest.TestCase):
     torch.distributed.init_process_group(
         backend="fake", store=FakeStore(), rank=0, world_size=self._world_size
     )
-    _ = api.tpu_device()
 
   def tearDown(self):
     torch.distributed.destroy_process_group()
