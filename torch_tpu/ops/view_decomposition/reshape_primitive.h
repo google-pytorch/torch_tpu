@@ -67,8 +67,8 @@ std::ostream& operator<<(std::ostream& os, const ReshapePrimitive& reshape);
 // does not reshape with matching element counts, or violates the
 // contiguity-like criterion.
 // Returns true if the layout was modified, or false if the reshape is a no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const ReshapePrimitive& reshape);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const ReshapePrimitive& reshape);
 
 // Merges two sequential reshapes into a single reshape.
 absl::StatusOr<ReshapePrimitive> Merge(ReshapePrimitive first,

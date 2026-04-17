@@ -73,8 +73,8 @@ std::ostream& operator<<(std::ostream& os, const PadPrimitive& pad) {
   return os;
 }
 
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const PadPrimitive& pad) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const PadPrimitive& pad) {
   TT_RETURN_IF_ERROR(ValidatePad(pad, layout.strided_dims.size()));
   bool updated = false;
   // Padding resets the storage offset to 0, as it requires a copy to

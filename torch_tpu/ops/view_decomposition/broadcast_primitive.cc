@@ -100,8 +100,8 @@ std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const BroadcastPrimitive& broadcast) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const BroadcastPrimitive& broadcast) {
   TT_RETURN_IF_ERROR(ValidateBroadcast(broadcast, layout));
 
   // Storage offset is unchanged.

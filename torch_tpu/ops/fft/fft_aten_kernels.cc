@@ -19,9 +19,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <numeric>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -164,6 +166,14 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(mlir::MlirOp input,
 
   return fft_op;
 }
+
+absl::Status CheckStaticShape(const at::Tensor& tensor,
+                              const std::string_view arg_name) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
+                      GetBaseBufferFromAtTensor(tensor));
+  return CheckStaticShape(tensor, buffer_ref, arg_name);
+}
+
 }  // namespace
 
 at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,

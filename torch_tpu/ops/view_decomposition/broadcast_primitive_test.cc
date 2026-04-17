@@ -32,7 +32,7 @@ using testing::HasSubstr;
 TEST(UpdateLayoutBroadcast, ScalarNoOp) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   BroadcastPrimitive broadcast = {.new_sizes = {}, .broadcast_dimensions = {}};
-  auto modified = UpdateLayout(layout, broadcast);
+  auto modified = UpdateLayoutImpl(layout, broadcast);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -46,7 +46,7 @@ TEST(UpdateLayoutBroadcast, TensorNoOp) {
   };
   BroadcastPrimitive broadcast = {.new_sizes = {6, 4, 2},
                                   .broadcast_dimensions = {0, 1, 2}};
-  auto modified = UpdateLayout(layout, broadcast);
+  auto modified = UpdateLayoutImpl(layout, broadcast);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -55,7 +55,7 @@ TEST(UpdateLayoutBroadcast, ScalarToTensor) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   BroadcastPrimitive broadcast = {.new_sizes = {2, 3, 4},
                                   .broadcast_dimensions = {}};
-  auto modified = UpdateLayout(layout, broadcast);
+  auto modified = UpdateLayoutImpl(layout, broadcast);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -76,7 +76,7 @@ TEST(UpdateLayoutBroadcast, TensorToTensor) {
   };
   BroadcastPrimitive broadcast = {.new_sizes = {6, 3, 4, 2},
                                   .broadcast_dimensions = {0, 3, 1}};
-  auto modified = UpdateLayout(layout, broadcast);
+  auto modified = UpdateLayoutImpl(layout, broadcast);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -98,7 +98,7 @@ TEST(UpdateLayoutBroadcast, InvalidRank) {
   };
   BroadcastPrimitive broadcast = {.new_sizes = {6, 4, 2, 1},
                                   .broadcast_dimensions = {0, 1, 2, 3}};
-  EXPECT_THAT(UpdateLayout(layout, broadcast),
+  EXPECT_THAT(UpdateLayoutImpl(layout, broadcast),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("broadcast_dimensions must have the same size "
                                  "as the input tensor")));
@@ -114,7 +114,7 @@ TEST(UpdateLayoutBroadcast, InvalidNegativeIndex) {
   BroadcastPrimitive broadcast = {.new_sizes = {6, 4, 2},
                                   .broadcast_dimensions = {0, 1, -1}};
   EXPECT_THAT(
-      UpdateLayout(layout, broadcast),
+      UpdateLayoutImpl(layout, broadcast),
       StatusIs(error::kInvalidArgument,
                HasSubstr("broadcast_dimensions[2] = -1 which is out of bounds "
                          "for new_sizes of size 3")));
@@ -130,7 +130,7 @@ TEST(UpdateLayoutBroadcast, InvalidIndexOutOfBounds) {
   BroadcastPrimitive broadcast = {.new_sizes = {6, 4, 2},
                                   .broadcast_dimensions = {0, 1, 3}};
   EXPECT_THAT(
-      UpdateLayout(layout, broadcast),
+      UpdateLayoutImpl(layout, broadcast),
       StatusIs(error::kInvalidArgument,
                HasSubstr("broadcast_dimensions[2] = 3 which is out of bounds "
                          "for new_sizes of size 3")));
@@ -146,7 +146,7 @@ TEST(UpdateLayoutBroadcast, InvalidDuplicateDimension) {
   BroadcastPrimitive broadcast = {.new_sizes = {6, 2, 2},
                                   .broadcast_dimensions = {0, 1, 1}};
   EXPECT_THAT(
-      UpdateLayout(layout, broadcast),
+      UpdateLayoutImpl(layout, broadcast),
       StatusIs(error::kInvalidArgument,
                HasSubstr("broadcast_dimensions has a duplicate input index")));
 }
@@ -160,7 +160,7 @@ TEST(UpdateLayoutBroadcast, InvalidSizeNotOne) {
   };
   BroadcastPrimitive broadcast = {.new_sizes = {6, 4, 3},
                                   .broadcast_dimensions = {0, 1, 2}};
-  EXPECT_THAT(UpdateLayout(layout, broadcast),
+  EXPECT_THAT(UpdateLayoutImpl(layout, broadcast),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("cannot broadcast input dimension 2 of size 2 "
                                  "to output dimension 2 of size 3")));

@@ -19,14 +19,18 @@
 
 #include <cstdint>
 #include <ostream>
+#include <string>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
 #include "torch_tpu/ops/view_decomposition/broadcast_primitive.h"
 #include "torch_tpu/ops/view_decomposition/conj_primitive.h"
@@ -108,6 +112,82 @@ absl::StatusOr<mlir::MlirOp> ViewSequenceShlo(mlir::MlirOp input,
 // the cache uses input parameter shapes to avoid false cache hits.
 absl::StatusOr<OpParamCacheKeys> ViewSequenceCacheKey(
     ViewSequenceSpan view_sequence, const c10::TensorImpl& tensor);
+
+namespace internal {
+
+// Type trait that checks whether `T` is one of `Variant` types.
+//
+// Is a `std::true_type` only if `Variant` is a `std::variant<...>` type, and
+// `T` is one of the types `Variant` accepts.
+template <typename T, typename Variant>
+struct IsTypeInVariant : std::false_type {};
+
+template <typename T, typename... Types>
+struct IsTypeInVariant<T, std::variant<Types...>>
+    : std::disjunction<std::is_same<T, Types>...> {};
+
+// Type trait that checks whether `T` is a `ViewPrimitive`.
+template <typename T>
+using IsViewPrimitiveType = IsTypeInVariant<T, ViewPrimitive>;
+
+// Returns a string to be appended to checks in the view decomposition logic,
+// describing the primitive that raised the error.
+//
+// `ViewPrimitiveT` should be a `ViewPrimitive` type.
+// `LayoutInfo` should be either:
+//
+//   - `StridedLayout`
+//   - `absl::Span<const int64_t>`
+//
+// The flag `without_leading_separator` is used for not returning a string
+// starting with "; ". This makes it so this string may be prepended with more
+// context (see `UpdateLayout<ViewPrimitiveT>` function below).
+template <
+    typename ViewPrimitiveT,
+    typename = std::enable_if_t<IsViewPrimitiveType<ViewPrimitiveT>::value>>
+std::string GetViewPrimitiveInternalErrorSuffix(
+    const ViewPrimitiveT& view_primitive,
+    const bool without_leading_separator = false) {
+  return absl::StrCat(
+      // Add leading phrase separator for better readability.
+      (without_leading_separator ? "" : "; "),
+      "primitive=", ToString(view_primitive), "; this is a TorchTPU bug");
+}
+
+}  // namespace internal
+
+// Updates the layout to reflect the effect of applying the given
+// `view_primitive`.
+//
+// This function is a wrapper for `UpdateLayoutImpl()`, which actually
+// implements the layout update for each `ViewPrimitive`. It calls the
+// implementation for the given `view_primitive` and, on error, appends a
+// description of the view primitive being run.
+//
+// Example:
+//   "; updating layout={} with primitive=bitcast(from_type=uint16,
+//   to_type=uint64); this is a PyTorch bug"
+//
+// Appended Error Message:
+//   RuntimeError: expected the RealToRealBitcast conversion StridedLayout input
+//                 to have its last dimension size equal 4, which is the dtypes'
+//                 bitwidth ratio, got scalar with 0 dimensions; updating
+//                 layout={} with primitive=bitcast(from_type=uint16,
+//                 to_type=uint64); this is a PyTorch bug
+//
+// Returns true if the layout was modified.
+template <typename ViewPrimitiveT,
+          typename = std::enable_if_t<
+              internal::IsViewPrimitiveType<ViewPrimitiveT>::value>>
+absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
+                                  const ViewPrimitiveT& view_primitive) {
+  TT_ASSIGN_OR_RETURN(
+      bool updated, UpdateLayoutImpl(layout, view_primitive),
+      _ << "; updating layout=" << layout << " with "
+        << internal::GetViewPrimitiveInternalErrorSuffix(
+               view_primitive, /* without_leading_separator= */ true));
+  return updated;
+}
 
 }  // namespace torch_tpu
 

@@ -62,8 +62,8 @@ std::ostream& operator<<(std::ostream& os,
   return os;
 }
 
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const TransposePrimitive& transpose) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const TransposePrimitive& transpose) {
   TT_RETURN_IF_ERROR(
       ValidatePermutation(transpose, layout.strided_dims.size()));
 

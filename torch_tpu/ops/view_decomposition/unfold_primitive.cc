@@ -39,8 +39,8 @@ std::ostream& operator<<(std::ostream& os, const UnfoldPrimitive& unfold) {
   return os;
 }
 
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const UnfoldPrimitive& unfold) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const UnfoldPrimitive& unfold) {
   TT_RET_CHECK(layout.strided_dims.size() > 1, error::kInvalidArgument)
       << "expected input to have at least 2 dimensions, but got "
       << layout.strided_dims.size();

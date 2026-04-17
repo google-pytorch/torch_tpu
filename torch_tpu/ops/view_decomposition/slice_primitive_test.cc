@@ -36,7 +36,7 @@ using testing::HasSubstr;
 TEST(UpdateLayoutSlice, ScalarNoOp) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   SlicePrimitive slice = {.slice_dims = {}};
-  auto modified = UpdateLayout(layout, slice);
+  auto modified = UpdateLayoutImpl(layout, slice);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -52,7 +52,7 @@ TEST(UpdateLayoutSlice, TensorNoOp) {
       .slice_dims = {{.start_index = 0, .limit_index = 6, .stride = 1},
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1}}};
-  auto modified = UpdateLayout(layout, slice);
+  auto modified = UpdateLayoutImpl(layout, slice);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -68,7 +68,7 @@ TEST(UpdateLayoutSlice, TensorToTensor) {
       .slice_dims = {{.start_index = 1, .limit_index = 6, .stride = 2},
                      {.start_index = 1, .limit_index = 3, .stride = 2},
                      {.start_index = 1, .limit_index = 2, .stride = 1}}};
-  auto modified = UpdateLayout(layout, slice);
+  auto modified = UpdateLayoutImpl(layout, slice);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -92,7 +92,7 @@ TEST(UpdateLayoutSlice, InvalidRank) {
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1},
                      {.start_index = 0, .limit_index = 1, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice has wrong number of dimensions")));
 }
@@ -108,7 +108,7 @@ TEST(UpdateLayoutSlice, InvalidNegativeStartIndex) {
       .slice_dims = {{.start_index = 0, .limit_index = 6, .stride = 1},
                      {.start_index = -1, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice has negative start index")));
 }
@@ -124,7 +124,7 @@ TEST(UpdateLayoutSlice, InvalidStartIndexGreaterThanSize) {
       .slice_dims = {{.start_index = 0, .limit_index = 6, .stride = 1},
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 3, .limit_index = 2, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice has start index 3 which is greater "
                                  "than the dimension size 2")));
@@ -142,7 +142,7 @@ TEST(UpdateLayoutSlice, InvalidLimitIndexLessThanStartIndex) {
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 2, .limit_index = 1, .stride = 1}}};
   EXPECT_THAT(
-      UpdateLayout(layout, slice),
+      UpdateLayoutImpl(layout, slice),
       StatusIs(
           error::kInvalidArgument,
           HasSubstr(
@@ -160,7 +160,7 @@ TEST(UpdateLayoutSlice, InvalidZeroStride) {
       .slice_dims = {{.start_index = 0, .limit_index = 6, .stride = 0},
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice has non-positive stride 0")));
 }
@@ -176,7 +176,7 @@ TEST(UpdateLayoutSlice, InvalidNegativeStride) {
       .slice_dims = {{.start_index = 0, .limit_index = 6, .stride = -1},
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice has non-positive stride -1")));
 }
@@ -192,7 +192,7 @@ TEST(UpdateLayoutSlice, InvalidOutOfBounds) {
       .slice_dims = {{.start_index = 0, .limit_index = 7, .stride = 1},
                      {.start_index = 0, .limit_index = 4, .stride = 1},
                      {.start_index = 0, .limit_index = 2, .stride = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, slice),
+  EXPECT_THAT(UpdateLayoutImpl(layout, slice),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("slice would be size 7 which is greater than "
                                  "the dimension size 6 on dimension 0")));
@@ -209,14 +209,16 @@ TEST(MergeSlice, ValidMerge) {
                      {.start_index = 1, .limit_index = 2, .stride = 2},
                      {.start_index = 0, .limit_index = 2, .stride = 2}}};
   auto expected_layout = MakeContiguousBaseLayout(contiguous_base_shape);
-  EXPECT_EQ(UpdateLayout(expected_layout, current).status(), absl::OkStatus());
-  EXPECT_EQ(UpdateLayout(expected_layout, to_merge).status(), absl::OkStatus());
+  EXPECT_EQ(UpdateLayoutImpl(expected_layout, current).status(),
+            absl::OkStatus());
+  EXPECT_EQ(UpdateLayoutImpl(expected_layout, to_merge).status(),
+            absl::OkStatus());
 
   auto merged = Merge(std::move(current), std::move(to_merge));
   EXPECT_EQ(merged.status(), absl::OkStatus());
 
   auto actual_layout = MakeContiguousBaseLayout(contiguous_base_shape);
-  EXPECT_EQ(UpdateLayout(actual_layout, merged.value()).status(),
+  EXPECT_EQ(UpdateLayoutImpl(actual_layout, merged.value()).status(),
             absl::OkStatus());
 
   EXPECT_EQ(actual_layout, expected_layout);

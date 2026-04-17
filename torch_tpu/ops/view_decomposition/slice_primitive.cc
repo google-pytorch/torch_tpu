@@ -113,8 +113,8 @@ std::ostream& operator<<(std::ostream& os, const SlicePrimitive& slice) {
   return os;
 }
 
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const SlicePrimitive& slice) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const SlicePrimitive& slice) {
   TT_RETURN_IF_ERROR(ValidateSlice(slice, layout));
   bool updated = false;
 

@@ -71,8 +71,8 @@ std::ostream& operator<<(std::ostream& os, const BroadcastPrimitive& broadcast);
 // Returns an error if broadcast_dimensions is not a valid permutation of the
 // input dimensions, or if any expanded dimension is not 1.
 // Returns true if the layout was modified.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const BroadcastPrimitive& broadcast);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const BroadcastPrimitive& broadcast);
 
 // An overload for the ViewPrimitiveShlo function that handles broadcast
 // primitives. This is a direct call into the stablehlo::BroadcastInDim

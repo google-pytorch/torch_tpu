@@ -60,8 +60,8 @@ std::ostream& operator<<(std::ostream& os, const TransposePrimitive& transpose);
 // is not one-to-one with permuted axes.
 // Returns true if the layout was modified, or false if the transpose is a
 // no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const TransposePrimitive& transpose);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const TransposePrimitive& transpose);
 
 // An overload for the ViewPrimitiveShlo function that handles transpose
 // primitives. This is a direct call into the stablehlo::Transpose function.

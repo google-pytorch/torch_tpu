@@ -39,7 +39,7 @@ TEST(UpdateLayoutUnfold, TensorNoOp) {
                             .limit_index = 5,
                             .window_stride = 999,
                             .window_size = 5};
-  auto modified = UpdateLayout(layout, unfold);
+  auto modified = UpdateLayoutImpl(layout, unfold);
   ASSERT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -53,7 +53,7 @@ TEST(UpdateLayoutUnfold, TensorValidUnfold) {
   };
   UnfoldPrimitive unfold = {
       .start_index = 1, .limit_index = 6, .window_stride = 2, .window_size = 3};
-  auto modified = UpdateLayout(layout, unfold);
+  auto modified = UpdateLayoutImpl(layout, unfold);
   ASSERT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -74,7 +74,7 @@ TEST(UpdateLayoutUnfold, UnfoldWithStrideOnLastDimension) {
   };
   UnfoldPrimitive unfold = {
       .start_index = 1, .limit_index = 6, .window_stride = 2, .window_size = 3};
-  auto modified = UpdateLayout(layout, unfold);
+  auto modified = UpdateLayoutImpl(layout, unfold);
   ASSERT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -94,7 +94,7 @@ TEST(UpdateLayoutUnfold, InvalidScalar) {
   UnfoldPrimitive unfold = {
       .start_index = 0, .limit_index = 0, .window_stride = 1, .window_size = 1};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(error::kInvalidArgument,
                HasSubstr("expected input to have at least 2 dimensions")));
 }
@@ -109,7 +109,7 @@ TEST(UpdateLayoutUnfold, InvalidRankOne) {
                             .window_stride = 1,
                             .window_size = 1};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(error::kInvalidArgument,
                HasSubstr("expected input to have at least 2 dimensions")));
 }
@@ -123,7 +123,7 @@ TEST(UpdateLayoutUnfold, InvalidPenultimateSize) {
   };
   UnfoldPrimitive unfold = {
       .start_index = 0, .limit_index = 5, .window_stride = 1, .window_size = 1};
-  EXPECT_THAT(UpdateLayout(layout, unfold),
+  EXPECT_THAT(UpdateLayoutImpl(layout, unfold),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("expected input to have size 1 in the "
                                  "second-to-last dimension")));
@@ -139,7 +139,7 @@ TEST(UpdateLayoutUnfold, InvalidStartIndex) {
   UnfoldPrimitive unfold = {
       .start_index = 5, .limit_index = 5, .window_stride = 1, .window_size = 1};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(
           error::kInvalidArgument,
           HasSubstr("start index 5 is out of bounds for dimension of size 5")));
@@ -155,7 +155,7 @@ TEST(UpdateLayoutUnfold, InvalidLimitIndexBelowStartIndex) {
   UnfoldPrimitive unfold = {
       .start_index = 2, .limit_index = 1, .window_stride = 1, .window_size = 1};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(error::kInvalidArgument,
                HasSubstr("limit index cannot be less than start index")));
 }
@@ -170,7 +170,7 @@ TEST(UpdateLayoutUnfold, InvalidLimitIndexOutOfBounds) {
   UnfoldPrimitive unfold = {
       .start_index = 0, .limit_index = 6, .window_stride = 1, .window_size = 1};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(
           error::kInvalidArgument,
           HasSubstr("limit index 6 is out of bounds for dimension of size 5")));
@@ -186,7 +186,7 @@ TEST(UpdateLayoutUnfold, InvalidWindowSize) {
   UnfoldPrimitive unfold = {
       .start_index = 1, .limit_index = 2, .window_stride = 1, .window_size = 2};
   EXPECT_THAT(
-      UpdateLayout(layout, unfold),
+      UpdateLayoutImpl(layout, unfold),
       StatusIs(error::kInvalidArgument,
                HasSubstr("window size 2 is larger than the range [1, 2)")));
 }
@@ -200,7 +200,7 @@ TEST(UpdateLayoutUnfold, InvalidWindowStrideZero) {
   };
   UnfoldPrimitive unfold = {
       .start_index = 1, .limit_index = 5, .window_stride = 0, .window_size = 2};
-  EXPECT_THAT(UpdateLayout(layout, unfold),
+  EXPECT_THAT(UpdateLayoutImpl(layout, unfold),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("window stride must be positive")));
 }
@@ -216,7 +216,7 @@ TEST(UpdateLayoutUnfold, InvalidWindowStrideNegative) {
                             .limit_index = 5,
                             .window_stride = -1,
                             .window_size = 2};
-  EXPECT_THAT(UpdateLayout(layout, unfold),
+  EXPECT_THAT(UpdateLayoutImpl(layout, unfold),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("window stride must be positive")));
 }

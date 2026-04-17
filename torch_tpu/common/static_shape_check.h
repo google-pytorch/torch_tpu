@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "ATen/core/TensorBody.h"
+#include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {
 
@@ -40,9 +41,20 @@ absl::Status CheckStaticShape(mlir::RankedTensorType type,
 // Overload for `at::Tensor`. It is called inside the function that PyTorch
 // dispatches the op to.
 //
+// The `DeviceBufferRef` is also required so that the `static_shape_check` does
+// not depend on the `tensor_to_buffer` target. This is specifically needed so
+// that we can call this function on view decomposition. Otherwise, we get the
+// dependency cycle:
+//
+//   - tensor_to_buffer
+//   - view primitive
+//   - static_shape_check
+//   - tensor_to_buffer
+//
 // `arg_name` should be set to the corresponding argument name of the op. This
 // will be used for displaying a better error message.
 absl::Status CheckStaticShape(const at::Tensor& tensor,
+                              const DeviceBufferRef& buffer_ref,
                               std::string_view arg_name);
 
 }  // namespace torch_tpu

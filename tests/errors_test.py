@@ -1593,6 +1593,42 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase, parameterized.TestCase):
     ):
       torch.ops.aten.mm.dtype_out(lhs, rhs, out_dtype=torch.float64, out=out)
 
+  # Why do we run this test only on TPU (and not on CPU)?
+  # PyTorch CPU does not raise an error when g size does not match the size of
+  # weight in dim 0.
+  # TODO: TorchTPU should have similar behavior w.r.t. PyTorch native devices.
+  def test_weight_norm_interface_g_size_mismatch(self):
+    v = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    g = torch.ones(3, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=(
+            "weight_norm_interface(): expected the size of the weight magnitude"
+            " (g) to be 2, which is the size of the weight at dimension 0,"
+            " got 3"
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._weight_norm(v, g, 0)
+
+  # Why do we run this test only on TPU (and not on CPU)?
+  # PyTorch CPU does not raise an error when g has more than 1 dimension.
+  # TODO: TorchTPU should have similar behavior w.r.t. PyTorch native devices.
+  def test_weight_norm_interface_g_rank_too_large(self):
+    v = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
+    g = torch.ones(3, 3, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=(
+            "weight_norm_interface(): expected the weight magnitude (g) to be a"
+            " scalar or a 1D tensor, got a tensor of shape [3, 3]"
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._weight_norm(v, g, 1)
+
 
 class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
   """Tests error messages on TPU vs on CPU."""
@@ -8047,6 +8083,24 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
         message_reviewed_by="wan",
     ):
       torch.view_as_complex(t)
+
+  def test_where_out_dtype_mismatch(self):
+    condition = torch.tensor([True, False], device=et.device())
+    inp = torch.ones(2, device=et.device(), dtype=torch.float32)
+    other = torch.zeros(2, device=et.device(), dtype=torch.float32)
+    out = torch.empty(2, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=(
+            "where(): expected the output dtype to be float32 (result of"
+            " promoting the dtype of the input tensors -- float32 and float32),"
+            " got int32"
+        ),
+        cpu="Expected out type to be Float but got Int",
+        message_reviewed_by="wan",
+    ):
+      torch.where(condition, inp, other, out=out)
 
 
 if __name__ == "__main__":

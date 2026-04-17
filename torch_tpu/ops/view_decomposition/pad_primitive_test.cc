@@ -33,7 +33,7 @@ using testing::HasSubstr;
 TEST(UpdateLayoutPad, ScalarNoOp) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   PadPrimitive pad = {.pad_dims = {}};
-  auto modified = UpdateLayout(layout, pad);
+  auto modified = UpdateLayoutImpl(layout, pad);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -50,7 +50,7 @@ TEST(UpdateLayoutPad, TensorNoOp) {
           {.low_padding = 0, .high_padding = 0, .interior_padding = 0},
           {.low_padding = 0, .high_padding = 0, .interior_padding = 0},
           {.low_padding = 0, .high_padding = 0, .interior_padding = 0}}};
-  auto modified = UpdateLayout(layout, pad);
+  auto modified = UpdateLayoutImpl(layout, pad);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -67,7 +67,7 @@ TEST(UpdateLayoutPad, TensorToTensor) {
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1},
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1},
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1}}};
-  auto modified = UpdateLayout(layout, pad);
+  auto modified = UpdateLayoutImpl(layout, pad);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -92,7 +92,7 @@ TEST(UpdateLayoutPad, InvalidRank) {
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1},
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1},
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1}}};
-  EXPECT_THAT(UpdateLayout(layout, pad),
+  EXPECT_THAT(UpdateLayoutImpl(layout, pad),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("pad has wrong number of dimensions")));
 }
@@ -110,7 +110,7 @@ TEST(UpdateLayoutPad, InvalidNegativePadding) {
           {.low_padding = 1, .high_padding = -1, .interior_padding = 1},
           {.low_padding = 1, .high_padding = 1, .interior_padding = 1}}};
   EXPECT_THAT(
-      UpdateLayout(layout, pad),
+      UpdateLayoutImpl(layout, pad),
       StatusIs(error::kInvalidArgument, HasSubstr("pad has negative padding")));
 }
 

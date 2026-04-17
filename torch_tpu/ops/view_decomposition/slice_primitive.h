@@ -80,8 +80,8 @@ std::ostream& operator<<(std::ostream& os, const SlicePrimitive& slice);
 // Returns an error if the number of dimensions does not match, or if the
 // slice indexes are invalid.
 // Returns true if the layout was modified.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const SlicePrimitive& slice);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const SlicePrimitive& slice);
 
 // Merges two sequential slices into a single slice.
 absl::StatusOr<SlicePrimitive> Merge(SlicePrimitive first,

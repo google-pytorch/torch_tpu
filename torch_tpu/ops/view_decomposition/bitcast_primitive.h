@@ -171,12 +171,12 @@ std::ostream& operator<<(std::ostream& os, const ViewAsComplex& bitcast);
 // Returns an error if the bitcast is not valid for the layout, which will be
 // due to a missing or incompatible last dimension.
 // Returns true if the layout was modified, or false if the bitcast is a no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const RealToRealBitcast& bitcast);
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const ComplexToRealBitcast& bitcast);
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const ViewAsComplex& bitcast);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const RealToRealBitcast& bitcast);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const ComplexToRealBitcast& bitcast);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const ViewAsComplex& bitcast);
 
 // An overload for the ViewPrimitiveShlo function that handles bitcast
 // primitives. This may involve calls to BitcastConvert, Complex, Real, Imag,
@@ -187,23 +187,6 @@ absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(
     mlir::MlirOp input, const ComplexToRealBitcast& bitcast);
 absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(mlir::MlirOp input,
                                                const ViewAsComplex& bitcast);
-
-// Returns the number of bits used to represent the given element type in torch.
-// If the type does not have a torch equivalent (such as F6E2M3FN), returns
-// the MLIR type size instead to avoid requiring a StatusOr.
-//
-// torch bitwidths are typically the same as the MLIR type numeric size, with
-// the exception of booleans, which are PRED/I1 in StableHLO but represented by
-// uint8s in torch.
-//
-// Note that mlir::ElementType::COMPLEXF32 and mlir::ElementType::COMPLEXF64
-// are the equivalent of torch.complex64 and torch.complex128, respectively, so
-// the bitwidth of COMPLEXF32 is 64 and the bitwidth of COMPLEXF64 is 128.
-int64_t TorchEquivalentBitwidth(mlir::ElementType element_type);
-
-// Returns a non-complex element type that can be cast into the given element
-// type.
-mlir::ElementType RealEquivalentOf(mlir::ElementType element_type);
 
 }  // namespace torch_tpu
 

@@ -119,6 +119,23 @@ absl::StatusOr<ToType> ConvertTo(mlir::Type mlir_type) {
   return ConvertTo<ToType>(element_type);
 }
 
+// Returns the number of bits used to represent the given element type in torch.
+// If the type does not have a torch equivalent (such as F6E2M3FN), returns
+// the MLIR type size instead to avoid requiring a StatusOr.
+//
+// torch bitwidths are typically the same as the MLIR type numeric size, with
+// the exception of booleans, which are PRED/I1 in StableHLO but represented by
+// uint8s in torch.
+//
+// Note that mlir::ElementType::COMPLEXF32 and mlir::ElementType::COMPLEXF64
+// are the equivalent of torch.complex64 and torch.complex128, respectively, so
+// the bitwidth of COMPLEXF32 is 64 and the bitwidth of COMPLEXF64 is 128.
+int64_t TorchEquivalentBitwidth(mlir::ElementType element_type);
+
+// Returns a non-complex element type that can be cast into the given element
+// type.
+mlir::ElementType RealEquivalentOf(mlir::ElementType element_type);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_COMMON_DTYPE_H_

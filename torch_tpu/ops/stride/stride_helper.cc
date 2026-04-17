@@ -24,9 +24,9 @@
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
-#include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {

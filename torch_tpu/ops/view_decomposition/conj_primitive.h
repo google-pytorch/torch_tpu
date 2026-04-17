@@ -26,8 +26,8 @@ struct ConjPrimitive {
   bool is_set = true;
 };
 
-inline absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                         const ConjPrimitive& primitive) {
+inline absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                             const ConjPrimitive& primitive) {
   return primitive.is_set;
 }
 // Size should be 1 byte, but alignment/padding might make it more in variant.

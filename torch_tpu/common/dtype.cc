@@ -644,4 +644,72 @@ absl::StatusOr<int64_t> ValidateTensorByteSize(at::IntArrayRef size,
   return extent_product;
 }
 
+int64_t TorchEquivalentBitwidth(mlir::ElementType element_type) {
+  switch (element_type) {
+    // PyTorch stores booleans as uint8s, even though they're called "I1" in
+    // MLIR.
+    case mlir::ElementType::PRED:
+      return 8;
+
+    // Torch does not actually support 2- or 6-bit integer types, so these
+    // cases will never be reached. Return the MLIR bitwidth anyway.
+    case mlir::ElementType::I2:
+    case mlir::ElementType::UI2:
+      return 2;
+    case mlir::ElementType::F6E2M3FN:
+    case mlir::ElementType::F6E3M2FN:
+      return 6;
+
+    // StableHLO's complex32 is equivalent to PyTorch's complex64/cfloat.
+    case mlir::ElementType::COMPLEXF32:
+      return 64;
+    // StableHLO's complex64 is equivalent to PyTorch's complex128/cdouble.
+    case mlir::ElementType::COMPLEXF64:
+      return 128;
+
+    // For everything else, the torch bitwidth is the same as the MLIR bitwidth.
+    case mlir::ElementType::I4:
+    case mlir::ElementType::UI4:
+    case mlir::ElementType::F4E2M1FN:
+      return 4;
+    case mlir::ElementType::I8:
+    case mlir::ElementType::UI8:
+    case mlir::ElementType::F8E3M4:
+    case mlir::ElementType::F8E4M3:
+    case mlir::ElementType::F8E4M3FN:
+    case mlir::ElementType::F8E4M3FNUZ:
+    case mlir::ElementType::F8E4M3B11FNUZ:
+    case mlir::ElementType::F8E5M2:
+    case mlir::ElementType::F8E5M2FNUZ:
+    case mlir::ElementType::F8E8M0FNU:
+      return 8;
+    case mlir::ElementType::I16:
+    case mlir::ElementType::UI16:
+    case mlir::ElementType::F16:
+    case mlir::ElementType::BF16:
+      return 16;
+    case mlir::ElementType::I32:
+    case mlir::ElementType::UI32:
+    case mlir::ElementType::F32:
+      return 32;
+    case mlir::ElementType::I64:
+    case mlir::ElementType::UI64:
+    case mlir::ElementType::F64:
+      return 64;
+      // Deliberately no default case, so that the compiler will warn if a new
+      // MLIR type is added.
+  }
+}
+
+mlir::ElementType RealEquivalentOf(const mlir::ElementType element_type) {
+  switch (element_type) {
+    case mlir::ElementType::COMPLEXF32:
+      return mlir::ElementType::F32;
+    case mlir::ElementType::COMPLEXF64:
+      return mlir::ElementType::F64;
+    default:
+      return element_type;
+  }
+}
+
 }  // namespace torch_tpu

@@ -34,7 +34,6 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/tensor_to_buffer.h"
 
 namespace torch_tpu {
 
@@ -139,11 +138,8 @@ absl::Status CheckStaticShape(mlir::RankedTensorType type,
 }
 
 absl::Status CheckStaticShape(const at::Tensor& tensor,
+                              const DeviceBufferRef& buffer_ref,
                               const std::string_view arg_name) {
-  // Retrieve the dynamic dimensions information from the `DeviceBufferRef`
-  // instance inside the given tensor.
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
-                      GetBaseBufferFromAtTensor(tensor));
   absl::Span<const BoundedDynamicDimension> dynamic_dimensions_info =
       buffer_ref.dynamic_dimensions();
 

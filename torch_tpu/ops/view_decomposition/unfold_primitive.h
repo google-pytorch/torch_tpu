@@ -68,8 +68,8 @@ std::ostream& operator<<(std::ostream& os, const UnfoldPrimitive& unfold);
 // out-of-bounds elements.
 // Returns true if the layout was modified, or false if the unfold is a
 // no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const UnfoldPrimitive& unfold);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const UnfoldPrimitive& unfold);
 
 // An overload for the ViewPrimitiveShlo function that handles unfold
 // primitives. This uses stablehlo::Slice and stablehlo::Concatenate.

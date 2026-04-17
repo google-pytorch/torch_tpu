@@ -100,8 +100,8 @@ std::ostream& operator<<(std::ostream& os, const PadPrimitive& pad);
 // Returns an error if the number of dimensions does not match, or if the
 // pad values are negative.
 // Returns true if the layout was modified.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const PadPrimitive& pad);
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const PadPrimitive& pad);
 
 // An overload for the ViewPrimitiveShlo function that handles pad
 // primitives. This is a direct call into the stablehlo::Pad function; the

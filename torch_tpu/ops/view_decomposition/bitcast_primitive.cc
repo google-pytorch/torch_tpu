@@ -227,8 +227,8 @@ std::ostream& operator<<(std::ostream& os, const ViewAsComplex& bitcast) {
 // Updates the layout to reflect the effect of applying the given real-to-real
 // bitcast.
 // Returns true if the layout was modified, or false if the bitcast is a no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const RealToRealBitcast& bitcast) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const RealToRealBitcast& bitcast) {
   TT_RET_CHECK(bitcast.from_type != mlir::ElementType::COMPLEXF32 &&
                    bitcast.from_type != mlir::ElementType::COMPLEXF64,
                error::kInvalidArgument)
@@ -284,8 +284,8 @@ absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
 // Updates the layout to reflect the effect of applying the given
 // complex-to-real bitcast.
 // Returns true if the layout was modified, or false if the bitcast is a no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const ComplexToRealBitcast& bitcast) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const ComplexToRealBitcast& bitcast) {
   // Double offset and all strides
   layout.storage_offset *= 2;
   for (auto& dim : layout.strided_dims) {
@@ -313,8 +313,8 @@ absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
 // Updates the layout to reflect the effect of applying the given
 // view_as_complex bitcast operation.
 // Returns true if the layout was modified, or false if the bitcast is a no-op.
-absl::StatusOr<bool> UpdateLayout(StridedLayout& layout,
-                                  const ViewAsComplex& bitcast) {
+absl::StatusOr<bool> UpdateLayoutImpl(StridedLayout& layout,
+                                      const ViewAsComplex& bitcast) {
   TT_RET_CHECK(!layout.strided_dims.empty(), error::kInvalidArgument)
       << "cannot apply view_as_complex to a scalar";
   // Inverse of view_as_real; converts a tensor like f32[2, 3, 8] ->
@@ -440,74 +440,6 @@ absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(mlir::MlirOp input,
       mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
 
   return mlir::stablehlo::Complex(real_values, imag_values);
-}
-
-int64_t TorchEquivalentBitwidth(mlir::ElementType element_type) {
-  switch (element_type) {
-    // PyTorch stores booleans as uint8s, even though they're called "I1" in
-    // MLIR.
-    case mlir::ElementType::PRED:
-      return 8;
-
-    // Torch does not actually support 2- or 6-bit integer types, so these
-    // cases will never be reached. Return the MLIR bitwidth anyway.
-    case mlir::ElementType::I2:
-    case mlir::ElementType::UI2:
-      return 2;
-    case mlir::ElementType::F6E2M3FN:
-    case mlir::ElementType::F6E3M2FN:
-      return 6;
-
-    // StableHLO's complex32 is equivalent to PyTorch's complex64/cfloat.
-    case mlir::ElementType::COMPLEXF32:
-      return 64;
-    // StableHLO's complex64 is equivalent to PyTorch's complex128/cdouble.
-    case mlir::ElementType::COMPLEXF64:
-      return 128;
-
-    // For everything else, the torch bitwidth is the same as the MLIR bitwidth.
-    case mlir::ElementType::I4:
-    case mlir::ElementType::UI4:
-    case mlir::ElementType::F4E2M1FN:
-      return 4;
-    case mlir::ElementType::I8:
-    case mlir::ElementType::UI8:
-    case mlir::ElementType::F8E3M4:
-    case mlir::ElementType::F8E4M3:
-    case mlir::ElementType::F8E4M3FN:
-    case mlir::ElementType::F8E4M3FNUZ:
-    case mlir::ElementType::F8E4M3B11FNUZ:
-    case mlir::ElementType::F8E5M2:
-    case mlir::ElementType::F8E5M2FNUZ:
-    case mlir::ElementType::F8E8M0FNU:
-      return 8;
-    case mlir::ElementType::I16:
-    case mlir::ElementType::UI16:
-    case mlir::ElementType::F16:
-    case mlir::ElementType::BF16:
-      return 16;
-    case mlir::ElementType::I32:
-    case mlir::ElementType::UI32:
-    case mlir::ElementType::F32:
-      return 32;
-    case mlir::ElementType::I64:
-    case mlir::ElementType::UI64:
-    case mlir::ElementType::F64:
-      return 64;
-      // Deliberately no default case, so that the compiler will warn if a new
-      // MLIR type is added.
-  }
-}
-
-mlir::ElementType RealEquivalentOf(const mlir::ElementType element_type) {
-  switch (element_type) {
-    case mlir::ElementType::COMPLEXF32:
-      return mlir::ElementType::F32;
-    case mlir::ElementType::COMPLEXF64:
-      return mlir::ElementType::F64;
-    default:
-      return element_type;
-  }
 }
 
 }  // namespace torch_tpu

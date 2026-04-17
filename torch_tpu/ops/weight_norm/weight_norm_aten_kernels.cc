@@ -29,6 +29,7 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -90,7 +91,7 @@ absl::StatusOr<MlirOpResults<2>> BuildWeightNormShlo(mlir::MlirOp v_op,
 
 std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
                                                            const at::Tensor& g,
-                                                           int64_t dim) {
+                                                           const int64_t dim) {
   TT_KERNEL(OpName::kWeightNormInterface, param_keys, (v, g, dim), {
     TT_CHECK_THROW(IsFloatingPoint(v), error::kInvalidArgument)
         << "expected the input dtype to be floating point, got "
@@ -99,13 +100,17 @@ std::tuple<at::Tensor, at::Tensor> AtenWeightNormInterface(const at::Tensor& v,
         << "expected v to have at least 1 dimension, got " << v.dim();
     TT_CHECK_THROW(dim == 0 || dim == v.dim() - 1, error::kInvalidArgument)
         << "expected dim to be 0 or the last dimension of v, got " << dim;
+
     TT_CHECK_THROW(g.dim() <= 1, error::kInvalidArgument)
-        << "g must be a scalar or a 1-d tensor, got g of size " << g.dim();
+        << "expected the weight magnitude (g) to be a scalar or a 1D tensor, "
+           "got a tensor of shape "
+        << ToString(g.sizes());
+
     if (g.dim() == 1) {
       TT_CHECK_THROW(g.size(0) == v.size(dim), error::kInvalidArgument)
-          << "g must match the size of weight in dim " << dim
-          << ", got g of size " << g.size(0) << " and weight of size "
-          << v.size(dim);
+          << "expected the size of the weight magnitude (g) to be "
+          << v.size(dim) << ", which is the size of the weight at dimension "
+          << dim << ", got " << g.size(0);
     }
 
     TT_ASSIGN_OR_THROW(const auto out_dtype,

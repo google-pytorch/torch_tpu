@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -56,6 +57,13 @@ absl::Status CheckWeightType(const at::Tensor& weight) {
       << ToString(scalar_type);
   return absl::OkStatus();
 }
+absl::Status CheckStaticShape(const at::Tensor& tensor,
+                              const std::string_view arg_name) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
+                      GetBaseBufferFromAtTensor(tensor));
+  return CheckStaticShape(tensor, buffer_ref, arg_name);
+}
+
 }  // namespace
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> AtenEmbeddingBag(

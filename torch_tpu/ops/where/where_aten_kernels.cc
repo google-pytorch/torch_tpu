@@ -28,6 +28,7 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -97,8 +98,11 @@ at::Tensor& AtenWhereSelfOut(const at::Tensor& condition,
 
     TT_CHECK_THROW(output_aten_type == out.scalar_type(),
                    error::kInvalidArgument)
-        << "inferred output type " << output_aten_type
-        << " does not match output tensor type " << out.scalar_type();
+        << "expected the output dtype to be " << ToString(output_aten_type)
+        << " (result of promoting the dtype of the input tensors -- "
+        << ToString(self.scalar_type()) << " and "
+        << ToString(other.scalar_type()) << "), got "
+        << ToString(out.scalar_type());
     at::native::resize_output(out, output_dims);
 
     // No scalars to cache

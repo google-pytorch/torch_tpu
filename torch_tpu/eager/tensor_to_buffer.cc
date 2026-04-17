@@ -61,7 +61,6 @@
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
 #include "torch_tpu/ops/stride/stride_helper.h"
-#include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
 #include "torch_tpu/ops/view_decomposition/decomposition.h"
 #include "torch_tpu/ops/view_decomposition/inversion.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"

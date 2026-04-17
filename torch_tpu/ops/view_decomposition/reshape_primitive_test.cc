@@ -35,15 +35,15 @@ using testing::HasSubstr;
 
 TEST(UpdateLayoutReshape, ScalarNoOp) {
   StridedLayout layout = MakeContiguousBaseLayout({});
-  auto modified =
-      UpdateLayout(layout, ReshapePrimitive{.base_sizes = {}, .new_sizes = {}});
+  auto modified = UpdateLayoutImpl(
+      layout, ReshapePrimitive{.base_sizes = {}, .new_sizes = {}});
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
 
 TEST(UpdateLayoutReshape, ScalarToVector) {
   StridedLayout layout = MakeContiguousBaseLayout({});
-  auto modified = UpdateLayout(
+  auto modified = UpdateLayoutImpl(
       layout, ReshapePrimitive{.base_sizes = {}, .new_sizes = {1, 1, 1}});
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
@@ -61,7 +61,7 @@ TEST(UpdateLayoutReshape, ScalarToVector) {
 
 TEST(UpdateLayoutReshape, VectorToScalar) {
   StridedLayout layout = MakeContiguousBaseLayout({1, 1, 1});
-  auto modified = UpdateLayout(
+  auto modified = UpdateLayoutImpl(
       layout, ReshapePrimitive{.base_sizes = {1, 1, 1}, .new_sizes = {}});
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
@@ -75,8 +75,8 @@ TEST(UpdateLayoutReshape, VectorToScalar) {
 TEST(UpdateLayoutReshape, InvalidScalarToVector) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   EXPECT_THAT(
-      UpdateLayout(layout,
-                   ReshapePrimitive{.base_sizes = {}, .new_sizes = {2}}),
+      UpdateLayoutImpl(layout,
+                       ReshapePrimitive{.base_sizes = {}, .new_sizes = {2}}),
       StatusIs(error::kInvalidArgument,
                HasSubstr("reshape does not match the number of elements")));
 }
@@ -84,8 +84,8 @@ TEST(UpdateLayoutReshape, InvalidScalarToVector) {
 TEST(UpdateLayoutReshape, InvalidVectorToScalar) {
   StridedLayout layout = MakeContiguousBaseLayout({2});
   EXPECT_THAT(
-      UpdateLayout(layout,
-                   ReshapePrimitive{.base_sizes = {2}, .new_sizes = {}}),
+      UpdateLayoutImpl(layout,
+                       ReshapePrimitive{.base_sizes = {2}, .new_sizes = {}}),
       StatusIs(error::kInvalidArgument,
                HasSubstr("reshape does not match the number of elements")));
 }
@@ -98,7 +98,7 @@ TEST(UpdateLayoutReshape, TensorNoOp) {
       .storage_offset = 0,
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4, 2}, .new_sizes = {6, 4, 2}};
-  auto modified = UpdateLayout(layout, reshape);
+  auto modified = UpdateLayoutImpl(layout, reshape);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -111,7 +111,7 @@ TEST(UpdateLayoutReshape, TensorToTensor) {
       .storage_offset = 0,
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4, 2}, .new_sizes = {2, 3, 8}};
-  auto modified = UpdateLayout(layout, reshape);
+  auto modified = UpdateLayoutImpl(layout, reshape);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -136,7 +136,7 @@ TEST(UpdateLayoutReshape, TensorWithOnesToTensor) {
   };
   ReshapePrimitive reshape = {.base_sizes = {1, 1, 6, 4, 2, 1, 1},
                               .new_sizes = {2, 3, 8}};
-  auto modified = UpdateLayout(layout, reshape);
+  auto modified = UpdateLayoutImpl(layout, reshape);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -157,7 +157,7 @@ TEST(UpdateLayoutReshape, TensorToTensorWithOnes) {
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4, 2},
                               .new_sizes = {1, 2, 1, 3, 1, 8, 1}};
-  auto modified = UpdateLayout(layout, reshape);
+  auto modified = UpdateLayoutImpl(layout, reshape);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -182,7 +182,7 @@ TEST(UpdateLayoutReshape, InvalidViolatesContinguity) {
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4, 2}, .new_sizes = {24, 2}};
   EXPECT_THAT(
-      UpdateLayout(layout, reshape),
+      UpdateLayoutImpl(layout, reshape),
       StatusIs(
           error::kInvalidArgument,
           HasSubstr("reshape is not aligned with contiguity-like blocks")));
@@ -196,7 +196,7 @@ TEST(UpdateLayoutReshape, InvalidBaseRank) {
       .storage_offset = 0,
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4}, .new_sizes = {24, 1}};
-  EXPECT_THAT(UpdateLayout(layout, reshape),
+  EXPECT_THAT(UpdateLayoutImpl(layout, reshape),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("reshape base sizes and layout rank must "
                                  "match")));
@@ -210,7 +210,7 @@ TEST(UpdateLayoutReshape, InvalidBaseSizes) {
       .storage_offset = 0,
   };
   ReshapePrimitive reshape = {.base_sizes = {6, 4, 1}, .new_sizes = {24, 1}};
-  EXPECT_THAT(UpdateLayout(layout, reshape),
+  EXPECT_THAT(UpdateLayoutImpl(layout, reshape),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("reshape base sizes must match the layout")));
 }
@@ -221,14 +221,16 @@ TEST(MergeSequentialReshape, ValidMerge) {
   ReshapePrimitive to_merge = {.base_sizes = {6, 9}, .new_sizes = {27, 2}};
 
   auto expected_layout = MakeContiguousBaseLayout(contiguous_base_shape);
-  EXPECT_EQ(UpdateLayout(expected_layout, current).status(), absl::OkStatus());
-  EXPECT_EQ(UpdateLayout(expected_layout, to_merge).status(), absl::OkStatus());
+  EXPECT_EQ(UpdateLayoutImpl(expected_layout, current).status(),
+            absl::OkStatus());
+  EXPECT_EQ(UpdateLayoutImpl(expected_layout, to_merge).status(),
+            absl::OkStatus());
 
   auto merged = Merge(std::move(current), std::move(to_merge));
   EXPECT_EQ(merged.status(), absl::OkStatus());
 
   auto actual_layout = MakeContiguousBaseLayout(contiguous_base_shape);
-  EXPECT_EQ(UpdateLayout(actual_layout, merged.value()).status(),
+  EXPECT_EQ(UpdateLayoutImpl(actual_layout, merged.value()).status(),
             absl::OkStatus());
 
   EXPECT_EQ(actual_layout, expected_layout);

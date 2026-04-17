@@ -33,7 +33,7 @@ using testing::HasSubstr;
 TEST(UpdateLayoutPermute, ScalarNoOp) {
   StridedLayout layout = MakeContiguousBaseLayout({});
   TransposePrimitive transpose = {.permutation = {}};
-  auto modified = UpdateLayout(layout, transpose);
+  auto modified = UpdateLayoutImpl(layout, transpose);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -46,7 +46,7 @@ TEST(UpdateLayoutPermute, TensorNoOp) {
       .storage_offset = 0,
   };
   TransposePrimitive transpose = {.permutation = {0, 1, 2}};
-  auto modified = UpdateLayout(layout, transpose);
+  auto modified = UpdateLayoutImpl(layout, transpose);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_FALSE(modified.value());
 }
@@ -59,7 +59,7 @@ TEST(UpdateLayoutPermute, TensorToTensor) {
       .storage_offset = 0,
   };
   TransposePrimitive transpose = {.permutation = {1, 2, 0}};
-  auto modified = UpdateLayout(layout, transpose);
+  auto modified = UpdateLayoutImpl(layout, transpose);
   EXPECT_EQ(modified.status(), absl::OkStatus());
   EXPECT_TRUE(modified.value());
   StridedLayout expected = {
@@ -79,7 +79,7 @@ TEST(UpdateLayoutPermute, InvalidDifferentRank) {
       .storage_offset = 0,
   };
   TransposePrimitive transpose = {.permutation = {0, 1, 2, 3}};
-  EXPECT_THAT(UpdateLayout(layout, transpose),
+  EXPECT_THAT(UpdateLayoutImpl(layout, transpose),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("transpose has wrong number of axes")));
 }
@@ -93,7 +93,7 @@ TEST(UpdateLayoutPermute, InvalidNegativeIndex) {
   };
   TransposePrimitive transpose = {.permutation = {-1, 0, 2}};
   EXPECT_THAT(
-      UpdateLayout(layout, transpose),
+      UpdateLayoutImpl(layout, transpose),
       StatusIs(error::kInvalidArgument,
                HasSubstr("permutation dimension index is out of bounds")));
 }
@@ -107,7 +107,7 @@ TEST(UpdateLayoutPermute, InvalidIndexTooLarge) {
   };
   TransposePrimitive transpose = {.permutation = {0, 1, 3}};
   EXPECT_THAT(
-      UpdateLayout(layout, transpose),
+      UpdateLayoutImpl(layout, transpose),
       StatusIs(error::kInvalidArgument,
                HasSubstr("permutation dimension index is out of bounds")));
 }
@@ -120,7 +120,7 @@ TEST(UpdateLayoutPermute, InvalidIndexRepeated) {
       .storage_offset = 0,
   };
   TransposePrimitive transpose = {.permutation = {0, 1, 0}};
-  EXPECT_THAT(UpdateLayout(layout, transpose),
+  EXPECT_THAT(UpdateLayoutImpl(layout, transpose),
               StatusIs(error::kInvalidArgument,
                        HasSubstr("transpose has duplicate axis dimension")));
 }
