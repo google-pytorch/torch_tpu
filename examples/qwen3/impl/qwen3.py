@@ -36,7 +36,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 # Global model configurations. For now we only support the smallest

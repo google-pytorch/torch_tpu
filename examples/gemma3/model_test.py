@@ -25,7 +25,6 @@ import json
 from absl import logging
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
@@ -44,7 +43,7 @@ class TestModel(absltest.TestCase):
     torch.manual_seed(seed)
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
-    self.device = api.tpu_device()
+    self.device = torch.device("tpu")
     logging.info("Using device: %s", self.device)
 
     # TODO(b/498567957): fix OOMs from parallel test execution

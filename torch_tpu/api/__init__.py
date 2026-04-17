@@ -50,10 +50,10 @@ def _ensure_loaded(
     if not loader._LOADED:
       # Set allow_xla_backend because unlike the automatic loading case, the
       # *_device() calls are explicitly requesting one of the backends. It is
-      # possible that someone may call `api._xla_cuda_device()` on a CPU device,
-      # causing the `xla_cpu` backend to be loaded, but this will be followed
-      # immediately by an error, and this case will be rare, so we do not
-      # have to overly concern ourselves with this.
+      # possible that someone may call `torch.device("xla_cuda")` on a CPU
+      # device, causing the `xla_cpu` backend to be loaded, but this will be
+      # followed immediately by an error, and this case will be rare, so we
+      # do not have to overly concern ourselves with this.
       loader.load(allow_xla_backend=True)
     return f()
 

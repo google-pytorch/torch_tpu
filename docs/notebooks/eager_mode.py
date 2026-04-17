@@ -67,11 +67,10 @@ def _(mo):
 @app.cell
 def init():
   import torch
-  from torch_tpu import api
   from torch_tpu._internal import execution_mode as em
 
   # Standard hardware initialization
-  api.tpu_device()
+  torch.device("tpu")
   return em, torch
 
 

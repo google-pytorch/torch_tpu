@@ -21,7 +21,6 @@ import torch
 from torch import distributed as dist
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import sync
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
@@ -32,7 +31,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 def run_dtensor_1d_apply_op() -> None:
   """Operations can be applied to a DTensor."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -55,7 +53,6 @@ def run_dtensor_1d_apply_op() -> None:
 
 def run_dtensor_1d_distribute_from_src() -> None:
   """DTensor can be initialized with data coming from only one process."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -110,7 +107,6 @@ def _test_redistribute(
 
 def run_dtensor_1d_shard_to_replicate() -> None:
   """Redistributing from shard to replicate triggers all_gather."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -125,7 +121,6 @@ def run_dtensor_1d_shard_to_replicate() -> None:
 
 def run_dtensor_1d_replicate_to_shard() -> None:
   """Redistributing from replicate to shard triggers local chunking."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -140,7 +135,6 @@ def run_dtensor_1d_replicate_to_shard() -> None:
 
 def run_dtensor_1d_shard_to_shard() -> None:
   """Redistributing from shard to shard triggers all_to_all."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -155,7 +149,6 @@ def run_dtensor_1d_shard_to_shard() -> None:
 
 def run_dtensor_1d_partial_to_replicate() -> None:
   """Redistributing from partial to replicate triggers all_reduce."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -169,7 +162,6 @@ def run_dtensor_1d_partial_to_replicate() -> None:
 
 def run_dtensor_1d_partial_to_shard() -> None:
   """Redistributing from partial to shard triggers reduce_scatter."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   device_mesh = dt.init_device_mesh("tpu", (world_size,))
@@ -242,7 +234,6 @@ class DTensor1DimTest(absltest.TestCase):
 
 def run_dtensor_2d_shard_to_shard() -> None:
   """Redistributing from shard to shard triggers all_to_all."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   world_size = int(os.environ["WORLD_SIZE"])
   full_tensor = _range_tensor_2d(world_size)
@@ -269,7 +260,6 @@ class DTensor2DimTest(absltest.TestCase):
 
 def run_sync_dtensor() -> None:
   """Syncing a DTensor materializes the underlying shard."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])

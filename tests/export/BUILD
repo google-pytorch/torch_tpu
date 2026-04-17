@@ -27,7 +27,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/export",
-        "//torch_tpu/api",
     ],
 )
 

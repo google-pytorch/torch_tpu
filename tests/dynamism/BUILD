@@ -36,9 +36,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -60,7 +60,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/api",  # buildcleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )

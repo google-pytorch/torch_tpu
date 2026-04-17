@@ -21,12 +21,10 @@ NOTE: You should not be running this script directly. Instead, run via:
 
 import torch
 from torch import distributed as dist
-from torch_tpu import api
 
 
 def run_all_reduce():
   # Initialize tpu device.
-  api.tpu_device()
 
   # Initialize the process group. The "tpu_dist" backend is used for distributed
   # TPU communication. Environment variables (RANK, WORLD_SIZE, etc.) are

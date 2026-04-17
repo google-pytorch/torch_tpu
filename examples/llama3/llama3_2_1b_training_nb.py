@@ -34,12 +34,11 @@ import datasets
 from etils import epath
 import torch
 import transformers
-from torch_tpu import api  # pylint: disable=unused-import
 from examples import paths
 # %% [markdown]
 # ## Set up the TPU device for PyTorch
 # %%
-# device = api.tpu_device()  # Workaround. Will become `torch.device("tpu")`
+# device = torch.device("tpu")  # Workaround. Will become `torch.device("tpu")`
 device = torch.device("cuda")
 
 torch.set_default_device(device)

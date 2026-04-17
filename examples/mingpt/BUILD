@@ -42,8 +42,8 @@ torch_tpu_py_test(
         "//shims/absl_py/flags",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//jax",
         "@pypi//numpy",
@@ -72,8 +72,8 @@ torch_tpu_py_test(
         "//shims/absl_py/flags",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
         "@pypi//numpy",
         "@xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",  # buildcleaner: keep
@@ -101,8 +101,8 @@ torch_tpu_py_test(
         "//shims/absl_py/flags",
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
         "@pypi//numpy",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
@@ -128,7 +128,6 @@ torch_tpu_py_test(
         "//shims/profile_cpu:python_tracer",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
     ],
@@ -144,6 +143,7 @@ pytype_strict_binary(
         "//examples/mingpt/impl:mingpt",
         "//shims/absl_py:app",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/api:_device_module",
         "@pypi//numpy",
     ],
@@ -155,7 +155,7 @@ pytype_strict_library(
     deps = [
         "//examples/mingpt/impl:mingpt",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
     ],
 )
 

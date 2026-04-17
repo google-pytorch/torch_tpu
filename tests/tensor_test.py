@@ -17,9 +17,9 @@ from typing import Any, Callable, Tuple
 from absl.testing import absltest
 import numpy as np
 import torch
+import torch.accelerator
 from torch.testing._internal import common_device_type
 from torch.testing._internal import common_utils as torch_test_utils
-from torch_tpu import api
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
 
@@ -312,7 +312,7 @@ def make_materialized_rope_inputs() -> (
   The tensor dtypes and shapes are chosen to match the Llama3 8B model.
   """
 
-  tpu = api.tpu_device()
+  tpu = torch.accelerator.current_accelerator()
   xq = torch.rand(1, 2024, 4, 128, dtype=torch.bfloat16, device=tpu)
   xk = torch.rand(1, 2024, 1, 128, dtype=torch.bfloat16, device=tpu)
   freqs_cis = rand_complex(2024, 64, device=tpu)
@@ -404,7 +404,7 @@ class TensorTest(torch_test_utils.TestCase):
         self._test(dtype, kwargs)
 
   def _test(self, dtype, kwargs):
-    tpu_d = api.tpu_device()
+    tpu_d = torch.accelerator.current_accelerator()
 
     test_name = kwargs["test_name"]
     sample_input = kwargs.get("sample_input", None)

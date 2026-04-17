@@ -32,7 +32,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
@@ -142,7 +141,6 @@ def run_all_to_all_single(
     test_data: AllToAllSingleTestData,
 ) -> None:
   """Tests all-to-all functionality."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -280,7 +278,6 @@ def run_all_to_all(
     test_data: AllToAllTestData,
 ) -> None:
   """Tests all-to-all functionality."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])

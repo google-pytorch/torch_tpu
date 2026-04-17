@@ -23,7 +23,6 @@ import peft
 import torch
 from torch.utils.data import DataLoader
 from torch_tpu._internal.utils import log_utils
-import torch_tpu.api as tpu
 from examples import paths
 import transformers
 
@@ -44,7 +43,7 @@ flags.DEFINE_float("learning_rate", 1e-4, "Learning rate.")
 class PeftLoraTrainingTest(absltest.TestCase):
 
   def _create_training_setup(self):
-    device = tpu.tpu_device()
+    device = torch.device("tpu")
     logging.info("Using TPU device: %s", device)
 
     dataset_path = BASE_PATH / "datasets/huggingface/tatsu-lab/alpaca"

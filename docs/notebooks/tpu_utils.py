@@ -18,7 +18,6 @@ import re
 import signal
 import time
 import torch
-from torch_tpu import api
 from torch_tpu.api import _device_module
 
 _DeviceModule = _device_module.DeviceModule
@@ -94,7 +93,7 @@ def safe_init(accelerator_type="v6e-4"):
 
   # ── Fast path: runtime already alive in this process ──
   if _DeviceModule.is_initialized():
-    return api.tpu_device()
+    return torch.device("tpu")
 
   # ── Slow path: first init or recovery ──
   api.tpu_device.cache_clear()
@@ -102,7 +101,7 @@ def safe_init(accelerator_type="v6e-4"):
   max_retries = 3
   for attempt in range(max_retries):
     try:
-      device = api.tpu_device()
+      device = torch.device("tpu")
       # Guard against partial init: the torch.tpu module may have
       # been registered by a prior failed attempt, causing
       # _init_device to short-circuit without calling _init_runtime_options.

@@ -27,7 +27,7 @@ from absl import flags
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal.utils import utils
 from tests import module_registry
@@ -100,7 +100,7 @@ class ModelCoverageHFTest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls) -> None:
     super().setUpClass()
-    cls.tpu_device = api.tpu_device()
+    cls.tpu_device = torch.accelerator.current_accelerator()
     cls.module_registry = module_registry.ModuleRegistry()
 
   def _check_model_size(
@@ -144,7 +144,7 @@ class ModelCoverageHFTest(parameterized.TestCase):
 
     compiled_model = None
 
-    if device == api.tpu_device():
+    if device == torch.accelerator.current_accelerator():
       fn_to_compile = (
           functools.partial(_train_step, model) if is_training else model
       )

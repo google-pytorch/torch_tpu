@@ -20,7 +20,6 @@ import os
 from absl.testing import absltest
 import torch
 import torch.export
-from torch_tpu import api
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.export import export as torch_tpu_export
 
@@ -64,11 +63,6 @@ def override_tracebacks(new_val):
 
 class TestExportLinearMode(absltest.TestCase):
 
-  def setUp(self):
-    # Export requires a device to be init before use
-    super().setUp()
-    api._xla_cpu_device()
-
   def test_export_linear(self):
     sample_input = (torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),)
     exported = torch.export.export(SimpleNN(), args=sample_input)
@@ -101,11 +95,6 @@ class TestExportLinearMode(absltest.TestCase):
 
 
 class ExportTest(absltest.TestCase):
-
-  def setUp(self):
-    # Export requires a device to be init before use
-    super().setUp()
-    api._xla_cpu_device()
 
   def test_module(self):
     sample_input = (

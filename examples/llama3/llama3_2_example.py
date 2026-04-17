@@ -19,7 +19,6 @@ import sys
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 from examples.llama3.impl import llama3_2
 
@@ -59,7 +58,7 @@ def main(argv):
   logits_tpu = None
   if _TPU.value:
     print("TPU")
-    tpu_device = api.tpu_device()
+    tpu_device = torch.device("tpu")
     model.to(tpu_device)
     tpu_tensor = tensor_in.to(tpu_device)
     with torch.no_grad():

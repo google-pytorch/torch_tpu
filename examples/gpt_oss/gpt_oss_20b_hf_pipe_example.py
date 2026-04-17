@@ -18,7 +18,6 @@ import time
 
 from absl import app
 import torch
-from torch_tpu import api
 from examples import paths
 import transformers
 
@@ -29,7 +28,6 @@ MAX_DECODE_STEPS = 2
 
 def main(argv):
   del argv
-  api.tpu_device()  # Initialize TPU backend
   torch.manual_seed(123)
 
   pipe_tpu = transformers.pipeline(

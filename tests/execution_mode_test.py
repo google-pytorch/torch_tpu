@@ -18,7 +18,8 @@ import concurrent
 import random
 
 from absl.testing import absltest
-from torch_tpu import api
+import torch
+import torch.accelerator
 from torch_tpu._internal import execution_mode
 
 
@@ -27,7 +28,7 @@ class ExecutionModeTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.tpu = api.tpu_device()
+    self.tpu = torch.accelerator.current_accelerator()
 
   def test_eager_mode_in_threads(self):
     """Tests setting compiler options in nested contexts concurrently."""

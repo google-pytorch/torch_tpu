@@ -18,7 +18,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 _TPU = flags.DEFINE_bool("tpu", True, "Run on TPU and compare output to CPU.")
@@ -178,7 +177,7 @@ def main(argv: list[str]) -> None:
   # Run TPU Model.
   if not _TPU.value:
     return
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   model.to(tpu_device)
   output_tpu = model(dummy_input.to(tpu_device)).to("cpu")
   utils.assert_close(

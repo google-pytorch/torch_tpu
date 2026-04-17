@@ -50,11 +50,10 @@ def _(mo):
 def _():
   import torch
   import torch_tpu
-  from torch_tpu import api
 
   # Initialize the TPU device
   # Idempotent and thread-safe entry point
-  device = api.tpu_device()
+  device = torch.device("tpu")
   print(f"TPU Device initialized: {device}")
   return device, torch
 

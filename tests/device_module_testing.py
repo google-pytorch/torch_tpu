@@ -21,6 +21,7 @@ from typing import Final
 from unittest import mock
 from absl.testing import absltest
 import torch
+import torch.accelerator
 from torch_tpu.api import _device_module
 
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()

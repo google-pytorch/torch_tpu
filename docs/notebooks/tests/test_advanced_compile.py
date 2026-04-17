@@ -23,13 +23,12 @@ import torch.optim as optim
 def test_device_init(device):
   """Verifies that the TPU device is correctly initialized and registered."""
   import torch_tpu
-  from torch_tpu import api
 
   # Assert device type is correct
   assert device.type == "tpu"
 
   # Assert api call works
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   assert tpu_device.type == "tpu"
 
 

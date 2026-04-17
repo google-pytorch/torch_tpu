@@ -23,7 +23,6 @@ from typing import Any, Optional, Sequence
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
@@ -314,7 +313,7 @@ def model_generate(
 def main(argv: Sequence[str]) -> None:
 
   if _DEVICE.value == "tpu":
-    device = api.tpu_device()
+    device = torch.device("tpu")
   else:
     device = "cuda"
 

@@ -21,7 +21,6 @@ from typing import Sequence
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from transformers.cache_utils import StaticCache
 from transformers.models.qwen3 import modeling_qwen3
 
@@ -115,7 +114,7 @@ def model_generate(
 
 
 def main(argv: Sequence[str]) -> None:
-  tpu_device = api.tpu_device()
+  tpu_device = torch.device("tpu")
   torch.manual_seed(42)
   config = modeling_qwen3.Qwen3Config(
       attention_bias=False,

@@ -17,7 +17,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
@@ -26,7 +25,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 def run_scatter() -> None:
   """Tests scatter functionality."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
@@ -47,7 +45,6 @@ def run_scatter() -> None:
 
 def run_scatter_scalar() -> None:
   """Tests scatter on scalar input."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])

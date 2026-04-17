@@ -27,7 +27,6 @@ from torch import distributed as dist
 from torch import nn
 from torch import optim
 from torch.distributed import fsdp
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.fsdp import model
@@ -54,7 +53,6 @@ def make_data(
 
 
 def worker_fn() -> None:
-  _ = api.tpu_device()
   dist.init_process_group(backend='tpu_dist')
   rank = dist.get_rank()
   world_size = dist.get_world_size()

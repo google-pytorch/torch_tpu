@@ -23,10 +23,7 @@ package(
 pytype_strict_library(
     name = "hello_world_distributed",
     srcs = ["hello_world_distributed.py"],
-    deps = [
-        "//shims/torch:pytorch",
-        "//torch_tpu/api",
-    ],
+    deps = ["//shims/torch:pytorch"],
 )
 
 torch_tpu_py_test(

@@ -211,9 +211,8 @@ class SingleAcceleratorTest(parameterized.TestCase):
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
     if _ACC.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-      self.accelerator_device = api.tpu_device()
+      self.accelerator_device = torch.device("tpu")
     elif _ACC.value == "gpu":
       self.accelerator_device = torch.device("cuda:0")
     else:

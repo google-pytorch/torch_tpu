@@ -23,7 +23,6 @@ import psutil
 import torch
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal import sync as tpu_sync
-import torch_tpu.api as xla_api
 
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
 
@@ -33,10 +32,9 @@ _BYTES_IN_MB = 1024 * 1024
 
 def initialize_device(device: str):
   if device == 'tpu':
-    torch_device = xla_api.tpu_device()
+    torch_device = torch.device('tpu')
   elif device == 'xla_cuda':
-    # pylint: disable=protected-access
-    torch_device = xla_api._xla_cuda_device()
+    torch_device = torch.device('xla_cuda')
   elif device == 'cuda' or device == 'cpu':
     torch_device = torch.device(device)
   else:

@@ -62,7 +62,7 @@ def _(mo):
     TorchTPU's behavior is controlled through several environment variables that configure the XLA compiler, the TPU driver (`libtpu`), and PyTorch's own debug subsystem.
 
     ### ⚠️ **CRITICAL: Process-Global Initialization**
-    TorchTPU/XLA environment variables are **locked** the moment the backend initializes (usually during `import torch` or `api.tpu_device()`).
+    TorchTPU/XLA environment variables are **locked** the moment the backend initializes (usually during `import torch` or `torch.device("tpu")`).
 
     **To try a different environment variable snippet:**
     1.  **Restart the Marimo Kernel** (Click the restart icon in the bottom menu or use the keyboard shortcut).
@@ -383,10 +383,10 @@ def _(mo):
     | `RANK` | Launcher | `import torch` | `0`, `1`, `2`, ... (integer) |
     | `TORCH_SHOW_CPP_STACKTRACES` | Debug | `import torch` | `0` (False), `1` (True) |
     | `TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS` | Safety | `import torch` | `0` (False), `1` (True) |
-    | `TORCH_TPU_INTERNAL_TIER2_COMPILATION_CACHE` | Cache | `api.tpu_device()` | `/dev/shm/xla_cache_dir/`, `<local_path>` |
-    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Cache | `api.tpu_device()` | `0` (False), `1` (True) |
-    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT` | Cache | `api.tpu_device()` | `gs://<bucket_name>/<path_to_cache>` |
-    | `TORCH_TPU_INTERNAL_XLA_OPTIONS` | XLA Tuning | `api.tpu_device()` | `xla_optimization_level=O[0-3]`, `--xla_tpu_...` |
+    | `TORCH_TPU_INTERNAL_TIER2_COMPILATION_CACHE` | Cache | `torch.device("tpu")` | `/dev/shm/xla_cache_dir/`, `<local_path>` |
+    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Cache | `torch.device("tpu")` | `0` (False), `1` (True) |
+    | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT` | Cache | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>` |
+    | `TORCH_TPU_INTERNAL_XLA_OPTIONS` | XLA Tuning | `torch.device("tpu")` | `xla_optimization_level=O[0-3]`, `--xla_tpu_...` |
     | `TORCH_TPU_SLICEBUILDER_ADDRESSES` | Cloud | `import torch` | `10.0.0.1:8471,10.0.0.2:8471` |
     | `TORCH_TPU_TOPOLOGY` | Cloud | `import torch` | `2x2x1`, `2x2x4`, `4x4x4`, etc. |
     | `TPU_CHIPS_PER_HOST_BOUNDS` | Cloud | `N/A` (Set by GCE) | `1,1,1`, `2,2,1`, `2,2,2` |

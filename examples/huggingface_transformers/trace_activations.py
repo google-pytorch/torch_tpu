@@ -52,9 +52,8 @@ _OUTPUT_DIR = flags.DEFINE_string(
 
 def main(_) -> None:
   if _DEVICE.value == "tpu":
-    from torch_tpu import api  # pylint: disable=g-import-not-at-top
 
-    device = api.tpu_device()
+    device = torch.device("tpu")
   elif _DEVICE.value == "cuda":
     if not torch.cuda.is_available():
       raise RuntimeError("CUDA requested but not available.")

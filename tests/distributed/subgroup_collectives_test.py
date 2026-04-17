@@ -28,7 +28,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
@@ -38,7 +37,6 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 def run_manual_2d_mesh() -> None:
   """Test parallel all-reduce on a simple [2, 4] device mesh."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])
@@ -85,7 +83,6 @@ def run_manual_2d_mesh() -> None:
 
 def run_manual_1d_as_2d_mesh() -> None:
   """Test special (redundant) case of [1, n] device mesh. Used in fairscale."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])
@@ -124,7 +121,6 @@ def run_manual_1d_as_2d_mesh() -> None:
 
 def run_manual_2d_all_gather_reduce_scatter() -> None:
   """Test 2D device mesh of [all-gather dim, reduce-scatter dim] shape."""
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])
