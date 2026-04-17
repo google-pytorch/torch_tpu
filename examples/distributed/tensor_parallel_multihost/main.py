@@ -16,7 +16,6 @@ import os
 
 from absl import logging
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.tensor_parallel_multihost import model
@@ -38,7 +37,7 @@ def fake_dataloader_read():
 
 def run_worker(rank: int, world_size: int) -> None:
   """Runs a non-distributed and an equivalent tensor-parallel version."""
-  device = api.tpu_device()
+  device = torch.device('tpu')
   logging.info('tpu_device initialized')
 
   torch.distributed.init_process_group(

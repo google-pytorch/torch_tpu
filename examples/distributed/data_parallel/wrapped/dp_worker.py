@@ -25,7 +25,6 @@ from absl import logging
 from torch import distributed as dist
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP  # pylint: disable=g-importing-member
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.data_parallel import dp_utils
@@ -85,7 +84,6 @@ def worker_fn() -> None:
   across all processes, to confirm that the resulting weights are the same.
   """
   # Initialize TPU and distributed backend.
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
 
   # Get rank and world size for torch.distributed.

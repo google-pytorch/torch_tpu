@@ -33,9 +33,7 @@ def _get_device() -> torch.device:
   """Initialize and return the accelerator runtime."""
 
   if _ACC.value == "tpu":
-    from torch_tpu import api  # pylint: disable=g-import-not-at-top
-
-    return api.tpu_device()
+    return torch.accelerator.current_accelerator()
   if _ACC.value == "cuda":
     return torch.device("cuda:0")
   raise RuntimeError(f"Unexpected device: {_ACC.value}")

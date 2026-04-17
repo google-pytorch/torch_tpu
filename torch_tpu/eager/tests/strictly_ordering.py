@@ -22,13 +22,12 @@ following that mechanism can lead to large memory explosions.
 
 from absl import app
 import torch
-from torch_tpu import api
 from torch_tpu._internal import sync
 
 
 def main(argv):
   del argv
-  device = api.tpu_device()
+  device = torch.accelerator.current_accelerator()
 
   print(f"Running on device: {device}")
 

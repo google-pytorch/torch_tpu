@@ -55,7 +55,6 @@ pytype_strict_library(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
     ],
 )
 

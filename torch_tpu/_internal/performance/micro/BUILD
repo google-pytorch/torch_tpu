@@ -25,7 +25,7 @@ pytype_strict_library(
     deps = [
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
     ],
 )
 
