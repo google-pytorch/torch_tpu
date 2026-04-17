@@ -69,6 +69,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/synchronization",
         "@tsl//tsl/profiler/lib:profiler_factory",
         "@tsl//tsl/profiler/lib:profiler_interface",
+        "@tsl//tsl/profiler/protobuf:profiler_options_proto_cc",
         "@xla//xla:future",
         "@xla//xla/backends/profiler/plugin:plugin_tracer",
         "@xla//xla/backends/profiler/plugin:profiler_c_api_hdrs",

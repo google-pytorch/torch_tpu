@@ -51,6 +51,7 @@
 #include "xla/tsl/framework/allocator.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
+#include "tsl/profiler/protobuf/profiler_options.pb.h"
 
 namespace torch_tpu {
 namespace {
