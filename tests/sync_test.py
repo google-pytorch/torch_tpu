@@ -102,7 +102,7 @@ class SyncTest(absltest.TestCase):
     z = x + y
 
     # Nothing is materialized or ready.
-    self.assertFalse(sync.is_materialized(x))
+    self.assertFalse(sync.is_materialized(x))  # This fails in OSS.
     self.assertFalse(sync.is_ready(x))
     self.assertFalse(sync.is_materialized(y))
     self.assertFalse(sync.is_ready(y))
