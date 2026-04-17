@@ -657,6 +657,29 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
   }
 }
 
+// Returns true if the op is a matrix multiplication op.
+[[nodiscard]] inline bool IsMatmulOp(OpName op_name) {
+  switch (op_name) {
+    case OpName::kAddmm:
+    case OpName::kAddmmDtype:
+    case OpName::kAddmmDtypeOut:
+    case OpName::kAddmmOut:
+    case OpName::kBaddbmmDtype:
+    case OpName::kBaddbmmDtypeOut:
+    case OpName::kBaddbmmOut:
+    case OpName::kBmm:
+    case OpName::kBmmDtype:
+    case OpName::kBmmDtypeOut:
+    case OpName::kBmmOut:
+    case OpName::kMmDtype:
+    case OpName::kMmDtypeOut:
+    case OpName::kMmOut:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_OP_NAMES_H_

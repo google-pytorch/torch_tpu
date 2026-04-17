@@ -61,15 +61,6 @@ inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // https://docs.pytorch.org/docs/stable/debugging_environment_variables.html#pytorch-debug-environment-variables
 inline constexpr char kTorchShowCppStacktracesEnvVar[] =
     "TORCH_SHOW_CPP_STACKTRACES";
-// Specifies the repeated op detection mode. If not set, "safe" mode is used.
-// Supported modes:
-// - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
-// detected.
-// - "aggressive": Uses MaterializationMode::kFullGraph when a repeated sequence
-// is detected.
-// Other values are no-ops.
-inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
-    "TORCH_TPU_INTERNAL_DETECT_REPEATED_OPS";
 // If set to "1", enable expensive debug checks in TorchTPU. This catches
 // more bugs in user code, but comes at a significant performance cost for
 // some ops. The debug eager mode enables these checks by default, but can
