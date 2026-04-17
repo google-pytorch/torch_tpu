@@ -14,16 +14,11 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
 class SetTest(absltest.TestCase):
   """Tests the Tensor.set_() operator."""
-
-  def setUp(self):
-    super().setUp()
-    _ = api.tpu_device()
 
   def test_set_none(self):
     """Setting None assigns an empty storage."""

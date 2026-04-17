@@ -22,14 +22,14 @@ elements but have uninitialized memory.
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 
 
 class ZeroSizeTest(absltest.TestCase):
 
   def test_copy_round_trip(self):
     """Tests that we can move a zero-size tensor between devices."""
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     cpu_tensor_original = torch.zeros(0)
     tpu_tensor = cpu_tensor_original.to(tpu_device)
     cpu_tensor_return = tpu_tensor.to("cpu")
@@ -37,13 +37,13 @@ class ZeroSizeTest(absltest.TestCase):
 
   def test_construct_on_tpu(self):
     """Tests that we can construct a zero-size tensor on TPU."""
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     tpu_tensor = torch.zeros(0, device=tpu_device)
     self.assertEqual(tpu_tensor.numel(), 0)
 
   def test_zero_size_output(self):
     """Tests that we can get a zero-size tensor as output."""
-    tpu_device = api.tpu_device()
+    tpu_device = torch.accelerator.current_accelerator()
     lhs = torch.ones(0, 2, device=tpu_device)
     rhs = torch.ones(2, 3, device=tpu_device)
     out = lhs.mm(rhs)

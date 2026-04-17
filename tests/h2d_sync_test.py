@@ -14,7 +14,6 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 
 
 class H2DSyncTest(absltest.TestCase):
@@ -25,7 +24,6 @@ class H2DSyncTest(absltest.TestCase):
     If synchronize() fails to wait, modifying the host tensor immediately
     after the call may corrupt the data transferred to the TPU.
     """
-    api.tpu_device()
     size = 4096
 
     # 1. Use pinned memory for async H2D transfer

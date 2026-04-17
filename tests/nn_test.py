@@ -17,13 +17,12 @@ import time
 from absl.testing import absltest
 import numpy as np
 import torch
+import torch.accelerator
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
 )
-
 from torch.testing._internal.common_utils import TestCase, run_tests
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -246,7 +245,7 @@ class TestNn(TestCase):
 
     cpu_result = cpu_model(sample_input)
 
-    tpu_d = api.tpu_device()
+    tpu_d = torch.accelerator.current_accelerator()
     tpu_model = model_builder(**args)
     tpu_model.load_state_dict(cpu_model.state_dict())
     tpu_model.to(tpu_d)

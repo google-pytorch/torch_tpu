@@ -1676,7 +1676,7 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
         RuntimeError,
         "linalg_solve_triangular(): expected the first argument to have at"
         " least 2 dimensions, got 1",
-        cpu=(
+        (
             "linalg.solve_triangular: The input tensor A must have at least 2"
             " dimensions."
         ),
@@ -1694,7 +1694,7 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
         "linalg_solve_triangular(): left == False means we are solving X * A ="
         " B; expected the two inputs to have matching last dimension, got 2"
         " and 3",
-        cpu=(
+        (
             "linalg.solve_triangular: Incompatible shapes of A and B for the"
             " equation XA = B (2x2 and 2x3)"
         ),
@@ -1712,7 +1712,7 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
         "linalg_solve_triangular(): left == True means we are solving A * X ="
         " B; expected the two inputs to have matching second to last dimension,"
         " got 2 and 3",
-        cpu=(
+        (
             "linalg.solve_triangular: Incompatible shapes of A and B for the"
             " equation AX = B (2x2 and 3x2)"
         ),
@@ -1729,7 +1729,7 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
         RuntimeError,
         "linalg_solve_triangular(): triangular solve not supported for dtype"
         " bfloat16",
-        cpu="\"triangular_solve_cpu\" not implemented for 'BFloat16'",
+        "\"triangular_solve_cpu\" not implemented for 'BFloat16'",
     ):
       torch.linalg.solve_triangular(
           a, b, upper=True, left=True, unitriangular=False
@@ -7830,7 +7830,7 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
     else:
       with et.assert_raises_message(
           RuntimeError,
-          cpu=(
+          (
               "Index tensor must have the same number of dimensions as input"
               " tensor"
           ),

@@ -17,7 +17,7 @@ import re
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 
@@ -34,8 +34,8 @@ class SyncTest(absltest.TestCase):
     super().tearDown()
 
   def test_sync_no_wait_tensor(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(10, device=torch.accelerator.current_accelerator())
     z = x + y
 
     # Nothing is materialized or ready.
@@ -57,8 +57,8 @@ class SyncTest(absltest.TestCase):
     self.assertFalse(sync.is_materialized(z))
 
   def test_sync_no_wait_list(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(10, device=torch.accelerator.current_accelerator())
     z = x + y
 
     # Nothing is materialized or ready.
@@ -73,8 +73,8 @@ class SyncTest(absltest.TestCase):
       self.assertTrue(sync.is_materialized(tensor))
 
   def test_sync_and_wait_tensor(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(10, device=torch.accelerator.current_accelerator())
     z = x + y
 
     # Nothing is materialized or ready.
@@ -97,8 +97,8 @@ class SyncTest(absltest.TestCase):
     self.assertFalse(sync.is_materialized(z))
 
   def test_sync_and_wait_list(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(10, device=torch.accelerator.current_accelerator())
     z = x + y
 
     # Nothing is materialized or ready.
@@ -120,9 +120,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(z))
 
   def test_sync_no_wait_all(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
-    z = torch.ones(12, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(11, device=torch.accelerator.current_accelerator())
+    z = torch.ones(12, device=torch.accelerator.current_accelerator())
 
     # Nothing is materialized or ready.
     self.assertFalse(sync.is_materialized(x))
@@ -140,9 +140,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(z))
 
   def test_sync_and_wait_all_materialized(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
-    z = torch.ones(12, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(11, device=torch.accelerator.current_accelerator())
+    z = torch.ones(12, device=torch.accelerator.current_accelerator())
 
     self.assertFalse(sync.is_materialized(x))
     self.assertFalse(sync.is_materialized(y))
@@ -155,9 +155,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(z))
 
   def test_sync_and_wait_all_ready(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
-    z = torch.ones(12, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(11, device=torch.accelerator.current_accelerator())
+    z = torch.ones(12, device=torch.accelerator.current_accelerator())
 
     self.assertFalse(sync.is_ready(x))
     self.assertFalse(sync.is_ready(y))
@@ -170,8 +170,8 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(z))
 
   def test_synchronize_device_materialized(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(11, device=torch.accelerator.current_accelerator())
 
     self.assertFalse(sync.is_materialized(x))
     self.assertFalse(sync.is_materialized(y))
@@ -185,8 +185,8 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(y))
 
   def test_synchronize_device_ready(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
+    y = torch.ones(11, device=torch.accelerator.current_accelerator())
 
     self.assertFalse(sync.is_ready(x))
     self.assertFalse(sync.is_ready(y))
@@ -197,7 +197,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(y))
 
   def test_host_to_device_is_materialized(self):
-    x = torch.ones(128, device="cpu").to(api.tpu_device())
+    x = torch.ones(128, device="cpu").to(
+        torch.accelerator.current_accelerator()
+    )
 
     self.assertTrue(sync.is_materialized(x))
 
@@ -207,7 +209,13 @@ class SyncTest(absltest.TestCase):
 
   def test_sync_with_zero_sized_tensor_on_tpu(self):
     # Create a zero-sized tensor on the TPU.
-    tensor = torch.ones(2, 0, 3, dtype=torch.int32, device=api.tpu_device())
+    tensor = torch.ones(
+        2,
+        0,
+        3,
+        dtype=torch.int32,
+        device=torch.accelerator.current_accelerator(),
+    )
 
     # It is in a deferred state (constant zero-sized).
     self.assertFalse(sync.is_materialized(tensor))
@@ -225,7 +233,7 @@ class SyncTest(absltest.TestCase):
 
     # Send it to the TPU. This should create a deferred zero-sized constant
     # instead of actually transferring 0 bytes.
-    tensor = tensor_cpu.to(api.tpu_device())
+    tensor = tensor_cpu.to(torch.accelerator.current_accelerator())
     self.assertFalse(sync.is_materialized(tensor))
     self.assertFalse(sync.is_ready(tensor))
 
@@ -236,9 +244,9 @@ class SyncTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(tensor))
 
   def test_sync_list_with_empty_and_non_empty(self):
-    x = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.accelerator.current_accelerator())
     y_cpu = torch.ones(10, 0, device="cpu")
-    y = y_cpu.to(api.tpu_device())
+    y = y_cpu.to(torch.accelerator.current_accelerator())
     # Should not raise error.
     sync.synchronize([x, y], wait=True)
     self.assertTrue(sync.is_ready(x))
@@ -271,7 +279,7 @@ class SyncTest(absltest.TestCase):
     return node_params, num_lines
 
   def test_computation_graphviz_simple(self):
-    x = torch.rand(2, 3, device=api.tpu_device())
+    x = torch.rand(2, 3, device=torch.accelerator.current_accelerator())
     y = x**2
     z = x.sum()
     expected_graphviz_string = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
@@ -375,9 +383,15 @@ digraph {
 }
 """
     # Create materialized leaf inputs by doing a host to device copy.
-    x_ones = torch.ones(2, 3, device="cpu").to(api.tpu_device())
-    y_ones = torch.ones(3, 4, device="cpu").to(api.tpu_device())
-    z_ones = torch.ones(2, 4, device="cpu").to(api.tpu_device())
+    x_ones = torch.ones(2, 3, device="cpu").to(
+        torch.accelerator.current_accelerator()
+    )
+    y_ones = torch.ones(3, 4, device="cpu").to(
+        torch.accelerator.current_accelerator()
+    )
+    z_ones = torch.ones(2, 4, device="cpu").to(
+        torch.accelerator.current_accelerator()
+    )
 
     # Create a graph of deferred operations.
     x = x_ones * 2
@@ -404,8 +418,8 @@ digraph {
     self.assertLen(s.split("\n"), num_lines)
 
   def test_dump_computation_graphviz(self):
-    x = torch.ones(2, 3, device=api.tpu_device())
-    y = torch.ones(2, 3, device=api.tpu_device())
+    x = torch.ones(2, 3, device=torch.accelerator.current_accelerator())
+    y = torch.ones(2, 3, device=torch.accelerator.current_accelerator())
     z = x + y
     expected_graphviz_string = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
 digraph {
@@ -441,7 +455,7 @@ digraph {
     self.assertLen(s.split("\n"), num_lines)
 
   def test_computation_mlir_pytree(self):
-    x = torch.ones(2, 3, device=api.tpu_device())
+    x = torch.ones(2, 3, device=torch.accelerator.current_accelerator())
     y = x + 1.0
 
     # Passing a complex pytree (dict, list, tuple) to computation_mlir
