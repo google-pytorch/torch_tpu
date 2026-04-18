@@ -16,14 +16,14 @@ import time
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch.accelerator
 from torch_tpu._internal.utils import utils
 
 
 class AllocatorReproTest(absltest.TestCase):
 
   def test_non_blocking_returns_immediately(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     size = 8192  # 8192x8192 int32 = 256MB
 
     # 1. Warmup: compile the 'a + b' graph and drive materialization.
@@ -78,7 +78,7 @@ class AllocatorReproTest(absltest.TestCase):
     self.assertLess(async_duration, sync_duration)
 
   def test_to_cpu_non_blocking(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     # Generate on CPU first to avoid lazy evaluation generating different
     # numbers!
@@ -106,7 +106,7 @@ class AllocatorReproTest(absltest.TestCase):
     utils.assert_close(cpu_tensor, expected_cpu_tensor)
 
   def test_pin_memory(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     # Initialize the TPU device by creating a small tensor on it
     _ = torch.zeros(1, device=device)
 

@@ -73,10 +73,10 @@ pytype_strict_library(
         "//shims/safetensors",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compiler_options",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -363,10 +363,10 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//scipy",
     ],
@@ -394,10 +394,10 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//scipy",
     ],
@@ -426,10 +426,10 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//scipy",
     ],
@@ -444,8 +444,8 @@ torch_tpu_py_test(
         ":op_testing",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compiler_options",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -476,8 +476,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//numpy",
     ],
@@ -494,9 +494,9 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@pypi//numpy",
     ],
@@ -511,8 +511,8 @@ pytype_strict_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal:testing",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -630,7 +630,7 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -643,7 +643,7 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -661,8 +661,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -675,8 +675,8 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -689,6 +689,7 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
         "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
@@ -702,7 +703,7 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -715,7 +716,7 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
+        "//torch_tpu",  # build_cleaner: keep
     ],
 )
 
@@ -727,9 +728,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/api",
     ],
 )
 
@@ -742,7 +743,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -753,8 +753,9 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/api",
     ],
 )
 
@@ -775,10 +776,10 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -793,7 +794,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
-        "//torch_tpu/api",
     ],
 )
 
@@ -809,10 +809,10 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -824,9 +824,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/precision",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -840,7 +840,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/api",
     ],
 )
 
@@ -853,8 +852,8 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -866,7 +865,6 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
     ],
 )
 
@@ -966,6 +964,7 @@ pytype_strict_library(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/api:_device_module",
     ],
 )
