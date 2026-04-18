@@ -36,7 +36,7 @@ def run_all_to_all_single_dtype_error() -> None:
   output_tensor = torch.empty((1, 2), dtype=torch.int64, device="tpu")
   # This message comes from native PyTorch.
   expected_msg = re.compile("Invalid usage of tensors with different dtypes.*")
-  with et.assert_raises_message(ValueError, expected_msg):
+  with et.assert_raises_message(ValueError, tpu=expected_msg):
     torch.distributed.all_to_all_single(output_tensor, input_tensor)
 
 
@@ -50,7 +50,7 @@ def run_all_to_all_single_invalid_tensor_size_error() -> None:
       "divisible by process group size, got 8 for process group size "
       "and 1 for tensor shape [1, 2] dim 0"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(output_tensor, input_tensor)
 
 
@@ -66,7 +66,7 @@ def run_all_to_all_single_invalid_split_sizes_size_error() -> None:
       "size as process group size, got 8 for process group size and "
       "9 for split sizes [2 2 2 2 2 2 2 2 2]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(
         output_tensor, input_tensor, output_split_sizes, input_split_sizes
     )
@@ -84,7 +84,7 @@ def run_all_to_all_single_invalid_split_sizes_sum_error() -> None:
       " first dimension, got 10 for split sizes [1 3 1 1 1 1 1 1] and 8 for"
       " tensor shape [8, 2] dim 0"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all_single(
         output_tensor, input_tensor, output_split_sizes, input_split_sizes
     )
@@ -145,7 +145,7 @@ def run_all_to_all_unequal_tensor_list_size_error() -> None:
       "distributed.all_to_all(): output and input tensors must have the same"
       " number of tensors, got 9 for output and 8 for input"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all(output_tensors, input_tensors)
 
 
@@ -167,7 +167,7 @@ def run_all_to_all_wrong_num_input_tensors_error() -> None:
       " tensors as the process group size, got 9 for input and 8 for process"
       " group size"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all(output_tensors, input_tensors)
 
 
@@ -188,7 +188,7 @@ def run_all_to_all_unequal_input_tensor_shape_error() -> None:
       "distributed.all_to_all(): all input tensors must be of same shape, got"
       " [2] at index 1 and [1] at index 0"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all(output_tensors, input_tensors)
 
 
@@ -208,7 +208,7 @@ def run_all_to_all_unequal_input_output_tensor_shape_error() -> None:
       "distributed.all_to_all(): output and input tensors must have the same"
       " shape, got [2] for output and [1] for input at index 0"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_to_all(output_tensors, input_tensors)
 
 

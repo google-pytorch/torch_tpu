@@ -90,7 +90,7 @@ def run_all_gather_tensor_wrong_number_output_dimensions() -> None:
       " (concatenation) or input dimensions + 1 (stacking). Got output shape"
       f" [{world_size}, 2, 2, 1], input shape [2, 2]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -109,7 +109,7 @@ def run_all_gather_tensor_wrong_concat_dimension() -> None:
       f" dimension 0. Got output shape [{2 * world_size - 1}, 2], input shape"
       f" [2, 2], world size {world_size}"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -127,7 +127,7 @@ def run_all_gather_tensor_wrong_stack_dimension() -> None:
       f" at dimension 0 must be world size. Got output shape [{world_size - 1},"
       f" 2, 2], input shape [2, 2], world size {world_size}"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -143,7 +143,7 @@ def run_all_gather_tensor_stack_mismatched_dim() -> None:
       " must match input tensor shape along all other dimensions. Got output"
       f" shape [{world_size}, 3, 2], input shape [2, 2]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -159,7 +159,7 @@ def run_all_gather_tensor_concat_mismatched_dim() -> None:
       " shape must match input tensor shape along all other dimensions. Got"
       f" output shape [{world_size * 2}, 3], input shape [2, 2]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -177,7 +177,7 @@ def run_all_gather_tensor_wrong_scalar_dimension() -> None:
       " must be 1-dimensional with size equal to world size. Got output shape"
       f" [{world_size}, {world_size}], world size {world_size}"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather_into_tensor(output, x)
 
 
@@ -197,7 +197,7 @@ def run_all_gather_uneven_output_sizes() -> None:
       "distributed.all_gather(): tensors in the list must have the same"
       " shape, got [1] at index 0 and [2] at index 1"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather(outputs, x)
     [o.to("cpu") for o in outputs]  # pylint: disable=expression-not-assigned
 
@@ -215,7 +215,7 @@ def run_all_gather_mismatch_input_size() -> None:
       "distributed.all_gather(): input tensor shape [2, 2] must match output"
       " tensor shape [3, 2]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.all_gather(outputs, x)
     [o.to("cpu") for o in outputs]  # pylint: disable=expression-not-assigned
 
@@ -234,7 +234,7 @@ def run_all_gather_mismatch_dtype() -> None:
       "Invalid usage of tensors with different dtypesFound torch.float32 and "
       " torch.int32"
   )
-  with et.assert_raises_message(ValueError, expected_msg):
+  with et.assert_raises_message(ValueError, tpu=expected_msg):
     torch.distributed.all_gather(outputs, x)
     [o.to("cpu") for o in outputs]  # pylint: disable=expression-not-assigned
 
@@ -260,7 +260,7 @@ def run_reduce_scatter_errors() -> None:
       f" world size, got {world_size-1} input tensors and"
       f" {world_size} processes."
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.reduce_scatter(output, inputs)
 
   # Dtypes must match. This is validated in PyTorch layer.
@@ -270,7 +270,7 @@ def run_reduce_scatter_errors() -> None:
       "Invalid usage of tensors with different dtypesFound torch.bfloat16 and "
       " torch.float32"
   )
-  with et.assert_raises_message(ValueError, expected_msg):
+  with et.assert_raises_message(ValueError, tpu=expected_msg):
     torch.distributed.reduce_scatter(output, inputs)
 
   # Output shape must match the input shape:
@@ -280,7 +280,7 @@ def run_reduce_scatter_errors() -> None:
       "distributed.reduce_scatter(): output tensor shape [3, 3] must match"
       " input tensor shape [2, 3]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.reduce_scatter(output, inputs)
 
   # Input tensors must have the same shape (torch_tpu-specific limitation):
@@ -291,7 +291,7 @@ def run_reduce_scatter_errors() -> None:
       "distributed.reduce_scatter(): tensors in the list must have the same"
       " shape, got [2, 3] at index 0 and [3, 3] at index 3"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.reduce_scatter(output, inputs)
 
 
@@ -308,7 +308,7 @@ def run_reduce_scatter_tensor_errors() -> None:
       "distributed.reduce_scatter_tensor(): input tensor shape must be either "
       f"[{world_size*3}, 4, 5] or [{world_size}, 3, 4, 5], but got [10, 4, 5]"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     torch.distributed.reduce_scatter_tensor(output, input_invalid)
 
 
@@ -324,7 +324,7 @@ def run_gather_wrong_input_size() -> None:
   expected_msg = (
       "distributed.gather(): a single input tensor must be provided, got 2"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     pg.gather([[]], [tensor, tensor], opts)
 
 
@@ -343,7 +343,7 @@ def run_gather_wrong_output_list_size() -> None:
         "distributed.gather(): there must be a single list of output tensors on"
         " the root rank, got 0"
     )
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       pg.gather([], [tensor], opts)
   else:
     pg.gather([], [tensor], opts)
@@ -364,7 +364,7 @@ def run_gather_wrong_output_tensor_count() -> None:
         f" must be equal to the group size, got {world_size - 1} tensors and"
         f" {world_size} processes"
     )
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       torch.distributed.gather(tensor, gather_list=gather_list, dst=dst)
   else:
     torch.distributed.gather(tensor, gather_list=None, dst=dst)
@@ -384,7 +384,7 @@ def run_gather_mismatch_input_size() -> None:
         "distributed.gather(): input tensor shape must match output tensor"
         " shape"
     )
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       torch.distributed.gather(tensor, gather_list=gather_list, dst=dst)
   else:
     torch.distributed.gather(tensor, gather_list=None, dst=dst)
@@ -405,7 +405,7 @@ def run_gather_non_uniform_output_shapes() -> None:
         "distributed.gather(): output tensors on the root rank: tensors in the"
         " list must have the same shape, got [2] at index 0 and [3] at index 1"
     )
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       torch.distributed.gather(tensor, gather_list=gather_list, dst=dst)
   else:
     torch.distributed.gather(tensor, gather_list=None, dst=dst)
@@ -429,7 +429,7 @@ def run_gather_output_on_non_root() -> None:
         " the root rank, got 2"
     )
     gather_list = [torch.zeros(2, device="tpu") for _ in range(world_size)]
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       pg.gather([gather_list, gather_list], [tensor], opts)
   else:
     expected_msg = (
@@ -437,7 +437,7 @@ def run_gather_output_on_non_root() -> None:
         " tensors must be empty"
     )
     gather_list = [torch.zeros(2, device="tpu") for _ in range(world_size)]
-    with et.assert_raises_message(RuntimeError, expected_msg):
+    with et.assert_raises_message(RuntimeError, tpu=expected_msg):
       pg.gather([gather_list], [tensor], opts)
 
 
