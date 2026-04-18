@@ -540,7 +540,6 @@ torch_tpu_py_test(
         "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
-    notap = "TODO(wan): Re-enable after the March 2026 TorchTPU release.",
     shard_count = 4,
     tags = [
         "requires-tpu-v5lite",
@@ -603,7 +602,6 @@ torch_tpu_py_test(
     args = ["--test_mode=cpu"],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
     main = "errors_test.py",
-    notap = "TODO(wan): Re-enable after the March 2026 TorchTPU release.",
     shard_count = 4,
     tags = ["wheel_test_excluded"],
     deps = [

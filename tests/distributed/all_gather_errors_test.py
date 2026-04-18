@@ -41,7 +41,7 @@ def run_all_gather_dtype_error() -> None:
   ]
   # This message comes from native PyTorch.
   expected_msg = re.compile("Invalid usage of tensors with different dtypes.*")
-  with et.assert_raises_message(ValueError, expected_msg):
+  with et.assert_raises_message(ValueError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
 
 
@@ -55,7 +55,7 @@ def run_all_gather_wrong_num_tensors() -> None:
       r"distributed\.all_gather\(\): output tensor list must have one tensor"
       r" per process, got 1 tensor and 8 processes.*"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
 
 
@@ -75,7 +75,7 @@ def run_all_gather_dispatch_failure() -> None:
   expected_msg = re.compile(
       r"distributed\.all_gather\(\): forced dispatch failure.*"
   )
-  with et.assert_raises_message(RuntimeError, expected_msg):
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
 
 

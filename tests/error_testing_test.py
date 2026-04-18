@@ -31,8 +31,8 @@ class ErrorTestingTest(absltest.TestCase):
     ):
       with et.assert_raises_message(
           RuntimeError,
-          tpu="TPU dummy error message for errors_test.py failure protocol",
-          cpu="CPU dummy error message for errors_test.py failure protocol",
+          tpu="""TPU dummy error message for errors_test.py failure protocol""",
+          cpu="""CPU dummy error message for errors_test.py failure protocol""",
           message_reviewed_by="wan",
       ):
         raise RuntimeError("Not the dummy error message")

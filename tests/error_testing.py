@@ -230,6 +230,7 @@ In either case, just ignore the failure (the test is not currently enforced for 
 @contextlib.contextmanager
 def assert_raises_message(
     exception_type,
+    *,
     tpu: str | re.Pattern[str],
     cpu: str | re.Pattern[str] | None = None,
     message_reviewed_by: str | None = None,
