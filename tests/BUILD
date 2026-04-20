@@ -623,6 +623,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "where_repro_test",
+    srcs = ["where_repro_test.py"],
+    main = "where_repro_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu/api",
+    ],
+)
+
+torch_tpu_py_test(
     name = "errors_cpp_context_test",
     srcs = ["errors_cpp_context_test.py"],
     tags = ["requires-tpu-v5lite"],
