@@ -262,10 +262,6 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
           ,
           .skip_checking_windowed_einsum_users =
               false /*comp_env->xla_tpu_skip_checking_windowed_einsum_users()*/,
-          .enable_windowed_einsum_for_all_gather =
-              false /*enable_cmv1_all_gather*/,
-          .enable_windowed_einsum_for_reduce_scatter =
-              false /*enable_cmv1_reduce_scatter*/,
           .need_resolve_conflicts = false /*need_resolve_conflicts*/},
       collective_creator);
 
