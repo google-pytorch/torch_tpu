@@ -62,6 +62,7 @@ build --per_file_copt=.*@-Wno-return-type
 # get reported as originating from torch_tpu code. Those need
 # to be ignored using a plain `.*` match.
 build --per_file_copt=.*external/.*@-w
+build --copt=-Wno-nullability-completeness
 
 # ===== End spammy C++ compile warning disables ===
 
