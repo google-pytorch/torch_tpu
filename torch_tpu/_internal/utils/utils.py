@@ -532,14 +532,20 @@ def _assert_tensor_close(
         msg=lambda msg: strict_msg_handler(msg, is_relative=False),
     )
 
+    # When expected is 0.0 and actual is -0.0, torch.testing.assert_close
+    # thinks the relative error is 1.0, so we need to set atol to a small
+    # value (as opposed to 0) to allow this case to pass.
+    # For float8 types, torch.testing.assert_close requires atol=0.0 for
+    # bitwise comparison.
+    rel_atol = 1e-7
+    if actual.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+      rel_atol = 0.0
+
     _raw_assert_tensor_close(
         actual=actual,
         expected=expected,
         rtol=rtol,
-        # When expected is 0.0 and actual is -0.0, torch.testing.assert_close
-        # thinks the relative error is 1.0, so we need to set atol to a small
-        # value (as opposed to 0) to allow this case to pass.
-        atol=1e-7,
+        atol=rel_atol,
         msg=lambda msg: strict_msg_handler(msg, is_relative=True),
     )
 

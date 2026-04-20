@@ -886,6 +886,43 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
 
+  @parameterized.product(
+      m=[16, 32],
+      n=[16, 32],
+      k=[16, 32],
+      dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
+  )
+  def test_scaled_mm_numeric(self, m, n, k, dtype):
+    """Tests torch._scaled_mm with numerical verification against F32 CPU."""
+    self_float = torch.randn(m, k, dtype=torch.float32)
+    self_fp8 = self_float.to(dtype)
+    mat2_float = torch.randn(k, n, dtype=torch.float32)
+    mat2_fp8 = mat2_float.to(dtype)
+
+    scale_a = torch.tensor([1.5], dtype=torch.float32)
+    scale_b = torch.tensor([2.0], dtype=torch.float32)
+
+    def compute(device):
+      if device == "cpu":
+        # Simulate in F32 on CPU
+        s_f32 = self_fp8.float()
+        m_f32 = mat2_fp8.float()
+        out_f32 = torch.mm(s_f32, m_f32)
+        return (out_f32 * scale_a * scale_b).to(dtype)
+      else:
+        return torch._scaled_mm(
+            self_fp8.to(device),
+            mat2_fp8.to(device),
+            scale_a.to(device),
+            scale_b.to(device),
+        )
+
+    self.assert_close_tpu_vs_cpu(
+        compute,
+        rtol=0.0,
+        atol=0.0,
+    )
+
   def test_col2im_fold(self):
     """Tests col2im via torch.nn.Fold.
 

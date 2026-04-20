@@ -256,6 +256,7 @@ void OpNameStack::Push(OpName op_name) {
       OpName::kScaledDotProductFlashAttention,
       OpName::kScaledDotProductFusedAttentionOverrideable,
       OpName::kScaledDotProductFusedAttentionOverrideableBackward,
+      OpName::kScaledMmOut,
       OpName::kScatterAddOut,
       OpName::kScatterValueOut,
       OpName::kScatterValueReduceOut,

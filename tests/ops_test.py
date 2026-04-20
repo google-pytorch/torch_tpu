@@ -593,6 +593,10 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.int32: {"rtol": 1e-4, "atol": 1e-4},
         torch.int64: {"rtol": 1e-4, "atol": 1e-4},
     },
+    "torch._scaled_mm": {
+        torch.float8_e4m3fn: {"rtol": 3e-6, "atol": 1.6e-05},
+        torch.float8_e5m2: {"rtol": 3e-6, "atol": 1.6e-05},
+    },
     "var": {
         torch.float16: {"rtol": 1e-2, "atol": 5e-2},
         torch.float32: {"rtol": 5e-6, "atol": 5e-4},
@@ -3536,6 +3540,12 @@ class TestOps(TorchTpuTestBase):
 
   def test_scalar_tensor(self):
     self.do_test_op("scalar_tensor")
+
+  def test_scaled_mm(self):
+    self.do_test_op(
+        "torch._scaled_mm",
+        include_dtypes=[torch.float8_e4m3fn, torch.float8_e5m2],
+    )
 
   def test_sigmoid(self):
     self.do_test_op(

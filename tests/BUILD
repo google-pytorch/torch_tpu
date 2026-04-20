@@ -226,6 +226,8 @@ torch_tpu_py_test(
         "ops_test_gpu_golden0.gz",
         "ops_test_gpu_golden1.gz",
         "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden3.gz",
+        "ops_test_gpu_golden4.gz",
     ],
     main = "ops_test.py",
     notest_oss = "Will re-enable this slow test until we have a proper way to speed it up.",
@@ -338,7 +340,7 @@ torch_tpu_py_test(
     # ops_test_vs_gpu target.
     shard_count = 3,
     tags = [
-        "requires-gpu-sm80",
+        "requires-gpu-sm90",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -601,12 +603,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
-        "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
-        "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
@@ -671,12 +668,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
-        "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
-        "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
