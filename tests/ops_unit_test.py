@@ -799,6 +799,92 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         ),
     )
 
+  @parameterized.named_parameters(
+      ("small", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, False),
+      (
+          "large",
+          50,
+          4,
+          20,
+          30,
+          [50, 45, 40, 35],
+          [30, 25, 20, 15],
+          torch.int32,
+          False,
+      ),
+      ("zero_target_length", 10, 2, 5, 0, [10, 8], [0, 0], torch.int32, False),
+      ("2d_lengths", 5, 2, 3, 3, [[5, 4]], [[3, 2]], torch.int32, False),
+      ("int64_lengths", 5, 2, 3, 3, [5, 4], [3, 2], torch.int64, False),
+      ("1d_targets", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, True),
+  )
+  def test_ctc_loss(
+      self,
+      t,
+      n,
+      c,
+      s,
+      in_lens,
+      tgt_lens,
+      lengths_dtype=torch.int32,
+      is_1d_targets=False,
+  ):
+    """Tests _ctc_loss.Tensor with various configurations."""
+    blank = 0
+
+    # Generate random log probs
+    probs = torch.randn(t, n, c)
+    log_probs = torch.nn.functional.log_softmax(probs, dim=2)
+
+    # Generate random targets in range [1, C-1] since blank is 0
+    if is_1d_targets:
+      targets = torch.randint(1, c, (sum(tgt_lens),), dtype=torch.int32)
+    else:
+      targets = torch.randint(1, c, (n, s), dtype=torch.int32)
+
+    input_lengths = torch.tensor(in_lens, dtype=lengths_dtype)
+    target_lengths = torch.tensor(tgt_lens, dtype=lengths_dtype)
+
+    def compute(
+        device,
+        log_probs=log_probs,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+    ):
+      loss, log_alpha = torch.ops.aten._ctc_loss.Tensor(
+          log_probs.to(device),
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+          blank,
+          zero_infinity=False,
+      )
+
+      # Mask invalid states to avoid comparing CPU garbage values (close to 0)
+      # against TPU's -inf
+      n_batch, t_len, c_len = log_alpha.shape
+
+      t_idx = (
+          torch.arange(t_len, device=device).unsqueeze(0).expand(n_batch, t_len)
+      )
+      time_mask = t_idx < input_lengths.to(device).flatten().unsqueeze(1)
+
+      c_idx = (
+          torch.arange(c_len, device=device).unsqueeze(0).expand(n_batch, c_len)
+      )
+      state_mask = c_idx <= (2 * target_lengths.to(device).flatten()).unsqueeze(
+          1
+      )
+
+      valid_mask = time_mask.unsqueeze(2) & state_mask.unsqueeze(1)
+      log_alpha = torch.where(
+          valid_mask, log_alpha, torch.tensor(float("-inf"), device=device)
+      )
+
+      return loss, log_alpha
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
+
   def test_col2im_fold(self):
     """Tests col2im via torch.nn.Fold.
 

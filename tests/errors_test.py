@@ -1577,6 +1577,72 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
     ):
       torch.triu(t, 1)
 
+  def test_ctc_loss_log_probs_3d(self):
+    log_probs = torch.randn(2, 3, device=et.device())
+    targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())
+    input_lengths = torch.tensor([2, 2], dtype=torch.int32, device=et.device())
+    target_lengths = torch.tensor([3, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        cpu="""Expected 3-dimensional tensor, but got 2-dimensional tensor for argument #1 'log_probs' (while checking arguments for ctc_loss_allocate_outputs)""",
+        tpu="""_ctc_loss(): expected log_probs to be 3-D, got 2-D""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._ctc_loss.Tensor(
+          log_probs, targets, input_lengths, target_lengths, 0, False
+      )
+
+  def test_ctc_loss_targets_1d_or_2d(self):
+    log_probs = torch.randn(5, 2, 3, device=et.device())
+    targets = torch.randint(
+        1, 3, (2, 3, 4), dtype=torch.int32, device=et.device()
+    )
+    input_lengths = torch.tensor([5, 5], dtype=torch.int32, device=et.device())
+    target_lengths = torch.tensor([3, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        cpu="""Expected 1 to 2 dimensions, but got 3-dimensional tensor for argument #2 'targets' (while checking arguments for ctc_loss_allocate_outputs)""",
+        tpu="""_ctc_loss(): expected targets to be 1-D or 2-D, got 3-D""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._ctc_loss.Tensor(
+          log_probs, targets, input_lengths, target_lengths, 0, False
+      )
+
+  def test_ctc_loss_input_lengths_size_match_batch_size(self):
+    log_probs = torch.randn(5, 2, 3, device=et.device())
+    targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())
+    input_lengths = torch.tensor(
+        [5, 5, 5], dtype=torch.int32, device=et.device()
+    )
+    target_lengths = torch.tensor([3, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        cpu="""input_lengths must be of size batch_size""",
+        tpu="""_ctc_loss(): expected input_lengths to have batch_size (2) elements, got 3""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._ctc_loss.Tensor(
+          log_probs, targets, input_lengths, target_lengths, 0, False
+      )
+
+  def test_ctc_loss_target_lengths_size_match_batch_size(self):
+    log_probs = torch.randn(5, 2, 3, device=et.device())
+    targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())
+    input_lengths = torch.tensor([5, 5], dtype=torch.int32, device=et.device())
+    target_lengths = torch.tensor(
+        [3, 3, 3], dtype=torch.int32, device=et.device()
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        cpu="""target_lengths must be of size batch_size""",
+        tpu="""_ctc_loss(): expected target_lengths to have batch_size (2) elements, got 3""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._ctc_loss.Tensor(
+          log_probs, targets, input_lengths, target_lengths, 0, False
+      )
+
   def test_tril_insufficient_dims(self):
     """Tests that tril with insufficient dims fails with expected error."""
     t = torch.tensor(42, device=et.device(), dtype=torch.float32)

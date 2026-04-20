@@ -450,6 +450,9 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float16: {"rtol": 5e-3, "atol": 1.2},
         torch.bfloat16: {"rtol": 1e-2, "atol": 1.0},
     },
+    "nn.functional.ctc_loss": {
+        torch.float32: {"rtol": 5e-7, "atol": 3e-4},
+    },
     "nn.functional.elu": {
         torch.float32: {"rtol": 1e-4, "atol": 1e-4},
         torch.float16: {"rtol": 1e-4, "atol": 1e-2},
@@ -1930,6 +1933,27 @@ class TestOps(TorchTpuTestBase):
         "cosh",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_ctc_loss(self):
+    self.do_test_op(
+        "nn.functional.ctc_loss",
+        check_grad=False,
+        # TODO: NotImplementedError: "log_softmax_lastdim_kernel_impl" not
+        # implemented for integral, float16, bfloat16, and complex dtypes.
+        exclude_dtypes={
+            "cpu": (
+                INTEGRAL_DTYPES
+                + COMPLEX_DTYPES
+                + (torch.bfloat16, torch.float16)
+            ),
+            "gpu": (
+                # NotImplementedError: "host_softmax" not implemented for
+                # integral and complex dtypes.
+                INTEGRAL_DTYPES
+                + COMPLEX_DTYPES
+            ),
+        },
     )
 
   def test_cumprod(self):
