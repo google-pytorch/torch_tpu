@@ -31,8 +31,6 @@ torch_tpu_py_test(
     name = "small_graph_test",
     srcs = ["small_graph_test.py"],
     tags = [
-        "nomsan",  # TODO: fix the test in msan mode.
-        "notsan",  # TODO: fix the test in tsan mode.
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
@@ -102,8 +100,6 @@ torch_tpu_py_test(
         ["exclusive"],
         [],
     ) + [
-        "noasan",  # TODO: fix the test in asan mode.
-        "nomsan",  # TODO: fix the test in msan mode.
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -123,7 +119,6 @@ torch_tpu_py_test(
     name = "compile_api_test",
     srcs = ["compile_api_test.py"],
     tags = [
-        "noasan",  # TODO(b/497852581): fix the test in asan mode.
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
@@ -281,9 +276,6 @@ torch_tpu_py_test(
     notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 6,
     tags = [
-        "noasan",  # TODO: fix the test in asan mode.
-        "nomsan",  # TODO: fix the test in msan mode.
-        "notsan",  # TODO: fix the test in tsan mode.
         "requires-net:external",
         "requires-tpu-v5lite",  #
     ],
@@ -306,7 +298,6 @@ torch_tpu_py_test(
     notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = "true",
     tags = [
-        "nomsan",  # TODO: fix the test in msan mode.
         "requires-tpu-v5lite",
     ],
     deps = [
