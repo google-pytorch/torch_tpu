@@ -48,6 +48,7 @@
 #include "torch_tpu/ops/compile/stateless_rng_kernels.h"
 #include "torch_tpu/ops/convolution/convolution_aten_kernels.h"
 #include "torch_tpu/ops/copy_from/copy_from_aten_kernels.h"
+#include "torch_tpu/ops/ctc_loss/ctc_loss_aten_kernels.h"
 #include "torch_tpu/ops/cummax/cummax_aten_kernels.h"
 #include "torch_tpu/ops/cummin/cummin_aten_kernels.h"
 #include "torch_tpu/ops/cumprod/cumprod_aten_kernels.h"
@@ -256,6 +257,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   Impl(m, OpName::kCopy_, AtenCopy_);
   Impl(m, OpName::kCosOut, AtenCosOut);
   Impl(m, OpName::kCoshOut, AtenCoshOut);
+  Impl(m, OpName::kCtcLoss, AtenCtcLoss);
+  Impl(m, OpName::kCtcLossTensor, AtenCtcLossTensor);
   Impl(m, OpName::kCummaxHelper, AtenCummaxHelper);
   Impl(m, OpName::kCumminHelper, AtenCumminHelper);
   Impl(m, OpName::kCumprodOut, AtenCumprodOut);

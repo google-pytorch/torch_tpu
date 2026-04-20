@@ -217,6 +217,10 @@ std::string_view ToString(OpName op_name) {
       return "cos.out";
     case OpName::kCoshOut:
       return "cosh.out";
+    case OpName::kCtcLoss:
+      return "_ctc_loss";
+    case OpName::kCtcLossTensor:
+      return "_ctc_loss.Tensor";
     case OpName::kCummaxHelper:
       return "_cummax_helper";
     case OpName::kCumminHelper:
@@ -1228,6 +1232,9 @@ std::string_view ToString(OpName op_name) {
 std::string_view ToBaseName(const OpName op_name) {
   if (op_name == OpName::kIndexPutImpl_) {
     return "index_put_";
+  }
+  if (op_name == OpName::kCtcLossTensor) {
+    return "_ctc_loss";
   }
 
   auto full_name = ToString(op_name);

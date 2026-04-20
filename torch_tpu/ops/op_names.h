@@ -120,6 +120,8 @@ enum class OpName {
   kCopy_,
   kCosOut,
   kCoshOut,
+  kCtcLoss,
+  kCtcLossTensor,
   kCummaxHelper,
   kCumminHelper,
   kCumprodOut,
