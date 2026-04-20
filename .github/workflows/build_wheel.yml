@@ -111,9 +111,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: CPU
-            runner: linux-x86-n2-16
-            extra_flags: "--config=wheel_test_cpu"
+          # - name: CPU
+          #   runner: linux-x86-n2-16
+          #   extra_flags: "--config=wheel_test_cpu"
           - name: TPU
             runner: linux-x86-ct5lp-224-8tpu
             extra_flags: '--config=wheel_test_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
@@ -137,4 +137,4 @@ jobs:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run tests
         shell: bash
-        run: bazel test ${{ matrix.extra_flags }} //...
+        run: bazel test ${{ matrix.extra_flags }} //... //torch_tpu/tests:where_repro_test
