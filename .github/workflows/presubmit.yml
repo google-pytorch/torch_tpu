@@ -42,9 +42,37 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'main' }}
 
 jobs:
+  build_on_cpu:
+    name: Build on CPU
+    runs-on: "linux-x86-n2-16"
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build Targets and Populate Disk Cache
+        run: |
+          bazel build --config=ci_cpu --disk_cache=/tmp/bazel_disk_cache //...
+          bazel build --config=ci_tpu --disk_cache=/tmp/bazel_disk_cache //...
+
+      - name: Compress Bazel Disk Cache
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zstd || (apt-get update -qq && apt-get install -y --no-install-recommends zstd)
+          echo "Compressing Bazel disk cache..."
+          # ONLY tarball the disk cache binary blobs, NOT the Bazel install base
+          tar -I 'zstd -T0 -1' -cf disk_cache.tar.zst -C /tmp bazel_disk_cache/
+
+      - name: Upload Disk Cache Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-disk-cache
+          path: disk_cache.tar.zst
+          retention-days: 1 # Only needed to pass to the next job
+          compression-level: 0 # Prevents GitHub from wasting CPU double-zipping the archive
+
   run_tests:
     name: "Presubmit on ${{ matrix.job_info.runner }}"
-    # Available self-hosted runners.
+    needs: build_on_cpu
     strategy:
       fail-fast: false
       matrix:
@@ -80,8 +108,21 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
-      # We don't need a separate step for bazel build as bazel test will also build the code before
-      # running the tests. This allows test building and test running to overlap and reduce total
-      # build time.
+      # Download the pre-compiled bazel disk cache artifact
+      - name: Download Disk Cache
+        uses: actions/download-artifact@v4
+        with:
+          name: bazel-disk-cache
+          path: .
+
+      # Unpack the cache. 
+      - name: Restore Bazel Disk Cache
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zstd || (apt-get update -qq && apt-get install -y --no-install-recommends zstd)
+          echo "Extracting Bazel disk cache..."
+          tar -I 'zstd -T0' -xf disk_cache.tar.zst -C /tmp
+
+      # Run the test command, pointing it to the restored local disk cache.
       - name: Run Bazel Test
-        run: bazel test --config=${{ matrix.job_info.config }} ${{ matrix.job_info.extra_flags }} //...
+        run: |
+          bazel test --config=${{ matrix.job_info.config }} ${{ matrix.job_info.extra_flags }} --disk_cache=/tmp/bazel_disk_cache //...
