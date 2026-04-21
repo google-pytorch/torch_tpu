@@ -315,7 +315,7 @@ class TpuBackend:
     #
     # TODO: Figure out how to remove symint from the graph and recompile
     # without dynamism.
-    if not _ENABLE_COMPILED_MODE_DYNAMISM.value:
+    if not flags.FLAGS["torch_tpu_internal_compiled_mode_dynamism"].value:
       _raise_on_symint(example_inputs)
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
