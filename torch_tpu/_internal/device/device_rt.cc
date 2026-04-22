@@ -19,6 +19,7 @@
 #include <string>
 
 #include "absl/log/absl_log.h"
+#include "absl/time/time.h"
 #include "ATen/core/Generator.h"
 #include "c10/core/Device.h"
 #include "c10/core/TensorImpl.h"
