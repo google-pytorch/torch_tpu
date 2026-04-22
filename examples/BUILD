@@ -24,6 +24,7 @@ pytype_strict_library(
     name = "paths",
     srcs = ["paths.py"],
     imports = ["../.."],
+    type_checking = "pyrefly",
 )
 
 torch_tpu_package_end()

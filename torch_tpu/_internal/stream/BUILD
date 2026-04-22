@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "streams",
     srcs = ["streams.py"],
+    type_checking = "pyrefly",
     deps = [
         "//torch_tpu/_internal/device:_device_ops_backend",
     ],

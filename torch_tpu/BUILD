@@ -55,6 +55,7 @@ pytype_strict_library(
     data = [
         ":torch_tpu_dist_info",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_backend",
@@ -78,6 +79,7 @@ py_library_providing_imports_info(
     # to ensure `torch_tpu` is linked in even if no symbols are explicitly
     # used by the user. This tag prevents build_cleaner from removing the dependency.
     tags = ["keep_dep"],
+    type_checking = "pyrefly",
     deps = if_oss(
         ["//shims/libtpu"],
         [],

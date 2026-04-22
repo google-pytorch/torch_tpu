@@ -27,6 +27,7 @@ package(
 pytype_strict_library(
     name = "build_data",
     srcs = ["build_data.py"],
+    type_checking = "pyrefly",
 )
 
 torch_tpu_package_end()

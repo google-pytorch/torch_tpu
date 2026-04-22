@@ -23,6 +23,7 @@ package(
 pytype_library(
     name = "symbol_bounds",
     srcs = ["symbol_bounds.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -36,6 +37,7 @@ pytype_library(
         "__init__.py",
         "sym_shape_manager.py",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
@@ -53,6 +55,7 @@ pytype_library(
     srcs = [
         "graph_transformations.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":sym_shape_manager",
         ":symbol_bounds",
@@ -66,6 +69,7 @@ pytype_library(
         "__init__.py",
         "compiler.py",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",

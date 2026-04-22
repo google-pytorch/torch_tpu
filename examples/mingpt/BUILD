@@ -140,6 +140,7 @@ pytype_strict_binary(
     exec_properties = {
         "cpp_link.mem": "20g",  # Needed for asan.
     },
+    type_checking = "pyrefly",
     deps = [
         "//examples/mingpt/impl:mingpt",
         "//shims/absl_py:app",
@@ -152,6 +153,7 @@ pytype_strict_binary(
 pytype_strict_library(
     name = "mingpt_runner_lib",
     srcs = ["mingpt_runner_lib.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples/mingpt/impl:mingpt",
         "//shims/torch:pytorch",

@@ -31,6 +31,7 @@ pytype_strict_library(
     srcs = [
         "distributed_utils.py",
     ],
+    type_checking = "pyrefly",
     visibility = ["//:__subpackages__"],
     deps = [
         "//shims/torch:pytorch",

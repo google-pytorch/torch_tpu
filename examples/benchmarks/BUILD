@@ -41,6 +41,7 @@ torch_tpu_py_test(
         "requires-gpu-sm100-full-only",
         "requires-net:external",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

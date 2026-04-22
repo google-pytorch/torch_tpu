@@ -27,6 +27,7 @@ package(
 pytype_strict_library(
     name = "device_utils",
     srcs = ["device_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch",
@@ -49,6 +50,7 @@ pytype_strict_library(
         "nofixdeps",
         "ignore_for_dep=third_party.py.jax",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
@@ -63,6 +65,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "hardware",
     srcs = ["hardware.py"],
+    type_checking = "pyrefly",
     deps = ["@pypi//immutabledict"],
 )
 
@@ -93,6 +96,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "benchmarking",
     srcs = ["benchmarking.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
@@ -103,6 +107,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "tracer_utils",
     srcs = ["tracer_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":utils",
         "//shims/torch:pytorch",
@@ -113,6 +118,7 @@ pytype_strict_library(
     name = "test_fixtures",
     testonly = True,
     srcs = ["test_fixtures.py"],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 
@@ -120,6 +126,7 @@ torch_tpu_py_test(
     name = "tracer_utils_test",
     srcs = ["tracer_utils_test.py"],
     strict = True,
+    type_checking = "pyrefly",
     deps = [
         ":test_fixtures",
         ":tracer_utils",
@@ -137,6 +144,7 @@ torch_tpu_py_test(
     main = "tracer_utils_tpu_test.py",
     strict = True,
     tags = ["requires-tpu-v5lite"],
+    type_checking = "pyrefly",
     deps = [
         ":test_fixtures",
         ":tracer_utils",
@@ -152,6 +160,7 @@ torch_tpu_py_test(
     name = "test_fixtures_test",
     srcs = ["test_fixtures_test.py"],
     strict = True,
+    type_checking = "pyrefly",
     deps = [
         ":test_fixtures",
         "//shims/absl_py/testing:absltest",
@@ -162,6 +171,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "log_utils",
     srcs = ["log_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
     ],

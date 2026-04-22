@@ -45,6 +45,7 @@ pytype_strict_library(
         "__init__.py",
         "precision.py",
     ],
+    type_checking = "pyrefly",
     deps = [":precision_impl"],
 )
 

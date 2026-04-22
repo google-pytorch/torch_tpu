@@ -30,6 +30,7 @@ pytype_library(
     tags = [
         "ignore_for_dep=third_party.py.torch_tpu.api",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",

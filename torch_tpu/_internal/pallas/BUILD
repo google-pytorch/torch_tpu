@@ -31,6 +31,7 @@ pytype_strict_library(
         "__init__.py",
         "pallas.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
@@ -105,6 +106,7 @@ pybind_extension(
 pytype_strict_library(
     name = "pallas_kernel_generate_utils",
     srcs = ["pallas_kernel_generate_utils.py"],
+    type_checking = "pyrefly",
     deps = [],
 )
 

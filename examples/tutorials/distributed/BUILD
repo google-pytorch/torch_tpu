@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "hello_world_distributed",
     srcs = ["hello_world_distributed.py"],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 

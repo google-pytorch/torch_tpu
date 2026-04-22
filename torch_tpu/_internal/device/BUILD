@@ -24,6 +24,7 @@ package(
 pytype_strict_library(
     name = "_device_module",
     srcs = ["_device_module.py"],
+    type_checking = "pyrefly",
     deps = [
         ":_device_ops_backend",
         "//shims/absl_py/logging",

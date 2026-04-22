@@ -141,6 +141,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "stablehlo_compile_testing",
     srcs = ["stablehlo_compile_testing.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
@@ -308,6 +309,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "requires-tpu-v5lite",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",

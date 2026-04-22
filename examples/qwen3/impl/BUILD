@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "qwen3",
     srcs = ["qwen3.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py:app",
         "//shims/absl_py/flags",

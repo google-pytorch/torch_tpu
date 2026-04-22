@@ -24,6 +24,7 @@ pytype_strict_library(
     name = "device_module_testing",
     testonly = True,
     srcs = ["device_module_testing.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

@@ -42,6 +42,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "fsdp_lora_worker",
     srcs = ["fsdp_lora_worker.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples/distributed/fsdp:fsdp_worker",
         "//examples/distributed/fsdp:model",

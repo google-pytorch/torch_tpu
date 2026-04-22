@@ -31,6 +31,7 @@ pytype_strict_library(
         "_impl.py",
         "profiler_api.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":_profiler_backend",
         "//shims/absl_py/logging",

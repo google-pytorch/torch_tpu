@@ -25,6 +25,7 @@ package(
 pytype_strict_library(
     name = "device_utils",
     srcs = ["__init__.py"],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 

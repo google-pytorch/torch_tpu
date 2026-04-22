@@ -41,6 +41,7 @@ pytype_strict_library(
         "nofixdeps",
         "ignore_for_dep=third_party.py.transformers",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "@pypi//numpy",
@@ -52,6 +53,7 @@ pytype_strict_library(
     srcs = [
         "mingpt_jax.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         "@pypi//jax",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
