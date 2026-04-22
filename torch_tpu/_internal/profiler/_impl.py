@@ -146,12 +146,15 @@ def start_trace(
     _profile_state.log_dir = str(log_dir)
 
 
-def stop_trace() -> None:
+def stop_trace() -> str:
   """Stops the currently-running profiler trace.
 
   The trace will be saved to the ``log_dir`` passed to the corresponding
   :func:`start_trace` call. Raises a RuntimeError if a trace hasn't been
   started.
+
+  Returns:
+    The path to the saved profiler trace directory.
 
   Raises:
     RuntimeError: If no profile has been started.
@@ -171,6 +174,8 @@ def stop_trace() -> None:
       logging.info('profiler saved in %s', final_file)
     finally:
       _profile_state.reset()
+
+    return plugin_dir
 
 
 @contextmanager
