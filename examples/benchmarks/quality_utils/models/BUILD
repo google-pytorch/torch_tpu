@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "configs",
     srcs = ["configs.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples:paths",
         "@pypi//llama_models",
@@ -32,6 +33,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "meta_llama3_quality_benchmark",
     srcs = ["meta_llama3_quality_benchmark.py"],
+    type_checking = "pyrefly",
     deps = [
         ":configs",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",

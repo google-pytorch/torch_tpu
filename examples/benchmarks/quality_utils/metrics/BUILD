@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "perplexity_metric",
     srcs = ["perplexity_metric.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//shims/torch:pytorch",
@@ -32,6 +33,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "data_loader",
     srcs = ["data_loader.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//torch_tpu/_internal/utils:log_utils",

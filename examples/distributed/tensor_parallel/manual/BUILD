@@ -48,6 +48,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "tp_worker",
     srcs = ["tp_worker.py"],
+    type_checking = "pyrefly",
     deps = [
         ":model",
         "//shims/absl_py/logging",
@@ -61,6 +62,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "model",
     srcs = ["model.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],

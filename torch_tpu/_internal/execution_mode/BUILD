@@ -28,6 +28,7 @@ pytype_strict_library(
     srcs = [
         "__init__.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal:execution_mode_impl",

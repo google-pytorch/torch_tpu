@@ -27,16 +27,19 @@ package(
 pytype_strict_library(
     name = "traceme",
     srcs = ["traceme.py"],
+    type_checking = "pyrefly",
 )
 
 pytype_strict_library(
     name = "xprof_analysis_client",
     srcs = ["xprof_analysis_client.py"],
+    type_checking = "pyrefly",
 )
 
 pytype_strict_library(
     name = "xprof_session",
     srcs = ["xprof_session.py"],
+    type_checking = "pyrefly",
 )
 
 torch_tpu_package_end()

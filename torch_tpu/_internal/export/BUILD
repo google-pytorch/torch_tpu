@@ -26,6 +26,7 @@ pytype_strict_library(
         "__init__.py",
         "export.py",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
     ],

@@ -22,6 +22,7 @@ package(
 pytype_strict_library(
     name = "utils",
     srcs = ["utils.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",

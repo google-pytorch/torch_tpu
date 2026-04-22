@@ -25,6 +25,7 @@ package(
 pytype_strict_library(
     name = "g3_multiprocessing",
     srcs = ["g3_multiprocessing.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py:app",
     ],

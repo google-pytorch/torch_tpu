@@ -107,6 +107,7 @@ pytype_library(
     srcs = [
         "__init__.py",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
     ],

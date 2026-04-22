@@ -44,6 +44,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "dp_worker",
     srcs = ["dp_worker.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples/distributed/data_parallel:dp_utils",
         "//shims/absl_py/logging",

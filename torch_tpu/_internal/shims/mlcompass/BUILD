@@ -27,11 +27,13 @@ package(
 pytype_strict_library(
     name = "benchmark_data",
     srcs = ["benchmark_data.py"],
+    type_checking = "pyrefly",
 )
 
 pytype_strict_library(
     name = "export_lib_borg",
     srcs = ["export_lib_borg.py"],
+    type_checking = "pyrefly",
 )
 
 torch_tpu_package_end()

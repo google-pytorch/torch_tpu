@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "resnet",
     srcs = ["resnet.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],

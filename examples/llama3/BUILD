@@ -62,6 +62,7 @@ torch_tpu_py_test(
 pytype_strict_library(
     name = "llama3_2_1b_training_nb",
     srcs = ["llama3_2_1b_training_nb.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples:paths",
         "//shims/etils/epath",

@@ -37,6 +37,7 @@ pytype_strict_library(
     srcs = [
         "model.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],
@@ -95,6 +96,7 @@ pytype_strict_binary(
     exec_properties = {
         "cpp_link.mem": "20g",  # Needed for asan.
     },
+    type_checking = "pyrefly",
     deps = [
         ":deepseek",
         "//shims/absl_py:app",

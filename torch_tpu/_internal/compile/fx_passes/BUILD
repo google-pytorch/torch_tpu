@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "rewrite_stateless_rng_ops",
     srcs = ["rewrite_stateless_rng_ops.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],
@@ -31,6 +32,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "mark_embedded_constants",
     srcs = ["mark_embedded_constants.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",

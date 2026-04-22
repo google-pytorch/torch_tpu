@@ -25,6 +25,7 @@ pytype_strict_library(
     srcs = [
         "simple_model.py",
     ],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 
@@ -33,6 +34,7 @@ pytype_strict_library(
     srcs = [
         "dp_utils.py",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":simple_model",
         "//shims/torch:pytorch",

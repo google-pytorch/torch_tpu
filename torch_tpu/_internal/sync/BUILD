@@ -74,6 +74,7 @@ pytype_library(
         "__init__.py",
         "sync.py",
     ],
+    type_checking = "pyrefly",
     visibility = [
         "//:__subpackages__",
     ],

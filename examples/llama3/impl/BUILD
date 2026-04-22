@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "llama3_2",
     srcs = ["llama3_2.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],

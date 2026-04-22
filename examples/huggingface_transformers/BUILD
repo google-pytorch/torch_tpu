@@ -29,6 +29,7 @@ pytype_strict_library(
     name = "model_configs",
     srcs = ["model_configs.py"],
     data = [":model_configs_data"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/etils/epath",
         "@pypi//transformers",

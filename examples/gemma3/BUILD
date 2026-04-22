@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "model",
     srcs = ["model.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",

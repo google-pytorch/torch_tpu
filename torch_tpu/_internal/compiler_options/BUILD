@@ -27,6 +27,7 @@ pytype_strict_library(
     srcs = [
         "__init__.py",
     ],
+    type_checking = "pyrefly",
     deps = ["//torch_tpu/_internal:compiler_options_impl"],
 )
 

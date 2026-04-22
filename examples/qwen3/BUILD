@@ -82,6 +82,7 @@ torch_tpu_py_test(
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
@@ -136,6 +137,7 @@ torch_tpu_py_test(
 pytype_strict_binary(
     name = "xm_launch_bd",
     srcs = ["xm_launch_bd.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py:app",
         "//shims/absl_py/flags",

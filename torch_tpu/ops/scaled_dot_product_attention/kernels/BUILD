@@ -34,6 +34,7 @@ pytype_strict_library(
     tags = [
         "ignore_for_dep=third_party.py.jax._src.pallas.core",
     ],
+    type_checking = "pyrefly",
     deps = [
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
@@ -50,6 +51,7 @@ pytype_strict_binary(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
+    type_checking = "pyrefly",
     deps = [
         ":scaled_dot_product_attention_kernels",
         "//shims/absl_py:app",

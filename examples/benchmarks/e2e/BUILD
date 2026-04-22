@@ -30,6 +30,7 @@ package(
 pytype_strict_library(
     name = "benchmark_utils",
     srcs = ["benchmark_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//shims/absl_py/flags",
@@ -47,6 +48,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "mlcompass_utils",
     srcs = ["mlcompass_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         "//shims/absl_py/logging",
@@ -60,6 +62,7 @@ pytype_strict_library(
     name = "performance_utils",
     testonly = 1,
     srcs = ["performance_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_function_db",
         ":benchmark_utils",
@@ -84,6 +87,7 @@ pytype_strict_library(
     name = "quality_utils",
     testonly = 1,
     srcs = ["quality_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":mlcompass_utils",
@@ -102,6 +106,7 @@ pytype_strict_library(
     name = "test_utils",
     testonly = 1,
     srcs = ["test_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":performance_utils",
@@ -132,6 +137,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":performance_utils",
@@ -161,6 +167,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":quality_utils",
@@ -205,6 +212,7 @@ pytype_strict_library(
     name = "layer_configs",
     testonly = True,
     srcs = ["layer_configs.py"],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 
@@ -225,6 +233,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":layer_configs",
@@ -274,6 +283,7 @@ torch_tpu_py_test(
         # Needed for getting xprof links
         "requires-net:external",
     ],
+    type_checking = "pyrefly",
     deps = [
         ":benchmark_utils",
         ":layer_configs",
@@ -352,6 +362,7 @@ pytype_strict_library(
     name = "benchmark_function_db",
     testonly = 1,
     srcs = ["benchmark_function_db.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/utils:device_utils",
@@ -361,6 +372,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "model_utils",
     srcs = ["model_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         ":ragged_moe",
         "//examples/deepseek",
@@ -376,6 +388,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "ragged_moe",
     srcs = ["ragged_moe.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/torch:pytorch",
     ],

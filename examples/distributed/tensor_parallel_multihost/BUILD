@@ -50,6 +50,7 @@ pytype_strict_binary(
         "cpp_link.mem": "20g",  # Needed for asan.
     },
     main = "main.py",
+    type_checking = "pyrefly",
     deps = [
         ":model",
         "//shims/absl_py/logging",
@@ -66,6 +67,7 @@ pytype_strict_library(
     srcs = [
         "model.py",
     ],
+    type_checking = "pyrefly",
     deps = ["//shims/torch:pytorch"],
 )
 

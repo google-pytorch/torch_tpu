@@ -23,6 +23,7 @@ package(
 pytype_strict_library(
     name = "singlehost_wrapper",
     srcs = ["singlehost_wrapper.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//torch_tpu/_internal/utils:hardware",
@@ -33,6 +34,7 @@ pytype_strict_library(
 pytype_strict_library(
     name = "multihost_wrapper",
     srcs = ["multihost_wrapper.py"],
+    type_checking = "pyrefly",
     deps = ["//shims/absl_py/logging"],
 )
 
@@ -61,6 +63,7 @@ torch_tpu_py_test(
     notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = True,
     tags = ["requires-tpu-v5lite:8"],
+    type_checking = "pyrefly",
     deps = [
         ":singlehost_wrapper",
         "//shims/absl_py/testing:absltest",
@@ -73,6 +76,7 @@ torch_tpu_py_test(
     name = "multihost_wrapper_test",
     srcs = ["multihost_wrapper_test.py"],
     strict = True,
+    type_checking = "pyrefly",
     deps = [
         ":multihost_wrapper",
         "//shims/absl_py/testing:absltest",

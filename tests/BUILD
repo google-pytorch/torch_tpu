@@ -26,6 +26,7 @@ pytype_strict_library(
         "//examples/huggingface_diffusers:model_configs_data",
         "//examples/huggingface_transformers:model_configs_data",
     ],
+    type_checking = "pyrefly",
     visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
@@ -66,6 +67,7 @@ pytype_strict_library(
     name = "op_testing",
     testonly = True,
     srcs = ["op_testing.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -85,6 +87,7 @@ pytype_strict_library(
     name = "ops_test_data",
     testonly = True,
     srcs = ["ops_test_data.py"],
+    type_checking = "pyrefly",
     visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
@@ -96,6 +99,7 @@ pytype_strict_library(
     name = "dynamism_test_utils",
     testonly = True,
     srcs = ["dynamism_test_utils.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -509,6 +513,7 @@ pytype_strict_library(
     name = "error_testing",
     testonly = True,
     srcs = ["error_testing.py"],
+    type_checking = "pyrefly",
     visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",

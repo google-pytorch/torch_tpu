@@ -27,6 +27,7 @@ package(
 pytype_strict_library(
     name = "gpu_env",
     srcs = ["gpu_env.py"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
