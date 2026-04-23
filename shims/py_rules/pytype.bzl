@@ -21,17 +21,27 @@ load("//:visibility.bzl", "BZL_VISIBILITY")
 
 visibility(BZL_VISIBILITY)
 
+def _adjust_kwargs(kwargs):
+    kwargs.pop("type_checking", None)
+    return kwargs
+
 def pytype_strict_binary(**kwargs):
-    py_binary(**kwargs)
+    py_binary(**_adjust_kwargs(kwargs))
 
 def pytype_strict_library(**kwargs):
-    py_library(**kwargs)
+    py_library(
+        # PY_LIBRARY_OK=oss
+        **_adjust_kwargs(kwargs)
+    )
 
 def pytype_library(**kwargs):
-    py_library(**kwargs)
+    py_library(
+        # PY_LIBRARY_OK=oss
+        **_adjust_kwargs(kwargs)
+    )
 
 def pytype_strict_contrib_test(**kwargs):
     py_test(
         # PY_TEST_OK=oss
-        **kwargs
+        **_adjust_kwargs(kwargs)
     )
