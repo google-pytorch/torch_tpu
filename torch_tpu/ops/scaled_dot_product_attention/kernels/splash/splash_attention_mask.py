@@ -1,3 +1,4 @@
+# pytype: skip-file
 # Copyright 2025 DeepMind Technologies Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +18,7 @@
 
 from collections.abc import Callable
 import dataclasses
-from typing import Any, Self
+from typing import Any, Optional, Self, cast
 
 import numpy as np
 
@@ -196,7 +197,7 @@ class _ComputableMask(Mask):
   """
 
   _shape: tuple[int, int]
-  q_sequence: np.ndarray
+  q_sequence: Optional[np.ndarray]
   mask_function: Callable[..., Any]
 
   def __init__(
@@ -236,6 +237,7 @@ class _ComputableMask(Mask):
     q_slice = _fill_slice(q_slice, self.shape[0])
     kv_slice = _fill_slice(kv_slice, self.shape[1])
 
+    assert self.q_sequence is not None
     rows = self.q_sequence[q_slice]
     cols = np.arange(kv_slice.start, kv_slice.stop)
 
@@ -292,7 +294,9 @@ class CausalMask(_ComputableMask):
     return (
         self.shape == other.shape
         and self.offset == other.offset
-        and np.array_equal(self.q_sequence, other.q_sequence)
+        and np.array_equal(
+            cast(Any, self.q_sequence), cast(Any, other.q_sequence)
+        )
     )
 
   def __hash__(self):
@@ -352,7 +356,9 @@ class ChunkedCausalMask(_ComputableMask):
     return (
         self.shape == other.shape
         and self.chunk_size == other.chunk_size
-        and np.array_equal(self.q_sequence, other.q_sequence)
+        and np.array_equal(
+            cast(Any, self.q_sequence), cast(Any, other.q_sequence)
+        )
     )
 
   def __hash__(self):
@@ -429,7 +435,9 @@ class LocalMask(_ComputableMask):
         self.shape == other.shape
         and self.window_size == other.window_size
         and self.offset == other.offset
-        and np.array_equal(self.q_sequence, other.q_sequence)
+        and np.array_equal(
+            cast(Any, self.q_sequence), cast(Any, other.q_sequence)
+        )
     )
 
   def __hash__(self):
@@ -510,7 +518,7 @@ class FullMask(_ComputableMask):
       return NotImplemented
 
     return self.shape == other.shape and np.array_equal(
-        self.q_sequence, other.q_sequence
+        cast(Any, self.q_sequence), cast(Any, other.q_sequence)
     )
 
   def __hash__(self):
