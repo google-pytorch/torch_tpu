@@ -473,6 +473,38 @@ def run_send_recv() -> None:
     utils.assert_close(recv_buffer.cpu(), expected)
 
 
+def run_send_recv_sliced_tensor() -> None:
+  """Tests point-to-point blocking send and recv with sliced tensors."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+
+  if world_size < 2:
+    return
+
+  # Shape (6, 2, 2), sliced to (4, 2, 2).
+  # Use rank to make data unique per rank.
+  x = (torch.arange(24, dtype=torch.float32, device="tpu") + rank * 100).view(
+      6, 2, 2
+  )
+  recv_buffer = torch.zeros((4, 2, 2), dtype=torch.float32, device="tpu")
+
+  if rank < world_size - 1:
+    torch.ops.torch_tpu.experimental_send(
+        [x[2:]], dst=rank + 1, tag=rank
+    ).wait()
+
+  if rank > 0:
+    src_rank = rank - 1
+    torch.ops.torch_tpu.experimental_recv(
+        [recv_buffer], src=src_rank, tag=src_rank
+    ).wait()
+    expected = (torch.arange(24, dtype=torch.float32) + src_rank * 100).view(
+        6, 2, 2
+    )[2:]
+    utils.assert_close(recv_buffer.cpu(), expected)
+
+
 def run_isend_irecv() -> None:
   """Tests point-to-point asynchronous isend and irecv functionality."""
   dist.init_process_group(backend="tpu_dist")
@@ -913,6 +945,14 @@ class CollectiveOpsTest(absltest.TestCase):
         nproc_per_node=self._world_size,
         fn=singlehost_wrapper.tpu_env_wrapper(
             run_send_recv, world_size=self._world_size
+        ),
+    )
+
+  def test_send_recv_sliced_tensor(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_send_recv_sliced_tensor, world_size=self._world_size
         ),
     )
 

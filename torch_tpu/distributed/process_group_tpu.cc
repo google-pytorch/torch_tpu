@@ -653,23 +653,35 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
     std::vector<at::Tensor>& tensors, int dst_rank, int tag) {
   std::vector<xla::PjRtBuffer*> pjrt_buffers;
   std::vector<xla::CrossHostTransferKey> transfer_keys;
+  std::vector<DeviceBufferRef> materialized_device_buffers;
 
   pjrt_buffers.reserve(tensors.size());
   transfer_keys.reserve(tensors.size());
+  materialized_device_buffers.reserve(tensors.size());
 
   int64_t src_device_id = addressable_device_id_;
   int64_t dst_device_id = rank_to_device_id_[dst_rank];
   for (size_t i = 0; i < tensors.size(); ++i) {
     const auto& tensor = tensors[i];
-    // Extract the underlying hardware buffer from the tensor.
-    TT_ASSIGN_OR_THROW(const DeviceBufferRef device_buffer,
-                       GetMaterialized(tensor));
+    // PJRT requires sending and receiving buffers to have identical memory
+    // layouts. However, XLA often chooses different tiled layouts for view
+    // tensors (like slices) on the sender compared to local allocations on the
+    // receiver.
+    //
+    // We mimic NCCL behavior by logically flattening the tensor to a 1D array.
+    // XLA assigns consistent default layouts for 1D shapes, eliminating layout
+    // mismatch overhead without requiring slow CPU fallbacks.
+    at::Tensor flat_tensor = tensor.flatten();
+
+    TT_ASSIGN_OR_THROW(DeviceBufferRef device_buffer,
+                       GetMaterialized(flat_tensor));
     TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
                        device_buffer.GetOrMaterializeBuffer());
 
     pjrt_buffers.push_back(pjrt_buffer);
     transfer_keys.push_back(
         GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
+    materialized_device_buffers.push_back(std::move(device_buffer));
   }
 
   // Initiate the cross-host send logic, which will block until
@@ -677,6 +689,13 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   // begin the asynchronous transfer.
   TT_ASSIGN_OR_THROW(auto send_future,
                      CrossHostSendBuffers(pjrt_buffers, transfer_keys));
+
+  // Keep ephemeral buffers alive until the send is complete.
+  send_future->addCallback(
+      [materialized_device_buffers = std::move(materialized_device_buffers)](
+          c10::ivalue::Future& future) mutable {
+        materialized_device_buffers.clear();
+      });
 
   return c10::make_intrusive<TpuWork>(tensors, getRank(), c10d::OpType::SEND,
                                       std::move(send_future));
@@ -695,7 +714,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_recv(
     const auto& tensor = tensors[i];
     TT_ASSIGN_OR_THROW(auto xla_dtype,
                        ConvertTo<xla::PrimitiveType>(tensor.scalar_type()));
-    xla::Shape xla_shape = xla::ShapeUtil::MakeShape(xla_dtype, tensor.sizes());
+    // Flatten shape to 1D (matching sender's layout via NCCL-like behavior).
+    xla::Shape xla_shape =
+        xla::ShapeUtil::MakeShape(xla_dtype, {tensor.numel()});
     recv_shapes.push_back(std::move(xla_shape));
     transfer_keys.push_back(
         GetCrossHostTransferKey(src_device_id, dst_device_id, tag, i));
