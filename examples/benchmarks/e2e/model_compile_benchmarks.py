@@ -23,7 +23,6 @@ import time
 from absl import logging
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import device_utils
 from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import benchmark_utils
@@ -194,7 +193,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
       )
 
   def test_eager_forward(self):
-    device = api.tpu_device()
+    device = torch.device("tpu")
     model_and_input = self._get_qwen3_1_7b(device)
     model = model_and_input.model
     example_inputs = model_and_input.example_inputs
@@ -207,7 +206,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
     self._run_benchmark("hf_qwen3_1_7b_eager", benchmark_fn)
 
   def test_compile_forward(self):
-    device = api.tpu_device()
+    device = torch.device("tpu")
     model_and_input = self._get_qwen3_1_7b(device)
     model = model_and_input.model
     example_inputs = model_and_input.example_inputs
@@ -227,7 +226,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
     self._run_benchmark("hf_qwen3_1_7b_compile", benchmark_fn)
 
   def test_per_layer_compile_forward(self):
-    device = api.tpu_device()
+    device = torch.device("tpu")
     model_and_input = self._get_qwen3_1_7b(device)
     model = model_and_input.model
     example_inputs = model_and_input.example_inputs
@@ -249,7 +248,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
       self._run_benchmark("hf_qwen3_1_7b_per_layer_compile", benchmark_fn)
 
   def test_compile_with_async_copy(self):
-    device = api.tpu_device()
+    device = torch.device("tpu")
     model_and_input = self._get_qwen3_1_7b(device)
     model = model_and_input.model
     example_inputs = model_and_input.example_inputs
@@ -300,7 +299,7 @@ class CompileBenchmarkTest(test_utils.BenchmarkTest):
         )
 
   def test_compile_with_synced_copy(self):
-    device = api.tpu_device()
+    device = torch.device("tpu")
     model_and_input = self._get_qwen3_1_7b(device)
     model = model_and_input.model
     example_inputs = model_and_input.example_inputs

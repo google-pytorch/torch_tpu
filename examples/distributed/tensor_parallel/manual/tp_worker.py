@@ -23,7 +23,6 @@ import os
 from absl import logging
 import torch
 from torch import distributed as dist
-from torch_tpu import api
 # Direct all logs to stdout so kubectl logs can see them
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
@@ -51,8 +50,6 @@ def worker_fn() -> None:
   rank = int(os.environ.get("RANK", -1))
   local_rank = int(os.environ.get("LOCAL_RANK", -1))
   logging.info("Worker function started, rank: %d", rank)
-
-  _ = api.tpu_device()
 
   dist.init_process_group(backend="tpu_dist")
 

@@ -23,7 +23,6 @@ from torch import nn
 from torch.distributed import fsdp
 import torch.distributed.tensor as dt
 from torch.nn import parallel
-from torch_tpu import api
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal.utils import log_utils
 from examples import paths
@@ -126,7 +125,7 @@ def _shard_and_materialize_model(
 
 def worker_fn(argv=None):
   del argv  # Unused
-  device = api.tpu_device()
+  device = torch.device("tpu")
   dist.init_process_group(backend="tpu_dist")
 
   rank = dist.get_rank()

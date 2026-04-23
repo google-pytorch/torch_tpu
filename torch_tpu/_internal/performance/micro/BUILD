@@ -24,7 +24,6 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "//torch_tpu/api",
     ],
 )
 

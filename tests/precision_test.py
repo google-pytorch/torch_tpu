@@ -17,7 +17,6 @@ import threading
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 import torch_tpu._internal.precision as p
 from torch_tpu._internal.utils import utils
 
@@ -28,10 +27,6 @@ p_impl = p.precision_impl
 
 
 class PrecisionTest(absltest.TestCase):
-
-  def setUp(self):
-    super().setUp()
-    api.tpu_device()
 
   def test_precision_exports_to_torch_module(self):
     self.assertTrue(torch.tpu.precision)
@@ -86,7 +81,7 @@ class PrecisionTest(absltest.TestCase):
       self.assertEqual(e.shape, (10, 10))
 
   def test_precision_in_shlo(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     a = torch.randn(10, 10, device=device)
     b = torch.randn(10, 10, device=device)
 
@@ -115,7 +110,7 @@ class PrecisionTest(absltest.TestCase):
       self.assertEqual(model(a, b).shape, (10, 10))
 
   def test_nested_precision_in_shlo(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     a = torch.randn(10, 10, device=device)
     b = torch.randn(10, 10, device=device)
 
@@ -149,7 +144,7 @@ class PrecisionTest(absltest.TestCase):
       self.assertEqual(f.shape, (10, 10))
 
   def test_nested_precision_layer_in_shlo(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     a = torch.randn(10, 10, device=device)
     b = torch.randn(10, 10, device=device)
 

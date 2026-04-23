@@ -18,7 +18,6 @@ import os
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api as tpu_api
 from torch_tpu._internal import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler import _impl as profiler_impl
@@ -68,7 +67,7 @@ class ProfilerApiTest(absltest.TestCase):
   def test_profile_api_tpu(self):
     """Tests the profile context manager with TPU operations."""
     try:
-      device = tpu_api.tpu_device()
+      device = torch.accelerator.current_accelerator()
     except RuntimeError as e:
       self.fail(f'Failed to get TPU device: {e}')
     self.assertEqual(device.type, 'tpu', 'Device type should be TPU')

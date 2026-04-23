@@ -16,7 +16,6 @@ import concurrent.futures
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
@@ -35,8 +34,8 @@ class SynchronizeTest(absltest.TestCase):
     super().tearDown()
 
   def test_synchronize_device_materialized(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.device('tpu'))
+    y = torch.ones(11, device=torch.device('tpu'))
 
     self.assertFalse(sync.is_materialized(x))
     self.assertFalse(sync.is_materialized(y))
@@ -50,8 +49,8 @@ class SynchronizeTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(y))
 
   def test_synchronize_device_ready(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.device('tpu'))
+    y = torch.ones(11, device=torch.device('tpu'))
 
     self.assertFalse(sync.is_ready(x))
     self.assertFalse(sync.is_ready(y))
@@ -62,8 +61,8 @@ class SynchronizeTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(y))
 
   def test_accelerator_synchronize_device_materialized(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.device('tpu'))
+    y = torch.ones(11, device=torch.device('tpu'))
 
     self.assertFalse(sync.is_materialized(x))
     self.assertFalse(sync.is_materialized(y))
@@ -74,8 +73,8 @@ class SynchronizeTest(absltest.TestCase):
     self.assertTrue(sync.is_materialized(y))
 
   def test_accelerator_synchronize_device_ready(self):
-    x = torch.ones(10, device=api.tpu_device())
-    y = torch.ones(11, device=api.tpu_device())
+    x = torch.ones(10, device=torch.device('tpu'))
+    y = torch.ones(11, device=torch.device('tpu'))
 
     self.assertFalse(sync.is_ready(x))
     self.assertFalse(sync.is_ready(y))
@@ -87,7 +86,7 @@ class SynchronizeTest(absltest.TestCase):
 
   def test_sync_with_zero_sized_tensor_on_tpu(self):
     # Create a zero-sized tensor on the TPU.
-    tensor = torch.ones(2, 0, 3, dtype=torch.int32, device=api.tpu_device())
+    tensor = torch.ones(2, 0, 3, dtype=torch.int32, device=torch.device('tpu'))
 
     # It is in a deferred state (constant zero-sized).
     self.assertFalse(sync.is_materialized(tensor))
@@ -105,7 +104,7 @@ class SynchronizeTest(absltest.TestCase):
 
     # Send it to the TPU. This should create a deferred zero-sized constant
     # instead of actually transferring 0 bytes.
-    tensor = tensor_cpu.to(api.tpu_device())
+    tensor = tensor_cpu.to(torch.device('tpu'))
     self.assertFalse(sync.is_materialized(tensor))
     self.assertFalse(sync.is_ready(tensor))
 
@@ -116,15 +115,14 @@ class SynchronizeTest(absltest.TestCase):
     self.assertTrue(sync.is_ready(tensor))
 
   def test_sync_list_with_empty_and_non_empty(self):
-    x = torch.ones(10, device=api.tpu_device())
+    x = torch.ones(10, device=torch.device('tpu'))
     y_cpu = torch.ones(10, 0, device='cpu')
-    y = y_cpu.to(api.tpu_device())
+    y = y_cpu.to(torch.device('tpu'))
     # Should not raise error.
     sync.synchronize([x, y], wait=True)
     self.assertTrue(sync.is_ready(x))
 
   def test_synchronize_from_multiple_threads(self):
-    _ = api.tpu_device()
 
     size = 8192 * 8192
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
@@ -145,7 +143,6 @@ class SynchronizeTest(absltest.TestCase):
         future.result()
 
   def test_accelerator_synchronize_from_multiple_threads(self):
-    _ = api.tpu_device()
 
     size = 8192 * 8192
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)

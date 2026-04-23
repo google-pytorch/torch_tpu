@@ -21,7 +21,6 @@ parallel.
 from absl.testing import absltest
 import torch
 from torch.testing._internal import common_utils
-from torch_tpu import api
 from torch_tpu._internal import execution_mode as em
 
 
@@ -30,7 +29,7 @@ class TpuBackendConfigTest(absltest.TestCase, common_utils.TestCase):
 
   def test_allow_excess_precision_backend(self):
     """Tests torch.backends.tpu.allow_excess_precision."""
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     eps: float = torch.finfo(torch.bfloat16).eps
     x_element = 1.0 + eps
     x = torch.tensor(

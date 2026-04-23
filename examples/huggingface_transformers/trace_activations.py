@@ -51,18 +51,9 @@ _OUTPUT_DIR = flags.DEFINE_string(
 
 
 def main(_) -> None:
-  if _DEVICE.value == "tpu":
-    from torch_tpu import api  # pylint: disable=g-import-not-at-top
-
-    device = api.tpu_device()
-  elif _DEVICE.value == "cuda":
-    if not torch.cuda.is_available():
-      raise RuntimeError("CUDA requested but not available.")
-    device = torch.device("cuda")
-  elif _DEVICE.value == "cpu":
-    device = torch.device("cpu")
-  else:
-    raise ValueError(f"Unsupported device: {_DEVICE.value}")
+  device = torch.device(_DEVICE.value)
+  # TODO(pganssle): Evaluate whether this assertion is still necessary.
+  assert str(device).split(":", 1)[0] == _DEVICE.value
 
   model_id = _MODEL_ID.value
   weights_dir = _WEIGHTS_DIR.value

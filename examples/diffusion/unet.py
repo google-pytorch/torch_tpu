@@ -36,7 +36,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -83,9 +82,9 @@ def main(argv):
   print(utils.format_model(model, t_tensor, aten=True, pt=True, params=True))
   result = model(t_tensor)
 
-  tpu_device = api.tpu_device()
-  model.to(tpu_device)
-  t_tensor_tpu = t_tensor.to(tpu_device)
+  device = torch.accelerator.current_accelerator()
+  model.to(device)
+  t_tensor_tpu = t_tensor.to(device)
   result_tpu = model(t_tensor_tpu).to("cpu")
 
   utils.assert_close(

@@ -64,7 +64,7 @@ def _(os):
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
 
   import torch
-  from torch_tpu import api
+
   import tpu_utils
 
   device = tpu_utils.safe_init()
@@ -184,8 +184,8 @@ def _():
         os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
         os.environ["ACCELERATOR_TYPE"] = "v6e-4"
         import torch
-        from torch_tpu import api
-        device = api.tpu_device()
+
+        device = torch.accelerator.current_accelerator()
 
         model = torch.nn.Linear(16, 16).to(device).to(torch.bfloat16)
 

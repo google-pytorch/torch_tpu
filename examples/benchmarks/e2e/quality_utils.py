@@ -20,7 +20,6 @@ from typing import Sequence
 from absl import logging
 from torch import distributed as dist
 from torch.google import distributed as g3_distributed
-from torch_tpu import api
 from torch_tpu._internal.distributed import gpu_env
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import log_utils
@@ -132,7 +131,6 @@ def _run_single_process_benchmark(
 def _run_torch_tpu_worker(
     config: QualityBenchmarkConfig, test_method_name: str, benchmark_name: str
 ):
-  _ = api.tpu_device()
   dist.init_process_group(backend="tpu_dist")
   rank = dist.get_rank()
   world_size = dist.get_world_size()

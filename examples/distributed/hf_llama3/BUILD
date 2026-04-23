@@ -31,7 +31,6 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )

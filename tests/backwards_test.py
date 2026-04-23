@@ -17,17 +17,14 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.nn import attention
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
-
-tpu_device = api.tpu_device
 
 
 class BackwardsTest(parameterized.TestCase):
 
   def test_sdpa_backward_math(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     cpu_device = torch.device('cpu')
 
     # create inputs
@@ -93,7 +90,7 @@ class BackwardsTest(parameterized.TestCase):
       dtype=[torch.float32, torch.bfloat16], is_causal=[True, False]
   )
   def test_sdpa_backward_overrideable(self, dtype, is_causal):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     cpu_device = torch.device('cpu')
 
     # create inputs
@@ -161,7 +158,7 @@ class BackwardsTest(parameterized.TestCase):
   )
   def test_matmul_backward(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     cpu_device = torch.device('cpu')
 
     # tpu
@@ -192,7 +189,7 @@ class BackwardsTest(parameterized.TestCase):
   )
   def test_copy_grad(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     cpu_device = torch.device('cpu')
 
     x = torch.randn(2, 2, requires_grad=True, device=device)
@@ -214,7 +211,7 @@ class BackwardsTest(parameterized.TestCase):
   )
   def test_optimizer_loop(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     cpu_device = torch.device('cpu')
 
     # TODO(b/435215740): Remove these lines.

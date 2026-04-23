@@ -16,10 +16,13 @@
 
 import os
 
+os.environ["TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND"] = "1"
+
+# pylint: disable=g-import-not-at-top
 from absl.testing import absltest
 import torch
 import torch.export
-from torch_tpu import api
+import torch_tpu  # pylint: disable=unused-import
 from torch_tpu._internal.export import export as torch_tpu_export
 
 
@@ -54,7 +57,7 @@ class TestExportLinearMode(absltest.TestCase):
   def setUp(self):
     # Export requires a device to be init before use
     super().setUp()
-    api._xla_cpu_device()
+    torch.device("xla")
 
   def test_export_linear(self):
     sample_input = (torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),)
@@ -88,11 +91,6 @@ class TestExportLinearMode(absltest.TestCase):
 
 
 class ExportTest(absltest.TestCase):
-
-  def setUp(self):
-    # Export requires a device to be init before use
-    super().setUp()
-    api._xla_cpu_device()
 
   def test_module(self):
     sample_input = (

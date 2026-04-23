@@ -18,7 +18,6 @@ import functools
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 
 
 class AllTest(absltest.TestCase):
@@ -26,12 +25,12 @@ class AllTest(absltest.TestCase):
 
   def _run_test(self, bools: list[bool], out=False) -> torch.Tensor:
     in_cpu_tensor = torch.tensor(bools, dtype=torch.bool)
-    in_tpu_tensor = in_cpu_tensor.to(api.tpu_device())
+    in_tpu_tensor = in_cpu_tensor.to(torch.accelerator.current_accelerator())
     if not out:
       out_tpu_tensor = torch.all(in_tpu_tensor)
     else:
       out_tpu_tensor = torch.zeros(
-          (), dtype=torch.bool, device=api.tpu_device()
+          (), dtype=torch.bool, device=torch.accelerator.current_accelerator()
       )
       torch.all(in_tpu_tensor, out=out_tpu_tensor)
     return out_tpu_tensor.to("cpu")

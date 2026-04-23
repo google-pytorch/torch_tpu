@@ -33,7 +33,6 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/api",
         "@pypi//psutil",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
     ],
@@ -86,7 +85,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/api",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -146,7 +144,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/api",
     ],
 )
 

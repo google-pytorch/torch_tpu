@@ -68,13 +68,10 @@ class SingleAcceleratorTest(parameterized.TestCase):
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
     # Identify accelerator device (tpu, or cuda)
-    if _DEVICE.value == "tpu" and not hasattr(self, "acc_device"):
-
-      self.acc_device = torch.device("tpu")
-    elif _DEVICE.value == "cuda":
-      self.acc_device = torch.device("cuda")
-    else:
-      raise RuntimeError(f"Unexpected flag value: {_DEVICE.value}")
+    if not hasattr(self, "acc_device"):
+      self.acc_device = torch.device(_DEVICE.value)
+      # TODO(pganssle): Evaluate whether this assertion is still necessary.
+      assert str(self.acc_device).split(":", 1)[0] == _DEVICE.value
 
     # Load model directly from transformers.
     from transformers import AutoModelForCausalLM, AutoTokenizer

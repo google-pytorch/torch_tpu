@@ -46,16 +46,9 @@ class SingleAcceleratorSmokeTest(absltest.TestCase):
     torch.manual_seed(seed)
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
-    if _DEVICE.value == "tpu":
-
-      self.accelerator_device = torch.device("tpu")
-    elif _DEVICE.value == "xla_cuda":
-
-      self.accelerator_device = torch.device("xla_cuda")
-    elif _DEVICE.value == "cuda":
-      self.accelerator_device = torch.device("cuda:0")
-    else:
-      raise RuntimeError(f"Unexpected flag value: {_DEVICE.value}")
+    self.accelerator_device = torch.device(_DEVICE.value)
+    # TODO(pganssle): Evaluate whether this assertion is still necessary.
+    assert str(self.accelerator_device).split(":", 1)[0] == _DEVICE.value
 
   def test_forward(self):
     """Test Qwen3 0.6B model on various shapes."""

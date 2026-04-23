@@ -19,7 +19,6 @@ import os
 from absl.testing import absltest
 import portpicker
 import torch
-from torch_tpu import api as tpu_api
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler import _impl as profiler_impl
 
@@ -105,7 +104,7 @@ class ProfilerInternalTest(absltest.TestCase):
   def test_start_stop_trace_tpu(self):
     """Tests the start_trace and stop_trace functions with TPU operations."""
     try:
-      device = tpu_api.tpu_device()
+      device = torch.accelerator.current_accelerator()
     except RuntimeError as e:
       self.fail(f'Failed to get TPU device: {e}')
 
@@ -134,7 +133,7 @@ class ProfilerInternalTest(absltest.TestCase):
   def test_trace_context_manager_tpu(self):
     """Tests the trace context manager with TPU operations."""
     try:
-      device = tpu_api.tpu_device()
+      device = torch.accelerator.current_accelerator()
     except RuntimeError as e:
       self.fail(f'Failed to get TPU device: {e}')
     self.assertEqual(device.type, 'tpu', 'Device type should be TPU')

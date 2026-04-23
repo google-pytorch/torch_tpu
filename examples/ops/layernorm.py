@@ -25,7 +25,6 @@ from absl import app
 from absl import flags
 import torch
 from torch import nn
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -76,9 +75,9 @@ def main(argv):
   utils.assert_close(output1, output2, rtol=1e-3, atol=1e-5)
 
   try:
-    tpu = api.tpu_device()
-    model1.to(tpu)
-    output_tpu = model1(input_.to(tpu)).to("cpu")
+    device = torch.device("tpu")
+    model1.to(device)
+    output_tpu = model1(input_.to(device)).to("cpu")
     utils.assert_close(output_tpu, output1, rtol=1e-3, atol=1e-5)
   except Exception as e:
     print("TPU model not fully supported yet.", e)

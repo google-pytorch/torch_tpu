@@ -25,7 +25,6 @@ from absl import flags
 from absl import logging
 from tensorboardX import writer
 import torch
-from torch_tpu import api
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import device_utils
@@ -328,7 +327,6 @@ def _run_torch_tpu_task(
     worker_func: Callable[..., Any],
     extra_worker_func_args: Tuple[Any, ...],
 ):
-  _ = api.tpu_device()
   torch.distributed.init_process_group(backend="tpu_dist")
   worker_func(*extra_worker_func_args)
   torch.distributed.destroy_process_group()

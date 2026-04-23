@@ -15,7 +15,6 @@
 from absl import logging
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
@@ -30,8 +29,8 @@ class TpuTest(absltest.TestCase):
 
     torch.manual_seed(seed)
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
-    self.device = api.tpu_device()
-    torch.set_default_device(api.tpu_device())
+    self.device = torch.device("tpu")
+    torch.set_default_device(self.device)
 
   def test_replay_on_linear_no_change(self):
     """Tests replay on linear on TPU with no change."""

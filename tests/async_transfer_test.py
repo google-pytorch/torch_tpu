@@ -16,14 +16,13 @@ import time
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
 class AsyncTransferTest(absltest.TestCase):
 
   def test_non_blocking_returns_immediately(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     size = 8192  # 8192x8192 int32 = 256MB
 
     # 1. Warmup: compile the 'a + b' graph and drive materialization.
@@ -78,7 +77,7 @@ class AsyncTransferTest(absltest.TestCase):
     self.assertLess(async_duration, sync_duration)
 
   def test_non_blocking_returns_immediately_accelerator(self):
-    device = api.tpu_device()
+    device = torch.device('tpu')
     size = 8192  # 8192x8192 int32 = 256MB
 
     # 1. Warmup: compile the 'a + b' graph and drive materialization.
@@ -121,7 +120,7 @@ class AsyncTransferTest(absltest.TestCase):
 
   def test_synchronize_default(self):
     """Tests that synchronize() correctly waits for async ops."""
-    _ = api.tpu_device()
+    _ = torch.device('tpu')
 
     size = 1024 * 1024
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
@@ -134,7 +133,7 @@ class AsyncTransferTest(absltest.TestCase):
 
   def test_accelerator_synchronize_default(self):
     """Tests that torch.accelerator.synchronize() correctly waits for async ops."""
-    _ = api.tpu_device()
+    _ = torch.device('tpu')
 
     size = 1024 * 1024
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
@@ -146,7 +145,7 @@ class AsyncTransferTest(absltest.TestCase):
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
   def test_to_cpu_non_blocking(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     # Generate on CPU first to avoid lazy evaluation generating different
     # numbers!
@@ -174,7 +173,7 @@ class AsyncTransferTest(absltest.TestCase):
     utils.assert_close(cpu_tensor, expected_cpu_tensor)
 
   def test_to_cpu_non_blocking_accelerator(self):
-    device = api.tpu_device()
+    device = torch.device('tpu')
 
     size = 2048
     a_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
@@ -194,7 +193,7 @@ class AsyncTransferTest(absltest.TestCase):
     utils.assert_close(cpu_tensor, expected_cpu_tensor)
 
   def test_pin_memory(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     # Initialize the TPU device by creating a small tensor on it
     _ = torch.zeros(1, device=device)
 
@@ -213,7 +212,7 @@ class AsyncTransferTest(absltest.TestCase):
     If synchronize() fails to wait, modifying the host tensor immediately
     after the call may corrupt the data transferred to the TPU.
     """
-    api.tpu_device()
+    torch.device('tpu')
     size = 4096
 
     # 1. Use pinned memory for async H2D transfer
@@ -255,7 +254,7 @@ class AsyncTransferTest(absltest.TestCase):
 
   def test_h2d_accelerator_sync(self):
     """Verifies that torch.accelerator.synchronize() waits for H2D transfers."""
-    api.tpu_device()
+    torch.device('tpu')
     size = 4096
 
     # Use pinned memory for async H2D transfer

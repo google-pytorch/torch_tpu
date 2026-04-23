@@ -24,7 +24,6 @@ from absl.testing import parameterized
 from etils import epath
 from PIL import Image
 import torch
-from torch_tpu import api
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal.utils import utils
 from tests import module_registry
@@ -107,7 +106,7 @@ class ModelCoverageTimmTest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls) -> None:
     super().setUpClass()
-    cls.tpu_device = api.tpu_device()
+    cls.tpu_device = torch.accelerator.current_accelerator()
     cls.module_registry = module_registry.ModuleRegistry()
 
   def setUp(self):

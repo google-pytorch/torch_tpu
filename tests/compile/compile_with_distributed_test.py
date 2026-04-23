@@ -21,7 +21,6 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import env
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
@@ -39,7 +38,7 @@ def expected_to_fail_in_oss(func):
 
 def run_all_reduce_with_torch_compile() -> None:
   """Tests all-reduce functionality."""
-  _ = api.tpu_device()
+
   dist.init_process_group(backend="tpu_dist")
 
   rank = int(os.environ["RANK"])

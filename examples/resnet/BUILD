@@ -34,7 +34,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -61,7 +60,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
-        "//torch_tpu/api",
         "@pypi//pillow",
         "@pypi//torchvision",
     ],
@@ -90,7 +88,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
-        "//torch_tpu/api",
         "@pypi//pillow",
         "@pypi//torchvision",
     ],
@@ -117,7 +114,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
-        "//torch_tpu/api",
         "@pypi//torchvision",
     ],
 )
@@ -143,7 +139,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
-        "//torch_tpu/api",
         "@pypi//torchvision",
     ],
 )
@@ -169,7 +164,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
-        "//torch_tpu/api",
         "@pypi//torchvision",
     ],
 )
@@ -203,7 +197,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -236,7 +229,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -269,7 +261,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//transformers",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",

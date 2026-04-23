@@ -24,7 +24,6 @@ from absl import logging
 from torch import distributed as dist
 from torch import nn
 from torch import optim
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.data_parallel import dp_utils
@@ -50,8 +49,6 @@ def worker_fn() -> None:
   world_size = int(os.environ["WORLD_SIZE"])
   batch_size = world_size * PER_RANK_BATCH_SIZE
 
-  # Initialize TPU and distributed backend.
-  _ = api.tpu_device()
   dist.init_process_group(
       backend="tpu_dist",
       rank=rank,

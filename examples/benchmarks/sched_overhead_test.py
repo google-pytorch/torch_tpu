@@ -24,7 +24,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 import torch._inductor.config as inductor_config
-from torch_tpu import api
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -55,14 +54,7 @@ _DEVICE = flags.DEFINE_enum(
 
 
 def get_torch_device() -> torch.device:
-  if _DEVICE.value == "tpu":
-    return api.tpu_device()
-  elif _DEVICE.value == "cuda":
-    return torch.device("cuda")
-  elif _DEVICE.value == "xla_cuda":
-    return api._xla_cuda_device()
-  else:
-    raise ValueError(f"Unsupported device: {_DEVICE.value}")
+  return torch.device(_DEVICE.value)
 
 
 def sync_device(

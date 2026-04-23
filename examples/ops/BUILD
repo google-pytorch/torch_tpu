@@ -33,7 +33,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -52,7 +51,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -73,7 +71,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 

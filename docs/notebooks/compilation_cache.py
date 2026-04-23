@@ -89,7 +89,7 @@ def _(mo):
 @app.cell
 def cache_stats_demo():
   import torch
-  from torch_tpu import api
+
   import tpu_utils
 
   device = tpu_utils.safe_init()

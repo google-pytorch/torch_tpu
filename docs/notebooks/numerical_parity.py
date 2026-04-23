@@ -75,11 +75,9 @@ def _():
   import torch.nn as nn
   from tpu_utils import safe_init
   from torch_tpu._internal.utils import utils  # used only in notebooks
-  # from torch_tpu import api # standard way outside of notebooks to create tpu device
 
   # Self-healing hardware initialization for notebooks
   device = safe_init()
-  # device = api.tpu_device()  # standard way outside of notebooks to create tpu device
   return device, nn, torch, utils
 
 
