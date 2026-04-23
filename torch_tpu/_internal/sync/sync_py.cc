@@ -27,6 +27,7 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -88,7 +89,8 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
   } else {
     // GetMaterialized returns DeviceBufferRefs for the views, but we don't
     // return them to Python.
-    TT_THROW_IF_ERROR(GetMaterialized(tensors_span));
+    TT_THROW_IF_ERROR(
+        GetMaterialized(tensors_span, MaterializationReason::kUnknown));
   }
 }
 
@@ -173,6 +175,29 @@ std::string PyGetComputationMlir(const std::vector<at::Tensor>& tensors) {
   return res_str;
 }
 
+// Drains the structured-log event buffer and returns one dict per event.
+// Each dict mirrors EagerEvent: name, ts_us, dur_us, device, cache_hit,
+// aten_graph, stablehlo, reason.
+py::list PyDrainStructuredLogBuffer() {
+  auto events = StructuredLogBuffer::Get().Drain();
+  py::list out;
+  for (auto& ev : events) {
+    py::dict d;
+    d["name"] = ev.name;
+    d["ts_us"] = ev.ts_us;
+    d["dur_us"] = ev.dur_us;
+    d["device"] = ev.device;
+    d["cache_hit"] = ev.cache_hit;
+    d["aten_graph"] = ev.aten_graph_payload;
+    d["stablehlo"] = ev.mlir_payload;
+    d["reason"] = std::string(MaterializationReasonToString(ev.reason));
+    out.append(std::move(d));
+  }
+  return out;
+}
+
+bool PyStructuredLogEnabled() { return StructuredLogBuffer::Get().enabled(); }
+
 }  // namespace
 
 PYBIND11_MODULE(_tpu_torch_sync, m) {
@@ -206,6 +231,12 @@ PYBIND11_MODULE(_tpu_torch_sync, m) {
   m.def("_get_computation_mlir", &PyGetComputationMlir, py::arg("tensors"),
         py::doc("Returns a MLIR compatible representation of the "
                 "computation graph of the given tensors."));
+
+  m.def("_drain_structured_log_buffer", &PyDrainStructuredLogBuffer,
+        py::doc("Drains buffered EagerEvent records and returns them as a "
+                "list of dicts."));
+  m.def("_structured_log_enabled", &PyStructuredLogEnabled,
+        py::doc("Returns true if TORCH_TRACE was set at program startup."));
 }
 
 }  // namespace torch_tpu

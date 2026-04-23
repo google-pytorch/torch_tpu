@@ -30,6 +30,7 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/tpu_hooks.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -56,9 +57,12 @@ class MaterializeTest : public testing::Test {
 };
 
 TEST_F(MaterializeTest, EmptyListNoOpSuccess) {
-  EXPECT_EQ(Materialize(absl::Span<const SharedDeviceBufferList>()),
+  EXPECT_EQ(Materialize(absl::Span<const SharedDeviceBufferList>(),
+                        MaterializationReason::kUnknown),
             absl::OkStatus());
-  EXPECT_EQ(Materialize(absl::Span<const DeviceBufferRef>()), absl::OkStatus());
+  EXPECT_EQ(Materialize(absl::Span<const DeviceBufferRef>(),
+                        MaterializationReason::kUnknown),
+            absl::OkStatus());
 }
 
 TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
@@ -66,7 +70,8 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   TF_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
                           DeviceBufferList::CreateZeroSize({0}, dtype));
   EXPECT_EQ(ref.state(), DeviceBufferRefState::kDeferred);
-  EXPECT_EQ(Materialize(ref), absl::OkStatus());
+  EXPECT_EQ(Materialize(ref, MaterializationReason::kUnknown),
+            absl::OkStatus());
   EXPECT_EQ(ref.state(), DeviceBufferRefState::kMaterialized);
 }
 
@@ -182,7 +187,8 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
 
   // Materialize d. This should trace the entire graph from the leaf nodes
   // c and e.
-  EXPECT_EQ(Materialize(ref_d), absl::OkStatus());
+  EXPECT_EQ(Materialize(ref_d, MaterializationReason::kUnknown),
+            absl::OkStatus());
 
   // a is materialized as it has fanout > 1.
   EXPECT_EQ(ref_a.state(), DeviceBufferRefState::kMaterialized);

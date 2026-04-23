@@ -31,6 +31,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_types.h"
+#include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/ops/copy_from/cpu_to_tpu.h"
 #include "torch_tpu/ops/copy_from/tpu_to_cpu.h"
 #include "torch_tpu/ops/copy_from/tpu_to_tpu.h"
@@ -153,6 +154,7 @@ at::Scalar AtenLocalScalarDense(const at::Tensor& self) {
   TT_KERNEL(OpName::kLocalScalarDense, _, (self), {
     TT_CHECK_THROW(self.numel() == 1, error::kInvalidArgument)
         << "expected the input tensor to have 1 element, got " << self.numel();
+    (void)GetMaterialized(self, MaterializationReason::kScalarConversion);
     at::Tensor cpu_tensor =
         self.to(at::TensorOptions().device(c10::kCPU).memory_format(
             at::MemoryFormat::Contiguous));

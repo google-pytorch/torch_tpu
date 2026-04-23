@@ -75,6 +75,7 @@
 #include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -636,7 +637,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
               // materialization. It exists because dist.broadcast_object_list
               // dispatches broadcast() operations from the source rank that are
               // not materialized, so it hangs.
-              TT_THROW_IF_ERROR(GetMaterialized(tensors));
+              TT_THROW_IF_ERROR(GetMaterialized(
+                  tensors, MaterializationReason::kDistributedOp));
 
               if (work_ptr != nullptr) {
                 dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =
@@ -659,8 +661,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
   for (size_t i = 0; i < tensors.size(); ++i) {
     const auto& tensor = tensors[i];
     // Extract the underlying hardware buffer from the tensor.
-    TT_ASSIGN_OR_THROW(const DeviceBufferRef device_buffer,
-                       GetMaterialized(tensor));
+    TT_ASSIGN_OR_THROW(
+        const DeviceBufferRef device_buffer,
+        GetMaterialized(tensor, MaterializationReason::kDistributedOp));
     TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
                        device_buffer.GetOrMaterializeBuffer());
 
@@ -998,7 +1001,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
         // This is needed because on the root rank, output_tensors[0] might have
         // deferred ops. On non-root ranks, the temporary tensors are fresh,
         // which can result in an asymmetry.
-        TT_THROW_IF_ERROR(GetMaterialized(allgather_outputs));
+        TT_THROW_IF_ERROR(GetMaterialized(
+            allgather_outputs, MaterializationReason::kDistributedOp));
 
         c10d::AllgatherOptions allgather_opts;
         allgather_opts.timeout = opts.timeout;
@@ -1019,7 +1023,9 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
         // rank to reach a graph break and then need to catch up. Materializing
         // on all ranks synchronously is safer and keeps all devices moving
         // forward smoothly.
-        TT_THROW_IF_ERROR(GetMaterialized(allgather_output_tensors[0]));
+        TT_THROW_IF_ERROR(
+            GetMaterialized(allgather_output_tensors[0],
+                            MaterializationReason::kDistributedOp));
 
         if (work_ptr != nullptr) {
           dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =

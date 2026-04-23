@@ -33,6 +33,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/pjrt/pjrt_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -81,7 +82,7 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // ephemeral view buffer.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
     tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::GetMaterialized");
-    return GetMaterialized(src);
+    return GetMaterialized(src, MaterializationReason::kCpuConversion);
   }());
 
   ABSL_CHECK_EQ(materialized_src_buf.state(),  // CRASH_OK

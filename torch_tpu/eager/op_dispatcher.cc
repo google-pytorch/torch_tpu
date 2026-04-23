@@ -57,6 +57,7 @@
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/materialize_new.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/copy_from/cpu_to_tpu.h"
 #include "torch_tpu/ops/macros/kernel.h"
@@ -364,7 +365,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
   if ((eager_mode == EagerMode::kDeferNever) ||
       (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking)) {
     auto& device_buffer_list = results[0].device_buffer_list();
-    TT_RETURN_IF_ERROR(Materialize(device_buffer_list));
+    TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
+                                   MaterializationReason::kDebugMode,
+                                   MaterializationMode::kSplitGraph));
     if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
       TT_RETURN_IF_ERROR(device_buffer_list->Synchronize());
     }
@@ -396,8 +399,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
             (detect_repeated_ops == kRepeatedOpAggressiveMode)
                 ? MaterializationMode::kFullGraph
                 : MaterializationMode::kSplitGraph;
-        TT_RETURN_IF_ERROR(
-            Materialize(results[0].device_buffer_list(), materialization_mode));
+        TT_RETURN_IF_ERROR(Materialize(
+            results[0].device_buffer_list(),
+            MaterializationReason::kRepeatedOpDetection, materialization_mode));
       }
     }
   }

@@ -35,6 +35,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/ops/python_context.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -168,6 +169,12 @@ class Traversal {
   // messages.
   std::string DebugString() const;
 
+  // Returns an FX-style textual representation of the Traversal, suitable
+  // for inline display in tlparse. Each deferred op becomes a line like
+  //   %0: f32[128, 128] = mm.out
+  // TODO: Add source locations (e.g., # test.py:25 in forward) to the output.
+  std::string ReadableString(MaterializationReason reason) const;
+
   // Builds the MLIR module for the Traversal.
   absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> BuildMlirModule(
       mlir::MLIRContext& mlir_context) const;
@@ -270,6 +277,9 @@ class Traversal {
   absl::StatusOr<mlir::MlirOp> GetMlirOpForProcessedBuffer(
       const absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>& ref_to_op_map,
       const DeviceBufferRef& buffer_ref) const;
+
+  size_t PrintInputs(std::ostream& out) const;
+  void PrintOps(std::ostream& out, size_t start_idx) const;
 };
 
 // A simple node traversal is one where the graph outputs are all the outputs of

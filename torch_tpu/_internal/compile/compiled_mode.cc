@@ -44,6 +44,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -238,8 +239,10 @@ std::vector<at::Tensor> ExecuteCompiledModel(
   TT_ASSIGN_OR_THROW(std::vector<Shape> result_shapes_vec,
                      GetOutputShapes(executable, output_shapes));
   // Get the materialized buffers for the argument tensors.
-  TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> argument_buffer_refs,
-                     GetMaterialized(argument_tensors));
+  TT_ASSIGN_OR_THROW(
+      std::vector<DeviceBufferRef> argument_buffer_refs,
+      GetMaterialized(argument_tensors,
+                      MaterializationReason::kCompileModeExecution));
 
   TT_ASSIGN_OR_THROW(
       std::vector<DeviceBufferRef> result_buffer_refs,
