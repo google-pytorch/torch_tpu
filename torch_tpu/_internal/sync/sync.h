@@ -24,6 +24,7 @@
 #include "absl/types/span.h"
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 
 namespace torch_tpu {
 
@@ -46,7 +47,9 @@ namespace torch_tpu {
 // base buffer, and then materialize and wait for the view buffer.
 // However, because views are ephemeral, future calls to .cpu() on the tensors
 // will re-execute the view logic (using the cached compilation).
-absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors);
+absl::Status SynchronizeTensors(
+    absl::Span<const at::Tensor> tensors,
+    MaterializationReason reason = MaterializationReason::kExplicitSync);
 
 // Whether to wait for execution to complete.
 enum class WaitOnExecution {
@@ -65,7 +68,9 @@ enum class WaitOnExecution {
 // concurrently. It snapshots the current state of all subgraphs at the time of
 // the call; any operations dispatched to the execution engine after this
 // function begins may not be included in the synchronization barrier.
-absl::Status SynchronizeAll(WaitOnExecution wait = WaitOnExecution::kNo);
+absl::Status SynchronizeAll(
+    WaitOnExecution wait = WaitOnExecution::kNo,
+    MaterializationReason reason = MaterializationReason::kExplicitSync);
 
 // Checks if the tensor is materialized; that is, if it has a PjRtBuffer
 // associated with it.

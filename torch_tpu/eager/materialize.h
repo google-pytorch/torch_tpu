@@ -27,6 +27,7 @@
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. This DeviceBufferList will contain a DeferredOp, which describes
@@ -55,6 +56,7 @@ enum class MaterializationMode { kFullGraph, kSplitGraph };
 // a placeholder.
 absl::Status Materialize(
     absl::Span<const SharedDeviceBufferList> nodes,
+    MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph);
 
 // Materializes all of the buffers and connected leaf nodes in-place.
@@ -62,21 +64,23 @@ absl::Status Materialize(
 // materialized; no-op for all materialized DeviceBufferLists.
 // Errors if any of the buffers are placeholders.
 absl::Status Materialize(
-    absl::Span<const DeviceBufferRef> buffer_refs,
+    absl::Span<const DeviceBufferRef> buffer_refs, MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph);
 
 // Materializes the given node in-place. Delegates to the span overload.
 inline absl::Status Materialize(
-    const SharedDeviceBufferList& node,
+    const SharedDeviceBufferList& node, MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph) {
-  return Materialize(absl::Span<const SharedDeviceBufferList>(&node, 1), mode);
+  return Materialize(absl::Span<const SharedDeviceBufferList>(&node, 1), reason,
+                     mode);
 }
 
 // Materializes the given buffer in-place. Delegates to the span overload.
 inline absl::Status Materialize(
-    const DeviceBufferRef& buffer_ref,
+    const DeviceBufferRef& buffer_ref, MaterializationReason reason,
     MaterializationMode mode = MaterializationMode::kSplitGraph) {
-  return Materialize(absl::Span<const DeviceBufferRef>(&buffer_ref, 1), mode);
+  return Materialize(absl::Span<const DeviceBufferRef>(&buffer_ref, 1), reason,
+                     mode);
 }
 
 // Returns a materialized DeviceBufferRef for the logical data in the tensor.
@@ -86,7 +90,8 @@ inline absl::Status Materialize(
 // If it is a view, then an ephemeral DeviceBufferList will be created and
 // materialized.
 // Errors if the tensor's base DeviceBufferRef is a placeholder.
-absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor);
+absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
+                                                MaterializationReason reason);
 
 // Returns a materialized DeviceBufferRefs each input tensor.
 // This will materialize each base tensor in-place (see Materialize()) if it is
@@ -96,7 +101,7 @@ absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor);
 // Errors if any of the tensors' base DeviceBufferRefs are placeholders or
 // depend on placeholders.
 absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
-    absl::Span<const at::Tensor> tensors);
+    absl::Span<const at::Tensor> tensors, MaterializationReason reason);
 
 // Enqueues an executable for materialization.
 // This will create one new DeviceBufferList for each output tensor, with the

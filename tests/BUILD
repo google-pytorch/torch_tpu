@@ -803,6 +803,43 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "tracing_test",
+    srcs = ["tracing_test.py"],
+    main = "tracing_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
+        "//torch_tpu/_internal/sync:_tpu_torch_sync",
+        "//torch_tpu/_internal/tracing",
+        "//torch_tpu/api",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "tracing_enabled_test",
+    srcs = ["tracing_test.py"],
+    env = {
+        "TORCH_TRACE": "/tmp/trace_output",
+    },
+    main = "tracing_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
+        "//torch_tpu/_internal/sync:_tpu_torch_sync",
+        "//torch_tpu/_internal/tracing",
+        "//torch_tpu/api",
+    ],
+)
+
+torch_tpu_py_test(
     name = "sync_test",
     srcs = ["sync_test.py"],
     main = "sync_test.py",

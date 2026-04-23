@@ -41,6 +41,7 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/materialize_common.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -388,9 +389,11 @@ absl::Status OnNewOpDispatch(const SharedDeviceBufferList& device_buffer_list) {
 }
 
 absl::Status MaterializeImplNew(
-    absl::Span<const SharedDeviceBufferList> nodes_to_materialize) {
+    absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
+    MaterializationReason reason) {
   ABSL_VLOG(1) << ">>> MaterializeImplNew " << nodes_to_materialize.size();
   (void)nodes_to_materialize;
+  (void)reason;
   return MaterializationWorker::GetInstance().Materialize();
 }
 

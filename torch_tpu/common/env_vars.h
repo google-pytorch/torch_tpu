@@ -61,6 +61,8 @@ inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // https://docs.pytorch.org/docs/stable/debugging_environment_variables.html#pytorch-debug-environment-variables
 inline constexpr char kTorchShowCppStacktracesEnvVar[] =
     "TORCH_SHOW_CPP_STACKTRACES";
+// If set, enables structured logging for tlparse.
+inline constexpr char kTorchTraceEnvVar[] = "TORCH_TRACE";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is

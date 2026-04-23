@@ -83,6 +83,7 @@ pytype_strict_library(
         "//torch_tpu/_internal/shims/xprof:xprof_session",
         "//torch_tpu/_internal/stream:streams",
         "//torch_tpu/_internal/sync",
+        "//torch_tpu/_internal/tracing",
         "//torch_tpu/_internal/utils",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:device_utils",

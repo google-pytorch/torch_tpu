@@ -57,6 +57,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -695,6 +696,65 @@ std::string Traversal::DebugString() const {
       os << "(unexpected buffer)";
     }
   }
+  return os.str();
+}
+
+std::string Traversal::ReadableString(MaterializationReason reason) const {
+  std::ostringstream os;
+  // Count ops and inputs for the header.
+  size_t op_count = 0;
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    if (node->deferred_op() != nullptr) ++op_count;
+  }
+  os << "# Graph: " << op_count << " ops, " << arguments_.size()
+     << " inputs, reason: " << MaterializationReasonToString(reason) << "\n";
+
+  auto print_inputs = [&](std::ostream& out) {
+    size_t idx = 0;
+    for (const DeviceBufferRef& input : arguments_) {
+      out << "%" << idx << ": " << ToShortString(input.element_type()) << "[";
+      const auto dims = input.dimensions();
+      for (size_t d = 0; d < dims.size(); ++d) {
+        if (d > 0) out << ", ";
+        out << dims[d];
+      }
+      out << "] = input\n";
+      ++idx;
+    }
+    return idx;
+  };
+
+  auto print_ops = [&](std::ostream& out, size_t start_idx) {
+    size_t idx = start_idx;
+    for (const SharedDeviceBufferList& node : execution_order_) {
+      const DeferredOp* op = node->deferred_op();
+      if (op == nullptr) continue;
+      out << "%" << idx << ": ";
+      if (auto out0_or = DeviceBufferRef::Create(node, /*index=*/0);
+          out0_or.ok()) {
+        const DeviceBufferRef& out0 = *out0_or;
+        out << ToShortString(out0.element_type()) << "[";
+        const auto dims = out0.dimensions();
+        for (size_t d = 0; d < dims.size(); ++d) {
+          if (d > 0) out << ", ";
+          out << dims[d];
+        }
+        out << "]";
+      } else {
+        out << "?";
+      }
+      out << " = " << ToString(op->op_name());
+      // TODO: Implement a robust way to identify user frames without relying on
+      // brittle path heuristics. For now, we omit LoC info to prioritize a
+      // robust implementation for MVP.
+      out << "\n";
+      ++idx;
+    }
+  };
+
+  size_t next_idx = print_inputs(os);
+  print_ops(os, next_idx);
+
   return os.str();
 }
 

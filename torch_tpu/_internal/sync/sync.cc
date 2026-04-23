@@ -32,6 +32,7 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 #include "xla/hlo/translate/register.h"
@@ -40,11 +41,12 @@ namespace torch_tpu {
 
 using BufferRefToVarMap = absl::flat_hash_map<DeviceBufferRef, std::string>;
 
-absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
+absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors,
+                                MaterializationReason reason) {
   // Materialize the tensors and get their DeviceBufferRefs.
   // GetMaterialized() will materialize each base tensor and each view.
   TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> buffer_refs,
-                      GetMaterialized(tensors));
+                      GetMaterialized(tensors, reason));
 
   // Wait for all of the PjRtBuffers to be ready.
   for (const DeviceBufferRef& buffer_ref : buffer_refs) {
@@ -54,7 +56,8 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
   return absl::OkStatus();
 }
 
-absl::Status SynchronizeAll(const WaitOnExecution wait) {
+absl::Status SynchronizeAll(const WaitOnExecution wait,
+                            MaterializationReason reason) {
   const std::vector<SharedDeviceBufferList> leaf_nodes =
       SubgraphRegistry::GetInstance().MergeAll()->GetLeafNodes();
 
@@ -62,7 +65,8 @@ absl::Status SynchronizeAll(const WaitOnExecution wait) {
     return absl::OkStatus();
   }
 
-  TT_RETURN_IF_ERROR(Materialize(leaf_nodes));
+  TT_RETURN_IF_ERROR(
+      Materialize(leaf_nodes, MaterializationReason::kExplicitSync));
 
   if (wait == WaitOnExecution::kYes) {
     for (const auto& leaf_node : leaf_nodes) {

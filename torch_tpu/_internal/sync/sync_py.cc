@@ -27,6 +27,7 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -49,7 +50,8 @@ bool AllTensorsAreOnDevice(absl::Span<const at::Tensor> tensors) {
   return true;
 }
 
-void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
+void PySync(const std::vector<at::Tensor>& tensors, bool wait,
+            const std::string& reason_str) {
   std::vector<at::Tensor> tpu_tensors;
   absl::Span<const at::Tensor> tensors_span = absl::MakeConstSpan(tensors);
   if (!AllTensorsAreOnDevice(tensors)) {
@@ -59,6 +61,11 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
       }
     }
     tensors_span = absl::MakeConstSpan(tpu_tensors);
+  }
+
+  MaterializationReason reason = MaterializationReason::kExplicitSync;
+  if (reason_str == "autograd") {
+    reason = MaterializationReason::kAutogradSync;
   }
 
   if (wait) {
@@ -84,22 +91,26 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
 
     py::gil_scoped_release release;
     // SynchronizeTensors is GetMaterialized + wait
-    TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span));
+    TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span, reason));
   } else {
     // GetMaterialized returns DeviceBufferRefs for the views, but we don't
     // return them to Python.
-    TT_THROW_IF_ERROR(GetMaterialized(tensors_span));
+    TT_THROW_IF_ERROR(GetMaterialized(tensors_span, reason));
   }
 }
 
-void PySyncAll(bool wait) {
+void PySyncAll(bool wait, const std::string& reason_str) {
   std::optional<py::gil_scoped_release> release;
   if (wait) {
     // See the comments in PySync for why we need to release the GIL.
     release.emplace();
   }
-  TT_THROW_IF_ERROR(
-      SynchronizeAll(wait ? WaitOnExecution::kYes : WaitOnExecution::kNo));
+  MaterializationReason reason = MaterializationReason::kExplicitSync;
+  if (reason_str == "autograd") {
+    reason = MaterializationReason::kAutogradSync;
+  }
+  TT_THROW_IF_ERROR(SynchronizeAll(
+      wait ? WaitOnExecution::kYes : WaitOnExecution::kNo, reason));
 }
 
 bool PyIsMaterialized(const at::Tensor& tensor) {
@@ -173,20 +184,47 @@ std::string PyGetComputationMlir(const std::vector<at::Tensor>& tensors) {
   return res_str;
 }
 
+// Drains the structured-log event buffer and returns one dict per event.
+// Each dict mirrors EagerEvent: name, ts_us, dur_us, device, cache_hit,
+// aten_graph, stablehlo, reason.
+py::list PyDrainStructuredLogBuffer() {
+  auto events = StructuredLogBuffer::Get().Drain();
+  py::list out;
+  for (auto& ev : events) {
+    py::dict d;
+    d["name"] = ev.name;
+    d["ts_us"] = ev.ts_us;
+    d["dur_us"] = ev.dur_us;
+    d["device"] = ev.device;
+    d["cache_hit"] = ev.cache_hit;
+    d["aten_graph"] = ev.aten_graph_payload;
+    d["stablehlo"] = ev.mlir_payload;
+    d["reason"] = std::string(MaterializationReasonToString(ev.reason));
+    out.append(std::move(d));
+  }
+  return out;
+}
+
+bool PyStructuredLogEnabled() { return StructuredLogBuffer::Get().enabled(); }
+
 }  // namespace
 
 PYBIND11_MODULE(_tpu_torch_sync, m) {
   m.def("_synchronize_list", &PySync, py::arg("tensors"),
-        py::arg("wait") = false,
-        py::doc("Forces a materialization of a list of TPU tensors, optionally "
-                "waiting for them to be ready."));
+        py::arg("wait") = false, py::arg("reason") = std::string(""),
+        py::doc("Forces materialization of a list of TPU tensors. "
+                "`reason` is an optional tag (empty or 'autograd')."));
   m.def(
       "_synchronize_tensor",
-      [](const at::Tensor& tensor, bool wait) { PySync({tensor}, wait); },
+      [](const at::Tensor& tensor, bool wait, const std::string& reason) {
+        PySync({tensor}, wait, reason);
+      },
       py::arg("tensor"), py::arg("wait") = false,
-      py::doc("Forces a materialization of single TPU tensor, optionally "
-              "waiting for it to be ready."));
+      py::arg("reason") = std::string(""),
+      py::doc("Forces materialization of a single TPU tensor. "
+              "`reason` is an optional tag (empty or 'autograd')."));
   m.def("_synchronize_all", &PySyncAll, py::arg("wait") = false,
+        py::arg("reason") = std::string(""),
         py::doc("Forces a materialization of all TPU tensors, optionally "
                 "waiting for them to be ready."));
 
@@ -206,6 +244,12 @@ PYBIND11_MODULE(_tpu_torch_sync, m) {
   m.def("_get_computation_mlir", &PyGetComputationMlir, py::arg("tensors"),
         py::doc("Returns a MLIR compatible representation of the "
                 "computation graph of the given tensors."));
+
+  m.def("_drain_structured_log_buffer", &PyDrainStructuredLogBuffer,
+        py::doc("Drains buffered EagerEvent records and returns them as a "
+                "list of dicts."));
+  m.def("_structured_log_enabled", &PyStructuredLogEnabled,
+        py::doc("Returns true if TORCH_TRACE was set at program startup."));
 }
 
 }  // namespace torch_tpu

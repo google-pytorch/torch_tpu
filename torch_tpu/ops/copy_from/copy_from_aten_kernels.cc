@@ -153,6 +153,9 @@ at::Scalar AtenLocalScalarDense(const at::Tensor& self) {
   TT_KERNEL(OpName::kLocalScalarDense, _, (self), {
     TT_CHECK_THROW(self.numel() == 1, error::kInvalidArgument)
         << "expected the input tensor to have 1 element, got " << self.numel();
+    // TODO: Consider forcing materialization with kScalarConversion reason here
+    // to avoid it being tagged as kCpuConversion by the subsequent .to(cpu)
+    // call.
     at::Tensor cpu_tensor =
         self.to(at::TensorOptions().device(c10::kCPU).memory_format(
             at::MemoryFormat::Contiguous));

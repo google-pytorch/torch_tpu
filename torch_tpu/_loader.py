@@ -112,6 +112,8 @@ def _init_device_impl(device: str) -> torch.device:
 
   # For monkeypatching torch.autograd.Variable._execution_engine.
   import torch_tpu._internal.sync  # pylint: disable=unused-import
+  # Auto-enables eager-mode tlparse tracing if TORCH_TRACE is set.
+  import torch_tpu._internal.tracing  # pylint: disable=unused-import
   # pylint: enable=unused-import,g-import-not-at-top
 
   # Only "tpu / xla_cuda / xla_cpu" are supported.

@@ -15,6 +15,7 @@
 
 import inspect
 import os
+from typing import Sequence
 
 import torch
 import torch.distributed.tensor as dt
@@ -32,7 +33,10 @@ def _maybe_unwrap(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def synchronize(
-    tensors: torch.Tensor | list[torch.Tensor] | None = None, wait: bool = False
+    tensors: torch.Tensor | Sequence[torch.Tensor] | None = None,
+    wait: bool = False,
+    *,
+    _reason: str = ""
 ) -> None:
   """Forces a materialization of one or more TPU tensors.
 
@@ -44,16 +48,19 @@ def synchronize(
       function will compiled a graph to compute the tensors and enqueue it for
       execution, but will not wait for the results. If wait is True, the
       function will also wait for the results to be ready.
+    _reason: Internal tag propagated to structured logging. Empty means
+      'user-initiated synchronize()'; 'autograd' tags the post-backward sync
+      from the patched autograd engine.
   """
   if tensors is None:
-    _tpu_torch_sync._synchronize_all(wait)  # pylint: disable=protected-access
+    _tpu_torch_sync._synchronize_all(wait, _reason)  # pylint: disable=protected-access
   elif isinstance(tensors, list):
     _tpu_torch_sync._synchronize_list(  # pylint: disable=protected-access
-        [_maybe_unwrap(t) for t in tensors], wait
+        [_maybe_unwrap(t) for t in tensors], wait, _reason
     )
   else:
     _tpu_torch_sync._synchronize_tensor(  # pylint: disable=protected-access
-        _maybe_unwrap(tensors), wait
+        _maybe_unwrap(tensors), wait, _reason
     )
 
 

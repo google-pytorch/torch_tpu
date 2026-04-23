@@ -349,6 +349,7 @@ torch_tpu_cc_library(
         ":device_buffer",
         ":eager_mode",
         ":materialize_common",
+        ":structured_log_buffer",
         ":traversal",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
@@ -383,14 +384,18 @@ torch_tpu_cc_library(
         ":materialize_common",
         ":materialize_new",
         ":split_traversal",
+        ":structured_log_buffer",
         ":tensor_to_buffer",
         ":traversal",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
+        "//torch_tpu/common:compilation_cache",
         "//torch_tpu/common:dynamism_utils",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:shape",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
@@ -405,6 +410,8 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_broadcast_lowering",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:future",
@@ -428,6 +435,27 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "structured_log_buffer",
+    srcs = ["structured_log_buffer.cc"],
+    hdrs = ["structured_log_buffer.h"],
+    deps = [
+        "//torch_tpu/common:env_vars",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "structured_log_buffer_test",
+    srcs = ["structured_log_buffer_test.cc"],
+    env = {"TORCH_TRACE": "/tmp/test_torch_trace"},
+    deps = [
+        ":structured_log_buffer",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "op_dispatcher",
     srcs = [
         "op_dispatcher.cc",
@@ -440,6 +468,7 @@ torch_tpu_cc_library(
         ":eager_mode",
         ":materialize",
         ":materialize_new",
+        ":structured_log_buffer",
         ":tensor_to_buffer",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
@@ -718,6 +747,7 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":device_buffer",
+        ":structured_log_buffer",
         "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:compilation",

@@ -35,6 +35,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/ops/python_context.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
@@ -167,6 +168,13 @@ class Traversal {
   // This is extremely verbose and should not be exposed in user-facing error
   // messages.
   std::string DebugString() const;
+
+  // Returns an FX-style textual representation of the Traversal, suitable
+  // for inline display in tlparse. Each deferred op becomes a line like
+  //   %0: f32[128, 128] = mm.out       # test.py:25 in forward
+  // where source locations come from DeferredOp::op_context().traceback()
+  // when TracebackMode is enabled, and are omitted otherwise.
+  std::string ReadableString(MaterializationReason reason) const;
 
   // Builds the MLIR module for the Traversal.
   absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> BuildMlirModule(
