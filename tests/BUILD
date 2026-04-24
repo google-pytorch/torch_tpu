@@ -559,7 +559,7 @@ torch_tpu_py_test(
         "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
-    shard_count = 4,
+    shard_count = 8,
     tags = [
         "requires-tpu-v5lite",
         "wheel_test_excluded",
