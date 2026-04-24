@@ -78,11 +78,21 @@ jobs:
         //tests:tpu_errors_test
         //tests:tpu_errors_test_cov
     steps:
+      - name: Fix dubious ownership
+        run: git config --global --add safe.directory '*'
       - run: echo "Start running tests."
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@v5
+        with:
+          lfs: 'false'
+      - name: Install Git LFS and pull binaries
+        run: |
+          sudo apt-get update && sudo apt-get install -y git-lfs
+          git config --global --add safe.directory '*'
+          git lfs install
+          git lfs pull
       # Enable remote connections.
       # Step 2: Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.

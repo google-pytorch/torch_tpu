@@ -62,6 +62,41 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "lfs_sync_test",
+    srcs = ["lfs_sync_test.py"],
+    data = [
+        "lfs_sync.py",
+        "ops_test_gpu_golden0.gz",
+        "ops_test_gpu_golden1.gz",
+        "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden3.gz",
+        "ops_test_gpu_golden_compiled0.gz",
+        "ops_test_gpu_golden_compiled1.gz",
+        "ops_test_gpu_golden_compiled2.gz",
+    ] + if_oss(
+        [],
+        [
+            "ops_test_gpu_golden0.gz.lfs",
+            "ops_test_gpu_golden1.gz.lfs",
+            "ops_test_gpu_golden2.gz.lfs",
+            "ops_test_gpu_golden_compiled0.gz.lfs",
+            "ops_test_gpu_golden_compiled1.gz.lfs",
+            "ops_test_gpu_golden_compiled2.gz.lfs",
+            "ops_test_gpu_golden3.gz.lfs",
+        ],
+    ),
+    notest_oss = "LFS pointers are not present in the OSS repository",
+    tags = [
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/etils/epath",
+        "//torch_tpu",
+    ],
+)
+
 torch_tpu_py_library(
     name = "op_testing",
     testonly = True,

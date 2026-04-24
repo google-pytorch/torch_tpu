@@ -72,6 +72,15 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@v5
+        with:
+          lfs: 'false'
+
+      - name: Install Git LFS and pull binaries
+        run: |
+          sudo apt-get update && sudo apt-get install -y git-lfs
+          git config --global --add safe.directory '*'
+          git lfs install
+          git lfs pull
 
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
