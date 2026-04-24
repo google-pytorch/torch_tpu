@@ -207,7 +207,9 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float32: {"rtol": 1.3e-6, "atol": 1.3e-1},
     },
     "addmv": {
-        torch.float16: {"rtol": 1e-2, "atol": 5e-2},
+        torch.complex64: {"rtol": 4.0e-7, "atol": 3.5e-5},
+        torch.float32: {"rtol": 4.5e-7, "atol": 1.6e-5},
+        torch.float16: {"rtol": 5.0e-4, "atol": 2.0e-3},
     },
     "arange": {
         # TODO(b/495931205): why is rtol so high?
@@ -728,6 +730,12 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 1e-3, "atol": 1e-1},
         torch.float32: {"rtol": 1.3e-6, "atol": 1.3e-1},
     },
+    "addmv": {
+        torch.complex64: {"rtol": 1.5e-7, "atol": 2.2e-5},
+        torch.float32: {"rtol": 1e-7, "atol": 1.6e-5},
+        torch.float16: {"rtol": 5.0e-4, "atol": 2.0e-3},
+        torch.bfloat16: {"rtol": 2.0e-2, "atol": 1.0e-1},
+    },
     "arange": {
         torch.bfloat16: {"rtol": 1e-1, "atol": 1e-5},
         torch.float16: {"rtol": 1e-2, "atol": 1e-5},
@@ -1133,6 +1141,12 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "addcmul": {
         torch.float16: {"rtol": 8.60e-03, "atol": 1.30e-01},
+    },
+    "addmv": {
+        torch.complex64: {"rtol": 1.5e-07, "atol": 2.2e-05},
+        torch.bfloat16: {"rtol": 2.0e-2, "atol": 1.0e-1},
+        torch.float16: {"rtol": 5.0e-4, "atol": 2.0e-3},
+        torch.float32: {"rtol": 1e-07, "atol": 1.6e-05},
     },
     "amin": {
         torch.bool: {"rtol": 1e1, "atol": 2.40e-02},
@@ -1653,14 +1667,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_addmv(self):
-    # TODO: make addmv fail for integral dtypes to match GPU.
-    self.do_test_op(
-        "addmv",
-        # TODO: look into making this STRICT.
-        check_value=CheckValueMode.LOOSE,
-        exclude_dtypes={"gpu": INTEGRAL_DTYPES},
-        exclude_inplace_dtypes={"gpu": INTEGRAL_DTYPES},
-    )
+    self.do_test_op("addmv")
 
   def test_all(self):
     self.do_test_op("all")

@@ -251,7 +251,6 @@ void CheckScalarInput() {
       kOpName == OpName::kAddmmDtype ||                  //
       kOpName == OpName::kAddmmDtypeOut ||               //
       kOpName == OpName::kAddmmOut ||                    //
-      kOpName == OpName::kAddmvOut ||                    //
       kOpName == OpName::kArangeStartOut ||              //
       kOpName == OpName::kBaddbmmDtype ||                //
       kOpName == OpName::kBaddbmmDtypeOut ||             //
