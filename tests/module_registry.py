@@ -28,7 +28,6 @@ inputs.
 
 import abc
 from collections.abc import Callable, Sequence
-from importlib import resources
 from importlib.resources import abc as resources_abc
 import inspect
 from typing import Any, Iterator
@@ -276,16 +275,16 @@ class TransformersProvider(BaseProvider):
     rather than downloading directly from the Hugging Face Hub.
   """
 
-  _FILES = resources.files("examples").joinpath(
-      "huggingface_transformers/model_configs"
-  )
-
   def list_modules(self) -> list[str]:
     modules = []
-    for resource in _walk_package_resources(self._FILES):
-      if resource.is_file() and "config.json" in resource.name:
-        with resources.as_file(resource) as f:
-          modules.append(f"{f.parts[-3]}/{f.parts[-2]}")
+    if self._base_path and self._base_path.exists():
+      # We expect models to be organized as base_path / {owner} / {model}
+      # so we traverse two levels of directories.
+      for owner_dir in self._base_path.iterdir():
+        if owner_dir.is_dir():
+          for model_dir in owner_dir.iterdir():
+            if model_dir.is_dir() and (model_dir / "config.json").exists():
+              modules.append(f"{owner_dir.name}/{model_dir.name}")
     return modules
 
   def get_module_spec(
@@ -366,16 +365,16 @@ class DiffusersProvider(BaseProvider):
     rather than downloading directly from the Hugging Face Hub.
   """
 
-  _FILES = resources.files("examples").joinpath(
-      "huggingface_diffusers/model_configs"
-  )
-
   def list_modules(self) -> list[str]:
     modules = []
-    for resource in _walk_package_resources(self._FILES):
-      if resource.is_file() and "model_index.json" in resource.name:
-        with resources.as_file(resource) as f:
-          modules.append(f"{f.parts[-3]}/{f.parts[-2]}")
+    if self._base_path and self._base_path.exists():
+      # We expect models to be organized as base_path / {owner} / {model}
+      # so we traverse two levels of directories.
+      for owner_dir in self._base_path.iterdir():
+        if owner_dir.is_dir():
+          for model_dir in owner_dir.iterdir():
+            if model_dir.is_dir() and (model_dir / "model_index.json").exists():
+              modules.append(f"{owner_dir.name}/{model_dir.name}")
     return modules
 
   def get_module_spec(

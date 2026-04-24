@@ -40,7 +40,30 @@ class ModuleRegistryTest(absltest.TestCase):
     self.module_registry = module_registry.ModuleRegistry()
 
   def test_list_all_modules(self):
-    modules = self.module_registry.list_all_modules()
+    # Populate temp dir with dummy models to satisfy test assertions
+    temp_dir = self.create_tempdir()
+
+    # For Transformers
+    google_dir = temp_dir.mkdir("google")
+    gemma_dir = google_dir.mkdir("gemma-3-270m")
+    gemma_dir.create_file("config.json").write_text('{"model_type": "gemma"}')
+
+    # For Diffusers
+    bfl_dir = temp_dir.mkdir("black-forest-labs")
+    flux_dir = bfl_dir.mkdir("FLUX.1-schnell")
+    flux_dir.create_file("model_index.json").write_text("{}")
+
+    stability_dir = temp_dir.mkdir("stabilityai")
+    sdxl_dir = stability_dir.mkdir("stable-diffusion-xl-base-1.0")
+    sdxl_dir.create_file("model_index.json").write_text("{}")
+
+    # For TIMM
+    timm_dir = temp_dir.mkdir("timm")
+    timm_dir.create_file("convnext_small.pth")
+    timm_dir.create_file("resnet50d.pth")
+
+    registry = module_registry.ModuleRegistry(base_path=temp_dir.full_path)
+    modules = registry.list_all_modules()
 
     self.assertIn("timm/convnext_small", modules)
     self.assertIn("timm/resnet50d", modules)
@@ -59,11 +82,6 @@ class ModuleRegistryTest(absltest.TestCase):
 
     self.assertIn("convnext_small", modules)
     self.assertIn("resnet50d", modules)
-
-  def test_transformers_list_modules(self):
-    modules = self.module_registry.list_modules("transformers")
-
-    self.assertIn("google/gemma-3-270m", modules)
 
   def test_torchvision_get_module_spec(self):
     module_spec = self.module_registry.get_module_spec(
