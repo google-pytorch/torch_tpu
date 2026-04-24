@@ -527,13 +527,13 @@ class FunctionTest(absltest.TestCase):
     compiled_fn = backend._compile_graph_module(gm, [x])
 
     # Run before pickle
-    result_before = compiled_fn(x)  # pylint: disable=unused-variable
+    result_before = compiled_fn([x])  # pylint: disable=unused-variable
 
     # Pickle roundtrip
     data = pickle.dumps(compiled_fn)
     restored = pickle.loads(data)
 
-    result = restored(x)
+    result = restored([x])
     utils.assert_close(result[0].cpu(), x * 3 + 1)
 
 

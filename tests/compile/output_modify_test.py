@@ -73,8 +73,8 @@ def _run_tpu_backend_with_injected_test_case(
     # For example, if inject_test_case added a None to the output which
     # the backend preserved, map_output can remove it to match the
     # return signature expected by torch.compile for the original function.
-    def wrapped_executable(*args, **kwargs):
-      results = executable(*args)
+    def wrapped_executable(*args):
+      results = executable(list(args))
       # inject_test_case can modify the output of the executable. To get the code running
       # We need to apply the counterpart before returning them.
       results = map_output(results)

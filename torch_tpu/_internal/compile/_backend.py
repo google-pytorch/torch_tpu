@@ -190,11 +190,16 @@ class _TorchTpuCompiledExecutable(OutputCode):
   ) -> Any:
     if output_shapes is None:
       output_shapes = []
-    # aot_autograd with SerializableAOTDispatchCompiler passes args as a
-    # single list: fn([t1, t2, ...]). Unwrap when we detect this pattern.
-    if len(args) == 1 and isinstance(args[0], list):
-      args = tuple(args[0])
     executable_args = self._filter_tensor_args(args)
+    if not hasattr(self, "_call_count"):
+      self._call_count = 0
+    self._call_count += 1
+    print(f"\n=== EXEC #{self._call_count} (id={id(self):#x}) ===")
+    print(f"  raw args: {len(args)}, filtered: {len(executable_args)}")
+    for i, a in enumerate(executable_args):
+      if isinstance(a, torch.Tensor):
+        print(f"  arg[{i}]: shape={list(a.shape)} dtype={a.dtype} ptr={a.data_ptr():#x} storage_offset={a.storage_offset()}")
+    import sys; sys.stdout.flush()
     outputs = tpu_torch_compile.execute(
         self._executable, executable_args, output_shapes
     )
@@ -216,9 +221,6 @@ class _TorchTpuCompiledExecutable(OutputCode):
     if len(self._tensor_arg_indices) == len(args):
       return args
 
-    if not self._tensor_arg_indices:
-      return ()
-
     filtered = operator.itemgetter(*self._tensor_arg_indices)(args)
     if len(self._tensor_arg_indices) == 1:
       return (filtered,)
@@ -226,11 +228,9 @@ class _TorchTpuCompiledExecutable(OutputCode):
 
   def __reduce__(self):
     """Enable pickling by serializing the PjRt executable to bytes."""
-    serialized = tpu_torch_compile.serialize_executable(self._executable)
-    return (
-        _unpickle_compiled_executable,
-        (serialized, self._reconstruct_fx_outputs_fn),
-    )
+    # TODO: Re-enable once donation issue is resolved.
+    # For now, raise to prevent AOTAutogradCache from pickling the executable.
+    raise TypeError("_TorchTpuCompiledExecutable does not support pickling yet")
 
   def prepare_for_serialization(self):
     pass
@@ -269,18 +269,7 @@ def _serialization_context(enable: bool = False):
     yield
     return
 
-  with ExitStack() as stack:
-    if torch._guards.TracingContext.try_get() is None:
-      fake_mode = FakeTensorMode(shape_env=ShapeEnv())
-      stack.enter_context(
-          torch._guards.tracing(torch._guards.TracingContext(fake_mode))
-      )
-
-    stack.enter_context(
-        functorch_config.patch("bundled_autograd_cache", True),
-    )
-    yield
-
+  yield
 
 def _split_str_for_logging(text, limit=13000) -> Sequence[str]:
   """Splits a string longer than the log line char limit into multiple chunks."""
@@ -416,6 +405,17 @@ class TpuBackend:
     _log_gm_and_inputs(
         "_compile_graph_module", "Post", graph_module, example_inputs
     )
+
+    # Debug: log input types and count
+    tensor_count = sum(1 for x in example_inputs if isinstance(x, torch.Tensor))
+    non_tensor = [(i, type(x).__name__, x) for i, x in enumerate(example_inputs) if not isinstance(x, torch.Tensor)]
+    print(f"\n=== COMPILE (id={id(self):#x}, serial={self._enable_serialization}) ===")
+    print(f"  {len(example_inputs)} inputs ({tensor_count} tensors, {len(non_tensor)} non-tensor)")
+    print(f"  non_tensors: {non_tensor[:5]}")
+    for i, x in enumerate(example_inputs):
+      if isinstance(x, torch.Tensor):
+        print(f"  input[{i}]: shape={list(x.shape)} dtype={x.dtype} ptr={x.data_ptr():#x}")
+    import sys; sys.stdout.flush()
 
     # Decompose auto functionalized ops, we need to explicitly do this because
     # the default behaviour inserts flatten and unflatten ops at the boundaries
