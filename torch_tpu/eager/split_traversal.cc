@@ -16,6 +16,7 @@
 
 #include "torch_tpu/eager/split_traversal.h"
 
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
