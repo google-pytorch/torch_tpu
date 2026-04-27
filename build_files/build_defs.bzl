@@ -675,7 +675,7 @@ def torch_tpu_py_test(
         "//conditions:default": existing_env,
     }), existing_env)
 
-    if "//torch_tpu" not in deps:
+    if "//torch_tpu" not in deps and ":torch_tpu" not in deps:
         fail("torch_tpu_py_test must include \"//torch_tpu\" in its deps to " +
              "ensure that torch_tpu is loaded.")
 
