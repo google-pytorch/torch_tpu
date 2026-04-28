@@ -87,31 +87,30 @@ namespace torch_tpu {
 // argument list is empty, and expands to a comma otherwise.
 #define TT_CHECK_AND_LOG_KERNEL_ARGS_IMPL_(op_name, ...)                       \
   do {                                                                         \
-    static_assert(::torch_tpu::internal::ArgsAreIdentifiers(#__VA_ARGS__),     \
+    static_assert(internal::ArgsAreIdentifiers(#__VA_ARGS__),                  \
                   "The op parameter list passed to TT_KERNEL() must contain "  \
                   "only identifier names.");                                   \
     constexpr std::string_view _func_sig = __PRETTY_FUNCTION__;                \
     static_assert(                                                             \
-        ::torch_tpu::internal::CountFunctionParams(_func_sig) ==               \
+        internal::CountFunctionParams(_func_sig) ==                            \
             std::tuple_size_v<decltype(std::forward_as_tuple(__VA_ARGS__))>,   \
         "TT_KERNEL() called with mismatching number of arguments to "          \
         "the kernel function signature.");                                     \
     if (ABSL_VLOG_IS_ON(1)) {                                                  \
       std::ostringstream _ss;                                                  \
-      ::torch_tpu::internal::LogKernelName(_ss, op_name);                      \
+      internal::LogKernelName(_ss, op_name);                                   \
       const std::vector<std::string_view> _arg_names =                         \
           TT_ARGS_AS_STRINGS_(__VA_ARGS__);                                    \
-      ::torch_tpu::internal::LogKernelArgs(                                    \
-          _ss, _arg_names __VA_OPT__(, ) __VA_ARGS__);                         \
+      internal::LogKernelArgs(_ss, _arg_names __VA_OPT__(, ) __VA_ARGS__);     \
       ABSL_LOG(INFO) << _ss.str();                                             \
     }                                                                          \
-    if constexpr (::torch_tpu::internal::kDebugMode) {                         \
+    if constexpr (internal::kDebugMode) {                                      \
       /* Only check the argument types once per kernel function. */            \
       static const bool _checked = [&] {                                       \
-        ::torch_tpu::internal::CheckTtKernelArgList<op_name>(                  \
-            ::torch_tpu::internal::KernelArgCheckerContext{                    \
+        internal::CheckTtKernelArgList<op_name>(                               \
+            internal::KernelArgCheckerContext{                                 \
                 TT_NORMALIZED_FILE, __LINE__, _func_sig,                       \
-                ::torch_tpu::internal::ParseArgTypesOrEmpty(_func_sig),        \
+                internal::ParseArgTypesOrEmpty(_func_sig),                     \
                 TT_ARGS_AS_STRINGS_(__VA_ARGS__)} __VA_OPT__(, ) __VA_ARGS__); \
         return true;                                                           \
       }();                                                                     \

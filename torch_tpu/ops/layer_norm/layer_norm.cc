@@ -432,8 +432,7 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormMomentsShlo(
       << ToString(element_type);
 
   // For bf16 and f16, use f32 for statistics computation.
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_casted,
-                      torch_tpu::PromoteFloatDtype(input_op));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_casted, PromoteFloatDtype(input_op));
   auto stats_float_type =
       mlir::dyn_cast<mlir::FloatType>(GetElementTypeOrSelf(input_casted));
 
@@ -482,7 +481,7 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormMomentsShlo(
       mlir::stablehlo::Subtract(input_casted, mean_unsqueezed);
 
   // Compute reciprocal standard deviation
-  mlir::MlirOp eps_op = torch_tpu::MakeConstantLike(variance, eps);
+  mlir::MlirOp eps_op = MakeConstantLike(variance, eps);
   mlir::MlirOp variance_plus_eps = mlir::stablehlo::Add(variance, eps_op);
   mlir::MlirOp rstd = mlir::stablehlo::Rsqrt(variance_plus_eps);
 

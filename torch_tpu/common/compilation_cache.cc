@@ -177,12 +177,12 @@ void CompilationCache::EnsureInitialized() {
   // they are tracked.
   xla::concurrency::DefaultExecutor();
 
-  compilation_pool_ = std::make_unique<torch_tpu::ThreadPool>(
+  compilation_pool_ = std::make_unique<ThreadPool>(
       // The actual thread name will be "tf_tt_compile" in logs.
       "tt_compile", GetNumCompilationThreads());
 
   if (UsesLocalBackupTaskForTier3Read()) {
-    backup_compilation_pool_ = std::make_unique<torch_tpu::ThreadPool>(
+    backup_compilation_pool_ = std::make_unique<ThreadPool>(
         // The actual thread name will be "tf_tt_compile2" in
         // logs. Unfortunately, we cannot use a longer, more
         // descriptive name, as that will cause the thread name to
@@ -849,7 +849,7 @@ void CompilationCache::EnqueueCompilation(
   compilation_pool_->Schedule(
       [this, key, builder = std::move(executable_builder),
        compile_options = std::move(compile_options)]() mutable {
-        torch_tpu::ScopedMemMeasuringContainer container;
+        ScopedMemMeasuringContainer container;
         this->GetFromTier2OrCompile(std::move(key), std::move(builder),
                                     std::move(compile_options));
       });
@@ -1076,6 +1076,7 @@ void CompilationCache::Compile(CompilationCacheKey key,
 
   const absl::Time compile_start = absl::Now();
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
+      // torch_tpu_lint: ignore
       torch_tpu::Compile(*client, std::move(executable_builder),
                          std::move(compile_options));
 

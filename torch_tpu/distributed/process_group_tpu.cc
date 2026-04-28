@@ -152,7 +152,8 @@ class TpuWork : public c10d::Work {
   std::vector<at::Tensor> results_;
   c10::intrusive_ptr<c10::ivalue::Future> results_future_;
 
-  friend class ::torch_tpu::ProcessGroupTpu;  // To allow changing op type.
+  // To allow changing op type.
+  friend class ::torch_tpu::ProcessGroupTpu;  // torch_tpu_lint: ignore
 };
 
 std::string DeviceBufferRefDebugString(at::Tensor& input) {
@@ -300,10 +301,10 @@ xla::CrossHostTransferKey GetCrossHostTransferKey(int64_t src_device_id,
                                                   int tag,
                                                   size_t tensor_index = 0) {
   uint64_t seed = 0;
-  torch_tpu::HashCombine(seed, static_cast<uint64_t>(src_device_id));
-  torch_tpu::HashCombine(seed, static_cast<uint64_t>(dst_device_id));
-  torch_tpu::HashCombine(seed, static_cast<uint64_t>(tag));
-  torch_tpu::HashCombine(seed, static_cast<uint64_t>(tensor_index));
+  HashCombine(seed, static_cast<uint64_t>(src_device_id));
+  HashCombine(seed, static_cast<uint64_t>(dst_device_id));
+  HashCombine(seed, static_cast<uint64_t>(tag));
+  HashCombine(seed, static_cast<uint64_t>(tensor_index));
   return xla::CrossHostTransferKey(static_cast<int64_t>(seed));
 }
 

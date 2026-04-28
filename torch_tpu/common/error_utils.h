@@ -285,11 +285,10 @@ class TtError : public std::runtime_error {
 // Implementation note:
 // - We use __func__ instead of __FUNCTION__ because the former is in STL
 //   and the latter is non portable.
-#define TT_ERROR(error_code)                                              \
-  ::torch_tpu::StatusBuilder(::torch_tpu::internal::MaybeAddCppSourceLoc( \
-      ::torch_tpu::internal::SetRootOpNamePayload(                        \
-          absl::Status(error_code, ""),                                   \
-          ::torch_tpu::GetRootOpName(std::nullopt)),                      \
+#define TT_ERROR(error_code)                                       \
+  StatusBuilder(internal::MaybeAddCppSourceLoc(                    \
+      internal::SetRootOpNamePayload(absl::Status(error_code, ""), \
+                                     GetRootOpName(std::nullopt)), \
       TT_NORMALIZED_FILE, __LINE__, __func__))
 
 // TT_SOURCE_LOCATION
@@ -378,7 +377,7 @@ class TtError : public std::runtime_error {
 //
 // If passed, `error_expr` is evaluated to produce the returned error value. The
 // expression may reference any variable visible in scope, as well as a
-// `torch_tpu::StatusBuilder` object populated with the error and named by a
+// `StatusBuilder` object populated with the error and named by a
 // single underscore `_`. The expression uses the builder to modify the status
 // and is thrown directly in manner similar to TT_RETURN_IF_ERROR. For example:
 //
@@ -455,7 +454,7 @@ class TtError : public std::runtime_error {
 //
 // If passed, `error_expr` is evaluated to produce the thrown error value. The
 // expression may reference any variable visible in scope, as well as a
-// `torch_tpu::StatusBuilder` object populated with the error and named by a
+// `StatusBuilder` object populated with the error and named by a
 // single underscore `_`. The expression uses the builder to modify the status
 // and is thrown directly in manner similar to TT_THROW_IF_ERROR. For example:
 //
@@ -514,11 +513,11 @@ class TtError : public std::runtime_error {
 // the error message contains the source location of the call site of
 // TT_RETURN_IF_ERROR when the TORCH_SHOW_CPP_STACKTRACES environment variable
 // is set to 1.
-#define TT_RETURN_IF_ERROR(status)                                          \
-  TT_ELSE_BLOCKER_                                                          \
-  if (auto tt_error_adapter_ = ::torch_tpu::internal::ReturnIfErrorAdaptor( \
-          ::torch_tpu::GetStatus((status)))) {                              \
-  } else /* NOLINT */                                                       \
+#define TT_RETURN_IF_ERROR(status)                               \
+  TT_ELSE_BLOCKER_                                               \
+  if (auto tt_error_adapter_ =                                   \
+          internal::ReturnIfErrorAdaptor(GetStatus((status)))) { \
+  } else /* NOLINT */                                            \
     return tt_error_adapter_.Consume(TT_NORMALIZED_FILE, __LINE__, __func__)
 
 // TT_THROW_IF_ERROR(status);
@@ -548,12 +547,12 @@ class TtError : public std::runtime_error {
 // when the TORCH_SHOW_CPP_STACKTRACES environment variable is set to 1.
 #define TT_THROW_IF_ERROR(status)                                           \
   TT_ELSE_BLOCKER_                                                          \
-  if (auto tt_error_adapter_ = ::torch_tpu::internal::ReturnIfErrorAdaptor( \
-          ::torch_tpu::GetStatus((status)))) {                              \
+  if (auto tt_error_adapter_ =                                              \
+          internal::ReturnIfErrorAdaptor(GetStatus((status)))) {            \
     TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_();                             \
   } else /* NOLINT */                                                       \
-    ::torch_tpu::internal::ThrowIfErrorAdapter(                             \
-        TT_NORMALIZED_FILE, __LINE__, __func__) = tt_error_adapter_.Consume()
+    internal::ThrowIfErrorAdapter(TT_NORMALIZED_FILE, __LINE__, __func__) = \
+        tt_error_adapter_.Consume()
 
 // TT_CHECK_THROW(cond, error_code) << message;
 //
@@ -568,17 +567,15 @@ class TtError : public std::runtime_error {
 // `cond` is evaluated exactly once. If the result is true, `error_code`
 // and the `message` are not evaluated. Otherwise, `error_code` and `message`
 // are evaluated exactly once.
-#define TT_CHECK_THROW(cond, error_code)                                     \
-  TT_ELSE_BLOCKER_                                                           \
-  if (ABSL_PREDICT_TRUE(cond)) {                                             \
-    TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_();                              \
-  } else /* NOLINT */                                                        \
-    ::torch_tpu::internal::ThrowIfErrorAdapter(TT_NORMALIZED_FILE, __LINE__, \
-                                               __func__) =                   \
-        ::torch_tpu::internal::ReturnIfErrorAdaptor(                         \
-            ::torch_tpu::internal::SetRootOpNamePayload(                     \
-                absl::Status(error_code, ""),                                \
-                ::torch_tpu::GetRootOpName(std::nullopt)))                   \
+#define TT_CHECK_THROW(cond, error_code)                                    \
+  TT_ELSE_BLOCKER_                                                          \
+  if (ABSL_PREDICT_TRUE(cond)) {                                            \
+    TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_();                             \
+  } else /* NOLINT */                                                       \
+    internal::ThrowIfErrorAdapter(TT_NORMALIZED_FILE, __LINE__, __func__) = \
+        internal::ReturnIfErrorAdaptor(                                     \
+            internal::SetRootOpNamePayload(absl::Status(error_code, ""),    \
+                                           GetRootOpName(std::nullopt)))    \
             .ConsumeRequiringMessage()  // Caller must provide a message.
 
 // Throws a TtError based on the error status.
@@ -586,11 +583,10 @@ class TtError : public std::runtime_error {
 // location of the error message or the type of the exception.
 //
 // REQUIRES: status is not OK.
-#define TT_THROW_TT_ERROR_(status, source_loc)                               \
-  do {                                                                       \
-    const absl::Status& _status = (status);                                  \
-    throw /* for implementing error API */ ::torch_tpu::TtError(_status,     \
-                                                                source_loc); \
+#define TT_THROW_TT_ERROR_(status, source_loc)                           \
+  do {                                                                   \
+    const absl::Status& _status = (status);                              \
+    throw /* for implementing error API */ TtError(_status, source_loc); \
   } while (false)
 
 // =================================================================
@@ -621,7 +617,7 @@ class ThrowIfErrorAdapter {
   //   - operator= has a fairly low precedence (lower than operator<<), so
   //     the TT_THROW_IF_ERROR(expr) macro expands to
   //       ...
-  //       ::torch_tpu::internal::ThrowIfErrorAdapter(
+  //       ThrowIfErrorAdapter(
   //           TT_NORMALIZED_FILE, __LINE__, __func__) =
   //           tt_error_adapter_.Consume() << "additional " << information;
   //     which parses correctly.
@@ -831,14 +827,14 @@ class AnythingCompatibleWithThrow {
 // only supported for internal builds. In the OSS builds, this macro is a
 // no-op.
 #if TT_IS_INTERNAL_TORCH_TPU
-#define TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_()                 \
-  do {                                                             \
-    if (false) {                                                   \
-      _Pragma("clang diagnostic push");                            \
-      _Pragma("clang diagnostic ignored \"-Wreturn-mismatch\"");   \
-      return ::torch_tpu::internal::AnythingCompatibleWithThrow(); \
-      _Pragma("clang diagnostic pop");                             \
-    }                                                              \
+#define TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_()               \
+  do {                                                           \
+    if (false) {                                                 \
+      _Pragma("clang diagnostic push");                          \
+      _Pragma("clang diagnostic ignored \"-Wreturn-mismatch\""); \
+      return internal::AnythingCompatibleWithThrow();            \
+      _Pragma("clang diagnostic pop");                           \
+    }                                                            \
   } while (false)
 #else
 #define TT_STATIC_ASSERT_RETURN_TYPE_NOT_STATUS_() TT_REQUIRE_SEMICOLON_
@@ -854,7 +850,7 @@ class AnythingCompatibleWithThrow {
   auto statusor = (rexpr);                                                     \
   TT_STATIC_ASSERT_NOT_STATUS_OR_REF_(statusor);                               \
   if (ABSL_PREDICT_FALSE(!statusor.ok())) {                                    \
-    return ::torch_tpu::internal::MaybeAddCppSourceLoc(                        \
+    return internal::MaybeAddCppSourceLoc(                                     \
         std::move(statusor).status(), TT_NORMALIZED_FILE, __LINE__, __func__); \
   }                                                                            \
   TT_REMOVE_PARENS_(lhs) = (*std::move(statusor))
@@ -875,17 +871,16 @@ class AnythingCompatibleWithThrow {
 // Since error_expr doesn't have to reference the `_` variable, we include
 // a static_cast<void>(_) to avoid a "unused variable" warning from the C++
 // compiler.
-#define TT_ASSIGN_OR_RETURN_IMPL_3_(statusor, lhs, rexpr, error_expr)   \
-  auto statusor = (rexpr);                                              \
-  TT_STATIC_ASSERT_NOT_STATUS_OR_REF_(statusor);                        \
-  if (ABSL_PREDICT_FALSE(!statusor.ok())) {                             \
-    ::torch_tpu::StatusBuilderWithMessage _(                            \
-        ::torch_tpu::internal::MaybeAddCppSourceLoc(                    \
-            std::move(statusor).status(), TT_NORMALIZED_FILE, __LINE__, \
-            __func__));                                                 \
-    static_cast<void>(_);                                               \
-    return error_expr;                                                  \
-  }                                                                     \
+#define TT_ASSIGN_OR_RETURN_IMPL_3_(statusor, lhs, rexpr, error_expr) \
+  auto statusor = (rexpr);                                            \
+  TT_STATIC_ASSERT_NOT_STATUS_OR_REF_(statusor);                      \
+  if (ABSL_PREDICT_FALSE(!statusor.ok())) {                           \
+    StatusBuilderWithMessage _(internal::MaybeAddCppSourceLoc(        \
+        std::move(statusor).status(), TT_NORMALIZED_FILE, __LINE__,   \
+        __func__));                                                   \
+    static_cast<void>(_);                                             \
+    return error_expr;                                                \
+  }                                                                   \
   TT_REMOVE_PARENS_(lhs) = (*std::move(statusor))
 
 // Implements TT_ASSIGN_OR_THROW(lhs, rexpr).
@@ -924,14 +919,14 @@ class AnythingCompatibleWithThrow {
 // Since error_expr doesn't have to reference the `_` variable, we include
 // a static_cast<void>(_) to avoid a "unused variable" warning from the C++
 // compiler.
-#define TT_ASSIGN_OR_THROW_IMPL_3_(statusor, lhs, rexpr, error_expr)       \
-  auto statusor = (rexpr);                                                 \
-  TT_STATIC_ASSERT_NOT_STATUS_OR_REF_(statusor);                           \
-  if (ABSL_PREDICT_FALSE(!statusor.ok())) {                                \
-    ::torch_tpu::StatusBuilderWithMessage _(std::move(statusor).status()); \
-    static_cast<void>(_);                                                  \
-    TT_THROW_TT_ERROR_(absl::Status((error_expr)), TT_SOURCE_LOCATION);    \
-  }                                                                        \
+#define TT_ASSIGN_OR_THROW_IMPL_3_(statusor, lhs, rexpr, error_expr)    \
+  auto statusor = (rexpr);                                              \
+  TT_STATIC_ASSERT_NOT_STATUS_OR_REF_(statusor);                        \
+  if (ABSL_PREDICT_FALSE(!statusor.ok())) {                             \
+    StatusBuilderWithMessage _(std::move(statusor).status());           \
+    static_cast<void>(_);                                               \
+    TT_THROW_TT_ERROR_(absl::Status((error_expr)), TT_SOURCE_LOCATION); \
+  }                                                                     \
   TT_REMOVE_PARENS_(lhs) = (*std::move(statusor))
 
 // Trait: is the type a StatusOr<T&>?

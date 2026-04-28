@@ -38,8 +38,8 @@ namespace torch_tpu {
   inline absl::StatusOr<mlir::MlirOp> FctName(                            \
       mlir::MlirOp input_op, mlir::ElementType out_mlir_type) {           \
     TT_ASSIGN_OR_RETURN(/* ERROR_COV_INFEASIBLE=in a macro definition. */ \
-                        mlir::MlirOp op, ::torch_tpu::ConvertIfInteger(   \
-                                             input_op, out_mlir_type));   \
+                        mlir::MlirOp op,                                  \
+                        ConvertIfInteger(input_op, out_mlir_type));       \
     return FctCall(op);                                                   \
   }                                                                       \
   TT_REQUIRE_SEMICOLON_

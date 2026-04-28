@@ -60,7 +60,7 @@ std::vector<at::Tensor> TorchTpuOptimizationBarrier(at::TensorList self) {
       out_dims_list.push_back(input.sizes());
     }
 
-    DispatchOpOptions<torch_tpu::kDynamicSize> options = {
+    DispatchOpOptions<kDynamicSize> options = {
         .out_dtypes = out_dtypes,
         .out_dims_list = out_dims_list,
         .op_param_cache_keys = OpParamCacheKeys::Empty()};

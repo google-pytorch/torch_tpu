@@ -181,7 +181,7 @@ absl::Status PjrtBackend::InitializeInternal() {
   }
   // Move active thread into container for memory tracking, if the flag is
   // enabled.
-  torch_tpu::ScopedMemMeasuringContainer container;
+  ScopedMemMeasuringContainer container;
 
   TT_ASSIGN_OR_RETURN(bool is_initialized,
                       pjrt::IsPjrtPluginInitialized(plugin_name));
@@ -193,8 +193,7 @@ absl::Status PjrtBackend::InitializeInternal() {
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
   TT_ASSIGN_OR_RETURN(
       client_,
-      torch_tpu::GetPjRtClient(options_.device_type,
-                               options_.premapped_buffer_size_bytes),
+      GetPjRtClient(options_.device_type, options_.premapped_buffer_size_bytes),
       _.SetPrepend() << "GetPjrtClient failed: ");
 
   TT_RET_CHECK(client_ != nullptr, error::kInternal)

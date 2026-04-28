@@ -34,11 +34,11 @@ namespace torch_tpu {
 // of it has no effect.
 //
 // Example:
-//  auto threads = torch_tpu::ThreadPool();
+//  auto threads = ThreadPool();
 //  threads.Schedule([]() {
 //    auto guard = ScopedMemMeasuringContainer();
 //    DoWork();
-//    auto child_threads = torch_tpu::ThreadPool();
+//    auto child_threads = ThreadPool();
 //    child_threads.Schedule([]() {
 //      DoWork();
 //    });

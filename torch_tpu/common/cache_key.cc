@@ -157,7 +157,7 @@ absl::StatusOr<at::Tensor> PromotedScalar::GetTensor(
 }
 
 std::string PromotedScalar::ToString() const {
-  return torch_tpu::ToString(scalar());
+  return torch_tpu::ToString(scalar());  // torch_tpu_lint: ignore
 }
 
 absl::StatusOr<OpParamCacheKeys> OpParamCacheKeys::Builder::operator*() {

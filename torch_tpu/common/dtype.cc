@@ -464,7 +464,6 @@ static at::ScalarType ToScalarType(const mlir::ComplexType complex_type) {
 }
 
 at::ScalarType ToScalarType(mlir::Type type) {
-  using ::torch_tpu::internal::ToScalarType;
   auto scalar_type =
       llvm::TypeSwitch<mlir::Type, at::ScalarType>(type)
           .Case<mlir::IntegerType>(

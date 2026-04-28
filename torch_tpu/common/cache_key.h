@@ -139,7 +139,7 @@ class IgnoredInCacheKey {
 
   // Supports logging.
   friend auto ToString(const IgnoredInCacheKey& value) {
-    using torch_tpu::ToString;
+    using torch_tpu::ToString;  // torch_tpu_lint: ignore
     return ToString(value.value_ref_);
   }
 

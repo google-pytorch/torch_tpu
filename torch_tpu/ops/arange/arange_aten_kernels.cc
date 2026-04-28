@@ -188,8 +188,8 @@ absl::StatusOr<MlirNullaryOpBuilder> GetArangeOpBuilder(
                           // ElementType.
         const auto step_constant, MakeConstant(builder, step));
 
-    return torch_tpu::BuildArangeOp(num_elements, mlir_type, start_constant,
-                                    step_constant);
+    return BuildArangeOp(num_elements, mlir_type, start_constant,
+                         step_constant);
   };
 }
 

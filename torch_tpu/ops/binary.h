@@ -32,9 +32,8 @@ namespace torch_tpu {
 #define TT_BINARY_BUILDER_(func_name, func_call)                          \
   inline absl::StatusOr<mlir::MlirOp> func_name(mlir::MlirOp input1_op,   \
                                                 mlir::MlirOp input2_op) { \
-    TT_ASSIGN_OR_RETURN(                                                  \
-        (auto [op1, op2]),                                                \
-        ::torch_tpu::ApplyBroadcastIfNeeded(input1_op, input2_op));       \
+    TT_ASSIGN_OR_RETURN((auto [op1, op2]),                                \
+                        ApplyBroadcastIfNeeded(input1_op, input2_op));    \
     return func_call(op1, op2);                                           \
   }                                                                       \
   TT_REQUIRE_SEMICOLON_
@@ -43,9 +42,8 @@ namespace torch_tpu {
 #define TT_COMPARISON_BUILDER_(func_name, comparison)                     \
   inline absl::StatusOr<mlir::MlirOp> func_name(mlir::MlirOp input1_op,   \
                                                 mlir::MlirOp input2_op) { \
-    TT_ASSIGN_OR_RETURN(                                                  \
-        (auto [op1, op2]),                                                \
-        ::torch_tpu::ApplyBroadcastIfNeeded(input1_op, input2_op));       \
+    TT_ASSIGN_OR_RETURN((auto [op1, op2]),                                \
+                        ApplyBroadcastIfNeeded(input1_op, input2_op));    \
     return mlir::stablehlo::Compare(op1, op2, comparison);                \
   }                                                                       \
   TT_REQUIRE_SEMICOLON_

@@ -49,15 +49,14 @@ mlir::MlirOp IsNanImpl(mlir::MlirOp input_op) {
 // Defines a function named FctName that calls FctCall on the input if it is a
 // float type, or returns a Boolean tensor with the same shape as the input
 // and each element being the given value.
-#define TT_FLOAT_IS_OP_BUILDER_(FctName, FctCall, result)                      \
-  absl::StatusOr<mlir::MlirOp> FctName(mlir::MlirOp input_op) {                \
-    const mlir::RankedTensorType input_type =                                  \
-        ::torch_tpu::GetTensorTypeOrDie(input_op);                             \
-    if (::torch_tpu::IsFloatType(input_type)) {                                \
-      return FctCall(input_op);                                                \
-    }                                                                          \
-    return ::torch_tpu::MakeBoolLike(input_op, input_op.getBuilder(), result); \
-  }                                                                            \
+#define TT_FLOAT_IS_OP_BUILDER_(FctName, FctCall, result)                   \
+  absl::StatusOr<mlir::MlirOp> FctName(mlir::MlirOp input_op) {             \
+    const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op); \
+    if (IsFloatType(input_type)) {                                          \
+      return FctCall(input_op);                                             \
+    }                                                                       \
+    return MakeBoolLike(input_op, input_op.getBuilder(), result);           \
+  }                                                                         \
   TT_REQUIRE_SEMICOLON_
 
 // go/keep-sorted start

@@ -282,8 +282,8 @@ std::shared_ptr<ContextedModule> PyGetPadModuleMlir(
   TT_ASSIGN_OR_THROW(mlir::OwningOpRef<mlir::ModuleOp> module,
                      GetPadModule(*context, shapes));
 
-  return std::make_shared<torch_tpu::ContextedModule>(std::move(context),
-                                                      std::move(module));
+  return std::make_shared<ContextedModule>(std::move(context),
+                                           std::move(module));
 }
 
 py::bytes PySerializeExecutable(
@@ -325,12 +325,12 @@ void PyAssignConstantTensor(const at::Tensor& cpu_src_tensor,
 }
 
 PYBIND11_MODULE(tpu_torch_compile, m) {
-  py::class_<torch_tpu::ContextedModule,  // NOLINT(bugprone-unused-raii)
-             std::shared_ptr<torch_tpu::ContextedModule>>(m, "ContextedModule");
+  py::class_<ContextedModule,  // NOLINT(bugprone-unused-raii)
+             std::shared_ptr<ContextedModule>>(m, "ContextedModule");
 
   py::class_<  // NOLINT(bugprone-unused-raii)
-      torch_tpu::LoadedExecutableWithMetadata,
-      std::shared_ptr<torch_tpu::LoadedExecutableWithMetadata>>(
+      LoadedExecutableWithMetadata,
+      std::shared_ptr<LoadedExecutableWithMetadata>>(
       m, "LoadedExecutableWithMetadata");
 
   py::class_<xla::PjRtLoadedExecutable,  // NOLINT(bugprone-unused-raii)

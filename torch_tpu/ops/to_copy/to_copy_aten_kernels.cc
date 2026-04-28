@@ -71,7 +71,7 @@ at::Tensor AtenToCopy(const at::Tensor& self,
                                 .pin_memory(at::Device(at::kPrivateUse1));
           // Call our TPU-specific copy_ implementation directly to avoid
           // redispatching back to this _to_copy implementation.
-          ::torch_tpu::AtenCopy_(dest, self, non_blocking);
+          AtenCopy_(dest, self, non_blocking);
           return dest;
         }
 
@@ -79,7 +79,7 @@ at::Tensor AtenToCopy(const at::Tensor& self,
         at::TensorOptions options =
             at::TensorOptions().dtype(target_dtype).device(target_device);
         at::Tensor dest = at::empty(self.sizes(), options, resolved_format);
-        ::torch_tpu::AtenCopy_(dest, self, non_blocking);
+        AtenCopy_(dest, self, non_blocking);
         return dest;
       });
 }

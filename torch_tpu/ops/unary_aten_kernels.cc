@@ -53,15 +53,15 @@
 // - the dtype and shape of the output is the same as the input
 // - doesn't have any parameters
 // TODO(b/442660800): minimize the number of kernels implemented by macros
-#define TT_DEFINE_ATEN_UNARY_OUT(op_name, func_name, op_builder)        \
-  at::Tensor& func_name##Out(const at::Tensor& self, at::Tensor& out) { \
-    TT_KERNEL(op_name, _, (self, out), {                                \
-      TT_THROW_IF_ERROR(::torch_tpu::UnaryOpOut(                        \
-          self, out, op_builder,                                        \
-          {.op_param_cache_keys = OpParamCacheKeys::Empty()}));         \
-      return out;                                                       \
-    });                                                                 \
-  }                                                                     \
+#define TT_DEFINE_ATEN_UNARY_OUT(op_name, func_name, op_builder)           \
+  at::Tensor& func_name##Out(const at::Tensor& self, at::Tensor& out) {    \
+    TT_KERNEL(op_name, _, (self, out), {                                   \
+      TT_THROW_IF_ERROR(                                                   \
+          UnaryOpOut(self, out, op_builder,                                \
+                     {.op_param_cache_keys = OpParamCacheKeys::Empty()})); \
+      return out;                                                          \
+    });                                                                    \
+  }                                                                        \
   TT_REQUIRE_SEMICOLON_
 
 // A floating-point (FP) only op is a simple Aten op (see above), with the
@@ -72,26 +72,25 @@
 // TODO(b/440585584): parameterize by explicit output dtype, not by default
 // dtype, and remove the cache to avoid unnecessary cache misses when unused.
 // TODO(b/442660800): minimize the number of kernels implemented by macros
-#define TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(op_name, func_name, op_builder)     \
-  at::Tensor& func_name##Out(const at::Tensor& self, at::Tensor& out) {      \
-    TT_KERNEL(op_name, param_keys, (self, out), {                            \
-      /* Find the desired output dtype. */                                   \
-      const c10::ScalarType out_dtype = ::torch_tpu::InferOutputDtype(self); \
-      TT_ASSIGN_OR_THROW(                                                    \
-          const auto out_mlir_type,                                          \
-          ::torch_tpu::ConvertTo<mlir::ElementType>(out_dtype));             \
-      ::torch_tpu::MlirUnaryOpBuilder op_builder_with_out_dtype =            \
-          [out_mlir_type](                                                   \
-              mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {          \
-        return op_builder(input, out_mlir_type);                             \
-      };                                                                     \
-      TT_THROW_IF_ERROR(::torch_tpu::UnaryOpOut(                             \
-          self, out, std::move(op_builder_with_out_dtype),                   \
-          {.op_param_cache_keys = std::move(param_keys),                     \
-           .out_dtype = out_mlir_type}));                                    \
-      return out;                                                            \
-    });                                                                      \
-  }                                                                          \
+#define TT_DEFINE_FP_ONLY_ATEN_UNARY_OUT(op_name, func_name, op_builder) \
+  at::Tensor& func_name##Out(const at::Tensor& self, at::Tensor& out) {  \
+    TT_KERNEL(op_name, param_keys, (self, out), {                        \
+      /* Find the desired output dtype. */                               \
+      const c10::ScalarType out_dtype = InferOutputDtype(self);          \
+      TT_ASSIGN_OR_THROW(const auto out_mlir_type,                       \
+                         ConvertTo<mlir::ElementType>(out_dtype));       \
+      MlirUnaryOpBuilder op_builder_with_out_dtype =                     \
+          [out_mlir_type](                                               \
+              mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {      \
+        return op_builder(input, out_mlir_type);                         \
+      };                                                                 \
+      TT_THROW_IF_ERROR(                                                 \
+          UnaryOpOut(self, out, std::move(op_builder_with_out_dtype),    \
+                     {.op_param_cache_keys = std::move(param_keys),      \
+                      .out_dtype = out_mlir_type}));                     \
+      return out;                                                        \
+    });                                                                  \
+  }                                                                      \
   TT_REQUIRE_SEMICOLON_
 
 namespace torch_tpu {
@@ -250,10 +249,10 @@ at::Tensor& AtenNegOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor AtenRelu(const at::Tensor& self) {
   TT_KERNEL(OpName::kRelu, _, (self), {
-    TT_ASSIGN_OR_THROW(at::Tensor result,
-                       ::torch_tpu::UnaryOp(
-                           self, BuildReluShlo,
-                           {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
+    TT_ASSIGN_OR_THROW(
+        at::Tensor result,
+        UnaryOp(self, BuildReluShlo,
+                {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
     return result;
   });
 }

@@ -526,7 +526,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> ForeachUnaryOp(
 
   std::vector<at::Tensor> inputs(self.begin(), self.end());
   const auto out_dims_list = GetDimsList(self);
-  DispatchOpOptions<torch_tpu::kDynamicSize> options = {
+  DispatchOpOptions<kDynamicSize> options = {
       .op_name = op_name,
       .out_dtypes = out_dtypes,
       .out_dims_list = out_dims_list,

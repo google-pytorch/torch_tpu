@@ -81,28 +81,28 @@ T&& get(FixedSizeSpan<T, N>&& span) {
 // ready in the aggregate initializer list when we create the std::array.
 // Therefore we overload MoveToStdArray for different N.
 template <typename T>
-std::array<T, 0> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 0> span) {
+std::array<T, 0> MoveToStdArray(FixedSizeSpan<T, 0> span) {
   return {};
 }
 template <typename T>
-std::array<T, 1> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 1> span) {
+std::array<T, 1> MoveToStdArray(FixedSizeSpan<T, 1> span) {
   return {std::move(span[0])};
 }
 template <typename T>
-std::array<T, 2> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 2> span) {
+std::array<T, 2> MoveToStdArray(FixedSizeSpan<T, 2> span) {
   return {std::move(span[0]), std::move(span[1])};
 }
 template <typename T>
-std::array<T, 3> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 3> span) {
+std::array<T, 3> MoveToStdArray(FixedSizeSpan<T, 3> span) {
   return {std::move(span[0]), std::move(span[1]), std::move(span[2])};
 }
 template <typename T>
-std::array<T, 4> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 4> span) {
+std::array<T, 4> MoveToStdArray(FixedSizeSpan<T, 4> span) {
   return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
           std::move(span[3])};
 }
 template <typename T>
-std::array<T, 5> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 5> span) {
+std::array<T, 5> MoveToStdArray(FixedSizeSpan<T, 5> span) {
   return {std::move(span[0]), std::move(span[1]), std::move(span[2]),
           std::move(span[3]), std::move(span[4])};
 }
@@ -114,13 +114,13 @@ std::array<T, 5> MoveToStdArray(torch_tpu::FixedSizeSpan<T, 5> span) {
 // binding. They must be in the `std` namespace.
 namespace std {
 
-// 1. Specialization of `std::tuple_size`
-template <typename T, std::size_t N>
+// 1. Specialization of `tuple_size`
+template <typename T, size_t N>
 struct tuple_size<torch_tpu::FixedSizeSpan<T, N>>
-    : std::integral_constant<std::size_t, N> {};
+    : integral_constant<size_t, N> {};
 
-// 2. Specialization of `std::tuple_element`
-template <std::size_t I, typename T, std::size_t N>
+// 2. Specialization of `tuple_element`
+template <size_t I, typename T, size_t N>
 struct tuple_element<I, torch_tpu::FixedSizeSpan<T, N>> {
   using type = T;
 };

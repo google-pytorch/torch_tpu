@@ -531,8 +531,7 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
                            self.scalar_type() != at::ScalarType::ComplexFloat,
                        error::kInvalidArgument)
             << "not yet implemented for uint8, int8, int16, int32,"
-            << " and complex64 dtypes, got "
-            << torch_tpu::ToString(self.scalar_type());
+            << " and complex64 dtypes, got " << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,
@@ -565,7 +564,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                        error::kInvalidArgument)
             << "not yet implemented for bool, bfloat16, float16, uint8, int8,"
             << " int16, int32, and complex64 dtypes, got "
-            << torch_tpu::ToString(self.scalar_type());
+            << ToString(self.scalar_type());
 
         TT_ASSIGN_OR_THROW(
             auto result,

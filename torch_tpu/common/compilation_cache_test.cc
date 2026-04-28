@@ -269,7 +269,7 @@ TEST_F(CompilationCacheTest, PeakMemoryReported) {
 
   absl::FlagSaver saver;
   absl::SetFlag(&FLAGS_torch_tpu_internal_enable_compilation_container, true);
-  torch_tpu::CleanUpContainer();
+  CleanUpContainer();
 
   CompilationCache& cache = CompilationCache::GetInstance();
 

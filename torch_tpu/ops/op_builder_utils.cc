@@ -623,13 +623,12 @@ std::string BuildModuleNameFromPyContext(
   }
 
   os << "_";
-  mlir::Location location =
-      torch_tpu::MakeMlirLocation(mlir_context, *python_context);
+  mlir::Location location = MakeMlirLocation(mlir_context, *python_context);
 
   // Traverse the location from the current frame up through callee frames
   // until we hit a viable user frame of the form
   //   NameLoc(funcname, FileLineColLoc(filename, line, col));
-  // See `torch_tpu::MakeMlirLocation` for more details on this format.
+  // See `MakeMlirLocation` for more details on this format.
   auto result =
       location->walk([&](mlir::Location child_loc) -> mlir::WalkResult {
         ABSL_VLOG(1) << "[BuildModuleNameFromPyContext] childLoc: "

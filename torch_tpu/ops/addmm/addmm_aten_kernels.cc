@@ -186,8 +186,8 @@ at::Tensor& AtenAddmmOut(const at::Tensor& self, const at::Tensor& mat1,
                        error::kInvalidArgument)
             << "input and out tensors expected to have the same dtype, got "
                "input dtype "
-            << torch_tpu::ToString(self.scalar_type()) << " and out dtype "
-            << torch_tpu::ToString(out.scalar_type());
+            << ToString(self.scalar_type()) << " and out dtype "
+            << ToString(out.scalar_type());
         TT_ASSIGN_OR_THROW(auto result_buffer,
                            AddMm(self, mat1, mat2, beta, alpha,
                                  out.scalar_type(), param_keys));
@@ -223,8 +223,8 @@ at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self, const at::Tensor& mat1,
       (self, mat1, mat2, out_dtype, beta, alpha, out), {
         TT_CHECK_THROW(out.scalar_type() == out_dtype, error::kInvalidArgument)
             << "out dtype should match out_dtype, got out dtype "
-            << torch_tpu::ToString(out.scalar_type()) << " and out_dtype "
-            << torch_tpu::ToString(out_dtype);
+            << ToString(out.scalar_type()) << " and out_dtype "
+            << ToString(out_dtype);
         TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=errors from addmm
                              // tested individually.
             auto result_buffer,

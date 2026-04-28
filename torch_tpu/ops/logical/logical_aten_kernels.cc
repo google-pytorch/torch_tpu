@@ -86,9 +86,9 @@ absl::Status LogicalUnaryOutImpl(const at::Tensor& self, at::Tensor& out,
   };
 
   TT_RETURN_IF_ERROR(
-      ::torch_tpu::UnaryOpOut(self, out, std::move(custom_op_builder),
-                              {.op_param_cache_keys = OpParamCacheKeys::Empty(),
-                               .out_dtype = out_dtype}));
+      UnaryOpOut(self, out, std::move(custom_op_builder),
+                 {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                  .out_dtype = out_dtype}));
   return absl::OkStatus();
 }
 
@@ -97,8 +97,8 @@ absl::Status LogicalUnaryOutImpl(const at::Tensor& self, at::Tensor& out,
 at::Tensor& AtenLogicalAndOut(const at::Tensor& self, const at::Tensor& other,
                               at::Tensor& out) {
   TT_KERNEL(OpName::kLogicalAndOut, _, (self, other, out), {
-    TT_THROW_IF_ERROR(::torch_tpu::LogicalBinaryOutImpl(self, other, out,
-                                                        BuildLogicalAndShlo));
+    TT_THROW_IF_ERROR(
+        LogicalBinaryOutImpl(self, other, out, BuildLogicalAndShlo));
     return out;
   });
 }
@@ -106,8 +106,8 @@ at::Tensor& AtenLogicalAndOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenLogicalOrOut(const at::Tensor& self, const at::Tensor& other,
                              at::Tensor& out) {
   TT_KERNEL(OpName::kLogicalOrOut, _, (self, other, out), {
-    TT_THROW_IF_ERROR(::torch_tpu::LogicalBinaryOutImpl(self, other, out,
-                                                        BuildLogicalOrShlo));
+    TT_THROW_IF_ERROR(
+        LogicalBinaryOutImpl(self, other, out, BuildLogicalOrShlo));
     return out;
   });
 }
@@ -115,16 +115,15 @@ at::Tensor& AtenLogicalOrOut(const at::Tensor& self, const at::Tensor& other,
 at::Tensor& AtenLogicalXorOut(const at::Tensor& self, const at::Tensor& other,
                               at::Tensor& out) {
   TT_KERNEL(OpName::kLogicalXorOut, _, (self, other, out), {
-    TT_THROW_IF_ERROR(::torch_tpu::LogicalBinaryOutImpl(self, other, out,
-                                                        BuildLogicalXorShlo));
+    TT_THROW_IF_ERROR(
+        LogicalBinaryOutImpl(self, other, out, BuildLogicalXorShlo));
     return out;
   });
 }
 
 at::Tensor& AtenLogicalNotOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kLogicalNotOut, _, (self, out), {
-    TT_THROW_IF_ERROR(
-        ::torch_tpu::LogicalUnaryOutImpl(self, out, BuildLogicalNotShlo));
+    TT_THROW_IF_ERROR(LogicalUnaryOutImpl(self, out, BuildLogicalNotShlo));
     return out;
   });
 }
