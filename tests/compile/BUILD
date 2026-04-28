@@ -85,6 +85,7 @@ torch_tpu_py_test(
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils",
@@ -154,6 +155,28 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/utils",
+        "//torch_tpu/api",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "caching_test",
+    srcs = ["caching_test.py"],
+    notest_oss = "subprocess spawning to set env vars timeout in oss",
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "//torch_tpu/api",
     ],
 )

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -73,17 +74,9 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
   return new_tensor;
 }
 
-absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
-    mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
+absl::StatusOr<std::unique_ptr<Traversal>> BuildTraversal(
+    const std::vector<at::Tensor>& arg_tensors,
     const std::vector<at::Tensor>& result_tensors) {
-  // Use artificial python context for compiled mode to that modules have better
-  // names when dumped. Currently this will always point to `_export_to_fx`, and
-  // can be improved in the future, but it is useful for distinguishing torch
-  // compiled graphs from eager graphs.
-  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
-  ScopedPythonContextProvider provider(
-      ScopedPythonContextCapturer::GetContext());
-
   TT_RET_CHECK(!result_tensors.empty(), error::kInvalidArgument)
       << "no result tensors provided";
 
@@ -97,8 +90,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     TT_RET_CHECK(buffer_ref.state() != DeviceBufferRefState::kDeferred,
                  error::kInternal)
         << "argument tensor has deferred ops: " << ToString(tensor);
-    ABSL_VLOG(3) << "[ExtractMlirFromGraph] arg_tensor: "
-                 << buffer_ref.DebugString();
+    ABSL_VLOG(3) << "[BuildTraversal] arg_tensor: " << buffer_ref.DebugString();
     argument_refs.push_back(std::move(buffer_ref));
   }
 
@@ -112,7 +104,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     TT_RET_CHECK(buffer_ref.state() != DeviceBufferRefState::kMaterialized,
                  error::kInternal)
         << "result tensor is already materialized: " << ToString(tensor);
-    ABSL_VLOG(3) << "[ExtractMlirFromGraph] result_tensor: "
+    ABSL_VLOG(3) << "[BuildTraversal] result_tensor: "
                  << buffer_ref.DebugString();
     result_refs.push_back(std::move(buffer_ref));
   }
@@ -124,26 +116,31 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
       traversal.ValidateAndReorderArguments(std::move(argument_refs)))
           .SetPrepend()
       << "failed to validate and reorder inputs: ";
-  TT_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
-                      traversal.BuildMlirModule(mlir_context));
 
-  return mlir_module;
+  return std::make_unique<Traversal>(std::move(traversal));
 }
 
-absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
-    const std::string_view mlir_module_bytecode,
-    const CompilationMode compilation_mode) {
-  TT_ASSIGN_OR_RETURN(
-      ContextedModule module,
-      ContextedModule::Make(
-          [&](mlir::MLIRContext& mlir_context)
-              -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
-            return mlir::stablehlo::deserializePortableArtifact(
-                {mlir_module_bytecode.data(), mlir_module_bytecode.size()},
-                &mlir_context);
-          }));
-  return CompileMlirExecutable(std::move(module).ToMaybeOwningMlirModule(),
-                               compilation_mode);
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
+    mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
+    const std::vector<at::Tensor>& result_tensors) {
+  // Use artificial python context for compiled mode to that modules have better
+  // names when dumped. Currently this will always point to `_export_to_fx`, and
+  // can be improved in the future, but it is useful for distinguishing torch
+  // compiled graphs from eager graphs.
+  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+  ScopedPythonContextProvider provider(
+      ScopedPythonContextCapturer::GetContext());
+
+  TT_ASSIGN_OR_RETURN(auto traversal,
+                      BuildTraversal(arg_tensors, result_tensors));
+  return traversal->BuildMlirModule(mlir_context);
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileTraversal(
+    const Traversal& traversal, const CompilationMode compilation_mode) {
+  TT_ASSIGN_OR_RETURN(CompiledKernel compiled_kernel,
+                      traversal.Compile(compilation_mode));
+  return compiled_kernel.fixed_shape_kernel.get();
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(

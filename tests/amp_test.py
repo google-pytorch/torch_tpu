@@ -95,9 +95,10 @@ class AmpTest(absltest.TestCase):
     self.assertEqual(actual_dtypes["loss"], torch.float32)
 
     # Check the MLIR that the model generates.
-    mlir = tpu_torch_compile.build_mlir(
+    traversal = tpu_torch_compile.build_traversal(
         [loss], [x, y] + list(model.parameters())
     )
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
 
     # Operations that get actually performed:

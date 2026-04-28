@@ -14,12 +14,12 @@
 
 from torch_tpu._internal.export import export as export_lib
 
-exported_to_mlir = export_lib.exported_to_mlir
-fx_to_mlir = export_lib.fx_to_mlir
+fx_to_traversal = export_lib.fx_to_traversal
+exported_to_traversal = export_lib.exported_to_traversal
 
 __all__ = [
     # go/keep-sorted start
-    "exported_to_mlir",
-    "fx_to_mlir",
+    "exported_to_traversal",
+    "fx_to_traversal",
     # go/keep-sorted end
 ]

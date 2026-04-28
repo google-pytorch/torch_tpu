@@ -183,8 +183,10 @@ class SchedOverheadTest(parameterized.TestCase):
     result_tensors = [z] * num_outputs
     argument_tensors = [x, y]
 
-    mlir = tpu_torch_compile.build_mlir(result_tensors, argument_tensors)
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal(
+        result_tensors, argument_tensors
+    )
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     # Warmup
     for _ in range(_NUM_WARMUP_STEPS.value):

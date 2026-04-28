@@ -65,7 +65,6 @@ pytype_strict_library(
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compiler_options",
         "//torch_tpu/_internal/device:_device_module",
-        "//torch_tpu/_internal/device_utils",
         "//torch_tpu/_internal/distributed:gpu_env",
         "//torch_tpu/_internal/distributed/launchers:multihost_wrapper",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",

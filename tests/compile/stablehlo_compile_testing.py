@@ -23,7 +23,6 @@ from absl import logging
 from absl.testing import absltest
 from torch.utils import tensorboard
 from torch_tpu._internal.compile import tpu_torch_compile
-from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import benchmarking
 
 record_tensorboard_metrics = benchmarking.record_tensorboard_metrics
@@ -59,9 +58,6 @@ class StableHloCompileTimeTestBase(absltest.TestCase):
     super().setUpClass()
     cls._writer = None
     cls._preheat_xla_done = False  # Whether XLA has been preheated.
-    _device_ops_backend._init_runtime_options(  # pylint: disable=protected-access
-        device_type="tpu",
-    )
 
     if _ENABLE_TENSORBOARD_LOGGING.value:
       log_dir = _TB_SUMMARY_LOGGING_DIR.value

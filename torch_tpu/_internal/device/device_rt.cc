@@ -161,7 +161,7 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         TT_CHECK_THROW(client != nullptr, error::kInternal)
             << "PjRtClient is null after initialization.";
-        return client->device_count();
+        return client->addressable_device_count();
       },
       "Returns the number of devices visible to the PJRT client. This count "
       "is equivalent to the global device count.");

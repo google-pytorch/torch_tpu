@@ -32,6 +32,7 @@
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/eager/traversal.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 
 // The core functions used for Dynamo compiled mode.
@@ -75,13 +76,17 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     mlir::MLIRContext& mlir_context, const std::vector<at::Tensor>& arg_tensors,
     const std::vector<at::Tensor>& result_tensors);
 
-// torch.compile integration: this is called by torch.compile() to compile the
-// FX graph, after it has generated the graph and its input/output tensors. This
-// function does the compilation and adds the compiled executable to the
-// compilation cache.
+// torch.compile integration: this constructs and returns the Traversal object
+// from the given argument and result tensors.
+absl::StatusOr<std::unique_ptr<Traversal>> BuildTraversal(
+    const std::vector<at::Tensor>& arg_tensors,
+    const std::vector<at::Tensor>& result_tensors);
+
+// torch.compile integration: this takes the Traversal object and triggers
+// cached compilation using the persistent compilation cache layer.
 //
 // Args:
-//   mlir_module_bytecode: The MLIR module bytecode.
+//   traversal: The Traversal object to compile.
 //   compilation_mode: Which compiler profile to use. By default, use the
 //     profile optimized for torch.compile. However, in tests we may specify
 //     the profile optimized for eager.
@@ -89,13 +94,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
 // Returns:
 //   The compiled executable. When the executable runs, the argument tensors
 //   will be converted to PjRt buffers and passed to the compiled executable,
-//   and the results will be converted back to ATen tensors
-//
-// Important: the argument and result tensors must be the same as those used
-// by the FX graph, including their order. Otherwise, the compilation might
-// fail or the materialized tensors might be wrong.
-absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileMlirExecutable(
-    std::string_view mlir_module_bytecode,
+//   and the results will be converted back to ATen tensors.
+absl::StatusOr<SharedLoadedExecutableWithMetadata> CompileTraversal(
+    const Traversal& traversal,
     CompilationMode compilation_mode = CompilationMode::kFastRuntime);
 
 // torch.compile integration: this is called by torch.compile() to compile the

@@ -56,7 +56,10 @@ class CompileApiTest(absltest.TestCase):
       z = x + y
     result_tensors = [z]
     argument_tensors = [x, y]
-    mlir = tpu_torch_compile.build_mlir(result_tensors, argument_tensors)
+    traversal = tpu_torch_compile.build_traversal(
+        result_tensors, argument_tensors
+    )
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     self.assertIn(
         'func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<10xf32>)',
@@ -72,7 +75,10 @@ class CompileApiTest(absltest.TestCase):
       z = x + y
     result_tensors = [z]
     argument_tensors = [x, y, extra]
-    mlir = tpu_torch_compile.build_mlir(result_tensors, argument_tensors)
+    traversal = tpu_torch_compile.build_traversal(
+        result_tensors, argument_tensors
+    )
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     self.assertIn('func @main', mlir_text)
     self.assertIn('%arg2', mlir_text)
@@ -84,12 +90,10 @@ class CompileApiTest(absltest.TestCase):
       z = x + y
     result_tensors = [z]
     argument_tensors = [x]
-    with self.assertRaises(RuntimeError) as err:
-      tpu_torch_compile.build_mlir(result_tensors, argument_tensors)
-    self.assertIn(
-        'identified an argument that was not provided',
-        str(err.exception),
-    )
+    with self.assertRaisesRegex(
+        RuntimeError, 'identified an argument that was not provided'
+    ):
+      tpu_torch_compile.build_traversal(result_tensors, argument_tensors)
 
   def test_compile_backend_defaults_to_tpu(self):
     with get_mock_lookup_backend() as mock_lookup_backend:
@@ -136,8 +140,8 @@ class CompileApiTest(absltest.TestCase):
       y = torch.ones(10, device='cpu').to(device=api.tpu_device())
       z = x + y
 
-    mlir = tpu_torch_compile.build_mlir([z], [x, y])
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal([z], [x, y])
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     results = tpu_torch_compile.execute(executable, [x, y], [[10]])
     self.assertLen(results, 1)
@@ -149,8 +153,8 @@ class CompileApiTest(absltest.TestCase):
       y = torch.ones(10, device='cpu').to(device=api.tpu_device())
       z = x + y
 
-    mlir = tpu_torch_compile.build_mlir([z], [x, y])
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal([z], [x, y])
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     results = tpu_torch_compile.execute(executable, [x, y], [[5]])
     self.assertLen(results, 1)
@@ -180,7 +184,8 @@ class CompileApiTest(absltest.TestCase):
 
     # Act
     y = tpu_torch_compile.make_constant_tensor(x)
-    mlir = tpu_torch_compile.build_mlir([y], [])
+    traversal = tpu_torch_compile.build_traversal([y], [])
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     actual = y.cpu()
 
@@ -211,7 +216,8 @@ class CompileApiTest(absltest.TestCase):
 
     # Act
     y = tpu_torch_compile.make_constant_tensor(x)
-    mlir = tpu_torch_compile.build_mlir([y], [])
+    traversal = tpu_torch_compile.build_traversal([y], [])
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     actual = y.cpu()
 
@@ -256,7 +262,8 @@ class CompileApiTest(absltest.TestCase):
 
     # Act
     y = tpu_torch_compile.make_constant_tensor(x)
-    mlir = tpu_torch_compile.build_mlir([y], [])
+    traversal = tpu_torch_compile.build_traversal([y], [])
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     actual = y.cpu()
 
@@ -286,7 +293,8 @@ class CompileApiTest(absltest.TestCase):
 
     # Act
     tpu_torch_compile.assign_constant_tensor(cpu_src, tpu_dst)
-    mlir = tpu_torch_compile.build_mlir([tpu_dst], [])
+    traversal = tpu_torch_compile.build_traversal([tpu_dst], [])
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     actual = tpu_dst.cpu()
 
@@ -321,7 +329,8 @@ class CompileApiTest(absltest.TestCase):
 
     # Act
     tpu_torch_compile.assign_constant_tensor(cpu_src, tpu_dst)
-    mlir = tpu_torch_compile.build_mlir([tpu_dst], [])
+    traversal = tpu_torch_compile.build_traversal([tpu_dst], [])
+    mlir = tpu_torch_compile.build_mlir(traversal)
     mlir_text = tpu_torch_compile.serialize_mlir_text(mlir)
     actual = tpu_dst.cpu()
 
@@ -363,8 +372,9 @@ class CompileApiTest(absltest.TestCase):
       results = torch.ops.torch_tpu.optimization_barrier(inputs)
     expected_mlir = """%0:2 = stablehlo.optimization_barrier %arg0, %arg1 : tensor<10xf32>, tensor<10xf32>"""
 
+    traversal = tpu_torch_compile.build_traversal(results, inputs)
     mlir_text = tpu_torch_compile.serialize_mlir_text(
-        tpu_torch_compile.build_mlir(results, inputs)
+        tpu_torch_compile.build_mlir(traversal)
     )
 
     self.assertIn(expected_mlir, mlir_text)

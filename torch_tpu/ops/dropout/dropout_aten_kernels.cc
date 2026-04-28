@@ -16,6 +16,7 @@
 
 #include "torch_tpu/ops/dropout/dropout_aten_kernels.h"
 
+#include <mutex>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -84,6 +85,10 @@ std::tuple<at::Tensor, at::Tensor> AtenDropout(const at::Tensor& input,
 
     auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
         std::nullopt, GetDefaultDeviceGenerator());
+
+    // See Note [Acquire lock when using random generators]
+    // NOLINTNEXTLINE
+    std::scoped_lock<std::mutex> lock(gen->mutex_);
 
     // Retrieve the rng_state tensor from the default device generator.
     at::Tensor rng_input_state = gen->DeviceStateTensor();

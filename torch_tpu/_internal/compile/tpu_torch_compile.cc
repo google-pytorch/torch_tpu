@@ -34,6 +34,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Generator.h"
 #include "ATen/core/TensorBody.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch/headeronly/core/ScalarType.h"
@@ -46,6 +47,8 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/eager/device_gen_impl.h"
+#include "torch_tpu/eager/traversal.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -79,27 +82,7 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
                            arg_tensor.requires_grad());
 }
 
-// Returns a ContextedModule corresponding to the graph terminating at
-// result_tensors and taking argument_tensors as inputs.
-std::shared_ptr<ContextedModule> PyBuildMlir(
-    const std::vector<at::Tensor>& result_tensors,
-    const std::vector<at::Tensor>& argument_tensors) {  // INT_VEC_OK
-  TT_ASSIGN_OR_THROW(ContextedModule module,
-                     ContextedModule::Make([&](mlir::MLIRContext& context) {
-                       return ExtractMlirFromGraph(context, argument_tensors,
-                                                   result_tensors);
-                     }));
 
-  mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
-  if (failed(mlir::verify(module.get()))) {
-    TT_THROW_IF_ERROR(
-        TT_ERROR(error::kInternal)
-        << "MLIR module is invalid:\n"
-        << diag_handler.ConsumeStatus().message() << "\n"
-        << DebugString(module.get(), DebugStringOptions::kEnableDebugInfo));
-  }
-  return std::make_shared<ContextedModule>(std::move(module));
-}
 
 // Parses MLIR text, verifies it, and returns a ContextedModule.
 std::shared_ptr<ContextedModule> PyParseMlirText(const std::string& mlir_text) {
@@ -170,6 +153,52 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
   return executable;
 }
 
+std::unique_ptr<Traversal> PyBuildTraversal(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors) {
+  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+  TT_ASSIGN_OR_THROW(auto traversal,
+                     BuildTraversal(argument_tensors, result_tensors),
+                     _.SetPrepend() << "failed to build traversal: ");
+  return traversal;
+}
+
+SharedLoadedExecutableWithMetadata PyCompileTraversal(
+    const Traversal& traversal, const bool fast_compile) {
+  ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+  ScopedPythonContextProvider provider(
+      ScopedPythonContextCapturer::GetContext());
+  TT_ASSIGN_OR_THROW(
+      auto executable,
+      CompileTraversal(traversal, fast_compile ? CompilationMode::kFastCompile
+                                               : CompilationMode::kFastRuntime),
+      _.SetPrepend() << "failed to compile traversal: ");
+  return executable;
+}
+
+std::shared_ptr<ContextedModule> PyBuildMlirFromTraversal(
+    const Traversal& traversal) {
+  TT_ASSIGN_OR_THROW(
+      ContextedModule module,
+      ContextedModule::Make([&](mlir::MLIRContext& context) {
+        ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
+        ScopedPythonContextProvider provider(
+            ScopedPythonContextCapturer::GetContext());
+        return traversal.BuildMlirModule(context);
+      }),
+      _.SetPrepend() << "failed to build MLIR from traversal: ");
+
+  mlir::BaseScopedDiagnosticHandler diag_handler(&module.context());
+  if (failed(mlir::verify(module.get()))) {
+    TT_THROW_IF_ERROR(
+        TT_ERROR(error::kInternal)
+        << "MLIR module is invalid:\n"
+        << diag_handler.ConsumeStatus().message() << "\n"
+        << DebugString(module.get(), DebugStringOptions::kEnableDebugInfo));
+  }
+  return std::make_shared<ContextedModule>(std::move(module));
+}
+
 // Executes a compiled PJRT executable with the given arguments.
 //
 // Args:
@@ -195,6 +224,18 @@ void PyPushEnableTracebacks(std::optional<bool> enabled) {
                                                : TracebackMode::kDisabled)
           : std::nullopt;
   PushContextState(state);
+}
+
+// Returns the internal TPU RNG state tensor from a generator.
+at::Tensor PyGetDeviceStateTensor(at::Generator gen) {
+  auto* device_gen = at::check_generator<DeviceGeneratorImpl>(gen);
+  return device_gen->DeviceStateTensor();
+}
+
+// Sets the internal TPU RNG state tensor on a generator.
+void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state) {
+  auto* device_gen = at::check_generator<DeviceGeneratorImpl>(gen);
+  TT_THROW_IF_ERROR(device_gen->SetDeviceStateTensor(std::move(rng_state)));
 }
 
 }  // namespace
@@ -325,6 +366,9 @@ void PyAssignConstantTensor(const at::Tensor& cpu_src_tensor,
 }
 
 PYBIND11_MODULE(tpu_torch_compile, m) {
+  py::class_<torch_tpu::Traversal,  // NOLINT(bugprone-unused-raii)
+             std::unique_ptr<torch_tpu::Traversal>>(m, "Traversal");
+
   py::class_<torch_tpu::ContextedModule,  // NOLINT(bugprone-unused-raii)
              std::shared_ptr<torch_tpu::ContextedModule>>(m, "ContextedModule");
 
@@ -354,11 +398,17 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
         py::arg("requires_grad"));
   m.def("placeholder_like", PyMakePlaceholderLike, py::arg("arg_tensor"));
-  m.def("build_mlir", PyBuildMlir, py::arg("result_tensors"),
+  m.def("build_traversal", PyBuildTraversal, py::arg("result_tensors"),
         py::arg("argument_tensors"));  // INT_VEC_OK
+
+  m.def("build_mlir", PyBuildMlirFromTraversal, py::arg("traversal"),
+        "Extracts the ContextedModule from a Traversal object.");
   // Returns: PjRtLoadedExecutable
   m.def("compile_mlir", PyCompileMlir, py::arg("module"),
         py::arg("fast_compile") = false);
+  m.def("compile_traversal", PyCompileTraversal, py::arg("traversal"),
+        py::arg("fast_compile") = false);
+
   m.def("parse_mlir_text", PyParseMlirText, py::arg("mlir_text"),
         "Parses a StableHLO MLIR text string and returns a ContextedModule.");
   m.def("serialize_mlir_text", PySerializeMlirText, py::arg("module"),
@@ -391,6 +441,11 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("cpu_src_tensor"), py::arg("tpu_dst_tensor"),
         "Updates a TPU tensor to be a tensor with the constant value of the "
         "CPU tensor.");
+  m.def("get_device_state_tensor", PyGetDeviceStateTensor, py::arg("generator"),
+        "Returns the internal TPU RNG state tensor from a generator.");
+  m.def("set_device_state_tensor", PySetDeviceStateTensor, py::arg("generator"),
+        py::arg("rng_state"),
+        "Sets the internal TPU RNG state tensor on a generator.");
 }
 
 }  // namespace torch_tpu

@@ -372,7 +372,7 @@ absl::Status DeviceGeneratorImpl::CheckDeviceStateTensor(
 
 absl::StatusOr<at::Tensor> DeviceGeneratorImpl::GetAndAdvanceDeviceStateTensor(
     int64_t num_elements, int64_t bit_width) {
-  auto rng_input_state = DeviceStateTensor();
+  auto rng_input_state = state_->device_state_tensor;
   if (num_elements <= 0 || bit_width <= 0) {
     return rng_input_state;
   }

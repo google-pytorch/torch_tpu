@@ -357,10 +357,43 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
       potentially after being processed by `reconstruct_fx_outputs_fn`.
     """
     output_shapes = [] if output_shapes is None else output_shapes
-    executable_args = self._take_tensor_args(args)
-    outputs = tpu_torch_compile.execute(
+
+    device = torch.accelerator.current_accelerator()
+    device_module = getattr(torch, device.type)
+
+    # Update RNG state as the last argument.
+    generators = [device_module.default_generators[device.index or 0]] + [
+        arg for arg in args if isinstance(arg, torch.Generator)
+    ]
+    # Map all generators (including user-passed custom generators) to the
+    # canonical default generator for their device. This aligns with PyTorch's
+    # observed CUDA behavior where graphsafe RNG ops always mutate the global
+    # generator's state, making `torch.manual_seed()` work for compiled graphs.
+    # TODO(b/501205098): Confirm the intended behavior and right implementation.
+    generators = [
+        device_module.default_generators[gen.device.index] for gen in generators
+    ]
+
+    device_state_tensors = [
+        tpu_torch_compile.get_device_state_tensor(gen) for gen in generators
+    ]
+
+    executable_args = (
+        *self._take_tensor_args(args),
+        *device_state_tensors,
+    )
+    outputs_with_device_state_tensors = tpu_torch_compile.execute(
         self._executable, executable_args, output_shapes
     )
+    outputs, device_state_tensors = (
+        outputs_with_device_state_tensors[: -len(device_state_tensors)],
+        outputs_with_device_state_tensors[-len(device_state_tensors) :],
+    )
+
+    # Once the executable has completed, restore the newly updated RNG state
+    # back to each generator.
+    for gen, device_state_tensor in zip(generators, device_state_tensors):
+      tpu_torch_compile.set_device_state_tensor(gen, device_state_tensor)
 
     if self._reconstruct_fx_outputs_fn is not None:
       outputs = self._reconstruct_fx_outputs_fn(args, outputs)
@@ -540,39 +573,44 @@ class StaticCompiler(Compiler):
           for arg in example_inputs
       ]
 
-      with dynamo_timed("torchtpu_fx_to_mlir"):
-        exported_mlir = torch_tpu_export.fx_to_mlir(
+      with dynamo_timed("torchtpu_fx_to_traversal"):
+        exported_traversal = torch_tpu_export.fx_to_traversal(
             graph_module,
             placeholder_args,
         )
 
-    # Emit StableHLO artifact for tlparse when TORCH_TRACE is set.
-    if tracing_enabled:
-      mlir_text = exported_mlir.serialize_text(enable_debug_info=self._debug)
-      trace_structured(
-          "artifact",
-          metadata_fn=lambda: {
-              "name": "torchtpu_stablehlo_graph",
-              "encoding": "string",
-          },
-          payload_fn=lambda: mlir_text,
-          expect_trace_id=True,
+    # Emit StableHLO artifact for tlparse when TORCH_TRACE is set or
+    # debugging is enabled.
+    mlir_text = ""
+    if tracing_enabled or self._debug:
+      mlir = tpu_torch_compile.build_mlir(exported_traversal.traversal)
+      mlir_text = tpu_torch_compile.serialize_mlir_text(
+          mlir, enable_debug_info=self._debug
       )
+      if tracing_enabled:
+        trace_structured(
+            "artifact",
+            metadata_fn=lambda: {
+                "name": "torchtpu_stablehlo_graph",
+                "encoding": "string",
+            },
+            payload_fn=lambda: mlir_text,
+            expect_trace_id=True,
+        )
 
     with dynamo_timed("torchtpu_pjrt_compile"):
-      cached_executable = tpu_torch_compile.compile_mlir(exported_mlir.module)
+      cached_executable = tpu_torch_compile.compile_traversal(
+          exported_traversal.traversal, fast_compile=False
+      )
 
     executable = _TorchTpuCompiledExecutable(
         executable=cached_executable,
-        reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
+        reconstruct_fx_outputs_fn=exported_traversal.reconstruct_fx_outputs_fn,
     )
 
     if self._debug:
-      # Do not use print_readable() as it includes original lines of code
-      # which is too verbose.
+      # Avoid print_readable() as it includes verbose original code lines.
       executable.graph_module_debug_str = str(graph_module.code)
-      executable.mlir_text = exported_mlir.serialize_text(
-          enable_debug_info=True
-      )
+      executable.mlir_text = mlir_text
 
     return executable

@@ -1217,8 +1217,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
 
-    mlir = tpu_torch_compile.build_mlir([z], [x, y])
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal([z], [x, y])
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -1232,8 +1232,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
 
-    mlir = tpu_torch_compile.build_mlir([z], [x, y])
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal([z], [x, y])
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -1247,8 +1247,8 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
 
-    mlir = tpu_torch_compile.build_mlir([z], [x, y])
-    executable = tpu_torch_compile.compile_mlir(mlir)
+    traversal = tpu_torch_compile.build_traversal([z], [x, y])
+    executable = tpu_torch_compile.compile_traversal(traversal)
 
     with et.assert_raises_message(
         RuntimeError,

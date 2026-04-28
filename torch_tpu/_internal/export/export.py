@@ -25,15 +25,14 @@ from absl import logging
 import torch
 import torch.export
 import torch.utils._pytree as pytree
-from torch_tpu._internal import device_utils
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 
-__all__ = [
-    "ExportedMlir",
-    "exported_to_mlir",
-    "fx_to_mlir",
-]
+__all__ = (
+    "ExportedTraversal",
+    "fx_to_traversal",
+    "exported_to_traversal",
+)
 
 
 def _extract_states_from_exported_program(exported_model):
@@ -90,37 +89,47 @@ def _extract_sample_arguments(exported: torch.export.ExportedProgram):
 
 
 @dataclasses.dataclass(frozen=True)
-class ExportedMlir:
-  """Represents the MLIR representation of an FX graph module.
+class ExportedTraversal:
+  """Traced traversal output along with graph metadata.
+
+  This object is returned by `fx_to_traversal` and is passed to the compilation
+  caching backend to compile the model.
 
   Attributes:
-    module: The ContextedModule instance.
-    mlir_result_tensors: A flattened list of tensors that the MLIR graph will
-      actually produce as outputs.
-    reconstruct_fx_outputs_fn: A function that takes the flattened MLIR outputs
-      and reconstructs the original FX graph's output structure (e.g., restoring
-      `None` values or nested tuples).
+    traversal: A move-only C++ Traversal object that traces the backend graph.
+    reconstruct_fx_outputs_fn: A function that reconstructs the original FX
+      graph's output structure from the executable's results.
   """
 
-  module: tpu_torch_compile.ContextedModule
-  mlir_result_tensors: list[torch.Tensor]
+  traversal: Any
   reconstruct_fx_outputs_fn: Callable[
       [Sequence[Any], Sequence[torch.Tensor]], Any
   ]
+  _module: tpu_torch_compile.ContextedModule | None = dataclasses.field(
+      init=False, repr=False, default=None
+  )
+
+  def get_module(self) -> tpu_torch_compile.ContextedModule:
+    """Return the MLIR module for the traversal."""
+    if self._module is None:
+      object.__setattr__(
+          self, "_module", tpu_torch_compile.build_mlir(self.traversal)
+      )
+    return self._module
 
   def serialize_text(self, enable_debug_info: bool = False) -> str:
-    """Returns the MLIR representation of the graph as text."""
+    """Return the MLIR representation of the graph as text."""
     return tpu_torch_compile.serialize_mlir_text(
-        self.module, enable_debug_info=enable_debug_info
+        self.get_module(), enable_debug_info=enable_debug_info
     )
 
   def serialize_bytecode(self) -> bytes:
-    """Returns the MLIR representation of the graph as bytecode."""
-    return tpu_torch_compile.serialize_mlir_bytecode(self.module)
+    """Return the MLIR representation of the graph as bytecode."""
+    return tpu_torch_compile.serialize_mlir_bytecode(self.get_module())
 
   def serialize_portable_artifact(self) -> bytes:
-    """Returns the MLIR representation of the graph as a versioned portable artifact."""
-    return tpu_torch_compile.serialize_mlir_portable_artifact(self.module)
+    """Return the MLIR representation of the graph as a versioned portable artifact."""
+    return tpu_torch_compile.serialize_mlir_portable_artifact(self.get_module())
 
 
 class EagerLikeFxInterpreter(torch.fx.Interpreter):
@@ -178,15 +187,15 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
     return dispatch_fx_node(node)
 
 
-def exported_to_mlir(
+def exported_to_traversal(
     exported: torch.export.ExportedProgram,
-) -> ExportedMlir:
-  """Converts a `torch.export.ExportedProgram` into its MLIR representation.
+) -> ExportedTraversal:
+  """Convert a `torch.export.ExportedProgram` into its Traversal representation.
 
-  This function serves as a high-level wrapper around `fx_to_mlir` for exported
-  models. It extracts the FX graph, sample arguments, and lifted states
+  This function serves as a high-level wrapper around `fx_to_traversal` for
+  exported models. It extracts the FX graph, sample arguments, and lifted states
   (parameters, buffers, and constants) from the `ExportedProgram`, moves them
-  to an available XLA device, and then generates the corresponding MLIR.
+  to an available XLA device, and then generates the corresponding Traversal.
 
   An XLA device must be initialized before calling this function.
 
@@ -194,7 +203,7 @@ def exported_to_mlir(
     exported: The `torch.export.ExportedProgram` to convert.
 
   Returns:
-    An `ExportedMlir` object containing the MLIR representation of the graph and
+    An `ExportedTraversal` object containing the C++ Traversal and
     FX output reconstruction information.
   """
 
@@ -204,17 +213,12 @@ def exported_to_mlir(
   args = state + sample_args
   args = [tpu_torch_compile.placeholder_like(arg) for arg in args]
 
-  device = device_utils.available_xla_device()
-  if device is None:
-    raise ValueError(
-        "export requires an XLA device to be initialized before use"
-    )
-
+  device = torch.accelerator.current_accelerator()
   to_xla = lambda x: x.to(device)
   args = pytree.tree_map_only(torch.Tensor, to_xla, args)
   module = exported.graph_module.to(device)
 
-  return fx_to_mlir(module, args=args)
+  return fx_to_traversal(module, args=args)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -233,7 +237,7 @@ def _reconstruct_fx_outputs(
     output_map: Sequence[_DedupedTensorOutput | _NonTensorPassthrough | None],
     spec: pytree.TreeSpec,
 ) -> Any:
-  """Restores the original FX output structure from flattened MLIR outputs."""
+  """Restore the original FX output structure from flattened MLIR outputs."""
   reconstructed_flat: list[Any] = []
   output_used = [False] * len(deduped_outputs)
   for item in output_map:
@@ -255,7 +259,7 @@ def _reconstruct_fx_outputs(
 def _map_unused_fake_inputs_to_outputs(
     gm: torch.fx.GraphModule,
 ) -> Mapping[int, int]:
-  """Maps indices of fake inputs that are directly passed through to outputs.
+  """Map indices of fake inputs that are directly passed through to outputs.
 
   This function inspects the given `GraphModule` to find "placeholder" nodes
   (inputs) that are also present in the output tuple. Specifically, it looks
@@ -303,7 +307,7 @@ def _process_fx_outputs(
     list[torch.Tensor],
     Callable[[Sequence[Any], Sequence[torch.Tensor]], Any],
 ]:
-  """Removes Nones, maps passthrough values, and dedups outputs.
+  """Remove Nones, map passthrough values, and dedup outputs.
 
   This is necessary because MLIR graphs do not support `None` values in the
   graph outputs, and we don't want to produce duplicate outputs for tensors that
@@ -382,87 +386,81 @@ def enable_tracebacks(value: bool | None = True):
     tpu_torch_compile.pop_enable_tracebacks()
 
 
-def fx_to_mlir(
+def fx_to_traversal(
     module: torch.fx.GraphModule,
-    args: list[torch.Tensor | Any],
-) -> ExportedMlir:
-  """Converts an FX graph module to MLIR using TorchTPU's defer mode.
+    args: Sequence[torch.Tensor | Any],
+) -> ExportedTraversal:
+  """Trace an FX graph module and extract a C++ Traversal object.
 
-  This function traces the given FX graph module by running it with an
-  EagerLikeFxInterpreter in full defer mode
-  (`execution_mode.EagerMode.DEFER_ALL`).
-  The
-  resulting deferred graph is then converted to MLIR bytes.
+  This completely avoids expensive MLIR generation up front, and acts as
+  an optimal input to the compilation caching backend.
 
   Args:
-    module: The `torch.fx.GraphModule` to be converted to MLIR.
-    args: A list of input arguments to trace the module. These will be run
-      through an FX graph interpreter to identify the graph's output tensors.
+    module: The `torch.fx.GraphModule` to trace.
+    args: A list of input arguments to trace the module.
 
   Returns:
-    An `ExportedMlir` object containing the MLIR representation of the graph and
-    FX output reconstruction information.
+    An `ExportedTraversal` object containing the C++ Traversal and metadata.
   """
   # Filter out non-tensor arguments.
   argument_tensors = [a for a in args if isinstance(a, torch.Tensor)]
 
-  # Sync the RNG state before FX tracing to force materialization of deferred
-  # ops.
-  #
-  # Context: TorchTPU uses "deferred execution". Operations aren't
-  # computed instantly. Instead, they are added to a deferred graph.
-  # RNG state is treated as just another tensor in this graph.
-  #
-  # The "Graph Leaking" Problem:
-  # If a module was run in eager mode previously (e.g., a warmup step), the
-  # current global RNG state might be an unexecuted node sitting at the end of
-  # that old graph. If FX tracing accesses this state (e.g., via dropout
-  # kernels) without syncing, it accidentally connects your clean export graph
-  # to the old eager execution graph.
-  #
-  # Illustration of the leak:
-  # [Old Eager Graph] ---> (Pending RNG State) <--- [New FX Tracing Graph]
-  #                               ^
-  #                  FX grabs this, merging both graphs!
-  #                  (Leads to bloat and validation errors)
-  #
-  # The Solution:
-  # Syncing forces the TPU to compute the old graph, turning the RNG state
-  # back into a concrete, standalone tensor. This gives the FX tracer a
-  # clean slate.
-  #
-  # Safe state after sync:
-  # [Old Graph Executed] | (Concrete RNG State) ---> [Clean FX Tracing Graph]
-  if argument_tensors:
-    rng_state = torch.get_device_module(
-        argument_tensors[0].device
-    ).get_rng_state()  # get_rng_state() syncs and returns tensor on CPU.
-    del rng_state
-
   # Run the module through the EagerLikeFxInterpreter with MLIR location
   # tracebacks enabled by default so that the MLIR we generate has file
   # location info.
-  with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
-    # We clone the args so that inplace updates do not overwrite the placeholder
-    # args, these copies will be removed in the compiled code so there is no
-    # performance impact.
-    # Remove once b/491716758 is implemented.
-    cloned_args = (
-        x.clone() if isinstance(x, torch.Tensor) else x for x in args
+  device = torch.accelerator.current_accelerator()
+  device_module = getattr(torch, device.type)
+
+  # Add the default RNG generator for the device to the args.
+  argument_generators = [
+      device_module.default_generators[device.index or 0]
+  ] + [arg for arg in args if isinstance(arg, torch.Generator)]
+
+  orig_generator_states = {}
+  for gen in argument_generators:
+    orig_generator_states[gen] = gen.graphsafe_get_state().clone_state()
+
+    # Plumb a placeholder tensor to trace the generator's device rng state.
+    # This intercepts the C++ backend's state so that random operations
+    # are correctly chained against this placeholder during graph capture.
+    device_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
+    begin_state_tensor = tpu_torch_compile.placeholder_like(device_state_tensor)
+    tpu_torch_compile.set_device_state_tensor(gen, begin_state_tensor)
+
+    # Add placeholder to the argument tensors for traversal.
+    argument_tensors.append(begin_state_tensor)
+
+  try:
+    with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
+      # We clone the args so that inplace updates do not overwrite the
+      # placeholder args. These copies will be removed in the compiled code so
+      # there is no performance impact.
+      # Remove once b/491716758 is implemented.
+      cloned_args = (
+          x.clone() if isinstance(x, torch.Tensor) else x for x in args
+      )
+      fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
+
+    result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(
+        module, fx_outputs
     )
-    fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
 
-  result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(
-      module, fx_outputs
-  )
+    # Plumb the final state tensor as the last output of the graph so that
+    # the updated RNG state can be returned from the executable and persisted.
+    for gen in argument_generators:
+      end_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
+      result_tensors.append(end_state_tensor)
 
-  mlir_module = tpu_torch_compile.build_mlir(
-      result_tensors=result_tensors,
-      argument_tensors=argument_tensors,
-  )
+    traversal = tpu_torch_compile.build_traversal(
+        result_tensors=result_tensors,
+        argument_tensors=argument_tensors,
+    )
+  finally:
+    # Restore original generator states.
+    for gen in argument_generators:
+      gen.graphsafe_set_state(orig_generator_states[gen])
 
-  return ExportedMlir(
-      module=mlir_module,
-      mlir_result_tensors=result_tensors,
+  return ExportedTraversal(
+      traversal=traversal,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
   )

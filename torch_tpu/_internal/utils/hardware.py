@@ -167,11 +167,8 @@ def get_tpu_device_count() -> int:
   """Returns the number of TPU devices found on the system.
 
   Returns:
-    The integer number of TPU devices detected or specified by WORLD_SIZE.
+    The integer number of TPU devices detected.
   """
-  if (world_size := os.environ.get("WORLD_SIZE")) is not None:
-    return int(world_size)
-
   count, _ = _scan_pci_tpus()
   return count
 

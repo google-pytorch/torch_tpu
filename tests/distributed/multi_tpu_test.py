@@ -27,7 +27,7 @@ from tests.distributed import distributed_utils
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 
-def run_device_count() -> None:
+def run_global_device_count() -> None:
   # Verify that rank-related environment variables are set by torchrun or
   # launcher.
   assert "RANK" in os.environ
@@ -41,8 +41,9 @@ def run_device_count() -> None:
   dist.init_process_group(backend="tpu_dist")
 
   global_device_id = tpu_distributed.global_device_id()
-  count = torch.tpu.device_count()
-  assert count == world_size
+  global_device_ids = tpu_distributed.all_global_device_ids()
+
+  assert len(global_device_ids) == world_size
   this_device = torch.tpu.current_device()
   assert (
       this_device == global_device_id
@@ -51,10 +52,12 @@ def run_device_count() -> None:
 
 class MultiTpuTest(absltest.TestCase):
 
-  def test_device_count(self):
+  def test_global_device_count(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
-        fn=singlehost_wrapper.tpu_env_wrapper(run_device_count, world_size=8),
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_global_device_count, world_size=8
+        ),
     )
 
 

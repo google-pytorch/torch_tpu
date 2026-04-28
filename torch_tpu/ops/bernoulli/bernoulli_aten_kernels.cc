@@ -17,6 +17,7 @@
 #include "torch_tpu/ops/bernoulli/bernoulli_aten_kernels.h"
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <utility>
 
@@ -101,6 +102,10 @@ at::Tensor& AtenBernoulli_Float(at::Tensor& self, double p,
 
     auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
         generator, GetDefaultDeviceGenerator());
+
+    // See Note [Acquire lock when using random generators]
+    // NOLINTNEXTLINE
+    std::scoped_lock<std::mutex> lock(gen->mutex_);
 
     // Since we need to generate random bits, we query for the rng state tensor.
     at::Tensor rng_input_state = gen->DeviceStateTensor();

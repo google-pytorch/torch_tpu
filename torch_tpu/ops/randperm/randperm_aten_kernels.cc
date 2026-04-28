@@ -17,6 +17,7 @@
 #include "torch_tpu/ops/randperm/randperm_aten_kernels.h"
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <utility>
 
@@ -105,9 +106,15 @@ at::Tensor& AtenRandpermGeneratorOut(c10::SymInt n,
     auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
         generator, GetDefaultDeviceGenerator());
 
-    // Query the current RNG state and advance it.
-    TT_ASSIGN_OR_THROW(at::Tensor rng_input_state,
-                       gen->GetAndAdvanceDeviceStateTensor(n_int, 64));
+    at::Tensor rng_input_state;  // UNINITIALIZED_TENSOR_OK
+    {
+      // See Note [Acquire lock when using random generators]
+      // NOLINTNEXTLINE
+      std::scoped_lock<std::mutex> lock(gen->mutex_);
+      // Query the current RNG state and advance it.
+      TT_ASSIGN_OR_THROW(rng_input_state,
+                         gen->GetAndAdvanceDeviceStateTensor(n_int, 64));
+    }
 
     // Dispatch the actual randperm.
     auto randperm_op_builder =

@@ -33,7 +33,6 @@ pytype_strict_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
-        "//torch_tpu/_internal/device_utils",
         "//torch_tpu/_internal/execution_mode",
     ],
 )

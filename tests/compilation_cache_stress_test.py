@@ -20,7 +20,12 @@ import time
 from absl.testing import absltest
 import torch
 from torch_tpu import api
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
+
+
+def eager_mode_defer_all():
+  return execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL)
 
 
 class CompilationCacheStressTest(absltest.TestCase):

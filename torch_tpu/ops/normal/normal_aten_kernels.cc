@@ -17,6 +17,7 @@
 #include "torch_tpu/ops/normal/normal_aten_kernels.h"
 
 #include <cmath>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -184,6 +185,10 @@ absl::StatusOr<DeviceBufferRef> NormalLike(
 
   auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
       generator, GetDefaultDeviceGenerator());
+
+  // See Note [Acquire lock when using random generators]
+  // NOLINTNEXTLINE
+  std::scoped_lock<std::mutex> lock(gen->mutex_);
 
   // Retrieve the rng_state tensor from the generator.
   at::Tensor rng_input_state = gen->DeviceStateTensor();

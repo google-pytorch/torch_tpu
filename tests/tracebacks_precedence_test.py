@@ -43,9 +43,8 @@ class TracebackPrecedenceTest(absltest.TestCase):
 
     # Context manager overrides the flag to False
     with torch_tpu_export.enable_tracebacks(False):
-      exported_mlir = torch_tpu_export.exported_to_mlir(exported)
-
-    mlir_text = exported_mlir.serialize_text(enable_debug_info=True)
+      exported_traversal = torch_tpu_export.exported_to_traversal(exported)
+    mlir_text = exported_traversal.serialize_text(enable_debug_info=True)
 
     # Expect no python filenames if tracebacks are disabled by the context
     # manager.
