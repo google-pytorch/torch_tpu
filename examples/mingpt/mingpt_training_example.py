@@ -46,7 +46,6 @@ from absl import app
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data.dataloader import DataLoader
-from torch_tpu import api
 from torch_tpu._internal import execution_mode
 from examples.mingpt.impl.mingpt import GPT
 # create a Trainer object
@@ -130,7 +129,7 @@ def main(_: Sequence[str]) -> None:
   model_config.vocab_size = train_dataset.get_vocab_size()
   model_config.block_size = train_dataset.get_block_size()
 
-  device = api.tpu_device()  # or "cpu"
+  device = torch.accelerator.current_accelerator()
 
   model = GPT(model_config, device=device)
 

@@ -18,7 +18,6 @@ import time
 
 from absl import app
 import torch
-from torch_tpu import api
 from torch_tpu._internal import compiler_options as compiler
 from examples import paths
 import transformers
@@ -32,11 +31,12 @@ def main(argv):
   del argv
   torch.manual_seed(123)
 
-  # TODO(b/504069903): Change api.tpu_device() to torch.device("tpu")
   # Run the following command to test:
   # blaze --blazerc=/dev/null test //examples/qwen3:qwen3_hf_pipe_example --compilation_mode=opt
   pipe_tpu = transformers.pipeline(
-      "text-generation", model=_MODEL_PATH, device=api.tpu_device()
+      "text-generation",
+      model=_MODEL_PATH,
+      device=torch.accelerator.current_accelerator(),
   )
 
   start_time = time.time()

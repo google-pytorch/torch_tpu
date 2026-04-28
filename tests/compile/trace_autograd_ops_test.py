@@ -27,7 +27,6 @@ import dataclasses
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu import api
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
@@ -150,7 +149,7 @@ class TraceAutogradOpsTest(parameterized.TestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    cls.tpu_device = api.tpu_device()
+    cls.tpu_device = torch.accelerator.current_accelerator()
     cls.base_model, cls.inputs = create_model_and_input()
     # Establish a 'Ground Truth' on CPU to compare TPU results against
     cls.cpu_config = RunConfig(

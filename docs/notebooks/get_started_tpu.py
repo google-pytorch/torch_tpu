@@ -87,7 +87,6 @@ def _(mo):
 def _():
   import torch
   import torch_tpu
-  from torch_tpu import api
 
   # device = torch.device("cuda") Remove this from your current code
 

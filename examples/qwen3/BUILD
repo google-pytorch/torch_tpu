@@ -189,7 +189,6 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -211,7 +210,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/compiler_options",
-        "//torch_tpu/api",
         "@pypi//transformers",
     ],
 )
@@ -250,15 +248,14 @@ torch_tpu_py_test(
         "requires-gpu-sm70-only",  # v100 has 16 or 32 GB HBM.
     ],
     deps = [
-        "//shims/absl_py/logging",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:log_utils",
         "//examples/huggingface_transformers:model_configs",
         "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils:log_utils",
         "@pypi//transformers",
-        # Do not add "//torch_tpu/api" here.
     ],
 )
 

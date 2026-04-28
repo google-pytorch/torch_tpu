@@ -57,14 +57,9 @@ class ResNet50TVTest(absltest.TestCase):
     torch.cuda.manual_seed(seed)  # Safe to call even if not using CUDA.
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
-    if _DEVICE.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
-
-      self.device = api.tpu_device()
-    elif _DEVICE.value == "cuda":
-      self.device = torch.device("cuda")
-    else:
-      raise RuntimeError(f"Unexpected flag value: {_DEVICE.value}")
+    self.device = torch.device(_DEVICE.value)
+    # TODO(pganssle): Evaluate whether this assertion is still necessary.
+    assert str(self.device).split(":", 1)[0] == _DEVICE.value
 
     torch.set_default_device(self.device)
 

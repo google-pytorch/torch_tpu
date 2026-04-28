@@ -19,7 +19,6 @@ import time
 from absl import app
 from absl import logging
 import torch
-from torch_tpu import api
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import log_utils
 from examples import paths
@@ -83,8 +82,7 @@ def model_generate(
 
 # pylint: disable=unused-argument
 def main(argv):
-  # Initialize TorchTPU
-  tpu_device = api.tpu_device()
+  device = torch.accelerator.current_accelerator()
   torch.manual_seed(123)
 
   # Load tokenizer from HuggingFace

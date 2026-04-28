@@ -11,10 +11,8 @@ To initialize the TPU device and run a simple operation:
 
 ```python
 import torch
-from torch_tpu import api
 
-# Initialize the TPU device
-device = api.tpu_device()
+device = torch.accelerator.current_accelerator()
 
 # Create a tensor on TPU
 x = torch.ones(2, 2, device=device)

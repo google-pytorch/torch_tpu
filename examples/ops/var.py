@@ -34,7 +34,6 @@ import sys
 from absl import app
 from absl import flags
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -74,13 +73,13 @@ def main(argv):
   utils.assert_close(out_torch, out_manual, rtol=1e-3, atol=1e-5)
 
   # TPU Comparisons.
-  tpu = api.tpu_device()
+  device = torch.accelerator.current_accelerator()
 
   def run_model(model: torch.nn.Module, tensor_in: torch.Tensor, desc: str):
     print(desc, file=sys.stderr)
     try:
-      tpu_model = model.to(tpu)
-      out_tpu = tpu_model(tensor_in.to(tpu)).to("cpu")
+      tpu_model = model.to(device)
+      out_tpu = tpu_model(tensor_in.to(device)).to("cpu")
       utils.assert_close(out_tpu, out_torch, rtol=1e-3, atol=1e-5)
     except NotImplementedError as ne:
       print("*** TPU model not working yet.***")

@@ -53,7 +53,6 @@ from torch.testing._internal.opinfo.definitions import _masked
 from torch.testing._internal.opinfo.definitions import fft
 from torch.testing._internal.opinfo.definitions import linalg
 from torch.utils import _pytree
-from torch_tpu import api
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import compiler_options as compiler
 from torch_tpu._internal.utils import utils
@@ -947,7 +946,7 @@ def _to_torch_tpu_printable_input(golden_input: OpInput) -> OpInput:
 
   For example, suppose golden_input contains
     (..., torch.ones(1, device="cpu"), (1,), {"device": "cpu"})
-  the _run_op(..., golden_input, api.tpu_device(), ...) call above
+  the _run_op(..., golden_input, torch.device("tpu"), ...) call above
   will translate it to
     (..., torch.ones(1, device="tpu"), (1,), {"device": "tpu"})
   before invoking the op. Trying to print this input will result in
@@ -966,7 +965,7 @@ def _to_torch_tpu_printable_input(golden_input: OpInput) -> OpInput:
     Kwargs: {"device": "tpu"}
   which is not misleading.
   """
-  return to(golden_input, api.tpu_device(), convert_tensors=False)
+  return to(golden_input, torch.device("tpu"), convert_tensors=False)
 
 
 def print_op_input(op_input: OpInput, *, data: bool = True) -> None:
@@ -1175,9 +1174,6 @@ class TorchTpuTestBase(TestCase):
     else:
       self.fail(f"Unknown test mode: {_TEST_MODE.value}")
 
-    if not _gen_gpu_golden_mode():
-      api.tpu_device()  # Initialize the TorchTPU device.
-
   def set_accuracy_overrides(
       self,
       *,
@@ -1344,7 +1340,7 @@ class TorchTpuTestBase(TestCase):
       self.fail(message)
 
     try:
-      torch_tpu_result = to(tensor_from_device(api.tpu_device()), "cpu")
+      torch_tpu_result = to(tensor_from_device(torch.device("tpu")), "cpu")
     except Exception as e:  # pylint: disable=broad-except
       torch_tpu_thrown = e
     if cpu_thrown and not torch_tpu_thrown:
@@ -1562,7 +1558,7 @@ class TorchTpuTestBase(TestCase):
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       op_func = torch.compile(op_func, dynamic=False, backend=backend)
 
-    if _CHECK_DYNAMISM_USING_SEED.value and device == api.tpu_device():
+    if _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu"):
       if not check_dynamism:
         self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
 
@@ -1873,7 +1869,7 @@ class TorchTpuTestBase(TestCase):
           op_input=golden_input,
           compute_grad=compute_grad,
           use_compiled=use_compiled,
-          device=api.tpu_device(),
+          device=torch.device("tpu"),
           check_device=check_device,
           check_dynamism=check_dynamism,
       )
@@ -2377,8 +2373,6 @@ def set_up_test_module() -> None:
       _analyze_perf_data()
       sys.exit(0)  # Don't run the tests.
     else:
-      # Initialize torch_tpu.
-      api.tpu_device()
       # Disable compilation cache so that we can measure the time
       # for compiling the same op repeatedly.
       torch_tpu_module = getattr(torch, "tpu")

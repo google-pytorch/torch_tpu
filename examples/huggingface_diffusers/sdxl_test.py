@@ -61,16 +61,9 @@ class SDXLSmokeTest(absltest.TestCase):
     torch.manual_seed(seed)
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
-    if _DEVICE.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
-
-      self.accelerator_device = api.tpu_device()
-    elif _DEVICE.value == "cuda":
-      self.accelerator_device = torch.device("cuda")
-    elif _DEVICE.value == "cpu":
-      self.accelerator_device = torch.device("cpu")
-    else:
-      raise RuntimeError(f"Unexpected flag value: {_DEVICE.value}")
+    self.accelerator_device = torch.device(_DEVICE.value)
+    # TODO(pganssle): Evaluate whether this assertion is still necessary.
+    assert str(self.accelerator_device).split(":", 1)[0] == _DEVICE.value
 
   def tearDown(self):
     super().tearDown()

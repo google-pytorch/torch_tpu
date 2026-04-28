@@ -17,7 +17,6 @@
 from unittest import mock
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import utils
 
@@ -26,7 +25,7 @@ class CompileTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.device = api.tpu_device()
+    self.device = torch.accelerator.current_accelerator()
 
   def call_and_compare(
       self, func, test_inputs, mark_dynamic_tests_info=None

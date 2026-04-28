@@ -16,12 +16,11 @@
 
 from collections.abc import Sequence
 import dataclasses
-import time
 from typing import Callable, Tuple
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
+import torch_tpu  # pylint: disable=unused-import
 from torch_tpu._internal.utils import utils
 
 
@@ -93,7 +92,7 @@ class LayoutTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.tpu_device = api.tpu_device()
+    self.tpu_device = torch.device("tpu")
 
   def _assert_same_layout(
       self, tensor_cpu: torch.Tensor, tensor_tpu: torch.Tensor
@@ -1324,9 +1323,4 @@ class SymbolicViewsTest(LayoutTest):
 
 
 if __name__ == "__main__":
-  # Initialize seed with the current system time
-  torch.manual_seed(time.time())
-  # Uncomment to set a specific seed value.
-  #  torch.manual_seed(1234)
-  print(f"Torch initial seed: {torch.initial_seed()}")
   absltest.main()

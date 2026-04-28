@@ -15,7 +15,6 @@
 import concurrent.futures
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -26,7 +25,7 @@ class StreamsTest(absltest.TestCase):
 
     Stream routing is still lightweight, but event recording should be usable.
     """
-    _ = api.tpu_device()
+
     default_stream = torch.tpu.default_stream()
     new_stream = torch.tpu.Stream(priority=-1)
 
@@ -44,7 +43,7 @@ class StreamsTest(absltest.TestCase):
     z.to('cpu')
 
   def test_stream_unimplemented_method(self):
-    _ = api.tpu_device()
+
     expected_msg = (
         'Streams and Events are not fully implemented in TorchTPU. Please file'
         ' a feature request describing your use case.'
@@ -55,7 +54,7 @@ class StreamsTest(absltest.TestCase):
 
   def test_stream_partially_implemented_method(self):
     """Tests that unimplemented stream methods raise NotImplementedError."""
-    _ = api.tpu_device()
+
     s = torch.tpu.Stream()
     expected_msg = (
         'Streams and Events are not fully implemented in TorchTPU. Please file'
@@ -68,7 +67,6 @@ class StreamsTest(absltest.TestCase):
 
   def test_synchronize_default(self):
     """Tests that synchronize() correctly waits for async ops."""
-    _ = api.tpu_device()
 
     # Create a large tensor to make the transfer non-instantaneous
     size = 1024 * 1024
@@ -85,7 +83,6 @@ class StreamsTest(absltest.TestCase):
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
   def test_synchronize_from_multiple_threads(self):
-    _ = api.tpu_device()
 
     # Create a large tensor that will take a while to copy
     size = 8192 * 8192
@@ -111,7 +108,7 @@ class StreamsTest(absltest.TestCase):
 
   def test_event_partially_implemented(self):
     """Tests that timing/ipc event methods remain unimplemented."""
-    _ = api.tpu_device()
+
     e = torch.tpu.Event()
     expected_msg = (
         'Streams and Events are not fully implemented in TorchTPU. Please file'
@@ -123,7 +120,6 @@ class StreamsTest(absltest.TestCase):
       e.ipc_handle()
 
   def test_event_records_nonblocking_copy(self):
-    _ = api.tpu_device()
 
     size = 1024 * 1024
     t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)
@@ -138,7 +134,6 @@ class StreamsTest(absltest.TestCase):
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 
   def test_event_snapshot_can_be_released_and_reused(self):
-    _ = api.tpu_device()
 
     size = 1024 * 1024
     first_t_tpu = torch.ones(size, device='tpu', dtype=torch.float32)

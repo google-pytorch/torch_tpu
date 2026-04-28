@@ -15,7 +15,6 @@
 from absl import logging
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 import transformers
@@ -31,7 +30,7 @@ INPUT_TEXT = "Hello, I am a"
 class HelloWorldLlmEagerTest(absltest.TestCase):
 
   def test_hello_world_llm_eager(self):
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
     torch.manual_seed(42)
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_PATH)

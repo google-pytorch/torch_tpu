@@ -23,7 +23,6 @@ from absl.testing import absltest
 os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
 
 import torch  # pylint: disable=g-import-not-at-top
-from torch_tpu import api
 
 
 class TestErrorsWithCppContext(absltest.TestCase):
@@ -31,7 +30,7 @@ class TestErrorsWithCppContext(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.device = api.tpu_device()
+    self.device = torch.accelerator.current_accelerator()
     self.maxDiff = None  # Show long diffs in assertEqual.
 
   def test_error_has_cpp_error_trace(self):

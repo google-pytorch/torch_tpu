@@ -25,7 +25,6 @@ from absl.testing import absltest
 import torch
 import torch._inductor.config as inductor_config
 from torch.utils import tensorboard
-from torch_tpu import api
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
@@ -118,14 +117,8 @@ def _get_eager_mode() -> execution_mode.EagerMode:
 
 
 def _get_torch_device() -> torch.device:
-  if _DEVICE.value == "tpu":
-    return api.tpu_device()
-  elif _DEVICE.value == "cuda":
-    return torch.device("cuda")
-  elif _DEVICE.value == "xla_cuda":
-    return api._xla_cuda_device()
-  else:
-    raise ValueError(f"Unsupported device: {_DEVICE.value}")
+  # TODO(williechong): leverage current_accelerator() instead
+  return torch.device(_DEVICE.value)
 
 
 def _sync_device(tensor_to_sync: torch.Tensor, wait=True) -> None:

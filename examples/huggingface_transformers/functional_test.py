@@ -50,14 +50,10 @@ class AllTest(absltest.TestCase):
     torch.manual_seed(seed)
     logging.info("Using absltest.FLAGS.test_random_seed: %d", seed)
 
-    if _DEVICE.value == "tpu":
-      from torch_tpu import api  # pylint: disable=g-import-not-at-top
-
-      torch.set_default_device(api.tpu_device())
-    elif _DEVICE.value == "cuda":
-      torch.set_default_device(torch.device("cuda"))
-    else:
-      raise RuntimeError(f"Unexpected flag value: {_DEVICE.value}")
+    device = torch.device(_DEVICE.value)
+    # TODO(pganssle): Evaluate whether this assertion is still necessary.
+    assert str(device).split(":", 1)[0] == _DEVICE.value
+    torch.set_default_device(device)
 
   def test_default_llama3_sdpa_is_torch_nn_functional_sdpa(self):
     """Test that HF defaults to torch.nn.functional.sdpa."""

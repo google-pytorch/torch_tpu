@@ -12,26 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
-)
-
-torch_tpu_py_test(
-    name = "api_test",
-    srcs = ["api_test.py"],
-    tags = [
-        "requires-net:external",
-        "requires-tpu-v5lite",
-    ],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/api",
-    ],
 )
 
 torch_tpu_package_end()

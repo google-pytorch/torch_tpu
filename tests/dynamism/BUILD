@@ -36,7 +36,6 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -60,7 +59,6 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/api",  # buildcleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )

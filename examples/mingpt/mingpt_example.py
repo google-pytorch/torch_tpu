@@ -19,7 +19,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 from examples.mingpt.impl import mingpt
 from examples.mingpt.impl import mingpt_jax
@@ -40,15 +39,10 @@ run_torch = True
 
 # TODO(bbahl): Update this to use mingpt_runner_lib.
 def main(argv):
-  if _DEVICE.value == "xla_cuda":
-    native_device_d = api._xla_cuda_device()
-  elif _DEVICE.value == "xla_cpu":
-    native_device_d = api._xla_cpu_device()
-  elif _DEVICE.value == "tpu":
-    native_device_d = api.tpu_device()
-  else:  # cpu, cuda, gpu, ...
-    native_device_d = torch.device(_DEVICE.value)
+  native_device_d = torch.accelerator.current_accelerator()
   native_device = str(native_device_d)
+  # TODO(bbahl): Investigate whether we need this flag at all
+  assert native_device.split(":", 1)[0] == _DEVICE.value
 
   common_dtype = torch.float32
   # model = "gpt2-large"

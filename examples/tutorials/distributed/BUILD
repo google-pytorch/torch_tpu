@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//shims/pynball:build_defs.bzl", "ipynb_deps")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -44,6 +45,12 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
+)
+
+ipynb_deps(
+    name = "hello_world_distributed_deps",
+    srcs = ["hello_world_distributed.ipynb"],
+    pytype = False,
 )
 
 torch_tpu_package_end()

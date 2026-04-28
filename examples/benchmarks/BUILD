@@ -54,7 +54,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/shims/xprof:xprof_session",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
     ],
 )
 
@@ -87,7 +86,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/shims/xprof:xprof_session",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
     ],
 )
 

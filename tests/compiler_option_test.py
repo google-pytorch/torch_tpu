@@ -18,7 +18,6 @@ import concurrent
 
 from absl.testing import absltest
 import torch
-from torch_tpu import api
 from torch_tpu._internal import compiler_options as compiler
 from tests import op_testing
 
@@ -28,7 +27,7 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
 
   def setUp(self):
     super().setUp()
-    self.tpu = api.tpu_device()
+    self.tpu = torch.accelerator.current_accelerator()
 
   def test_push_compiler_options_does_not_affect_result(self):
     """Tests setting compiler options.
@@ -88,7 +87,11 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
       with compiler.custom_compiler_options(
           compiler_option_dicts[index % len(compiler_option_dicts)]
       ):
-        arg = torch.tensor(2, dtype=torch.float32, device=api.tpu_device())
+        arg = torch.tensor(
+            2,
+            dtype=torch.float32,
+            device=torch.accelerator.current_accelerator(),
+        )
         res = op(arg)
         return res.to("cpu").item()  # to() triggers compilation.
 
@@ -124,7 +127,11 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
         with compiler.custom_compiler_options(
             compiler_option_dicts2[index % len(compiler_option_dicts2)]
         ):
-          arg = torch.tensor(2, dtype=torch.float32, device=api.tpu_device())
+          arg = torch.tensor(
+              2,
+              dtype=torch.float32,
+              device=torch.accelerator.current_accelerator(),
+          )
           res = op(arg)
           return res.to("cpu").item()  # to() triggers compilation.
 

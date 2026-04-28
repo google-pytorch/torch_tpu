@@ -36,7 +36,6 @@ torch_tpu_py_test(
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/api",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//transformers",
     ],
@@ -70,7 +69,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:benchmarking",
         "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/api",
         "@pypi//transformers",
         "@rules_python//python/runfiles",
     ],

@@ -17,7 +17,6 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -25,7 +24,7 @@ class UntypedStorageTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.tpu = api.tpu_device()
+    self.tpu = torch.accelerator.current_accelerator()
 
   @parameterized.named_parameters(
       ('float32', torch.float32),

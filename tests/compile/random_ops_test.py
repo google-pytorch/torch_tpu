@@ -19,7 +19,6 @@ import unittest
 from absl.testing import absltest
 import torch
 from torch.utils import checkpoint
-from torch_tpu import api
 from torch_tpu._internal.utils import utils
 
 
@@ -43,7 +42,7 @@ class RandomOpsTest(absltest.TestCase):
   @unittest.skip("b/496168350")
   def test_dropout_compile(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     class MyModule(torch.nn.Module):
 
@@ -68,7 +67,7 @@ class RandomOpsTest(absltest.TestCase):
   @unittest.skip("b/496168350")
   def test_dropout_compile_with_former_eager_run(self):
     torch.manual_seed(42)
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     class MyModule(torch.nn.Module):
 
@@ -98,7 +97,7 @@ class RandomOpsTest(absltest.TestCase):
   @unittest.skip("b/496168350")
   def test_checkpoint_rng_compile(self):
     # Arrange
-    device = api.tpu_device()
+    device = torch.accelerator.current_accelerator()
 
     class MyModule(torch.nn.Module):
 

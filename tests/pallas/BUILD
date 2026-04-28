@@ -34,7 +34,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
     ],
 )
@@ -64,7 +63,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "//torch_tpu/_internal/utils",
-        "//torch_tpu/api",
         "@pypi//jax",
     ],
 )

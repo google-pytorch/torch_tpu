@@ -68,8 +68,8 @@ def test_inference_mode_crash():
         os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
         os.environ["ACCELERATOR_TYPE"] = "v6e-4"
         import torch
-        from torch_tpu import api
-        device = api.tpu_device()
+
+        device = torch.accelerator.current_accelerator()
 
         model = torch.nn.Linear(16, 16).to(device).to(torch.bfloat16)
 

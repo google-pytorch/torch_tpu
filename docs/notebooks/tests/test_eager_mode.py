@@ -18,7 +18,7 @@ import pytest
 
 def test_factory_demo():
   import torch
-  from torch_tpu import api
+
   import tpu_utils
 
   device = tpu_utils.safe_init()

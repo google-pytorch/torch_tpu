@@ -24,7 +24,6 @@ from absl.testing import absltest
 import torch
 from torch.distributed.elastic.multiprocessing import errors
 import torch.multiprocessing as mp
-from torch_tpu import api
 from torch_tpu._internal import testing as tt_testing
 
 
@@ -49,7 +48,7 @@ def device():
   """Returns the device to use for testing the error messages."""
 
   if TEST_MODE.value in ("tpu", "cov"):
-    return api.tpu_device()
+    return torch.device("tpu")
   if TEST_MODE.value == "cpu":
     return torch.device("cpu")
   raise ValueError(f"Unsupported test mode: {TEST_MODE.value}")
@@ -64,7 +63,7 @@ def set_up_module(init_torch_tpu: bool = True):
   """
 
   if TEST_MODE.value in ("tpu", "cov") and init_torch_tpu:
-    api.tpu_device()  # Initialize torch_tpu.
+    torch.accelerator.current_accelerator()  # Initialize torch_tpu.
 
 
 # Matches a source location in the format of "file:line: ...".

@@ -28,7 +28,6 @@ import torch
 from torch.utils import _pytree as pytree
 from torch_tpu._internal.utils import device_utils
 from torch_tpu._internal.utils import log_utils
-import torch_tpu.api as xla_api
 from examples.benchmarks.quality_utils import quality_benchmark_model
 
 from torch_tpu._internal.shims.xprof import traceme
@@ -338,12 +337,7 @@ class XprofContext:
 
 def get_torch_device(platform: Platform) -> torch.device:
   """Returns the torch device for the given platform."""
-  if PLATFORM_DEVICE_MAP[platform] == "tpu":
-    return xla_api.tpu_device()
-  elif PLATFORM_DEVICE_MAP[platform] == "cuda":
-    return torch.device("cuda")
-  else:
-    raise ValueError(f"Unknown platform: {platform}")
+  return torch.device(PLATFORM_DEVICE_MAP[platform])
 
 
 def is_torch_compile(run_mode: RunMode) -> bool:
