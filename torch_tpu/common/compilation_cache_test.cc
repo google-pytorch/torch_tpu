@@ -16,7 +16,6 @@
 
 #include "torch_tpu/common/compilation_cache.h"
 
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>  // NOLINT
