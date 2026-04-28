@@ -65,7 +65,7 @@ def _(mo):
 @app.cell
 def _():
   import torch
-  from torch_tpu import api
+
   from torch_tpu._internal import profiler
   from torch_tpu._internal import sync
   import tpu_utils

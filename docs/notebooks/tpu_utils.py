@@ -18,7 +18,6 @@ import re
 import signal
 import time
 import torch
-from torch_tpu import api
 from torch_tpu._internal.device import _device_module
 
 _DeviceModule = _device_module.DeviceModule
@@ -36,7 +35,6 @@ def safe_shutdown():
   _DeviceModule._is_initialized = False
   _DeviceModule._device_count = None
   _DeviceModule._current_device = None
-  api.tpu_device.cache_clear()
   print("✅ TPU runtime state reset.")
 
 
@@ -94,15 +92,14 @@ def safe_init(accelerator_type="v6e-4"):
 
   # ── Fast path: runtime already alive in this process ──
   if _DeviceModule.is_initialized():
-    return api.tpu_device()
+    return torch.device("tpu")
 
   # ── Slow path: first init or recovery ──
-  api.tpu_device.cache_clear()
 
   max_retries = 3
   for attempt in range(max_retries):
     try:
-      device = api.tpu_device()
+      device = torch.device("tpu")
       # Guard against partial init: the torch.tpu module may have
       # been registered by a prior failed attempt, causing
       # _init_device to short-circuit without calling _init_runtime_options.
@@ -130,8 +127,7 @@ def safe_init(accelerator_type="v6e-4"):
           # Wait for the killed process to fully release
           # the IOMMU device handles (/dev/vfio/1).
           _wait_for_tpu_device(max_wait=10.0)
-          api.tpu_device.cache_clear()
-          continue
+        continue
 
       # ── IOMMU / device busy (after a recent kill) ──
       if "device or resource busy" in err_msg.lower():
@@ -140,7 +136,6 @@ def safe_init(accelerator_type="v6e-4"):
             f" {attempt+1}/{max_retries})…"
         )
         _wait_for_tpu_device(max_wait=10.0)
-        api.tpu_device.cache_clear()
         continue
 
       # ── Missing environment ──
@@ -152,7 +147,6 @@ def safe_init(accelerator_type="v6e-4"):
         )
         os.environ["ACCELERATOR_TYPE"] = accelerator_type
         time.sleep(1.0)
-        api.tpu_device.cache_clear()
         continue
 
       # ── Unknown error — don't swallow it ──
