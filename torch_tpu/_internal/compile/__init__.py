@@ -17,7 +17,7 @@ from absl import logging
 import torch
 from torch._dynamo import decorators
 from torch._dynamo.backends import registry
-from ._backend import TpuBackend
+from torch_tpu._internal.compile._backend import TpuBackend
 
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")

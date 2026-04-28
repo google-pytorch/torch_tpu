@@ -17,6 +17,7 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
@@ -515,8 +516,9 @@ def torch_tpu_py_library(name, srcs = [], **kwargs):
         fail("torch_tpu_py_library must contain at most one srcs file. This prevents build bloat " +
              "and circular dependencies between files.")
 
-    pytype_strict_library(
-        # PY_LIBRARY_OK=for implementing torch_tpu_py_library.
+    # In OSS, pytype_strict_library doesn't work when srcs is empty.
+    rule = pytype_strict_library if len(srcs) > 0 else py_library
+    rule(
         name = name,
         srcs = srcs,
         **kwargs

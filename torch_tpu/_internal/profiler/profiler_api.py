@@ -21,9 +21,9 @@ import os
 from typing import Any
 import warnings
 
-from ._impl import ProfileOptions
-from ._impl import start_trace
-from ._impl import stop_trace
+from torch_tpu._internal.profiler._impl import ProfileOptions
+from torch_tpu._internal.profiler._impl import start_trace
+from torch_tpu._internal.profiler._impl import stop_trace
 
 
 class ProfilerActivity(enum.Enum):

@@ -22,8 +22,7 @@ import time
 
 import torch
 from torch.utils.data.dataloader import DataLoader
-
-from .utils import CfgNode as CN
+from examples.mingpt.impl.utils import CfgNode as CN
 
 
 class Trainer:

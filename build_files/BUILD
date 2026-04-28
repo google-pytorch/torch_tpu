@@ -32,7 +32,6 @@ package(
 bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
-    visibility = ["//visibility:private"],
     deps = [
         "//shims/build_cleaner:build_defs_lib",
         "//shims/py_rules:pytype_bzl",
@@ -40,6 +39,7 @@ bzl_library(
         "//torch_tpu/google/build_files:build_defs_bzl",
         "//torch_tpu/google/build_rules:py_platform_test_bzl",
         "@rules_cc//cc:core_rules",
+        "@rules_python//python:py_library_bzl",
         "@rules_python//python:py_test_bzl",
         "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     ],

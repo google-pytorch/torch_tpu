@@ -19,7 +19,7 @@ from typing import Final, NamedTuple, TypeAlias
 import jax
 import jax.numpy as jnp
 import numpy as np
-from . import splash_attention_mask_info as mask_info_lib
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask_info as mask_info_lib
 
 
 MaskInfo = mask_info_lib.MaskInfo

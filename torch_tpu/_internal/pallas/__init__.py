@@ -13,7 +13,7 @@
 # limitations under the License.
 """Pallas API for Torch-TPU."""
 
-from . import pallas
+from torch_tpu._internal.pallas import pallas
 
 custom_jax_kernel = pallas.custom_jax_kernel
 jax_op = pallas.jax_op

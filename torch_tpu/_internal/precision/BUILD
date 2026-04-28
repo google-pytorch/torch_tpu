@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 licenses(["notice"])
@@ -39,13 +38,25 @@ pybind_extension(
     ],
 )
 
-pytype_strict_library(
-    name = "precision",
-    srcs = [
-        "__init__.py",
-        "precision.py",
-    ],
+torch_tpu_py_library(
+    name = "precision_init",
+    srcs = ["__init__.py"],
+    deps = [":precision_file"],
+)
+
+torch_tpu_py_library(
+    name = "precision_file",
+    srcs = ["precision.py"],
     deps = [":precision_impl"],
+)
+
+torch_tpu_py_library(
+    name = "precision",
+    srcs = [],
+    deps = [
+        ":precision_file",
+        ":precision_init",
+    ],
 )
 
 # This library is not used directly, but is needed for go/cclean.

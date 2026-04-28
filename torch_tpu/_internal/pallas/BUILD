@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -25,12 +24,20 @@ package(
     ],
 )
 
-pytype_strict_library(
-    name = "pallas",
-    srcs = [
-        "__init__.py",
-        "pallas.py",
+torch_tpu_py_library(
+    name = "pallas_init",
+    srcs = ["__init__.py"],
+    deps = [
+        ":pallas_lib",
+        "//shims/jax:pallas",  # buildcleaner: keep
+        "//shims/jax:pallas_tpu",  # buildcleaner: keep
+        "@pypi//jax",  # buildcleaner: keep
     ],
+)
+
+torch_tpu_py_library(
+    name = "pallas_lib",
+    srcs = ["pallas.py"],
     deps = [
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
@@ -39,6 +46,15 @@ pytype_strict_library(
         "//shims/torch:pytorch",
         "@pypi//frozendict",
         "@pypi//jax",  # buildcleaner: keep
+    ],
+)
+
+torch_tpu_py_library(
+    name = "pallas",
+    srcs = [],
+    deps = [
+        ":pallas_init",
+        ":pallas_lib",
     ],
 )
 

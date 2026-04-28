@@ -22,8 +22,7 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-from . import splash_attention_mask as mask_lib
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask as mask_lib
 
 # mypy: ignore-errors
 

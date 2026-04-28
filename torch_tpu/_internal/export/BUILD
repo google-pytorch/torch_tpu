@@ -12,29 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-pytype_strict_library(
-    name = "export",
-    srcs = [
-        "__init__.py",
-        "export.py",
-    ],
-    visibility = [
-        "//:__subpackages__",
-    ],
+torch_tpu_py_library(
+    name = "export_init",
+    srcs = ["__init__.py"],
+    visibility = ["//:__subpackages__"],
+    deps = [":export_lib"],
+)
+
+torch_tpu_py_library(
+    name = "export_lib",
+    srcs = ["export.py"],
+    visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/device_utils",
         "//torch_tpu/_internal/execution_mode",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "export",
+    srcs = [],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":export_init",
+        ":export_lib",
     ],
 )
 

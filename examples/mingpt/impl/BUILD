@@ -14,7 +14,6 @@
 
 load("@rules_license//rules:license.bzl", "license")
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 
 package(
     default_applicable_licenses = [":license"],
@@ -28,22 +27,58 @@ license(
 
 licenses(["notice"])
 
-pytype_strict_library(
-    name = "mingpt",
-    srcs = [
-        "mingpt.py",
-        "trainer.py",
-        "utils.py",
-    ],
+torch_tpu_py_library(
+    name = "mingpt_lib",
+    srcs = ["mingpt.py"],
     tags = [
-        # Prevent build_cleaner from adding @pypi//transformers, which is a lazy import
-        # that is invisible to this package. See go/build-cleaner/customize-behavior#ignore-for-dep
-        "nofixdeps",
         "ignore_for_dep=third_party.py.transformers",
+        "nofixdeps",
+    ],
+    deps = [
+        ":utils",
+        "//shims/torch:pytorch",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "trainer",
+    srcs = ["trainer.py"],
+    tags = [
+        "ignore_for_dep=third_party.py.transformers",
+        "nofixdeps",
+    ],
+    deps = [
+        ":utils",
+        "//shims/torch:pytorch",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "utils",
+    srcs = ["utils.py"],
+    tags = [
+        "ignore_for_dep=third_party.py.transformers",
+        "nofixdeps",
     ],
     deps = [
         "//shims/torch:pytorch",
         "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "mingpt",
+    srcs = [],
+    tags = [
+        "ignore_for_dep=third_party.py.transformers",
+        "nofixdeps",
+    ],
+    deps = [
+        ":mingpt_lib",
+        ":trainer",
+        ":utils",
     ],
 )
 

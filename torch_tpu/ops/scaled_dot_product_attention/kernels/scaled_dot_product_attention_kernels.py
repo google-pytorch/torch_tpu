@@ -23,9 +23,8 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 import torch
-
-from . import flash_attention
-from .splash import splash_attention
+from torch_tpu.ops.scaled_dot_product_attention.kernels import flash_attention
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention
 
 try:
   # Works whenever we have an updated jaxlib, i.e. g3 and when oss goes out.

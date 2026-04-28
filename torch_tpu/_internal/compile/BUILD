@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -33,12 +32,28 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
-    name = "tpu_backend",
-    srcs = [
-        "__init__.py",
-        "_backend.py",
+torch_tpu_py_library(
+    name = "tpu_backend_init",
+    srcs = ["__init__.py"],
+    tags = [
+        "ignore_for_dep=third_party.py.torch_tpu.api",
     ],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
+    ],
+    deps = [
+        ":tpu_backend_lib",
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "tpu_backend_lib",
+    srcs = ["_backend.py"],
     tags = [
         "ignore_for_dep=third_party.py.torch_tpu.api",
     ],
@@ -48,14 +63,28 @@ pytype_strict_library(
     ],
     deps = [
         ":tpu_torch_compile",
-        "//shims/absl_py:app",
-        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
         "//torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//torch_tpu/_internal/export",
         "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "tpu_backend",
+    srcs = [],
+    tags = [
+        "ignore_for_dep=third_party.py.torch_tpu.api",
+    ],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
+    ],
+    deps = [
+        ":tpu_backend_init",
+        ":tpu_backend_lib",
     ],
 )
 

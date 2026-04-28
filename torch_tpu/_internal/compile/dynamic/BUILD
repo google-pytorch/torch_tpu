@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -30,12 +29,18 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
-    name = "sym_shape_manager",
-    srcs = [
-        "__init__.py",
-        "sym_shape_manager.py",
+torch_tpu_py_library(
+    name = "sym_shape_manager_init",
+    srcs = ["__init__.py"],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
     ],
+)
+
+torch_tpu_py_library(
+    name = "sym_shape_manager_lib",
+    srcs = ["sym_shape_manager.py"],
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
@@ -45,6 +50,19 @@ pytype_strict_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "@pypi//sympy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "sym_shape_manager",
+    srcs = [],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
+    ],
+    deps = [
+        ":sym_shape_manager_init",
+        ":sym_shape_manager_lib",
     ],
 )
 
@@ -60,12 +78,18 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
-    name = "compiler",
-    srcs = [
-        "__init__.py",
-        "compiler.py",
+torch_tpu_py_library(
+    name = "compiler_init",
+    srcs = ["__init__.py"],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
     ],
+)
+
+torch_tpu_py_library(
+    name = "compiler_lib",
+    srcs = ["compiler.py"],
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
@@ -77,6 +101,19 @@ pytype_strict_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "compiler",
+    srcs = [],
+    visibility = [
+        "//:__subpackages__",
+        "//learning/agents/tern/torch_agent:__subpackages__",
+    ],
+    deps = [
+        ":compiler_init",
+        ":compiler_lib",
     ],
 )
 

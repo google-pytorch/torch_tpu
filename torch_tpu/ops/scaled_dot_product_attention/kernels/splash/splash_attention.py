@@ -31,10 +31,9 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
 import numpy as np
-
-from . import base
-from . import splash_attention_mask as mask_lib
-from . import splash_attention_mask_info as mask_info_lib
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import base
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask as mask_lib
+from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask_info as mask_info_lib
 
 
 P = jax.P
