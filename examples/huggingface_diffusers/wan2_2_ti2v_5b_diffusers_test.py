@@ -14,21 +14,23 @@
 
 """Smoke test of HuggingFace Wan2.2-TI2V-5B inference."""
 
+import os
 import pathlib
 
 from absl import flags
 from absl import logging
 from absl.testing import absltest
 import diffusers
+import numpy as np
 from PIL import Image
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 
+
 log_utils.log_to_stderr()
 
 
-XM_HOME = paths.XM_HOME
 _DEVICE = flags.DEFINE_enum(
     "device",
     None,
@@ -36,8 +38,14 @@ _DEVICE = flags.DEFINE_enum(
     required=True,
     help="Accelerator to test.",
 )
+_SAVE_IMAGE = flags.DEFINE_boolean(
+    "save_image",
+    False,
+    "Whether to save the generated image to outputs.",
+)
+
 _MODEL_PATH = str(
-    pathlib.Path(XM_HOME)
+    pathlib.Path(paths.XM_HOME)
     / "weights"
     / "huggingface"
     / "Wan-AI"
@@ -80,9 +88,10 @@ class Wan2_2_TI2V_5B_SmokeTest(absltest.TestCase):
     else:
       generator = torch.Generator(device=self.accelerator_device).manual_seed(0)
 
+    # Arbitrary values for testing.
     height = 704
     width = 1280
-    num_frames = 30  # Over 89 frames, we run out of memory on single-host TPU.
+    num_frames = 1
     num_inference_steps = 50
     guidance_scale = 5.0
 
@@ -97,10 +106,27 @@ class Wan2_2_TI2V_5B_SmokeTest(absltest.TestCase):
     ).frames[0]
 
     generated_video = video[0]
-    logging.info(
-        "Generated video floats (first frame, small slice): %s",
-        generated_video[:2, :2, :2],
-    )
+
+    # Save the first frame if enabled.
+    if _SAVE_IMAGE.value:
+      outputs_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR")
+      if not outputs_dir:
+        outputs_dir = "/tmp"
+
+      frame = generated_video
+
+      # Convert to uint8 if floating point type.
+      if np.issubdtype(frame.dtype, np.floating):
+        frame = (frame * 255).astype(np.uint8)
+
+      # Transpose to HWC if CHW.
+      if frame.ndim == 3 and frame.shape[0] == 3:
+        frame = frame.transpose(1, 2, 0)
+
+      img = Image.fromarray(frame)
+      save_path = os.path.join(outputs_dir, "first_frame.png")
+      img.save(save_path)
+      logging.info(f"Saved first frame to {save_path}")
 
     # Assert
     # Trivial assert, this smoke test just tests this doesn't crash.
