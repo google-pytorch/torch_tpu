@@ -1454,6 +1454,13 @@ Please use clone() or contiguous() to copy the tensor before writing""",
           False,
       )
 
+  def test_oom_in_ones(self):
+    """Tests that torch.ones() OOMs on CPU, but not on TPU."""
+    # TPU defers allocation until execution time.
+    torch.ones(
+        1_000_000_000, 1_000_000_000, device=et.device(), dtype=torch.float32
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

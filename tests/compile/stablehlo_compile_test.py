@@ -255,6 +255,21 @@ module {
 
     self.do_test("Compilation/Take_Float32", make_shlo)
 
+  def test_compile_oom_in_ones(self):
+    """Tests compilation time for oom program."""
+
+    def make_shlo(i: int) -> str:
+      del i  # Unused.
+      return """
+module {
+  func.func @main(%arg0: tensor<1000000000x1000000000xf32>) -> tensor<1000000000x1000000000xf32> {
+    return %arg0 : tensor<1000000000x1000000000xf32>
+  }
+}
+"""
+
+    self.do_test("Compilation/OOM_Ones", make_shlo)
+
 
 if __name__ == "__main__":
   absltest.main()

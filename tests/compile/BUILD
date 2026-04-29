@@ -206,6 +206,7 @@ torch_tpu_py_test(
     srcs = ["stablehlo_compile_test.py"],
     args = [
         "--enable_tensorboard_logging=False",
+        "StableHloCompileTimeTest.test_compile_oom_in_ones",
     ],
     exec_properties = {
         "cpp_link.mem": "20g",  # Needed for asan.
