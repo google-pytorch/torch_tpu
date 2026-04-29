@@ -140,4 +140,34 @@ pybind_extension(
     ],
 )
 
+
+# This library is not used directly, but is needed for go/cclean. Without
+# this rule, cclean complains that raw_transfer_impl.cc has no rule depending on it.
+torch_tpu_cc_library(
+    name = "raw_transfer_impl_build",
+    srcs = ["raw_transfer_impl.cc"],
+    deps = [
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/pjrt:raw_transfer",
+        "//shims/pybind11",
+    ],
+)
+
+pybind_extension(
+    name = "raw_transfer_impl",
+    srcs = ["raw_transfer_impl.cc"],
+    common_lib_packages = [
+        "torch_tpu/common",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/pjrt:raw_transfer",
+    ],
+)
+
 torch_tpu_package_end()

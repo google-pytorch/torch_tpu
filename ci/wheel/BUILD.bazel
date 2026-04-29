@@ -100,6 +100,7 @@ py_package(
     visibility = ["//visibility:public"],
     deps = [
         ":all_torch_tpu_files",
+        "//torch_tpu/_internal:raw_transfer_impl",
     ],
 )
 

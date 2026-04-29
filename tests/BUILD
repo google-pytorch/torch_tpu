@@ -1107,4 +1107,18 @@ test_suite(
     ],
 )
 
+
+torch_tpu_py_test(
+    name = "test_raw_transfer",
+    srcs = ["test_raw_transfer.py"],
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal:raw_transfer_impl",
+        "//torch_tpu/api",
+    ],
+)
+
 torch_tpu_package_end()

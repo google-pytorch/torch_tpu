@@ -689,6 +689,7 @@ pywrap_library(
         "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/dynamism:_tpu_torch_dynamism",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",
+        "//torch_tpu/_internal:raw_transfer_impl",
         "//torch_tpu/_internal/precision:precision_impl",
         "//torch_tpu/_internal/profiler:_profiler_backend",
         "//torch_tpu/_internal/sync:_tpu_torch_sync",
