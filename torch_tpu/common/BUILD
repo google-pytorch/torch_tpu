@@ -19,13 +19,7 @@ load(
     "pywrap_binaries",
     "pywrap_library",
 )
-load(
-    "//build_files:build_defs.bzl",
-    "oss_target",
-    "torch_tpu_cc_library",
-    "torch_tpu_cc_test",
-    "torch_tpu_package_end",
-)
+load("//build_files:build_defs.bzl", "oss_target", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end", "torch_tpu_pywrap_binaries", "torch_tpu_pywrap_library")
 load(
     "//shims/build_files:build_defs.bzl",
     "add_internal_filesystem_dependencies",
@@ -674,7 +668,7 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],
 )
 
-pywrap_library(
+torch_tpu_pywrap_library(
     name = "pywrap_torch_tpu",
     extra_deps = [
         ":torch_rpath_flags",
@@ -697,7 +691,7 @@ pywrap_library(
     ],
 )
 
-pywrap_binaries(
+torch_tpu_pywrap_binaries(
     name = "pywrap_torch_tpu_binaries",
     dep = ":pywrap_torch_tpu",
     visibility = ["//:__subpackages__"],

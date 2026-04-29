@@ -15,17 +15,22 @@
 """Common build definitions for torch_tpu."""
 
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_python//python:py_binary.bzl", "py_binary")
 load("@rules_python//python:py_test.bzl", "py_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
+    "pywrap_binaries",
+    "pywrap_library",
     "use_pywrap_rules",
 )
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
+load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_contrib_test", "pytype_strict_library")
+load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -63,6 +68,35 @@ def if_oss(oss_value, internal_value = None):
     """Returns a value based on whether this is an OSS version of torch_tpu."""
     if is_oss():
         return oss_value
+
+def _get_label_prefix():
+    return "//" if is_oss() else "//torch_tpu:"
+
+def _empty_if_wheel_test(kwargs):
+    """Neuters core targets when wheel testing is enabled.
+
+    If the target is in the torch_tpu package, we return a version of the
+    attribute that is empty when wheel testing is enabled. This prevents
+    the target from contributing source files or binaries to the runfiles,
+    allowing the wheel to provide the torch_tpu package instead.
+    """
+    package = native.package_name()
+
+    # Handle both OSS (torch_tpu/...) and Google3 (third_party/py/torch_tpu/...)
+    is_torch_tpu = (
+        package == "torch_tpu" or
+        package.startswith("torch_tpu/") or
+        package.startswith("third_party/py/torch_tpu")
+    )
+    if is_torch_tpu:
+        label = _get_label_prefix() + "wheel_test_enabled"
+        for attr in ["srcs", "deps", "data", "hdrs", "linkopts"]:
+            if attr in kwargs:
+                kwargs[attr] = select({
+                    label: [],
+                    "//conditions:default": kwargs[attr],
+                })
+    return kwargs
     return internal_value
 
 def oss_target(rule_func, name, **kwargs):
@@ -111,18 +145,26 @@ def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = No
         **kwargs: Any additional arguments.
     """
 
-    if len(srcs) > 1:
+    if len(srcs) > 1 and is_oss():
         fail("torch_tpu_cc_library must contain at most one srcs file. This reduces build bloat " +
              "and prevents circular dependencies between files.")
-    if len(hdrs) > 1:
+    if len(hdrs) > 1 and is_oss():
         fail("torch_tpu_cc_library must contain at most one hdrs file. This reduces build bloat " +
              "and prevents circular dependencies between files.")
 
     copts, features = adjust_cc_options(copts, features)
+    kwargs = _empty_if_wheel_test(kwargs)
+    label = _get_label_prefix() + "wheel_test_enabled"
     cc_library(
         name = name,
-        srcs = srcs,
-        hdrs = hdrs,
+        srcs = select({
+            label: [],
+            "//conditions:default": srcs,
+        }),
+        hdrs = select({
+            label: [],
+            "//conditions:default": hdrs,
+        }),
         copts = copts,
         features = features,
         **kwargs
@@ -442,7 +484,7 @@ def torch_tpu_cc_test(
         **kwargs: Any additional arguments.
     """
 
-    if len(srcs) > 1:
+    if len(srcs) > 1 and is_oss():
         fail("torch_tpu_cc_test must contain at most one srcs file. This prevents build bloat " +
              "and circular dependencies between files.")
 
@@ -511,14 +553,19 @@ def torch_tpu_py_library(name, srcs = [], **kwargs):
         **kwargs: Any additional arguments.
     """
 
-    if len(srcs) > 1:
+    if len(srcs) > 1 and is_oss():
         fail("torch_tpu_py_library must contain at most one srcs file. This prevents build bloat " +
              "and circular dependencies between files.")
 
+    kwargs = _empty_if_wheel_test(kwargs)
+    label = _get_label_prefix() + "wheel_test_enabled"
     pytype_strict_library(
         # PY_LIBRARY_OK=for implementing torch_tpu_py_library.
         name = name,
-        srcs = srcs,
+        srcs = select({
+            label: [],
+            "//conditions:default": srcs,
+        }),
         **kwargs
     )
     build_test(
@@ -606,7 +653,7 @@ def torch_tpu_py_test(
         **kwargs: Any additional arguments.
     """
 
-    if len(srcs) > 1:
+    if len(srcs) > 1 and is_oss():
         fail("torch_tpu_py_test must contain at most one srcs file. This prevents build bloat " +
              "and circular dependencies between files.")
 
@@ -869,3 +916,89 @@ def torch_tpu_package_end():
 
     _define_cpp_filegroup(name = "all_cpp_files_recursive")
     _define_test_suite(name = "all_tests")
+
+def torch_tpu_pywrap_library(**kwargs):
+    """Creates a pywrap_library for torch_tpu.
+
+    This macro neuters the target when wheel testing is enabled.
+    """
+    kwargs = _empty_if_wheel_test(kwargs)
+    pywrap_library(**kwargs)
+
+def torch_tpu_pywrap_binaries(**kwargs):
+    """Creates a pywrap_binaries for torch_tpu.
+
+    This macro neuters the target when wheel testing is enabled.
+    """
+    kwargs = _empty_if_wheel_test(kwargs)
+    pywrap_binaries(**kwargs)
+
+def torch_tpu_py_binary(name, **kwargs):
+    """Creates a pytype_strict_binary for torch_tpu.
+
+    This macro neuters the target when wheel testing is enabled.
+
+    Args:
+        name: The name of the binary.
+        **kwargs: Any additional arguments.
+    """
+
+    kwargs = _empty_if_wheel_test(kwargs)
+    pytype_strict_binary(
+        name = name,
+        **kwargs
+    )
+
+def torch_tpu_cc_binary(name, copts = None, features = None, **kwargs):
+    """Creates a C++ binary for torch_tpu.
+
+    This macro neuters the target when wheel testing is enabled.
+
+    Args:
+        name: The name of the binary.
+        copts: The C/C++ compiler options to use.
+        features: The blaze features to enable/disable.
+        **kwargs: Any additional arguments.
+    """
+
+    copts, features = adjust_cc_options(copts, features)
+    kwargs = _empty_if_wheel_test(kwargs)
+    cc_binary(
+        name = name,
+        copts = copts,
+        features = features,
+        **kwargs
+    )
+
+def torch_tpu_py_library_providing_imports_info(**kwargs):
+    """Creates a py_library_providing_imports_info for torch_tpu.
+
+    This macro neuters the target when wheel testing is enabled.
+    """
+    kwargs = _empty_if_wheel_test(kwargs)
+    py_library_providing_imports_info(**kwargs)
+
+register_extension_info(
+    extension = torch_tpu_cc_binary,
+    label_regex_for_dep = "{extension_name}",
+)
+
+register_extension_info(
+    extension = torch_tpu_py_binary,
+    label_regex_for_dep = "{extension_name}",
+)
+
+register_extension_info(
+    extension = torch_tpu_pywrap_library,
+    label_regex_for_dep = "{extension_name}",
+)
+
+register_extension_info(
+    extension = torch_tpu_pywrap_binaries,
+    label_regex_for_dep = "{extension_name}",
+)
+
+register_extension_info(
+    extension = torch_tpu_py_library_providing_imports_info,
+    label_regex_for_dep = "{extension_name}",
+)

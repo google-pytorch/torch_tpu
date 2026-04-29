@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("@rules_python//python:py_binary.bzl", "py_binary")
 
 bzl_library(
     name = "torch_local_repo_bzl",
@@ -23,12 +22,6 @@ bzl_library(
         "torch_local_repo.bzl",
     ],
     visibility = ["//visibility:private"],
-)
-
-py_binary(
-    name = "assemble_wheel_deps",
-    srcs = ["assemble_wheel_deps.py"],
-    visibility = ["//visibility:public"],
 )
 
 exports_files([

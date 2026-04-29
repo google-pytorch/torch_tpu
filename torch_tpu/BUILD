@@ -5,6 +5,7 @@ load(
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_library_providing_imports_info",
 )
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//build_files:py_dist_info.bzl", "py_dist_info")
@@ -22,7 +23,18 @@ load("//build_files:py_dist_info.bzl", "py_dist_info")
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
+load("//tools/build_defs/bazel_skylib/rules:common_settings.bzl", "bool_flag")
+
+bool_flag(
+    name = "test_wheel",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "wheel_test_enabled",
+    flag_values = {":test_wheel": "True"},
+    visibility = ["//visibility:private"],
+)
 
 WHEEL_VERSION = "0.0.0"
 
@@ -67,7 +79,7 @@ torch_tpu_py_library(
     ],
 )
 
-py_library_providing_imports_info(
+torch_tpu_py_library_providing_imports_info(
     name = "torch_tpu",
     srcs = [
         "__init__.py",

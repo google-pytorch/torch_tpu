@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -25,7 +24,7 @@ package(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "pallas",
     srcs = [
         "__init__.py",

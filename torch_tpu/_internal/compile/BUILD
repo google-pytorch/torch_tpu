@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -33,7 +32,7 @@ torch_tpu_py_library(
     ],
 )
 
-pytype_strict_library(
+torch_tpu_py_library(
     name = "tpu_backend",
     srcs = [
         "__init__.py",
