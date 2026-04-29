@@ -20,7 +20,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <limits>
+#include <iterator>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -30,7 +30,6 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
-#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -38,12 +37,10 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "ATen/core/ATen_fwd.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/util/accumulate.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -57,7 +54,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
@@ -66,28 +62,112 @@
 
 namespace torch_tpu {
 
-void Subgraph::Prune() {
-  queue_.erase(std::remove_if(
-                   queue_.begin(), queue_.end(),
-                   [](std::weak_ptr<DeviceBufferList>& weak_node) {
-                     std::shared_ptr<DeviceBufferList> node = weak_node.lock();
-                     if (!node) {
-                       return true;
-                     }
-                     const auto* deferred_op = node->deferred_op();
-                     if (!deferred_op || deferred_op->num_child_ops() > 0) {
-                       return true;
-                     }
-                     return false;
-                   }),
-               queue_.end());
+SubgraphRegistry& SubgraphRegistry::GetInstance() {
+  static SubgraphRegistry* const registry = new SubgraphRegistry();
+  return *registry;
 }
 
-void Subgraph::PruneAndReturnLeafNodes(
+size_t SubgraphRegistry::AllocateSubgraph() {
+  absl::MutexLock lock(mu_);
+  if (!free_list_.empty()) {
+    const size_t index = free_list_.front();
+    free_list_.pop_front();
+    auto& subgraph_data = subgraph_data_[index];
+    subgraph_data.ref_count = 1;
+    return index;
+  }
+
+  // There are no previously-allocated subgraphs to reuse. Allocate a new one.
+  size_t allocated_index = subgraph_data_.size();
+  // The newly-created SubgraphData is a root (is its own parent).
+  subgraph_data_.push_back(
+      SubgraphData{.parent = allocated_index, .ref_count = 1});
+  return allocated_index;
+}
+
+void SubgraphRegistry::DecrementRefCountLocked(size_t subgraph_index) {
+  size_t curr = subgraph_index;
+  auto* curr_data = &subgraph_data_[curr];
+  curr_data->ref_count--;
+
+  // Cascading free all SubgraphData with a ref_count of 0.
+  while (curr_data->ref_count == 0) {
+    // Record what the parent value is before we overwrite it.
+    size_t next = curr_data->parent;
+
+    // Mark curr as free.
+    curr_data->queue.clear();
+    curr_data->parent = curr;  // Mark as root.
+    free_list_.push_back(curr);
+
+    // If we have reached the root, we can stop.
+    // Otherwise, loop and decrement the ref_count of the parent.
+    if (next == curr) return;
+    curr = next;
+    curr_data = &subgraph_data_[curr];
+    curr_data->ref_count--;
+  }
+}
+
+Subgraph::Subgraph()
+    : subgraph_index_(SubgraphRegistry::GetInstance().AllocateSubgraph()) {}
+
+Subgraph::~Subgraph() {
+  SubgraphRegistry& registry = SubgraphRegistry::GetInstance();
+  absl::MutexLock lock(registry.mu_);
+  registry.DecrementRefCountLocked(subgraph_index_);
+}
+
+size_t SubgraphRegistry::FindLocked(size_t subgraph_index) {
+  // Walk up the tree to find the root subgraph, keeping track of the path in a
+  // stack.
+  // Once we find a subgraph that is its own parent, we have found the root.
+  size_t root = subgraph_data_[subgraph_index].parent;
+  while (subgraph_data_[root].parent != root) {
+    root = subgraph_data_[root].parent;
+  }
+
+  // Path compression: update the parents of all subgraphs along the path to
+  // the root to make future walks faster.
+  size_t curr = subgraph_index;
+  while (subgraph_data_[curr].parent != root) {
+    size_t old_parent = subgraph_data_[curr].parent;
+
+    // Move the reference from the old parent to the new root.
+    // Increment FIRST, so that we don't accidentally free something we need to
+    // retain.
+    subgraph_data_[root].ref_count++;
+    DecrementRefCountLocked(old_parent);
+
+    subgraph_data_[curr].parent = root;
+    curr = old_parent;
+  }
+
+  return root;
+}
+
+void SubgraphRegistry::SubgraphData::Prune() {
+  queue.erase(std::remove_if(
+                  queue.begin(), queue.end(),
+                  [](std::weak_ptr<DeviceBufferList>& weak_node) {
+                    std::shared_ptr<DeviceBufferList> node = weak_node.lock();
+                    if (!node) {
+                      return true;
+                    }
+                    const auto* deferred_op = node->deferred_op();
+                    if (!deferred_op || deferred_op->num_child_ops() > 0) {
+                      return true;
+                    }
+                    return false;
+                  }),
+              queue.end());
+}
+
+void SubgraphRegistry::SubgraphData::PruneAndReturnLeafNodes(
     std::vector<SharedDeviceBufferList>& leaf_nodes_out) {
-  queue_.erase(
+  queue.erase(
       std::remove_if(
-          queue_.begin(), queue_.end(),
+          queue.begin(), queue.end(),
           [&leaf_nodes_out](std::weak_ptr<DeviceBufferList>& weak_node) {
             std::shared_ptr<DeviceBufferList> node = weak_node.lock();
             if (!node) {
@@ -100,138 +180,108 @@ void Subgraph::PruneAndReturnLeafNodes(
             leaf_nodes_out.push_back(std::move(node));
             return false;
           }),
-      queue_.end());
+      queue.end());
 }
 
-void Subgraph::push(std::weak_ptr<DeviceBufferList> device_buffer) {
+void SubgraphRegistry::Push(size_t subgraph_index,
+                            std::weak_ptr<DeviceBufferList> device_buffer) {
   absl::MutexLock lock(mu_);
-  if (queue_.size() >= queue_.capacity()) {
+  size_t root = FindLocked(subgraph_index);
+  if (subgraph_data_[root].queue.size() >=
+      subgraph_data_[root].queue.capacity()) {
     // Try to free up capacity by pruning down to just the live leaf nodes.
-    Prune();
+    subgraph_data_[root].Prune();
   }
-  queue_.push_back(std::move(device_buffer));
+  subgraph_data_[root].queue.push_back(std::move(device_buffer));
 }
 
-std::shared_ptr<Subgraph> Subgraph::Find() {
-  std::shared_ptr<Subgraph> root = shared_from_this();
-  while (true) {
-    std::shared_ptr<Subgraph> next_root;
-    {
-      absl::MutexLock lock(root->mu_);
-      next_root = root->parent_;
-    }
-    if (!next_root) break;
-    root = next_root;
-  }
-
-  // Path compression: update parents along the path to the root.
-  std::shared_ptr<Subgraph> current = shared_from_this();
-  while (current != root) {
-    std::shared_ptr<Subgraph> next;
-    {
-      absl::MutexLock lock(current->mu_);
-      next = current->parent_;
-      if (next) {
-        current->parent_ = root;
-      }
-    }
-    if (!next || next == root) break;
-    current = next;
-  }
-
-  return root;
+void Subgraph::push(std::weak_ptr<DeviceBufferList> device_buffer) const {
+  SubgraphRegistry::GetInstance().Push(subgraph_index_,
+                                       std::move(device_buffer));
 }
 
-void Subgraph::Merge(std::shared_ptr<Subgraph> s1,
-                     std::shared_ptr<Subgraph> s2) {
-  auto r1 = s1->Find();
-  auto r2 = s2->Find();
-  if (r1 == r2) return;
+void SubgraphRegistry::MergeIndexes(absl::Span<const size_t> subgraph_indexes) {
+  // Merging nothing or merging a single subgraph has no effect.
+  if (subgraph_indexes.size() < 2) return;
 
-  absl::MutexLock lock1(r1->mu_);
-  absl::MutexLock lock2(r2->mu_);
+  const size_t new_root = FindLocked(subgraph_indexes[0]);
+  auto& new_root_data = subgraph_data_[new_root];
+  for (size_t i = 1; i < subgraph_indexes.size(); ++i) {
+    const size_t old_root = FindLocked(subgraph_indexes[i]);
+    if (new_root == old_root) continue;  // Already merged.
 
-  // Prune r1's queue to avoid reallocation if possible.
-  r1->Prune();
+    auto& old_root_data = subgraph_data_[old_root];
 
-  // Push r2's live, leaf nodes onto r1's queue.
-  for (auto& weak_node : r2->queue_) {
-    if (auto node = weak_node.lock()) {
-      const auto* deferred_op = node->deferred_op();
-      if (deferred_op && deferred_op->num_child_ops() == 0) {
-        r1->queue_.push_back(std::move(weak_node));
-      }
+    // If we can fit all of the merged nodes into the existing capacity, we
+    // don't need to check any weak_ptrs for expiration and can just do a fast
+    // insert.
+    if (new_root_data.queue.size() + old_root_data.queue.size() >
+        new_root_data.queue.capacity()) {
+      new_root_data.Prune();
+      old_root_data.Prune();
     }
+    new_root_data.queue.insert(
+        new_root_data.queue.end(),
+        std::make_move_iterator(old_root_data.queue.begin()),
+        std::make_move_iterator(old_root_data.queue.end()));
+
+    // Set the old root to be an empty pointer to the new root.
+    old_root_data.queue.clear();
+
+    new_root_data.ref_count++;
+
+    old_root_data.parent = new_root;
   }
-  r2->queue_.clear();
-  r2->parent_ = r1;
 }
 
-std::vector<SharedDeviceBufferList> Subgraph::GetLeafNodes() {
+void SubgraphRegistry::Merge(
+    absl::Span<const std::shared_ptr<Subgraph>> subgraphs) {
+  // Merging nothing or merging a single subgraph has no effect.
+  if (subgraphs.size() < 2) return;
+
+  std::vector<size_t> subgraph_indexes;
+  subgraph_indexes.reserve(subgraphs.size());
+  for (const auto& subgraph : subgraphs) {
+    subgraph_indexes.push_back(subgraph->subgraph_index());
+  }
+
   absl::MutexLock lock(mu_);
-  // Simultaneously prune the queue and write leaf nodes to the output.
+  MergeIndexes(subgraph_indexes);
+}
+
+void SubgraphRegistry::MergeAll() {
+  absl::MutexLock lock(mu_);
+  std::vector<size_t> root_subgraphs;
+  for (size_t i = 0; i < subgraph_data_.size(); ++i) {
+    if (subgraph_data_[i].ref_count > 0 && subgraph_data_[i].parent == i) {
+      root_subgraphs.push_back(i);
+    }
+  }
+  MergeIndexes(root_subgraphs);
+}
+
+std::vector<SharedDeviceBufferList> SubgraphRegistry::GetLeafNodes(
+    size_t subgraph_index) {
+  absl::MutexLock lock(mu_);
+  const size_t root = FindLocked(subgraph_index);
   std::vector<SharedDeviceBufferList> leaf_nodes;
-  PruneAndReturnLeafNodes(leaf_nodes);
+  subgraph_data_[root].PruneAndReturnLeafNodes(leaf_nodes);
   return leaf_nodes;
 }
 
-SubgraphRegistry& SubgraphRegistry::GetInstance() {
-  static SubgraphRegistry* const registry = new SubgraphRegistry();
-  return *registry;
+std::vector<SharedDeviceBufferList> Subgraph::GetLeafNodes() const {
+  return SubgraphRegistry::GetInstance().GetLeafNodes(subgraph_index_);
 }
 
-absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MakeNewSubgraph() {
+[[nodiscard]] bool SubgraphRegistry::SubgraphsEqual(const Subgraph& subgraph1,
+                                                    const Subgraph& subgraph2) {
+  if (subgraph1.subgraph_index() == subgraph2.subgraph_index()) {
+    return true;
+  }
   absl::MutexLock lock(mu_);
-  if (subgraphs_.size() >= subgraphs_.capacity()) {
-    // Try to free up capacity by pruning down to just the live subgraphs.
-    subgraphs_.erase(std::remove_if(subgraphs_.begin(), subgraphs_.end(),
-                                    [](std::weak_ptr<Subgraph>& weak_subgraph) {
-                                      return weak_subgraph.lock() == nullptr;
-                                    }),
-                     subgraphs_.end());
-  }
-
-  auto subgraph = std::make_shared<Subgraph>();
-  subgraphs_.push_back(subgraph);  // intentional copy
-  return subgraph;
-}
-
-absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MergeAll() {
-  absl::MutexLock lock(mu_);
-  // Find the first non-expired subgraph.
-  std::shared_ptr<Subgraph> root;
-  auto it = subgraphs_.begin();
-  while (it != subgraphs_.end()) {
-    root = it->lock();
-    if (root) break;
-    ++it;
-  }
-  if (it == subgraphs_.end()) {
-    // All subgraphs are expired. Create a new one and register it as the only
-    // subgraph.
-    subgraphs_.clear();
-    auto subgraph = std::make_shared<Subgraph>();
-    subgraphs_.push_back(subgraph);  // intentional copy
-    return subgraph;
-  }
-
-  // Merge all other subgraphs into the root subgraph.
-  ++it;
-  for (; it != subgraphs_.end(); ++it) {
-    if (auto subgraph = it->lock()) {
-      Subgraph::Merge(root, subgraph);
-    }
-  }
-
-  // Make the root subgraph the only subgraph in the registry and return it.
-  ABSL_CHECK(root);  // CRASH_OK=satisfying ClangTidy
-  subgraphs_.clear();
-  subgraphs_.push_back(root);  // intentional copy
-  return root;
-}
-
-std::shared_ptr<Subgraph> Subgraph::Create() {
-  return SubgraphRegistry::GetInstance().MakeNewSubgraph();
+  const size_t root1 = FindLocked(subgraph1.subgraph_index());
+  const size_t root2 = FindLocked(subgraph2.subgraph_index());
+  return root1 == root2;
 }
 
 size_t DeviceBufferList::size_bytes(int64_t index) const {
@@ -480,26 +530,32 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
     // Otherwise, two independent collective operations could be isolated in
     // disconnected subgraphs, and different rank processes could have different
     // orderings of these subgraphs, leading to a deadlock.
-    subgraph = SubgraphRegistry::GetInstance().MergeAll();
-  }
-
-  for (const auto& input : inputs) {
-    if (input.state() == DeviceBufferRefState::kDeferred) {
-      auto input_subgraph = input.device_buffer_list()->subgraph();
-      if (!input_subgraph) continue;
-
-      auto input_rep = input_subgraph->Find();
-      if (!subgraph) {
-        subgraph = input_rep;
-      } else if (subgraph != input_rep) {
-        Subgraph::Merge(subgraph, input_rep);
-        subgraph = subgraph->Find();
+    //
+    // Create a new subgraph for this distributed op, and then merge all
+    // subgraphs; after merging, this subgraph's root will be the global root.
+    subgraph = std::make_shared<Subgraph>();
+    SubgraphRegistry::GetInstance().MergeAll();
+  } else {
+    // Dispatching a new op may cause 2 or more existing subgraphs to merge.
+    std::vector<std::shared_ptr<Subgraph>> input_subgraphs;
+    for (const auto& input : inputs) {
+      if (const auto* deferred_op = input.deferred_op()) {
+        input_subgraphs.push_back(deferred_op->subgraph());
       }
+    }
+    if (input_subgraphs.size() > 1) {
+      // If all input subgraphs currently share the same root, this operation
+      // will be a no-op.
+      SubgraphRegistry::GetInstance().Merge(input_subgraphs);
+    }
+    if (!input_subgraphs.empty()) {
+      subgraph = input_subgraphs[0];
     }
   }
 
   if (!subgraph) {
-    subgraph = Subgraph::Create();
+    // Nullary, non-distributed ops start a new subgraph.
+    subgraph = std::make_shared<Subgraph>();
   }
 
   // Create the DeferredOp.
