@@ -50,9 +50,9 @@ jobs:
   build_and_test_wheel:
     name: "Build and Test Wheel on ${{ matrix.job_info.runner }}"
     # Run nightly, or on PRs explicitly tagged with 'ci:local-torch'.
-    if: >-
-      github.event_name == 'schedule' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:local-torch')
+    # if: >-
+    #   github.event_name == 'schedule' ||
+    #   contains(github.event.pull_request.labels.*.name, 'ci:local-torch')
     strategy:
       matrix:
         job_info: [
@@ -145,12 +145,12 @@ jobs:
 
   notify_failure:
     name: Notify Failed Runs
-    needs: [run_tests]
+    needs: [build_and_test_wheel]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check whether one of the jobs failed
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
+        if: contains(needs.build_and_test_wheel.result, 'failure') && github.event_name != 'pull_request'
         uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

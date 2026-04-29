@@ -668,9 +668,13 @@ def torch_tpu_py_test(
     all_paths = [torch_lib, libtpu_lib, wheel_lib, solib_path]
     new_paths_str = ":".join(all_paths)
 
+    # Apply the fix to always include these paths in the base environment
+    # to support processes spawned by mp.spawn.
+    _prepend_to_env(existing_env, "LD_LIBRARY_PATH", new_paths_str)
+
     # 3. Create the specialized environment for wheel testing
+    # This inherits the LD_LIBRARY_PATH we just set.
     env_with_wheel = dict(existing_env)
-    _prepend_to_env(env_with_wheel, "LD_LIBRARY_PATH", new_paths_str)
 
     # Local Torch + Wheel test environment
     # We include local paths for LD_LIBRARY_PATH and PYTHONPATH
@@ -679,7 +683,7 @@ def torch_tpu_py_test(
     local_torch_lib = "torch_tpu_py_import_unpacked_wheel/torch/lib"
     local_torch_lib_alt = "__main__/torch_tpu_py_import_unpacked_wheel/torch/lib"
     local_paths = [local_torch_lib, local_torch_lib_alt]
-    local_ld_path = ":".join(local_paths) + ":" + new_paths_str
+    local_ld_path = ":".join(local_paths)
     _prepend_to_env(env_with_local_torch, "LD_LIBRARY_PATH", local_ld_path)
 
     local_torch_python = "../local_torch/site-packages"
@@ -707,9 +711,10 @@ def torch_tpu_py_test(
     _add_lsan_options(env_with_wheel)
     _add_lsan_options(env_with_local_torch)
 
-    # 4. Use select to swap between the wheel and non-wheel envs
+    # 4. Use select to swap between environments and dependencies
     test_env = if_oss(select({
         "//:wheel_test_with_local_torch": env_with_local_torch,
+        "//shims/torch:use_local_torch": env_with_local_torch,
         "//:wheel_test_enabled": env_with_wheel,
         "//conditions:default": existing_env,
     }), existing_env)
