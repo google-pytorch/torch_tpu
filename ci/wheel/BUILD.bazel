@@ -59,8 +59,9 @@ remap_pywrap_binaries(
     srcs = "//torch_tpu/common:pywrap_torch_tpu_binaries",
 )
 
-pytype_strict_library(
-    name = "all_torch_tpu_files",
+# Source files for all torch_tpu components in the wheel.
+filegroup(
+    name = "all_torch_tpu_files_srcs",
     srcs = [
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compiler_options",
@@ -89,6 +90,14 @@ pytype_strict_library(
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
         "//torch_tpu/api",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+pytype_strict_library(
+    name = "all_torch_tpu_files",
+    srcs = [
+        ":all_torch_tpu_files_srcs",
     ],
     visibility = ["//visibility:public"],
 )

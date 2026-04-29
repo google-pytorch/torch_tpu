@@ -31,6 +31,23 @@ filegroup(
     srcs = ["pyproject.toml"],
 )
 
+filegroup(
+    name = "all_python_sources",
+    srcs = glob(
+        ["**/*.py"],
+        exclude = [
+            "**/.*/**",
+            "bazel-*/**",
+            "dist/**",
+            "venv/**",
+        ],
+    ) + [
+        "//torch_tpu:all_python_files",
+        "//tests:all_python_files",
+    ],
+    visibility = ["//ci/wheel/sanity:__pkg__"],
+)
+
 exports_files(["README.md"])
 
 bool_flag(
@@ -79,14 +96,23 @@ filegroup(
     srcs = ["@local_torch//:torch_py_files"],
 )
 
+# Source files for extra test dependencies.
+filegroup(
+    name = "wheel_extra_test_deps_srcs",
+    testonly = True,
+    srcs = [
+        "//tests:all_py_files_recursive",
+        # "//torch_tpu/_internal/distributed:spmd_util",
+        "//torch_tpu/_internal/utils:test_fixtures",
+    ],
+)
+
 # 3. Assemble everything into the final zip using a robust procedural approach
 genrule(
     name = "wheel_extra_test_deps",
     testonly = True,
     srcs = [
-        "//tests:all_py_files_recursive",
-        "//torch_tpu/_internal/distributed:spmd_util",
-        "//torch_tpu/_internal/utils:test_fixtures",
+        ":wheel_extra_test_deps_srcs",
     ] + select({
         "//ci/wheel:use_local_torch": [
             ":torch_libs_mapped",

@@ -18,6 +18,12 @@ package(
     default_applicable_licenses = ["//:license"],
 )
 
+filegroup(
+    name = "all_python_files",
+    srcs = glob(["**/*.py"]),
+    visibility = ["//torch_tpu/oss:__subpackages__"],
+)
+
 torch_tpu_py_library(
     name = "module_registry",
     srcs = ["module_registry.py"],

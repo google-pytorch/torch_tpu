@@ -40,6 +40,12 @@ license(
     package_name = "torch_tpu",
 )
 
+filegroup(
+    name = "all_python_files",
+    srcs = glob(["**/*.py"]),
+    visibility = ["//torch_tpu/oss:__subpackages__"],
+)
+
 exports_files(["LICENSE"])
 
 py_dist_info(
