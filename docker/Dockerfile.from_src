@@ -29,7 +29,7 @@ RUN curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/baz
 # Set working directory
 WORKDIR /workspace
 
-RUN pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cpu
+RUN pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Explicitly install requirements to leverage Docker cache without needing the file in context.
 RUN pip install \

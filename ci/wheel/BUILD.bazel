@@ -34,11 +34,11 @@ config_setting(
 )
 
 # Define requirements list that conditionally includes torch
-# If TORCH_SOURCE=local, we do not require torch==2.10.0, allowing
+# If TORCH_SOURCE=local, we do not require torch==2.11.0, allowing
 # the wheel to be installed alongside any local PyTorch version.
 TORCH_REQ = select({
     ":use_local_torch": [],
-    "//conditions:default": ["torch==2.10.0"],
+    "//conditions:default": ["torch==2.11.0"],
 })
 
 FILTERED_REQUIRES = [req for req in WHEEL_REQUIRES if not req.startswith("torch")]
