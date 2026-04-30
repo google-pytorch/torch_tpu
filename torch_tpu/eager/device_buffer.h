@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -39,7 +40,6 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Allocator.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -141,44 +141,37 @@ class DeferredOp;
 
 using SharedDeviceBufferList = absl_nonnull std::shared_ptr<DeviceBufferList>;
 
+using SubgraphQueue = std::vector<std::weak_ptr<DeviceBufferList>>;
+
 // A Subgraph represents a set of deferred operations that are logically
 // connected. Subgraphs can be merged when an operation takes inputs from
 // multiple subgraphs.
 // Each subgraph maintains its own queue of deferred operations.
 // TODO(bawilson): factor this into a separate file.
-class Subgraph : public std::enable_shared_from_this<Subgraph> {
+class Subgraph {
  public:
-  // Constructs a subgraph, but does not register it with the subgraph
-  // registry.
-  Subgraph() = default;
+  // Allocates a new empty subgraph with the SubgraphRegistry.
+  Subgraph();
 
-  // Creates a new subgraph and registers it with the subgraph registry.
-  static std::shared_ptr<Subgraph> Create();
+  // Decrements the reference count of this subgraph in the SubgraphRegistry and
+  // marks, the subgraph as inactive and reusable if the reference count reaches
+  // zero.
+  ~Subgraph();
 
-  // Pushes a deferred node onto this subgraph's queue.
-  void push(std::weak_ptr<DeviceBufferList> device_buffer);
+  // Pushes a deferred node onto the queue of the root for this subgraph.
+  void push(std::weak_ptr<DeviceBufferList> device_buffer) const;
 
-  // Returns the representative subgraph (root of the DSU tree).
-  std::shared_ptr<Subgraph> Find();
-
-  // Merges two subgraphs.
-  static void Merge(std::shared_ptr<Subgraph> s1, std::shared_ptr<Subgraph> s2);
+  // Returns the index of this subgraph in the SubgraphRegistry.
+  [[nodiscard]] size_t subgraph_index() const { return subgraph_index_; }
 
   // Returns the leaf nodes of the subgraph.
-  std::vector<SharedDeviceBufferList> GetLeafNodes();
+  std::vector<SharedDeviceBufferList> GetLeafNodes() const;
 
  private:
-  // Prunes the queue to remove expired, materialized, and non-leaf nodes.
-  void Prune() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-
-  // Prunes the queue, and writes the leaf nodes to the output vector.
-  void PruneAndReturnLeafNodes(
-      std::vector<SharedDeviceBufferList>& leaf_nodes_out)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-
-  absl::Mutex mu_;
-  std::shared_ptr<Subgraph> parent_ ABSL_GUARDED_BY(mu_);
-  std::vector<std::weak_ptr<DeviceBufferList>> queue_ ABSL_GUARDED_BY(mu_);
+  // Under the hood, a Subgraph is just an index into the SubgraphRegistry, but
+  // asserts that the index is valid to avoid repeated re-validation.
+  explicit Subgraph(size_t subgraph_index) : subgraph_index_(subgraph_index) {}
+  const size_t subgraph_index_ = 0;
 };
 
 // A global singleton registry of all Subgraphs that currently exist.
@@ -188,14 +181,53 @@ class SubgraphRegistry {
   // Returns the singleton registry instance.
   [[nodiscard]] static SubgraphRegistry& GetInstance();
 
-  // Constructs a new, empty subgraph and registers it with the registry.
-  absl_nonnull std::shared_ptr<Subgraph> MakeNewSubgraph();
+  // Merges the given subgraphs so that they all share the same root, and
+  // that root contains all of the leaf nodes of all of the input subgraphs.
+  void Merge(absl::Span<const std::shared_ptr<Subgraph>> subgraphs);
 
-  // Merges all subgraphs in the registry into a single subgraph.
-  // If the registry is empty, creates a new empty subgraph and returns it.
-  absl_nonnull std::shared_ptr<Subgraph> MergeAll();
+  // Merges all currently existing subgraphs into a single subgraph.
+  // After this, all existing Subgraphs will be equivalent.
+  void MergeAll();
+
+  // Returns true if the given subgraphs all share the same root.
+  [[nodiscard]] bool SubgraphsEqual(const Subgraph& subgraph1,
+                                    const Subgraph& subgraph2);
 
  private:
+  // Initializes a new SubgraphData slot for an empty, root subgraph and returns
+  // the index of the newly allocated subgraph.
+  // Reuses prior capacity if able.
+  // Only called by the Subgraph constructor.
+  size_t AllocateSubgraph();
+
+  // Reduces the reference count of a subgraph. If this causes the reference
+  // count to reach zero, marks the subgraph as inactive and reusable, and
+  // decrements the reference count of the parent subgraph (possibly cascading
+  // to other subgraphs).
+  void DecrementRefCountLocked(size_t subgraph_index)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  // Returns the root subgraph index for the given subgraph index.
+  // Performs path compression as well.
+  size_t FindLocked(size_t subgraph_index) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  // Pushes a deferred node onto the queue of the root subgraph for the given
+  // subgraph index.
+  void Push(size_t subgraph_index,
+            std::weak_ptr<DeviceBufferList> device_buffer);
+
+  // Returns the leaf nodes of the subgraph with the given index.
+  std::vector<SharedDeviceBufferList> GetLeafNodes(size_t subgraph_index);
+
+  // Most operations on a SubgraphRegistry are implemented through accessor
+  // methods on Subgraph, to ensure that the index is always valid.
+  friend class Subgraph;
+
+  // Merges the subgraphs corresponding to the given subgraph indexes.
+  // Called internally by Merge() and MergeAll().
+  void MergeIndexes(absl::Span<const size_t> subgraph_indexes)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
   SubgraphRegistry() = default;
   // SubgraphRegistry is neither copyable nor movable.
   SubgraphRegistry(const SubgraphRegistry&) = delete;
@@ -203,8 +235,37 @@ class SubgraphRegistry {
   SubgraphRegistry(SubgraphRegistry&&) = delete;
   SubgraphRegistry& operator=(SubgraphRegistry&&) = delete;
 
+  // The information needed to represent a single subgraph.
+  struct SubgraphData {
+    // Removes all non-live, non-deferred, non-leaf nodes from the queue.
+    void Prune();
+
+    // Removes all non-live, non-deferred, non-leaf nodes from the queue and
+    // writes the live, deferred, and leaf nodes to the output vector.
+    void PruneAndReturnLeafNodes(
+        std::vector<SharedDeviceBufferList>& leaf_nodes_out);
+
+    // The queue of deferred nodes for this subgraph. Always empty for non-root
+    // subgraphs.
+    SubgraphQueue queue;
+
+    // The subgraph index of the parent subgraph in the subgraph_data_ vector.
+    size_t parent;
+
+    // The number of active references to this SubgraphData.
+    // If a Subgraph handle exists, that counts as a reference.
+    // If this SubgraphData is a direct parent of another SubgraphData with a
+    // non-zero ref_count, that also counts as a reference.
+    // When this ref_count reaches zero, the SubgraphData slot can be reused.
+    int64_t ref_count = 0;
+  };
+
   absl::Mutex mu_;
-  std::vector<std::weak_ptr<Subgraph>> subgraphs_ ABSL_GUARDED_BY(mu_);
+  // Stores the data for each subgraph.
+  std::vector<SubgraphData> subgraph_data_ ABSL_GUARDED_BY(mu_);
+  // Stores the indices of slots that have been allocated but are currently
+  // empty and available for reuse.
+  std::deque<size_t> free_list_ ABSL_GUARDED_BY(mu_);
 };
 
 // A DeviceBufferRef is a reference to an element in a DeviceBufferList.
@@ -342,6 +403,10 @@ class DeviceBufferRef {
     return H::combine(std::move(h), ref.index_, ref.device_buffer_list_);
   }
 
+  // Increments the number of child ops for the DeviceBufferList that this
+  // DeviceBufferRef is attached to.
+  void IncrementNumChildOps() const;
+
  private:
   // DeviceBufferRefs can only be constructed by DeviceBufferList::Create*
   // functions, to ensure the reference and referent are created simultaneously.
@@ -409,15 +474,10 @@ class DeferredOp {
         op_context_(ScopedPythonContextCapturer::GetContext()),
         split_mode_(split_mode),
         subgraph_(std::move(subgraph)) {
-    absl::flat_hash_set<const DeferredOp*> unique_deferred_ops;
+    absl::flat_hash_set<const DeviceBufferList*> unique_input_lists;
     for (const auto& input : inputs_) {
-      const auto* deferred_op = input.deferred_op();
-      if (deferred_op) {
-        // Deduplicate the input nodes when increment the child op count.
-        const bool inserted = unique_deferred_ops.insert(deferred_op).second;
-        if (inserted) {
-          deferred_op->num_child_ops_++;
-        }
+      if (unique_input_lists.insert(input.device_buffer_list().get()).second) {
+        input.IncrementNumChildOps();
       }
     }
   }
@@ -467,11 +527,6 @@ class DeferredOp {
 
   // Marks this DeferredOp as having been executed at least once.
   void mark_executed() const { has_been_executed_ = true; }
-
-  // Returns the number of other DeferredOps that have been created which depend
-  // on this one. This does *not* track the liveness of these ops; if a
-  // DeferredOp destroyed, the refcount will not be updated.
-  [[nodiscard]] int64_t num_child_ops() const { return num_child_ops_; }
 
   // Returns the cache keys for the op parameters. These are used to ensure that
   // the compilation cache does not reuse a cached compiled op if there are
@@ -844,6 +899,9 @@ class DeviceBufferList {
 
   std::string DebugString() const;
 
+  int64_t num_child_ops() const { return num_child_ops_; }
+  void IncrementNumChildOps() { num_child_ops_++; }
+
  private:
   // Private constructor for a DeviceBufferList wrapping a single materialized
   // PjRtBuffer.
@@ -929,6 +987,11 @@ class DeviceBufferList {
   // A global index of the creation of this DeviceBufferList (created atomically
   // for thread safety). Lower means earlier.
   uint64_t creation_index_ = 0;
+
+  // The number of other DeferredOps that have been created which depend
+  // on this DeviceBufferList. This does *not* track the liveness of these ops;
+  // if a DeferredOp is destroyed, the refcount will not be updated.
+  mutable std::atomic_int64_t num_child_ops_ = 0;
 
   // The number of live c10::DataPtrs to this DeviceBufferList.
   // This is incremented by MakeDataPtr and decremented by
