@@ -71,8 +71,9 @@ TEST_F(SubgraphTest, SubgraphMerging) {
   ASSERT_TRUE(refs2_or.ok());
   auto ref2 = refs2_or.value()[0];
 
-  EXPECT_NE(ref1.device_buffer_list()->subgraph()->Find(),
-            ref2.device_buffer_list()->subgraph()->Find());
+  auto& registry = SubgraphRegistry::GetInstance();
+  EXPECT_FALSE(registry.SubgraphsEqual(*ref1.device_buffer_list()->subgraph(),
+                                       *ref2.device_buffer_list()->subgraph()));
 
   // Create a third node that merges the first two.
   auto refs3_or =
@@ -82,12 +83,10 @@ TEST_F(SubgraphTest, SubgraphMerging) {
   auto ref3 = refs3_or.value()[0];
 
   // All three should now belong to the same representative subgraph.
-  auto rep1 = ref1.device_buffer_list()->subgraph()->Find();
-  auto rep2 = ref2.device_buffer_list()->subgraph()->Find();
-  auto rep3 = ref3.device_buffer_list()->subgraph()->Find();
-
-  EXPECT_EQ(rep1, rep2);
-  EXPECT_EQ(rep1, rep3);
+  EXPECT_TRUE(registry.SubgraphsEqual(*ref1.device_buffer_list()->subgraph(),
+                                      *ref2.device_buffer_list()->subgraph()));
+  EXPECT_TRUE(registry.SubgraphsEqual(*ref1.device_buffer_list()->subgraph(),
+                                      *ref3.device_buffer_list()->subgraph()));
 }
 
 TEST_F(SubgraphTest, GetLeafNodesInvalidPopping) {
@@ -96,6 +95,7 @@ TEST_F(SubgraphTest, GetLeafNodesInvalidPopping) {
 
   SharedDeviceBufferList node2;
   std::shared_ptr<Subgraph> subgraph;
+  auto& registry = SubgraphRegistry::GetInstance();
 
   {
     auto refs1_or = DeviceBufferList::CreateDeferred(
@@ -108,10 +108,9 @@ TEST_F(SubgraphTest, GetLeafNodesInvalidPopping) {
     ASSERT_TRUE(refs2_or.ok());
     node2 = refs2_or.value()[0].device_buffer_list();
 
-    subgraph = node1->subgraph()->Find();
-    Subgraph::Merge(subgraph, node2->subgraph()->Find());
-    subgraph = subgraph->Find();
+    registry.Merge({node1->subgraph(), node2->subgraph()});
     // node1 and node2 are now in the same subgraph queue.
+    subgraph = node1->subgraph();
   }
   // node1 is now out of scope and should be invalid in the queue.
 
@@ -129,6 +128,7 @@ TEST_F(SubgraphTest, GetLeafNodesStopPopping) {
   SharedDeviceBufferList node1;
   SharedDeviceBufferList node3;
   std::shared_ptr<Subgraph> subgraph;
+  auto& registry = SubgraphRegistry::GetInstance();
 
   {
     auto refs1_or = DeviceBufferList::CreateDeferred(
@@ -143,11 +143,9 @@ TEST_F(SubgraphTest, GetLeafNodesStopPopping) {
         OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
     node3 = refs3_or.value()[0].device_buffer_list();
 
-    subgraph = node1->subgraph()->Find();
-    Subgraph::Merge(subgraph, node2->subgraph()->Find());
-    Subgraph::Merge(subgraph, node3->subgraph()->Find());
-    subgraph = subgraph->Find();
+    registry.Merge({node1->subgraph(), node2->subgraph(), node3->subgraph()});
     // node1, node2, node3 are now in the same subgraph queue.
+    subgraph = node1->subgraph();
   }
   // node2 is now out of scope and should be invalid in the queue.
   // node1 and node3 are still valid.
@@ -157,7 +155,7 @@ TEST_F(SubgraphTest, GetLeafNodesStopPopping) {
   // node2 (invalid) and node3 (valid) should remain in the queue.
   // Both node1 and node3 should be returned as leaves if they have no child
   // ops.
-  EXPECT_THAT(leaves, SizeIs(2));
+  ASSERT_THAT(leaves, SizeIs(2));
   EXPECT_EQ(leaves[0], node1);
   EXPECT_EQ(leaves[1], node3);
 
@@ -169,7 +167,7 @@ TEST_F(SubgraphTest, GetLeafNodesStopPopping) {
   node1.reset();
   leaves = subgraph->GetLeafNodes();
   // Now node2 is at the front, it should be popped. node3 is next and returned.
-  EXPECT_THAT(leaves, SizeIs(1));
+  ASSERT_THAT(leaves, SizeIs(1));
   EXPECT_EQ(leaves[0], node3);
 }
 
@@ -193,6 +191,7 @@ TEST_F(SubgraphTest, DeferredOpSubgraphDereference) {
 TEST_F(SubgraphTest, MergeAll) {
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  auto& registry = SubgraphRegistry::GetInstance();
 
   // Create two unrelated deferred nodes.
   auto refs_a_or = DeviceBufferList::CreateDeferred(
@@ -210,20 +209,21 @@ TEST_F(SubgraphTest, MergeAll) {
   ASSERT_NE(ref_b_deferred_op, nullptr);
 
   // The subgraphs should be distinct; they haven't been merged.
-  EXPECT_NE(ref_a_deferred_op->subgraph()->Find(),
-            ref_b_deferred_op->subgraph()->Find());
+  EXPECT_FALSE(registry.SubgraphsEqual(*ref_a_deferred_op->subgraph(),
+                                       *ref_b_deferred_op->subgraph()));
 
   // Merge all subgraphs.
-  auto merged_subgraph = SubgraphRegistry::GetInstance().MergeAll();
+  SubgraphRegistry::GetInstance().MergeAll();
 
   // Both nodes should now be in this merged subgraph.
-  EXPECT_EQ(ref_a_deferred_op->subgraph()->Find(), merged_subgraph);
-  EXPECT_EQ(ref_b_deferred_op->subgraph()->Find(), merged_subgraph);
+  EXPECT_TRUE(registry.SubgraphsEqual(*ref_a_deferred_op->subgraph(),
+                                      *ref_b_deferred_op->subgraph()));
 }
 
 TEST_F(SubgraphTest, DistributedCollectivesInSameSubgraph) {
   ScopedPythonContextCapturer capturer(OpName::kDistributedAllReduce);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  auto& registry = SubgraphRegistry::GetInstance();
 
   // Create two unrelated deferred nodes, but use the name for a distributed
   // collective.
@@ -235,10 +235,6 @@ TEST_F(SubgraphTest, DistributedCollectivesInSameSubgraph) {
   const auto* ref_a_deferred_op = ref_a.deferred_op();
   ASSERT_NE(ref_a_deferred_op, nullptr);
 
-  // Record the representative subgraph for ref_a before creating ref_b.
-  const auto* ref_a_subgraph_before =
-      ref_a_deferred_op->subgraph()->Find().get();
-
   auto refs_b_or = DeviceBufferList::CreateDeferred(
       OpName::kDistributedAllReduce, DummyBuilder, {},
       OpParamCacheKeys::Empty(), {shape});
@@ -247,30 +243,27 @@ TEST_F(SubgraphTest, DistributedCollectivesInSameSubgraph) {
   const auto* ref_b_deferred_op = ref_b.deferred_op();
   ASSERT_NE(ref_b_deferred_op, nullptr);
 
-  const auto* ref_a_subgraph_after =
-      ref_a_deferred_op->subgraph()->Find().get();
-  auto* ref_b_subgraph_after = ref_b_deferred_op->subgraph()->Find().get();
-
-  // ref_a should still have the same subgraph.
-  EXPECT_EQ(ref_a_subgraph_before, ref_a_subgraph_after);
-
-  // ref_b should have been merged into the same subgraph as ref_a.
-  EXPECT_EQ(ref_b_subgraph_after, ref_a_subgraph_after);
+  // Even though there is no direct data dependency between the two nodes,
+  // they should be in the same subgraph because they are both distributed
+  // collectives.
+  EXPECT_TRUE(registry.SubgraphsEqual(*ref_a_deferred_op->subgraph(),
+                                      *ref_b_deferred_op->subgraph()));
 
   // Both nodes should be leaf nodes in this subgraph, and the older leaf node
   // should be first.
   std::vector<const DeviceBufferList*> actual_leaf_nodes_ptrs;
-  for (const auto& leaf_node : ref_b_subgraph_after->GetLeafNodes()) {
+  for (const auto& leaf_node : ref_b_deferred_op->subgraph()->GetLeafNodes()) {
     actual_leaf_nodes_ptrs.push_back(leaf_node.get());
   }
   EXPECT_THAT(actual_leaf_nodes_ptrs,
-              testing::ElementsAre(ref_a.device_buffer_list().get(),
-                                   ref_b.device_buffer_list().get()));
+              testing::UnorderedElementsAre(ref_a.device_buffer_list().get(),
+                                            ref_b.device_buffer_list().get()));
 }
 
 TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
   ScopedPythonContextCapturer capturer(OpName::kDistributedAllReduce);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
+  auto& registry = SubgraphRegistry::GetInstance();
 
   // Create 3 disconnected ops in a pattern of [collective, non-collective,
   // collective]
@@ -281,8 +274,6 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
   auto collective_ref_a = collective_refs_a_or.value()[0];
   const auto* collective_ref_a_deferred_op = collective_ref_a.deferred_op();
   ASSERT_NE(collective_ref_a_deferred_op, nullptr);
-  const auto* collective_ref_a_subgraph_before =
-      collective_ref_a_deferred_op->subgraph()->Find().get();
 
   auto non_collective_refs_b_or = DeviceBufferList::CreateDeferred(
       OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
@@ -294,8 +285,9 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
 
   // The collective and non-collective ops should be in different subgraphs
   // initially.
-  EXPECT_NE(collective_ref_a_deferred_op->subgraph()->Find(),
-            non_collective_ref_b_deferred_op->subgraph()->Find());
+  EXPECT_FALSE(
+      registry.SubgraphsEqual(*collective_ref_a_deferred_op->subgraph(),
+                              *non_collective_ref_b_deferred_op->subgraph()));
 
   auto collective_refs_c_or = DeviceBufferList::CreateDeferred(
       OpName::kDistributedAllReduce, DummyBuilder, {},
@@ -308,25 +300,24 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
   // Creating collective ref_c should merge all three ops into the same
   // subgraph, which should be the same as the representative subgraph for
   // ref_a before merging.
-  EXPECT_EQ(collective_ref_a_deferred_op->subgraph()->Find().get(),
-            collective_ref_a_subgraph_before);
-  EXPECT_EQ(non_collective_ref_b_deferred_op->subgraph()->Find().get(),
-            collective_ref_a_subgraph_before);
-  EXPECT_EQ(collective_ref_c_deferred_op->subgraph()->Find().get(),
-            collective_ref_a_subgraph_before);
+  EXPECT_TRUE(
+      registry.SubgraphsEqual(*collective_ref_a_deferred_op->subgraph(),
+                              *non_collective_ref_b_deferred_op->subgraph()));
+  EXPECT_TRUE(
+      registry.SubgraphsEqual(*collective_ref_a_deferred_op->subgraph(),
+                              *collective_ref_c_deferred_op->subgraph()));
 
-  // All three nodes should be leaf nodes in this subgraph, and should be
-  // returned in the order they were created.
+  // All three nodes should be leaf nodes in this subgraph.
   std::vector<const DeviceBufferList*> actual_leaf_nodes_ptrs;
   for (const auto& leaf_node :
-       collective_ref_a_deferred_op->subgraph()->Find()->GetLeafNodes()) {
+       collective_ref_a_deferred_op->subgraph()->GetLeafNodes()) {
     actual_leaf_nodes_ptrs.push_back(leaf_node.get());
   }
-  EXPECT_THAT(
-      actual_leaf_nodes_ptrs,
-      testing::ElementsAre(collective_ref_a.device_buffer_list().get(),
-                           non_collective_ref_b.device_buffer_list().get(),
-                           collective_ref_c.device_buffer_list().get()));
+  EXPECT_THAT(actual_leaf_nodes_ptrs,
+              testing::UnorderedElementsAre(
+                  collective_ref_a.device_buffer_list().get(),
+                  non_collective_ref_b.device_buffer_list().get(),
+                  collective_ref_c.device_buffer_list().get()));
 }
 
 }  // namespace

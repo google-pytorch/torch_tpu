@@ -109,10 +109,8 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":device_types",
-        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
@@ -126,7 +124,6 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
@@ -235,7 +232,6 @@ torch_tpu_cc_library(
         ":device_buffer",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log:absl_check",
     ],
 )
 
