@@ -2434,11 +2434,13 @@ def set_up_test_module() -> None:
                 and sample.input.is_floating_point()
             ):
               # Create a small ramp (e.g., 0.0 to 0.01) to break any ties
+              # For bfloat16, we need a larger scale.
+              scale = 0.05 if dtype == torch.bfloat16 else 1e-2
               ramp = (
                   torch.linspace(
                       0, 1, sample.input.numel(), device=device, dtype=dtype
                   ).reshape(sample.input.shape)
-                  * 1e-2
+                  * scale
               )
 
               # Apply the ramp and preserve the requires_grad state
