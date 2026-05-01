@@ -1023,6 +1023,21 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "ldexp_cpu_test",
+    srcs = ["ldexp_cpu_test.py"],
+    env = {
+        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
+    },
+    main = "ldexp_cpu_test.py",
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "autoload_disabled_backend_test_gpu",
     srcs = ["autoload_disabled_backend_test.py"],
     main = "autoload_disabled_backend_test.py",
