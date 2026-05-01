@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/base/thread_annotations.h"
 #include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -43,13 +44,14 @@
 #include "c10/core/Device.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/util/accumulate.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
+#include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -232,6 +234,70 @@ absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MergeAll() {
 
 std::shared_ptr<Subgraph> Subgraph::Create() {
   return SubgraphRegistry::GetInstance().MakeNewSubgraph();
+}
+
+namespace {
+
+class GlobalLeafNodes {
+ public:
+  static GlobalLeafNodes& GetInstance() {
+    static GlobalLeafNodes* const instance = new GlobalLeafNodes();
+    return *instance;
+  }
+
+  std::vector<SharedDeviceBufferList> GetLeafNodes() {
+    absl::MutexLock lock(mu_);
+    std::vector<SharedDeviceBufferList> leaf_nodes;
+    leaf_nodes_.erase(
+        std::remove_if(
+            leaf_nodes_.begin(), leaf_nodes_.end(),
+            [&leaf_nodes](std::weak_ptr<DeviceBufferList>& weak_node) {
+              if (auto node = weak_node.lock()) {
+                if (const auto* deferred_op = node->deferred_op();
+                    deferred_op && deferred_op->num_child_ops() == 0) {
+                  leaf_nodes.push_back(std::move(node));
+                  return false;
+                }
+              }
+              return true;
+            }),
+        leaf_nodes_.end());
+    return leaf_nodes;
+  }
+
+  void Push(std::weak_ptr<DeviceBufferList> device_buffer) {
+    absl::MutexLock lock(mu_);
+    if (leaf_nodes_.size() >= leaf_nodes_.capacity()) {
+      leaf_nodes_.erase(
+          std::remove_if(leaf_nodes_.begin(), leaf_nodes_.end(),
+                         [](std::weak_ptr<DeviceBufferList>& weak_node) {
+                           if (auto node = weak_node.lock()) {
+                             if (const auto* deferred_op = node->deferred_op();
+                                 deferred_op &&
+                                 deferred_op->num_child_ops() == 0) {
+                               return false;
+                             }
+                           }
+                           return true;
+                         }),
+          leaf_nodes_.end());
+    }
+    leaf_nodes_.push_back(std::move(device_buffer));
+  }
+
+ private:
+  absl::Mutex mu_;
+  std::vector<std::weak_ptr<DeviceBufferList>> leaf_nodes_ ABSL_GUARDED_BY(mu_);
+};
+
+}  // namespace
+
+std::vector<SharedDeviceBufferList> GetGlobalLeafNodes() {
+  if (GetEnvOnce<kTorchTpuInternalIndependentSubgraphsEnvVar>().value_or("1") ==
+      "1") {
+    return SubgraphRegistry::GetInstance().MergeAll()->GetLeafNodes();
+  }
+  return GlobalLeafNodes::GetInstance().GetLeafNodes();
 }
 
 size_t DeviceBufferList::size_bytes(int64_t index) const {
@@ -443,6 +509,44 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateMaterialized(
   return DeviceBufferRef(std::move(device_buffer_list), 0);
 }
 
+namespace {
+
+absl_nonnull std::shared_ptr<Subgraph> GetSubgraph(
+    OpName op_name, absl::Span<const DeviceBufferRef> inputs) {
+  std::shared_ptr<Subgraph> subgraph = nullptr;
+  if (IsDistributedOp(op_name)) {
+    // Each distributed op acts as a barrier; all prior operations (connected
+    // or not) that were created before it must be considered part of the same
+    // graph so that proper ordering is maintained.
+    // Otherwise, two independent collective operations could be isolated in
+    // disconnected subgraphs, and different rank processes could have
+    // different orderings of these subgraphs, leading to a deadlock.
+    subgraph = SubgraphRegistry::GetInstance().MergeAll();
+  }
+
+  for (const auto& input : inputs) {
+    if (input.state() == DeviceBufferRefState::kDeferred) {
+      auto input_subgraph = input.device_buffer_list()->subgraph();
+      if (!input_subgraph) continue;
+
+      auto input_rep = input_subgraph->Find();
+      if (!subgraph) {
+        subgraph = input_rep;
+      } else if (subgraph != input_rep) {
+        Subgraph::Merge(subgraph, input_rep);
+        subgraph = subgraph->Find();
+      }
+    }
+  }
+
+  if (subgraph) {
+    return subgraph;
+  }
+  return Subgraph::Create();
+}
+
+}  // namespace
+
 absl::StatusOr<DeviceBufferRef>
 DeviceBufferList::CreateMaterializedNonAvailable(
     absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
@@ -471,35 +575,16 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   }
   int64_t num_outputs = output_shapes.size();
 
+  // When TORCH_TPU_INTERNAL_INDEPENDENT_SUBGRAPHS = "1" (the default), we try
+  // to group independent operations into separate Subgraph queues, so that
+  // materializing one doesn't materialize the others.
+  // If TORCH_TPU_INTERNAL_INDEPENDENT_SUBGRAPHS = "0" (or any other value) then
+  // we instead only track leaf nodes in a single global queue.
   std::shared_ptr<Subgraph> subgraph = nullptr;
 
-  if (IsDistributedOp(op_name)) {
-    // Each distributed op acts as a barrier; all prior operations (connected or
-    // not) that were created before it must be considered part of the same
-    // graph so that proper ordering is maintained.
-    // Otherwise, two independent collective operations could be isolated in
-    // disconnected subgraphs, and different rank processes could have different
-    // orderings of these subgraphs, leading to a deadlock.
-    subgraph = SubgraphRegistry::GetInstance().MergeAll();
-  }
-
-  for (const auto& input : inputs) {
-    if (input.state() == DeviceBufferRefState::kDeferred) {
-      auto input_subgraph = input.device_buffer_list()->subgraph();
-      if (!input_subgraph) continue;
-
-      auto input_rep = input_subgraph->Find();
-      if (!subgraph) {
-        subgraph = input_rep;
-      } else if (subgraph != input_rep) {
-        Subgraph::Merge(subgraph, input_rep);
-        subgraph = subgraph->Find();
-      }
-    }
-  }
-
-  if (!subgraph) {
-    subgraph = Subgraph::Create();
+  if (GetEnvOnce<kTorchTpuInternalIndependentSubgraphsEnvVar>().value_or("1") ==
+      "1") {
+    subgraph = GetSubgraph(op_name, inputs);
   }
 
   // Create the DeferredOp.
@@ -512,7 +597,12 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   auto device_buffer = std::shared_ptr<DeviceBufferList>(
       new DeviceBufferList(std::move(op), std::move(output_shapes), subgraph));
 
-  subgraph->push(std::weak_ptr<DeviceBufferList>(device_buffer));
+  if (subgraph) {
+    subgraph->push(std::weak_ptr<DeviceBufferList>(device_buffer));
+  } else {
+    GlobalLeafNodes::GetInstance().Push(
+        std::weak_ptr<DeviceBufferList>(device_buffer));
+  }
 
   // Construct one DeviceBufferRef for each output.
   std::vector<DeviceBufferRef> device_buffer_refs;

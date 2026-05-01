@@ -61,8 +61,6 @@ inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // https://docs.pytorch.org/docs/stable/debugging_environment_variables.html#pytorch-debug-environment-variables
 inline constexpr char kTorchShowCppStacktracesEnvVar[] =
     "TORCH_SHOW_CPP_STACKTRACES";
-// If set, enables structured logging for tlparse.
-inline constexpr char kTorchTraceEnvVar[] = "TORCH_TRACE";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
@@ -78,6 +76,13 @@ inline constexpr char kTorchTpuInternalDetectRepeatedOpsEnvVar[] =
 // be overridden by setting this env var to "0".
 inline constexpr char kTorchTpuInternalEnableDebugChecksEnvVar[] =
     "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS";
+// If set to "1", disjoint subgraphs with no data dependencies may be executed
+// independently. This may cause them to be executed in a different order than
+// they were dispatched. This functionality is always disabled for distributed
+// collectives, to ensure that the order of collectives is consistent and does
+// not deadlock.
+inline constexpr char kTorchTpuInternalIndependentSubgraphsEnvVar[] =
+    "TORCH_TPU_INTERNAL_INDEPENDENT_SUBGRAPHS";
 // The name of the tier-2 compilation cache. The special name "disabled" can be
 // used to disable the tier-2 cache. If not set, TorchTPU decides whether to use
 // the tier-2 cache or not based on the world size: if the world size is 1, the
@@ -102,6 +107,8 @@ inline constexpr char kTorchTpuInternalTier3CompilationCacheRootEnvVar[] =
 // ...".
 inline constexpr char kTorchTpuInternalXlaOptionsEnvVar[] =
     "TORCH_TPU_INTERNAL_XLA_OPTIONS";
+// If set, enables structured logging for tlparse.
+inline constexpr char kTorchTraceEnvVar[] = "TORCH_TRACE";
 inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuDeferAndFuse[] =

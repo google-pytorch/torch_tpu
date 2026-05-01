@@ -39,7 +39,6 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Allocator.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -206,6 +205,8 @@ class SubgraphRegistry {
   absl::Mutex mu_;
   std::vector<std::weak_ptr<Subgraph>> subgraphs_ ABSL_GUARDED_BY(mu_);
 };
+
+std::vector<SharedDeviceBufferList> GetGlobalLeafNodes();
 
 // A DeviceBufferRef is a reference to an element in a DeviceBufferList.
 // It is nothing more than a container for a std::shared_ptr<DeviceBufferList>
