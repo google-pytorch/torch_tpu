@@ -20,8 +20,9 @@ package(
 )
 
 torch_tpu_cc_test(
-    name = "device_buffer_test",
-    srcs = ["device_buffer_test.cc"],
+    name = "subgraph_test",
+    srcs = ["subgraph_test.cc"],
+    env = {"TORCH_TPU_INTERNAL_INDEPENDENT_SUBGRAPHS": "1"},
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
@@ -112,10 +113,10 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
+        "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
@@ -360,6 +361,7 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
         "//torch_tpu/common:dynamism_utils",
+        "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:flags",
         "//torch_tpu/common:shape",
