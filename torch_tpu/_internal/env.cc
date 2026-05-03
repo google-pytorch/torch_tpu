@@ -18,8 +18,6 @@
 
 namespace torch_tpu {
 
-PYBIND11_MODULE(env, m) {
-  m.attr("IS_INTERNAL_TORCH_TPU") = static_cast<bool>(TT_IS_INTERNAL_TORCH_TPU);
-}
+PYBIND11_MODULE(env, m) { m.attr("IS_INTERNAL_TORCH_TPU") = true; }
 
 }  // namespace torch_tpu
