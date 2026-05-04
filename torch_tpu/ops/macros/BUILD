@@ -38,6 +38,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_vlog_is_on",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
