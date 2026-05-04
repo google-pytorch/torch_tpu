@@ -234,6 +234,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_vlog_is_on",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@stablehlo//:attr_type_builder_util",
