@@ -856,11 +856,38 @@ def _define_cpp_filegroup(name):
         visibility = ["//:__subpackages__"],
     )
 
+def _define_py_filegroup(name):
+    """Defines filegroups for all Python files in the current package and subpackages.
+
+    The filegroups created are:
+    - "all_py_files": All Python files in the current package.
+    - "all_py_files_recursive": All Python files in the current package and subpackages recursively.
+
+    Args:
+        name: The name of the filegroup. It has to be "all_py_files_recursive"
+            to collect files from subpackages recursively.
+    """
+    if name != "all_py_files_recursive":
+        fail("The name must be 'all_py_files_recursive' to collect files recursively.")
+    native.filegroup(
+        name = "all_py_files",
+        srcs = native.glob(["**/*.py"]),
+        visibility = ["//visibility:public"],
+    )
+    native.filegroup(
+        name = name,
+        srcs = [":all_py_files"] + _get_subpackage_targets_named(
+            name = name,
+        ),
+        visibility = ["//visibility:public"],
+    )
+
 # buildifier: disable=unnamed-macro
 def torch_tpu_package_end():
     """Marks the end of a standard package for torch_tpu.
 
-    This macro defines a recursive test suite named "all_tests" and
+    This macro defines a recursive test suite named "all_tests",
+    a recursive Python filegroup named "all_py_files_recursive" and
     a recursive C++ filegroup named "all_cpp_files_recursive"
     for the current package and all subpackages. It MUST be used at the END
     of every BUILD file in torch_tpu (or the "all_tests" group may not
@@ -868,4 +895,5 @@ def torch_tpu_package_end():
     """
 
     _define_cpp_filegroup(name = "all_cpp_files_recursive")
+    _define_py_filegroup(name = "all_py_files_recursive")
     _define_test_suite(name = "all_tests")

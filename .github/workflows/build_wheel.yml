@@ -160,6 +160,8 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Check Package Sanity
+        run: bazel test //ci/wheel/sanity:package_sanity_check
       - name: Run tests
         shell: bash
         run: bazel test ${{ matrix.extra_flags }} //...
