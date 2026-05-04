@@ -715,6 +715,7 @@ pywrap_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//torch_tpu/_internal:env",
+        "//torch_tpu/_internal:layout_impl",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/compiler_options:compiler_options_impl",

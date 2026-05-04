@@ -61,7 +61,8 @@ namespace torch_tpu {
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     const void* host_data, mlir::ElementType element_type,
     absl::Span<const int64_t> dimensions,
-    std::optional<at::Tensor> backing_tensor) {
+    std::optional<at::Tensor> backing_tensor,
+    const xla::Layout* device_layout) {
   tsl::profiler::TraceMe trace("TpuMallocAndMemcpyHtoD");
   if (backing_tensor.has_value() && backing_tensor->data_ptr() != host_data) {
     return TT_ERROR(error::kInvalidArgument)
@@ -149,7 +150,7 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
            backing_tensor = std::move(backing_tensor)]() mutable {
             promise.Set(absl::OkStatus());
           },
-          memory_space, nullptr));
+          memory_space, device_layout));
 
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] "
                   "client->BufferFromHostBuffer SUCCEEDED.";

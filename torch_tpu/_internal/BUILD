@@ -76,4 +76,56 @@ pybind_extension(
     ],
 )
 
+# Layout-pinned TPU tensor allocation. See `_internal.layout` for the
+# Python wrapper.
+torch_tpu_cc_library(
+    name = "layout_impl_build",
+    srcs = ["layout_impl.cc"],
+    deps = [
+        "//shims/pybind11",
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:dtype",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/pjrt:pjrt_utils",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@xla//xla:shape_util",
+    ],
+)
+
+pybind_extension(
+    name = "layout_impl",
+    srcs = ["layout_impl.cc"],
+    common_lib_packages = [
+        "torch_tpu/common",
+    ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:dtype",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/pjrt:pjrt_utils",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@xla//xla:shape_util",
+    ],
+)
+
 torch_tpu_package_end()

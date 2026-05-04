@@ -38,10 +38,19 @@ namespace torch_tpu {
 
 // If backing tensor is present we keep it alive until the transfer completes,
 // otherwise we block on the transfer to complete.
+//
+// `device_layout`, if non-null, is forwarded to PJRT's BufferFromHostBuffer as
+// the requested device-side XLA layout. This lets callers pin the layout of
+// persistent device buffers (e.g. weight scales / KV cache) so that XLA can
+// elide the per-step relayout that would otherwise show up as
+// `tt_jit_as_strided` / `copy_bitcast_fusion` against the kernel's
+// operand-layout-constraint. If null, PJRT picks the default descending
+// layout (row-major).
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     const void* host_data, mlir::ElementType element_type,
     absl::Span<const int64_t> dimensions,
-    std::optional<at::Tensor> backing_tensor = std::nullopt);
+    std::optional<at::Tensor> backing_tensor = std::nullopt,
+    const xla::Layout* device_layout = nullptr);
 
 absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
                                          bool non_blocking = false);
