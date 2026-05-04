@@ -19,17 +19,21 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Types.h"
 #include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/native/Resize.h"
 #include "ATen/ops/div.h"
+#include "ATen/ops/empty.h"
 #include "ATen/ops/result_type.h"
 #include "ATen/ops/sub.h"
 #include "c10/core/DefaultDtype.h"
@@ -44,7 +48,9 @@
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
@@ -64,6 +70,26 @@ namespace chlo = mlir::chlo;
 
 namespace internal {
 
+// When PyTorch executes mixed-device operations (e.g., `tpu_tensor +
+// cpu_scalar`), the dispatcher bypasses the standard backend device guards. We
+// must manually move 1-element CPU tensors to the TPU to avoid crashes when we
+// later try to extract their TPU buffers.
+absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
+    absl::Span<const at::Tensor> tensors) {
+  std::vector<at::Tensor> tpu_tensors;
+  tpu_tensors.reserve(tensors.size());
+  for (const auto& tensor : tensors) {
+    // MakeTensor uses a cache to deduplicate scalar tensors.
+    if (tensor.device().type() == c10::DeviceType::CPU && tensor.numel() == 1) {
+      TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor, MakeTensor(tensor.item()));
+      tpu_tensors.push_back(std::move(tpu_tensor));
+    } else {
+      tpu_tensors.push_back(tensor);
+    }
+  }
+  return tpu_tensors;
+}
+
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
                                                  const at::Scalar& other,
                                                  MlirBinaryOpBuilder op_builder,
@@ -79,25 +105,14 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts) {
-  // Special case in which the LHS is a scalar allocated on the CPU.
-  if (self.device().type() == c10::DeviceType::CPU && self.numel() == 1) {
-    // MakeTensor uses a cache to deduplicate scalar tensors.
-    TT_ASSIGN_OR_RETURN(at::Tensor self_tensor, MakeTensor(self.item()));
-    return DispatchBinaryOp(self_tensor, other, std::move(bin_op_builder),
-                            std::move(opts));
-  }
-  // Special case in which the RHS is a scalar allocated on the CPU.
-  if (other.device().type() == c10::DeviceType::CPU && other.numel() == 1) {
-    // MakeTensor uses a cache to deduplicate scalar tensors.
-    TT_ASSIGN_OR_RETURN(at::Tensor other_tensor, MakeTensor(other.item()));
-    return DispatchBinaryOp(self, other_tensor, std::move(bin_op_builder),
-                            std::move(opts));
-  }
+  TT_ASSIGN_OR_RETURN(auto tpu_tensors, MoveCpuScalarsToTpu({self, other}));
+  const at::Tensor& self_tpu = tpu_tensors[0];
+  const at::Tensor& other_tpu = tpu_tensors[1];
 
   TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
-                      InferSize(self.sizes(), other.sizes()));
+                      InferSize(self_tpu.sizes(), other_tpu.sizes()));
 
-  at::ScalarType promoted_scalar_type = at::result_type(self, other);
+  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
   if (opts.force_float_inputs) {
     if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
@@ -111,11 +126,52 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
 
   auto op_builder = [bin_op_builder = std::move(bin_op_builder)](
                         FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-    auto& [self, other] = inputs;
-    return bin_op_builder(self, other);
+    auto& [self_op, other_op] = inputs;
+    return bin_op_builder(self_op, other_op);
   };
   return DispatchOp<2>(
-      std::move(op_builder), {self, other},
+      std::move(op_builder), {self_tpu, other_tpu},
+      {.op_name = opts.op_name,
+       .out_dtype = output_dtype,
+       .out_dims = output_dims,
+       .computation_dtype = computation_dtype,
+       .op_param_cache_keys = std::move(opts.op_param_cache_keys),
+       .split_mode = opts.split_mode});
+}
+
+absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
+    const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
+    MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts) {
+  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
+                      MoveCpuScalarsToTpu({self, other, third}));
+  const at::Tensor& self_tpu = tpu_tensors[0];
+  const at::Tensor& other_tpu = tpu_tensors[1];
+  const at::Tensor& third_tpu = tpu_tensors[2];
+
+  TT_ASSIGN_OR_RETURN(
+      const Dimensions output_dims,
+      InferSize(self_tpu.sizes(), other_tpu.sizes(), third_tpu.sizes()));
+
+  at::ScalarType promoted_scalar_type = at::result_type(self_tpu, other_tpu);
+
+  if (opts.force_float_inputs) {
+    if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
+      promoted_scalar_type = c10::get_default_dtype_as_scalartype();
+    }
+  }
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      ToElementType(promoted_scalar_type));
+  mlir::ElementType output_dtype = opts.output_dtype_override
+                                       ? *opts.output_dtype_override
+                                       : computation_dtype;
+
+  auto op_builder = [ternary_op_builder = std::move(ternary_op_builder)](
+                        FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+    auto& [self, other, third] = inputs;
+    return ternary_op_builder(self, other, third);
+  };
+  return DispatchOp<3>(
+      std::move(op_builder), {self_tpu, other_tpu, third_tpu},
       {.op_name = opts.op_name,
        .out_dtype = output_dtype,
        .out_dims = output_dims,
@@ -126,19 +182,56 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
 
 }  // namespace internal
 
+absl::Status FinalizeOpOutput(at::Tensor& out, DeviceBufferRef result_buf,
+                              OutputOpMode mode) {
+  if (mode == OutputOpMode::kInPlace) {
+    TT_RET_CHECK(absl::MakeConstSpan(out.sizes()) == result_buf.dimensions(),
+                 error::kInvalidArgument)
+        << "output with shape " << ToString(result_buf.dimensions())
+        << " doesn't match the broadcast shape of the tensor being operated on "
+           "in-place, which has shape "
+        << ToString(out.sizes());
+  } else {
+    at::native::resize_output(out, result_buf.dimensions());
+  }
+
+  return AssignBufferToAtTensor(std::move(result_buf), out);
+}
+
+absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
+                          const at::Tensor& third, at::Tensor& out,
+                          MlirTernaryOpBuilder op_builder,
+                          TernaryOpOptions opts) {
+  TT_RET_CHECK(out.device().type() == GetPrivateUse1DeviceType(),
+               error::kInvalidArgument)
+      << "the out tensor is expected to be on tpu, got " << out.device().str();
+  if (!opts.output_dtype_override) {
+    TT_ASSIGN_OR_RETURN(auto output_dtype,
+                        ConvertTo<mlir::ElementType>(out.scalar_type()));
+    opts.output_dtype_override = output_dtype;
+  }
+  TT_ASSIGN_OR_RETURN(
+      auto result_buf,
+      internal::DispatchTernaryOp(self, other, third, std::move(op_builder),
+                                  std::move(opts)));
+
+  bool is_inplace =
+      out.is_alias_of(self) || out.is_alias_of(other) || out.is_alias_of(third);
+  OutputOpMode mode =
+      is_inplace ? OutputOpMode::kInPlace : OutputOpMode::kOutOfPlace;
+
+  return FinalizeOpOutput(out, std::move(result_buf), mode);
+}
+
 namespace {
 
-absl::StatusOr<MlirBinaryOpBuilder> AtenAddHelper(const at::Tensor& self,
-                                                  const at::Tensor& other,
-                                                  const at::Scalar& alpha) {
-  bool alpha_is_one = false;
-  if (alpha.isIntegral(/*include_bool=*/false)) {
-    alpha_is_one = (alpha.toLong() == 1);
-  } else if (alpha.isFloatingPoint()) {
-    alpha_is_one = (alpha.toDouble() == 1.0);
-  } else if (alpha.isBoolean()) {
-    alpha_is_one = (alpha.toBool() == true);
-  } else {
+// PyTorch operations that take an `alpha` scalar usually only support real
+// datatypes (Integer, Floating Point, or Boolean). We reject complex scalars
+// here to match PyTorch constraints as complex alphas are not yet supported on
+// TPU.
+absl::Status CheckAlphaTypeSupported(const at::Scalar& alpha) {
+  if (!alpha.isIntegral(/*include_bool=*/false) && !alpha.isFloatingPoint() &&
+      !alpha.isBoolean()) {
     // TODO: add support to complex alpha on TPU.
     TT_ASSIGN_OR_RETURN(const auto alpha_element_type,
                         internal::ToElementType(alpha.type()));
@@ -146,24 +239,18 @@ absl::StatusOr<MlirBinaryOpBuilder> AtenAddHelper(const at::Tensor& self,
            << ToString(alpha_element_type)
            << " alpha value is not yet supported";
   }
+  return absl::OkStatus();
+}
 
-  if (alpha_is_one) {
-    return BuildAddShlo;
-  }
-
-  auto op_builder = [alpha](
-                        mlir::MlirOp self_op,
-                        mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(auto alpha_op, MakeConstantLike(other_op, alpha));
-    const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
-    auto other_element_type = other_type.getElementType();
-    alpha_op = stablehlo::ConvertElementType(alpha_op, other_element_type);
-    TT_ASSIGN_OR_RETURN(auto mul_op, BuildMulShlo(other_op, alpha_op));
-
-    return BuildAddShlo(self_op, mul_op);
-  };
-
-  return std::move(op_builder);
+absl::StatusOr<mlir::MlirOp> BuildAlphaMulShlo(mlir::MlirOp other_op,
+                                               mlir::MlirOp alpha_op) {
+  const mlir::RankedTensorType other_type = GetTensorTypeOrDie(other_op);
+  auto other_element_type = other_type.getElementType();
+  auto casted_alpha_op =
+      stablehlo::ConvertElementType(alpha_op, other_element_type);
+  TT_ASSIGN_OR_RETURN((auto [broadcasted_other, broadcasted_alpha]),
+                      ApplyBroadcastIfNeeded(other_op, casted_alpha_op));
+  return BuildMulShlo(broadcasted_other, broadcasted_alpha);
 }
 
 struct DivOpOptions {
@@ -494,47 +581,72 @@ absl::Status CheckSubInputs(const at::Tensor& self, const at::Tensor& other) {
 // NOLINTEND
 at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, alpha, out), {
-    TT_ASSIGN_OR_THROW(auto op_builder, AtenAddHelper(self, other, alpha));
+  auto promoted_alpha = PromoteScalar(alpha);
+  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
+    TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
+
+    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
+                       promoted_alpha.GetTensor(out.scalar_type()));
+
+    auto op_builder =
+        [](mlir::MlirOp self_op, mlir::MlirOp other_op,
+           mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
+      TT_ASSIGN_OR_RETURN(auto mul_op, BuildAlphaMulShlo(other_op, alpha_op));
+      return BuildAddShlo(self_op, mul_op);
+    };
+
     TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(op_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
+        TernaryOpOut(self, other, alpha_tensor, out, std::move(op_builder),
+                     {.op_param_cache_keys = std::move(param_keys)}));
     return out;
   });
 }
 
 at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
                            const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kAddReluOut, param_keys, (self, other, alpha, out), {
-    TT_ASSIGN_OR_THROW(auto add_builder, (AtenAddHelper(self, other, alpha)));
-    auto add_relu_builder =
-        [add_builder = std::move(add_builder)](
-            mlir::MlirOp self_op,
-            mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-      TT_ASSIGN_OR_RETURN(auto add_op, add_builder(self_op, other_op));
-      return BuildReluShlo(add_op);
-    };
-    TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(add_relu_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
-    return out;
-  });
+  auto promoted_alpha = PromoteScalar(alpha);
+  TT_KERNEL(
+      OpName::kAddReluOut, param_keys, (self, other, promoted_alpha, out), {
+        TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
+
+        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
+                           promoted_alpha.GetTensor(out.scalar_type()));
+
+        auto op_builder =
+            [](mlir::MlirOp self_op, mlir::MlirOp other_op,
+               mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
+          TT_ASSIGN_OR_RETURN(auto mul_op,
+                              BuildAlphaMulShlo(other_op, alpha_op));
+          TT_ASSIGN_OR_RETURN(auto add_op, BuildAddShlo(self_op, mul_op));
+          return BuildReluShlo(add_op);
+        };
+
+        TT_THROW_IF_ERROR(
+            TernaryOpOut(self, other, alpha_tensor, out, std::move(op_builder),
+                         {.op_param_cache_keys = std::move(param_keys)}));
+        return out;
+      });
 }
 
 at::Tensor AtenAddReluScalar(const at::Tensor& self, const at::Scalar& other,
                              const at::Scalar& alpha) {
-  TT_KERNEL(OpName::kAddReluScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage"),
-             IgnoreInCacheKey(alpha, "Legacy usage")),
-            {
-              at::ScalarType promoted_scalar_type =
-                  at::result_type(self, other);
-              at::Tensor out = MakeEmptyTensor(
-                  self.sizes(), promoted_scalar_type, self.device());
-              TT_ASSIGN_OR_THROW(auto wrapped_other, MakeTensor(other));
-              AtenAddReluOut(self, wrapped_other, alpha, out);
-              return out;
-            });
+  auto promoted_other = PromoteScalar(other);
+  auto promoted_alpha = PromoteScalar(alpha);
+  TT_KERNEL(OpName::kAddReluScalar, _, (self, promoted_other, promoted_alpha), {
+    at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    at::Tensor type_tensor =
+        at::empty({}, at::TensorOptions().dtype(promoted_scalar_type));
+    promoted_scalar_type = at::result_type(type_tensor, alpha);
+    at::Tensor out =
+        MakeEmptyTensor(self.sizes(), promoted_scalar_type, self.device());
+    TT_ASSIGN_OR_THROW(const at::Tensor wrapped_other,
+                       promoted_other.GetTensor(promoted_scalar_type));
+    // Consume promoted_alpha to satisfy the TT_KERNEL requirement
+    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
+                       promoted_alpha.GetTensor(promoted_scalar_type));
+    AtenAddReluOut(self, wrapped_other, alpha, out);
+    return out;
+  });
 }
 
 at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
@@ -1098,12 +1210,24 @@ at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenSubOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
-  TT_KERNEL(OpName::kSubOut, param_keys, (self, other, alpha, out), {
+  auto promoted_alpha = PromoteScalar(alpha);
+  TT_KERNEL(OpName::kSubOut, param_keys, (self, other, promoted_alpha, out), {
+    TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
     TT_THROW_IF_ERROR(CheckSubInputs(self, other));
-    TT_ASSIGN_OR_THROW(auto op_builder, AtenAddHelper(self, other, -alpha));
+
+    TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
+                       promoted_alpha.GetTensor(out.scalar_type()));
+
+    auto op_builder =
+        [](mlir::MlirOp self_op, mlir::MlirOp other_op,
+           mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
+      TT_ASSIGN_OR_RETURN(auto mul_op, BuildAlphaMulShlo(other_op, alpha_op));
+      return BuildSubShlo(self_op, mul_op);
+    };
+
     TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(op_builder),
-                    {.op_param_cache_keys = std::move(param_keys)}));
+        TernaryOpOut(self, other, alpha_tensor, out, std::move(op_builder),
+                     {.op_param_cache_keys = std::move(param_keys)}));
     return out;
   });
 }

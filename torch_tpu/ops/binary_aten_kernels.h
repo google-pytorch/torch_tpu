@@ -24,14 +24,11 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/DeprecatedTypeProperties.h"
-#include "ATen/native/Resize.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_types.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -53,6 +50,22 @@ struct BinaryOpOptions {
   OpSplitMode split_mode = OpSplitMode::kNone;
 };
 
+struct TernaryOpOptions {
+  // The op name for dispatching. If omitted, use the op name from the active
+  // TT_KERNEL() context.
+  std::optional<OpName> op_name = std::nullopt;
+  bool force_float_inputs =
+      false;  // Force inputs to be floats, by casting if necessary.
+  std::optional<mlir::ElementType> output_dtype_override = std::nullopt;
+  OpParamCacheKeys op_param_cache_keys;
+  OpSplitMode split_mode = OpSplitMode::kNone;
+};
+
+enum class OutputOpMode {
+  kOutOfPlace,
+  kInPlace,
+};
+
 namespace internal {
 
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
@@ -64,7 +77,17 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     const at::Tensor& self, const at::Tensor& other,
     MlirBinaryOpBuilder bin_op_builder, BinaryOpOptions opts);
 
+absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
+    const at::Tensor& self, const at::Tensor& other, const at::Tensor& third,
+    MlirTernaryOpBuilder ternary_op_builder, TernaryOpOptions opts);
+
 }  // namespace internal
+
+// Handles output tensor post-processing for Binary and Ternary operations on
+// TPU. Enforces that outputs for in-place aliases match the result buffer's
+// shape, and resizes the output tensor for out-of-place execution.
+absl::Status FinalizeOpOutput(at::Tensor& out, DeviceBufferRef result_buf,
+                              OutputOpMode mode);
 
 template <typename OtherType>
 absl::StatusOr<at::Tensor> BinaryOp(const at::Tensor& tensor,
@@ -93,27 +116,24 @@ absl::Status BinaryOpOut(const at::Tensor& tensor, const OtherType& other,
                                            tensor, other, std::move(op_builder),
                                            std::move(opts)));
 
-  // For in-place operations, the `out` tensor is an alias of the `tensor`
-  // input. In this case, we must not resize it, but check that the shape
-  // of the result matches. For other cases, we resize the output tensor.
   bool is_inplace = out.is_alias_of(tensor);
   if constexpr (std::is_same_v<OtherType, at::Tensor>) {
     is_inplace = is_inplace || out.is_alias_of(other);
   }
 
-  if (is_inplace) {
-    TT_RET_CHECK(absl::MakeConstSpan(out.sizes()) == result_buf.dimensions(),
-                 error::kInvalidArgument)
-        << "output with shape " << ToString(result_buf.dimensions())
-        << " doesn't match the broadcast shape of the tensor being operated on "
-           "in-place, which has shape "
-        << ToString(out.sizes());
-  } else {
-    at::native::resize_output(out, result_buf.dimensions());
-  }
-
-  return AssignBufferToAtTensor(std::move(result_buf), out);
+  OutputOpMode mode =
+      is_inplace ? OutputOpMode::kInPlace : OutputOpMode::kOutOfPlace;
+  return FinalizeOpOutput(out, std::move(result_buf), mode);
 }
+
+// Performs output tensor post-processing for Ternary operations on TPU.
+// Validates that `out` is on the TPU, delegates dispatching to
+// `DispatchTernaryOp`, checks for in-place aliasing, and finalizes the output
+// tensor using `FinalizeOpOutput`.
+absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
+                          const at::Tensor& third, at::Tensor& out,
+                          MlirTernaryOpBuilder op_builder,
+                          TernaryOpOptions opts);
 
 // NOLINTBEGIN
 // clang-format off

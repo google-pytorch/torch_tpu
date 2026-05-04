@@ -594,6 +594,10 @@ using MlirUnaryOpBuilder =
 using MlirBinaryOpBuilder = absl::AnyInvocable<absl::StatusOr<mlir::MlirOp>(
     mlir::MlirOp input1, mlir::MlirOp input2) const>;
 
+// An op builder with three inputs and one result.
+using MlirTernaryOpBuilder = absl::AnyInvocable<absl::StatusOr<mlir::MlirOp>(
+    mlir::MlirOp, mlir::MlirOp, mlir::MlirOp) const>;
+
 // Builder function for an MLIR-based computation. This is an MlirOpBuilder
 // which has been wrapped into a module with a @main function.
 using MlirComputationBuilder =
