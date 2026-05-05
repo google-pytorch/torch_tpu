@@ -120,6 +120,7 @@ pip.parse(
             "libc10",
             "libtorch_cpu",
             "libtorch_python",
+            "libpython",
             "libtorch",
             "libshm",
             "libtorch_global_deps",

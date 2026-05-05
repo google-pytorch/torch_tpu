@@ -82,12 +82,20 @@ def define_extra_torch_targets():
         visibility = ["//visibility:public"],
     )
 
+    # TODO: figure out why torch_tpu is linking libpython at all and stop it
+    cc_library(
+        name = "libpython",  # ALLOW_CC_TARGETS=External wheel repo target cannot use custom macros
+        srcs = native.glob(["site-packages/torch/lib/libpython3.*.so*"]),
+        visibility = ["//visibility:public"],
+    )
+
     cc_library(
         name = "torch_libs",
         deps = [
             ":libtorch",
             ":libtorch_python",
             ":libtorch_global_deps",
+            ":libpython",
         ],
         visibility = ["//visibility:public"],
     )

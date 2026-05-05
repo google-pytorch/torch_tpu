@@ -160,6 +160,11 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Remove system-level libpython to verify wheel independence
+        run: |
+          sudo rm -f /usr/lib/x86_64-linux-gnu/libpython3.*.so*
+          sudo rm -f /usr/lib/libpython3.*.so*
+          sudo rm -f /usr/local/lib/libpython3.*.so*
       - name: Run tests
         shell: bash
         run: bazel test ${{ matrix.extra_flags }} //...

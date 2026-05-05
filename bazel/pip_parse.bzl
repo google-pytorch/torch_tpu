@@ -65,6 +65,7 @@ def torch_tpu_pip_parse():
                 "libc10",
                 "libtorch_cpu",
                 "libtorch_python",
+                "libpython",
             ],
         },
     )

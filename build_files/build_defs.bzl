@@ -704,14 +704,37 @@ def torch_tpu_py_test(
     # Add env and LD_LIBRARY_PATH for wheel based testing.
     # Define the necessary library paths
 
-    # 1. Define all paths needed for the dynamic linker
+    # 1. Define all paths needed for the dynamic linker (supporting both legacy and Bzlmod names)
     torch_lib = "../pypi_torch/site-packages/torch/lib"
+    torch_lib_bzlmod = "../torch_tpu_pypi_312_torch/site-packages/torch/lib"
+    torch_lib_bzlmod_mangled = "../rules_python++pip+torch_tpu_pypi_312_torch/site-packages/torch/lib"
+
     libtpu_lib = "../pypi_libtpu/site-packages/libtpu"
+    libtpu_lib_bzlmod = "../torch_tpu_pypi_312_libtpu/site-packages/libtpu"
+    libtpu_lib_bzlmod_mangled = "../rules_python++pip+torch_tpu_pypi_312_libtpu/site-packages/libtpu"
+
     wheel_lib = "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal"
     solib_path = "../_solib_x86_64"
 
+    # Hermetic Python stand-alone toolchain library paths containing versioned libpython binaries
+    hermetic_py_lib = "../rules_python++python+python_3_12_x86_64-unknown-linux-gnu/lib"
+    hermetic_py_lib_alt = "../python_3_12_x86_64-unknown-linux-gnu/lib"
+    hermetic_py_lib_host = "../python_3_12_host/lib"
+
     # 2. Join them into a single string
-    all_paths = [torch_lib, libtpu_lib, wheel_lib, solib_path]
+    all_paths = [
+        torch_lib,
+        torch_lib_bzlmod,
+        torch_lib_bzlmod_mangled,
+        libtpu_lib,
+        libtpu_lib_bzlmod,
+        libtpu_lib_bzlmod_mangled,
+        wheel_lib,
+        solib_path,
+        hermetic_py_lib,
+        hermetic_py_lib_alt,
+        hermetic_py_lib_host,
+    ]
     new_paths_str = ":".join(all_paths)
 
     # 3. Create the specialized environment for wheel testing

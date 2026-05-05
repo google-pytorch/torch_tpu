@@ -79,6 +79,7 @@ cc_library(
         ],
         "//conditions:default": [
             "@pypi_torch//:libc10",
+            "@pypi_torch//:libpython",
             "@pypi_torch//:libshm",
             "@pypi_torch//:libtorch",
             "@pypi_torch//:libtorch_cpu",
@@ -136,6 +137,7 @@ cc_library(
         ],
         "//conditions:default": [
             "@pypi//torch:torch_headers",
+            "@pypi_torch//:libpython",
             "@pypi_torch//:libtorch_python",
             "@rules_python//python/cc:current_py_cc_libs",
         ],

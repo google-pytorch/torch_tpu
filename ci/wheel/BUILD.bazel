@@ -94,6 +94,18 @@ pytype_strict_library(
     visibility = ["//visibility:public"],
 )
 
+# TODO: figure out why torch_tpu is linking libpython at all and stop it.
+# Meanwhile, bundle it inside the wheel package folder to unblock users on barren distros.
+genrule(
+    name = "bundle_libpython",
+    srcs = select({
+        ":use_local_torch": [],
+        "//conditions:default": ["@pypi_torch//:libpython"],
+    }),
+    outs = ["libpython3.12.so.1.0"],
+    cmd = "if [ -n \"$(SRCS)\" ]; then cp $(SRCS) $@; else touch $@; fi",
+)
+
 py_package(
     name = "torch_tpu_package_end",
     packages = ["torch_tpu"],
@@ -123,13 +135,17 @@ py_wheel(
     python_requires = ">=3.12",
     python_tag = "cp312",
     requires = FILTERED_REQUIRES + TORCH_REQ,
-    strip_path_prefixes = ["ci/wheel/remapped_pywrap_binaries_pkg"],
+    strip_path_prefixes = [
+        "ci/wheel/remapped_pywrap_binaries_pkg",
+        "ci/wheel",
+    ],
     summary = "TPU/XLA support for PyTorch",
     tags = ["manual"],
     # base version set by pyproject.toml.
     version = WHEEL_VERSION,
     visibility = ["//visibility:public"],
     deps = [
+        ":bundle_libpython",
         ":remapped_pywrap_binaries",
         ":torch_tpu_package_end",
     ],
