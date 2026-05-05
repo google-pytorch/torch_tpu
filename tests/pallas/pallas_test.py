@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Small graph test for TPU backend."""
+"""Tests for Pallas custom kernels."""
 
 import functools
 from typing import Optional, Tuple
@@ -22,7 +22,7 @@ from jax.experimental import pallas as pl
 import jax.export
 import torch
 from torch_tpu import api
-from torch_tpu._internal import compile
+from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import utils
@@ -673,6 +673,261 @@ class TestPallasKernels(absltest.TestCase):
           input_output_aliases={0: 0},
           donate_argnums=(1,),
       )
+
+  def test_jax_dot_grad_for_backwards(self):
+    """Test usage of jax.grad to generate a backwards function.
+
+    The pullback returned from VJP is not fully parameterized.
+    Although strictly "purely functional",
+    it is a closure that bakes in the inputs and is intended to be disposable.
+
+    We need to match the PyTorch
+    torch._library.custom_ops.CustomOpDef.register_autograd()
+    expectation of a fully parameterized, reusable, non-disposable
+    backward function.
+
+    The math trick to do this is to multiply the outputs by their grad
+    and sum them, or f(x) * grad_output. Then use jax.grad.
+
+    The math there is that the upstream grads are a "linear model"
+    of every single op that comes after this, by definition, since
+    grad_output = d_L / d_output. But it gets treated as a constant
+    by jax.grad. So when jax.grad calculates g'(x) where g(x) = f(x) * grad_y,
+    g'(x) == f'(x) * grad_y. The first term is the Jacobian. The second
+    op is the Product. And the final term is the vector of grads. Hence,
+    we have created a Vector Jacobian Product function, fully parameterized.
+    """
+
+    # Create the kernel in JAX. Do not jax.jit this, jax_op will do it later.
+    def mul_and_add_scalars_jax_kernel(
+        x: jax.Array, y: jax.Array
+    ) -> Tuple[jax.Array, jax.Array]:
+      if x.ndim != 0 or y.ndim != 0:
+        raise ValueError("Only scalars are supported.")
+      return jax.numpy.multiply(x, y), jax.numpy.add(x, y)
+
+    # Employ the scalar surrogate trick to make jax.grad
+    # create the backward. We don't want to write it ourselves.
+    # Do not jax.jit this, jax_op will do it later.
+    # This trick will recalculate forward in cases where
+    # the grad function inherently contains the forward, such as
+    # the canonical example of exp(x). Advanced cases can
+    # write the backward in math, or, for lax ops, attempt to
+    # extract them from jax._src.interpreters.ad.primitive_jvps
+    def mul_and_add_scalars_backward_jax_kernel(
+        x: jax.Array, y: jax.Array, d_mul: jax.Array, d_add: jax.Array
+    ) -> Tuple[jax.Array, jax.Array]:
+
+      def scalar_surrogate(x_local: jax.Array, y_local: jax.Array):
+        output_mul, output_add = mul_and_add_scalars_jax_kernel(
+            x_local, y_local
+        )
+        return output_mul * d_mul + output_add * d_add
+
+      dx, dy = jax.grad(fun=scalar_surrogate, argnums=(0, 1))(x, y)
+
+      return dx, dy
+
+    # Register the forward and backwards as PyTorch custom ops.
+    # This is consistent with `torch.library.triton_op`:
+    # "If you want the backward to call Triton kernels,
+    # then those must be wrapped in triton_op as well"
+    # https://docs.pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html
+    mul_and_add_scalars: torch._library.custom_ops.CustomOpDef = pallas.jax_op(
+        "test::mul_and_add_scalars", mul_and_add_scalars_jax_kernel
+    )
+    mul_and_add_scalars_backward: torch._library.custom_ops.CustomOpDef = (
+        pallas.jax_op(
+            "test::mul_and_add_scalars_backward",
+            mul_and_add_scalars_backward_jax_kernel,
+        )
+    )
+
+    # We have the ops registered with PyTorch,
+    # but now we need to register the second op
+    # as the autograd for the first op.
+    def setup_context(ctx, inputs, output):
+      del output  # Unused
+      ctx.save_for_backward(*inputs)
+
+    def backward(ctx, d_mul, d_add):
+      x, y = ctx.saved_tensors
+      return mul_and_add_scalars_backward(x, y, d_mul, d_add)
+
+    mul_and_add_scalars.register_autograd(backward, setup_context=setup_context)
+
+    # We are done! We have a custom op implemented in JAX
+    # with its own backward implemented in JAX, fully
+    # registered with torch.library for composability with
+    # torch.compile and autograd.
+
+    # Arrange - Create input
+    x = torch.tensor(2.0, requires_grad=True, device=self.device)
+    y = torch.tensor(7.0, requires_grad=True, device=self.device)
+
+    with self.subTest("test mul, dL/dout = 11.0"):
+      # Act - Forward
+      output_mul, output_add = mul_and_add_scalars(x, y)
+
+      # Assert - Forward output
+      # No need for utils.assert_close - these are integer-valued outputs.
+      self.assertEqual(output_mul.item(), 14.0)
+      self.assertEqual(output_add.item(), 9.0)
+
+      # Act - backward on d_mul.
+      output_mul.backward(
+          torch.tensor(11.0, device=self.device), retain_graph=True
+      )
+
+      # Assert - backward on d_mul
+      expected_dx = 7.0 * 11.0
+      expected_dy = 2.0 * 11.0
+      self.assertEqual(x.grad.item(), expected_dx)
+      self.assertEqual(y.grad.item(), expected_dy)
+
+    with self.subTest("test mul, dL/dout = -13.0"):
+      # Arrange - clear grads on graph
+      x.grad = None
+      y.grad = None
+
+      # Act - backward on d_mul again.
+      output_mul.backward(
+          torch.tensor(-13.0, device=self.device), retain_graph=True
+      )
+
+      # Assert - backward on d_mul again.
+      expected_dx = 7.0 * -13.0
+      expected_dy = 2.0 * -13.0
+      self.assertEqual(x.grad.item(), expected_dx)
+      self.assertEqual(y.grad.item(), expected_dy)
+
+    with self.subTest("test add, dL/dout = 17.0"):
+      # Arrange - clear grads on graph
+      x.grad = None
+      y.grad = None
+
+      # Act - backward on d_add.
+      output_add.backward(torch.tensor(17.0, device=self.device))
+
+      # Assert - backward on d_add
+      self.assertEqual(x.grad.item(), 17.0)
+      self.assertEqual(y.grad.item(), 17.0)
+
+    with self.subTest("no graph break"):
+      # Arrange
+      # @torch.compile(
+      #     backend="tpu",
+      #     fullgraph=True,
+      # )
+      def step(a, b):
+        out_mul, out_add = mul_and_add_scalars(a, b)
+        x = out_mul + out_add + a.cos()
+        loss = -((x - 10.0) ** 2)
+        loss.backward()
+        return loss, a.grad, b.grad
+
+      # Act
+      print(utils.format_model(step, x, y, shlo=True))
+      del step
+
+      # Assert
+      # Machine validation of the MLIR is beyond the scope of a unit test,
+      # but we can manually inspect the above print to see that
+      # the jax kernels are called, and per discussions with xla experts,
+      # a call is ultimately inlined and flattened.
+      # pylint: disable=line-too-long
+      #
+      # module @tt_jit_export_L175C0_dispatch_fx_node_neg {
+      #   func.func private @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg2: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg3: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {
+      #     %0 = stablehlo.multiply %arg2, %arg1 : tensor<f32>
+      #     %1 = stablehlo.add %arg3, %0 : tensor<f32>
+      #     %2 = stablehlo.multiply %arg0, %arg2 : tensor<f32>
+      #     %3 = stablehlo.add %arg3, %2 : tensor<f32>
+      #     return %1, %3 : tensor<f32>, tensor<f32>
+      #   }
+      #   func.func private @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0: tensor<f32> {mhlo.sharding = "{replicated}"}, %arg1: tensor<f32> {mhlo.sharding = "{replicated}"}) -> (tensor<f32>, tensor<f32>) {
+      #     %0 = stablehlo.multiply %arg0, %arg1 : tensor<f32>
+      #     %1 = stablehlo.add %arg0, %arg1 : tensor<f32>
+      #     return %0, %1 : tensor<f32>, tensor<f32>
+      #   }
+      #   func.func @main(%arg0: tensor<f32>, %arg1: tensor<f32>) -> (tensor<f32>, tensor<f32>, tensor<f32>) {
+      #     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
+      #     %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+      #     %cst_1 = stablehlo.constant dense<1.000000e+01> : tensor<f64>
+      #     %0 = stablehlo.cosine %arg0 : tensor<f32>
+      #     %1:2 = call @"test::mul_and_add_scalars_0x5affe934a9008caa"(%arg0, %arg1) : (tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)
+      #     %2 = stablehlo.add %1#0, %1#1 : tensor<f32>
+      #     %3 = stablehlo.add %2, %0 : tensor<f32>
+      #     %4 = stablehlo.convert %3 : (tensor<f32>) -> tensor<f64>
+      #     %cst_2 = stablehlo.constant dense<-1.000000e+00> : tensor<f64>
+      #     %5 = stablehlo.multiply %cst_1, %cst_2 : tensor<f64>
+      #     %6 = stablehlo.add %4, %5 : tensor<f64>
+      #     %7 = stablehlo.convert %6 : (tensor<f64>) -> tensor<f32>
+      #     %8 = stablehlo.power %7, %cst_0 : tensor<f32>
+      #     %9 = stablehlo.convert %8 : (tensor<f32>) -> tensor<f64>
+      #     %10 = stablehlo.multiply %9, %cst : tensor<f64>
+      #     %11 = stablehlo.convert %10 : (tensor<f64>) -> tensor<f32>
+      #     %cst_3 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+      #     %12 = stablehlo.negate %cst_3 : tensor<f32>
+      #     %13 = stablehlo.multiply %12, %11 : tensor<f32>
+      #     %14:2 = call @"test::mul_and_add_scalars_backward_0x728519e39ec5d7ce"(%arg0, %arg1, %13, %13) : (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)
+      #     %15 = stablehlo.sine %arg0 : tensor<f32>
+      #     %16 = stablehlo.negate %15 : tensor<f32>
+      #     %17 = stablehlo.multiply %13, %16 : tensor<f32>
+      #     %18 = stablehlo.add %17, %14#0 : tensor<f32>
+      #     %cst_4 = stablehlo.constant dense<2.000000e+00> : tensor<f32>
+      #     %19 = stablehlo.power %7, %cst_4 : tensor<f32>
+      #     %20 = stablehlo.negate %19 : tensor<f32>
+      #     return %20, %18, %14#1 : tensor<f32>, tensor<f32>, tensor<f32>
+      #   }
+      # }
+      # pylint: enable=line-too-long
+
+    with self.subTest("composable_with_compile"):
+      # Arrange - setup compiled function
+      @torch.compile(backend="tpu")
+      def step2(x_local, y_local):
+        mul_out, add_out = mul_and_add_scalars(x_local, y_local)
+        # This means grad_mul_out = 2, grad_add_out = -3.
+        mul_out.backward(
+            torch.tensor(2.0, device=x_local.device), retain_graph=True
+        )
+        add_out.backward(torch.tensor(-3.0, device=x_local.device))
+        return mul_out, add_out, x_local.grad, y_local.grad
+
+      # Step 1: Arrange
+      x.grad = None
+      y.grad = None
+      x = torch.tensor(4.0, requires_grad=True, device=self.device)
+      y = torch.tensor(-5.0, requires_grad=True, device=self.device)
+
+      # Step 1: Act
+      mul_out, add_out, grad_x, grad_y = step2(x, y)
+
+      # Step 1: Assert
+      self.assertEqual(mul_out.item(), 4.0 * -5.0)
+      self.assertEqual(add_out.item(), 4.0 + -5.0)
+      # grad_x = grad_mul * y + grad_add (passes straight through)
+      self.assertEqual(grad_x.item(), 2.0 * -5.0 - 3.0)
+      # grad_y = grad_mul * x + grad_add (passes straight through)
+      self.assertEqual(grad_y.item(), 2.0 * 4.0 - 3.0)
+
+      # Step 2: Arrange
+      x.grad = None
+      y.grad = None
+      x = torch.tensor(-4.0, requires_grad=True, device=self.device)
+      y = torch.tensor(-37.0, requires_grad=True, device=self.device)
+
+      # Step 2: Act
+      mul_out, add_out, grad_x, grad_y = step2(x, y)
+
+      # Step 2: Assert
+      self.assertEqual(mul_out.item(), -4.0 * -37.0)
+      self.assertEqual(add_out.item(), -4.0 + -37.0)
+      # grad_x = grad_mul * y + grad_add (passes straight through)
+      self.assertEqual(grad_x.item(), 2.0 * -37.0 - 3.0)
+      # grad_y = grad_mul * x + grad_add (passes straight through)
+      self.assertEqual(grad_y.item(), 2.0 * -4.0 - 3.0)
 
 
 if __name__ == "__main__":
