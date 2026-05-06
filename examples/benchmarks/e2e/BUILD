@@ -132,7 +132,7 @@ torch_tpu_py_library(
 
 torch_tpu_py_test(
     name = "model_performance_benchmarks",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     # This allows us to use a single .par file for remote cluster execution.
     linking_mode = "static",
@@ -161,7 +161,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "model_performance_benchmarks_torchax",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     args = ["--backend=torchax"],
     autoload = False,
@@ -344,7 +344,6 @@ torch_tpu_py_test(
         "cpu:4",
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         # Needed for getting xprof links
         "requires-net:external",
     ],
@@ -440,7 +439,6 @@ torch_tpu_py_test(
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         "requires-net:external",
     ],
     deps = [

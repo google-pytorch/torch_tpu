@@ -41,6 +41,7 @@ from diffusers.models.auto_model import AutoModel
 from etils import epath
 import timm
 import torch
+from torch_tpu.examples.benchmarks.e2e import benchmark_utils
 import torchvision
 import transformers
 
@@ -422,7 +423,7 @@ class TransformersProvider(BaseProvider):
         with resources.as_file(
             self._FILES.joinpath(str(pathlib.Path(name) / "config.json"))
         ) as f:
-          config = transformers.AutoConfig.from_pretrained(str(f))
+          config = transformers.AutoConfig.from_pretrained(str(f.parent))
       except Exception as exc:  # pylint: disable=broad-except
         raise ValueError(
             f"Model config for '{name}' is missing in local resources"
@@ -462,21 +463,21 @@ class TransformersProvider(BaseProvider):
 
     safe_seq_len = min(_get_max_seq_len(config), 512)
 
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
-
     def _input_fn(
         shape=None, device="cpu"
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       actual_shape = shape if shape is not None else (1, safe_seq_len)
+      vocab_size = benchmark_utils.get_vocab_size(config)
+
       return (
           (),
           {
               "input_ids": torch.randint(
-                  0, vocab_size, actual_shape, device=device
+                  0,
+                  vocab_size,
+                  actual_shape,
+                  device=device,
+                  dtype=torch.long,
               ),
               "attention_mask": torch.ones(
                   actual_shape, device=device, dtype=torch.long

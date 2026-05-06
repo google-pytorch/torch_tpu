@@ -27,8 +27,10 @@ from examples.benchmarks.e2e import test_utils
 
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
+
 _HF_LLAMA_3_2_1B_BENCHMARK_NAME = "hf_llama_3_2_1b"
 _HF_GEMMA_3_270M_BENCHMARK_NAME = "hf_gemma_3_270m"
+_HF_GEMMA_4_31B_BENCHMARK_NAME = "hf_gemma_4_31b"
 _META_LLAMA_3_2_8B_BENCHMARK_NAME = "meta_llama_3_2_8b"
 _HF_QWEN3_1_7B_BENCHMARK_NAME = "hf_qwen3_1_7b"
 _HF_GPT_OSS_20B_BENCHMARK_NAME = "hf_gpt_oss_20b"
@@ -36,6 +38,12 @@ _HF_GPT_OSS_120B_BENCHMARK_NAME = "hf_gpt_oss_120b"
 _HF_QWEN3_CODER_30B_RAGGED_MOE_BENCHMARK_NAME = "hf_qwen3_30b_ragged_moe"
 _TIMM_RESNET_50_BENCHMARK_NAME = "timm_resnet_50"
 _WAN_2_2_TI2V_5B_BENCHMARK_NAME = "wan_2_2_ti2v_5b"
+
+
+def _modify_gemma4_config_to_small(config):
+  if hasattr(config, "text_config"):
+    config.text_config.num_hidden_layers = 6
+  return config
 
 
 class BenchmarkTest(test_utils.BenchmarkTest):
@@ -54,7 +62,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_llama_3_2_1b_forward(self, run_mode):
-    """Tests the forward pass of Llama-3.2-1B."""
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             benchmark_utils.Platform.GFC_1X1X1,
@@ -81,7 +88,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_llama_3_2_1b_train_1_step(self, run_mode):
-    """Tests the training of Llama-3.2-1B."""
 
     batch_size = 8
 
@@ -110,10 +116,74 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       test_utils.generate_run_mode_configs([
           benchmark_utils.RunMode.EAGER_DEFAULT,
           benchmark_utils.RunMode.EAGER_OPTIMIZED,
+          benchmark_utils.RunMode.COMPILED,
+      ])
+  )
+  def test_gemma_4_31b_6_layers_forward(self, run_mode):
+
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.GFC_2X2X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="google/gemma-4-31B",
+            sequence_length=512,
+            batch_size=1,
+            custom_kwargs={
+                "modify_config_hook": _modify_gemma4_config_to_small
+            },
+        ),
+        model_and_input_factory=model_utils.huggingface_llm_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(config, _HF_GEMMA_4_31B_BENCHMARK_NAME)
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+          benchmark_utils.RunMode.EAGER_OPTIMIZED,
+          benchmark_utils.RunMode.COMPILED,
+      ])
+  )
+  def test_gemma_4_31b_6_layers_train_1_step(self, run_mode):
+
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.GFC_2X2X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=True,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="google/gemma-4-31B",
+            sequence_length=512,
+            batch_size=1,
+            custom_kwargs={
+                "modify_config_hook": _modify_gemma4_config_to_small
+            },
+        ),
+        model_and_input_factory=model_utils.huggingface_llm_model_builder,
+        train_factory=functools.partial(
+            benchmark_function_db.huggingface_llm_train_factory,
+            grad_accumulation_steps=4,
+        ),
+    )
+    self.run_performance_benchmark_test(config, _HF_GEMMA_4_31B_BENCHMARK_NAME)
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+          benchmark_utils.RunMode.EAGER_OPTIMIZED,
       ])
   )
   def test_distributed_meta_llama_3_2_8b_forward(self, run_mode):
-    """Tests the forward pass of Meta Llama-3.2-8B."""
     if self._is_torchax_backend():
       self.skipTest("TorchAX does not support distributed tests yet.")
     config = performance_utils.PerformanceBenchmarkConfig(
@@ -215,7 +285,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_gemma_3_270m_forward(self, run_mode):
-    """Tests the forward pass of Gemma-3-270m."""
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             benchmark_utils.Platform.GFC_1X1X1,
@@ -242,7 +311,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_gemma_3_270m_train_1_step(self, run_mode):
-    """Tests the training of Gemma-3-270m."""
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             benchmark_utils.Platform.GFC_1X1X1,
@@ -277,7 +345,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_qwen3_1_7b_forward(self, run_mode):
-    """Tests the forward pass of Qwen3 1.7B."""
 
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
@@ -306,7 +373,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_qwen3_1_7b_train(self, run_mode):
-    """Tests the train pass of Qwen3 1.7B."""
     if (
         self._is_torchax_backend()
         and run_mode != benchmark_utils.RunMode.COMPILED
@@ -341,7 +407,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_qwen3_coder_30b_a3b_ragged_moe_forward(self, run_mode):
-    """Tests the forward pass of Qwen3-Coder-30B-A3B."""
     if self._is_torchax_backend():
       self.skipTest("TorchAX does not support distributed tests yet.")
     config = performance_utils.PerformanceBenchmarkConfig(
@@ -376,7 +441,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_gpt_oss_20b_forward(self, run_mode):
-    """Tests the forward pass of GPT-OSS-20B."""
     if (
         self._is_torchax_backend()
         and run_mode != benchmark_utils.RunMode.COMPILED
@@ -410,7 +474,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
       ])
   )
   def test_gpt_oss_20b_train(self, run_mode):
-    """Tests the train pass of GPT-OSS-20B."""
     # TODO(b/510886286): Reenable after fix.
     self.skipTest("Assert async not supported yet.")
 

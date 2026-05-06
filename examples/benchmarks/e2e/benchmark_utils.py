@@ -719,3 +719,18 @@ def run_quality_benchmark(
       e2e_wall_time_seconds=time.perf_counter() - start_time,
       metrics=metric_scores,
   )
+
+
+def get_vocab_size(config: Any, default: int = 256_000) -> int:
+  """Gets the vocab size from a config, with a fallback default."""
+  direct_vocab_size = getattr(config, "vocab_size", None)
+  if direct_vocab_size is not None:
+    return direct_vocab_size
+
+  text_config = getattr(config, "text_config", None)
+  if text_config is not None:
+    text_vocab_size = getattr(text_config, "vocab_size", None)
+    if text_vocab_size is not None:
+      return text_vocab_size
+
+  return default

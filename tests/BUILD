@@ -27,6 +27,7 @@ torch_tpu_py_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//examples/benchmarks/e2e:benchmark_utils",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/etils/epath",

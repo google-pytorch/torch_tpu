@@ -297,9 +297,11 @@ def huggingface_llm_model_builder(
   example_inputs.pop("attention_mask", None)
 
   if is_training:
+    vocab_size = benchmark_utils.get_vocab_size(model_cpu.config)
+
     example_inputs["labels"] = torch.randint(
         0,
-        model_cpu.config.vocab_size,
+        vocab_size,
         (batch_size, sequence_length),
         device=device,
         dtype=torch.int64,
