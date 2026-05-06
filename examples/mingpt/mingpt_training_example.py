@@ -150,8 +150,8 @@ def main(_: Sequence[str]) -> None:
 
   trainer.set_callback('on_batch_end', batch_end_callback)
   # TODO: Remove callback mode once we implement all the missing ops.
-  with execution_mode.cpu_fallback_mode(enabled=True):
-    trainer.run()
+  execution_mode.enable_cpu_fallback = True
+  trainer.run()
 
 
 if __name__ == '__main__':

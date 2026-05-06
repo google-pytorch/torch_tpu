@@ -16,11 +16,11 @@
 
 #include "torch_tpu/eager/tpu_aten_kernels.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
 
-#include "absl/base/no_destructor.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "ATen/core/ATen_fwd.h"
@@ -862,18 +862,18 @@ TORCH_LIBRARY_IMPL(torch_tpu, CPU, m) {
   Impl(m, OpName::kRaggedDotOut, AtenRaggedDotOut);
 }
 
-bool& MutableIsCpuFallbackEnabled() {
-  // Backward runs in a different thread, the static state is shared with the
-  // entire process.
-  static absl::NoDestructor<bool> cpu_fallback_enabled{false};
-  return *cpu_fallback_enabled;
+// Returns a mutable reference to the global CPU fallback mode (defaulted to
+// false).
+static std::atomic<bool>& GetMutableGlobalCpuFallbackMode() {
+  static std::atomic<bool> cpu_fallback_enabled = false;
+  return cpu_fallback_enabled;
 }
 
-void EnableCpuFallback(bool enabled) {
-  MutableIsCpuFallbackEnabled() = enabled;
+void EnableCpuFallback(const bool enabled) {
+  GetMutableGlobalCpuFallbackMode().store(enabled);
 }
 
-bool IsCpuFallbackEnabled() { return MutableIsCpuFallbackEnabled(); }
+bool IsCpuFallbackEnabled() { return GetMutableGlobalCpuFallbackMode().load(); }
 
 }  // namespace torch_tpu
 

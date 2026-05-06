@@ -16,6 +16,7 @@
 
 import concurrent
 import random
+import threading
 
 from absl.testing import absltest
 from torch_tpu._internal import execution_mode
@@ -114,16 +115,28 @@ class ExecutionModeTest(absltest.TestCase):
       for future in futures:
         future.result()  # Ensure no exceptions were raised.
 
-  def test_fallback_mode(self):
-    fallback_modes = [True, False]
+  def test_cpu_fallback_mode(self):
+    """Tests that CPU fallback mode is a global setting shared across threads."""
+    event = threading.Event()
 
-    def _change_fallback_mode(new_mode):
-      with execution_mode.cpu_fallback_mode(new_mode):
-        self.assertEqual(execution_mode.is_cpu_fallback_enabled(), new_mode)
+    def _wait_and_check():
+      event.wait()
+      return execution_mode.enable_cpu_fallback
+
+    expected_value = random.choice([True, False])
 
     # Start 100 threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
-      executor.submit(_change_fallback_mode, random.choice(fallback_modes))
+      futures = [executor.submit(_wait_and_check) for _ in range(100)]
+      # Update the global fallback mode randomly in the main thread.
+      execution_mode.enable_cpu_fallback = expected_value
+      event.set()
+      # Ensure that all worker threads see the updated value.
+      for future in futures:
+        self.assertIs(future.result(), expected_value)
+
+    # Reset
+    execution_mode.enable_cpu_fallback = False
 
 
 if __name__ == "__main__":

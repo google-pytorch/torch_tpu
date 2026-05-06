@@ -15,7 +15,9 @@
 """Context managers for setting various execution modes."""
 
 import contextlib
-from typing import Set, TypeAlias
+import sys
+import types
+from typing import TypeAlias
 
 import torch
 from torch_tpu._internal.execution_mode import execution_mode_impl
@@ -23,6 +25,23 @@ from torch_tpu._internal.execution_mode.execution_mode_impl import get_eager_mod
 from torch_tpu._internal.execution_mode.execution_mode_impl import set_eager_mode
 
 EagerMode: TypeAlias = execution_mode_impl.EagerMode
+
+
+class _ExecutionModeModule(types.ModuleType):
+  """Custom module for managing TorchTPU execution settings."""
+
+  @property
+  def enable_cpu_fallback(self) -> bool:
+    # pylint: disable-next=protected-access
+    return execution_mode_impl._is_cpu_fallback_enabled()
+
+  @enable_cpu_fallback.setter
+  def enable_cpu_fallback(self, value: bool):
+    # pylint: disable-next=protected-access
+    execution_mode_impl._enable_cpu_fallback(value)
+
+
+sys.modules[__name__].__class__ = _ExecutionModeModule
 
 
 @contextlib.contextmanager
@@ -37,22 +56,10 @@ def eager_mode(mode: EagerMode):
     execution_mode_impl._pop_eager_mode()  # pylint: disable=protected-access
 
 
-@contextlib.contextmanager
-def cpu_fallback_mode(enabled: bool):
-  """Context manager for setting the fallback mode."""
-  old_enabled = execution_mode_impl.is_cpu_fallback_enabled()
-  try:
-    execution_mode_impl.enable_cpu_fallback(enabled)
-    yield
-  finally:
-    execution_mode_impl.enable_cpu_fallback(old_enabled)
-
-
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
     "EagerMode",
-    "cpu_fallback_mode",
     "eager_mode",
     "get_eager_mode",
     "set_eager_mode",

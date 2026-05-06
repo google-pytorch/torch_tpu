@@ -19,11 +19,15 @@
 
 namespace torch_tpu {
 
-// Allow fallback to CPU for missing operators. This is mostly for testing and
-// debugging. This way, as least we have model running, without being blocked by
-// certain missing operators.
+// Enables CPU fallback globally. For internal use only.
+//
+// If enabled, TorchTPU will fall back to CPU for unsupported operators. It is
+// reserved for testing and debugging purposes to have models running, without
+// being blocked by certain operator implementations.
 void EnableCpuFallback(bool enabled);
 
+// Returns true if CPU fallback is enabled globally, otherwise false.
+// For internal use only.
 [[nodiscard]] bool IsCpuFallbackEnabled();
 
 }  // namespace torch_tpu

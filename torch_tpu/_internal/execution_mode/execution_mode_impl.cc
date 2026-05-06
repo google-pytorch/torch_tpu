@@ -21,13 +21,8 @@
 #include "pybind11/stl.h"
 
 namespace torch_tpu {
+
 namespace py = pybind11;
-
-namespace {
-
-enum class FallbackMode { kNoFallback, kAllowFallback };
-
-}  // namespace
 
 PYBIND11_MODULE(execution_mode_impl, m) {
   py::enum_<EagerMode>(m, "EagerMode")
@@ -45,7 +40,8 @@ PYBIND11_MODULE(execution_mode_impl, m) {
   m.def("_pop_eager_mode", &PopContextState<EagerModeContextState>,
         "Internal pop for context manager");
 
-  m.def("enable_cpu_fallback", EnableCpuFallback, py::arg("enabled"));
-  m.def("is_cpu_fallback_enabled", IsCpuFallbackEnabled);
+  m.def("_enable_cpu_fallback", EnableCpuFallback, py::arg("enabled"));
+  m.def("_is_cpu_fallback_enabled", IsCpuFallbackEnabled);
 }
+
 }  // namespace torch_tpu

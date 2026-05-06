@@ -28,7 +28,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from scipy import stats
 import torch
-from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
@@ -6531,8 +6530,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           left = torch.tensor([0.0], dtype=left_dtype, device=device)
           right = torch.tensor([0.0], dtype=right_dtype, device=device)
           expected = torch.promote_types(left_dtype, right_dtype)
-          with execution_mode.cpu_fallback_mode(False):
-            actual = op(left, right).dtype
+          actual = op(left, right).dtype
+
           self.assertEqual(
               expected,
               actual,
@@ -6551,8 +6550,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           # Notice that the output type matches the type of the non-scalar
           # input, rather than the result of torch.promote_types.
           expected = left.dtype
-          with execution_mode.cpu_fallback_mode(False):
-            actual = op(left, right).dtype
+          actual = op(left, right).dtype
+
           self.assertEqual(
               expected,
               actual,
@@ -6569,8 +6568,8 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           left = torch.tensor(0.0, dtype=left_dtype, device=device)
           right = torch.tensor(0.0, dtype=right_dtype, device=device)
           expected = torch.promote_types(left_dtype, right_dtype)
-          with execution_mode.cpu_fallback_mode(False):
-            actual = op(left, right).dtype
+          actual = op(left, right).dtype
+
           self.assertEqual(
               expected,
               actual,
