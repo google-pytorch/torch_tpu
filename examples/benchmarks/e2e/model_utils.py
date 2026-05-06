@@ -1223,7 +1223,6 @@ def get_ml_layer_model(
 
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
-
 def get_timm_model(
     model_name: str,
     *,

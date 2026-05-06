@@ -110,6 +110,8 @@ class PerformanceBenchmarkConfig:
   is_training: bool
   model_and_input_args: ModelAndInputArgs
   grad_accumulation_steps: int = 4
+  model_creator_fn: Optional[Callable[..., model_utils.ModelAndInput]] = None
+  benchmark_fn_creator_fn: Optional[Callable[..., Callable[..., Any]]] = None
 
 
 # LINT.ThenChange(../../../g3doc/benchmarking.md)
@@ -212,6 +214,7 @@ def _run_single_process_benchmark(
       weights_dtype,
       config.is_training,
       benchmark_utils.is_torch_compile(config.run_mode),
+      model_creator_fn=config.model_creator_fn,
   )
   optimizer = _get_optimizer(
       model_and_input.model,
@@ -481,6 +484,13 @@ def _get_benchmark_function(
     inputs, and optimizer (if is_training is True) and returns output of the
     model.
   """
+  if config.benchmark_fn_creator_fn is not None:
+    return config.benchmark_fn_creator_fn(
+        device=device,
+        use_torch_compile=benchmark_utils.is_torch_compile(config.run_mode),
+        is_training=config.is_training,
+    )
+
   if config.benchmark_category in (
       benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
       benchmark_utils.BenchmarkCategory.QWEN_RAGGED_MOE,
@@ -532,6 +542,7 @@ def get_model_and_input(
     weights_dtype: torch.dtype,
     is_training: bool,
     use_torch_compile: bool,
+    model_creator_fn: Optional[Callable[..., model_utils.ModelAndInput]] = None,
 ) -> model_utils.ModelAndInput:
   """Returns the benchmark model and example input for the given args.
 
@@ -549,6 +560,15 @@ def get_model_and_input(
   Returns:
     ModelAndInput dataclass containing the model and example inputs.
   """
+  if model_creator_fn is not None:
+    return model_creator_fn(
+        model_and_input_args=model_and_input_args,
+        device=device,
+        weights_dtype=weights_dtype,
+        is_training=is_training,
+        use_torch_compile=use_torch_compile,
+    )
+
   if benchmark_category == benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM:
     dist_strat_str = model_and_input_args.custom_kwargs.get(
         "dist_strat", "none"
