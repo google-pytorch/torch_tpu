@@ -32,10 +32,10 @@ torch_tpu_py_library(
         "//shims/etils/epath",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
-        "@pypi//diffusers",
-        "@pypi//timm",
-        "@pypi//torchvision",
-        "@pypi//transformers",
+        "@pypi//diffusers",  # build_cleaner: keep
+        "@pypi//timm",  # build_cleaner: keep
+        "@pypi//torchvision",  # build_cleaner: keep
+        "@pypi//transformers",  # build_cleaner: keep
     ],
 )
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -34,11 +34,11 @@ torch_tpu_py_test(
     },
     main = "sched_overhead_test.py",
     notap = "this is a manual test",
+    platform = "//buildenv/platforms/forge/gpu/gb200",
     shard_count = 1,
     strict = True,
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
-        "requires-gpu-sm100-full-only",
         "requires-net:external",
     ],
     deps = [
@@ -87,6 +87,11 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils:log_utils",
     ],
+)
+
+torch_tpu_py_library(
+    name = "init",
+    srcs = ["__init__.py"],
 )
 
 torch_tpu_package_end()
