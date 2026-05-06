@@ -210,6 +210,7 @@ class BenchmarkCategory(enum.Enum):
   ML_LAYER = "ml_layer"
   TIMM = "timm"
   QWEN_RAGGED_MOE = "qwen_ragged_moe"
+  TORCHAUDIO = "torchaudio"
 
 
 @dataclasses.dataclass
