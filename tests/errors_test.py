@@ -313,6 +313,27 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
     ):
       torch.triu(t, 1)
 
+  def test_scaled_mm_invalid_shapes(self):
+    """Tests that scaled_mm fails if matrix sizes are not divisible by 16."""
+    if et.device().type != "tpu":
+      self.skipTest("Only supported on TPU")
+    device = et.device()
+    # Generate in F32 and cast to FP8 to avoid randn failure on TPU!
+    mat1 = torch.randn(15, 16, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    mat2 = torch.randn(16, 32, dtype=torch.float32, device=device).to(
+        torch.float8_e4m3fn
+    )
+    scale_a = torch.tensor([1.0], dtype=torch.float32, device=device)
+    scale_b = torch.tensor([1.0], dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_mm(): expected matrices sizes to be divisible by 16, got shapes [15, 16] and [16, 32]""",
+    ):
+      torch._scaled_mm(mat1, mat2, scale_a, scale_b)
+
   def test_ctc_loss_log_probs_3d(self):
     log_probs = torch.randn(2, 3, device=et.device())
     targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())

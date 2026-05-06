@@ -22,7 +22,7 @@
 
 namespace torch_tpu {
 
-// NOLINTNEXTLINE(readability/fn_size)
+// NOLINTBEGIN(readability/fn_size)
 std::string_view ToString(OpName op_name) {
   // WARNING: These names are used for computing cache keys, so they must be
   // stable. Changing them may cause key collisions in the persistent cache.
@@ -1074,6 +1074,10 @@ std::string_view ToString(OpName op_name) {
       return "_scaled_dot_product_fused_attention_overrideable";
     case OpName::kScaledDotProductFusedAttentionOverrideableBackward:
       return "_scaled_dot_product_fused_attention_overrideable_backward";
+    case OpName::kScaledMm:
+      return "_scaled_mm";
+    case OpName::kScaledMmOut:
+      return "_scaled_mm.out";
     case OpName::kScatterAddOut:
       return "scatter_add.out";
     case OpName::kScatterReduceOut:
@@ -1247,6 +1251,7 @@ std::string_view ToString(OpName op_name) {
       // all cases are handled.
   }
 }
+// NOLINTEND(readability/fn_size)
 
 std::string_view ToBaseName(const OpName op_name) {
   if (op_name == OpName::kIndexPutImpl_) {

@@ -298,6 +298,20 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "structured_log_buffer",
+    srcs = ["structured_log_buffer.cc"],
+    hdrs = ["structured_log_buffer.h"],
+    deps = [
+        "//torch_tpu/common:env_vars",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "safe_materialization_rule",
     srcs = ["safe_materialization_rule.cc"],
     hdrs = ["safe_materialization_rule.h"],
@@ -423,20 +437,6 @@ torch_tpu_cc_library(
         "//torch_tpu/common:context_states",
         "//torch_tpu/common:env_vars",
         "@com_google_absl//absl/log:absl_log",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "structured_log_buffer",
-    srcs = ["structured_log_buffer.cc"],
-    hdrs = ["structured_log_buffer.h"],
-    deps = [
-        "//torch_tpu/common:env_vars",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/synchronization",
-        "@com_google_absl//absl/time",
     ],
 )
 
@@ -650,6 +650,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/roll:roll_aten_kernels",
         "//torch_tpu/ops/round:round_aten_kernels",
         "//torch_tpu/ops/scaled_dot_product_attention:scaled_dot_product_attention_aten_kernels",
+        "//torch_tpu/ops/scaled_mm:scaled_mm_aten_kernels",
         "//torch_tpu/ops/scatter:scatter_aten_kernels",
         "//torch_tpu/ops/set:set_aten_kernels",
         "//torch_tpu/ops/sigmoid:sigmoid_aten_kernels",

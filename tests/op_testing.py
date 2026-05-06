@@ -382,7 +382,9 @@ def _format_dtype(dtype: torch.dtype) -> str:
 
 
 _DTYPE_NAME_TO_DTYPE: Final[Mapping[str, torch.dtype]] = {
-    _format_dtype(dtype): dtype for dtype in NUMERIC_DTYPES
+    **{_format_dtype(dtype): dtype for dtype in NUMERIC_DTYPES},
+    "float8_e4m3fn": torch.float8_e4m3fn,
+    "float8_e5m2": torch.float8_e5m2,
 }
 
 
@@ -1689,6 +1691,11 @@ class TorchTpuTestBase(TestCase):
         _add_perf_result(PerfResult(op_name, dtype, time.time() - start_time))
     except Exception as e:  # pylint: disable=broad-except
       # The op raised an exception.
+      if _gen_gpu_golden_mode():
+        print(
+            f"Exception caught during golden generation for {op_name}: {e}",
+            flush=True,
+        )
       result = e
     return result
 
@@ -2041,6 +2048,7 @@ class TorchTpuTestBase(TestCase):
       self,
       op_name: str,
       *,
+      include_dtypes: Iterable[torch.dtype] | None = None,
       exclude_dtypes: (
           Iterable[torch.dtype] | Mapping[str, Iterable[torch.dtype]] | None
       ) = None,
@@ -2066,6 +2074,8 @@ class TorchTpuTestBase(TestCase):
 
     Args:
       op_name: The name of the op to test.
+      include_dtypes: A list of input dtypes to include in testing. If None, all
+        numeric dtypes will be tested.
       exclude_dtypes: A list of input dtypes to exclude from testing, or a
         dictionary mapping device type ("cpu" or "gpu") to such a list (useful
         when different dtypes should be excluded for different golden devices).
@@ -2123,12 +2133,15 @@ class TorchTpuTestBase(TestCase):
 
       Currently only the out variant can be disabled (via check_out_variant).
       """
+      dtypes_to_test = (
+          include_dtypes if include_dtypes is not None else NUMERIC_DTYPES
+      )
 
       op = _get_op(op_name, variant_test_name=variant_test_name)
 
       # Test the base variant.
       print(f"Testing {op_name}().", flush=True)
-      for dtype in NUMERIC_DTYPES:
+      for dtype in dtypes_to_test:
         if _should_skip_dtype(dtype, exclude_dtypes=exclude_dtypes):
           continue
         self._test_torch_tpu_vs_golden(
@@ -2149,7 +2162,7 @@ class TorchTpuTestBase(TestCase):
 
       if check_out_variant:
         print(f"Testing {op_name}(out=...).", flush=True)
-        for dtype in NUMERIC_DTYPES:
+        for dtype in dtypes_to_test:
           if _should_skip_dtype(dtype, exclude_dtypes=exclude_dtypes):
             continue
           # TODO: cover more ways to specify the out arguments (e.g. correct
@@ -2177,7 +2190,7 @@ class TorchTpuTestBase(TestCase):
 
       # Test the inplace variant.
       print(f"Testing {op_name}_().", flush=True)
-      for dtype in NUMERIC_DTYPES:
+      for dtype in dtypes_to_test:
         if _should_skip_dtype(dtype, exclude_dtypes=exclude_inplace_dtypes):
           continue
         self._test_torch_tpu_vs_golden(
