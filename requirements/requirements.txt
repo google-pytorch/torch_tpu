@@ -408,9 +408,9 @@ datasets==4.8.0 \
     --hash=sha256:3d1e79657f588baf42cfb4a51dd030ca7467e02222e7e88a5f31011884f4f355 \
     --hash=sha256:e3fe0199939c6d7d59cb60f5819521ec75b8e670ed752396be2bf7881c9417f7
     # via torch-tpu (pyproject.toml)
-diffusers==0.37.0 \
-    --hash=sha256:408789af73898585f525afd07ca72b3955affea4216a669558e9f59b5b1fe704 \
-    --hash=sha256:7eab74bf896974250b5e1027cae813aba1004f02d97c9b44891b83713386aa08
+diffusers==0.38.0 \
+    --hash=sha256:18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612 \
+    --hash=sha256:1e094ec5c16f18c42fb89d37f07a94cf9aab3ebbe527ab059c609597b8857626
     # via torch-tpu (pyproject.toml)
 dill==0.4.1 \
     --hash=sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d \
