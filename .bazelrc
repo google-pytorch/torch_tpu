@@ -312,22 +312,28 @@ common --@rules_python//python/config_settings:venvs_site_packages=yes
 build --flag_alias=is_wheel_build=//:is_wheel_build
 build --flag_alias=test_wheel=//:test_wheel
 
+# Common wheel configs
+common:wheel_common --config=remote_caching_readonly
+common:wheel_common --config=remote_execution_readonly
+
 # Config for building the wheel
+build:wheel --config=wheel_common
 build:wheel --is_wheel_build
-build:wheel --config=remote_caching_readonly
-build:wheel --config=remote_execution_readonly
-test:wheel_config --config=wheel
-test:wheel_config --test_output=errors
-test:wheel_config --test_wheel=true
-test:wheel_config --test_lang_filters=py  # Only run python tests
+build:wheel -c opt
+
+# Common configs for wheel test
+test:wheel_common_test --config=wheel_common
+test:wheel_common_test --test_output=errors
+test:wheel_common_test --test_wheel=true
+test:wheel_common_test --test_lang_filters=py  # Only run python tests
 
 # Config for testing CPU wheel test.
 test:wheel_test_cpu --config=ci_cpu
-test:wheel_test_cpu --config=wheel_config
+test:wheel_test_cpu --config=wheel_common_test
 
 # Config for testing TPU wheel test.
 test:wheel_test_tpu --config=ci_tpu
-test:wheel_test_tpu --config=wheel_config
+test:wheel_test_tpu --config=wheel_common_test
 test:wheel_test_tpu --spawn_strategy=local
 
 # We need to re-specify all of these tag filters because when specified more

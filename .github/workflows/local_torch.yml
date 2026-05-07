@@ -103,7 +103,8 @@ jobs:
       - name: Build TorchTPU wheel
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
-          bazel build -c opt //ci/wheel:torch_tpu_wheel \
+          bazel build //ci/wheel:torch_tpu_wheel \
+            --config=wheel \
             --define TORCH_SOURCE=local \
             --repo_env=TORCH_SOURCE=$TORCH_SOURCE
 
