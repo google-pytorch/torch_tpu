@@ -519,11 +519,16 @@ def torch_tpu_cc_test(
             targets = [":" + name],
             tags = result.build_test_tags,
         )
+    deps = kwargs.pop("deps", [])
+    if is_oss():
+        deps.append("@rules_python//python/cc:current_py_cc_libs")
+
     cc_test(
         name = name,
         size = size,
         timeout = timeout,
         srcs = srcs,
+        deps = deps,
         copts = copts,
         args = args,
         features = features,

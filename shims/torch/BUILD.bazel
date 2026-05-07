@@ -38,18 +38,6 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-# Config setting when building a wheel with local torch.
-config_setting(
-    name = "wheel_build_with_local_torch",
-    define_values = {
-        "TORCH_SOURCE": "local",
-    },
-    flag_values = {
-        "//:is_wheel_build": "True",
-    },
-    visibility = ["//visibility:public"],
-)
-
 # TODO: b/457858115 - Bazel likely enforces strict dependencies and requires optional dependencies
 # to be explicitly listed in deps if they are used.
 # Python Rules: Depend on PyPI torch by default, but skip it for local builds
@@ -97,14 +85,6 @@ cc_library(
             "@local_torch//:libtorch_python",
             "@rules_python//python/cc:current_py_cc_libs",
         ],
-        ":is_wheel_build": [
-            "@pypi_torch//:libc10",
-            "@pypi_torch//:libtorch_cpu",
-        ],
-        ":wheel_build_with_local_torch": [
-            "@local_torch//:libc10",
-            "@local_torch//:libtorch_cpu",
-        ],
         "//conditions:default": [
             "@pypi_torch//:libc10",
             "@pypi_torch//:libtorch_cpu",
@@ -123,10 +103,6 @@ cc_library(
         ":is_wheel_build": [
             "@pypi_torch//:libc10",
             "@pypi_torch//:libtorch_cpu",
-        ],
-        ":wheel_build_with_local_torch": [
-            "@local_torch//:libc10",
-            "@local_torch//:libtorch_cpu",
         ],
         "//conditions:default": [
             "@pypi_torch//:libc10",
@@ -165,18 +141,10 @@ cc_library(
             "@local_torch//:libtorch_python",
             "@rules_python//python/cc:current_py_cc_libs",
         ],
-        ":is_wheel_build": [
-            "@pypi//torch:torch_headers",
-            "@pypi_torch//:libtorch_python",
-        ],
-        ":wheel_build_with_local_torch": [
-            "@local_torch//:libtorch_python",
-            "@local_torch//:torch_headers",
-        ],
         "//conditions:default": [
             "@pypi//torch:torch_headers",
             "@pypi_torch//:libtorch_python",
-            "@rules_python//python/cc:current_py_cc_libs",
+            "@rules_python//python/cc:current_py_cc_headers",
         ],
     }),
 )

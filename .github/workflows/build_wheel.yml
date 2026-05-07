@@ -72,7 +72,7 @@ jobs:
       - name: Build wheel
         run: |
           WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
-          bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
+          bazel build -c opt --config=remote_caching_readonly --config=remote_execution_readonly //ci/wheel:torch_tpu_wheel --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
       - name: Check wheel metadata
