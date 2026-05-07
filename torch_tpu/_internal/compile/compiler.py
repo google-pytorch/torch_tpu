@@ -450,23 +450,38 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
     pass
 
 
-def has_symints(args: Any) -> bool:
-  """Checks whether SymInt inputs or shapes exist in the provided input args.
+def _has_activation_checkpoint(graph: torch.fx.Graph) -> bool:
+  """Determines whether activation checkpointing was used within the program."""
+  ac_ops = graph.find_nodes(
+      op="call_function",
+      target=torch.ops.higher_order.tag_activation_checkpoint,
+  )
+  return len(ac_ops) > 0
+
+
+def has_dynamic_symints(args: Any) -> bool:
+  """Checks whether truly dynamic SymInt inputs or shapes exist.
+
+  A SymInt whose expression has been fully concretized (no free symbols)
+  is treated as static.
 
   Args:
     args: example program inputs provided for compilation.
 
   Returns:
-    True if any SymInt args or Tensors with SymInt dimensions exist.
+    True if any args or tensor dimensions have unresolved symbolic variables.
   """
   flat_args, _ = _pytree.tree_flatten(args)
 
+  def _is_dynamic_symint(val: Any) -> bool:
+    return isinstance(val, torch.SymInt) and bool(val.node.expr.free_symbols)
+
   for arg in flat_args:
-    if isinstance(arg, torch.SymInt):
+    if _is_dynamic_symint(arg):
       return True
 
     if isinstance(arg, torch.Tensor):
-      if any(isinstance(s, torch.SymInt) for s in arg.shape):
+      if any(_is_dynamic_symint(s) for s in arg.shape):
         return True
 
   return False

@@ -17,7 +17,10 @@
 import os
 
 from absl.testing import absltest
+import sympy
 import torch
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
+from torch_tpu._internal.compile.compiler import has_dynamic_symints
 from torch_tpu._internal.utils import utils
 
 def simple(x):
@@ -70,6 +73,15 @@ class EnsureNoDynamicTest(absltest.TestCase):
 
     ## Shape change and recompile
     utils.assert_close(compiled(input_2_tpu).to("cpu"), simple(input_2))
+
+  def test_concrete_symint_treated_as_static(self):
+    """SymInt wrapping a concrete integer should not be flagged as dynamic."""
+    shape_env = ShapeEnv()
+    symint = shape_env.create_symintnode(sympy.Integer(32), hint=32)
+    self.assertFalse(
+        has_dynamic_symints([symint]),
+        "Concrete SymInt (no free symbols) should be treated as static",
+    )
 
 
 if __name__ == "__main__":

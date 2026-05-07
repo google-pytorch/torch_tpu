@@ -1,5 +1,6 @@
 bazel-*
 user.bazelrc
+*/**/__pycache__
 # Vim swap files (used for recovery)
 .*.swp
 .*.swo

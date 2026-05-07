@@ -290,7 +290,7 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
 
-    if compiler.has_symints(example_inputs):
+    if compiler.has_dynamic_symints(example_inputs):
       compiler_instance = dynamic_compiler.DynamicCompiler(debug=self._debug)
     else:
       compiler_instance = compiler.StaticCompiler(debug=self._debug)
