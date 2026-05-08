@@ -140,70 +140,89 @@ class DeferredOp;
 
 using SharedDeviceBufferList = absl_nonnull std::shared_ptr<DeviceBufferList>;
 
-// A Subgraph represents a set of deferred operations that are logically
-// connected. Subgraphs can be merged when an operation takes inputs from
-// multiple subgraphs.
-// Each subgraph maintains its own queue of deferred operations.
+// An OpQueue represents a set of deferred operations that are logically
+// connected. OpQueues can be merged when an operation takes inputs from
+// multiple queues.
+// Each queue maintains its own list of deferred operations.
 // TODO(bawilson): factor this into a separate file.
-class Subgraph : public std::enable_shared_from_this<Subgraph> {
+class OpQueue : public std::enable_shared_from_this<OpQueue> {
  public:
-  // Constructs a subgraph, but does not register it with the subgraph
-  // registry.
-  Subgraph() = default;
+  // Constructs an op queue.
+  OpQueue() = default;
 
-  // Creates a new subgraph and registers it with the subgraph registry.
-  static std::shared_ptr<Subgraph> Create();
+  // Creates a new op queue or returns the global instance.
+  static std::shared_ptr<OpQueue> Create();
 
-  // Pushes a deferred node onto this subgraph's queue.
+  // Pushes a deferred node onto this queue.
   void push(std::weak_ptr<DeviceBufferList> device_buffer);
 
-  // Returns the representative subgraph (root of the DSU tree).
-  std::shared_ptr<Subgraph> Find();
-
-  // Merges two subgraphs.
-  static void Merge(std::shared_ptr<Subgraph> s1, std::shared_ptr<Subgraph> s2);
-
-  // Returns the leaf nodes of the subgraph.
+  // Returns the leaf nodes of the queue.
   std::vector<SharedDeviceBufferList> GetLeafNodes();
 
+  // Acquires a snapshot of nodes for processing.
+  // Locks processing_mu_ and returns the nodes.
+  std::vector<SharedDeviceBufferList> AcquireProcessingSnapshot()
+      ABSL_EXCLUSIVE_LOCK_FUNCTION(processing_mu_);
+
+  // Releases the processing lock.
+  void ReleaseProcessingSnapshot() ABSL_UNLOCK_FUNCTION(processing_mu_);
+
+  // Returns all nodes in the processing queue.
+  std::vector<SharedDeviceBufferList> GetAllNodes();
+
+  class ABSL_SCOPED_LOCKABLE SnapshotLock {
+   public:
+    explicit SnapshotLock(std::shared_ptr<OpQueue> queue)
+        ABSL_EXCLUSIVE_LOCK_FUNCTION(queue->processing_mu_)
+        : queue_(std::move(queue)) {
+      nodes_ = queue_->AcquireProcessingSnapshot();
+    }
+    ~SnapshotLock() ABSL_UNLOCK_FUNCTION() {
+      queue_->ReleaseProcessingSnapshot();
+    }
+    const std::vector<SharedDeviceBufferList>& nodes() const { return nodes_; }
+
+   private:
+    std::shared_ptr<OpQueue> queue_;
+    std::vector<SharedDeviceBufferList> nodes_;
+  };
+
  private:
-  // Prunes the queue to remove expired, materialized, and non-leaf nodes.
-  void Prune() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  // Prunes the queue to remove expired nodes.
+  void Prune() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_staging_);
 
-  // Prunes the queue, and writes the leaf nodes to the output vector.
-  void PruneAndReturnLeafNodes(
-      std::vector<SharedDeviceBufferList>& leaf_nodes_out)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  absl::Mutex mu_staging_;
+  std::vector<std::weak_ptr<DeviceBufferList>> staging_queue_
+      ABSL_GUARDED_BY(mu_staging_);
 
-  absl::Mutex mu_;
-  std::shared_ptr<Subgraph> parent_ ABSL_GUARDED_BY(mu_);
-  std::vector<std::weak_ptr<DeviceBufferList>> queue_ ABSL_GUARDED_BY(mu_);
+  absl::Mutex processing_mu_;
+  std::vector<std::weak_ptr<DeviceBufferList>> processing_queue_
+      ABSL_GUARDED_BY(processing_mu_);
 };
 
-// A global singleton registry of all Subgraphs that currently exist.
+// A global singleton registry of all OpQueues that currently exist.
 // TODO(bawilson): factor this into a separate file.
-class SubgraphRegistry {
+class OpQueueRegistry {
  public:
   // Returns the singleton registry instance.
-  [[nodiscard]] static SubgraphRegistry& GetInstance();
+  [[nodiscard]] static OpQueueRegistry& GetInstance();
 
-  // Constructs a new, empty subgraph and registers it with the registry.
-  absl_nonnull std::shared_ptr<Subgraph> MakeNewSubgraph();
+  // Returns the single global op queue.
+  absl_nonnull std::shared_ptr<OpQueue> MakeNewOpQueue();
 
-  // Merges all subgraphs in the registry into a single subgraph.
-  // If the registry is empty, creates a new empty subgraph and returns it.
-  absl_nonnull std::shared_ptr<Subgraph> MergeAll();
+  // Returns the single global op queue.
+  absl_nonnull std::shared_ptr<OpQueue> MergeAll();
 
  private:
-  SubgraphRegistry() = default;
-  // SubgraphRegistry is neither copyable nor movable.
-  SubgraphRegistry(const SubgraphRegistry&) = delete;
-  SubgraphRegistry& operator=(const SubgraphRegistry&) = delete;
-  SubgraphRegistry(SubgraphRegistry&&) = delete;
-  SubgraphRegistry& operator=(SubgraphRegistry&&) = delete;
+  OpQueueRegistry() = default;
+  // OpQueueRegistry is neither copyable nor movable.
+  OpQueueRegistry(const OpQueueRegistry&) = delete;
+  OpQueueRegistry& operator=(const OpQueueRegistry&) = delete;
+  OpQueueRegistry(OpQueueRegistry&&) = delete;
+  OpQueueRegistry& operator=(OpQueueRegistry&&) = delete;
 
   absl::Mutex mu_;
-  std::vector<std::weak_ptr<Subgraph>> subgraphs_ ABSL_GUARDED_BY(mu_);
+  std::shared_ptr<OpQueue> global_queue_ ABSL_GUARDED_BY(mu_);
 };
 
 // A DeviceBufferRef is a reference to an element in a DeviceBufferList.
@@ -403,7 +422,7 @@ class DeferredOp {
   DeferredOp(OpName op_name, MlirOpBuilder op_builder,
              std::vector<DeviceBufferRef> inputs,
              OpParamCacheKeys op_param_cache_keys,
-             std::shared_ptr<Subgraph> subgraph,
+             std::shared_ptr<OpQueue> subgraph,
              OpSplitMode split_mode = OpSplitMode::kNone,
              Indices donated_indices = {})
       : op_name_(op_name),
@@ -508,8 +527,8 @@ class DeferredOp {
     return "";
   }
 
-  // Returns the subgraph this op belongs to.
-  std::shared_ptr<Subgraph> subgraph() const { return subgraph_; }
+  // Returns the op queue this op belongs to.
+  std::shared_ptr<OpQueue> subgraph() const { return subgraph_; }
 
   [[nodiscard]] absl::Span<const int64_t> donated_indices() const {
     return donated_indices_;
@@ -557,8 +576,8 @@ class DeferredOp {
   // subgraphs for compilation.
   const OpSplitMode split_mode_ = OpSplitMode::kNone;
 
-  // The subgraph this op belongs to.
-  std::shared_ptr<Subgraph> subgraph_;
+  // The op queue this op belongs to.
+  std::shared_ptr<OpQueue> subgraph_;
 
   friend std::ostream& operator<<(std::ostream& os,
                                   const DeferredOp& deferred_op);
@@ -818,7 +837,7 @@ class DeviceBufferList {
   }
 
   // Returns the representative ID of the subgraph this node belongs to.
-  [[nodiscard]] std::shared_ptr<Subgraph> subgraph() const { return subgraph_; }
+  [[nodiscard]] std::shared_ptr<OpQueue> subgraph() const { return subgraph_; }
 
   // If the DeviceBufferList has no live data pointers, it is "stale", meaning
   // that it will never be directly materialized and will never have any new
@@ -869,7 +888,7 @@ class DeviceBufferList {
   // DeferredOp's op_builder; if they do not, then there may be compilation
   // failures.
   DeviceBufferList(DeferredOp deferred_op, std::vector<Shape> shapes,
-                   std::shared_ptr<Subgraph> subgraph)
+                   std::shared_ptr<OpQueue> subgraph)
       : data_(DeferredOp(std::move(deferred_op))),
         shapes_(std::move(shapes)),
         subgraph_(std::move(subgraph)) {
@@ -907,8 +926,8 @@ class DeviceBufferList {
   std::variant<std::monostate, DeferredOp, MaterializedBuffers> data_;
   // The shapes of all the buffers in the DeviceBufferList.
   std::vector<Shape> shapes_;
-  // The subgraph this node belongs to. Only valid for deferred nodes.
-  std::shared_ptr<Subgraph> subgraph_;
+  // The op queue this node belongs to. Only valid for deferred nodes.
+  std::shared_ptr<OpQueue> subgraph_;
   // A global index of the creation of this DeviceBufferList (created atomically
   // for thread safety). Lower means earlier.
   uint64_t creation_index_ = 0;

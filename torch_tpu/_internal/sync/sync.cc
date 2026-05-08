@@ -60,7 +60,7 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
 
 absl::Status SynchronizeAll(const WaitOnExecution wait) {
   const std::vector<SharedDeviceBufferList> leaf_nodes =
-      SubgraphRegistry::GetInstance().MergeAll()->GetLeafNodes();
+      OpQueueRegistry::GetInstance().MergeAll()->GetLeafNodes();
 
   if (leaf_nodes.empty()) {
     return absl::OkStatus();

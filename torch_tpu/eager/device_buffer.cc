@@ -66,172 +66,130 @@
 
 namespace torch_tpu {
 
-void Subgraph::Prune() {
-  queue_.erase(std::remove_if(queue_.begin(), queue_.end(),
-                              [](std::weak_ptr<DeviceBufferList>& weak_node) {
-                                std::shared_ptr<DeviceBufferList> node =
-                                    weak_node.lock();
-                                if (!node) {
-                                  return true;
-                                }
-                                const auto* deferred_op = node->deferred_op();
-                                if (!deferred_op || node->num_child_ops() > 0) {
-                                  return true;
-                                }
-                                return false;
-                              }),
-               queue_.end());
+void OpQueue::Prune() {
+  staging_queue_.erase(
+      std::remove_if(staging_queue_.begin(), staging_queue_.end(),
+                     [](std::weak_ptr<DeviceBufferList>& weak_node) {
+                       return weak_node.expired();
+                     }),
+      staging_queue_.end());
 }
 
-void Subgraph::PruneAndReturnLeafNodes(
-    std::vector<SharedDeviceBufferList>& leaf_nodes_out) {
-  queue_.erase(
-      std::remove_if(
-          queue_.begin(), queue_.end(),
-          [&leaf_nodes_out](std::weak_ptr<DeviceBufferList>& weak_node) {
-            std::shared_ptr<DeviceBufferList> node = weak_node.lock();
-            if (!node) {
-              return true;
-            }
-            const auto* deferred_op = node->deferred_op();
-            if (!deferred_op || node->num_child_ops() > 0) {
-              return true;
-            }
-            leaf_nodes_out.push_back(std::move(node));
-            return false;
-          }),
-      queue_.end());
-}
-
-void Subgraph::push(std::weak_ptr<DeviceBufferList> device_buffer) {
-  absl::MutexLock lock(mu_);
-  if (queue_.size() >= queue_.capacity()) {
-    // Try to free up capacity by pruning down to just the live leaf nodes.
+void OpQueue::push(std::weak_ptr<DeviceBufferList> device_buffer) {
+  absl::MutexLock lock(mu_staging_);
+  if (staging_queue_.size() >= staging_queue_.capacity()) {
     Prune();
   }
-  queue_.push_back(std::move(device_buffer));
+  staging_queue_.push_back(std::move(device_buffer));
 }
 
-std::shared_ptr<Subgraph> Subgraph::Find() {
-  std::shared_ptr<Subgraph> root = shared_from_this();
-  while (true) {
-    std::shared_ptr<Subgraph> next_root;
-    {
-      absl::MutexLock lock(root->mu_);
-      next_root = root->parent_;
-    }
-    if (!next_root) break;
-    root = next_root;
-  }
-
-  // Path compression: update parents along the path to the root.
-  std::shared_ptr<Subgraph> current = shared_from_this();
-  while (current != root) {
-    std::shared_ptr<Subgraph> next;
-    {
-      absl::MutexLock lock(current->mu_);
-      next = current->parent_;
-      if (next) {
-        current->parent_ = root;
-      }
-    }
-    if (!next || next == root) break;
-    current = next;
-  }
-
-  return root;
-}
-
-void Subgraph::Merge(std::shared_ptr<Subgraph> s1,
-                     std::shared_ptr<Subgraph> s2) {
-  auto r1 = s1->Find();
-  auto r2 = s2->Find();
-  if (r1 == r2) return;
-
-  absl::MutexLock lock1(r1->mu_);
-  absl::MutexLock lock2(r2->mu_);
-
-  // Prune r1's queue to avoid reallocation if possible.
-  r1->Prune();
-
-  // Push r2's live, leaf nodes onto r1's queue.
-  for (auto& weak_node : r2->queue_) {
-    if (auto node = weak_node.lock()) {
-      const auto* deferred_op = node->deferred_op();
-      if (deferred_op && node->num_child_ops() == 0) {
-        r1->queue_.push_back(std::move(weak_node));
-      }
-    }
-  }
-  r2->queue_.clear();
-  r2->parent_ = r1;
-}
-
-std::vector<SharedDeviceBufferList> Subgraph::GetLeafNodes() {
-  absl::MutexLock lock(mu_);
-  // Simultaneously prune the queue and write leaf nodes to the output.
+std::vector<SharedDeviceBufferList> OpQueue::GetLeafNodes() {
   std::vector<SharedDeviceBufferList> leaf_nodes;
-  PruneAndReturnLeafNodes(leaf_nodes);
+
+  {
+    absl::MutexLock lock(mu_staging_);
+    for (const auto& weak_node : staging_queue_) {
+      if (auto node = weak_node.lock()) {
+        if (node->deferred_op() != nullptr && node->num_child_ops() == 0) {
+          leaf_nodes.push_back(std::move(node));
+        }
+      }
+    }
+  }
+
+  {
+    absl::MutexLock lock(processing_mu_);
+    for (const auto& weak_node : processing_queue_) {
+      if (auto node = weak_node.lock()) {
+        if (node->deferred_op() != nullptr && node->num_child_ops() == 0) {
+          leaf_nodes.push_back(std::move(node));
+        }
+      }
+    }
+  }
+
   return leaf_nodes;
 }
 
-SubgraphRegistry& SubgraphRegistry::GetInstance() {
-  static SubgraphRegistry* const registry = new SubgraphRegistry();
+std::vector<SharedDeviceBufferList> OpQueue::AcquireProcessingSnapshot() {
+  std::vector<std::weak_ptr<DeviceBufferList>> nodes_to_move;
+  {
+    absl::MutexLock lock(mu_staging_);
+    Prune();
+    nodes_to_move = std::move(staging_queue_);
+    staging_queue_.clear();
+  }
+
+  processing_mu_.Lock();
+
+  for (auto& weak_node : nodes_to_move) {
+    processing_queue_.push_back(std::move(weak_node));
+  }
+
+  // Prune from front.
+  auto it = processing_queue_.begin();
+  while (it != processing_queue_.end() && it->expired()) {
+    ++it;
+  }
+  if (it != processing_queue_.begin()) {
+    processing_queue_.erase(processing_queue_.begin(), it);
+  }
+
+  std::vector<SharedDeviceBufferList> result;
+  for (const auto& weak_node : processing_queue_) {
+    if (auto node = weak_node.lock()) {
+      result.push_back(std::move(node));
+    }
+  }
+  return result;
+}
+
+void OpQueue::ReleaseProcessingSnapshot() { processing_mu_.Unlock(); }
+
+std::vector<SharedDeviceBufferList> OpQueue::GetAllNodes() {
+  std::vector<SharedDeviceBufferList> all_nodes;
+  {
+    absl::MutexLock lock(mu_staging_);
+    for (const auto& weak_node : staging_queue_) {
+      if (auto node = weak_node.lock()) {
+        all_nodes.push_back(std::move(node));
+      }
+    }
+  }
+  {
+    absl::MutexLock lock(processing_mu_);
+    for (const auto& weak_node : processing_queue_) {
+      if (auto node = weak_node.lock()) {
+        all_nodes.push_back(std::move(node));
+      }
+    }
+  }
+  return all_nodes;
+}
+
+OpQueueRegistry& OpQueueRegistry::GetInstance() {
+  static OpQueueRegistry* const registry = new OpQueueRegistry();
   return *registry;
 }
 
-absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MakeNewSubgraph() {
+absl_nonnull std::shared_ptr<OpQueue> OpQueueRegistry::MakeNewOpQueue() {
   absl::MutexLock lock(mu_);
-  if (subgraphs_.size() >= subgraphs_.capacity()) {
-    // Try to free up capacity by pruning down to just the live subgraphs.
-    subgraphs_.erase(std::remove_if(subgraphs_.begin(), subgraphs_.end(),
-                                    [](std::weak_ptr<Subgraph>& weak_subgraph) {
-                                      return weak_subgraph.lock() == nullptr;
-                                    }),
-                     subgraphs_.end());
+  if (!global_queue_) {
+    global_queue_ = std::make_shared<OpQueue>();
   }
-
-  auto subgraph = std::make_shared<Subgraph>();
-  subgraphs_.push_back(subgraph);  // intentional copy
-  return subgraph;
+  return global_queue_;
 }
 
-absl_nonnull std::shared_ptr<Subgraph> SubgraphRegistry::MergeAll() {
+absl_nonnull std::shared_ptr<OpQueue> OpQueueRegistry::MergeAll() {
   absl::MutexLock lock(mu_);
-  // Find the first non-expired subgraph.
-  std::shared_ptr<Subgraph> root;
-  auto it = subgraphs_.begin();
-  while (it != subgraphs_.end()) {
-    root = it->lock();
-    if (root) break;
-    ++it;
+  if (!global_queue_) {
+    global_queue_ = std::make_shared<OpQueue>();
   }
-  if (it == subgraphs_.end()) {
-    // All subgraphs are expired. Create a new one and register it as the only
-    // subgraph.
-    subgraphs_.clear();
-    auto subgraph = std::make_shared<Subgraph>();
-    subgraphs_.push_back(subgraph);  // intentional copy
-    return subgraph;
-  }
-
-  // Merge all other subgraphs into the root subgraph.
-  ++it;
-  for (; it != subgraphs_.end(); ++it) {
-    if (auto subgraph = it->lock()) {
-      Subgraph::Merge(root, subgraph);
-    }
-  }
-
-  // Make the root subgraph the only subgraph in the registry and return it.
-  ABSL_CHECK(root);  // CRASH_OK=satisfying ClangTidy
-  subgraphs_.clear();
-  subgraphs_.push_back(root);  // intentional copy
-  return root;
+  return global_queue_;
 }
 
-std::shared_ptr<Subgraph> Subgraph::Create() {
-  return SubgraphRegistry::GetInstance().MakeNewSubgraph();
+std::shared_ptr<OpQueue> OpQueue::Create() {
+  return OpQueueRegistry::GetInstance().MakeNewOpQueue();
 }
 
 size_t DeviceBufferList::size_bytes(int64_t index) const {
@@ -455,36 +413,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   }
   int64_t num_outputs = output_shapes.size();
 
-  std::shared_ptr<Subgraph> subgraph = nullptr;
-
-  if (IsDistributedOp(op_name)) {
-    // Each distributed op acts as a barrier; all prior operations (connected or
-    // not) that were created before it must be considered part of the same
-    // graph so that proper ordering is maintained.
-    // Otherwise, two independent collective operations could be isolated in
-    // disconnected subgraphs, and different rank processes could have different
-    // orderings of these subgraphs, leading to a deadlock.
-    subgraph = SubgraphRegistry::GetInstance().MergeAll();
-  }
-
-  for (const auto& input : inputs) {
-    if (input.state() == DeviceBufferRefState::kDeferred) {
-      auto input_subgraph = input.device_buffer_list()->subgraph();
-      if (!input_subgraph) continue;
-
-      auto input_rep = input_subgraph->Find();
-      if (!subgraph) {
-        subgraph = input_rep;
-      } else if (subgraph != input_rep) {
-        Subgraph::Merge(subgraph, input_rep);
-        subgraph = subgraph->Find();
-      }
-    }
-  }
-
-  if (!subgraph) {
-    subgraph = Subgraph::Create();
-  }
+  // Always use the single global queue.
+  std::shared_ptr<OpQueue> subgraph = OpQueueRegistry::GetInstance().MergeAll();
 
   // Create the DeferredOp.
   auto op = DeferredOp(op_name, std::move(op_builder), std::move(inputs),
