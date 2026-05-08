@@ -148,6 +148,8 @@ jobs:
         run: |
           mkdir dist
           gcloud storage cp "${{ needs.build_wheels.outputs.gcs-path }}/*.whl" dist/
+          # Keep only the newest wheel if multiple versions were downloaded to avoid pip conflicts
+          ls -t dist/torch_tpu*.whl | tail -n +2 | xargs rm -f || true
       - name: Download a specific CUDA-enabled torch wheel to verify the override mechanism
         if: matrix.wheel_version == 'cuda'
         run: |
