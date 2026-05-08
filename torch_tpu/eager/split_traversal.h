@@ -23,6 +23,7 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 
@@ -36,7 +37,8 @@ namespace torch_tpu {
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 SplitTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    EagerMode eager_mode);
 
 }  // namespace torch_tpu
 

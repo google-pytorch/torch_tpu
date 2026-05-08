@@ -27,12 +27,14 @@
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/flags.h"
 #include "torch_tpu/eager/custom_split.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/safe_materialization_rule.h"
 #include "torch_tpu/eager/split_utils.h"
 #include "torch_tpu/eager/traversal.h"
+#include "torch_tpu/ops/op_names.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
 
@@ -41,10 +43,40 @@ ABSL_FLAG(bool, torch_tpu_internal_safe_materialization_rule, true,
           "dropped or materialized sequentially.");
 namespace torch_tpu {
 
+namespace {
+
+// Split the graph at every point, except for ephemeral views and empty tensors.
+absl::flat_hash_set<const DeviceBufferList*> SplitAll(
+    const Traversal& traversal,
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs) {
+  absl::flat_hash_set<const DeviceBufferList*> split_points;
+  for (const auto& node : traversal.execution_order()) {
+    // We have to materialize all required outputs and all live tensors, even if
+    // they are views.
+    if (!node->is_stale() || required_outputs.contains(node.get())) {
+      split_points.insert(node.get());
+      continue;
+    }
+
+    const auto* deferred_op = node->deferred_op();
+    if (!deferred_op) continue;
+    const auto op_name = deferred_op->op_name();
+    if (op_name == OpName::kAsStrided || op_name == OpName::kAsStridedInverse ||
+        op_name == OpName::kEmpty || op_name == OpName::kEmptyMemoryFormat) {
+      continue;
+    }
+    split_points.insert(node.get());
+  }
+  return split_points;
+}
+
+}  // namespace
+
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 SplitTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs) {
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    EagerMode eager_mode) {
   ABSL_VLOG(1) << ">>> SplitTraversal " << traversal->execution_order().size();
   tsl::profiler::TraceMe t("SplitTraversal");
 
@@ -59,8 +91,11 @@ SplitTraversal(
   // Here we collect a set of nodes that should be split into separate
   // traversals.
   absl::flat_hash_set<const DeviceBufferList*> split_points;
-  if (GetFlagOnce<bool,
-                  &FLAGS_torch_tpu_internal_safe_materialization_rule>()) {
+  if (eager_mode == EagerMode::kDeferNever ||
+      eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
+    split_points = SplitAll(*traversal, required_outputs);
+  } else if (GetFlagOnce<
+                 bool, &FLAGS_torch_tpu_internal_safe_materialization_rule>()) {
     auto safe_rule = SafeMaterializationRule(required_outputs);
     split_points = safe_rule(*traversal);
   } else {

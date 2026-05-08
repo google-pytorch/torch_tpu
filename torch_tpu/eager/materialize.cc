@@ -46,6 +46,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/compilation.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dynamism_utils.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/flags.h"
@@ -339,9 +340,11 @@ class MaterializationWorker {
     LogDeferredNodes(task.nodes_to_materialize,
                      /* msg_prefix= */ "  Input node");
 
-    ABSL_VLOG(1) << "[MaterializationWorker] Getting leaf nodes";
+    const auto eager_mode = GetEagerMode();
+
     std::vector<SharedDeviceBufferList> all_nodes = task.nodes_to_materialize;
-    {
+    if (eager_mode == EagerMode::kDeferAndFuse) {
+      ABSL_VLOG(1) << "[MaterializationWorker] Getting leaf nodes";
       tsl::profiler::TraceMe t("AddLeafNodes");
       AddLeafNodes(all_nodes);
     }
@@ -376,7 +379,8 @@ class MaterializationWorker {
           required_outputs.insert(node.get());
         }
         TT_ASSIGN_OR_RETURN(
-            traversals, SplitTraversal(std::move(traversal), required_outputs));
+            traversals,
+            SplitTraversal(std::move(traversal), required_outputs, eager_mode));
       }
 
       ABSL_VLOG(1) << "[MaterializationWorker] Split traversal into "
@@ -388,12 +392,12 @@ class MaterializationWorker {
     TT_RETURN_IF_ERROR(
         PropagateBoundedDynamism(absl::MakeSpan(traversals), mlir_context));
 
+    const auto compilation_mode = (eager_mode == EagerMode::kDeferAndFuse)
+                                      ? CompilationMode::kFastRuntime
+                                      : CompilationMode::kFastCompile;
     std::vector<ExecutionTask> execution_tasks;
     for (auto& split_traversal : traversals) {
       ABSL_VLOG(1) << "[MaterializationWorker] Compiling traversal";
-      auto compilation_mode = (GetEagerMode() == EagerMode::kDeferAndFuse)
-                                  ? CompilationMode::kFastRuntime
-                                  : CompilationMode::kFastCompile;
       absl::StatusOr<CompiledKernel> compiled_kernel;
       {
         tsl::profiler::TraceMe t("CompileTraversal");
