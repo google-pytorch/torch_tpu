@@ -33,6 +33,7 @@ from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _tpu_backend_config
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import hardware
+
 # pylint: enable=g-import-not-at-top
 
 # Ensure that device is initialized exactly once
@@ -76,10 +77,72 @@ def _default_backend_selector(graph_module, example_inputs, **kwargs):
 # Monkeypatch torch.compile to default to TPU backend if available.
 @functools.wraps(_torch_compile)
 def _default_tpu_compile(*args, **kwargs):
+  """Wraps `torch.compile` to modify the default backend for TPU.
+
+  This function intercepts calls to `torch.compile` and modifies the default
+  behavior when no explicit backend is specified. If the backend is not
+  provided in kwargs, it defaults to using the '_default_backend_selector',
+  which will choose the "tpu" backend if available.
+
+  Furthermore, when the "tpu" backend is to be used and the `dynamic` kwarg is
+  not explicitly set, this wrapper defaults `dynamic` to False as the TPU
+  backend does not currently support dynamic shapes.
+
+  To avoid race conditions with the TPU backend initialization, the actual
+  call to the original `torch.compile` (with the potentially modified `backend`
+  and `dynamic` arguments) is deferred until the compiled model is first
+  invoked.
+
+  This wrapper handles both direct calls to `torch.compile(model, ...)` and its
+  use as a decorator (`@torch.compile`).
+
+  Args:
+    *args: Positional arguments passed to torch.compile.
+    **kwargs: Keyword arguments passed to torch.compile.
+  """
 
   # If an explicit backend is not specified, use DefaultBackendSelector.
   if "backend" not in kwargs:
-    kwargs["backend"] = _default_backend_selector
+
+    def get_compiled_model(model, *c_args, **c_kwargs):
+      if hasattr(torch, "tpu") and "dynamic" not in c_kwargs:
+        c_kwargs["dynamic"] = False
+      c_kwargs["backend"] = _default_backend_selector
+      return _torch_compile(model, *c_args, **c_kwargs)
+
+    # If we have positional args then we know this is not a call via the
+    # @torch.compile annotation. In this case we do not need to return a new
+    # decorator function.
+    if args:
+      model = args[0]
+      remaining_args = args[1:]
+
+      compiled_model = None
+
+      @functools.wraps(model)
+      def lazy_wrapper(*model_args, **model_kwargs):
+        nonlocal compiled_model
+        if compiled_model is None:
+          compiled_model = get_compiled_model(model, *remaining_args, **kwargs)
+        return compiled_model(*model_args, **model_kwargs)
+
+      return lazy_wrapper
+    else:
+
+      def decorator(model):
+        compiled_model = None
+
+        @functools.wraps(model)
+        def lazy_wrapper(*model_args, **model_kwargs):
+          nonlocal compiled_model
+          if compiled_model is None:
+            compiled_model = get_compiled_model(model, *args, **kwargs)
+          return compiled_model(*model_args, **model_kwargs)
+
+        return lazy_wrapper
+
+      return decorator
+
   return _torch_compile(*args, **kwargs)
 
 

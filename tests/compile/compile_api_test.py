@@ -16,7 +16,9 @@
 
 from typing import TypeAlias
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
+from torch_tpu import _loader as loader
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
@@ -26,6 +28,26 @@ EagerMode: TypeAlias = execution_mode.EagerMode
 
 @torch.compile
 def global_compile_plus_one(x):
+  return x + 1
+
+
+@torch.compile
+def global_compile_dynamic_none(x):
+  return x + 1
+
+
+@torch.compile(dynamic=True)
+def global_compile_dynamic_true(x):
+  return x + 1
+
+
+@torch.compile(dynamic=False)
+def global_compile_dynamic_false(x):
+  return x + 1
+
+
+@torch.compile(dynamic=None)
+def global_compile_explicit_dynamic_none(x):
   return x + 1
 
 
@@ -48,8 +70,13 @@ def eager_mode_defer_all():
   return execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL)
 
 
+# Sentinel object to distinguish between "omitted" and "explicitly passed as
+# None" in parameterized tests.
+_MISSING = object()
+
+
 # TODO: add more test coverage for the direct compile API.
-class CompileApiTest(absltest.TestCase):
+class CompileApiTest(parameterized.TestCase):
 
   def test_build_mlir(self):
     with eager_mode_defer_all():
@@ -99,6 +126,91 @@ class CompileApiTest(absltest.TestCase):
       torch.compile(lambda arg: arg + 1)(x)
 
       mock_lookup_backend.assert_called_with('tpu')
+
+  @parameterized.named_parameters(
+      # Direct compilation
+      dict(
+          testcase_name='direct_defaults_to_false',
+          style='direct',
+          expected_dynamic=False,
+          explicit_dynamic=_MISSING,
+      ),
+      dict(
+          testcase_name='direct_respects_true',
+          style='direct',
+          expected_dynamic=True,
+          explicit_dynamic=True,
+      ),
+      dict(
+          testcase_name='direct_respects_false',
+          style='direct',
+          expected_dynamic=False,
+          explicit_dynamic=False,
+      ),
+      dict(
+          testcase_name='direct_explicit_none',
+          style='direct',
+          expected_dynamic=None,
+          explicit_dynamic=None,
+      ),
+      # Decorator compilation
+      dict(
+          testcase_name='decorator_defaults_to_false',
+          style='decorator',
+          expected_dynamic=False,
+          decorator_fn=global_compile_dynamic_none,
+      ),
+      dict(
+          testcase_name='decorator_respects_true',
+          style='decorator',
+          expected_dynamic=True,
+          decorator_fn=global_compile_dynamic_true,
+      ),
+      dict(
+          testcase_name='decorator_respects_false',
+          style='decorator',
+          expected_dynamic=False,
+          decorator_fn=global_compile_dynamic_false,
+      ),
+      dict(
+          testcase_name='decorator_explicit_none',
+          style='decorator',
+          expected_dynamic=None,
+          decorator_fn=global_compile_explicit_dynamic_none,
+      ),
+  )
+  def test_compile_dynamic_behavior(
+      self,
+      style,
+      expected_dynamic,
+      explicit_dynamic=_MISSING,
+      decorator_fn=None,
+  ):
+
+    def dummy_compiled(model, *args, **kwargs):
+      del model, args, kwargs
+      return lambda x: x
+
+    with absltest.mock.patch.object(
+        loader, '_torch_compile', side_effect=dummy_compiled
+    ) as mock_torch_compile:
+      mock_torch_compile.assert_not_called()
+
+      if style == 'direct':
+        kwargs = {}
+        if explicit_dynamic is not _MISSING:
+          kwargs['dynamic'] = explicit_dynamic
+        compiled = torch.compile(lambda arg: arg + 1, **kwargs)
+        compiled(torch.ones(10, device='tpu'))
+      elif style == 'decorator':
+        decorator_fn(torch.ones(10, device='tpu'))
+      else:
+        raise ValueError(f'Unknown style: {style}')
+
+      mock_torch_compile.assert_called_once()
+      unused_args, kwargs = mock_torch_compile.call_args
+      self.assertIn('dynamic', kwargs)
+      self.assertEqual(kwargs['dynamic'], expected_dynamic)
 
   def test_global_compile_decorator_backend_defaults_to_tpu(self):
     with get_mock_lookup_backend() as mock_lookup_backend:
