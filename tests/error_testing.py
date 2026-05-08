@@ -24,6 +24,7 @@ from absl.testing import absltest
 import torch
 from torch.distributed.elastic.multiprocessing import errors
 import torch.multiprocessing as mp
+from torch_tpu._internal import sync
 from torch_tpu._internal import testing as tt_testing
 
 
@@ -382,11 +383,17 @@ class ErrorTestBase(absltest.TestCase):
     tt_testing.set_op_dispatch_failure("", "")
 
   def tearDown(self):
-    # Error tests sometimes force op dispatch failures. We reset the forced
-    # op dispatch failures in setUp() and tearDown() to avoid influencing
-    # other tests.
-    tt_testing.set_op_dispatch_failure("", "")
-    super().tearDown()
+    try:
+      # Ensure any pending deferred ops are materialized to avoid leakage into
+      # the next test in the same process.
+      sync.synchronize(wait=True)
+    finally:
+      # Error tests sometimes force op dispatch failures. We reset the forced
+      # op dispatch failures in setUp() and tearDown() to avoid influencing
+      # other tests. This must be in a finally block to ensure it runs even if
+      # synchronize raises an exception.
+      tt_testing.set_op_dispatch_failure("", "")
+      super().tearDown()
 
 
 class TpuOnlyErrorTestBase(ErrorTestBase):

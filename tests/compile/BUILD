@@ -149,6 +149,7 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
     ],
 )

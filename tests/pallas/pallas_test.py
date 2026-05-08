@@ -24,6 +24,7 @@ import torch
 from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
+from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -122,6 +123,12 @@ class TestPallasKernels(absltest.TestCase):
   def setUp(self):
     super().setUp()
     self.device = torch.device("tpu")
+
+  def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
+    super().tearDown()
 
   def _assert_donated(self, x: torch.Tensor):
     with self.assertRaisesRegex(

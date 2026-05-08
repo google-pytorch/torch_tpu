@@ -18,6 +18,7 @@ from absl.testing import parameterized
 import torch
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
 from tests import op_testing
 
@@ -72,6 +73,9 @@ class DynamismApiTest(absltest.TestCase):
     execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
 
   def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
 
@@ -175,6 +179,9 @@ class DynamismTest(parameterized.TestCase):
     execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
 
   def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
 

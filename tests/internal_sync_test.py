@@ -32,6 +32,9 @@ class InternalSyncTest(absltest.TestCase):
     execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
 
   def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
 

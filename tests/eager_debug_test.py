@@ -16,12 +16,24 @@ from typing import TypeAlias
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import sync
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 class EagerDebugTest(absltest.TestCase):
   """Test for eager debug feature."""
+
+  def setUp(self):
+    super().setUp()
+    self.old_eager_mode = execution_mode.eager_mode
+
+  def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
+    execution_mode.eager_mode = self.old_eager_mode
+    super().tearDown()
 
   def test_failing_op_raises_in_correct_location(self):
     """Test that failing ops are not deferred."""

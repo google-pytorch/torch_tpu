@@ -476,7 +476,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_cummax_dimension_size_limit(self):
     """Tests cummax fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
-    t = torch.empty(2**31, dtype=torch.float32, device=et.device())
+    t = torch.empty(2**31, dtype=torch.int8, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
         tpu="""cummax_helper(): expected dimension size to be less than or equal to 2147483647, got 2147483648""",
@@ -487,7 +487,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_cummin_dimension_size_limit(self):
     """Tests cummin fails if dimension size has > 2^31-1 elements."""
     # Create an empty tensor with shape 2**31
-    t = torch.empty(2**31, dtype=torch.float32, device=et.device())
+    t = torch.empty(2**31, dtype=torch.int8, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
         tpu="""cummin_helper(): expected dimension size to be less than or equal to 2147483647, got 2147483648""",
@@ -542,7 +542,9 @@ Please use clone() or contiguous() to copy the tensor before writing""",
   def test_max_pool2d_with_indices_input_too_large(self):
     """Tests max_pool2d_with_indices fails if input has > 2^31-1 elements."""
     # h * w = 2^15 * 2^16 = 2^31, exceeding the ui32 index limit 2^31 - 1
-    t = torch.empty(1, 1, 2**15, 2**16, dtype=torch.float32, device=et.device())
+    t = torch.empty(
+        1, 1, 2**15, 2**16, dtype=torch.bfloat16, device=et.device()
+    )
     with et.assert_raises_message(
         RuntimeError,
         tpu=re.compile(

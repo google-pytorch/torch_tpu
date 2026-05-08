@@ -22,10 +22,17 @@ from absl.testing import absltest
 import torch
 from torch.testing._internal import common_utils
 from torch_tpu._internal import execution_mode as em
+from torch_tpu._internal import sync
 
 
 class TpuBackendConfigTest(absltest.TestCase, common_utils.TestCase):
   """Tests for torch.backends.tpu related configs."""
+
+  def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
+    super().tearDown()
 
   def test_allow_excess_precision_backend(self):
     """Tests torch.backends.tpu.allow_excess_precision."""

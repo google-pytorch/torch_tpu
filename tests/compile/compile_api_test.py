@@ -18,6 +18,7 @@ from typing import TypeAlias
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
 
@@ -50,6 +51,12 @@ def eager_mode_defer_all():
 
 # TODO: add more test coverage for the direct compile API.
 class CompileApiTest(absltest.TestCase):
+
+  def tearDown(self):
+    # Ensure any pending deferred ops are materialized to avoid leakage into the
+    # next test in the same process.
+    sync.synchronize(wait=True)
+    super().tearDown()
 
   def test_build_mlir(self):
     with eager_mode_defer_all():

@@ -524,6 +524,7 @@ torch_tpu_py_library(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal:testing",
+        "//torch_tpu/_internal/sync",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
 )
@@ -875,6 +876,7 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/utils",
     ],
 )
@@ -952,6 +954,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
     ],
 )
 
@@ -1078,6 +1081,7 @@ torch_tpu_py_test(
         "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
     ],
 )
 
@@ -1092,6 +1096,7 @@ torch_tpu_py_test(
         "//shims/torch:testing_internal",
         "//torch_tpu",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/_internal/sync",
     ],
 )
 
