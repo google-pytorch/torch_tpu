@@ -16,10 +16,9 @@
 
 from collections.abc import Mapping
 import operator
-from absl import logging
 import sympy
 import torch
-
+from torch_tpu._internal.compile import logging
 
 CUSTOM_SYMPY_FUNCS = {
     "FloorDiv": operator.floordiv,

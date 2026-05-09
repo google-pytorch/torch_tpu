@@ -728,6 +728,32 @@ class FunctionTest(absltest.TestCase):
     # The values should be the same as well.
     utils.assert_close(actual=result.cpu(), expected=expected)
 
+  @mock.patch.dict(os.environ, {"TORCH_TPU_INTERNAL_LOG_COMPILE": "1"})
+  @mock.patch(
+      "torch_tpu._internal.compile._backend.logging.info", autospec=True
+  )
+  def test_compile_debug_logging_with_env_var(self, mock_logging_info):
+    def simple(x, y):
+      return x + y
+
+    inputs = [
+        torch.tensor([0.1, 0.2]),
+        torch.tensor([0.4, 0.5]),
+    ]
+    tpu_backend = compile_lib.TpuBackend(debug=False)
+    compiled = torch.compile(simple, backend=tpu_backend)
+    inputs_tpu = _backend.to_device(inputs, torch.device("tpu"))
+    compiled(*inputs_tpu)
+
+    self.assertTrue(mock_logging_info.called)
+    called_args = [
+        call.args[0] for call in mock_logging_info.call_args_list if call.args
+    ]
+    self.assertTrue(
+        any("Graph:" in arg for arg in called_args),
+        f"Expected 'Graph:' in logs, got {called_args}",
+    )
+
 
 class ModuleTest(absltest.TestCase):
 

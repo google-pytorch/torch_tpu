@@ -36,7 +36,6 @@ import functools
 import hashlib
 from typing import Any, TypeAlias
 
-from absl import logging
 import torch
 from torch._dynamo.backends.common import aot_autograd
 from torch._functorch._aot_autograd import autograd_cache as _autograd_cache
@@ -46,6 +45,7 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import logging
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
 
@@ -244,6 +244,7 @@ def _log_gm_and_inputs(
   inputs_chunks = _split_str_for_logging(str(utils.InputMetadata(inputs)))
   gm_chunks = _split_str_for_logging(gm.print_readable(print_output=False))
   preamble = f"[TpuBackend.{loc}] {pre_or_post}-AOT Autograd"
+
   logging.debug("%s Graph:", preamble)
   for c in gm_chunks:
     logging.debug(c)

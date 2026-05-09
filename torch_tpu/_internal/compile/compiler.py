@@ -26,7 +26,6 @@ import dataclasses
 import operator
 from typing import Any, TypeAlias
 
-from absl import logging
 import torch
 from torch._dynamo.utils import dynamo_timed
 from torch._functorch._aot_autograd.schemas import AOTDispatchCompiler
@@ -39,6 +38,7 @@ from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
+from torch_tpu._internal.compile import logging
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants

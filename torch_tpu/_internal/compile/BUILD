@@ -21,11 +21,19 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "logging",
+    srcs = ["logging.py"],
+    deps = [
+        "//shims/absl_py/logging",
+    ],
+)
+
+torch_tpu_py_library(
     name = "compiler",
     srcs = ["compiler.py"],
     deps = [
+        ":logging",
         ":tpu_torch_compile",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
@@ -46,9 +54,9 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":logging",
         ":tpu_backend",
         ":tpu_torch_compile",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
 )
@@ -64,7 +72,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
-        "//shims/absl_py/logging",
+        ":logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
         "//torch_tpu/_internal/utils",

@@ -17,12 +17,12 @@
 from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
-from absl import logging
 import torch
 from torch._inductor.utils import InputType
 from torch._logging import LazyString
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import logging
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic.dynamic_adapters import DynamicAdapterLinearHypothesis
 from torch_tpu._internal.compile.dynamic.dynamic_adapters import ShapeBoundInfo

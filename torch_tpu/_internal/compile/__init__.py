@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from absl import logging
 import torch
 from torch._dynamo import decorators
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
+from torch_tpu._internal.compile import logging
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile._backend import TpuBackend
 

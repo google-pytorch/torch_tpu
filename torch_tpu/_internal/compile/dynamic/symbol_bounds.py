@@ -15,10 +15,10 @@
 """Determine bounds of symbolic integers."""
 
 from __future__ import annotations
-from absl import logging
 import sympy
 import torch
 from torch.utils._sympy.numbers import int_oo
+from torch_tpu._internal.compile import logging
 
 
 def _is_valid_bound(s: sympy.Expr) -> bool:

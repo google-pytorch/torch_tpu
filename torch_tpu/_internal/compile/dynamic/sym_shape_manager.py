@@ -18,10 +18,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import dataclasses
 from typing import Any
-from absl import logging
 import sympy
 import torch
 from torch.utils import _pytree
+from torch_tpu._internal.compile import logging
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
 

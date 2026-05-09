@@ -23,8 +23,8 @@ torch_tpu_py_library(
     name = "symbol_bounds",
     srcs = ["symbol_bounds.py"],
     deps = [
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile:logging",
         "@pypi//sympy",
     ],
 )
@@ -33,8 +33,8 @@ torch_tpu_py_library(
     name = "sym_utils",
     srcs = ["sym_utils.py"],
     deps = [
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile:logging",
         "@pypi//sympy",
     ],
 )
@@ -60,8 +60,8 @@ torch_tpu_py_library(
     deps = [
         ":sym_utils",
         ":symbol_bounds",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile:logging",
         "@pypi//sympy",
     ],
 )
@@ -100,9 +100,9 @@ torch_tpu_py_library(
         ":graph_transformations",
         ":sym_shape_manager",
         ":symbol_bounds",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:compiler",
+        "//torch_tpu/_internal/compile:logging",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
     ],
 )
