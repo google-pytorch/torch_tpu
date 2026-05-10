@@ -56,6 +56,7 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/unary.h"
+#include "torch_tpu/ops/unary_aten_kernels.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
@@ -250,6 +251,24 @@ absl::StatusOr<mlir::MlirOp> BuildAlphaMulShlo(mlir::MlirOp other_op,
   TT_ASSIGN_OR_RETURN((auto [broadcasted_other, broadcasted_alpha]),
                       ApplyBroadcastIfNeeded(other_op, casted_alpha_op));
   return BuildMulShlo(broadcasted_other, broadcasted_alpha);
+}
+
+// Builds the StableHLO sequence for Add + Relu operation: Relu(self + other).
+absl::StatusOr<mlir::MlirOp> BuildAddReluShlo(mlir::MlirOp self_op,
+                                              mlir::MlirOp other_op) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp add_op, BuildAddShlo(self_op, other_op));
+  return BuildReluShlo(add_op);
+}
+
+// Builds the StableHLO sequence for Alpha-scaled Add + Relu operation:
+// Relu(self + alpha * other).
+absl::StatusOr<mlir::MlirOp> BuildAlphaAddReluShlo(mlir::MlirOp self_op,
+                                                   mlir::MlirOp other_op,
+                                                   mlir::MlirOp alpha_op) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mul_op,
+                      BuildAlphaMulShlo(other_op, alpha_op));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp add_op, BuildAddShlo(self_op, mul_op));
+  return BuildReluShlo(add_op);
 }
 
 struct DivOpOptions {
@@ -611,21 +630,25 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
                            const at::Scalar& alpha, at::Tensor& out) {
-  auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha = PromoteScalar(alpha).AvoidPromoting(
+      ScalarValue::kOne, ScalarValue::kZero);
   TT_KERNEL(
       OpName::kAddReluOut, param_keys, (self, other, promoted_alpha, out), {
         TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
 
+        // As an optimization, if alpha is 0, skip computing the addition
+        // entirely and just compute Relu(self).
+        if (promoted_alpha.IsZero()) {
+          TT_THROW_IF_ERROR(
+              UnaryOpOut(self, out, BuildReluShlo,
+                         {.op_param_cache_keys = std::move(param_keys)}));
+          return out;
+        }
+
         // As an optimization, skip the scaling if alpha is 1.
         if (promoted_alpha.IsOne()) {
-          auto op_builder =
-              [](mlir::MlirOp self_op,
-                 mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-            TT_ASSIGN_OR_RETURN(auto add_op, BuildAddShlo(self_op, other_op));
-            return BuildReluShlo(add_op);
-          };
           TT_THROW_IF_ERROR(
-              BinaryOpOut(self, other, out, std::move(op_builder),
+              BinaryOpOut(self, other, out, BuildAddReluShlo,
                           {.op_param_cache_keys = std::move(param_keys)}));
           return out;
         }
@@ -633,17 +656,8 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
                            promoted_alpha.GetTensor(out.scalar_type()));
 
-        auto op_builder =
-            [](mlir::MlirOp self_op, mlir::MlirOp other_op,
-               mlir::MlirOp alpha_op) -> absl::StatusOr<mlir::MlirOp> {
-          TT_ASSIGN_OR_RETURN(auto mul_op,
-                              BuildAlphaMulShlo(other_op, alpha_op));
-          TT_ASSIGN_OR_RETURN(auto add_op, BuildAddShlo(self_op, mul_op));
-          return BuildReluShlo(add_op);
-        };
-
         TT_THROW_IF_ERROR(
-            TernaryOpOut(self, other, alpha_tensor, out, std::move(op_builder),
+            TernaryOpOut(self, other, alpha_tensor, out, BuildAlphaAddReluShlo,
                          {.op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
@@ -651,18 +665,46 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor AtenAddReluScalar(const at::Tensor& self, const at::Scalar& other,
                              const at::Scalar& alpha) {
-  TT_KERNEL(OpName::kAddReluScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage"),
-             IgnoreInCacheKey(alpha, "Legacy usage")),
-            {
-              at::ScalarType promoted_scalar_type =
-                  at::result_type(self, other);
-              at::Tensor out = MakeEmptyTensor(
-                  self.sizes(), promoted_scalar_type, self.device());
-              TT_ASSIGN_OR_THROW(auto wrapped_other, MakeTensor(other));
-              AtenAddReluOut(self, wrapped_other, alpha, out);
-              return out;
-            });
+  PromotedScalar promoted_other = PromoteScalar(other);
+  MaybePromotedScalar promoted_alpha = PromoteScalar(alpha).AvoidPromoting(
+      ScalarValue::kOne, ScalarValue::kZero);
+  TT_KERNEL(
+      OpName::kAddReluScalar, param_keys,
+      (self, promoted_other, promoted_alpha), {
+        TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
+
+        const at::ScalarType promoted_scalar_type =
+            at::result_type(self, other);
+        at::Tensor out =
+            MakeEmptyTensor(self.sizes(), promoted_scalar_type, self.device());
+
+        // As an optimization, if alpha is 0, skip computing the addition
+        // entirely and just compute Relu(self).
+        if (promoted_alpha.IsZero()) {
+          TT_THROW_IF_ERROR(
+              UnaryOpOut(self, out, BuildReluShlo,
+                         {.op_param_cache_keys = std::move(param_keys)}));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(const at::Tensor other_tensor,
+                           promoted_other.GetTensor(promoted_scalar_type));
+
+        if (promoted_alpha.IsOne()) {
+          TT_THROW_IF_ERROR(
+              BinaryOpOut(self, other_tensor, out, BuildAddReluShlo,
+                          {.op_param_cache_keys = std::move(param_keys)}));
+          return out;
+        }
+
+        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
+                           promoted_alpha.GetTensor(promoted_scalar_type));
+
+        TT_THROW_IF_ERROR(TernaryOpOut(
+            self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
+            {.op_param_cache_keys = std::move(param_keys)}));
+        return out;
+      });
 }
 
 at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
