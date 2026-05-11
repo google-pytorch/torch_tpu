@@ -31,18 +31,16 @@ def _(mo):
   mo.md(r"""
     # Distributed Training 101: Scaling to Multiple Cores
 
-    Scaling from a single TPU core to an 8-core VM (or a multi-host Pod) is one
-    of the primary reasons to use TPUs. TorchTPU handles this via a SPMD (Single
-    Program, Multiple Data) model.
+    This section covers how to train up to 8 TPUs on a single host. TorchTPU support both MPMD (Multiple Program, Multiple Data) and SPMD workloads.
 
-    > ** This is a distributed training example.** The code in this notebook is for **reference only** and cannot be executed interactively. Distributed code requires a process launcher (like `torchrun`) to manage multiple processes, which is not supported within a single notebook kernel.
+    > **This is a distributed training example.** The code in this notebook is for **reference only** and cannot be executed interactively. Distributed code requires a process launcher (like `torchrun`) to manage multiple processes, which is not supported within a single notebook kernel.
     >
     > To run these examples, copy the code into a `.py` file and follow the execution instructions in Section 3.
 
     In this tutorial, you will learn:
     1.  **The `torchrun` Orchestrator**: Distributed execution on the TPU mesh.
     2.  **The Worker Function**: Initializing DDP and the TPU backend.
-    3.  **Launching & "Strict Sync"**: Executing the script and avoiding deadlocks.
+    3.  **Launching**: Executing the script safely.
     """)
   return
 
@@ -50,9 +48,9 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## 1. The `torchrun` Orchestrator
+    ## 1. Model
 
-    The current best practice for distributed training is to use standard PyTorch `torchrun`. On TPU, this is combined with the `singlehost_wrapper` (which we'll cover in Section 3) to initialize the TPU mesh and slice builder ports before the workers are spawned.
+    The current best practice for distributed training is to use standard PyTorch `torchrun`. On TPU, this is combined with a launch wrapper (covered in Section 3) to initialize the TPUs before the workers are spawned.
     """)
   return
 
@@ -86,7 +84,13 @@ def _(mo):
     ## 2. The Worker Function
 
     The `main` function contains the logic that will execute on *every* rank.
-    **Crucial Difference:** On TPU, each process only "sees" its assigned core as `tpu:0`. We do not pass `device_ids` to DDP.
+
+    **Crucial Differences from GPU:**
+    1.  **Process Isolation:** Unlike GPUs where all processes can see all available devices, on TPU, each process *only* sees the single TPU core it has been assigned.
+    2.  **Device Indexing:** Because a process only sees one core, the device index is always `0` (i.e., `tpu:0`), regardless of the process's rank.
+    3.  **Process Group Backend:** When initializing the distributed process group, use `backend="tpu_dist"` instead of the standard `nccl` or `gloo`.
+
+    Because of this, we **do not** pass `device_ids` to the DDP constructor.
     """)
   return
 
@@ -95,42 +99,50 @@ def _(mo):
 def _(DDP, ToyModel, api, dist, nn, optim, torch):
   def main():
     # 1. Discover hardware for this process
-    # This also registers the "tpu_dist" backend
-    device = api.tpu_device()
+    # This initializes the TPU and makes the "tpu" device string available.
+    api.tpu_device()
 
-    # 2. Initialize process group with tpu_dist backend
-    if not dist.is_initialized():
-      dist.init_process_group(backend="tpu_dist")
+    # 2. Initialize process group
+    # Crucial Difference: Use "tpu_dist" instead of "nccl" or "gloo"
+    dist.init_process_group(backend="tpu_dist")
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     print(f"Initializing Rank {rank}/{world_size}")
 
     # 3. Move model to TPU and wrap in DDP
-    # Note: On TPU, we don't pass device_ids to DDP
-    model = ToyModel().to("tpu").to(torch.bfloat16)
+    # Note: On TPU, we do NOT pass device_ids to DDP. Passing device_ids may cause errors.
+    model = ToyModel().to("tpu")
     ddp_model = DDP(model)
 
     loss_fn = nn.MSELoss()
     optimizer = optim.SGD(ddp_model.parameters(), lr=0.001)
 
     # 4. Training Step with dummy data
-    # Ensure inputs/labels match the model's bfloat16 dtype
-    inputs = torch.randn(20, 10).to(device).to(torch.bfloat16)
-    labels = torch.randn(20, 5).to(device).to(torch.bfloat16)
+    inputs = torch.randn(20, 10, device="tpu")
+    labels = torch.randn(20, 5, device="tpu")
 
-    optimizer.zero_grad()
-    outputs = ddp_model(inputs)
-    loss = loss_fn(outputs, labels)
-    loss.backward()
-    optimizer.step()
+    # Initialize loss accumulator on device to avoid stalling the CPU
+    epoch_loss = torch.zeros((), device="tpu")
 
-    # 5. Mandatory Materialization Trigger
-    # This ensures all ranks stay in lock-step
-    current_loss = loss.item()
+    for step in range(5):
+      optimizer.zero_grad()
+      outputs = ddp_model(inputs)
+      loss = loss_fn(outputs, labels)
+      loss.backward()
+      optimizer.step()
 
-    print(f"Rank {rank} Step Complete. Loss: {current_loss:.4f}")
-    dist.destroy_process_group()
+      # Detach the loss tensor and accumulate on TPU
+      epoch_loss += loss.detach()
+
+      # 5. Materialization Trigger
+      # Bring the aggregated loss back to CPU once at the end
+      avg_loss = (epoch_loss / 5).item()
+
+      print(f"Rank {rank} Step Complete. Average Loss: {avg_loss:.4f}")
+      dist.destroy_process_group()
+
+    return
 
   return
 
@@ -140,24 +152,15 @@ def _(mo):
   mo.md(r"""
     ## 3. Launching the Workers
 
-    Finally, we execute the script using `torchrun` and the `singlehost_wrapper` from the command line. This setup is mandatory as it defines the hardware topology before the PyTorch processes start.
+    Finally, we execute the script using `torchrun` and the `singlehost_wrapper` from the command line.
+
+    *Note: The `_internal` wrapper is used to automatically configure the necessary environment variables for distributed execution on TPU. For more details on what these variables are doing under the hood, see the [Environment Variables](?file=environment_variables.py) reference.*
 
     ```bash
     # Run this in your TPU VM terminal:
     eval $(python -m torch_tpu._internal.distributed.launchers.singlehost_wrapper | sed 's/^/export /')
     torchrun --nproc_per_node=$WORLD_SIZE your_script.py
     ```
-    """)
-  return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-  mo.md(r"""
-    ###  Golden Rules of Distributed TPU
-    1.  **Never Diverge**: Avoid `if rank == 0` blocks around operations that trigger materialization (like `.item()`). If one rank runs ahead, the mesh deadlocks.
-    2.  **Shared Seeds**: Ensure all ranks start with the same weights by using a shared seed.
-    3.  **Flush at Exit**: Call `torch.tpu.manual_seed_all(0)` after your loop finishes to ensure the final weight update is executed.
     """)
   return
 
