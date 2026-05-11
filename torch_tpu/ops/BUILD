@@ -325,6 +325,7 @@ torch_tpu_cc_library(
         ":op_names",
         ":python_context",
         ":unary",
+        ":unary_aten_kernels",
         ":xla_utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
