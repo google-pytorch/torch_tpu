@@ -33,8 +33,6 @@ from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 
-EagerMode: TypeAlias = execution_mode.EagerMode
-
 
 # A tolerance value can be either a float or a callable that takes the expected
 # value as the only argument and returns the tolerance to use for comparing
@@ -669,9 +667,11 @@ def format_model(
       mlir_text = torch_tpu_export.exported_to_mlir(exported).serialize_text()
       result += mlir_text + "\n"
     else:
-      with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
-        results = model(*input_tensors)
+      with execution_mode.eager_mode(
+          execution_mode.EagerMode.INTERNAL_DEFER_ALL
+      ):
 
+        results = model(*input_tensors)
       shlo = sync.computation_mlir(results)
       result += shlo + "\n"
 

@@ -20,7 +20,7 @@ import functools
 import gc
 import os
 import sys
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeAlias, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 
 from absl import flags
 from absl import logging
@@ -36,8 +36,6 @@ from examples.benchmarks.e2e import model_utils
 from tests.distributed import distributed_utils
 
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 log_utils.log_to_stderr()
 
@@ -150,18 +148,18 @@ def _run_mode_context(run_mode: benchmark_utils.RunMode, device: torch.device):
   Yields:
     None
   """
-  original_eager_mode = execution_mode.eager_mode
+  original_eager_mode = execution_mode.get_eager_mode()
   new_eager_mode = None
 
   match run_mode:
     case benchmark_utils.RunMode.EAGER_DEFAULT:
-      new_eager_mode = EagerMode.DEFER_NEVER
+      new_eager_mode = execution_mode.EagerMode.DEFER_NEVER
 
     case benchmark_utils.RunMode.EAGER_OPTIMIZED:
-      new_eager_mode = EagerMode.DEFER_AND_FUSE
+      new_eager_mode = execution_mode.EagerMode.DEFER_AND_FUSE
 
     case benchmark_utils.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING:
-      new_eager_mode = EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+      new_eager_mode = execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
 
     case benchmark_utils.RunMode.COMPILED:
       pass  # Explicitly do nothing
@@ -170,13 +168,13 @@ def _run_mode_context(run_mode: benchmark_utils.RunMode, device: torch.device):
       raise ValueError(f"Unexpected run mode: {run_mode}")
 
   if new_eager_mode is not None:
-    execution_mode.eager_mode = new_eager_mode
+    execution_mode.set_eager_mode(new_eager_mode)
 
   try:
     yield
   finally:
     # Change back to the original value.
-    execution_mode.eager_mode = original_eager_mode
+    execution_mode.set_eager_mode(original_eager_mode)
     # pylint: disable=protected-access
     device_utils.clear_cache(device.type)
     if benchmark_utils.is_torch_compile(run_mode):

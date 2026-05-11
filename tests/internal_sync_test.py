@@ -14,25 +14,22 @@
 
 import os
 import re
-from typing import TypeAlias
 
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 
-EagerMode: TypeAlias = execution_mode.EagerMode
-
 
 class InternalSyncTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+    self.old_eager_mode = execution_mode.get_eager_mode()
+    execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE)
 
   def tearDown(self):
-    execution_mode.eager_mode = self.old_eager_mode
+    execution_mode.set_eager_mode(self.old_eager_mode)
     super().tearDown()
 
   def test_sync_no_wait_tensor(self):

@@ -15,7 +15,7 @@
 """Tests error handling on TPU only."""
 
 import re
-from typing import Any, TypeAlias
+from typing import Any
 import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -26,8 +26,6 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def setUpModule():
@@ -1214,7 +1212,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       tpu_torch_compile.get_pad_module_mlir(tensor_info, bounds_list)
 
   def test_execute_output_shapes_too_many(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1229,7 +1227,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       tpu_torch_compile.execute(executable, [x, y], [[5], [5]])
 
   def test_execute_output_shapes_rank_mismatch(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1244,7 +1242,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       tpu_torch_compile.execute(executable, [x, y], [[5, 2]])
 
   def test_execute_output_shapes_exceeds_bound(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y

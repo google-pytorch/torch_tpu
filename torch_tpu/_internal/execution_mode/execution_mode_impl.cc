@@ -27,18 +27,18 @@ namespace py = pybind11;
 PYBIND11_MODULE(execution_mode_impl, m) {
   py::enum_<EagerMode>(m, "EagerMode")
       .value("DEFER_AND_FUSE", EagerMode::kDeferAndFuse)
+      .value("INTERNAL_DEFER_ALL", EagerMode::kInternalDeferAll)
       .value("DEFER_NEVER", EagerMode::kDeferNever)
       .value("DEFER_NEVER_AND_LAUNCH_BLOCKING",
              EagerMode::kDeferNeverAndLaunchBlocking)
-      .value("INTERNAL_DEFER_ALL", EagerMode::kInternalDeferAll)
       .export_values();
 
-  m.def("_get_eager_mode", GetEagerMode);
-  m.def("_set_eager_mode", SetEagerMode, py::arg("eager_mode"));
+  m.def("get_eager_mode", GetEagerMode);
+  m.def("set_eager_mode", SetEagerMode, py::arg("eager_mode"));
   m.def("_push_eager_mode", &PushContextState<EagerModeContextState>,
-        "Internal push for `execution_eager_mode` context manager.");
+        "Internal push for context manager");
   m.def("_pop_eager_mode", &PopContextState<EagerModeContextState>,
-        "Internal pop for `execution_eager_mode` context manager.");
+        "Internal pop for context manager");
 
   m.def("_enable_cpu_fallback", EnableCpuFallback, py::arg("enabled"));
   m.def("_is_cpu_fallback_enabled", IsCpuFallbackEnabled);

@@ -14,13 +14,10 @@
 
 """Tests that automatic mixed precision (AMP)/torch.autocast works on TPU."""
 
-from typing import TypeAlias
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 class AmpTest(absltest.TestCase):
@@ -74,7 +71,7 @@ class AmpTest(absltest.TestCase):
 
     # Run the forward pass to get the loss.
     # Use DeferAll mode so that we can inspect the MLIR as well.
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL):
       loss = model(x, y, actual_dtypes)
 
     # Check that the dtypes are as expected for AMP.

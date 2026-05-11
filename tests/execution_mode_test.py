@@ -17,17 +17,14 @@
 import concurrent
 import random
 import threading
-from typing import TypeAlias
 
 from absl.testing import absltest
 from torch_tpu._internal import execution_mode
 
-EagerMode: TypeAlias = execution_mode.EagerMode
-
 _EAGER_MODES = [
-    EagerMode.DEFER_AND_FUSE,
-    EagerMode.DEFER_NEVER,
-    EagerMode.INTERNAL_DEFER_ALL,
+    execution_mode.EagerMode.DEFER_AND_FUSE,
+    execution_mode.EagerMode.DEFER_NEVER,
+    execution_mode.EagerMode.INTERNAL_DEFER_ALL,
 ]
 
 
@@ -36,64 +33,68 @@ class ExecutionModeTest(absltest.TestCase):
 
   def test_eager_mode_nested_context(self):
     """Tests that nested context managers override each other correctly."""
-    prev_mode = execution_mode.eager_mode
+    prev_mode = execution_mode.get_eager_mode()
     try:
-      execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+      execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE)
       self.assertEqual(
-          execution_mode.eager_mode,
-          EagerMode.DEFER_AND_FUSE,
+          execution_mode.get_eager_mode(),
+          execution_mode.EagerMode.DEFER_AND_FUSE,
       )
 
-      with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      with execution_mode.eager_mode(execution_mode.EagerMode.DEFER_NEVER):
         self.assertEqual(
-            execution_mode.eager_mode,
-            EagerMode.DEFER_NEVER,
+            execution_mode.get_eager_mode(),
+            execution_mode.EagerMode.DEFER_NEVER,
         )
 
-        with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+        with execution_mode.eager_mode(
+            execution_mode.EagerMode.INTERNAL_DEFER_ALL
+        ):
           self.assertEqual(
-              execution_mode.eager_mode,
-              EagerMode.INTERNAL_DEFER_ALL,
+              execution_mode.get_eager_mode(),
+              execution_mode.EagerMode.INTERNAL_DEFER_ALL,
           )
 
         self.assertEqual(
-            execution_mode.eager_mode,
-            EagerMode.DEFER_NEVER,
+            execution_mode.get_eager_mode(),
+            execution_mode.EagerMode.DEFER_NEVER,
         )
 
       self.assertEqual(
-          execution_mode.eager_mode,
-          EagerMode.DEFER_AND_FUSE,
+          execution_mode.get_eager_mode(),
+          execution_mode.EagerMode.DEFER_AND_FUSE,
       )
     finally:
-      execution_mode.eager_mode = prev_mode
+      execution_mode.set_eager_mode(prev_mode)
 
   def test_eager_mode_global_override(self):
     """Tests interaction between global setting and context managers."""
-    prev_mode = execution_mode.eager_mode
+    prev_mode = execution_mode.get_eager_mode()
     try:
-      execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
-      with execution_mode.set_eager_mode(EagerMode.DEFER_NEVER):
+      execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE)
+      with execution_mode.eager_mode(execution_mode.EagerMode.DEFER_NEVER):
         self.assertEqual(
-            execution_mode.eager_mode,
-            EagerMode.DEFER_NEVER,
+            execution_mode.get_eager_mode(),
+            execution_mode.EagerMode.DEFER_NEVER,
         )
         # Changing global setting should not affect the current state, which is
         # determined once at the time of context entry and remains unchanged
         # within the context.
-        execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
+        execution_mode.set_eager_mode(
+            execution_mode.EagerMode.INTERNAL_DEFER_ALL
+        )
         self.assertEqual(
-            execution_mode.eager_mode,
-            EagerMode.DEFER_NEVER,
+            execution_mode.get_eager_mode(),
+            execution_mode.EagerMode.DEFER_NEVER,
         )
 
       # Upon exiting the context, the updated global setting takes effect.
       self.assertEqual(
-          execution_mode.eager_mode,
-          EagerMode.INTERNAL_DEFER_ALL,
+          execution_mode.get_eager_mode(),
+          execution_mode.EagerMode.INTERNAL_DEFER_ALL,
       )
     finally:
-      execution_mode.eager_mode = prev_mode
+      execution_mode.set_eager_mode(prev_mode)
 
   def test_eager_mode_concurrent_nested_context(self):
     """Tests setting eager mode in nested contexts concurrently."""
@@ -102,11 +103,11 @@ class ExecutionModeTest(absltest.TestCase):
       mode1 = random.choice(_EAGER_MODES)
       mode2 = random.choice(_EAGER_MODES)
       # Nested context managers with random modes.
-      with execution_mode.set_eager_mode(mode1):
-        self.assertEqual(execution_mode.eager_mode, mode1)
-        with execution_mode.set_eager_mode(mode2):
-          self.assertEqual(execution_mode.eager_mode, mode2)
-        self.assertEqual(execution_mode.eager_mode, mode1)
+      with execution_mode.eager_mode(mode1):
+        self.assertEqual(execution_mode.get_eager_mode(), mode1)
+        with execution_mode.eager_mode(mode2):
+          self.assertEqual(execution_mode.get_eager_mode(), mode2)
+        self.assertEqual(execution_mode.get_eager_mode(), mode1)
 
     # Start 100 threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:

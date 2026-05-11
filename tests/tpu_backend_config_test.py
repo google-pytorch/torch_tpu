@@ -39,7 +39,7 @@ class TpuBackendConfigTest(absltest.TestCase, common_utils.TestCase):
     )
 
     def run_compute():
-      with em.set_eager_mode(em.EagerMode.DEFER_AND_FUSE):
+      with em.eager_mode(em.EagerMode.DEFER_AND_FUSE):
         intermediate = torch.mm(x, x)
         output = intermediate * torch.tensor(
             [1.0], dtype=torch.float32, device=device

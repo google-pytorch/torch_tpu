@@ -18,7 +18,7 @@
 import os
 import sys
 import time
-from typing import Any, Dict, TypeAlias
+from typing import Any, Dict
 
 from absl import flags
 from absl import logging
@@ -38,7 +38,6 @@ import transformers
 
 from torch_tpu._internal.shims.xprof import traceme
 
-EagerMode: TypeAlias = execution_mode.EagerMode
 log_utils.log_to_stderr()
 
 
@@ -98,13 +97,13 @@ def get_torch_device() -> torch.device:
 
 
 # %%
-def get_eager_mode() -> EagerMode:
+def get_eager_mode() -> execution_mode.EagerMode:
   if _EAGER_MODE.value == "DEFER_AND_FUSE":
-    return EagerMode.DEFER_AND_FUSE
+    return execution_mode.EagerMode.DEFER_AND_FUSE
   elif _EAGER_MODE.value == "DEFER_NEVER":
-    return EagerMode.DEFER_NEVER
+    return execution_mode.EagerMode.DEFER_NEVER
   elif _EAGER_MODE.value == "DEFER_NEVER_AND_LAUNCH_BLOCKING":
-    return EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    return execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
   else:
     raise ValueError(f"Unsupported defer mode: {_EAGER_MODE.value}")
 
@@ -436,7 +435,7 @@ class Llama31BTrainingTest(absltest.TestCase):
 
     # Set defer mode for torch_tpu
     if _DEVICE.value in ("tpu", "xla_cuda"):
-      execution_mode.eager_mode = get_eager_mode()
+      execution_mode.set_eager_mode(get_eager_mode())
 
     # Initialize model
     self.model = transformers.AutoModelForCausalLM.from_pretrained(

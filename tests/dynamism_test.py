@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TypeAlias
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -20,8 +19,6 @@ from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import utils
 from tests import op_testing
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 # TODO: this is not concurrency safe, causes flaky test failures if there is
@@ -68,11 +65,11 @@ class DynamismApiTest(absltest.TestCase):
     self.device = torch.device("tpu")
     # Dynamism in eager mode works only when EagerMode.DEFER_AND_FUSE is
     # selected.
-    self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+    self.old_eager_mode = execution_mode.get_eager_mode()
+    execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE)
 
   def tearDown(self):
-    execution_mode.eager_mode = self.old_eager_mode
+    execution_mode.set_eager_mode(self.old_eager_mode)
     super().tearDown()
 
   def test_mark_get_dynamism_info(self):
@@ -171,11 +168,11 @@ class DynamismTest(parameterized.TestCase):
     torch.tpu._clear_cache()
     # Dynamism in eager mode works only when EagerMode.DEFER_AND_FUSE is
     # selected.
-    self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+    self.old_eager_mode = execution_mode.get_eager_mode()
+    execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE)
 
   def tearDown(self):
-    execution_mode.eager_mode = self.old_eager_mode
+    execution_mode.set_eager_mode(self.old_eager_mode)
     super().tearDown()
 
   def _run_bounded_dynamism_test(self, fn, mark_dynamic_fn, *args):

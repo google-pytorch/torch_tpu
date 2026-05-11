@@ -15,7 +15,7 @@
 """Tests for Pallas custom kernels."""
 
 import functools
-from typing import Optional, Tuple, TypeAlias
+from typing import Optional, Tuple
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
@@ -26,13 +26,11 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal.utils import utils
 
-EagerMode: TypeAlias = execution_mode.EagerMode
-
 
 def _is_deferred_mode():
-  return execution_mode.eager_mode in (
-      EagerMode.DEFER_AND_FUSE,
-      EagerMode.INTERNAL_DEFER_ALL,
+  return execution_mode.get_eager_mode() in (
+      execution_mode.EagerMode.DEFER_AND_FUSE,
+      execution_mode.EagerMode.INTERNAL_DEFER_ALL,
   )
 
 

@@ -12,34 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Properties and context managers for setting various execution modes."""
+"""Context managers for setting various execution modes."""
 
 import contextlib
 import sys
 import types
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TypeAlias
 
+import torch
 from torch_tpu._internal.execution_mode import execution_mode_impl
+from torch_tpu._internal.execution_mode.execution_mode_impl import get_eager_mode
+from torch_tpu._internal.execution_mode.execution_mode_impl import set_eager_mode
 
 EagerMode: TypeAlias = execution_mode_impl.EagerMode
-
-if TYPE_CHECKING:
-  eager_mode: EagerMode
-  enable_cpu_fallback: bool
 
 
 class _ExecutionModeModule(types.ModuleType):
   """Custom module for managing TorchTPU execution settings."""
-
-  @property
-  def eager_mode(self) -> EagerMode:
-    # pylint: disable-next=protected-access
-    return execution_mode_impl._get_eager_mode()
-
-  @eager_mode.setter
-  def eager_mode(self, value: EagerMode):
-    # pylint: disable-next=protected-access
-    execution_mode_impl._set_eager_mode(value)
 
   @property
   def enable_cpu_fallback(self) -> bool:
@@ -56,7 +45,7 @@ sys.modules[__name__].__class__ = _ExecutionModeModule
 
 
 @contextlib.contextmanager
-def set_eager_mode(mode: EagerMode):
+def eager_mode(mode: EagerMode):
   """Context manager for setting the eager mode."""
   # Push the new state.
   execution_mode_impl._push_eager_mode(mode)  # pylint: disable=protected-access
@@ -71,6 +60,8 @@ def set_eager_mode(mode: EagerMode):
 __all__ = [
     # go/keep-sorted start
     "EagerMode",
+    "eager_mode",
+    "get_eager_mode",
     "set_eager_mode",
     # go/keep-sorted end
 ]

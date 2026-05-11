@@ -14,7 +14,6 @@
 
 import glob
 import os
-from typing import TypeAlias
 
 from absl.testing import absltest
 import torch
@@ -26,8 +25,6 @@ from torch_tpu._internal.sync import sync
 from tests.distributed import distributed_utils
 
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def _test_wrapper(test_fn, *args, **kwargs):
@@ -49,7 +46,7 @@ def run_spmd_safe_decorator_test():
 
   x = torch.ones((2, 2), device="cpu").to("tpu")
 
-  with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+  with execution_mode.eager_mode(execution_mode.EagerMode.DEFER_AND_FUSE):
     res = eager_fused_all_reduce(x)
     sync.synchronize(res, wait=True)
 

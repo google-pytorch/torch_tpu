@@ -14,14 +14,11 @@
 
 """Directly test the PyBind11 API for compiled mode, without using Dynamo."""
 
-from typing import TypeAlias
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 @torch.compile
@@ -45,7 +42,7 @@ def eager_mode_defer_all():
   Returns:
     A context manager for setting the execution mode.
   """
-  return execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL)
+  return execution_mode.eager_mode(execution_mode.EagerMode.INTERNAL_DEFER_ALL)
 
 
 # TODO: add more test coverage for the direct compile API.

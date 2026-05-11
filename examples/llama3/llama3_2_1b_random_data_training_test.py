@@ -18,7 +18,7 @@ import os
 import pprint
 import sys
 import time
-from typing import Any, Callable, Dict, TypeAlias
+from typing import Any, Callable, Dict
 
 from absl import flags
 from absl import logging
@@ -35,8 +35,6 @@ import transformers
 
 from torch_tpu._internal.shims.xprof import traceme
 from rules_python.python.runfiles import runfiles
-
-EagerMode: TypeAlias = execution_mode.EagerMode
 
 log_utils.log_to_stderr()
 
@@ -111,13 +109,13 @@ _TB_SUMMARY_LOGGING_DIR = flags.DEFINE_string(
 BASE_MODEL_CONFIG_PATH = "__main__/examples/huggingface_transformers/model_configs"
 
 
-def get_eager_mode() -> EagerMode:
+def get_eager_mode() -> execution_mode.EagerMode:
   if _EAGER_MODE.value == "DEFER_AND_FUSE":
-    return EagerMode.DEFER_AND_FUSE
+    return execution_mode.EagerMode.DEFER_AND_FUSE
   elif _EAGER_MODE.value == "DEFER_NEVER":
-    return EagerMode.DEFER_NEVER
+    return execution_mode.EagerMode.DEFER_NEVER
   elif _EAGER_MODE.value == "DEFER_NEVER_AND_LAUNCH_BLOCKING":
-    return EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+    return execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
   else:
     raise ValueError(f"Unsupported defer mode: {_EAGER_MODE.value}")
 
@@ -396,7 +394,7 @@ class Llama321BRandomDataTrainingTest(absltest.TestCase):
     batch_size = _BATCH_SIZE.value
     seq_len = _SEQ_LEN.value
     device = get_torch_device()
-    execution_mode.eager_mode = get_eager_mode()
+    execution_mode.set_eager_mode(get_eager_mode())
 
     # Arrange
     model_config_path = runfiles.Create().Rlocation(
