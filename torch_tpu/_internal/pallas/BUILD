@@ -31,6 +31,13 @@ pytype_strict_library(
         "__init__.py",
         "pallas.py",
     ],
+    visibility = [
+        "//:__subpackages__",
+        "//shims/torchtitan:__subpackages__",
+        "@pypi//helion:__subpackages__",
+        "@pypi//tokamax/_src/ops/linear_softmax_cross_entropy_loss:__pkg__",
+        "@pypi//tokamax/experimental/google/torch_tpu/examples:__pkg__",
+    ],
     deps = [
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",

@@ -82,6 +82,7 @@ py_library_providing_imports_info(
     visibility = [
         "//:__subpackages__",
         "//shims/torchtitan:__subpackages__",
+        "@pypi//tokamax:__subpackages__",
     ],
     deps = if_oss(
         ["//shims/libtpu"],
