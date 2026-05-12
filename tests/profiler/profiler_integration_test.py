@@ -396,6 +396,68 @@ class ProfilerIntegrationTest(absltest.TestCase):
         c = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
         tpu_sync.synchronize(c)
 
+  def test_tpu_profiler_config_experimental_options(self):
+    # Verifies that experimental configuration options are correctly serialized,
+    # passed and stored.
+    device = tpu_api.tpu_device()
+    output_dir = (
+        pathlib.Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp"))
+        / "experimental_options"
+    )
+
+    config = TpuProfilerConfig(
+        host_tracer_level=2,
+        experimental_options={
+            "tpu_num_sparse_cores_to_trace": 4,
+            "tpu_trace_mode": "TRACE_ONLY_HOST",
+            "tpu_perf_counters": True,
+        },
+        run_dir=output_dir,
+        # check_experimental_options defaults to True
+    )
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.PrivateUse1,
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(
+            str(output_dir)
+        ),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    # Find the xplane file strictly inside our isolated output directory
+    xplane_files = list(output_dir.glob("**/plugins/profile/**/*.xplane.pb"))
+    self.assertNotEmpty(xplane_files, f"No xplane file found in {output_dir}")
+    tpu_xplane_path = xplane_files[0]
+
+    xspace = xplane_pb2.XSpace.FromString(tpu_xplane_path.read_bytes())
+    options_bytes = _get_profiler_options_bytes(xspace)
+    options = profiler_options_pb2.ProfileOptions.FromString(options_bytes)
+
+    advanced_config = options.advanced_configuration
+
+    with self.subTest(name="tpu_num_sparse_cores_to_trace"):
+      self.assertIn("tpu_num_sparse_cores_to_trace", advanced_config)
+      self.assertEqual(
+          advanced_config["tpu_num_sparse_cores_to_trace"].int64_value, 4
+      )
+
+    with self.subTest(name="tpu_trace_mode"):
+      self.assertIn("tpu_trace_mode", advanced_config)
+      self.assertEqual(
+          advanced_config["tpu_trace_mode"].string_value, "TRACE_ONLY_HOST"
+      )
+
+    with self.subTest(name="tpu_perf_counters"):
+      self.assertIn("tpu_perf_counters", advanced_config)
+      self.assertTrue(advanced_config["tpu_perf_counters"].bool_value)
+
   def test_concurrent_profiling_and_execution(self):
     stop_workers = False
 

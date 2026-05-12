@@ -131,8 +131,48 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnknownOption) {
   std::string run_dir;
 
   absl::Status status = UpdateProfileOptions("unknown_option:1", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_TRUE(status.ok());
+
+  const auto& advanced_config = opts.advanced_configuration();
+  auto it = advanced_config.find("unknown_option");
+  ASSERT_TRUE(it != advanced_config.end());
+  EXPECT_EQ(it->second.int64_value(), 1);
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsAdvancedOptionEscaping) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+
+  absl::Status status = UpdateProfileOptions(
+      "str_escaped_opt:\"a \\\"nested\\\" quote\","
+      "str_comma_opt:\"a \\\"nested\\\", comma\","
+      "str_bs_opt:\"some\\\\path\","
+      "bool_opt:true,"
+      "int_opt:42",
+      opts, run_dir);
+  EXPECT_TRUE(status.ok());
+
+  const auto& advanced_config = opts.advanced_configuration();
+
+  auto it_escaped = advanced_config.find("str_escaped_opt");
+  ASSERT_TRUE(it_escaped != advanced_config.end());
+  EXPECT_EQ(it_escaped->second.string_value(), "a \"nested\" quote");
+
+  auto it_comma = advanced_config.find("str_comma_opt");
+  ASSERT_TRUE(it_comma != advanced_config.end());
+  EXPECT_EQ(it_comma->second.string_value(), "a \"nested\", comma");
+
+  auto it_bs = advanced_config.find("str_bs_opt");
+  ASSERT_TRUE(it_bs != advanced_config.end());
+  EXPECT_EQ(it_bs->second.string_value(), "some\\path");
+
+  auto it_bool = advanced_config.find("bool_opt");
+  ASSERT_TRUE(it_bool != advanced_config.end());
+  EXPECT_TRUE(it_bool->second.bool_value());
+
+  auto it_int = advanced_config.find("int_opt");
+  ASSERT_TRUE(it_int != advanced_config.end());
+  EXPECT_EQ(it_int->second.int64_value(), 42);
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidValue) {

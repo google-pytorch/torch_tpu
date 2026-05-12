@@ -16,9 +16,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import pathlib
+from typing import TypeAlias
 
 import torch
+
+_ExperimentalValue: TypeAlias = int | bool | str
+
+
+def _format_experimental_value(value: _ExperimentalValue) -> str:
+  """Formats a value for the custom profiler config string."""
+  if isinstance(value, str):
+    # Escape backslashes first, then double quotes to preserve literal
+    # quotes and avoid parsing ambiguity in the backend C++ tokenizer.
+    return f'"{value.replace("\\", "\\\\").replace('"', '\\"')}"'
+  elif isinstance(value, bool):
+    return "true" if value else "false"
+  else:
+    return str(value)
 
 
 class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=protected-access
@@ -31,6 +47,8 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       device_tracer_level: int = 1,
       python_tracer_level: int = 0,
       run_dir: pathlib.Path | None = None,
+      experimental_options: Mapping[str, _ExperimentalValue] | None = None,
+      check_experimental_options: bool = True,
   ):
     """Initializes the TPU profiler configuration.
 
@@ -54,6 +72,12 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         (default), falls back to Kineto's `activitiesLogFile` directory (which
         defaults to "/tmp" if no handler is provided). This ensures TPU and CPU
         traces are co-located in the same directory.
+      experimental_options: Dictionary of experimental profiler options.
+        Supported value types: int, bool, str. Strings will be automatically
+        quoted and escaped.
+      check_experimental_options: If True (default), strictly validates that
+        experimental keys are recognized by the underlying profiling compiler
+        backend.
     """
     run_dir_posix = (
         pathlib.Path(run_dir).as_posix() if run_dir is not None else None
@@ -63,6 +87,18 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         f"device_tracer_level:{device_tracer_level}",
         f"python_tracer_level:{python_tracer_level}",
     ] + ([f"run_dir:{run_dir_posix}"] if run_dir_posix is not None else [])
+
+    if experimental_options:
+      for key, value in experimental_options.items():
+        if ":" in key or "," in key:
+          raise ValueError(
+              f"Experimental option keys cannot contain ':' or ',': '{key}'"
+          )
+        config_parts.append(f"{key}:{_format_experimental_value(value)}")
+
+      config_parts.append(
+          f"tpu_check_experimental_options:{_format_experimental_value(check_experimental_options)}"
+      )
 
     # We suppress 'wrong-keyword-args' because 'custom_profiler_config' is
     # explicitly supported by the C++ implementation of _ExperimentalConfig
