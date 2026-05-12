@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=2",
     "absl-py>=2",
     "libtpu>=0.0.38",
+    "dm-tree>=0.1.10",
     "portpicker>=1.6",
     "tensorboard>=2.20",
     "frozendict>=2",
@@ -57,7 +58,7 @@ benchmark = [
     "tensorboardx>=2.6",
     "timm>=1.0.26",
     "torchax>=0.0.11",
-    "grpcio-tools>=1.60.0"
+    "grpcio-tools>=1.64.0"
 ]
 
 examples = [

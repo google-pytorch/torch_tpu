@@ -81,7 +81,9 @@ python_init_repositories(
     ],
     local_wheel_workspaces = ["//:WORKSPACE"],
     requirements = {
+        "3.10": "//requirements:requirements.txt",
         "3.12": "//requirements:requirements.txt",
+        "3.14": "//requirements:requirements.txt",
     },
 )
 

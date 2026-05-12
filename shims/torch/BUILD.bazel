@@ -77,8 +77,8 @@ cc_library(
         # NOTE: All dependencies below will be added to the torch_tpu wheel.
         # If you are adding a new dependency that is not for the wheel, please make a new shim.
         "//conditions:default": [
-            "@pypi_torch//:libc10",
-            "@pypi_torch//:libtorch_cpu",
+            "@pypi//torch:libc10",
+            "@pypi//torch:libtorch_cpu",
         ],
     }),
 )
@@ -93,8 +93,8 @@ cc_library(
             "@local_torch//:libtorch_cpu",
         ],
         "//conditions:default": [
-            "@pypi_torch//:libc10",
-            "@pypi_torch//:libtorch_cpu",
+            "@pypi//torch:libc10",
+            "@pypi//torch:libtorch_cpu",
         ],
     }),
 )
@@ -131,8 +131,8 @@ cc_library(
             "@local_torch//:torch_headers",
         ],
         "//conditions:default": [
+            "@pypi//torch:libtorch_python",
             "@pypi//torch:torch_headers",
-            "@pypi_torch//:libtorch_python",
         ],
     }),
 )

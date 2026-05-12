@@ -871,7 +871,7 @@ oss_target(
     args = ["$(location :split_utils_test)"],
     data = [
         ":split_utils_test",
-        "@pypi_libtpu//:whl",
+        "@pypi//libtpu:whl",
     ],
     tags = [
         # This is normally added by the torch_tpu_... rules
