@@ -361,7 +361,8 @@ TEST(OpParamCacheKeys, SetParamSymInt) {
   ASSERT_TRUE(params_or.ok());
   EXPECT_THAT(params_or.value(), ElementsAre(Pair("foo", "123")));
 
-#if defined(__has_feature) && __has_feature(hwaddress_sanitizer)
+#if defined(HWADDRESS_SANITIZER) || \
+    (defined(__has_feature) && __has_feature(hwaddress_sanitizer))
   // Skip the test as c10::SymInt pointer packing is incompatible with
   // HWASAN on ARM64.
 #else
@@ -375,7 +376,8 @@ TEST(OpParamCacheKeys, SetParamSymInt) {
 }
 
 TEST(OpParamCacheKeys, SetParamSymIntArrayRef) {
-#if defined(__has_feature) && __has_feature(hwaddress_sanitizer)
+#if defined(HWADDRESS_SANITIZER) || \
+    (defined(__has_feature) && __has_feature(hwaddress_sanitizer))
   // Skip the test as c10::SymInt pointer packing is incompatible with
   // HWASAN on ARM64.
 #else
