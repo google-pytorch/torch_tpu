@@ -81,13 +81,13 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // If src is a view, this will materialize both the base buffer and the
   // ephemeral view buffer.
   TT_ASSIGN_OR_RETURN(const DeviceBufferRef materialized_src_buf, [&]() {
-    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::GetMaterialized");
-    return GetMaterialized(src, MaterializationReason::kCpuTransfer);
+    tsl::profiler::TraceMe trace_mat("CopyTpuToCpu::MaterializeAndGet");
+    return MaterializeAndGet(src, MaterializationReason::kCpuTransfer);
   }());
 
   ABSL_CHECK_EQ(materialized_src_buf.state(),  // CRASH_OK
                 DeviceBufferRefState::kMaterialized)
-      << "expected materialized buffer after GetMaterialized";
+      << "expected materialized buffer after MaterializeAndGet";
 
   // Fast path: if the destination tensor is fully allocated, contiguous, and
   // has the exact same size and dtype as the source, we can copy directly

@@ -90,8 +90,8 @@ inline absl::Status Materialize(
 // If it is a view, then an ephemeral DeviceBufferList will be created and
 // materialized.
 // Errors if the tensor's base DeviceBufferRef is a placeholder.
-absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
-                                                MaterializationReason reason);
+absl::StatusOr<DeviceBufferRef> MaterializeAndGet(const at::Tensor& tensor,
+                                                  MaterializationReason reason);
 
 // Returns a materialized DeviceBufferRefs each input tensor.
 // This will materialize each base tensor in-place (see Materialize()) if it is
@@ -100,7 +100,7 @@ absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
 // All views will be materialized into ephemeral DeviceBufferLists.
 // Errors if any of the tensors' base DeviceBufferRefs are placeholders or
 // depend on placeholders.
-absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
+absl::StatusOr<std::vector<DeviceBufferRef>> MaterializeAndGet(
     absl::Span<const at::Tensor> tensors, MaterializationReason reason);
 
 // Enqueues an executable for materialization.

@@ -200,7 +200,7 @@ std::optional<DeviceBufferRef> GetPjrtBufferOrThrow(
         "Expected TPU tensor.");
   }
   auto buffer_ref_or =
-      GetMaterialized(tpu_tensor, MaterializationReason::kCpuTransfer);
+      MaterializeAndGet(tpu_tensor, MaterializationReason::kCpuTransfer);
   if (!buffer_ref_or.ok()) {
     throw std::runtime_error(  // TORCH_ERROR_API_OK=internal C++ exception
         "Failed to materialize TPU tensor.");

@@ -335,8 +335,8 @@ std::vector<at::Tensor> ExecuteCompiledModel(
   // Get the materialized buffers for the argument tensors.
   TT_ASSIGN_OR_THROW(
       std::vector<DeviceBufferRef> argument_buffer_refs,
-      GetMaterialized(argument_tensors,
-                      MaterializationReason::kCompileModeExecution));
+      MaterializeAndGet(argument_tensors,
+                        MaterializationReason::kCompileModeExecution));
 
   TT_ASSIGN_OR_THROW(
       std::vector<DeviceBufferRef> result_buffer_refs,

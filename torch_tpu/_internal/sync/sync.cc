@@ -48,7 +48,7 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
   // GetMaterialized() will materialize each base tensor and each view.
   TT_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferRef> buffer_refs,
-      GetMaterialized(tensors, MaterializationReason::kExplicitSync));
+      MaterializeAndGet(tensors, MaterializationReason::kExplicitSync));
 
   // Wait for all of the PjRtBuffers to be ready.
   for (const DeviceBufferRef& buffer_ref : buffer_refs) {

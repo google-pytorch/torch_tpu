@@ -642,7 +642,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
               // materialization. It exists because dist.broadcast_object_list
               // dispatches broadcast() operations from the source rank that are
               // not materialized, so it hangs.
-              TT_THROW_IF_ERROR(GetMaterialized(
+              TT_THROW_IF_ERROR(MaterializeAndGet(
                   tensors, MaterializationReason::kDistributedOp));
 
               if (work_ptr != nullptr) {
@@ -668,7 +668,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
     // Extract the underlying hardware buffer from the tensor.
     TT_ASSIGN_OR_THROW(
         const DeviceBufferRef device_buffer,
-        GetMaterialized(tensor, MaterializationReason::kDistributedOp));
+        MaterializeAndGet(tensor, MaterializationReason::kDistributedOp));
     TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
                        device_buffer.GetOrMaterializeBuffer());
 
@@ -1004,7 +1004,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
         // This is needed because on the root rank, output_tensors[0] might have
         // deferred ops. On non-root ranks, the temporary tensors are fresh,
         // which can result in an asymmetry.
-        TT_THROW_IF_ERROR(GetMaterialized(
+        TT_THROW_IF_ERROR(MaterializeAndGet(
             allgather_outputs, MaterializationReason::kDistributedOp));
 
         c10d::AllgatherOptions allgather_opts;
@@ -1027,8 +1027,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
         // on all ranks synchronously is safer and keeps all devices moving
         // forward smoothly.
         TT_THROW_IF_ERROR(
-            GetMaterialized(allgather_output_tensors[0],
-                            MaterializationReason::kDistributedOp));
+            MaterializeAndGet(allgather_output_tensors[0],
+                              MaterializationReason::kDistributedOp));
 
         if (work_ptr != nullptr) {
           dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =

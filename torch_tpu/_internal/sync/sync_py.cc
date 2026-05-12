@@ -84,13 +84,13 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
     // complete.
 
     py::gil_scoped_release release;
-    // SynchronizeTensors is GetMaterialized + wait
+    // SynchronizeTensors is MaterializeAndGet + wait
     TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span));
   } else {
-    // GetMaterialized returns DeviceBufferRefs for the views, but we don't
+    // MaterializeAndGet returns DeviceBufferRefs for the views, but we don't
     // return them to Python.
     TT_THROW_IF_ERROR(
-        GetMaterialized(tensors_span, MaterializationReason::kExplicitSync));
+        MaterializeAndGet(tensors_span, MaterializationReason::kExplicitSync));
   }
 }
 

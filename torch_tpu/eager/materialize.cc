@@ -32,6 +32,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/flags/declare.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
@@ -410,68 +411,51 @@ absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
   return MaterializeImpl(nodes_to_materialize, reason, materialization_mode);
 }
 
-absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
-                                                MaterializationReason reason) {
-  tsl::profiler::TraceMe trace("GetMaterialized");
-  // Make sure the base DeviceBufferRef is materialized
-  const auto* tensor_impl = tensor.unsafeGetTensorImpl();
-  TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined";
-  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
-                      GetBaseBufferFromAtTensor(*tensor_impl));
-  TT_RETURN_IF_ERROR(
-      Materialize(base_buffer_ref, reason, MaterializationMode::kSplitGraph));
-
-  // Get the view DeviceBufferRef (may be the same as the base)
-  TT_ASSIGN_OR_RETURN(const DeviceBufferRef view_buffer_ref,
-                      GetBufferFromAtTensor(tensor));
-  // Materialize the view (no-op if the tensor is a continuous base tensor)
-  TT_RETURN_IF_ERROR(
-      Materialize(view_buffer_ref, reason, MaterializationMode::kSplitGraph));
-
-  if (GetFlagOnce<bool,
-                  &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-    TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
-  }
-
-  return view_buffer_ref;
-}
-
-absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
+absl::StatusOr<std::vector<DeviceBufferRef>> MaterializeAndGet(
     absl::Span<const at::Tensor> tensors, MaterializationReason reason) {
-  tsl::profiler::TraceMe trace("GetMaterialized (batch)");
-  if (tensors.empty()) {
-    return std::vector<DeviceBufferRef>();
-  }
-  // Materialize all of the base DeviceBufferRefs (in a single execution)
-  std::vector<DeviceBufferRef> base_buffer_refs;
-  base_buffer_refs.reserve(tensors.size());
+  tsl::profiler::TraceMe trace("MaterializeAndGet");
+  // We want to materialize both the base and view buffers for each tensor.
+  // Materialize() will deduplicate the DeviceBufferRefs down to a set of
+  // unique, deferred DeviceBufferLists.
+  // This will deduplicate in two ways:
+  //   1. If any two tensors are identical, being the same view of the same
+  //      base tensor, they will be deduplicated.
+  //   2. If any two tensors are different views of the same base tensor, then
+  //      they will deduplicate the base buffer.
+  std::vector<DeviceBufferRef> base_and_view_buffer_refs;
+
+  // We only need to actually return the view buffer refs.
+  std::vector<DeviceBufferRef> view_buffer_refs;
+
   for (const at::Tensor& tensor : tensors) {
     const auto* tensor_impl = tensor.unsafeGetTensorImpl();
     TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined";
+
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
                         GetBaseBufferFromAtTensor(*tensor_impl));
-    base_buffer_refs.push_back(base_buffer_ref);
-  }
-  TT_RETURN_IF_ERROR(
-      Materialize(base_buffer_refs, reason, MaterializationMode::kSplitGraph));
-
-  // Materialize all of the views (no-op if all tensors are contiguous bases)
-  std::vector<DeviceBufferRef> view_buffer_refs;
-  view_buffer_refs.reserve(tensors.size());
-  for (const at::Tensor& tensor : tensors) {
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef view_buffer_ref,
                         GetBufferFromAtTensor(tensor));
+
+    if (base_buffer_ref != view_buffer_ref) {
+      // The tensor is a view, so we need to materialize the base and view
+      // buffers separately.
+      base_and_view_buffer_refs.push_back(base_buffer_ref);
+    }
+    base_and_view_buffer_refs.push_back(view_buffer_ref);
     view_buffer_refs.push_back(view_buffer_ref);
   }
-  TT_RETURN_IF_ERROR(
-      Materialize(view_buffer_refs, reason, MaterializationMode::kSplitGraph));
-
-  if (GetFlagOnce<bool,
-                  &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-    TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
-  }
-
+  TT_RETURN_IF_ERROR(Materialize(base_and_view_buffer_refs, reason,
+                                 MaterializationMode::kSplitGraph));
   return view_buffer_refs;
+}
+
+absl::StatusOr<DeviceBufferRef> MaterializeAndGet(
+    const at::Tensor& tensor, MaterializationReason reason) {
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> results,
+      MaterializeAndGet(absl::Span<const at::Tensor>(&tensor, 1), reason));
+  ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
+  return results[0];
 }
 
 void SetOutputNodesAsError(absl::Span<const DeviceBufferRef> outputs,
