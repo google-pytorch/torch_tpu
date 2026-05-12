@@ -361,15 +361,18 @@ TEST(OpParamCacheKeys, SetParamSymInt) {
   ASSERT_TRUE(params_or.ok());
   EXPECT_THAT(params_or.value(), ElementsAre(Pair("foo", "123")));
 
+#if !defined(__has_feature) || !__has_feature(hwaddress_sanitizer)
   c10::SymNode sym_node =
       c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t>>(456);
   auto params2_or =
       *OpParamCacheKeysBuilder().SetParam("foo", c10::SymInt(sym_node));
   ASSERT_TRUE(params2_or.ok());
   EXPECT_THAT(params2_or.value(), ElementsAre(Pair("foo", "456")));
+#endif
 }
 
 TEST(OpParamCacheKeys, SetParamSymIntArrayRef) {
+#if !defined(__has_feature) || !__has_feature(hwaddress_sanitizer)
   c10::SymNode sym_node =
       c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t>>(456);
   c10::SymInt si[] = {c10::SymInt(123), c10::SymInt(sym_node)};
@@ -377,6 +380,7 @@ TEST(OpParamCacheKeys, SetParamSymIntArrayRef) {
   auto params_or = *OpParamCacheKeysBuilder().SetParam("foo", sir);
   ASSERT_TRUE(params_or.ok());
   EXPECT_THAT(params_or.value(), ElementsAre(Pair("foo", "[123,456]")));
+#endif
 
   c10::SymIntArrayRef empty_sym_int_array_ref;
   auto params2_or =
