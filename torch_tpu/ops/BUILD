@@ -91,6 +91,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:chlo_builder",
         "@stablehlo//:mlir_builder",

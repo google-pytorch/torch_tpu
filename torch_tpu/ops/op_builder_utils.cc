@@ -59,6 +59,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/WalkResult.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "ATen/core/ATen_fwd.h"
 #include "c10/core/Scalar.h"  // IWYU pragma: keep for c10::Scalar
 #include "c10/core/ScalarType.h"
@@ -150,9 +151,15 @@ absl::StatusOr<std::string> SerializePortableArtifact(mlir::ModuleOp module) {
   TT_ASSIGN_OR_RETURN(
       const std::string serialized,
       xla::SerializeUsingVersionedStablehlo(
-          module, mlir::vhlo::Version::fromCompatibilityRequirement(
-                      mlir::vhlo::Version::CompatibilityRequirement::WEEK_4)
-                      .toString()),
+          module,
+          mlir::vhlo::Version::fromCompatibilityRequirement(
+              mlir::vhlo::Version::CompatibilityRequirement::WEEK_4)
+              .toString(),
+          mlir::sdy::SdyDialectVersion::fromCompatibilityRequirement(
+              mlir::sdy::SdyDialectVersion::CompatibilityRequirement::WEEK_4)
+              .toString(),
+          /*inplace=*/false,
+          /*allow_mixed_serialization=*/true),
       _.SetPrepend() << "Failed to serialize MLIR module to StableHLO: ");
   return serialized;
 }
