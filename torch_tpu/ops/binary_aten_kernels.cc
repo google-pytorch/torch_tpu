@@ -29,7 +29,6 @@
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Types.h"
-#include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/native/Resize.h"
 #include "ATen/ops/div.h"
@@ -624,6 +623,28 @@ absl::Status AtenComparisonScalarOutHelper(
                      {.op_param_cache_keys = OpParamCacheKeys::Empty()});
 }
 
+// Helper function for bitwise shift scalar operations.
+absl::Status AtenBitwiseShiftScalarHelper(const at::Tensor& self,
+                                          PromotedScalar& promoted_other,
+                                          at::Tensor& out,
+                                          const BitwiseShiftDirection direction,
+                                          const at::ScalarType result_type) {
+  TT_ASSIGN_OR_RETURN(const at::Tensor other_tensor,
+                      promoted_other.GetTensor(result_type));
+
+  TT_RETURN_IF_ERROR(CheckBitwiseShiftInputs(self, other_tensor));
+
+  const at::Tensor new_self = self.to(out.scalar_type());
+  const at::Tensor new_other = other_tensor.to(out.scalar_type());
+
+  MlirBinaryOpBuilder builder = (direction == BitwiseShiftDirection::kLeft)
+                                    ? BuildBitwiseLeftShiftShlo
+                                    : BuildBitwiseRightShiftShlo;
+
+  return BinaryOpOut(new_self, new_other, out, std::move(builder),
+                     {.op_param_cache_keys = OpParamCacheKeys::Empty()});
+}
+
 }  // namespace
 
 // NOLINTBEGIN
@@ -1007,13 +1028,13 @@ at::Tensor& AtenGtTensorOut(const at::Tensor& self, const at::Tensor& other,
 }
 
 at::Tensor& AtenIlshiftScalar(at::Tensor& self, const at::Scalar& other) {
-  TT_KERNEL(OpName::kIlshiftScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage")), {
-              at::Tensor wrapped_scalar =
-                  at::native::wrapped_scalar_tensor(other);
-              AtenBitwiseLeftShiftTensorOut(self, wrapped_scalar, self);
-              return self;
-            });
+  PromotedScalar promoted_other = PromoteScalar(other);
+  TT_KERNEL(OpName::kIlshiftScalar, _, (self, promoted_other), {
+    const at::ScalarType result_type = at::result_type(self, other);
+    TT_THROW_IF_ERROR(AtenBitwiseShiftScalarHelper(
+        self, promoted_other, self, BitwiseShiftDirection::kLeft, result_type));
+    return self;
+  });
 }
 
 at::Tensor& AtenIlshiftTensor(at::Tensor& self, const at::Tensor& other) {
@@ -1024,13 +1045,14 @@ at::Tensor& AtenIlshiftTensor(at::Tensor& self, const at::Tensor& other) {
 }
 
 at::Tensor& AtenIrshiftScalar(at::Tensor& self, const at::Scalar& other) {
-  TT_KERNEL(OpName::kIrshiftScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage")), {
-              at::Tensor wrapped_scalar =
-                  at::native::wrapped_scalar_tensor(other);
-              AtenBitwiseRightShiftTensorOut(self, wrapped_scalar, self);
-              return self;
-            });
+  PromotedScalar promoted_other = PromoteScalar(other);
+  TT_KERNEL(OpName::kIrshiftScalar, _, (self, promoted_other), {
+    const at::ScalarType result_type = at::result_type(self, other);
+    TT_THROW_IF_ERROR(AtenBitwiseShiftScalarHelper(
+        self, promoted_other, self, BitwiseShiftDirection::kRight,
+        result_type));
+    return self;
+  });
 }
 
 at::Tensor& AtenIrshiftTensor(at::Tensor& self, const at::Tensor& other) {
@@ -1062,15 +1084,14 @@ at::Tensor& AtenLeTensorOut(const at::Tensor& self, const at::Tensor& other,
 }
 
 at::Tensor AtenLshiftScalar(const at::Tensor& self, const at::Scalar& other) {
-  TT_KERNEL(OpName::kLshiftScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage")), {
-              at::Tensor out = MakeEmptyTensor(self.sizes(), self.scalar_type(),
-                                               self.device());
-              at::Tensor wrapped_scalar =
-                  at::native::wrapped_scalar_tensor(other);
-              AtenBitwiseLeftShiftTensorOut(self, wrapped_scalar, out);
-              return out;
-            });
+  PromotedScalar promoted_other = PromoteScalar(other);
+  TT_KERNEL(OpName::kLshiftScalar, _, (self, promoted_other), {
+    const at::ScalarType result_type = at::result_type(self, other);
+    at::Tensor out = MakeEmptyTensor(self.sizes(), result_type, self.device());
+    TT_THROW_IF_ERROR(AtenBitwiseShiftScalarHelper(
+        self, promoted_other, out, BitwiseShiftDirection::kLeft, result_type));
+    return out;
+  });
 }
 
 at::Tensor AtenLshiftTensor(const at::Tensor& self, const at::Tensor& other) {
@@ -1272,15 +1293,14 @@ at::Tensor& AtenRemainderTensorOut(const at::Tensor& self,
 }
 
 at::Tensor AtenRshiftScalar(const at::Tensor& self, const at::Scalar& other) {
-  TT_KERNEL(OpName::kRshiftScalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage")), {
-              at::Tensor out = MakeEmptyTensor(self.sizes(), self.scalar_type(),
-                                               self.device());
-              at::Tensor wrapped_scalar =
-                  at::native::wrapped_scalar_tensor(other);
-              AtenBitwiseRightShiftTensorOut(self, wrapped_scalar, out);
-              return out;
-            });
+  PromotedScalar promoted_other = PromoteScalar(other);
+  TT_KERNEL(OpName::kRshiftScalar, _, (self, promoted_other), {
+    const at::ScalarType result_type = at::result_type(self, other);
+    at::Tensor out = MakeEmptyTensor(self.sizes(), result_type, self.device());
+    TT_THROW_IF_ERROR(AtenBitwiseShiftScalarHelper(
+        self, promoted_other, out, BitwiseShiftDirection::kRight, result_type));
+    return out;
+  });
 }
 
 at::Tensor AtenRshiftTensor(const at::Tensor& self, const at::Tensor& other) {
