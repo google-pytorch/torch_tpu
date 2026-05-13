@@ -112,6 +112,24 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "model_performance_benchmarks_lib",
+    testonly = 1,
+    srcs = ["model_performance_benchmarks.py"],
+    deps = [
+        ":benchmark_function_db",
+        ":benchmark_utils",
+        ":model_utils",
+        ":performance_utils",
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
 torch_tpu_py_test(
     name = "model_performance_benchmarks",
     timeout = "long",
@@ -136,16 +154,8 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
+        ":model_performance_benchmarks_lib",
         "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -167,16 +177,8 @@ torch_tpu_py_test(
         "requires-tpu-v7x",
     ],
     deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
+        ":model_performance_benchmarks_lib",
         "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -416,16 +418,8 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
+        ":model_performance_benchmarks_lib",
         "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -450,16 +444,8 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
+        ":model_performance_benchmarks_lib",
         "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
