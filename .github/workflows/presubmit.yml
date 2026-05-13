@@ -60,12 +60,12 @@ jobs:
           {
             runner: "linux-x86-n2-16",
             config: "ci_cpu",
-            extra_flags: "",
+            extra_flags: "--config=remote_caching_readwrite --config=remote_execution_readwrite",
           },
           {
             runner: "linux-x86-ct5lp-224-8tpu",
             config: "ci_tpu",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+            extra_flags: '--config=remote_caching_readwrite --config=remote_execution_readwrite --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the

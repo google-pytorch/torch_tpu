@@ -87,8 +87,8 @@ jobs:
           # Tests tagged with `manual` are dropped. Only using config `ci_tpu_nightly` and flag
           # `--test_tag_filters` to get tests tagged with `nonightly` is not enough as there are
           # some tests implicitly getting the `manual` tag from `notap` or `nolocal`.
-          TEST_TARGETS=$(bazel query 'tests(//...) except attr("tags", "nonightly", tests(//...))' | tr '\n' ' ')
-          bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
+          TEST_TARGETS=$(bazel query --config=remote_caching_readwrite --config=remote_execution_readwrite 'tests(//...) except attr("tags", "nonightly", tests(//...))' | tr '\n' ' ')
+          bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
 
   notify_failure:
     name: Notify Failed Runs

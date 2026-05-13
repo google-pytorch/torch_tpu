@@ -88,7 +88,7 @@ jobs:
       # running the tests. This allows test building and test running to overlap and reduce total
       # build time.
       - name: Run Bazel Test
-        run: bazel test --config=${{ matrix.job_info.bazel_config }} --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
+        run: bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite --config=${{ matrix.job_info.bazel_config }} --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" //...
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@v4
         if: failure()

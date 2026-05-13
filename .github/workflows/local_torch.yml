@@ -103,7 +103,7 @@ jobs:
       - name: Build TorchTPU wheel
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
-          bazel build -c opt //ci/wheel:torch_tpu_wheel \
+          bazel build --config=remote_caching_readwrite --config=remote_execution_readwrite -c opt //ci/wheel:torch_tpu_wheel \
             --define TORCH_SOURCE=local \
             --repo_env=TORCH_SOURCE=$TORCH_SOURCE
 
@@ -124,7 +124,7 @@ jobs:
       - name: Test TorchTPU against Local PyTorch
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
-          bazel test //... \
+          bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite //... \
             --config=${{ matrix.job_info.source_test_config }} \
             --config=no_rbe \
             --google_default_credentials=true \
@@ -135,7 +135,7 @@ jobs:
       - name: Test TorchTPU Wheel
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
-          bazel test //... \
+          bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite //... \
             --config=${{ matrix.job_info.wheel_test_config }} \
             --config=no_rbe \
             --google_default_credentials=true \

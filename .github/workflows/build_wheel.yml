@@ -72,7 +72,7 @@ jobs:
       - name: Build wheel
         run: |
           WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
-          bazel build -c opt //ci/wheel:torch_tpu_wheel --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
+          bazel build --config=remote_caching_readwrite --config=remote_execution_readwrite -c opt //ci/wheel:torch_tpu_wheel --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
       - name: Check wheel metadata
@@ -170,4 +170,4 @@ jobs:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run tests
         shell: bash
-        run: bazel test ${{ matrix.extra_flags }} //...
+        run: bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite ${{ matrix.extra_flags }} //...

@@ -80,7 +80,7 @@ jobs:
       # C++ native binaries are compiled by Clang with the TSan runtime statically embedded.
       - name: Run C++ Tests (Static TSan)
         run: |
-          bazel test //... \
+          bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite //... \
             --config=${{ matrix.job_info.config }} \
             --config=tsan_cc \
             --test_lang_filters=cc
@@ -89,7 +89,7 @@ jobs:
       # inject the TSan runtime globally before Python's dlopen hides the symbols.
       - name: Run Python Tests (Dynamic TSan + Hermetic Python)
         run: |
-          bazel test //... \
+          bazel test --config=remote_caching_readwrite --config=remote_execution_readwrite //... \
             --config=${{ matrix.job_info.config }} \
             --config=tsan_py \
             --test_lang_filters=py \
