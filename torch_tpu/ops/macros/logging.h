@@ -301,7 +301,6 @@ void CheckScalarInput() {
       kOpName == OpName::kLinspaceOut ||                 //
       kOpName == OpName::kLocalScalarDense ||            //
       kOpName == OpName::kLogSoftmaxBackwardDataOut ||   //
-      kOpName == OpName::kLshiftScalar ||                //
       kOpName == OpName::kLt ||                          //
       kOpName == OpName::kMaskedFill_Scalar ||           //
       kOpName == OpName::kNativeBatchNormBackward ||     //
