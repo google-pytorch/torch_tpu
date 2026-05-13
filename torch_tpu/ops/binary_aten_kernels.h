@@ -66,6 +66,12 @@ enum class OutputOpMode {
   kInPlace,
 };
 
+// Indicates the direction for bitwise shift operations.
+enum class BitwiseShiftDirection {
+  kLeft,
+  kRight,
+};
+
 namespace internal {
 
 absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
