@@ -503,6 +503,7 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     },
     "nn.functional.ctc_loss": {
         torch.float32: {"rtol": 4.6e-7, "atol": 2.5e-4},
+        torch.bfloat16: {"rtol": 1e-2, "atol": 1e-2},
     },
     "nn.functional.embedding": {
         torch.bfloat16: {"rtol": 1.1e-2, "atol": 4e-3},
@@ -2134,6 +2135,9 @@ class TestOps(TorchTpuTestBase):
                 + (torch.bfloat16, torch.float16)
             ),
         },
+        # Excluded in compiled mode because our custom kernel accesses data
+        # during graph tracing, which FakeTensors do not support.
+        skip_if=lambda device, variant, op_input: op_testing.is_compiled_mode(),
     )
 
   def test_cumprod(self):

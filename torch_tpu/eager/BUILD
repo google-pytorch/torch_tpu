@@ -574,6 +574,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
+        "//shims/torch/c10/core:base_headers",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:error_utils",
@@ -716,6 +717,7 @@ torch_tpu_cc_library(
     deps = [
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:macro_utils",
         "@com_google_absl//absl/base:no_destructor",

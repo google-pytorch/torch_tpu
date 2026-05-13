@@ -859,6 +859,18 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       ("2d_lengths", 5, 2, 3, 3, [[5, 4]], [[3, 2]], torch.int32, False),
       ("int64_lengths", 5, 2, 3, 3, [5, 4], [3, 2], torch.int64, False),
       ("1d_targets", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, True),
+      (
+          "small_bf16",
+          5,
+          2,
+          3,
+          3,
+          [5, 4],
+          [3, 2],
+          torch.int32,
+          False,
+          torch.bfloat16,
+      ),
   )
   def test_ctc_loss(
       self,
@@ -870,12 +882,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       tgt_lens,
       lengths_dtype=torch.int32,
       is_1d_targets=False,
+      dtype=torch.float32,
   ):
     """Tests _ctc_loss.Tensor with various configurations."""
     blank = 0
 
     # Generate random log probs
-    probs = torch.randn(t, n, c)
+    probs = torch.randn(t, n, c, dtype=dtype)
     log_probs = torch.nn.functional.log_softmax(probs, dim=2)
 
     # Generate random targets in range [1, C-1] since blank is 0
@@ -894,6 +907,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         input_lengths=input_lengths,
         target_lengths=target_lengths,
     ):
+      if device == "cpu":
+        log_probs = log_probs.to(torch.float32)
+
       loss, log_alpha = torch.ops.aten._ctc_loss.Tensor(
           log_probs.to(device),
           targets.to(device),
@@ -924,9 +940,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           valid_mask, log_alpha, torch.tensor(float("-inf"), device=device)
       )
 
-      return loss, log_alpha
+      # Cast back to float32 for comparison if it was running in mixed precision
+      return loss.to(torch.float32), log_alpha.to(torch.float32)
 
-    self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(compute, rtol=0.01, atol=0.03)
+    else:
+      self.assert_close_tpu_vs_cpu(compute, rtol=2e-4, atol=3e-4)
 
   @parameterized.named_parameters(
       ("small", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, False),
@@ -945,6 +965,18 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       ("2d_lengths", 5, 2, 3, 3, [[5, 4]], [[3, 2]], torch.int32, False),
       ("int64_lengths", 5, 2, 3, 3, [5, 4], [3, 2], torch.int64, False),
       ("1d_targets", 5, 2, 3, 3, [5, 4], [3, 2], torch.int32, True),
+      (
+          "small_bf16",
+          5,
+          2,
+          3,
+          3,
+          [5, 4],
+          [3, 2],
+          torch.int32,
+          False,
+          torch.bfloat16,
+      ),
   )
   def test_ctc_loss_backward(
       self,
@@ -956,12 +988,13 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       tgt_lens,
       lengths_dtype=torch.int32,
       is_1d_targets=False,
+      dtype=torch.float32,
   ):
     """Tests _ctc_loss_backward.Tensor with various configurations."""
     blank = 0
 
     # Generate random log probs
-    probs = torch.randn(t, n, c)
+    probs = torch.randn(t, n, c, dtype=dtype)
     log_probs = torch.nn.functional.log_softmax(probs, dim=2)
 
     # Generate random targets in range [1, C-1] since blank is 0
@@ -975,12 +1008,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     # Calculate forward pass on CPU to get the inputs for backward
     loss, log_alpha = torch.ops.aten._ctc_loss.Tensor(
-        log_probs,
+        log_probs.to(torch.float32),
         targets,
         input_lengths,
         target_lengths,
         blank,
-        zero_infinity=False,
+        zero_infinity=True,
     )
 
     grad_out = torch.randn_like(loss)
@@ -995,7 +1028,19 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         loss=loss,
         log_alpha=log_alpha,
     ):
-      return torch.ops.aten._ctc_loss_backward.Tensor(
+      if device == "cpu":
+        log_probs = log_probs.to(torch.float32)
+        grad_out = grad_out.to(torch.float32)
+        loss = loss.to(torch.float32)
+        log_alpha = log_alpha.to(torch.float32)
+      else:
+        # On TPU, ensure all match log_probs dtype
+        target_dtype = log_probs.dtype
+        grad_out = grad_out.to(target_dtype)
+        loss = loss.to(target_dtype)
+        log_alpha = log_alpha.to(target_dtype)
+
+      res = torch.ops.aten._ctc_loss_backward.Tensor(
           grad_out.to(device),
           log_probs.to(device),
           targets.to(device),
@@ -1004,10 +1049,85 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           loss.to(device),
           log_alpha.to(device),
           blank,
-          zero_infinity=False,
+          zero_infinity=True,
+      )
+      return res.to(dtype)
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(compute, rtol=0.2, atol=2.0e-3)
+    else:
+      self.assert_close_tpu_vs_cpu(compute, rtol=3.7e-3, atol=4.2e-5)
+
+  @parameterized.named_parameters(
+      (
+          "small_bf16",
+          5,
+          2,
+          3,
+          3,
+          [5, 4],
+          [3, 2],
+          torch.int32,
+          False,
+          torch.bfloat16,
+      ),
+  )
+  def test_ctc_loss_nn(
+      self,
+      t,
+      n,
+      c,
+      s,
+      in_lens,
+      tgt_lens,
+      lengths_dtype=torch.int32,
+      is_1d_targets=False,
+      dtype=torch.float32,
+  ):
+    """Tests torch.nn.CTCLoss with various configurations."""
+    blank = 0
+
+    probs = torch.randn(t, n, c, dtype=dtype)
+    log_probs = torch.nn.functional.log_softmax(probs, dim=2)
+
+    if is_1d_targets:
+      targets = torch.randint(1, c, (sum(tgt_lens),), dtype=torch.int32)
+    else:
+      targets = torch.randint(1, c, (n, s), dtype=torch.int32)
+
+    input_lengths = torch.tensor(in_lens, dtype=lengths_dtype)
+    target_lengths = torch.tensor(tgt_lens, dtype=lengths_dtype)
+
+    def compute(
+        device,
+        log_probs=log_probs,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+    ):
+      log_probs_dev = log_probs.to(device).detach().requires_grad_(True)
+
+      if device == "cpu" and dtype == torch.bfloat16:
+        log_probs_dev = (
+            log_probs.to(torch.float32).detach().requires_grad_(True)
+        )
+
+      ctc_loss = torch.nn.CTCLoss(
+          blank=blank, reduction="mean", zero_infinity=False
       )
 
-    self.assert_close_tpu_vs_cpu(compute, rtol=3.7e-3, atol=4.2e-5)
+      loss = ctc_loss(
+          log_probs_dev,
+          targets.to(device),
+          input_lengths.to(device),
+          target_lengths.to(device),
+      )
+
+      loss.backward()
+
+      return loss.to(torch.float32), log_probs_dev.grad.to(torch.float32)
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=0.2, atol=2.0e-3)
 
   def test_col2im_fold(self):
     """Tests col2im via torch.nn.Fold.

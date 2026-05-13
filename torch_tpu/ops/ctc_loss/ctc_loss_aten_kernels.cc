@@ -34,11 +34,13 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Reduction.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/max.h"
 #include "ATen/ops/tensor.h"
 #include "ATen/ops/zeros.h"
 #include "c10/core/ScalarType.h"
+#include "torch/csrc/autograd/custom_function.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -1184,6 +1186,111 @@ at::Tensor AtenCtcLossBackwardTensor(
 
         return grad_in;
       });
+}
+
+at::Tensor AtenCtcLossTensorWithReduction(const at::Tensor& log_probs,
+                                          const at::Tensor& targets,
+                                          const at::Tensor& input_lengths,
+                                          const at::Tensor& target_lengths,
+                                          int64_t blank, int64_t reduction,
+                                          bool zero_infinity) {
+  TT_KERNEL(OpName::kCtcLossTensorOverload, param_keys,
+            (log_probs, targets, input_lengths, target_lengths, blank,
+             reduction, zero_infinity),
+            {
+              (void)param_keys;
+              auto [loss, log_alpha] =
+                  AtenCtcLossTensor(log_probs, targets, input_lengths,
+                                    target_lengths, blank, zero_infinity);
+
+              if (reduction == at::Reduction::Mean) {
+                auto clamped_target_lengths = target_lengths.clamp_min(1);
+                return loss.div(clamped_target_lengths.to(loss.dtype())).mean();
+              } else if (reduction == at::Reduction::Sum) {
+                return loss.sum();
+              }
+              return loss;
+            });
+}
+
+at::Tensor AtenCtcLossIntList(const at::Tensor& log_probs,
+                              const at::Tensor& targets,
+                              at::IntArrayRef input_lengths,
+                              at::IntArrayRef target_lengths, int64_t blank,
+                              int64_t reduction, bool zero_infinity) {
+  at::Tensor input_lengths_tensor =
+      at::tensor(input_lengths, at::kLong).to(log_probs.device());
+  at::Tensor target_lengths_tensor =
+      at::tensor(target_lengths, at::kLong).to(log_probs.device());
+
+  return AtenCtcLossTensorWithReduction(
+      log_probs, targets, input_lengths_tensor, target_lengths_tensor, blank,
+      reduction, zero_infinity);
+}
+
+at::Tensor AtenCtcLossAutograd::forward(torch::autograd::AutogradContext* ctx,
+                                        const at::Tensor& log_probs,
+                                        const at::Tensor& targets,
+                                        const at::Tensor& input_lengths,
+                                        const at::Tensor& target_lengths,
+                                        int64_t blank, int64_t reduction,
+                                        bool zero_infinity) {
+  auto [loss, log_alpha] = AtenCtcLossTensor(
+      log_probs, targets, input_lengths, target_lengths, blank, zero_infinity);
+
+  ctx->saved_data["reduction"] = reduction;
+  ctx->saved_data["blank"] = blank;
+  ctx->saved_data["zero_infinity"] = zero_infinity;
+
+  ctx->save_for_backward(
+      {log_probs, targets, input_lengths, target_lengths, loss, log_alpha});
+
+  if (reduction == at::Reduction::Mean) {
+    auto clamped_target_lengths = target_lengths.clamp_min(1);
+    return loss.div(clamped_target_lengths.to(loss.dtype())).mean();
+  } else if (reduction == at::Reduction::Sum) {
+    return loss.sum();
+  }
+  return loss;
+}
+
+torch::autograd::variable_list AtenCtcLossAutograd::backward(
+    torch::autograd::AutogradContext* ctx,
+    torch::autograd::variable_list grad_outputs) {
+  auto saved = ctx->get_saved_variables();
+  auto log_probs = saved[0];
+  auto targets = saved[1];
+  auto input_lengths = saved[2];
+  auto target_lengths = saved[3];
+  auto loss = saved[4];
+  auto log_alpha = saved[5];
+
+  auto reduction = ctx->saved_data["reduction"].toInt();
+  auto blank = ctx->saved_data["blank"].toInt();
+  auto zero_infinity = ctx->saved_data["zero_infinity"].toBool();
+
+  auto grad_output = grad_outputs[0];
+
+  at::Tensor grad;  // UNINITIALIZED_TENSOR_OK
+  if (reduction == at::Reduction::Mean) {
+    auto clamped_target_lengths = target_lengths.clamp_min(1);
+    grad = grad_output.div(loss.numel());
+    grad = grad.div(clamped_target_lengths.to(grad.dtype()));
+  } else if (reduction == at::Reduction::Sum) {
+    grad = grad_output.expand_as(loss);
+  } else {
+    grad = grad_output;
+  }
+
+  auto grad_log_probs = AtenCtcLossBackwardTensor(
+      grad, log_probs, targets, input_lengths, target_lengths, loss, log_alpha,
+      blank, zero_infinity);
+
+  // Returns gradients for each argument of forward():
+  // log_probs, targets, input_lengths, target_lengths, blank, reduction,
+  // zero_infinity Only log_probs requires gradient.
+  return {grad_log_probs, at::Tensor(), at::Tensor(), at::Tensor(),
+          at::Tensor(),   at::Tensor(), at::Tensor()};
 }
 
 }  // namespace torch_tpu

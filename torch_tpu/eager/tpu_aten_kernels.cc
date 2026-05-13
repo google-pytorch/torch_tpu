@@ -32,6 +32,8 @@
 #include "ATen/native/transformers/attention.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/max_pool2d_with_indices.h"
+#include "ATen/ops/tensor.h"
+#include "c10/core/ScalarType.h"
 #include "torch/library.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/a_min_max/a_min_max_aten_kernels.h"
@@ -274,7 +276,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   Impl(m, OpName::kCtcLoss, AtenCtcLoss);
   Impl(m, OpName::kCtcLossBackward, AtenCtcLossBackward);
   Impl(m, OpName::kCtcLossBackwardTensor, AtenCtcLossBackwardTensor);
+  Impl(m, OpName::kCtcLossIntList, AtenCtcLossIntList);
   Impl(m, OpName::kCtcLossTensor, AtenCtcLossTensor);
+  Impl(m, OpName::kCtcLossTensorOverload, AtenCtcLossTensorWithReduction);
   Impl(m, OpName::kCummaxHelper, AtenCummaxHelper);
   Impl(m, OpName::kCumminHelper, AtenCumminHelper);
   Impl(m, OpName::kCumprodOut, AtenCumprodOut);
@@ -768,6 +772,33 @@ TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
 //  and add an AutogradTPU entry to VariableFallbackKernel.cpp.
 TORCH_LIBRARY_IMPL(_, AutogradPrivateUse1, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
+}
+
+// Support torch.nn.CTCLoss in torch.compile for TPU in BFloat16.
+// PyTorch's default implementation accesses data pointer on CPU, causing
+// fallback to CPU during graph tracing. We override it here to keep it on TPU.
+TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
+  Impl(m, OpName::kCtcLossTensorOverload,
+       [](const at::Tensor& log_probs, const at::Tensor& targets,
+          const at::Tensor& input_lengths, const at::Tensor& target_lengths,
+          int64_t blank, int64_t reduction, bool zero_infinity) -> at::Tensor {
+         return AtenCtcLossAutograd::apply(log_probs, targets, input_lengths,
+                                           target_lengths, blank, reduction,
+                                           zero_infinity);
+       });
+
+  Impl(m, OpName::kCtcLossIntList,
+       [](const at::Tensor& log_probs, const at::Tensor& targets,
+          at::IntArrayRef input_lengths, at::IntArrayRef target_lengths,
+          int64_t blank, int64_t reduction, bool zero_infinity) -> at::Tensor {
+         at::Tensor input_lengths_tensor =
+             at::tensor(input_lengths, at::kLong).to(log_probs.device());
+         at::Tensor target_lengths_tensor =
+             at::tensor(target_lengths, at::kLong).to(log_probs.device());
+         return AtenCtcLossAutograd::apply(
+             log_probs, targets, input_lengths_tensor, target_lengths_tensor,
+             blank, reduction, zero_infinity);
+       });
 }
 
 // MaxPool is by default a CompositeImplicitAutograd op. The decomposition
