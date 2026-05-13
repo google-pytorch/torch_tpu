@@ -52,7 +52,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
 
   // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
   std::scoped_lock<std::mutex> lock(gen->mutex_);
-  at::Tensor rng_input_state = gen->DeviceStateTensor();
+  at::Tensor rng_input_state =
+      gen->DeviceStateTensor();  // DEVICE_STATE_TENSOR_OK=implementing
+                                 // RNG wrapper.
 
   TT_ASSIGN_OR_RETURN(auto results_array,
                       std::move(dispatch_func)(rng_input_state));
@@ -65,7 +67,10 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
       << "RNG op must produce at least one output (the new state).";
 
   auto rng_output_state = MakeTensor(std::move(results[0]));
-  TT_RETURN_IF_ERROR(gen->SetDeviceStateTensor(rng_output_state));
+  TT_RETURN_IF_ERROR(
+      gen->SetDeviceStateTensor(  // DEVICE_STATE_TENSOR_OK=implementing
+                                  // RNG wrapper.
+          rng_output_state));
 
   results.erase(results.begin());
   return results;
