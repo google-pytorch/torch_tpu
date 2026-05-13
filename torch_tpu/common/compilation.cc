@@ -372,6 +372,9 @@ static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
             // Important: keep the keys sorted alphabetically - the override
             // merging logic relies on this.
             // go/keep-sorted start
+            // Prevents generation of unnecessary debug info that slows down
+            // compilation.
+            {"xla_jf_debug_level", 0},
             // Reduces TPU binary size by using calls for deduplicated HLOs.
             {"xla_tpu_enable_deduplicated_calls", std::string("ENABLED")},
             // Enable "safe" XLA scavenge mode (where "safe" is needed by
