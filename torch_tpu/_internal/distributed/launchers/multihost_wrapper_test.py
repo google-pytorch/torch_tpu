@@ -16,6 +16,8 @@
 
 import os
 from unittest import mock
+# THIS IS A TEST
+print("HELLO WORLD")
 
 from absl.testing import absltest
 from torch_tpu._internal.distributed.launchers import multihost_wrapper

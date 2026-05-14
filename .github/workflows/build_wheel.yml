@@ -26,6 +26,14 @@ on:
         options:
           - "yes"
           - "no"
+      override_base_sha:
+        description: 'Override Base SHA for bazel-diff (optional)'
+        required: false
+        type: string
+      override_current_sha:
+        description: 'Override Current SHA for bazel-diff (optional)'
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -121,25 +129,30 @@ jobs:
         include:
           - name: CPU
             runner: linux-x86-n2-16
-            extra_flags: "--config=wheel_test_cpu"
+            config: "wheel_test_cpu"
+            extra_flags: ""
             custom_name: linux-x86-n2-16
           - name: TPU
             runner: linux-x86-ct5lp-224-8tpu
-            extra_flags: '--config=wheel_test_tpu --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            config: "wheel_test_tpu"
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
             custom_name: linux-x86-ct5lp-224-8tpu
           - name: "CPU (CUDA wheel)"
             runner: linux-x86-n2-16
-            extra_flags: "--config=wheel_test_cpu"
+            config: "wheel_test_cpu"
+            extra_flags: ""
             wheel_version: "cuda"
             custom_name: "CPU (CUDA wheel)"
           - name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n2-16
-            extra_flags: "--config=wheel_test_cpu"
+            config: "wheel_test_cpu"
+            extra_flags: ""
             wheel_version: "nightly"
             custom_name: "CPU (PyTorch Nightly)"
           - name: "TPU (PyTorch Nightly)"
             runner: linux-x86-tpu7x-224-4tpu
-            extra_flags: '--config=wheel_test_tpu_on_v7 --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            config: "wheel_test_tpu_on_v7"
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
             wheel_version: "nightly"
             custom_name: "TPU (PyTorch Nightly)"
     runs-on: ${{ matrix.runner }}
@@ -152,6 +165,12 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v5
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
+      # container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Download Wheel from GCS
         run: |
           mkdir dist
@@ -168,6 +187,11 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      - name: Run tests
-        shell: bash
-        run: bazel test ${{ matrix.extra_flags }} //...
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: ${{ matrix.config }}
+          extra_bazel_flags: ${{ matrix.extra_flags }}
+          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
