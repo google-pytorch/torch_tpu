@@ -650,9 +650,13 @@ class DiffusersProvider(BaseProvider):
 
       # Fallback to text_dim if cross_attention_dim is not specified in config
       # (e.g. for Wan2.2)
-      cross_attention_dim = cfg.get("cross_attention_dim")
-      if cross_attention_dim is None:
-        cross_attention_dim = cfg.get("text_dim", 2048)
+      # Add new fallback to joint_attention_dim for Flux models.
+      cross_attention_dim = (
+          cfg.get("cross_attention_dim")
+          or cfg.get("joint_attention_dim")
+          or cfg.get("text_dim")
+          or 2048
+      )
 
       # Encoder hidden states - These would be per token text embeddings
       # returned by CLIP-ViT/L text encoder
@@ -688,11 +692,44 @@ class DiffusersProvider(BaseProvider):
               " parameter found in forward signature."
           )
 
+      # Fix noisy_latents for flux model.
+      # Flux model only accepted flattened tensor.
+      if "Flux" in class_name:
+        patch_size = cfg.get("patch_size")
+        img_seq_len = (
+            latent_dims[0] // patch_size + latent_dims[1] // patch_size
+        )
+        noisy_latents = torch.randn(
+            batch_size,
+            img_seq_len,
+            latent_channels,
+            device=device,
+            dtype=d_type,
+        )
+
       kwargs = {
           primary_input_key: noisy_latents,
           "timestep": timesteps,
           "encoder_hidden_states": dummy_encoder_hidden_states,
       }
+
+      # Additional inputs for Flux models.
+      if "Flux" in class_name:
+        # Get the img_seq_len from tensor shape.
+        img_seq_len = noisy_latents.shape[1]
+
+        if "img_ids" in forward_params:
+          kwargs["img_ids"] = torch.zeros(
+              (batch_size, img_seq_len, 4),
+              dtype=d_type,
+              device=device,
+          )
+        if "txt_ids" in forward_params:
+          kwargs["txt_ids"] = torch.zeros(
+              (batch_size, seq_len, 4),
+              dtype=d_type,
+              device=device,
+          )
 
       # Create dummy additional conditioning inputs which would be expected in
       # an SDXL pipeline.

@@ -1383,7 +1383,8 @@ def huggingface_diffuser_model_builder(
     model = model_cpu.to(weights_dtype).to(device)
     model.apply(_init_model_weights)
 
-    # Dimensions derived from pipeline settings (height=704, width=1280, num_frames=5):
+    # Dimensions derived from pipeline settings
+    # (height=704, width=1280, num_frames=5):
     text_seq_len = 512
     batch_size = 1
     #   (VAE temporal downscale factor is 4)
@@ -1393,6 +1394,35 @@ def huggingface_diffuser_model_builder(
     latent_width = 80  # width // 16 = 1280 // 16 = 80
     _, example_inputs = module_spec.sample_inputs_factory(
         (batch_size, text_seq_len, latent_frames, latent_height, latent_width),
+        str(device),
+    )
+
+    for k, v in example_inputs.items():
+
+      if isinstance(v, torch.Tensor) and v.is_floating_point():
+        example_inputs[k] = v.to(weights_dtype)
+
+  elif model_name == "black-forest-labs/FLUX.2-klein-9B":
+    registry = get_module_registry()
+    module_spec = registry.get_module_spec(
+        "diffusers", model_name, load_weights=False, subfolder="transformer"
+    )
+
+    with torch.device("cpu"):
+      model_cpu = module_spec.module_factory()
+
+    model = model_cpu.to(weights_dtype).to(device)
+    model.apply(_init_model_weights)
+
+    # Dimensions derived from pipeline settings (height=1024, width=1024):
+    text_seq_len = 512
+    batch_size = 1
+
+    #   (VAE spatial downscale factor is 16 for Wan2.2)
+    latent_height = 64  # height // 16 = 1024 // 16 = 64
+    latent_width = 64  # width // 16 = 1024 // 16 = 64
+    _, example_inputs = module_spec.sample_inputs_factory(
+        (batch_size, text_seq_len, latent_height, latent_width),
         str(device),
     )
 
