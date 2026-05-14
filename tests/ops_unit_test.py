@@ -872,6 +872,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       is_1d_targets=False,
   ):
     """Tests _ctc_loss.Tensor with various configurations."""
+    torch.manual_seed(0)
     blank = 0
 
     # Generate random log probs
@@ -958,6 +959,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       is_1d_targets=False,
   ):
     """Tests _ctc_loss_backward.Tensor with various configurations."""
+    torch.manual_seed(0)
     blank = 0
 
     # Generate random log probs
