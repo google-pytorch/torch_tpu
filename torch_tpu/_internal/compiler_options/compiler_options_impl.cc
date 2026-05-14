@@ -25,9 +25,13 @@ namespace torch_tpu {
 
 namespace py = pybind11;
 
+// THIS IS A TEST
+
 static void PushCompilerOptions(CompilerOptionOverrides options) {
   TT_THROW_IF_ERROR(PushCompilerOptionOverrides(std::move(options)));
 }
+
+static void DummyTestFunc() {}
 
 PYBIND11_MODULE(compiler_options_impl, m) {
   // Pushes the XLA options onto the per-thread custom compiler options stack.
@@ -35,6 +39,9 @@ PYBIND11_MODULE(compiler_options_impl, m) {
 
   // Pops the XLA options from the per-thread custom compiler options stack.
   m.def("pop_compiler_options", []() { PopCompilerOptionOverrides(); });
+
+  // Dummy test function
+  m.def("dummy_test_func", &DummyTestFunc);
 }
 
 }  // namespace torch_tpu
