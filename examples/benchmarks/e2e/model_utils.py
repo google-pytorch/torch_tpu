@@ -1716,7 +1716,10 @@ def huggingface_diffuser_model_builder(
       and example inputs.
   """
   model_name = model_and_input_args.model_name
-  if model_name == "Wan-AI/Wan2.2-TI2V-5B-Diffusers":
+  if model_name in (
+      "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+      "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+  ):
     registry = get_module_registry()
     module_spec = registry.get_module_spec(
         "diffusers", model_name, load_weights=False, subfolder="transformer"
@@ -1728,7 +1731,8 @@ def huggingface_diffuser_model_builder(
     model = model_cpu.to(weights_dtype).to(device)
     model.apply(_init_model_weights)
 
-    # Dimensions derived from pipeline settings (height=704, width=1280, num_frames=5):
+    # Dimensions derived from pipeline settings
+    # (height=704, width=1280, num_frames=5):
     text_seq_len = 512
     batch_size = 1
     #   (VAE temporal downscale factor is 4)

@@ -59,7 +59,9 @@ _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
 # Note: hf_resnet_50 is from Hugging Face transformers, which differs from timm_resnet_50.
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
+_HF_GEMMA_4_31B_12L_BENCHMARK_NAME = "hf_gemma_4_31b_12l"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
+_WAN_2_2_I2V_A14B_BENCHMARK_NAME = "wan_2_2_i2v_a14b"
 
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
@@ -1376,6 +1378,27 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     )
     self.run_performance_benchmark_test(
         config, _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME
+    )
+
+  @parameterized.named_parameters(test_utils.generate_run_mode_configs())
+  def test_wan_2_2_i2v_a14b_forward(self, run_mode):
+    """Tests the forward pass of Wan-2.2-I2V-A14B."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_DIFFUSER,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        ),
+        model_and_input_factory=model_utils.huggingface_diffuser_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _WAN_2_2_I2V_A14B_BENCHMARK_NAME
     )
 
 
