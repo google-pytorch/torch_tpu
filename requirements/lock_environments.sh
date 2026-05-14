@@ -31,19 +31,25 @@ script_dir=$(dirname "$(readlink -f "$0")")
 working_dir="$script_dir/.."
 cd "$working_dir"
 
-# This is stateful, so we must remove the existing lock file first
-REQUIREMENTS_FILE="requirements/requirements.txt"
+# Loop over supported Python versions and generate lock files
+for version in "3.11" "3.12" "3.14"; do
+  version_und=$(echo "$version" | tr '.' '_')
+  REQUIREMENTS_FILE="requirements/requirements_${version_und}.txt"
 
+  echo "Generating lock file for Python $version -> $REQUIREMENTS_FILE"
+  
+  if [ -f "$REQUIREMENTS_FILE" ]; then
+    rm "$REQUIREMENTS_FILE"
+  fi
 
-if [ -f "$REQUIREMENTS_FILE" ]; then
-  rm "$REQUIREMENTS_FILE"
-fi
-
-# See https://docs.astral.sh/uv/reference/cli/#uv-pip-compile for more details.
-uv pip compile pyproject.toml \
-  --all-extras \
-  --python-version 3.12 \
-  --python-platform x86_64-manylinux_2_31 \
-  --resolution lowest-direct \
-  --generate-hashes \
-  --output-file "$REQUIREMENTS_FILE"
+  # See https://docs.astral.sh/uv/reference/cli/#uv-pip-compile for more details.
+  uv pip compile pyproject.toml \
+    --all-extras \
+    --python-version "$version" \
+    --python-platform x86_64-manylinux_2_31 \
+    --generate-hashes \
+    --index-url https://pypi.org/simple \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --index-strategy unsafe-best-match \
+    --output-file "$REQUIREMENTS_FILE"
+done

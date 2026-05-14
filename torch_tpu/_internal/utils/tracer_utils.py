@@ -222,7 +222,7 @@ def replay_log(
     The replayed log, which may include exceptions if the replay fails.
   """
   if log[-1]["idx"] != len(log) * 2 - 1:
-    raise ValueError(f"{log[-1]["idx"]=} != {(len(log)*2-1)=}.")
+    raise ValueError(f"{log[-1]['idx']=} != {(len(log)*2-1)=}.")
 
   log = tuple(log)  # Ignore mutations to the log.
 

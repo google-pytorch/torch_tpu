@@ -52,7 +52,7 @@ concurrency:
 jobs:
   # TODO(pganssle): Migrate to cibuildwheel
   build_wheels:
-    name: "Build wheel on ${{ matrix.job_info.runner }}"
+    name: "Build wheel on ${{ matrix.job_info.runner }} (Python ${{ matrix.job_info.python_version }})"
     strategy:
       matrix:
         job_info:
@@ -60,6 +60,17 @@ jobs:
             {
               runner: "linux-x86-n2-16",
               container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest",
+              python_version: "3.11",
+            },
+            {
+              runner: "linux-x86-n2-16",
+              container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest",
+              python_version: "3.12",
+            },
+            {
+              runner: "linux-x86-n2-16",
+              container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest",
+              python_version: "3.14",
             },
           ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
@@ -71,8 +82,8 @@ jobs:
     env:
       WHEEL_DIR: dist
     outputs:
-      # Full path to the wheel on GCS
-      gcs-wheel-path: ${{ steps.upload.outputs.gcs_wheel_path }}
+      # Directory containing wheels on GCS
+      gcs-wheel-dir: ${{ steps.upload.outputs.gcs_wheel_dir }}
     permissions:
       contents: read
     steps:
@@ -80,7 +91,10 @@ jobs:
       - name: Build wheel
         run: |
           WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
-          bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
+          echo "=== BAZEL-BIN WHEEL DIR CONTENTS ==="
+          ls -la bazel-bin/ci/wheel/ || true
+          echo "========================================"
+          bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.job_info.python_version }} --define PYTHON_VERSION=${{ matrix.job_info.python_version }}
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
       - name: Check wheel metadata
@@ -93,10 +107,8 @@ jobs:
           WHEEL_FILENAME=$(basename "$WHEEL_PATH")
           GCS_PATH="gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/$WHEEL_FILENAME"
           gcloud storage cp "$WHEEL_PATH" "$GCS_PATH"
-          # We must store the full path to the wheel, not just the bucket, since
-          # sometimes stale pre-existing wheels exist in the bucket, and we need
-          # to know which one is the one this particular job uploaded.
-          echo "gcs_wheel_path=$GCS_PATH" >> $GITHUB_OUTPUT
+          # Pass the directory path to the next job
+          echo "gcs_wheel_dir=gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/" >> $GITHUB_OUTPUT
       - name: Upload to Artifact Registry
         # Run only on main branch, once a day.
         if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -127,33 +139,71 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: CPU
+          - name: "CPU (Python 3.12)"
             runner: linux-x86-n2-16
             config: "wheel_test_cpu"
             extra_flags: ""
-            custom_name: linux-x86-n2-16
-          - name: TPU
+            python_version: "3.12"
+            python_repo: "python_3_12"
+            custom_name: "CPU (Python 3.12)"
+          - name: "TPU (Python 3.12)"
             runner: linux-x86-ct5lp-224-8tpu
             config: "wheel_test_tpu"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
-            custom_name: linux-x86-ct5lp-224-8tpu
+            python_version: "3.12"
+            python_repo: "python_3_12"
+            custom_name: "TPU (Python 3.12)"
+          - name: "TPU (Python 3.11)"
+            runner: linux-x86-ct5lp-224-8tpu
+            config: "wheel_test_tpu"
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            python_version: "3.11"
+            python_repo: "python_3_11"
+            custom_name: "TPU (Python 3.11)"
+          - name: "TPU (Python 3.14)"
+            runner: linux-x86-ct5lp-224-8tpu
+            config: "wheel_test_tpu"
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            python_version: "3.14"
+            python_repo: "python_3_14"
+            custom_name: "TPU (Python 3.14)"
+          - name: "CPU (Python 3.11)"
+            runner: linux-x86-n2-16
+            config: "wheel_test_cpu"
+            extra_flags: ""
+            python_version: "3.11"
+            python_repo: "python_3_11"
+            custom_name: "CPU (Python 3.11)"
+          - name: "CPU (Python 3.14)"
+            runner: linux-x86-n2-16
+            config: "wheel_test_cpu"
+            extra_flags: ""
+            python_version: "3.14"
+            python_repo: "python_3_14"
+            custom_name: "CPU (Python 3.14)"
           - name: "CPU (CUDA wheel)"
             runner: linux-x86-n2-16
             config: "wheel_test_cpu"
             extra_flags: ""
             wheel_version: "cuda"
+            python_version: "3.12"
+            python_repo: "python_3_12"
             custom_name: "CPU (CUDA wheel)"
           - name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n2-16
             config: "wheel_test_cpu"
             extra_flags: ""
             wheel_version: "nightly"
+            python_version: "3.12"
+            python_repo: "python_3_12"
             custom_name: "CPU (PyTorch Nightly)"
           - name: "TPU (PyTorch Nightly)"
             runner: linux-x86-tpu7x-224-4tpu
             config: "wheel_test_tpu_on_v7"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
             wheel_version: "nightly"
+            python_version: "3.12"
+            python_repo: "python_3_12"
             custom_name: "TPU (PyTorch Nightly)"
     runs-on: ${{ matrix.runner }}
     container:
@@ -173,8 +223,12 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Download Wheel from GCS
         run: |
+          rm -rf dist
           mkdir dist
-          gcloud storage cp "${{ needs.build_wheels.outputs.gcs-wheel-path }}" dist/
+          PYTHON_VER_CLEAN=$(echo "${{ matrix.python_version }}" | tr -d '.')
+          gcloud storage cp "${{ needs.build_wheels.outputs.gcs-wheel-dir }}torch_tpu-0.1.1*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # In case there are multiple wheels for the same version on GCS, keep only the newest one
+          # ls -t dist/torch_tpu*.whl | tail -n +2 | xargs rm -f || true
       - name: Download a specific CUDA-enabled torch wheel to verify the override mechanism
         if: matrix.wheel_version == 'cuda'
         run: |
@@ -193,5 +247,5 @@ jobs:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
-          extra_bazel_flags: ${{ matrix.extra_flags }}
+          extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

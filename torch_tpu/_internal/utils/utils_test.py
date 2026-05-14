@@ -414,7 +414,7 @@ Tolerance Suggestions:
           utils.assert_close(actual[key], expected[key])
         except Exception as e:
           raise self.failureException(
-              f"{key=}\n{actual["idx"]=}\n{actual[key]=}\n{expected[key]=}\n"
+              f"{key=}\n{actual['idx']=}\n{actual[key]=}\n{expected[key]=}\n"
           ) from e
 
   def test_activation_tracer_on_zero_child_module_creates_log(self):

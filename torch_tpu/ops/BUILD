@@ -537,7 +537,7 @@ oss_target(
     args = ["$(location :custom_kernels_test)"],
     data = [
         ":custom_kernels_test",
-        "@pypi_libtpu//:whl",
+        "@pypi//libtpu:whl",
     ],
     tags = [
         # This is normally added by the torch_tpu_... rules
