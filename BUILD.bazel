@@ -87,6 +87,7 @@ genrule(
         "//tests:all_py_files_recursive",
         "//torch_tpu/_internal/distributed:spmd_util",
         "//torch_tpu/_internal/utils:test_fixtures",
+        "//torch_tpu/_internal/utils:benchmarking",
     ] + select({
         "//ci/wheel:use_local_torch": [
             ":torch_libs_mapped",
