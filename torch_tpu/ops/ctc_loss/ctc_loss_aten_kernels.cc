@@ -34,6 +34,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Reduction.h"
 #include "ATen/ops/empty.h"
 #include "ATen/ops/max.h"
 #include "ATen/ops/tensor.h"
@@ -50,6 +51,8 @@
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/reductions/reductions.h"
+#include "torch_tpu/ops/reductions/sum.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -577,6 +580,49 @@ absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossShlo(
                        log_probs_type.getElementType(), zero_infinity));
 
   return std::vector<mlir::MlirOp>{loss, whl[2]};
+}
+
+absl::StatusOr<std::vector<mlir::MlirOp>> BuildCtcLossWithReductionShlo(
+    mlir::MlirOp log_probs, mlir::MlirOp targets, mlir::MlirOp input_lengths,
+    mlir::MlirOp target_lengths, int64_t blank, int64_t reduction,
+    ZeroInfinity zero_infinity, mlir::MlirBuilder& builder) {
+  TT_ASSIGN_OR_RETURN(
+      auto shlo_outputs,
+      BuildCtcLossShlo(log_probs, targets, input_lengths, target_lengths, blank,
+                       zero_infinity, builder));
+  mlir::MlirOp loss = shlo_outputs[0];
+  mlir::MlirOp log_alpha = shlo_outputs[1];
+
+  mlir::RankedTensorType loss_type = GetTensorTypeOrDie(loss);
+  TT_ASSIGN_OR_RETURN(mlir::ElementType loss_dtype, GetElementType(loss));
+
+  mlir::MlirOp loss_output = loss;
+
+  if (reduction == at::Reduction::Mean) {
+    mlir::MlirOp target_lengths_float =
+        mlir::stablehlo::ConvertElementType(target_lengths, loss_dtype);
+    mlir::MlirOp one = MakeConstantLike(target_lengths_float, 1);
+    mlir::MlirOp target_lengths_clamped =
+        mlir::stablehlo::Max(target_lengths_float, one);
+
+    mlir::MlirOp losses = mlir::stablehlo::Div(loss, target_lengths_clamped);
+
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp sum,
+        BuildSumShlo(losses, GetAllDimensions(losses), ReductionMode::kDropDims,
+                     /*element_type_opt=*/std::nullopt));
+    int64_t n = loss_type.getShape()[0];
+    mlir::MlirOp n_const = MakeScalarConstant(builder, n, loss_dtype);
+    loss_output = mlir::stablehlo::Div(sum, n_const);
+  } else if (reduction == at::Reduction::Sum) {
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp sum,
+        BuildSumShlo(loss, GetAllDimensions(loss), ReductionMode::kDropDims,
+                     /*element_type_opt=*/std::nullopt));
+    loss_output = sum;
+  }
+
+  return std::vector<mlir::MlirOp>{loss_output, log_alpha};
 }
 
 // The core dynamic programming body for the CTC backward algorithm at time t.
@@ -1184,6 +1230,134 @@ at::Tensor AtenCtcLossBackwardTensor(
 
         return grad_in;
       });
+}
+
+absl::StatusOr<DeviceBufferRef> CtcLossPublic(const at::Tensor& log_probs,
+                                              const at::Tensor& targets,
+                                              const at::Tensor& input_lengths,
+                                              const at::Tensor& target_lengths,
+                                              int64_t blank, int64_t reduction,
+                                              bool zero_infinity,
+                                              OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(log_probs.dim() == 3, error::kInvalidArgument)
+      << "expected log_probs to be 3-D, got " << log_probs.dim() << "-D";
+  TT_RET_CHECK(targets.dim() == 1 || targets.dim() == 2,
+               error::kInvalidArgument)
+      << "expected targets to be 1-D or 2-D, got " << targets.dim() << "-D";
+
+  const int64_t batch_size = log_probs.size(1);
+  TT_RET_CHECK(input_lengths.numel() == batch_size, error::kInvalidArgument)
+      << "expected input_lengths to have batch_size (" << batch_size
+      << ") elements, got " << input_lengths.numel();
+  TT_RET_CHECK(target_lengths.numel() == batch_size, error::kInvalidArgument)
+      << "expected target_lengths to have batch_size (" << batch_size
+      << ") elements, got " << target_lengths.numel();
+
+  const int64_t n = log_probs.size(1);
+
+  at::Tensor padded_targets = targets;
+  if (targets.dim() == 1) {
+    at::Tensor target_lengths_cpu =
+        target_lengths.to(at::kLong).cpu().contiguous();
+    auto lengths_accessor = target_lengths_cpu.accessor<int64_t, 1>();
+    const int64_t max_target_length =
+        target_lengths_cpu.numel() > 0
+            ? at::max(target_lengths_cpu).item<int64_t>()
+            : 0;
+
+    padded_targets = at::zeros({n, max_target_length}, targets.options());
+    int64_t offset = 0;
+    for (int64_t i = 0; i < n; ++i) {
+      int64_t len = lengths_accessor[i];
+      if (len > 0) {
+        padded_targets.select(0, i).narrow(0, 0, len).copy_(
+            targets.narrow(0, offset, len));
+      }
+      offset += len;
+    }
+  }
+
+  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(log_probs.scalar_type()));
+
+  Dimensions loss_dims;
+  if (reduction == at::Reduction::None) {
+    loss_dims = {n};
+  } else {
+    loss_dims = {};
+  }
+
+  DispatchOpOptions<1> options = {
+      .out_dtype = output_dtype,
+      .out_dims = loss_dims,
+      .op_param_cache_keys = std::move(param_keys),
+  };
+
+  auto op_builder = [blank, reduction,
+                     zero_infinity](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+      -> absl::StatusOr<MlirOpResults<1>> {
+    auto& [log_probs_op, targets_op, input_lengths_op, target_lengths_op] =
+        inputs;
+    auto& builder = log_probs_op.getBuilder();
+    TT_ASSIGN_OR_RETURN(
+        auto results,
+        BuildCtcLossWithReductionShlo(
+            log_probs_op, targets_op, input_lengths_op, target_lengths_op,
+            blank, reduction,
+            zero_infinity ? ZeroInfinity::kYes : ZeroInfinity::kNo, builder));
+    return MlirOpResults<1>{results[0]};
+  };
+
+  TT_ASSIGN_OR_RETURN(auto output_buf,
+                      (DispatchOp<4, 1>(std::move(op_builder),
+                                        {log_probs, padded_targets,
+                                         input_lengths, target_lengths},
+                                        std::move(options))));
+  return output_buf;
+}
+
+at::Tensor AtenCtcLossTensorPublic(const at::Tensor& log_probs,
+                                   const at::Tensor& targets,
+                                   const at::Tensor& input_lengths,
+                                   const at::Tensor& target_lengths,
+                                   int64_t blank, int64_t reduction,
+                                   bool zero_infinity) {
+  TT_KERNEL(OpName::kCtcLossTensorPublic, param_keys,
+            (log_probs, targets, input_lengths, target_lengths, blank,
+             reduction, zero_infinity),
+            {
+              TT_ASSIGN_OR_THROW(
+                  DeviceBufferRef result,
+                  CtcLossPublic(log_probs, targets, input_lengths,
+                                target_lengths, blank, reduction, zero_infinity,
+                                std::move(param_keys)));
+              return MakeTensor(std::move(result));
+            });
+}
+
+at::Tensor AtenCtcLossIntListPublic(const at::Tensor& log_probs,
+                                    const at::Tensor& targets,
+                                    at::IntArrayRef input_lengths,
+                                    at::IntArrayRef target_lengths,
+                                    int64_t blank, int64_t reduction,
+                                    bool zero_infinity) {
+  TT_KERNEL(OpName::kCtcLossIntListPublic, param_keys,
+            (log_probs, targets,
+             IgnoreInCacheKey(input_lengths, "delegates to CtcLossPublic"),
+             IgnoreInCacheKey(target_lengths, "delegates to CtcLossPublic"),
+             blank, reduction, zero_infinity),
+            {
+              at::Tensor input_lengths_tensor =
+                  at::tensor(input_lengths, at::kLong).to(log_probs.device());
+              at::Tensor target_lengths_tensor =
+                  at::tensor(target_lengths, at::kLong).to(log_probs.device());
+              TT_ASSIGN_OR_THROW(
+                  DeviceBufferRef result,
+                  CtcLossPublic(log_probs, targets, input_lengths_tensor,
+                                target_lengths_tensor, blank, reduction,
+                                zero_infinity, std::move(param_keys)));
+              return MakeTensor(std::move(result));
+            });
 }
 
 }  // namespace torch_tpu

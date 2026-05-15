@@ -48,6 +48,20 @@ at::Tensor AtenCtcLossBackwardTensor(
     const at::Tensor& target_lengths, const at::Tensor& neg_log_likelihood,
     const at::Tensor& log_alpha, int64_t blank, bool zero_infinity);
 
+at::Tensor AtenCtcLossIntListPublic(const at::Tensor& log_probs,
+                                    const at::Tensor& targets,
+                                    at::IntArrayRef input_lengths,
+                                    at::IntArrayRef target_lengths,
+                                    int64_t blank, int64_t reduction,
+                                    bool zero_infinity);
+
+at::Tensor AtenCtcLossTensorPublic(const at::Tensor& log_probs,
+                                   const at::Tensor& targets,
+                                   const at::Tensor& input_lengths,
+                                   const at::Tensor& target_lengths,
+                                   int64_t blank, int64_t reduction,
+                                   bool zero_infinity);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_CTC_LOSS_CTC_LOSS_ATEN_KERNELS_H_
