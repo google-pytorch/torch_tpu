@@ -1,0 +1,99 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# This workflow runs clang-tidy static analysis on Pull Requests to catch C++ bugs, memory leaks,
+# and performance issues on newly modified lines.
+
+name: Clang Tidy
+
+on:
+  pull_request:
+    paths:
+      - '**.cc'
+      - '**.h'
+      - '**.cpp'
+      - '**.hpp'
+      - 'ci/tools/clang_tidy.sh'
+      - '.clang-tidy'
+
+permissions:
+  contents: read
+
+# Cancel old jobs when a contributor pushes new commits to their PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+jobs:
+  run_clang_tidy:
+    name: Clang tidy check
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      BUILD_DIR: .
+    steps:
+      - name: Check out PR HEAD
+        uses: actions/checkout@v5
+
+      - name: Fetch PR Base Commit
+        run: git fetch --no-tags --depth=1 origin $BASE_SHA
+
+      # uv is a blazing-fast, single-binary replacement for pip, pipx, and virtualenv written in
+      # Rust.
+      # Modern Linux runners (Ubuntu 23.04+) enforce PEP 668 ("Externally Managed Environments").
+      # This blocks standard 'pip install' commands from modifying the global system Python
+      # interpreter to prevent OS instability. 'uv' natively works around this safely and cleanly by
+      # utilizing fully isolated virtual environments under the hood.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Build and Generate Compile Commands
+        run: |
+          # 1. Find modified C++ files (using the job-level $BASE_SHA)
+          FILES=$(git diff --name-only --diff-filter=d origin/$BASE_SHA HEAD | grep -E '\.(cc|cpp|h|hpp)$' || true)
+
+          if [ -z "$FILES" ]; then
+            echo "No C++ files changed. Skipping build."
+            echo "[]" > compile_commands.json
+            exit 0
+          fi
+
+          # 2. Find the Bazel packages that own these files
+          PACKAGES=$(echo "$FILES" | while read -r file; do
+              echo "//$(dirname "$file"):all"
+          done | sort -u | tr '\n' ' ')
+
+          # 3. Query Bazel for the specific targets that depend on these files
+          TARGETS=$(bazel query "kind('cc_(library|binary|test)', rdeps(set($PACKAGES), set($FILES), 1))")
+
+          if [ -z "$TARGETS" ]; then
+            echo "No C++ targets affected. Skipping build."
+            echo "[]" > compile_commands.json
+            exit 0
+          fi
+
+          echo "Building specific targets: $TARGETS"
+
+          # 4. Build ONLY the affected targets to generate their headers
+          bazel build $TARGETS
+
+          # 5. Generate compilation database safely
+          bazel aquery "mnemonic(CppCompile, set($TARGETS))" --output=jsonproto > aquery_output.json
+          bazel run //ci/tools:generate_compile_commands < aquery_output.json
+
+      # Tox automatically inherits $BASE_SHA and $BUILD_DIR
+      - name: Run Clang Tidy via Tox
+        run: uvx --with tox-uv tox run -e tidy-lint
