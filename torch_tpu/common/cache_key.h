@@ -73,6 +73,12 @@ class MaybePromotedScalar;
 
 enum class ScalarValue { kZero, kOne };
 
+enum class ScalingMode {
+  kArbitrary,
+  kZero,
+  kOne,
+};
+
 namespace internal {
 
 struct PromotedScalarState {
@@ -93,7 +99,15 @@ void AppendPromotedScalarPointers(
     std::vector<const PromotedScalarState* absl_nonnull>& promoted_scalars,
     const MaybePromotedScalar& arg);
 
+bool IsScalarEqualTo(const at::Scalar& scalar, int value);
+
 }  // namespace internal
+
+[[nodiscard]] inline ScalingMode GetScalingMode(const at::Scalar& s) {
+  if (internal::IsScalarEqualTo(s, 0)) return ScalingMode::kZero;
+  if (internal::IsScalarEqualTo(s, 1)) return ScalingMode::kOne;
+  return ScalingMode::kArbitrary;
+}
 
 // A scalar value that is promoted to a tensor lazily.
 class PromotedScalar {
@@ -280,6 +294,7 @@ absl::StatusOr<std::string> FormatParamCacheKey(at::Scalar value);
   return std::string(value.symbol().toQualString());
 }
 [[nodiscard]] std::string FormatParamCacheKey(c10d::ReduceOp value);
+[[nodiscard]] std::string FormatParamCacheKey(ScalingMode value);
 [[nodiscard]] inline std::string FormatParamCacheKey(
     const mlir::ElementType value) {
   return std::string(ToShortString(value));

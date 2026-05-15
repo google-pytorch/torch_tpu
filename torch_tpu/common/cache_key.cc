@@ -94,6 +94,19 @@ std::string FormatParamCacheKey(const c10d::ReduceOp value) {
   return ToString(reduce_op_type);
 }
 
+std::string FormatParamCacheKey(const ScalingMode value) {
+  switch (value) {
+    case ScalingMode::kArbitrary:
+      return "a";
+    case ScalingMode::kZero:
+      return "0";
+    case ScalingMode::kOne:
+      return "1";
+  }
+  ABSL_LOG(FATAL)  // CRASH_OK=Unreachable under valid enum values.
+      << "Unknown ScalingMode: " << static_cast<int>(value);
+}
+
 std::string FormatParamCacheKey(const std::string_view value) {
   return std::string(value);
 }
