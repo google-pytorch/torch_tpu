@@ -36,6 +36,18 @@ def expected_to_fail_in_oss(func):
   return func if env.IS_INTERNAL_TORCH_TPU else unittest.expectedFailure(func)
 
 
+def expected_to_fail_in_oss_unless_in_wheel_test_with_pytorch_nightly(func):
+  """Annotates a test to fail in OSS, but allows it to pass in workflow "Test wheel on TPU (PyTorch Nightly)"."""
+
+  if (
+      env.IS_INTERNAL_TORCH_TPU
+      or os.environ.get("TEST_WHEEL_ON_TPU_USING_PYTORCH_NIGHTLY_WHEEL") == "1"
+  ):
+    return func
+  else:
+    return unittest.expectedFailure(func)
+
+
 def compile_and_assert_outputs(func, inputs, expected_outputs=None):
   """Compiles a function, runs it, and returns compiled executables."""
   backend = tt_compile.TpuBackend(debug=True)
@@ -359,7 +371,7 @@ class MultiTpuTorchCompileTest(absltest.TestCase):
         ),
     )
 
-  @expected_to_fail_in_oss
+  @expected_to_fail_in_oss_unless_in_wheel_test_with_pytorch_nightly
   def test_all_to_all_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
@@ -395,7 +407,7 @@ class MultiTpuTorchCompileTest(absltest.TestCase):
         ),
     )
 
-  @expected_to_fail_in_oss
+  @expected_to_fail_in_oss_unless_in_wheel_test_with_pytorch_nightly
   def test_broadcast_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
@@ -404,7 +416,7 @@ class MultiTpuTorchCompileTest(absltest.TestCase):
         ),
     )
 
-  @expected_to_fail_in_oss
+  @expected_to_fail_in_oss_unless_in_wheel_test_with_pytorch_nightly
   def test_reduce_scatter_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
@@ -413,7 +425,7 @@ class MultiTpuTorchCompileTest(absltest.TestCase):
         ),
     )
 
-  @expected_to_fail_in_oss
+  @expected_to_fail_in_oss_unless_in_wheel_test_with_pytorch_nightly
   def test_gather_with_torch_compile(self):
     distributed_utils.dist_run(
         nproc_per_node=8,
