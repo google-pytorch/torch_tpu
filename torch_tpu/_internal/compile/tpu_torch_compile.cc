@@ -64,12 +64,15 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/future.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/layout.h"
+#include "xla/literal.h"
 #include "xla/mlir/utils/error_util.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/shape_util.h"
 
 namespace torch_tpu {
 namespace py = pybind11;
@@ -251,6 +254,102 @@ void PyPushEnableTracebacks(std::optional<bool> enabled) {
                                                : TracebackMode::kDisabled)
           : std::nullopt;
   PushContextState(state);
+}
+
+at::Tensor PyPadViaHostDma(
+    const at::Tensor& src_tensor,
+    const std::vector<int64_t>& padded_shape) {  // INT_VEC_OK
+  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref,
+                     GetBufferFromAtTensor(src_tensor));
+  TT_ASSIGN_OR_THROW(auto* src_buffer, buffer_ref.GetOrMaterializeBuffer());
+
+  xla::Shape padded_xla_shape = xla::ShapeUtil::MakeShape(
+      src_buffer->on_device_shape().element_type(), padded_shape);
+  size_t padded_transfer_size = xla::ShapeUtil::ByteSizeOf(padded_xla_shape);
+
+  std::vector<uint8_t> host_staging(padded_transfer_size, 0);
+  xla::Shape unpadded_host_shape =
+      xla::ShapeUtil::MakeShapeWithDescendingLayout(
+          src_buffer->on_device_shape().element_type(),
+          src_buffer->on_device_shape().dimensions());
+  xla::MutableBorrowingLiteral literal(
+      reinterpret_cast<char*>(host_staging.data()), unpadded_host_shape);
+  TT_THROW_IF_ERROR(src_buffer->ToLiteral(&literal).Await());
+
+  TT_ASSIGN_OR_THROW(auto transfer_manager,
+                     src_buffer->client()->CreateBuffersForAsyncHostToDevice(
+                         {padded_xla_shape}, src_buffer->memory_space()));
+
+  std::unique_ptr<xla::PjRtBuffer> dst_buffer =
+      transfer_manager->RetrieveBuffer(0);
+
+  xla::Shape padded_host_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
+      padded_xla_shape.element_type(), padded_xla_shape.dimensions());
+  xla::BorrowingLiteral padded_literal(
+      reinterpret_cast<const char*>(host_staging.data()), padded_host_shape);
+
+  auto promise_pair = xla::MakePromise();
+  auto promise = std::move(promise_pair.first);
+  auto promise_future = std::move(promise_pair.second);
+
+  TT_THROW_IF_ERROR(transfer_manager->TransferLiteralToBuffer(
+      0, padded_literal,
+      [promise = std::move(promise)]() mutable { promise.Set(); }));
+
+  TT_THROW_IF_ERROR(promise_future.Await());
+
+  TT_ASSIGN_OR_THROW(
+      DeviceBufferRef dst_buffer_ref,
+      DeviceBufferList::CreateMaterialized(std::move(dst_buffer)));
+  return MakeTensor(std::move(dst_buffer_ref));
+}
+
+at::Tensor PySliceViaHostDma(
+    const at::Tensor& src_tensor,
+    const std::vector<int64_t>& target_shape) {  // INT_VEC_OK
+  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref,
+                     GetBufferFromAtTensor(src_tensor));
+  TT_ASSIGN_OR_THROW(auto* src_buffer, buffer_ref.GetOrMaterializeBuffer());
+
+  xla::Shape target_xla_shape = xla::ShapeUtil::MakeShape(
+      src_buffer->on_device_shape().element_type(), target_shape);
+  size_t padded_transfer_size =
+      xla::ShapeUtil::ByteSizeOf(src_buffer->on_device_shape());
+
+  std::vector<uint8_t> host_staging(padded_transfer_size);
+  xla::Shape padded_host_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
+      src_buffer->on_device_shape().element_type(),
+      src_buffer->on_device_shape().dimensions());
+  xla::MutableBorrowingLiteral literal(
+      reinterpret_cast<char*>(host_staging.data()), padded_host_shape);
+  TT_THROW_IF_ERROR(src_buffer->ToLiteral(&literal).Await());
+
+  TT_ASSIGN_OR_THROW(auto transfer_manager,
+                     src_buffer->client()->CreateBuffersForAsyncHostToDevice(
+                         {target_xla_shape}, src_buffer->memory_space()));
+
+  std::unique_ptr<xla::PjRtBuffer> dst_buffer =
+      transfer_manager->RetrieveBuffer(0);
+
+  xla::Shape target_host_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
+      target_xla_shape.element_type(), target_xla_shape.dimensions());
+  xla::BorrowingLiteral target_literal(
+      reinterpret_cast<const char*>(host_staging.data()), target_host_shape);
+
+  auto promise_pair = xla::MakePromise();
+  auto promise = std::move(promise_pair.first);
+  auto promise_future = std::move(promise_pair.second);
+
+  TT_THROW_IF_ERROR(transfer_manager->TransferLiteralToBuffer(
+      0, target_literal,
+      [promise = std::move(promise)]() mutable { promise.Set(); }));
+
+  TT_THROW_IF_ERROR(promise_future.Await());
+
+  TT_ASSIGN_OR_THROW(
+      DeviceBufferRef dst_buffer_ref,
+      DeviceBufferList::CreateMaterialized(std::move(dst_buffer)));
+  return MakeTensor(std::move(dst_buffer_ref));
 }
 
 }  // namespace
@@ -611,6 +710,13 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   // Returns: PjRtLoadedExecutable
   m.def("compile_mlir", PyCompileMlir, py::arg("module"),
         py::arg("fast_compile") = false);
+  m.def("pad_via_host_dma", PyPadViaHostDma, py::arg("src_tensor"),
+        py::arg("padded_shape"),
+        "Pads a tensor to a bounded shape using PJRT host-assisted DMA.");
+  m.def("slice_via_host_dma", PySliceViaHostDma, py::arg("src_tensor"),
+        py::arg("target_shape"),
+        "Slices a padded tensor back to a target shape using PJRT "
+        "host-assisted DMA.");
   m.def("parse_mlir_text", PyParseMlirText, py::arg("mlir_text"),
         "Parses a StableHLO MLIR text string and returns a ContextedModule.");
   m.def("serialize_mlir_text", PySerializeMlirText, py::arg("module"),

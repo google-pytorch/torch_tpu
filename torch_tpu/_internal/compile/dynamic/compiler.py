@@ -180,62 +180,58 @@ def _compile_and_execute_pad_subgraph(
     args: Sequence[Any],
     sym_shape_manager: SymShapeManager,
 ) -> list[torch.Tensor]:
-  """Compiles and executes the pad subgraph."""
+  """Executes the pad subgraph using PJRT host-assisted DMA."""
   tensor_args, tensor_info, bounds_list = _get_pad_subgraph_inputs(
       args, sym_shape_manager
   )
 
   logging.debug(
-      "[DynamicTpuBackend] Compile Pad Subgraph, tensor_info: %s,"
+      "[DynamicTpuBackend] Execute Pad Subgraph via Host DMA, tensor_info: %s,"
       " bounds_list: %s",
       tensor_info,
       bounds_list,
   )
 
-  # Get the MLIR module for the pad subgraph.
-  mlir_module = tpu_torch_compile.get_pad_module_mlir(tensor_info, bounds_list)
-  logging.debug(
-      "[DynamicTpuBackend] MLIR pad module: %s",
-      LazyString(lambda: tpu_torch_compile.serialize_mlir_text(mlir_module)),
-  )
-  # Compile the pad subgraph to a PJRT executable.
-  executable = tpu_torch_compile.compile_mlir(mlir_module)
+  pad_outputs = []
+  for idx, arg in enumerate(tensor_args):
+    bounds = bounds_list[idx]
+    if not bounds.dynamic_dims:
+      pad_outputs.append(arg)
+    else:
+      padded_shape = list(arg.shape)
+      for dim_idx, upper_bound in zip(bounds.dynamic_dims, bounds.upper_bounds):
+        padded_shape[dim_idx] = upper_bound
 
-  # Execute the pad subgraph with the input tensors and get the padded tensors.
-  return tpu_torch_compile.execute(executable, tensor_args)
+      padded_tensor = tpu_torch_compile.pad_via_host_dma(arg, padded_shape)
+      pad_outputs.append(padded_tensor)
+
+      for dim_idx in bounds.dynamic_dims:
+        dim_size = arg.shape[dim_idx]
+        size_tensor = torch.tensor(
+            dim_size, dtype=torch.int32, device=arg.device
+        )
+        pad_outputs.append(size_tensor)
+
+  return pad_outputs
 
 
 def _compile_and_execute_slice_subgraph(
     tensor_outputs: Sequence[torch.Tensor],
     output_shapes: Sequence[list[int]],
 ) -> list[torch.Tensor]:
-  """Compiles and executes the slice subgraph."""
-  target_shapes = []
-  padded_shapes = []
-  input_scalar_types = []
+  """Executes the slice subgraph using PJRT host-assisted DMA."""
+  logging.debug(
+      "[DynamicTpuBackend] Execute Slice Subgraph via Host DMA,"
+      " output_shapes: %s",
+      LazyString(lambda: str(output_shapes)),
+  )
 
+  sliced_outputs = []
   for tensor, target_shape in zip(tensor_outputs, output_shapes):
-    target_shapes.append(target_shape)
-    padded_shapes.append(list(tensor.shape))
-    input_scalar_types.append(tensor.dtype)
+    sliced_tensor = tpu_torch_compile.slice_via_host_dma(tensor, target_shape)
+    sliced_outputs.append(sliced_tensor)
 
-  logging.debug(
-      "[DynamicTpuBackend] Compile Slice Subgraph, target_shapes: %s,"
-      " padded_shapes: %s",
-      LazyString(lambda: str(target_shapes)),
-      LazyString(lambda: str(padded_shapes)),
-  )
-
-  mlir_module = tpu_torch_compile.get_slice_module_mlir(
-      target_shapes, padded_shapes, input_scalar_types
-  )
-  logging.debug(
-      "[DynamicTpuBackend] MLIR slice module: %s",
-      LazyString(lambda: tpu_torch_compile.serialize_mlir_text(mlir_module)),
-  )
-  return tpu_torch_compile.execute(
-      tpu_torch_compile.compile_mlir(mlir_module), tensor_outputs
-  )
+  return sliced_outputs
 
 
 def _compute_output_shapes(

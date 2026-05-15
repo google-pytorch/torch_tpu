@@ -89,4 +89,31 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "pad_slice_microbenchmark_test",
+    timeout = "long",
+    srcs = ["pad_slice_microbenchmark.py"],
+    main = "pad_slice_microbenchmark.py",
+    nopresubmit = "slow test",
+    shard_count = 1,
+    strict = True,
+    tags = [
+        "cpu:4",
+        "requires-net:external",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+        "//torch_tpu/_internal/sync",
+        "//torch_tpu/_internal/utils:log_utils",
+    ],
+)
+
 torch_tpu_package_end()
