@@ -1018,4 +1018,92 @@ absl::StatusOr<std::string> GetGraphviz(
   return result;
 }
 
+absl::StatusOr<absl_nullable std::unique_ptr<Traversal>>
+Traversal::EliminateDeadCode(
+    absl_nonnull std::unique_ptr<Traversal> traversal,
+    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+        required_nodes) {
+  // Check the traversal outputs first. If they're all live, then the whole
+  // traversal is live.
+  bool all_outputs_live = true;
+  absl::flat_hash_set<const DeviceBufferList*> live_output_nodes;
+  for (const DeviceBufferRef& output : traversal->outputs()) {
+    if (!output.device_buffer_list()->is_stale() ||
+        required_nodes.contains(output.device_buffer_list().get())) {
+      live_output_nodes.insert(output.device_buffer_list().get());
+      continue;
+    }
+    if (const auto* deferred_op = output.deferred_op();
+        deferred_op != nullptr && IsDistributedOp(deferred_op->op_name())) {
+      live_output_nodes.insert(output.device_buffer_list().get());
+      continue;
+    }
+    all_outputs_live = false;
+  }
+  if (all_outputs_live) {
+    // No dead code; return the original traversal.
+    return traversal;
+  }
+
+  // There's at least some amount of dead code.
+  // Iterate backwards to efficiently propagate liveness from output to input.
+  absl::flat_hash_set<const DeviceBufferList*> live_nodes;
+  for (auto it = traversal->execution_order().rbegin();
+       it != traversal->execution_order().rend(); ++it) {
+    const DeviceBufferList& node = **it;
+    const DeferredOp* deferred_op = node.deferred_op();
+    ABSL_CHECK(deferred_op != nullptr);  // CRASH_OK
+
+    // A node is live if:
+    //  - it has a live tensor using it (is_stale() is false)
+    //  - it is a required node (can't be eliminated)
+    //  - it is a distributed op (all ranks must execute the same ops)
+    //  - any other live node uses it as an input, even indirectly
+    const bool is_live = !node.is_stale() || required_nodes.contains(&node) ||
+                         IsDistributedOp(deferred_op->op_name()) ||
+                         live_nodes.contains(&node);
+    if (is_live) {
+      // If the node is live, but isn't being retained by any other output, then
+      // we need it to become a new output of the traversal.
+      if (!live_nodes.contains(&node)) {
+        live_output_nodes.insert(&node);
+      }
+
+      // A live node makes all of its inputs live.
+      for (const DeviceBufferRef& input : deferred_op->inputs()) {
+        live_nodes.insert(input.device_buffer_list().get());
+      }
+    }
+  }
+
+  if (live_output_nodes.empty()) {
+    // The entire traversal is dead code.
+    return nullptr;
+  }
+
+  // Filter the dead code from the execution order, and populate new outputs.
+  Traversal::Parts parts = traversal->IntoParts();
+  std::vector<SharedDeviceBufferList> new_output_nodes;
+  std::erase_if(parts.execution_order,
+                [&live_nodes, &live_output_nodes,
+                 &new_output_nodes](const SharedDeviceBufferList& node) {
+                  if (live_output_nodes.contains(node.get())) {
+                    // This node is both live and an output of the new
+                    // traversal.
+                    new_output_nodes.push_back(node);
+                    return false;
+                  } else if (live_nodes.contains(node.get())) {
+                    // This node is live, but not an output of the new
+                    // traversal.
+                    return false;
+                  }
+                  return true;
+                });
+
+  // Lift the now non-dead code into a new traversal with the new outputs.
+  // This will find the new arguments.
+  return Traversal::CreateFromExecutionOrder(parts.execution_order,
+                                             new_output_nodes);
+}
+
 }  // namespace torch_tpu

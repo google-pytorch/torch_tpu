@@ -69,6 +69,7 @@ torch_tpu_cc_test(
     deps = [
         ":device_buffer",
         ":structured_log_buffer",
+        ":tensor_to_buffer",
         ":traversal",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",

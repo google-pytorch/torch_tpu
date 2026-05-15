@@ -221,6 +221,20 @@ class Traversal {
         });
   }
 
+  // Removes all arguments, execution nodes, and outputs which are dead code.
+  // A node is dead code if it is not an indirect input to any required node,
+  // to any live tensor, or to any distributed collective.
+  //
+  // Distributed collectives must be treated as live to ensure all process ranks
+  // perform the same operations, even if some ranks don't use the result.
+  //
+  // If the entire traversal is dead code, returns nullptr.
+  static absl::StatusOr<absl_nullable std::unique_ptr<Traversal>>
+  EliminateDeadCode(
+      absl_nonnull std::unique_ptr<Traversal> traversal,
+      const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+          required_nodes);
+
  private:
   // Private constructor, only called by Traversal::Create().
   // Definitions:
