@@ -252,6 +252,7 @@ void OpNameStack::Push(OpName op_name) {
       OpName::kRandpermGeneratorOut,
       OpName::kReflectionPad2d,
       OpName::kReflectionPad2dBackward,
+      OpName::kRepeatInterleaveSelfTensor,
       OpName::kReplicationPad2dBackward,
       OpName::kReplicationPad3dBackward,
       OpName::kReshapeAlias,

@@ -19,7 +19,7 @@ import dataclasses
 import enum
 import random
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from absl import flags
 from absl import logging
@@ -45,6 +45,9 @@ MIN_WARMUP_STEPS = flags.DEFINE_integer(
 )
 POST_WARMUP_STEPS = flags.DEFINE_integer(
     "post_warmup_steps", 10, "Number of post-warmup steps."
+)
+CAPTURE_OPS = flags.DEFINE_bool(
+    "capture_ops", False, "Whether to capture ATen operators and their inputs."
 )
 _RANDOM_SEED = 0
 
@@ -499,6 +502,7 @@ def _post_warmup_run(
     enable_xprof: bool = False,
     xprof_client: xprof_analysis_client.XprofAnalysisClient | None = None,
     sync_params: bool = False,
+    capture_file_name: Optional[str] = None,
 ) -> _PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
 
@@ -528,32 +532,42 @@ def _post_warmup_run(
   # TODO(bbahl): Calculate the number of post warmup steps based on timing
   # information.
   with XprofContext("post_warmup_run", enable_xprof) as xprof_context:
-    for step in range(POST_WARMUP_STEPS.value):
-      with traceme.TraceMe("Eval", step_num=step):
-        step_input = example_inputs[step] if is_sequence else example_inputs
-        start_time = time.perf_counter()
-        out = benchmark_function(model, step_input, optimizer)
-        device_utils.synchronize(device_name, out)
-        if sync_params:
-          for p in model.parameters():
-            if p.grad is not None:
-              device_utils.synchronize(device_name, p.grad)
-        timings[step] = time.perf_counter() - start_time
+    capture_mode = None
+    if capture_file_name:
+      from examples.benchmarks.ops.op_capture import OpCaptureMode
 
-      # Assert that the cache misses are consistent across steps.
-      if not is_sequence:
-        # TODO(unda): Re-introduce a version of this check for bounded dynamism.
-        step_cache_misses = device_utils.cache_miss_count(device_name)
-        if num_cache_misses is None:
-          num_cache_misses = step_cache_misses
-        if step_cache_misses != num_cache_misses:
-          raise RuntimeError(
-              "Cache misses are not consistent across steps; expected"
-              f" {num_cache_misses}, got {step_cache_misses}. This means that"
-              " the model is not fully warmed up after"
-              f" {MAX_WARMUP_STEPS.value} warmup steps. Consider increasing the"
-              " number of warmup steps."
-          )
+      capture_mode = OpCaptureMode()
+
+    import contextlib
+
+    ctx = capture_mode if capture_mode else contextlib.nullcontext()
+    with ctx:
+      for step in range(POST_WARMUP_STEPS.value):
+        with traceme.TraceMe("Eval", step_num=step):
+          step_input = example_inputs[step] if is_sequence else example_inputs
+          start_time = time.perf_counter()
+          out = benchmark_function(model, step_input, optimizer)
+          device_utils.synchronize(device_name, out)
+          if sync_params:
+            for p in model.parameters():
+              if p.grad is not None:
+                device_utils.synchronize(device_name, p.grad)
+          timings[step] = time.perf_counter() - start_time
+
+        # Assert that the cache misses are consistent across steps.
+        if not is_sequence:
+          # TODO(unda): Re-introduce a version of this check for bounded dynamism.
+          step_cache_misses = device_utils.cache_miss_count(device_name)
+          if num_cache_misses is None:
+            num_cache_misses = step_cache_misses
+          if step_cache_misses != num_cache_misses:
+            raise RuntimeError(
+                "Cache misses are not consistent across steps; expected"
+                f" {num_cache_misses}, got {step_cache_misses}. This means that"
+                " the model is not fully warmed up after"
+                f" {MAX_WARMUP_STEPS.value} warmup steps. Consider increasing"
+                " the number of warmup steps."
+            )
 
   post_warmup_run_session_xprof_url = None
   if enable_xprof:
@@ -570,6 +584,13 @@ def _post_warmup_run(
   )
 
   logging.info("Post Warmup Timings: %s", timings)
+
+  if capture_mode and capture_file_name:
+    import os
+
+    output_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", ".")
+    full_path = os.path.join(output_dir, capture_file_name)
+    capture_mode.save_to_json(full_path)
 
   return _PostWarmupRunResult(
       post_warmup_step_time_seconds=np.mean(timings),
@@ -603,6 +624,7 @@ def run_performance_benchmark(
     xprof_client: xprof_analysis_client.XprofAnalysisClient | None = None,
     sync_params: bool = False,
     is_bounded_dynamic: bool = False,
+    capture_file_name: Optional[str] = None,
 ) -> PerformanceBenchmarkResult:
   """Runs a performance benchmark for a given model.
 
@@ -624,7 +646,6 @@ def run_performance_benchmark(
     A PerformanceBenchmarkResult instance containing the results of the
     benchmark.
   """
-
   if _get_device_name(device) == "cuda" and not torch.cuda.is_available():
     logging.warning("CUDA is not available. Skipping CUDA benchmark.")
     # Return a default result if CUDA is not available to avoid failing
@@ -678,6 +699,7 @@ def run_performance_benchmark(
             enable_xprof=enable_xprof,
             xprof_client=xprof_client,
             sync_params=sync_params,
+            capture_file_name=capture_file_name,
         )
     )
 
