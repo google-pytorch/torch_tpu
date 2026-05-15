@@ -37,6 +37,7 @@ from transformers import activations
 from transformers.models.bert import modeling_bert
 from transformers.models.qwen3 import configuration_qwen3
 from transformers.models.qwen3 import modeling_qwen3
+from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
 from transformers.models.qwen3_moe import modeling_qwen3_moe
 
 
@@ -1469,10 +1470,24 @@ def _apply_tensor_parallel_plan(
     _apply_tensor_parallel_plan(child, full_name, tp_plan, world_size, rank)
 
 
-def _replace_qwen_moe_with_ragged_moe(model, config):
-  for layer in model.model.layers:
-    assert isinstance(layer.mlp, modeling_qwen3_moe.Qwen3MoeSparseMoeBlock)
-    layer.mlp = ragged_moe.RaggedMoeQwen3(config, is_tensor_parallel=True)
+def _replace_qwen_moe_with_ragged_moe(model, config, is_tensor_parallel=False):
+  layers = (
+      model.model.layers
+      if hasattr(model.model, "layers")
+      else model.model.language_model.layers
+  )
+  cfg = config.text_config if hasattr(config, "text_config") else config
+  for layer in layers:
+    assert isinstance(
+        layer.mlp,
+        (
+            modeling_qwen3_moe.Qwen3MoeSparseMoeBlock,
+            modeling_qwen3_5_moe.Qwen3_5MoeSparseMoeBlock,
+        ),
+    )
+    layer.mlp = ragged_moe.RaggedMoeQwen3(
+        cfg, is_tensor_parallel=is_tensor_parallel
+    )
 
 
 def qwen_ragged_moe_model_builder(
@@ -1499,8 +1514,14 @@ def qwen_ragged_moe_model_builder(
   sequence_length = model_and_input_args.sequence_length
   batch_size = model_and_input_args.batch_size
   registry = get_module_registry()
+  modify_config_hook = model_and_input_args.custom_kwargs.get(
+      "modify_config_hook", None
+  )
   module_spec = registry.get_module_spec(
-      "transformers", model_name, load_weights=False
+      "transformers",
+      model_name,
+      load_weights=False,
+      modify_config_hook=modify_config_hook,
   )
   module_config = module_spec.config
 
@@ -1516,13 +1537,17 @@ def qwen_ragged_moe_model_builder(
   # Directly initialize the model on the device.
   with torch.device(device), set_default_dtype(weights_dtype):
     model = module_spec.module_factory()
-    if world_size > 1:
+    is_tp = world_size > 1
+    if is_tp:
       # Fairscale library setup for distributed model parallelism.
       if not fairscale_init.model_parallel_is_initialized():
         fairscale_init.initialize_model_parallel(world_size)
 
-      _replace_qwen_moe_with_ragged_moe(model, module_config)
+    _replace_qwen_moe_with_ragged_moe(
+        model, module_config, is_tensor_parallel=is_tp
+    )
 
+    if is_tp:
       _apply_tensor_parallel_plan(
           model,
           name_prefix="",

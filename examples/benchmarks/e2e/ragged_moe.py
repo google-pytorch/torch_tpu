@@ -26,8 +26,12 @@ class RaggedMoeQwen3(torch.nn.Module):
   def __init__(self, config, is_tensor_parallel=False):
     super().__init__()
     self.num_experts = config.num_experts
-    self.top_k = config.num_experts_per_tok
-    self.norm_topk_prob = config.norm_topk_prob
+    self.top_k = getattr(
+        config,
+        "num_experts_per_tok",
+        getattr(config, "num_experts_per_token", 8),
+    )
+    self.norm_topk_prob = getattr(config, "norm_topk_prob", True)
 
     self.is_tensor_parallel = is_tensor_parallel
     world_size = torch.distributed.get_world_size() if is_tensor_parallel else 1

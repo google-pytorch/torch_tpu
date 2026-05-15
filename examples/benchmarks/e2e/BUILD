@@ -469,7 +469,7 @@ torch_tpu_py_library(
         "@pypi//llama_models",
         "@pypi//numpy",
         "@pypi//timm",
-        "@pypi//transformers",
+        "@pypi//transformers:v5",
     ],
 )
 

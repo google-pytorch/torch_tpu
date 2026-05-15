@@ -35,7 +35,7 @@ torch_tpu_py_library(
         "@pypi//diffusers",
         "@pypi//timm",
         "@pypi//torchvision",
-        "@pypi//transformers",
+        "@pypi//transformers:v5",
     ],
 )
 
