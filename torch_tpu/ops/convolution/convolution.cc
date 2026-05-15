@@ -24,6 +24,7 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -820,14 +821,16 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
 
   mlir::MlirOp init_val = MakeScalarConstant(builder, 0, output_dtype);
 
+  absl::Status reduce_status;
   auto body_builder = [&](mlir::RegionBuilder& rb) {
-    (void)BuildReduceBody(
+    reduce_status = BuildReduceBody(
         rb, mlir::getElementType(builder.getContext(), output_dtype),
         c10d::ReduceOp::SUM);
   };
 
   auto results = stablehlo::Reduce(builder, {grad_output}, {init_val},
                                    body_builder, reduction_dims);
+  TT_RETURN_IF_ERROR(reduce_status);
   return results[0];
 }
 
