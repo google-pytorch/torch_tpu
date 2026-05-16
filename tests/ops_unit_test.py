@@ -111,6 +111,60 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         )
     )
 
+  def test_addmm_input_broadcasting(self):
+    """Tests torch.addmm() with input tensors that need broadcasting."""
+    # M=2, K=3, N=4
+    mat1 = torch.randn(2, 3)
+    mat2 = torch.randn(3, 4)
+
+    # Case 1: self is [1, 4] -> should broadcast to [2, 4]
+    self_1 = torch.randn(1, 4)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            self_1.to(device),
+            mat1.to(device),
+            mat2.to(device),
+        ),
+        atol=1e-2,
+        rtol=2e-2,
+    )
+
+    # Case 2: self is [2, 1] -> should broadcast to [2, 4]
+    self_2 = torch.randn(2, 1)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            self_2.to(device),
+            mat1.to(device),
+            mat2.to(device),
+        ),
+        atol=1e-2,
+        rtol=2e-2,
+    )
+
+    # Case 3: self is [1, 1] -> should broadcast to [2, 4]
+    self_3 = torch.randn(1, 1)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            self_3.to(device),
+            mat1.to(device),
+            mat2.to(device),
+        ),
+        atol=1e-2,
+        rtol=2e-2,
+    )
+
+    # Case 4: self is [1] -> should broadcast to [2, 4]
+    self_4 = torch.randn(1)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            self_4.to(device),
+            mat1.to(device),
+            mat2.to(device),
+        ),
+        atol=1e-2,
+        rtol=2e-2,
+    )
+
   def test_rsqrt_complex_grad(self):
     device = torch.device("tpu")
     x = torch.randn(

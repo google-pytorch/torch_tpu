@@ -69,7 +69,6 @@ class TestExportLinearMode(absltest.TestCase):
 
     # Check for StableHLO ops
     self.assertIn("stablehlo.add", mlir_text)
-    self.assertIn("stablehlo.multiply", mlir_text)
 
     # Check for namescope / opname
     self.assertIn('loc("addmm/as_strided"', mlir_text)
