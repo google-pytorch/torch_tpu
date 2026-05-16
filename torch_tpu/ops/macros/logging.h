@@ -244,13 +244,7 @@ void CheckScalarInput() {
                 // go/keep-sorted start
       kOpName == OpName::kAdd ||                         //
       kOpName == OpName::kAddRelu_Scalar ||              //
-      kOpName == OpName::kAddmmDtype ||                  //
-      kOpName == OpName::kAddmmDtypeOut ||               //
-      kOpName == OpName::kAddmmOut ||                    //
       kOpName == OpName::kArangeStartOut ||              //
-      kOpName == OpName::kBaddbmmDtype ||                //
-      kOpName == OpName::kBaddbmmDtypeOut ||             //
-      kOpName == OpName::kBaddbmmOut ||                  //
       kOpName == OpName::kCdistForward ||                //
       kOpName == OpName::kEluBackwardGradInput ||        //
       kOpName == OpName::kEluOut ||                      //
