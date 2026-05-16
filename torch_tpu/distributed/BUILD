@@ -71,6 +71,7 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/runtime:device_id",
     ],

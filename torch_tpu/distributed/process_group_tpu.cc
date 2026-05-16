@@ -87,6 +87,7 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/runtime/device_id.h"
 #include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 
 ABSL_FLAG(bool, torch_tpu_internal_materialize_collective_tensors, true,
           "Split the execution graph before and after collectives.");
