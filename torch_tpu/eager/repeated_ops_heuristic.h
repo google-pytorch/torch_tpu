@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_EAGER_REPEATED_OPS_HEURISTIC_H_
 #define TORCH_TPU_EAGER_REPEATED_OPS_HEURISTIC_H_
 
+#include "absl/status/status.h"
 #include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {
