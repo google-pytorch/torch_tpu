@@ -37,6 +37,8 @@ _HF_QWEN3_CODER_30B_RAGGED_MOE_BENCHMARK_NAME = "hf_qwen3_30b_ragged_moe"
 _TIMM_RESNET_50_BENCHMARK_NAME = "timm_resnet_50"
 _WAN_2_2_TI2V_5B_BENCHMARK_NAME = "wan_2_2_ti2v_5b"
 
+_TORCHAUDIO_CONFORMER_BENCHMARK_NAME = "torchaudio_conformer"
+
 
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
@@ -628,6 +630,76 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         ),
     )
     self.run_performance_benchmark_test(config, _WAN_2_2_TI2V_5B_BENCHMARK_NAME)
+
+
+class TorchaudioBenchmarkTest(test_utils.BenchmarkTest):
+  """Benchmark tests for torchaudio models."""
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_and_train_configs(
+          run_modes=(
+              benchmark_utils.RunMode.EAGER_DEFAULT,
+              benchmark_utils.RunMode.EAGER_OPTIMIZED,
+              benchmark_utils.RunMode.COMPILED,
+          ),
+          is_training=(True,),
+      )
+  )
+  def test_conformer_train_1_step(self, run_mode, is_training):
+    """Tests the train pass of Conformer."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.TORCHAUDIO,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.conformer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            batch_size=10,
+            sequence_length=400,
+            custom_kwargs={
+                "input_dim": 80,
+                "num_heads": 4,
+                "ffn_dim": 128,
+                "num_layers": 4,
+                "depthwise_conv_kernel_size": 31,
+            },
+        ),
+        train_factory=benchmark_function_db.simple_train_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _TORCHAUDIO_CONFORMER_BENCHMARK_NAME
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_and_train_configs(
+          run_modes=(
+              benchmark_utils.RunMode.EAGER_DEFAULT,
+              benchmark_utils.RunMode.EAGER_OPTIMIZED,
+              benchmark_utils.RunMode.COMPILED,
+          ),
+          is_training=(False,),
+      )
+  )
+  def test_conformer_forward(self, run_mode, is_training):
+    """Tests the forward pass of Conformer."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.TORCHAUDIO,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.conformer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            batch_size=10, sequence_length=400
+        ),
+        eval_factory=benchmark_function_db.simple_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _TORCHAUDIO_CONFORMER_BENCHMARK_NAME
+    )
 
 
 if __name__ == "__main__":

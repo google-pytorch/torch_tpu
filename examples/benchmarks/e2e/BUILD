@@ -465,6 +465,7 @@ torch_tpu_py_library(
         "//examples/deepseek",
         "//shims/torch:pytorch",
         "//tests:module_registry",
+        "//torch_tpu/google/examples/torchaudio_source:conformer",
         "@pypi//fairscale",
         "@pypi//llama_models",
         "@pypi//numpy",

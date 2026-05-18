@@ -32,6 +32,7 @@ from torch.nn import parallel
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import ragged_moe
 from examples.deepseek import model as deepseek_model
+from torch_tpu.google.examples.torchaudio_source import conformer
 from tests import module_registry
 from transformers import activations
 from transformers.models.bert import modeling_bert
@@ -1535,4 +1536,55 @@ def qwen_ragged_moe_model_builder(
   _, example_inputs = module_spec.sample_inputs_factory(
       (batch_size, sequence_length), str(device)
   )
+  return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
+def conformer_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns the Conformer model and example inputs."""
+  input_dim = model_and_input_args.custom_kwargs.get("input_dim", 80)
+  num_heads = model_and_input_args.custom_kwargs.get("num_heads", 4)
+  ffn_dim = model_and_input_args.custom_kwargs.get("ffn_dim", 128)
+  num_layers = model_and_input_args.custom_kwargs.get("num_layers", 4)
+  depthwise_conv_kernel_size = model_and_input_args.custom_kwargs.get(
+      "depthwise_conv_kernel_size", 31
+  )
+
+  batch_size = model_and_input_args.batch_size
+  sequence_length = model_and_input_args.sequence_length
+
+  model = (
+      conformer.Conformer(
+          input_dim=input_dim,
+          num_heads=num_heads,
+          ffn_dim=ffn_dim,
+          num_layers=num_layers,
+          depthwise_conv_kernel_size=depthwise_conv_kernel_size,
+      )
+      .to(dtype=weights_dtype)
+      .to(device)
+  )
+
+  # Deterministic inputs for benchmarking
+  lengths = torch.full(
+      (batch_size,), sequence_length, dtype=torch.long, device=device
+  )
+  input_tensor = torch.randn(
+      batch_size,
+      sequence_length,
+      input_dim,
+      dtype=weights_dtype,
+      device=device,
+  )
+  example_inputs = (input_tensor, lengths)
+
+  if is_training:
+    model.train()
+  else:
+    model.eval()
+
   return ModelAndInput(model=model, example_inputs=example_inputs)
