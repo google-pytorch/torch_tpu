@@ -46,11 +46,25 @@ import transformers
 
 _MAX_SEQ_LEN_HEURISTIC_CAP = 100_000
 
-_WEIGHTS_BASE_PATH = flags.DEFINE_string(
-    "weights_base_path",
-# "$DATA_ROOT/$WEIGHTS_SUBDIR"
+_HF_TRANSFORMERS_WEIGHTS_DIR = flags.DEFINE_string(
+    "hf_transformers_weights_dir",
+# "$DATA_ROOT/$WEIGHTS_SUBDIR/huggingface"
     "",
-    "Default base location of model configs and weights.",
+    "Location of weights and config files for HuggingFace Transformers models.",
+)
+
+_HF_TIMM_WEIGHTS_DIR = flags.DEFINE_string(
+    "hf_timm_weights_dir",
+# "$DATA_ROOT/$WEIGHTS_SUBDIR/huggingface/timm"
+    "",
+    "Location of weights and config files for HuggingFace TIMM models.",
+)
+
+_HF_DIFFUSERS_WEIGHTS_DIR = flags.DEFINE_string(
+    "hf_diffusers_weights_dir",
+# "$DATA_ROOT/$WEIGHTS_SUBDIR/huggingface"
+    "",
+    "Location of weights and config files for HuggingFace Diffusers models.",
 )
 
 
@@ -87,22 +101,6 @@ class ModuleSpec:
 class BaseProvider(abc.ABC):
   """Abstract base class for model source providers."""
 
-  def __init__(self, base_path: str | None = None, subdir: str | None = None):
-    if base_path is None:
-      base_path = _WEIGHTS_BASE_PATH.value
-
-    # If base_path is empty, assume no local cache is available
-    self.has_cache_dir = bool(base_path)
-
-    if self.has_cache_dir:
-      self._base_path = epath.Path(base_path)
-      if subdir:
-        self._base_path = self._base_path / subdir
-      if not self._base_path.exists():
-        raise FileNotFoundError(f"Base path does not exist: {self._base_path}")
-    else:
-      self._base_path = None
-
   @abc.abstractmethod
   def list_modules(self) -> list[str]:
     """Lists the names of all models available from this provider.
@@ -114,12 +112,7 @@ class BaseProvider(abc.ABC):
 
   @abc.abstractmethod
   def get_module_spec(
-      self,
-      name: str,
-      *,
-      load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
-      **kwargs,
+      self, name: str, *, load_weights: bool = False, **kwargs
   ) -> ModuleSpec:
     """Retrieves the specification for a specific model.
 
@@ -127,8 +120,6 @@ class BaseProvider(abc.ABC):
       name: The name of the model to retrieve.
       load_weights: If True, loads pre-trained weights. If False, initializes
         with random weights.
-      modify_config_hook: A callable to modify the model configuration. The
-        config object is specific to the provider.
       **kwargs: Additional provider-specific arguments.
 
     Returns:
@@ -140,45 +131,22 @@ class BaseProvider(abc.ABC):
 class TorchvisionProvider(BaseProvider):
   """Provider for standard Torchvision models."""
 
-  def __init__(self, base_path: str | None = None):
-    super().__init__(base_path=base_path, subdir="torchvision")
-
   def list_modules(self) -> list[str]:
-    """Lists the names of all models available from this provider.
-
-    Structured as {base_path}/torchvision/{model_name}/weights.pt
-
-    Returns:
-      A list of model name strings.
-    """
-    if not self.has_cache_dir:
-      return []
-    assert self._base_path is not None
-    return [path.name for path in self._base_path.iterdir() if path.is_dir()]
+    return torchvision.models.list_models()
 
   def get_module_spec(
-      self,
-      name: str,
-      *,
-      load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
-      **kwargs,
+      self, name: str, *, load_weights: bool = False, **kwargs
   ) -> ModuleSpec:
-    if modify_config_hook is not None:
-      raise ValueError("modify_config_hook is not supported for torchvision.")
     if load_weights:
       raise NotImplementedError(
           "Loading pretrained weights not yet implemented."
       )
+
     default_shape = (1, 3, 224, 224)
     return ModuleSpec(
         lambda: torchvision.models.get_model(name),
-        lambda shape=None, device="cpu": (
-            (
-                torch.randn(
-                    shape if shape is not None else default_shape, device=device
-                ),
-            ),
+        lambda shape=default_shape, device="cpu": (
+            (torch.randn(shape, device=device),),
             {},
         ),
     )
@@ -187,29 +155,15 @@ class TorchvisionProvider(BaseProvider):
 class TimmProvider(BaseProvider):
   """Provider for TIMM (PyTorch Image Models)."""
 
-  def __init__(self, base_path: str | None = None):
-    super().__init__(base_path=base_path, subdir="timm")
+  def __init__(self):
+    weights_dir = _HF_TIMM_WEIGHTS_DIR.value
+    self._weights_dir = epath.Path(weights_dir) if weights_dir else None
 
   def list_modules(self) -> list[str]:
-    """Lists the names of all models available from this provider.
-
-    Structured as {base_path}/timm/{model_name}/weights.pth
-
-    Returns:
-      A list of model name strings.
-    """
-    if not self.has_cache_dir:
-      return []
-    assert self._base_path is not None
-    return [path.name for path in self._base_path.iterdir() if path.is_dir()]
+    return timm.list_models()
 
   def get_module_spec(
-      self,
-      name: str,
-      *,
-      load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
-      **kwargs,
+      self, name: str, *, load_weights: bool = False, **kwargs
   ) -> ModuleSpec:
     """Creates a ModuleSpec for a TIMM model.
 
@@ -220,19 +174,11 @@ class TimmProvider(BaseProvider):
       name: Name (str) of the timm model.
       load_weights: If True, loads pretrained weights. If False, initializes
         with random weights.
-      modify_config_hook: A callable that accepts and returns a
-        timm.models.PretrainedCfg object to modify the model configuration.
       **kwargs: Additional keyword arguments.
 
     Returns:
       A ModuleSpec containing the model factory and input factory.
     """
-    if load_weights and not self.has_cache_dir:
-      raise ValueError(
-          f"load_weights cannot be set to True for {name} when no cache"
-          " directory is available."
-      )
-
     try:
       config = timm.models.get_pretrained_cfg(name)
     except RuntimeError:
@@ -242,12 +188,9 @@ class TimmProvider(BaseProvider):
           name,
       )
 
-    if config and modify_config_hook is not None:
-      config = modify_config_hook(config)
-
     def _module_factory():
-      if load_weights and self._base_path:
-        local_checkpoint = self._base_path / name / f"{name}.pth"
+      if load_weights and self._weights_dir:
+        local_checkpoint = self._weights_dir / f"{name}.pth"
 
         if local_checkpoint.exists():
           model = timm.create_model(name, pretrained=False)
@@ -257,9 +200,8 @@ class TimmProvider(BaseProvider):
           model.load_state_dict(state_dict)
           return model
         else:
-          raise ValueError(
-              f"Cannot load weights for {name} because checkpoint is missing"
-              f" at {local_checkpoint}."
+          logging.warning(
+              "Checkpoint %s not found. Using random init.", local_checkpoint
           )
 
       return timm.create_model(name, pretrained=False)
@@ -347,35 +289,23 @@ class TransformersProvider(BaseProvider):
       "huggingface_transformers/model_configs"
   )
 
-  def __init__(self, base_path: str | None = None):
-    super().__init__(base_path=base_path, subdir="transformers")
+  def __init__(self):
+    weights_dir = _HF_TRANSFORMERS_WEIGHTS_DIR.value
+    if weights_dir:
+      self._weights_dir = epath.Path(weights_dir)
+    else:
+      self._weights_dir = None
 
   def list_modules(self) -> list[str]:
-    """Lists the names of all models available from this provider.
-
-    Structured as {base_path}/transformers/{owner}/{model}/files
-
-    Returns:
-      A list of model name strings formatted as '{owner}/{model}'.
-    """
-    if not self.has_cache_dir:
-      return []
-    assert self._base_path is not None
     modules = []
-    for owner_path in self._base_path.iterdir():
-      if owner_path.is_dir():
-        for model_path in owner_path.iterdir():
-          if model_path.is_dir():
-            modules.append(f"{owner_path.name}/{model_path.name}")
+    for resource in _walk_package_resources(self._FILES):
+      if resource.is_file() and "config.json" in resource.name:
+        with resources.as_file(resource) as f:
+          modules.append(f"{f.parts[-3]}/{f.parts[-2]}")
     return modules
 
   def get_module_spec(
-      self,
-      name: str,
-      *,
-      load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
-      **kwargs,
+      self, name: str, *, load_weights: bool = False, **kwargs
   ) -> ModuleSpec:
     """Creates a ModuleSpec for a Transformer model.
 
@@ -386,65 +316,28 @@ class TransformersProvider(BaseProvider):
       name: Name (str) of the hf transformer model.
       load_weights: If True, loads pretrained weights. If False, initializes
         with random weights.
-      modify_config_hook: A callable that accepts and returns a
-        transformers.PretrainedConfig object to modify the model configuration.
       **kwargs: Additional keyword arguments.
 
     Returns:
       A ModuleSpec containing the model factory and input factory.
     """
-    # Load the config first
-    config = None
-
-    if self.has_cache_dir:
-      model_dir_or_repo_id = self._base_path / name
-      try:
-        if model_dir_or_repo_id.exists():
-          config = transformers.AutoConfig.from_pretrained(
-              str(model_dir_or_repo_id)
-          )
-      except Exception as exc:  # pylint: disable=broad-except
-        logging.warning(
-            "Failed to access %s in cache, falling back to local resources."
-            " Error: %s",
-            model_dir_or_repo_id,
-            exc,
-        )
-
-    if config is None:  # Fallback to local resources
-      # Pretrained weights are not available in local resources.
-      if load_weights:
-        raise ValueError(
-            f"load_weights cannot be set to True for {name} when falling back"
-            " to local configuration resources."
-        )
-      try:
-        with resources.as_file(
-            self._FILES.joinpath(str(pathlib.Path(name) / "config.json"))
-        ) as f:
-          config = transformers.AutoConfig.from_pretrained(str(f))
-      except Exception as exc:  # pylint: disable=broad-except
-        raise ValueError(
-            f"Model config for '{name}' is missing in local resources"
-            f" ({self._FILES.joinpath(str(pathlib.Path(name) / 'config.json'))})"
-            " and could not be loaded from cache."
-        ) from exc
-
-    if modify_config_hook is not None:
-      if load_weights:
-        raise NotImplementedError(
-            "modify_config_hook is not supported when load_weights is True."
-        )
-      config = modify_config_hook(config)
-
     if load_weights:
+      model_dir_or_repo_id = name
+      if self._weights_dir:
+        model_dir_or_repo_id = self._weights_dir / name
+
       model_fn = lambda: transformers.AutoModelForCausalLM.from_pretrained(
-          str(model_dir_or_repo_id)
+          model_dir_or_repo_id
       )
       preprocessor_fn = lambda: (
-          transformers.AutoTokenizer.from_pretrained(str(model_dir_or_repo_id))
+          transformers.AutoTokenizer.from_pretrained(model_dir_or_repo_id)
       )
+      config = transformers.AutoConfig.from_pretrained(model_dir_or_repo_id)
     else:
+      with resources.as_file(
+          self._FILES.joinpath(str(pathlib.Path(name) / "config.json"))
+      ) as f:
+        config = transformers.AutoConfig.from_pretrained(str(f))
       architectures = getattr(config, "architectures", [])
       model_cls = transformers.AutoModel
 
@@ -462,21 +355,83 @@ class TransformersProvider(BaseProvider):
 
     safe_seq_len = min(_get_max_seq_len(config), 512)
 
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
-
     def _input_fn(
         shape=None, device="cpu"
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       actual_shape = shape if shape is not None else (1, safe_seq_len)
+
+      if getattr(config, "model_type", None) == "qwen3_vl":
+        if hasattr(config, "text_config") and config.text_config is not None:
+          image_token_id = config.image_token_id
+        else:
+          image_token_id = config.image_token_id
+
+        if (
+            hasattr(config, "vision_config")
+            and config.vision_config is not None
+        ):
+          patch_size = getattr(config.vision_config, "patch_size", 16)
+          temporal_patch_size = getattr(
+              config.vision_config, "temporal_patch_size", 2
+          )
+          in_channels = getattr(config.vision_config, "in_channels", 3)
+        else:
+          patch_size = 16
+          temporal_patch_size = 2
+          in_channels = 3
+
+        batch_size = actual_shape[0]
+        seq_len = actual_shape[1]
+
+        num_images_per_sample = 1
+        total_images = batch_size * num_images_per_sample
+
+        h_patches = 4
+        w_patches = 4
+        patches_per_image = h_patches * w_patches
+        total_patches = total_images * patches_per_image
+
+        patch_dim = in_channels * temporal_patch_size * patch_size * patch_size
+
+        pixel_values = torch.randn((total_patches, patch_dim), device=device)
+        image_grid_thw = torch.tensor(
+            [[1, h_patches, w_patches]], dtype=torch.long, device=device
+        ).repeat(total_images, 1)
+
+        num_image_tokens = patches_per_image // 4
+
+        text_len_before = max(1, (seq_len - num_image_tokens) // 2)
+        text_len_after = max(1, seq_len - num_image_tokens - text_len_before)
+
+        input_ids_list = []
+        attention_mask_list = []
+        for _ in range(batch_size):
+          input_ids_single = torch.cat([
+              torch.randint(100, 1000, (text_len_before,), device=device),
+              torch.full((num_image_tokens,), image_token_id, device=device),
+              torch.randint(100, 1000, (text_len_after,), device=device),
+          ])
+          input_ids_list.append(input_ids_single)
+          attention_mask_list.append(torch.ones_like(input_ids_single))
+
+        input_ids = torch.stack(input_ids_list)
+        attention_mask = torch.stack(attention_mask_list)
+
+        return (
+            (),
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "pixel_values": pixel_values,
+                "image_grid_thw": image_grid_thw,
+            },
+        )
+
       return (
           (),
           {
               "input_ids": torch.randint(
-                  0, vocab_size, actual_shape, device=device
+                  0, config.vocab_size, actual_shape, device=device
               ),
               "attention_mask": torch.ones(
                   actual_shape, device=device, dtype=torch.long
@@ -499,26 +454,19 @@ class DiffusersProvider(BaseProvider):
       "huggingface_diffusers/model_configs"
   )
 
-  def __init__(self, base_path: str | None = None):
-    super().__init__(base_path=base_path, subdir="diffusers")
+  def __init__(self):
+    weights_dir = _HF_DIFFUSERS_WEIGHTS_DIR.value
+    if weights_dir:
+      self._weights_dir = epath.Path(weights_dir)
+    else:
+      self._weights_dir = None
 
   def list_modules(self) -> list[str]:
-    """Lists the names of all models available from this provider.
-
-    Structured as {base_path}/diffusers/{owner}/{model}/files
-
-    Returns:
-      A list of model name strings formatted as '{owner}/{model}'.
-    """
-    if not self.has_cache_dir:
-      return []
-    assert self._base_path is not None
     modules = []
-    for owner_path in self._base_path.iterdir():
-      if owner_path.is_dir():
-        for model_path in owner_path.iterdir():
-          if model_path.is_dir():
-            modules.append(f"{owner_path.name}/{model_path.name}")
+    for resource in _walk_package_resources(self._FILES):
+      if resource.is_file() and "model_index.json" in resource.name:
+        with resources.as_file(resource) as f:
+          modules.append(f"{f.parts[-3]}/{f.parts[-2]}")
     return modules
 
   def get_module_spec(
@@ -526,7 +474,6 @@ class DiffusersProvider(BaseProvider):
       name: str,
       *,
       load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
       **kwargs,
   ) -> ModuleSpec:
     """Creates a ModuleSpec for a Diffuser model.
@@ -535,8 +482,6 @@ class DiffusersProvider(BaseProvider):
       name: Name (str) of the hf diffuser model.
       load_weights: If True, loads pretrained weights. If False, initializes
         with random weights.
-      modify_config_hook: A callable that accepts and returns a config
-        dictionary to modify the model configuration for diffusers models.
       **kwargs: Additional keyword arguments. Supported arguments: - subfolder:
         Subfolder of the model to load.
 
@@ -546,57 +491,24 @@ class DiffusersProvider(BaseProvider):
     subfolder = kwargs.get("subfolder")
     d_type = torch.bfloat16
 
-    raw_config = None
-
-    if self.has_cache_dir:
-      model_path = self._base_path / name
-      try:
-        if model_path.exists():
-          raw_config = AutoModel.load_config(
-              str(model_path), subfolder=subfolder
-          )
-      except Exception as exc:  # pylint: disable=broad-except
-        logging.warning(
-            "Failed to access %s in cache, falling back to local resources."
-            " Error: %s",
-            model_path,
-            exc,
-        )
-
-    if raw_config is None:  # Fallback to local resources
-      if load_weights:
-        # Pretrained weights are not available in local resources.
-        raise ValueError(
-            f"load_weights cannot be set to True for {name} when falling back"
-            " to local configuration resources."
-        )
+    if load_weights:
+      model_path = str(self._weights_dir / name)
+      raw_config = AutoModel.load_config(model_path, subfolder=subfolder)
+      config_dict = dict(raw_config)
+    else:
       model_dir = pathlib.Path(name)
       if subfolder:
         model_dir = model_dir / subfolder
-      try:
-        with resources.as_file(
-            self._FILES.joinpath(str(model_dir / "config.json"))
-        ) as f:
-          raw_config = AutoModel.load_config(str(f.parent))
-      except Exception as exc:  # pylint: disable=broad-exception-caught
-        raise ValueError(
-            f"Model config for '{name}' is missing in local resources "
-            f"({self._FILES.joinpath(str(model_dir / 'config.json'))}) "
-            "and could not be loaded from cache."
-        ) from exc
-
-    if modify_config_hook is not None:
-      if load_weights:
-        raise NotImplementedError(
-            "modify_config_hook is not supported when load_weights is True."
-        )
-      raw_config = modify_config_hook(raw_config)
-    config_dict = dict(raw_config)
+      with resources.as_file(
+          self._FILES.joinpath(str(model_dir / "config.json"))
+      ) as f:
+        raw_config = AutoModel.load_config(str(f.parent))
+        config_dict = dict(raw_config)
 
     def _module_factory():
       if load_weights:
         return AutoModel.from_pretrained(
-            str(model_path),
+            model_path,
             torch_dtype=d_type,
             subfolder=subfolder,
         )
@@ -612,33 +524,11 @@ class DiffusersProvider(BaseProvider):
       seq_len = shape[1] if shape and len(shape) > 1 else 77
       cfg = config_dict
 
+      # Create dummy inputs using random noisy tensors
       latent_channels = cfg.get("in_channels", 4)
-
-      # Use latent dimensions passed in shape if available
-      # (e.g. for video models)
-      if shape and len(shape) > 2:
-        latent_dims = shape[2:]
-      else:
-        # Fall back to sample_size from config for 2D models
-        latent_size = cfg.get("sample_size", 64)
-        if isinstance(latent_size, int):
-          latent_dims = (latent_size, latent_size)
-        else:
-          latent_dims = tuple(latent_size)
-
-        # Check for 3D model if we only have 2D defaults.
-        # If patch_size has 3 dimensions, it's likely a 3D/video model and
-        # expects a "frames" dimension.
-        patch_size = cfg.get("patch_size")
-        if (
-            len(latent_dims) == 2
-            and isinstance(patch_size, (list, tuple))
-            and len(patch_size) == 3
-        ):
-          latent_dims = (2,) + latent_dims  # Default 2 frames
-
+      latent_size = cfg.get("sample_size", 64)
       noisy_latents = torch.randn(
-          (batch_size, latent_channels, *latent_dims),
+          (batch_size, latent_channels, latent_size, latent_size),
           dtype=d_type,
           device=device,
       )
@@ -648,11 +538,7 @@ class DiffusersProvider(BaseProvider):
           0, 1000, (batch_size,), device=device, dtype=torch.long
       )
 
-      # Fallback to text_dim if cross_attention_dim is not specified in config
-      # (e.g. for Wan2.2)
-      cross_attention_dim = cfg.get("cross_attention_dim")
-      if cross_attention_dim is None:
-        cross_attention_dim = cfg.get("text_dim", 2048)
+      cross_attention_dim = cfg.get("cross_attention_dim", 2048)
 
       # Encoder hidden states - These would be per token text embeddings
       # returned by CLIP-ViT/L text encoder
@@ -692,6 +578,7 @@ class DiffusersProvider(BaseProvider):
           primary_input_key: noisy_latents,
           "timestep": timesteps,
           "encoder_hidden_states": dummy_encoder_hidden_states,
+          "return_dict": False,
       }
 
       # Create dummy additional conditioning inputs which would be expected in
@@ -735,27 +622,12 @@ class DiffusersProvider(BaseProvider):
 class ModuleRegistry:
   """Central registry for managing multiple model providers."""
 
-  def __init__(self, base_path: str | None = None):
-    """Initializes the registry.
-
-    Providers construct specific paths relative to this base_path.
-    - For Timm and Torchvision library, models are structured as:
-    base_path/{provider}/{model}/
-    - For other libraries, models are structured as:
-    base_path/{provider}/{owner}/{model}/
-
-    Args:
-      base_path: The base directory for model weights. Defaults to the value of
-        `_WEIGHTS_BASE_PATH`.
-    """
-    if base_path is None:
-      base_path = _WEIGHTS_BASE_PATH.value
-
+  def __init__(self):
     self._providers: dict[str, BaseProvider] = {
-        "torchvision": TorchvisionProvider(base_path=base_path),
-        "timm": TimmProvider(base_path=base_path),
-        "transformers": TransformersProvider(base_path=base_path),
-        "diffusers": DiffusersProvider(base_path=base_path),
+        "torchvision": TorchvisionProvider(),
+        "timm": TimmProvider(),
+        "transformers": TransformersProvider(),
+        "diffusers": DiffusersProvider(),
     }
 
   def list_all_sources(self) -> list[str]:
@@ -796,7 +668,6 @@ class ModuleRegistry:
       name: str,
       *,
       load_weights: bool = False,
-      modify_config_hook: Callable[[Any], Any] | None = None,
       **kwargs,
   ) -> ModuleSpec:
     """Instantiates and returns the ModuleSpec for a specific model.
@@ -805,9 +676,6 @@ class ModuleRegistry:
       source: The provider key.
       name: The name of the model within that provider.
       load_weights: Whether to load pre-trained weights.
-      modify_config_hook: A callable to modify the model configuration. The
-        callable accepts and returns a config object specific to the model
-        library (e.g., transformers.PretrainedConfig for transformers).
       **kwargs: Additional provider-specific arguments.
 
     Returns:
@@ -820,9 +688,4 @@ class ModuleRegistry:
       raise ValueError(f"Source '{source}' not supported.")
 
     provider = self._providers[source]
-    return provider.get_module_spec(
-        name,
-        load_weights=load_weights,
-        modify_config_hook=modify_config_hook,
-        **kwargs,
-    )
+    return provider.get_module_spec(name, load_weights=load_weights, **kwargs)

@@ -39,49 +39,30 @@ class ModuleRegistryTest(absltest.TestCase):
     super().setUp()
     self.module_registry = module_registry.ModuleRegistry()
 
-  def test_non_existent_path(self):
-    with self.assertRaises(FileNotFoundError):
-      module_registry.TimmProvider(base_path="/non/existent/path")
-
-  def test_empty_base_path(self):
-    registry = module_registry.ModuleRegistry(base_path="")
-
-    self.assertEqual(registry.list_modules("torchvision"), [])
-    self.assertEqual(registry.list_modules("timm"), [])
-    self.assertEqual(registry.list_modules("transformers"), [])
-    self.assertEqual(registry.list_modules("diffusers"), [])
-
-    self.assertEqual(registry.list_all_modules(), [])
-
   def test_list_all_modules(self):
     modules = self.module_registry.list_all_modules()
 
-    self.assertIn("torchvision/resnet50", modules)
-    self.assertIn("timm/convnext_small.in12k_ft_in1k", modules)
-    self.assertIn("timm/resnet50d.ra2_in1k", modules)
-    self.assertIn("timm/vgg16.tv_in1k", modules)
-    self.assertIn("transformers/openai/gpt-oss-120b", modules)
-    self.assertIn("transformers/meta-llama/Llama-3.2-3B", modules)
+    self.assertIn("timm/convnext_small", modules)
+    self.assertIn("timm/resnet50d", modules)
     self.assertIn("transformers/google/gemma-3-270m", modules)
+    self.assertIn("diffusers/black-forest-labs/FLUX.1-schnell", modules)
     self.assertIn("diffusers/stabilityai/stable-diffusion-xl-base-1.0", modules)
 
   def test_torchvision_list_modules(self):
-    modules = self.module_registry.list_modules("torchvision")
-
-    self.assertIn("resnet50", modules)
+    # torchvision doesn't return a stable set of models when running in Forge so
+    # we can't assert on existence of a specific model name.
+    # See torchvision models _api.py for details.
+    self.assertNotEmpty(self.module_registry.list_modules("torchvision"))
 
   def test_timm_list_modules(self):
     modules = self.module_registry.list_modules("timm")
 
-    self.assertIn("convnext_small.in12k_ft_in1k", modules)
-    self.assertIn("resnet50d.ra2_in1k", modules)
-    self.assertIn("vgg16.tv_in1k", modules)
+    self.assertIn("convnext_small", modules)
+    self.assertIn("resnet50d", modules)
 
   def test_transformers_list_modules(self):
     modules = self.module_registry.list_modules("transformers")
 
-    self.assertIn("openai/gpt-oss-120b", modules)
-    self.assertIn("meta-llama/Llama-3.2-3B", modules)
     self.assertIn("google/gemma-3-270m", modules)
 
   def test_torchvision_get_module_spec(self):
@@ -169,97 +150,32 @@ class ModuleRegistryTest(absltest.TestCase):
 
     self.assertEqual(out.logits.shape, expected_logits_shape)
 
-  def test_transformers_with_modify_config_hook(self):
-    def modify_config(config):
-      config.vocab_size = 99999
-      return config
-
+  def test_transformers_get_module_spec_qwen3_vl(self):
     module_spec = self.module_registry.get_module_spec(
-        "transformers",
-        "google/gemma-3-270m",
-        load_weights=False,
-        modify_config_hook=modify_config,
+        "transformers", "Qwen/Qwen3-VL-Instruct"
     )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory()
 
-    self.assertEqual(module_spec.config.vocab_size, 99999)
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("attention_mask", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_grid_thw", kwargs)
 
-  def test_transformers_modify_config_hook_and_load_weights_raises(self):
-    def modify_config(config):
-      return config
+    model.eval()
+    out = model(**kwargs)
 
-    with self.assertRaises(NotImplementedError):
-      self.module_registry.get_module_spec(
-          "transformers",
-          "google/gemma-3-270m",
-          load_weights=True,
-          modify_config_hook=modify_config,
-      )
-
-  def test_torchvision_with_modify_config_hook_raises(self):
-    def modify_config(config):
-      return config
-
-    with self.assertRaises(ValueError):
-      self.module_registry.get_module_spec(
-          "torchvision",
-          "convnext_small",
-          modify_config_hook=modify_config,
-      )
-
-  def test_timm_with_modify_config_hook(self):
-    def modify_config(config):
-      config.input_size = (3, 999, 999)
-      return config
-
-    module_spec = self.module_registry.get_module_spec(
-        "timm",
-        "mobilenetv3_small_050",
-        load_weights=False,
-        modify_config_hook=modify_config,
+    logits = out.logits if hasattr(out, "logits") else out[0]
+    vocab_size = (
+        module_spec.config.text_config.vocab_size
+        if hasattr(module_spec.config, "text_config")
+        else module_spec.config.vocab_size
     )
-
-    self.assertEqual(module_spec.config.input_size, (3, 999, 999))
-
-  def test_timm_with_modify_config_hook_and_invalid_config(self):
-    def modify_config(config):
-      config.input_size = (3, 999, 999)
-      return config
-
-    module_spec = self.module_registry.get_module_spec(
-        "timm",
-        "random_model_name",
-        load_weights=False,
-        modify_config_hook=modify_config,
+    expected_logits_shape = (
+        *kwargs["input_ids"].shape,
+        vocab_size,
     )
-    self.assertIsNone(module_spec.config)
-
-  def test_diffusers_with_modify_config_hook(self):
-    def modify_config(config):
-      config["sample_size"] = 999
-      return config
-
-    module_spec = self.module_registry.get_module_spec(
-        "diffusers",
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        load_weights=False,
-        subfolder="unet",
-        modify_config_hook=modify_config,
-    )
-
-    self.assertEqual(module_spec.config.get("sample_size"), 999)
-
-  def test_diffusers_with_modify_config_hook_and_load_weights_raises(self):
-    def modify_config(config):
-      return config
-
-    with self.assertRaises(NotImplementedError):
-      self.module_registry.get_module_spec(
-          "diffusers",
-          "stabilityai/stable-diffusion-xl-base-1.0",
-          load_weights=True,
-          subfolder="unet",
-          modify_config_hook=modify_config,
-      )
+    self.assertEqual(logits.shape, expected_logits_shape)
 
   def test_transformers_get_module_spec_pretrained_using_sample_inputs(self):
     module_spec = self.module_registry.get_module_spec(

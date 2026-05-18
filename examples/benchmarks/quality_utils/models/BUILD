@@ -41,4 +41,17 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "qwen3_vl_quality_benchmark",
+    srcs = ["qwen3_vl_quality_benchmark.py"],
+    deps = [
+        "//examples/benchmarks/quality_utils:quality_benchmark_model",
+        "//shims/torch:pytorch",
+        "//tests:module_registry",
+        "//torch_tpu",
+        "//torch_tpu:_loader",
+        "//torch_tpu/_internal/utils:device_utils",
+    ],
+)
+
 torch_tpu_package_end()

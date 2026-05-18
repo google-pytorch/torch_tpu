@@ -35,7 +35,8 @@ torch_tpu_py_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/shims/xprof:traceme",
+        "//torch_tpu",
+        "//torch_tpu/_internal/shims/xprof:traceme",  # buildcleaner: keep
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
         "//torch_tpu/_internal/shims/xprof:xprof_session",
         "//torch_tpu/_internal/utils:device_utils",
@@ -69,6 +70,7 @@ torch_tpu_py_library(
         "//shims/torch",
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
+        "//torch_tpu",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/shims/xprof:xprof_analysis_client",
@@ -89,6 +91,7 @@ torch_tpu_py_library(
         "//examples/benchmarks/quality_utils/metrics:data_loader",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu",
         "//torch_tpu/_internal/distributed:gpu_env",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/utils:log_utils",
@@ -101,32 +104,14 @@ torch_tpu_py_library(
     srcs = ["test_utils.py"],
     deps = [
         ":benchmark_utils",
-        ":model_utils",
+        ":model_utils",  # buildcleaner: keep
         ":performance_utils",
-        "//examples/benchmarks/e2e/torchax:performance_utils",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/logging",
+        "//examples/benchmarks/e2e/torchax:performance_utils",  # buildcleaner: keep
+        "//shims/absl_py/flags",  # buildcleaner: keep
+        "//shims/absl_py/logging",  # buildcleaner: keep
         "//shims/absl_py/testing:parameterized",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
-        "@pypi//torchax",
-    ],
-)
-
-torch_tpu_py_library(
-    name = "model_performance_benchmarks_lib",
-    testonly = 1,
-    srcs = ["model_performance_benchmarks.py"],
-    deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",  # buildcleaner: keep
+        "@pypi//torchax",  # buildcleaner: keep
     ],
 )
 
@@ -137,8 +122,8 @@ torch_tpu_py_test(
     # This allows us to use a single .par file for remote cluster execution.
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 4,
     strict = True,
     tags = if_oss(
@@ -154,61 +139,14 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":model_performance_benchmarks_lib",
-        "//torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_performance_benchmarks_torchax",
-    timeout = "long",
-    srcs = ["model_performance_benchmarks.py"],
-    args = ["--backend=torchax"],
-    autoload = False,
-    main = "model_performance_benchmarks.py",
-    notap = "Tested on guitar workflow.",
-    notest_oss = "Benchmarks have a separate workflow.",
-    shard_count = 7,
-    strict = True,
-    tags = [
-        "cpu:4",
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v7x",
-    ],
-    deps = [
-        ":model_performance_benchmarks_lib",
-        "//torch_tpu",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_compile_benchmarks",
-    timeout = "long",
-    srcs = ["model_compile_benchmarks.py"],
-    main = "model_compile_benchmarks.py",
-    notap = "To be tested on guitar workflow.",
-    notest_oss = "transformers version mismatches in oss with torch.compile issues",
-    tags = [
-        "cpu:4",
-        "nofastbuild",  # Measures performance.
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v7x",
-    ],
-    deps = [
         ":benchmark_utils",
-        ":mlcompass_utils",
-        ":model_utils",
         ":performance_utils",
         ":test_utils",
-        "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/shims/xprof:traceme",
-        "//torch_tpu/_internal/utils:device_utils",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu",  # buildcleaner: keep
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -233,13 +171,13 @@ torch_tpu_py_test(
     deps = [
         ":benchmark_utils",
         ":quality_utils",
-        "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//examples/benchmarks/quality_utils/metrics:data_loader",
         "//examples/benchmarks/quality_utils/metrics:perplexity_metric",
         "//examples/benchmarks/quality_utils/models:meta_llama3_quality_benchmark",
+        "//examples/benchmarks/quality_utils/models:qwen3_vl_quality_benchmark",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu",
+        "//torch_tpu",  # buildcleaner: keep
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
@@ -284,8 +222,8 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["layer_performance_benchmarks.py"],
     main = "layer_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 8,
     strict = True,
     tags = [
@@ -297,16 +235,16 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":benchmark_function_db",
+        ":benchmark_function_db",  # buildcleaner: keep
         ":benchmark_utils",
         ":layer_configs",
-        ":model_utils",
+        ":model_utils",  # buildcleaner: keep
         ":performance_utils",
         ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
-        "//torch_tpu",
+        "//torch_tpu",  # buildcleaner: keep
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
@@ -336,63 +274,28 @@ torch_tpu_py_test(
         "cpp_link.mem": "16g",
     },
     main = "layer_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 2,
     strict = True,
     tags = [
         "cpu:4",
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         # Needed for getting xprof links
         "requires-net:external",
     ],
     deps = [
-        ":benchmark_function_db",
+        ":benchmark_function_db",  # buildcleaner: keep
         ":benchmark_utils",
         ":layer_configs",
-        ":model_utils",
+        ":model_utils",  # buildcleaner: keep
         ":performance_utils",
         ":test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "layer_performance_benchmarks_torchax",
-    timeout = "long",
-    srcs = ["layer_performance_benchmarks.py"],
-    args = [
-        "--backend=torchax",
-    ],
-    autoload = False,
-    main = "layer_performance_benchmarks.py",
-    notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
-    shard_count = 9,
-    strict = True,
-    tags = [
-        "cpu:4",
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v7x",
-    ],
-    deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":layer_configs",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
+        "//torch_tpu",  # buildcleaner: keep
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
@@ -407,8 +310,8 @@ torch_tpu_py_test(
     # This allows us to use a single .par file for remote cluster execution.
     linking_mode = "static",
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Tested on guitar workflow.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "cpu:4",
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
@@ -418,8 +321,14 @@ torch_tpu_py_test(
         "requires-net:external",
     ],
     deps = [
-        ":model_performance_benchmarks_lib",
-        "//torch_tpu",
+        ":benchmark_utils",
+        ":performance_utils",
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",  # buildcleaner: keep
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -433,19 +342,24 @@ torch_tpu_py_test(
         "cpp_link.mem": "16g",
     },
     main = "model_performance_benchmarks.py",
+    nobuild_oss = "Disabled during switch from opt-in to opt-out",
     notap = "Frequently causes Forge OOM.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 2,
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         "requires-net:external",
     ],
     deps = [
-        ":model_performance_benchmarks_lib",
-        "//torch_tpu",
+        ":benchmark_utils",
+        ":performance_utils",
+        ":test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",  # buildcleaner: keep
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 
@@ -453,22 +367,24 @@ torch_tpu_py_library(
     name = "benchmark_function_db",
     testonly = 1,
     srcs = ["benchmark_function_db.py"],
-    deps = ["//shims/torch:pytorch"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
 )
 
 torch_tpu_py_library(
     name = "model_utils",
     srcs = ["model_utils.py"],
     deps = [
-        ":benchmark_utils",
-        ":ragged_moe",
+        ":benchmark_utils",  # buildcleaner: keep
+        ":ragged_moe",  # buildcleaner: keep
         "//examples/deepseek",
         "//shims/torch:pytorch",
         "//tests:module_registry",
         "@pypi//fairscale",
         "@pypi//llama_models",
-        "@pypi//numpy",
-        "@pypi//timm",
+        "@pypi//numpy",  # buildcleaner: keep
+        "@pypi//timm",  # buildcleaner: keep
         "@pypi//transformers",
     ],
 )
@@ -478,38 +394,6 @@ torch_tpu_py_library(
     srcs = ["ragged_moe.py"],
     deps = [
         "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "dynamic_layer_performance_benchmarks",
-    timeout = "long",
-    srcs = ["layer_performance_benchmarks.py"],
-    args = ["--bounded_dynamic=True"],
-    main = "layer_performance_benchmarks.py",
-    notap = "disabled until dynamic shape support is added.",
-    notest_oss = "disabled until dynamic shape support is added",
-    shard_count = 8,
-    strict = True,
-    tags = [
-        "cpu:4",
-        "nofastbuild",
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v5p",
-    ],
-    deps = [
-        ":benchmark_function_db",
-        ":benchmark_utils",
-        ":layer_configs",
-        ":model_utils",
-        ":performance_utils",
-        ":test_utils",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
     ],
 )
 

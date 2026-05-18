@@ -14,17 +14,17 @@
 
 """Benchmarks for model quality."""
 
-from typing import Any
-
 from absl.testing import absltest
-import torch
 import torch.multiprocessing as mp
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import quality_utils
-from examples.benchmarks.quality_utils import quality_benchmark_model
 from examples.benchmarks.quality_utils.metrics import data_loader
 from examples.benchmarks.quality_utils.metrics import perplexity_metric
 from examples.benchmarks.quality_utils.models import meta_llama3_quality_benchmark
+from examples.benchmarks.quality_utils.models import qwen3_vl_quality_benchmark
+
+_QWEN3_VL_BENCHMARK_NAME = "qwen3_vl"
+
 
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
@@ -37,46 +37,6 @@ _WORLD_SIZE_MAP = {
     benchmark_utils.Platform.B200_4: 4,
     benchmark_utils.Platform.B200_8: 8,
 }
-
-
-class _DummyQualityBenchmarkModel(
-    quality_benchmark_model.QualityBenchmarkModel
-):
-  """A dummy model for unsupported platforms."""
-
-  def initialize(self) -> None:
-    pass
-
-  def get_model(self) -> torch.nn.Module:
-    return torch.nn.Module()
-
-  def _compile_model_once(self) -> None:
-    pass
-
-  def format(self, raw_input: Any) -> quality_benchmark_model.FormattedInput:
-    return quality_benchmark_model.FormattedInput(
-        input=torch.tensor([]), unpadded_length=0
-    )
-
-
-class _DummyQualityBenchmarkModel(
-    quality_benchmark_model.QualityBenchmarkModel
-):
-  """A dummy model for unsupported platforms."""
-
-  def initialize(self) -> None:
-    pass
-
-  def get_model(self) -> torch.nn.Module:
-    return torch.nn.Module()
-
-  def _compile_model_once(self) -> None:
-    pass
-
-  def format(self, raw_input: Any) -> quality_benchmark_model.FormattedInput:
-    return quality_benchmark_model.FormattedInput(
-        input=torch.tensor([]), unpadded_length=0
-    )
 
 
 def _distributed_meta_llama_3_benchmark_config(
@@ -93,16 +53,6 @@ def _distributed_meta_llama_3_benchmark_config(
     model_config: The model config to use.
     run_mode: The mode to run the benchmark in.
   """
-  if platform not in _WORLD_SIZE_MAP:
-    return quality_utils.QualityBenchmarkConfig(
-        supported_platforms=list(_WORLD_SIZE_MAP.keys()),
-        benchmark_category=benchmark_utils.BenchmarkCategory.META_LLAMA,
-        run_mode=run_mode,
-        benchmark_model=_DummyQualityBenchmarkModel(),
-        metrics=[],
-        dataset_type=data_loader.DatasetType.WIKITEXT,
-    )
-
   # Determine world size and device based on platform
   world_size = _WORLD_SIZE_MAP[platform]
   device = benchmark_utils.PLATFORM_DEVICE_MAP[platform]
@@ -118,7 +68,10 @@ def _distributed_meta_llama_3_benchmark_config(
   metrics = [perplexity_metric.PerplexityMetric(max_text_chunk_size=1024)]
 
   config = quality_utils.QualityBenchmarkConfig(
-      supported_platforms=list(_WORLD_SIZE_MAP.keys()),
+      supported_platforms=[
+          benchmark_utils.Platform.GFC_2X2X1,
+          benchmark_utils.Platform.B200_8,
+      ],
       benchmark_category=benchmark_utils.BenchmarkCategory.META_LLAMA,
       run_mode=run_mode,
       benchmark_model=benchmark_model,
@@ -203,6 +156,31 @@ class BenchmarkTest(absltest.TestCase):
         _META_LLAMA_3_2_70B_BENCHMARK_NAME,
         True,
     )
+
+  def test_quality_qwen3_vl_eager_forward(self):
+    """Tests the quality of Qwen3-VL in eager mode."""
+    platform = benchmark_utils.PLATFORM.value
+    device = benchmark_utils.PLATFORM_DEVICE_MAP[platform]
+
+    benchmark_model = qwen3_vl_quality_benchmark.Qwen3VLQualityBenchmarkModel(
+        "Qwen/Qwen3-VL-Instruct", device
+    )
+
+    metrics = [perplexity_metric.PerplexityMetric(max_text_chunk_size=1024)]
+
+    config = quality_utils.QualityBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.META_LLAMA,
+        run_mode=benchmark_utils.RunMode.EAGER_DEFAULT,
+        benchmark_model=benchmark_model,
+        metrics=metrics,
+        dataset_type=data_loader.DatasetType.WIKITEXT,
+    )
+
+    self.run_benchmark_test(config, _QWEN3_VL_BENCHMARK_NAME, distributed=False)
 
 
 if __name__ == "__main__":
