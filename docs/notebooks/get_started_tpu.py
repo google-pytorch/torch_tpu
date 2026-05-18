@@ -86,14 +86,8 @@ def _(mo):
 @app.cell
 def _():
   import torch
-  import torch_tpu
-  from torch_tpu import api
 
-  # device = torch.device("cuda") Remove this from your current code
-
-  # Initialize the TPU device
-  # This registers the "tpu" device string in PyTorch.
-  device = api.tpu_device()
+  device = torch.device("tpu")  # Change from cuda to tpu
 
   print(f"TPU Initialization complete. Primary device: {device}")
   return device, torch
