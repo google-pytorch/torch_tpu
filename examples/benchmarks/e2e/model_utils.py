@@ -18,7 +18,9 @@ import dataclasses
 import enum
 import functools
 from importlib import resources
+import json
 import math
+import pathlib
 import re
 from typing import Any, Callable
 
@@ -314,6 +316,11 @@ def huggingface_llm_model_builder(
   # control-flow tracing errors in masking_utils.py while keeping identical
   # benchmark workload/math.
   example_inputs.pop("attention_mask", None)
+
+  # Cast floating point inputs to weights_dtype if any (for vision models)
+  for k, v in example_inputs.items():
+    if isinstance(v, torch.Tensor) and v.is_floating_point():
+      example_inputs[k] = v.to(weights_dtype)
 
   if is_training:
     vocab_size = get_vocab_size(model_cpu.config)
@@ -1580,6 +1587,98 @@ def ml_layer_model_builder(
         "At least one of batch_size or sequence_length must be a"
         " DynamicDimension for bounded dynamic benchmarks."
     )
+
+  return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
+def rmbg_1_4_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns a ModelAndInput for the RMBG-1.4 model.
+
+  This builder handles the custom configuration loading for RMBG-1.4, mapping
+  it to a standard Segformer architecture for compatibility with the
+  transformers library.
+
+  Args:
+      model_and_input_args: The model and input args.
+      device: The device to load the model and inputs on.
+      weights_dtype: The data type for the model weights.
+      is_training: Whether the model is in training mode.
+
+  Returns:
+      A ModelAndInput dataclass.
+  """
+  model_name = model_and_input_args.model_name
+  batch_size = model_and_input_args.batch_size
+
+  # Path to local resources
+  resource_files = resources.files("examples").joinpath(
+      "huggingface_transformers/model_configs"
+  )
+
+  config_path = resource_files.joinpath(
+      str(pathlib.Path(model_name) / "config.json")
+  )
+
+  with resources.as_file(config_path) as f:
+    with open(f, "r") as json_file:
+      config_dict = json.load(json_file)
+
+    # RMBG-1.4 uses a custom model_type value. Map it to standard
+    # 'segformer' so that AutoConfig can recognize it.
+    if config_dict.get("model_type") == "SegformerForSemanticSegmentation":
+      config_dict["model_type"] = "segformer"
+      # Strip custom auto_map to avoid remote code execution prompts
+      config_dict.pop("auto_map", None)
+      # Map to standard architecture
+      config_dict["architectures"] = ["SegformerForSemanticSegmentation"]
+
+      # Map custom channels to Segformer equivalents
+      if "in_ch" in config_dict:
+        config_dict["num_channels"] = config_dict["in_ch"]
+      if "out_ch" in config_dict:
+        config_dict["num_labels"] = config_dict["out_ch"]
+
+      config_class = transformers.CONFIG_MAPPING[config_dict["model_type"]]
+      config = config_class.from_dict(config_dict)
+    else:
+      config = transformers.AutoConfig.from_pretrained(str(f))
+      if hasattr(config, "auto_map"):
+        config.auto_map = None
+
+  # Use the architecture from config
+  architectures = getattr(
+      config, "architectures", ["SegformerForSemanticSegmentation"]
+  )
+  model_cls = getattr(transformers, architectures[0], transformers.AutoModel)
+
+  with torch.device(device), set_default_dtype(weights_dtype):
+    model = model_cls(config)
+    _init_model_weights(model)
+
+  # Prepare inputs. RMBG-1.4 is a vision model.
+  num_channels = getattr(config, "num_channels", 3)
+  if hasattr(config, "in_ch"):
+    num_channels = config.in_ch
+  image_size = getattr(config, "image_size", 512)
+  if isinstance(image_size, int):
+    image_size = (image_size, image_size)
+
+  actual_shape = (batch_size, num_channels, *image_size)
+  example_inputs = {
+      "pixel_values": torch.randn(
+          actual_shape, device=device, dtype=weights_dtype
+      ),
+  }
+
+  if is_training:
+    model.train()
+  else:
+    model.eval()
 
   return ModelAndInput(model=model, example_inputs=example_inputs)
 

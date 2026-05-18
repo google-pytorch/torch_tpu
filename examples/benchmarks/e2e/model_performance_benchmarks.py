@@ -60,6 +60,8 @@ _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
+_HF_RMBG_1_4_BENCHMARK_NAME = "hf_rmbg_1_4"
+
 
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
@@ -1198,6 +1200,33 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     self.run_performance_benchmark_test(
         config, _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME
     )
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+          benchmark_utils.RunMode.EAGER_OPTIMIZED,
+          benchmark_utils.RunMode.COMPILED,
+      ])
+  )
+  def test_rmbg_1_4_forward(self, run_mode):
+    """Tests the forward pass of RMBG-1.4."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="briaai/RMBG-1.4",
+            sequence_length=512,
+            batch_size=1,
+        ),
+        model_and_input_factory=model_utils.rmbg_1_4_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(config, _HF_RMBG_1_4_BENCHMARK_NAME)
 
   # ============================================================================
   # 7. Wan Diffuser Family

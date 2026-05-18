@@ -450,6 +450,10 @@ class TransformersProvider(BaseProvider):
             self._FILES.joinpath(str(pathlib.Path(name) / "config.json"))
         ) as f:
           config = transformers.AutoConfig.from_pretrained(str(f))
+          # Strip custom auto_map to avoid remote code execution prompts
+          # during testing.
+          if hasattr(config, "auto_map"):
+            config.auto_map = None
       except Exception as exc:  # pylint: disable=broad-except
         raise ValueError(
             f"Model config for '{name}' is missing in local resources"
