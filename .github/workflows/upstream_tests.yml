@@ -1,0 +1,160 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Runs a curated subset of upstream pytorch/pytorch tests against the torch_tpu
+# PrivateUse1 backend. Out-of-tree backends are expected to consume the upstream
+# device-generic test suite directly; see
+# https://dev-discuss.pytorch.org/t/making-pytorch-test-suite-usable-from-out-of-tree-braindump/3357
+#
+# The pytorch source tree is checked out to a sibling directory at the pin
+# recorded in tests/upstream/pytorch_pin.txt. End users of the torch_tpu wheel
+# never need pytorch source — this dependency is CI-only.
+
+name: CI - Upstream PyTorch tests on TPU
+
+# Pinned pytorch ref must match the torch version torch_tpu's wheel is
+# compiled against (see pyproject.toml). Bumping the pin requires either
+# rebuilding torch_tpu against the new torch or accepting ABI mismatches.
+
+on:
+  workflow_dispatch:
+    inputs:
+      halt-for-connection:
+        description: 'Should this workflow run wait for a remote connection?'
+        type: choice
+        default: 'no'
+        options:
+          - 'yes'
+          - 'no'
+      pytorch_ref_override:
+        description: 'Override pytorch ref (default: read from pytorch_pin.txt)'
+        required: false
+        type: string
+      suite:
+        description: 'Test suite to run (see tests/upstream/test_suites.py)'
+        required: false
+        type: choice
+        default: 'smoke'
+        options:
+          - smoke
+          - opinfo_correctness
+          - numerics
+          - tensor_ops
+          - frontend
+          - full
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "0 6 * * *"  # daily at 06:00 UTC
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+jobs:
+  run_upstream_tests:
+    name: "Upstream tests on ${{ matrix.runner }}"
+    # On PRs, opt-in via label to avoid spending TPU cycles on every push.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:upstream-tests')
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ["linux-x86-ct5lp-224-8tpu"]
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Build torch_tpu wheel
+        run: |
+          bazel build -c opt --config=no_rbe //ci/wheel:torch_tpu_wheel
+          mkdir -p dist
+          cp bazel-bin/ci/wheel/*.whl dist/
+
+      - name: Install torch_tpu wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          python -m pip install pytest pytest-timeout pytest-xdist expecttest
+
+      - name: Checkout pytorch at pin
+        run: |
+          PIN="${{ inputs.pytorch_ref_override }}"
+          if [[ -z "$PIN" ]]; then
+            PIN="$(tr -d '[:space:]' < tests/upstream/pytorch_pin.txt)"
+          fi
+          echo "Using pytorch ref: $PIN"
+          git clone --filter=blob:none https://github.com/pytorch/pytorch.git /tmp/pytorch
+          git -C /tmp/pytorch checkout "$PIN"
+          echo "PYTORCH_SRC_DIR=/tmp/pytorch" >> "$GITHUB_ENV"
+
+      - name: Run upstream tests
+        env:
+          UPSTREAM_JUNIT_OUT: ${{ github.workspace }}/upstream_results.xml
+          # workflow_dispatch override; empty on PR/schedule → runner falls
+          # back to DEFAULT_SUITE in tests/upstream/test_suites.py.
+          UPSTREAM_SUITE: ${{ inputs.suite }}
+          # Disable PyTorch's backend autoload — our plugin loads torch_tpu
+          # explicitly via _tpu_api.tpu_device(). Letting torch autoload it
+          # during `import torch` triggers a circular import inside torch_tpu.
+          TORCH_DEVICE_BACKEND_AUTOLOAD: "0"
+        run: bash tests/upstream/run_upstream.sh
+
+      - name: Upload junit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-junit-${{ matrix.runner }}
+          path: upstream_results.xml
+          if-no-files-found: warn
+
+  notify_failure:
+    name: Notify Failed Runs
+    needs: [run_upstream_tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get current date
+        id: date
+        if: contains(needs.run_upstream_tests.result, 'failure') && github.event_name == 'schedule'
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: File issue on scheduled failure
+        if: contains(needs.run_upstream_tests.result, 'failure') && github.event_name == 'schedule'
+        uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label-name: "ci:upstream-tests-failed"
+          title-template: "Upstream PyTorch tests failed on TPU (${{ steps.date.outputs.date }})"
