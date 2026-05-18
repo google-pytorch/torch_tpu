@@ -44,7 +44,7 @@ test = [
     "scipy>=1.16.1",
     "numpy>=2",
     "timm>=1.0.26",
-    "torchvision>=0.25",
+    "torchvision>=0.26",
     "transformers>=5.8.0",
     "pytest>=9"
 ]
@@ -70,7 +70,7 @@ examples = [
     "transformers>=5.8.0",
     "diffusers>=0.37",
     "peft>=0.18",
-    "torchvision>=0.25",
+    "torchvision>=0.26",
     "llama-models>=0.3.0",
     "fairscale>=0.4",
     "grain>=0.2.16",
