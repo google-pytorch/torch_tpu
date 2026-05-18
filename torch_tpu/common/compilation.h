@@ -195,7 +195,8 @@ absl::Status PushCompilerOptionOverrides(CompilerOptionOverrides overrides);
 void PopCompilerOptionOverrides();
 
 // Sets whether XLA is allowed to use excess precision for all compilations.
-void SetAllowExcessPrecision(bool allow);
+// Returns FailedPreconditionError if the flag has already been set.
+absl::Status SetAllowExcessPrecision(bool allow);
 
 // Returns whether XLA is allowed to use excess precision for all compilations.
 [[nodiscard]] bool GetAllowExcessPrecision();

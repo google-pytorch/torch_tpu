@@ -28,26 +28,18 @@ class _TpuBackendConfig:
     not explicitly set. First time calling this property triggers parsing and
     memoization of the XLA_FLAGS environment variable.
     """
-    # pylint: disable=protected-access
-    return _device_ops_backend._get_allow_excess_precision()
+
+    return _device_ops_backend._get_allow_excess_precision()  # pylint: disable=protected-access
 
   @allow_excess_precision.setter
   def allow_excess_precision(self, value: bool):
     """Sets whether XLA is allowed to use excess precision.
 
-    It sets the XLA flag of --allow_excess_precision globally for all future
-    compilations. Changing its value would result in compile cache eviction.
-
-    Currently, the compilation cache will be evicted if this flag is changed,
-    which would impact the performance. Recommend not changing it frequently.
-    File a feature request for a context manager for this flag if needed.
+    This flag can only be set once per process. Attempting to set it a second
+    time (even to the same value) will raise a RuntimeError.
 
     Args:
       value: Whether to allow excess precision. Can be True or False.
     """
-    # TODO: b/498591854 - Update the docstring when the cache is no longer
-    # evicted.
-    # TODO: b/502610173 - Set to False when XLA_FLAGS is not set. Change the
-    # docstring accordingly.
-    # pylint: disable=protected-access
-    _device_ops_backend._set_allow_excess_precision(value)
+
+    _device_ops_backend._set_allow_excess_precision(value)  # pylint: disable=protected-access

@@ -207,23 +207,18 @@ void PopCompilerOptionOverrides() {
 static std::atomic<ExcessPrecisionState> g_allow_excess_precision{
     ExcessPrecisionState::kUnset};
 
-// TODO: b/498591854 - Remove this callback once allow_excess_precision is
-// included in the cache key. This is a temporary solution to avoid a circular
-// dependency between the low-level compilation.cc and the higher-level
-// compilation_cache.cc. We cannot call cache eviction in compilation_cache
-// directly from here. compilation_cache would fill this callback with the
-// eviction function and we call this callback instead. This is called before
-// the value of g_allow_excess_precision is changed.
-std::atomic<void (*)()> g_excess_precision_change_callback{nullptr};
+// Implements write-once semantics for g_allow_excess_precision.
+absl::Status SetAllowExcessPrecision(bool allow) {
+  ExcessPrecisionState expected = ExcessPrecisionState::kUnset;
+  ExcessPrecisionState desired =
+      allow ? ExcessPrecisionState::kAllow : ExcessPrecisionState::kDisallow;
 
-void SetAllowExcessPrecision(bool allow) {
-  if (GetAllowExcessPrecision() != allow) {
-    if (void (*callback)() = g_excess_precision_change_callback.load()) {
-      callback();
-    }
+  if (g_allow_excess_precision.compare_exchange_strong(expected, desired)) {
+    return absl::OkStatus();
   }
-  g_allow_excess_precision.store(allow ? ExcessPrecisionState::kAllow
-                                       : ExcessPrecisionState::kDisallow);
+
+  return TT_ERROR(error::kFailedPrecondition)
+         << "torch.backends.tpu.allow_excess_precision can only be set once.";
 }
 
 bool GetAllowExcessPrecision() {

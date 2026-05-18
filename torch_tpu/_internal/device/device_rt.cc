@@ -151,6 +151,10 @@ void SynchronizeStreamPy(int64_t stream_id, std::optional<int> device_index) {
   PjrtBackend::GetInstance().SynchronizeStream(index, stream_id);
 }
 
+void SetAllowExcessPrecisionPy(bool allow) {
+  TT_THROW_IF_ERROR(SetAllowExcessPrecision(allow));
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_device_ops_backend, m) {
@@ -292,7 +296,7 @@ PYBIND11_MODULE(_device_ops_backend, m) {
       "_clear_cache", []() { CompilationCache::GetInstance().EvictAll(); },
       "Evict all existing entries in the compilation cache. The function "
       "waits for all in-flight compilations to complete.");
-  m.def("_set_allow_excess_precision", &SetAllowExcessPrecision,
+  m.def("_set_allow_excess_precision", &SetAllowExcessPrecisionPy,
         py::arg("allow"),
         "Sets whether XLA is allowed to use excess precision for all "
         "compilations.");

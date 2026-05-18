@@ -1072,14 +1072,13 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "tpu_backend_config_test",
     srcs = ["tpu_backend_config_test.py"],
+    shard_count = 4,  # Update this to match the number of methods to ensure each test is in a separate process.
     strict = True,
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//shims/torch:testing_internal",
         "//torch_tpu",  # build_cleaner: keep
-        "//torch_tpu/_internal/execution_mode",
     ],
 )
 
