@@ -29,6 +29,7 @@ _ALL_MODEL_IDS = _MINI_MODEL_IDS + [
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
     "meta-llama/Llama-3.2-1B",
+    "facebook/sam3",
 ]
 
 # Get the parent package name. The absolute name differs internally vs

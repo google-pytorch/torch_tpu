@@ -1412,6 +1412,38 @@ def huggingface_diffuser_model_builder(
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 
+def huggingface_vision_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns a Hugging Face vision model and inputs."""
+  model_name = model_and_input_args.model_name
+  registry = get_module_registry()
+  module_spec = registry.get_module_spec(
+      "transformers",
+      model_name,
+      load_weights=False,
+  )
+
+  if module_spec.config is not None:
+    module_spec.config.torch_dtype = weights_dtype
+
+  with torch.device("cpu"):
+    model_cpu = module_spec.module_factory().to(weights_dtype)
+
+  _, example_inputs = module_spec.sample_inputs_factory(None, str(device))
+
+  model = model_cpu.to(device)
+  if is_training:
+    model.train()
+  else:
+    model.eval()
+
+  return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
 def _apply_tensor_parallel_plan(
     module,
     name_prefix="",

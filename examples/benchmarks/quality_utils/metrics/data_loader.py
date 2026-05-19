@@ -59,6 +59,21 @@ def load_string_test_data():
     yield text_to_encode
 
 
+def load_edge_cases():
+  """Loads extreme edge cases for testing.
+
+  Yields:
+    A prompt to be used for perplexity score computation.
+  """
+  ds = [
+      "",
+      "a",
+      "a" * 10000,
+  ]
+
+  yield from ds
+
+
 def load_wikitext():
   """Loads all the prompts from the wikitext validation dataset."""
   return load_limited_wikitext(-1)
@@ -75,7 +90,7 @@ def load_limited_wikitext(num_prompts: int):
       all prompts.
 
   Yields:
-    A prompt to be used for perplexity score computation.
+    A single concatenated string to be used for perplexity score computation.
   """
   # Load the wikitext dataset.
   source = tfds.data_source(
@@ -87,13 +102,22 @@ def load_limited_wikitext(num_prompts: int):
   else:
     n = min(num_prompts, len(ds))
 
-  # Iterate over the dataset and yield the text to encode.
+  texts = []
+  # Iterate over the dataset and append the text to encode.
   for i in range(_get_num_prompts(num_prompts, n)):
     # Get text from the dataset. Skip empty samples.
-    text_to_encode = str(ds[i]["text"])[2:-1]
+    raw_text = ds[i]["text"]
+    text_to_encode = (
+        raw_text.decode("utf-8")
+        if isinstance(raw_text, bytes)
+        else str(raw_text)
+    )
     if not text_to_encode:
       continue
-    yield text_to_encode
+    texts.append(text_to_encode)
+
+  if texts:
+    yield "\n\n".join(texts)
 
 
 class DatasetType(enum.Enum):
@@ -101,12 +125,14 @@ class DatasetType(enum.Enum):
 
   WIKITEXT = "wikitext"
   STRING_TEST_DATA = "string_test_data"
+  EDGE_CASES = "edge_cases"
 
 
 # LINT.IfChange
 _DATASET_LOADER_MAP = {
     DatasetType.WIKITEXT: load_wikitext,
     DatasetType.STRING_TEST_DATA: load_string_test_data,
+    DatasetType.EDGE_CASES: load_edge_cases,
 }
 
 

@@ -178,7 +178,8 @@ def _run_mode_context(run_mode: benchmark_utils.RunMode, device: torch.device):
     # Change back to the original value.
     execution_mode.eager_mode = original_eager_mode
     # pylint: disable=protected-access
-    device_utils.clear_cache(device.type)
+    if device.type != "cpu":
+      device_utils.clear_cache(device.type)
     if benchmark_utils.is_torch_compile(run_mode):
       torch._dynamo.reset()
 
@@ -313,6 +314,11 @@ def run_single_process_benchmark(
   result = None
   benchmark_exception = None
   try:
+    capture_file_name = None
+    if benchmark_utils.CAPTURE_OPS.value:
+      mode_str = config.run_mode.value
+      capture_file_name = f"{benchmark_name}_{mode_str}_ops.json"
+
     with _run_mode_context(config.run_mode, device):
       result = benchmark_utils.run_performance_benchmark(
           func,
@@ -324,6 +330,7 @@ def run_single_process_benchmark(
           xprof_client=xprof_client,
           sync_params=config.sync_params,
           is_bounded_dynamic=BOUNDED_DYNAMIC.value,
+          capture_file_name=capture_file_name,
       )
       logging.info(
           "Performance Benchmark Results:\n"

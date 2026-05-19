@@ -84,6 +84,7 @@ genrule(
     name = "wheel_extra_test_deps",
     testonly = True,
     srcs = [
+        "//examples:all_py_files_recursive",
         "//tests:all_py_files_recursive",
         "//torch_tpu/_internal/distributed:spmd_util",
         "//torch_tpu/_internal/utils:test_fixtures",

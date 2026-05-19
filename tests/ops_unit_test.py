@@ -3449,6 +3449,87 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         ),
     )
 
+  def test_repeat_interleave_tensor(self):
+    t = torch.tensor([1, 2, 3])
+
+    # Case 1: Multi-element repeat tensor
+    repeats = torch.tensor([2, 1, 3])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(repeats, device=device),
+        ),
+    )
+
+    # Case 2: Single-element 1D repeat tensor (Broadcasting check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor([2]), device=device),
+        ),
+    )
+
+    # Case 3: 0D repeat tensor / scalar (0D check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor(2), device=device),
+        ),
+    )
+
+    # Case 4: Repetitions containing zero elements (pruning check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor([2, 0, 1]), device=device),
+        ),
+    )
+
+    # Case 5: 2D inputs along different dimensions (rank and dim checks)
+    t_2d = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32)
+    repeats_2d = torch.tensor([2, 3])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=0,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=1,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=-1,
+        ),
+    )
+
+    # Case 6: Dtype variations (bfloat16, int32, bool)
+    for dtype in [torch.bfloat16, torch.int32, torch.bool]:
+      t_dtype = torch.tensor([1, 0, 1], dtype=dtype)
+      repeats_dtype = torch.tensor([2, 1, 3])
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t_dtype=t_dtype, repeats_dtype=repeats_dtype: torch.repeat_interleave(
+              input=to(t_dtype, device=device),
+              repeats=to(repeats_dtype, device=device),
+          ),
+      )
+
+    # Case 7: Explicit output_size parameter (avoids host sync)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(repeats, device=device),
+            output_size=6,
+        ),
+    )
+
   def test_tensor_to_tpu_with_default_device(self):
     """Tests that a tensor can be moved to TPU with a default device set."""
     device = torch.device("tpu")

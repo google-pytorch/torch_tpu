@@ -130,6 +130,7 @@
 #include "torch_tpu/ops/reductions/sum_aten_kernels.h"
 #include "torch_tpu/ops/reductions/var_aten_kernels.h"
 #include "torch_tpu/ops/reflection_pad/reflection_pad_aten_kernels.h"
+#include "torch_tpu/ops/repeat_interleave/repeat_interleave_aten_kernels.h"
 #include "torch_tpu/ops/replication_pad/replication_pad_aten_kernels.h"
 #include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "torch_tpu/ops/rms_norm/rms_norm_aten_kernels.h"
@@ -634,6 +635,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   Impl(m, OpName::kRelu_, AtenRelu_);
   Impl(m, OpName::kRemainderScalarTensor, AtenRemainderScalarTensor);
   Impl(m, OpName::kRemainderTensorOut, AtenRemainderTensorOut);
+  Impl(m, OpName::kRepeatInterleaveSelfTensor, AtenRepeatInterleave);
   Impl(m, OpName::kReplicationPad1dBackwardGradInput,
        AtenReplicationPad1dBackwardGradInput);
   Impl(m, OpName::kReplicationPad1dOut, AtenReplicationPad1dOut);

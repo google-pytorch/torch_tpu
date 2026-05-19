@@ -26,6 +26,8 @@ instantiated model and factory functions for generating compatible sample
 inputs.
 """
 
+# pylint: disable=g-import-not-at-top
+
 import abc
 from collections.abc import Callable, Sequence
 from importlib import resources
@@ -36,13 +38,37 @@ from typing import Any, Iterator
 
 from absl import flags
 from absl import logging
-import diffusers
-from diffusers.models.auto_model import AutoModel
 from etils import epath
-import timm
 import torch
-import torchvision
-import transformers
+
+try:
+  import diffusers
+  from diffusers.models.auto_model import AutoModel
+
+  _HAS_DIFFUSERS = True
+except ImportError:
+  _HAS_DIFFUSERS = False
+
+try:
+  import timm
+
+  _HAS_TIMM = True
+except ImportError:
+  _HAS_TIMM = False
+
+try:
+  import torchvision
+
+  _HAS_TORCHVISION = True
+except ImportError:
+  _HAS_TORCHVISION = False
+
+try:
+  import transformers
+
+  _HAS_TRANSFORMERS = True
+except ImportError:
+  _HAS_TRANSFORMERS = False
 
 _MAX_SEQ_LEN_HEURISTIC_CAP = 100_000
 
@@ -439,7 +465,7 @@ class TransformersProvider(BaseProvider):
 
     if load_weights:
       model_fn = lambda: transformers.AutoModelForCausalLM.from_pretrained(
-          str(model_dir_or_repo_id)
+          str(model_dir_or_repo_id), **kwargs
       )
       preprocessor_fn = lambda: (
           transformers.AutoTokenizer.from_pretrained(str(model_dir_or_repo_id))
@@ -459,6 +485,80 @@ class TransformersProvider(BaseProvider):
 
       model_fn = lambda: model_cls(config)
       preprocessor_fn = None
+
+    if getattr(config, "model_type", None) == "sam3_video":
+
+      def _sam3_input_fn(
+          shape=None, device="cpu"
+      ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        from transformers.models.sam3_video.modeling_sam3_video import Sam3VideoInferenceSession
+
+        tracker_config = getattr(config, "tracker_config", None)
+        if tracker_config is not None:
+          image_size = getattr(tracker_config, "image_size", 1008)
+        else:
+          vision_config = getattr(config, "vision_config", None)
+          backbone_config = (
+              getattr(vision_config, "backbone_config", None)
+              if vision_config
+              else None
+          )
+          image_size = (
+              getattr(backbone_config, "image_size", 1008)
+              if backbone_config
+              else 1008
+          )
+
+        if shape is not None:
+          video_shape = shape
+        else:
+          video_shape = (2, 3, image_size, image_size)
+
+        target_dtype = getattr(config, "torch_dtype", torch.float32)
+        video = torch.randn(video_shape, device=device, dtype=target_dtype)
+        session = Sam3VideoInferenceSession(
+            video=video,
+            video_height=image_size,
+            video_width=image_size,
+            inference_device=device,
+            inference_state_device=device,
+            video_storage_device=device,
+            dtype=target_dtype,
+        )
+        prompt_id = session.add_prompt("dummy prompt")
+        detector_config = getattr(config, "detector_config", None)
+        text_config = (
+            getattr(detector_config, "text_config", None)
+            if detector_config
+            else None
+        )
+        text_vocab_size = (
+            getattr(text_config, "vocab_size", 49408) if text_config else 49408
+        )
+        text_seq_len = (
+            getattr(text_config, "max_position_embeddings", 32)
+            if text_config
+            else 32
+        )
+        session.prompt_input_ids[prompt_id] = torch.randint(
+            0,
+            text_vocab_size,
+            (1, text_seq_len),
+            device=device,
+            dtype=torch.long,
+        )
+        session.prompt_attention_masks[prompt_id] = torch.ones(
+            (1, text_seq_len), device=device, dtype=torch.long
+        )
+        return (
+            (),
+            {
+                "inference_session": session,
+                "frame_idx": 0,
+            },
+        )
+
+      return ModuleSpec(model_fn, _sam3_input_fn, preprocessor_fn, config)
 
     safe_seq_len = min(_get_max_seq_len(config), 512)
 
@@ -751,12 +851,17 @@ class ModuleRegistry:
     if base_path is None:
       base_path = _WEIGHTS_BASE_PATH.value
 
-    self._providers: dict[str, BaseProvider] = {
-        "torchvision": TorchvisionProvider(base_path=base_path),
-        "timm": TimmProvider(base_path=base_path),
-        "transformers": TransformersProvider(base_path=base_path),
-        "diffusers": DiffusersProvider(base_path=base_path),
-    }
+    self._providers: dict[str, BaseProvider] = {}
+    if _HAS_TORCHVISION:
+      self._providers["torchvision"] = TorchvisionProvider(base_path=base_path)
+    if _HAS_TIMM:
+      self._providers["timm"] = TimmProvider(base_path=base_path)
+    if _HAS_TRANSFORMERS:
+      self._providers["transformers"] = TransformersProvider(
+          base_path=base_path
+      )
+    if _HAS_DIFFUSERS:
+      self._providers["diffusers"] = DiffusersProvider(base_path=base_path)
 
   def list_all_sources(self) -> list[str]:
     """Returns a list of registered provider keys (e.g., 'torchvision')."""

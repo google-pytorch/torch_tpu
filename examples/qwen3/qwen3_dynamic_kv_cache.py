@@ -16,6 +16,8 @@
 
 from collections.abc import Mapping
 import copy
+import dataclasses
+import enum
 import pathlib
 import time
 from typing import Any
@@ -78,6 +80,36 @@ _WARMUP_STEPS = flags.DEFINE_integer(
 )
 
 
+@enum.unique
+class Device(enum.Enum):
+  """A supported device for running the model.
+
+  Attributes:
+    TPU: TPU device.
+    CUDA: CUDA device.
+  """
+
+  TPU = "tpu"
+  CUDA = "cuda"
+
+
+@enum.unique
+class Mode(enum.Enum):
+  """An execution mode for running the model.
+
+  Attributes:
+    CPU: CPU mode.
+    EAGER: Eager mode.
+    COMPILED_DYNAMIC: Compiled dynamic mode.
+    COMPILED_STATIC: Compiled static mode.
+  """
+
+  CPU = "cpu"
+  EAGER = "eager"
+  COMPILED_DYNAMIC = "compiled_dynamic"
+  COMPILED_STATIC = "compiled_static"
+
+
 def model_generate(
     model: transformers.PreTrainedModel,
     initial_inputs: torch.Tensor,
@@ -97,7 +129,7 @@ def model_generate(
   Returns:
     A tuple of (decoded text, latency metrics dictionary).
   """
-  with torch.no_grad():
+  with torch.inference_mode():
     with traceme.TraceMe(f"[{prefix}] Prefill"):
       start_time = time.time()
       output = model(input_ids=initial_inputs, use_cache=True)
@@ -276,105 +308,206 @@ def _print_summary_table(
   print()
 
 
+@dataclasses.dataclass(frozen=True)
+class CompiledConfig:
+  """Configuration for torch.compile.
+
+  Attributes:
+    backend: The backend to use for compilation.
+    prefix: The prefix for log messages.
+    key: The key for storing metrics.
+  """
+
+  backend: Any
+  prefix: str
+  key: str
+
+
+def _get_compiled_config(device: Device, mode: Mode) -> CompiledConfig:
+  """Gets the backend, prefix, and key for torch.compile based on device and mode."""
+  if mode == Mode.COMPILED_DYNAMIC:
+    if device == Device.CUDA:
+      return CompiledConfig(
+          backend="inductor",
+          prefix="[Compiled CUDA] ",
+          key="Compiled CUDA",
+      )
+    return CompiledConfig(
+        backend=_backend.TpuBackend(dynamism=True),
+        prefix="[Compiled TPU (Dynamic)] ",
+        key="Compiled TPU (Dynamic)",
+    )
+
+  if mode == Mode.COMPILED_STATIC:
+    if device == Device.CUDA:
+      raise ValueError("Static compilation not supported for CUDA")
+    return CompiledConfig(
+        backend=_backend.TpuBackend(dynamism=False),
+        prefix="[Compiled TPU (Static)] ",
+        key="Compiled TPU (Static)",
+    )
+
+  raise ValueError(f"Invalid compiled mode: {mode}")
+
+
 def _run_with_actual_weights(
+    model_cpu: transformers.PreTrainedModel,
     tokenizer: transformers.PreTrainedTokenizer,
-    model_path: pathlib.Path,
     inputs: torch.Tensor,
     max_decode_steps: int,
-    device: str,
-) -> None:
-  if device == "cuda":
-    inductor_config.compile_threads = 1
+    *,
+    device: Device,
+    mode: Mode,
+) -> tuple[str, Mapping[str, Any]]:
+  """Runs benchmark for a single mode with actual weights.
 
-  model_cpu = transformers.AutoModelForCausalLM.from_pretrained(
-      model_path, torch_dtype=torch.bfloat16, attn_implementation="eager"
-  )
-  output_cpu, metrics_cpu = model_generate(
-      model_cpu, inputs, tokenizer, max_decode_steps, prefix="[CPU] "
-  )
-  logging.info("output_cpu=%s", output_cpu)
+  Args:
+    model_cpu: The HuggingFace model loaded on CPU.
+    tokenizer: The tokenizer.
+    inputs: The initial input tensor.
+    max_decode_steps: The maximum number of decoding steps.
+    device: The device to run on.
+    mode: The execution mode.
 
-  model_device = copy.deepcopy(model_cpu).to(device)
+  Returns:
+    A tuple (output_text, metrics), where output_text is the decoded output
+    text, and metrics is a dictionary of metrics for the executed mode.
+  """
+  with torch.no_grad():
+    if mode == Mode.CPU:
+      result_output, metrics_cpu = model_generate(
+          model_cpu,
+          inputs,
+          tokenizer,
+          max_decode_steps,
+          prefix="[CPU] ",
+      )
+      logging.info("output_cpu=%s", result_output)
+      return result_output, {"CPU": metrics_cpu}
 
-  if not _COMPILE_ONLY.value:
-    output_device, metrics_device = model_generate(
-        model_device,
-        inputs.to(device),
-        tokenizer,
-        max_decode_steps,
-        prefix=f"[{device.upper()}] ",
-    )
-    logging.info("output_%s=%s", device, output_device)
-    assert output_cpu == output_device, f"{output_cpu=} != {output_device=}"
-    eager_device_metrics = {device.upper(): metrics_device}
-  else:
-    eager_device_metrics = {}
+    model_device = copy.deepcopy(model_cpu).to(device.value)
 
-  if device == "cuda":
-    model_device_compiled = torch.compile(model_device, backend="inductor")
-  else:
-    model_device_compiled = torch.compile(
-        model_device, backend=_backend.TpuBackend(dynamism=True)
-    )
-  output_device_compiled, metrics_compiled = model_generate(
-      model_device_compiled,
-      inputs.to(device),
-      tokenizer,
-      max_decode_steps,
-      prefix=f"[Compiled {device.upper()}] ",
-  )
-  logging.info("output_%s_compiled=%s", device, output_device_compiled)
-  assert (
-      output_cpu == output_device_compiled
-  ), f"{output_cpu=} != {output_device_compiled=}"
+    if mode == Mode.EAGER:
+      output_device, metrics_device = model_generate(
+          model_device,
+          inputs.to(device.value),
+          tokenizer,
+          max_decode_steps,
+          prefix=f"[{device.value.upper()}] ",
+      )
+      logging.info("output_%s=%s", device.value, output_device)
+      return output_device, {device.value.upper(): metrics_device}
 
-  all_metrics = {
-      "CPU": metrics_cpu,
-      f"Compiled {device.upper()}": metrics_compiled,
-      **eager_device_metrics,
-  }
+    if mode == Mode.COMPILED_DYNAMIC:
+      config = _get_compiled_config(device, mode)
+      model_device_compiled = torch.compile(
+          model_device, backend=config.backend
+      )
 
-  _print_summary_table(all_metrics, max_decode_steps)
+      output_device_compiled, metrics_compiled = model_generate(
+          model_device_compiled,
+          inputs.to(device.value),
+          tokenizer,
+          max_decode_steps,
+          prefix=config.prefix,
+      )
+      logging.info(
+          "output_%s_compiled=%s", device.value, output_device_compiled
+      )
+      return output_device_compiled, {config.key: metrics_compiled}
+
+    if mode == Mode.COMPILED_STATIC:
+      config = _get_compiled_config(device, mode)
+      model_device_compiled = torch.compile(
+          model_device, backend=config.backend, dynamic=False
+      )
+
+      output_device_compiled, metrics_compiled = model_generate(
+          model_device_compiled,
+          inputs.to(device.value),
+          tokenizer,
+          max_decode_steps,
+          prefix=config.prefix,
+      )
+      logging.info(
+          "output_%s_compiled_static=%s", device.value, output_device_compiled
+      )
+      return output_device_compiled, {config.key: metrics_compiled}
+
+    raise ValueError(f"Invalid mode: {mode}")
 
 
 def _run_with_random_weights(
+    config: transformers.PretrainedConfig,
     tokenizer: transformers.PreTrainedTokenizer,
-    model_path: pathlib.Path,
     inputs: torch.Tensor,
     max_decode_steps: int,
-    device: str,
-) -> None:
-  if device == "cuda":
-    inductor_config.compile_threads = 1
-  config = transformers.AutoConfig.from_pretrained(model_path)
-  config._attn_implementation = "eager"
+    *,
+    device: Device,
+    mode: Mode,
+) -> Mapping[str, Any]:
+  """Runs benchmark for a single mode with random weights.
 
-  with torch.device(device):
+  Args:
+    config: The HuggingFace model configuration.
+    tokenizer: The tokenizer.
+    inputs: The initial input tensor.
+    max_decode_steps: The maximum number of decoding steps.
+    device: The device to run on.
+    mode: The execution mode.
+
+  Returns:
+    A dictionary of metrics for the executed mode.
+  """
+  with torch.device(device.value):
     model_device = transformers.AutoModelForCausalLM.from_config(config).to(
         torch.bfloat16
     )
 
-  if device == "cuda":
-    model_device_compiled = torch.compile(model_device)
-  else:
+  if mode == Mode.COMPILED_DYNAMIC:
+    compiled_config = _get_compiled_config(device, mode)
     model_device_compiled = torch.compile(
-        model_device, backend=_backend.TpuBackend(dynamism=True)
+        model_device, backend=compiled_config.backend
     )
 
-  _, metrics_compiled = model_generate(
-      model_device_compiled,
-      inputs.to(device),
-      tokenizer,
-      max_decode_steps,
-      prefix=f"[Compiled {device.upper()}] ",
-  )
-  all_metrics = {f"Compiled {device.upper()}": metrics_compiled}
-  _print_summary_table(all_metrics, max_decode_steps)
+    _, metrics_compiled = model_generate(
+        model_device_compiled,
+        inputs.to(device.value),
+        tokenizer,
+        max_decode_steps,
+        prefix=compiled_config.prefix,
+    )
+    return {compiled_config.key: metrics_compiled}
+
+  if mode == Mode.COMPILED_STATIC:
+    compiled_config = _get_compiled_config(device, mode)
+    model_device_compiled = torch.compile(
+        model_device, backend=compiled_config.backend, dynamic=False
+    )
+
+    _, metrics_compiled = model_generate(
+        model_device_compiled,
+        inputs.to(device.value),
+        tokenizer,
+        max_decode_steps,
+        prefix=compiled_config.prefix,
+    )
+    return {compiled_config.key: metrics_compiled}
+
+  raise ValueError(f"Invalid mode: {mode}")
 
 
 # pylint: disable=unused-argument
 def main(argv):
+  if len(argv) > 1:
+    raise app.UsageError("Too many command-line arguments.")
+
   torch.manual_seed(123)
+
+  device = Device(_DEVICE.value)
+
+  if device == Device.CUDA:
+    inductor_config.compile_threads = 1
 
   # All Qwen3 models (from 0.6B up to 30B MoE) share the exact same
   # tokenizer vocabulary. Also, not every model has its own separate
@@ -414,15 +547,70 @@ def main(argv):
     ).input_ids
 
   max_decode_steps = 10
+  all_metrics = {}
 
   if _USE_RANDOM_WEIGHTS.value:
-    _run_with_random_weights(
-        tokenizer, model_path, inputs, max_decode_steps, _DEVICE.value
-    )
+    config = transformers.AutoConfig.from_pretrained(model_path)
+    config._attn_implementation = "eager"
+
+    if device == Device.TPU:
+      modes = [Mode.COMPILED_DYNAMIC, Mode.COMPILED_STATIC]
+    else:
+      modes = [Mode.COMPILED_DYNAMIC]
+
+    for mode in modes:
+      metrics = _run_with_random_weights(
+          config,
+          tokenizer,
+          inputs,
+          max_decode_steps,
+          device=device,
+          mode=mode,
+      )
+      all_metrics.update(metrics)
   else:
-    _run_with_actual_weights(
-        tokenizer, model_path, inputs, max_decode_steps, _DEVICE.value
+    model_cpu = transformers.AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype=torch.bfloat16, attn_implementation="eager"
     )
+
+    modes = (
+        [Mode.CPU]
+        + ([Mode.EAGER] if not _COMPILE_ONLY.value else [])
+        + (
+            [Mode.COMPILED_DYNAMIC, Mode.COMPILED_STATIC]
+            if device == Device.TPU
+            else [Mode.COMPILED_DYNAMIC]
+        )
+    )
+
+    output_cpu = None
+    if Mode.CPU in modes:
+      output_cpu, metrics = _run_with_actual_weights(
+          model_cpu,
+          tokenizer,
+          inputs,
+          max_decode_steps,
+          device=device,
+          mode=Mode.CPU,
+      )
+      all_metrics.update(metrics)
+
+    for mode in modes:
+      if mode == Mode.CPU:
+        continue
+      output, metrics = _run_with_actual_weights(
+          model_cpu,
+          tokenizer,
+          inputs,
+          max_decode_steps,
+          device=device,
+          mode=mode,
+      )
+      if output_cpu is not None:
+        assert output_cpu == output, f"{output_cpu=} != {output=}"
+      all_metrics.update(metrics)
+
+  _print_summary_table(all_metrics, max_decode_steps)
 
 
 if __name__ == "__main__":

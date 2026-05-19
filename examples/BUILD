@@ -20,9 +20,17 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "init",
+    srcs = ["__init__.py"],
+)
+
+torch_tpu_py_library(
     name = "paths",
     srcs = ["paths.py"],
     imports = ["../.."],
+    deps = [
+        ":init",  # build_cleaner: keep
+    ],
 )
 
 torch_tpu_package_end()
