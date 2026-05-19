@@ -15,7 +15,6 @@
 """Tests for RNG state and random operations under compile mode."""
 
 from typing import Any, Callable
-import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -154,7 +153,6 @@ class RandomOpsTest(parameterized.TestCase):
 
     self.assert_random_outputs(runner)
 
-  @unittest.skip("Requires PyTorch changes. Reference: b/496168350")
   def test_checkpoint_rng_compile(self):
     # Arrange
     device = torch.device("tpu")
@@ -194,6 +192,21 @@ class RandomOpsTest(parameterized.TestCase):
       return out_compiled, grad_x_compiled, grad_W_compiled
 
     self.assert_random_outputs(runner)
+
+  def test_checkpoint_preserve_rng_state_compile(self):
+    def fw(x):
+      return torch.nn.functional.dropout(x, p=0.5, training=True)
+
+    def cp_fw(x):
+      return checkpoint.checkpoint(
+          fw, x, use_reentrant=False, preserve_rng_state=True
+      )
+
+    compiled = torch.compile(cp_fw, backend="tpu")
+    x = torch.randn(10, requires_grad=True, device="tpu")
+
+    res = compiled(x)
+    res.sum().backward()
 
   @parameterized.named_parameters(
       ("rand", lambda x: torch.rand(x.shape, device=x.device)),

@@ -211,6 +211,9 @@ at::Tensor DeviceGeneratorImpl::DeviceStateTensor() const {
 
 absl::Status DeviceGeneratorImpl::SetDeviceStateTensor(
     at::Tensor device_state_tensor) {
+  if (device_state_tensor.dtype() == at::kByte) {
+    device_state_tensor = device_state_tensor.view(at::kUInt64);
+  }
   TT_RETURN_IF_ERROR(CheckDeviceStateTensor(device_state_tensor));
   state_->device_state_tensor = std::move(device_state_tensor);
   return absl::OkStatus();
@@ -323,10 +326,11 @@ void DeviceGeneratorImpl::set_state(const c10::TensorImpl& new_state_impl) {
       << "expect rng state to be a torch.ByteTensor";
   TT_CHECK_THROW(new_state.is_contiguous(), error::kFailedPrecondition)
       << "expect rng state to be contiguous";
-  TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
-                 error::kFailedPrecondition)
-      << "expect rng state to be shape (16,), got " << new_state.sizes();
-  state_->device_state_tensor = new_state.view(at::kUInt64).to(device());
+  TT_CHECK_THROW(new_state.size(0) >= 16, error::kFailedPrecondition)
+      << "expect rng state to be at least shape (16,), got "
+      << new_state.sizes();
+  state_->device_state_tensor =
+      new_state.slice(0, 0, 16).view(at::kUInt64).to(device());
 }
 
 void DeviceGeneratorImpl::graphsafe_set_state(
@@ -365,8 +369,6 @@ absl::Status DeviceGeneratorImpl::CheckDeviceStateTensor(
       << "expected rng_state to be of dtype UInt64, got " << rng_state.dtype();
   TT_RET_CHECK(rng_state.dim() == 1, error::kFailedPrecondition)
       << "expected rng_state to be a 1D tensor, got " << rng_state.dim();
-  TT_RET_CHECK(rng_state.size(0) == 2, error::kFailedPrecondition)
-      << "expected rng_state size 2, got " << rng_state.size(0);
   return absl::OkStatus();
 }
 

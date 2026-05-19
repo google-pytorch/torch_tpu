@@ -423,6 +423,11 @@ def fx_to_mlir(
   argument_generators = [
       arg for arg in args if isinstance(arg, torch.Generator)
   ] + [device_module.default_generators[device.index or 0]]
+  argument_generators = [
+      device_module.default_generators[gen.device.index]
+      for gen in argument_generators
+  ]
+  argument_generators = list(dict.fromkeys(argument_generators))
 
   orig_generator_states = {}
   for gen in argument_generators:

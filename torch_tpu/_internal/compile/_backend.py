@@ -30,10 +30,13 @@ The `torch.compile()` function has the following relevant arguments:
     Disables the compilation. No ops for us.
 """
 
+# pylint: disable=protected-access
+
 from collections.abc import Callable, Iterator, Sequence
 import contextlib
 import functools
 import hashlib
+import operator
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -44,10 +47,208 @@ from torch._functorch._aot_autograd import graph_compile as _graph_compile
 from torch._functorch._aot_autograd.schemas import AOTAutogradCacheInfo
 from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompiler
 import torch._functorch.config as functorch_config
+import torch._functorch.partitioners
+from torch._guards import detect_fake_mode
+from torch._prims.rng_prims import graphsafe_run_with_rng_state
+from torch._prims.rng_prims import run_and_save_rng_state
+from torch._prims.rng_prims import run_with_rng_state
+from torch._prims.rng_prims import track_tensor_tree
+from torch._subclasses.fake_tensor import FakeTensorMode
+from torch.fx.experimental.proxy_tensor import ProxyTorchDispatchMode
 from torch.utils import _pytree
-from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile.compiler import CompiledArtifact
+from torch_tpu._internal.compile.compiler import Compiler
+from torch_tpu._internal.compile.compiler import has_dynamic_symints
+from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
+
+
+def _custom_functionalize_rng_ops(
+    joint_module, fw_module, bw_module, num_fwd_outputs
+):
+  """Custom functionalize RNG ops wrapper."""
+  orig_fn = getattr(
+      torch._functorch.partitioners, "_orig_functionalize_rng_ops"
+  )
+
+  fw_module, bw_module = orig_fn(
+      joint_module, fw_module, bw_module, num_fwd_outputs
+  )
+
+  fake_mode = detect_fake_mode()
+  if fake_mode is not None:
+    with fake_mode:
+      tpu_val = fake_mode.from_tensor(
+          torch.zeros(632, dtype=torch.uint8, device="tpu")
+      )
+  else:
+    tpu_val = torch.zeros(632, dtype=torch.uint8, device="tpu")
+
+  for node in fw_module.graph.nodes:
+    if node.op == "call_function" and node.target == operator.getitem:
+      if (
+          node.args[0].op == "call_function"
+          and node.args[0].target == run_and_save_rng_state
+      ):
+        if node.args[1] == 0:
+          node.meta["val"] = tpu_val
+
+  bw_rng_placeholders = set()
+  for node in bw_module.graph.nodes:
+    if node.op == "call_function" and node.target == run_with_rng_state:
+      bw_rng_placeholders.add(node.args[0])
+
+  for ph in bw_rng_placeholders:
+    ph.meta["val"] = tpu_val
+
+  return fw_module, bw_module
+
+
+if not hasattr(torch._functorch.partitioners, "_orig_functionalize_rng_ops"):
+  torch._functorch.partitioners._orig_functionalize_rng_ops = (
+      torch._functorch.partitioners.functionalize_rng_ops
+  )
+  torch._functorch.partitioners.functionalize_rng_ops = (
+      _custom_functionalize_rng_ops
+  )
+
+
+def _run_and_save_impl_tpu(op, *args, **kwargs):
+  """TPU implementation for run_and_save_rng_state."""
+  from torch_tpu._internal.compile import tpu_torch_compile  # pylint: disable=g-import-not-at-top
+
+  device = torch.accelerator.current_accelerator()
+  device_module = getattr(torch, device.type)
+  gen = device_module.default_generators[device.index or 0]
+  tpu_state = tpu_torch_compile.get_device_state_tensor(gen)
+  tpu_state_bytes = tpu_state.view(torch.uint8)
+  padding = torch.zeros(616, dtype=torch.uint8, device=tpu_state.device)
+  padded_state = torch.cat([tpu_state_bytes, padding], dim=0)
+  return padded_state, op(*args, **kwargs)
+
+
+run_and_save_rng_state.py_impl(torch._C.DispatchKey.PrivateUse1)(
+    _run_and_save_impl_tpu
+)
+
+_orig_run_and_save_backend_select = run_and_save_rng_state.py_kernels[
+    torch._C.DispatchKey.BackendSelect
+]
+
+
+def _custom_run_and_save_backend_select(op, *args, **kwargs):
+  """Custom BackendSelect for run_and_save_rng_state."""
+  devices = {arg.device.type for arg in args if isinstance(arg, torch.Tensor)}
+  if any(dev == "tpu" for dev in devices):
+    return _run_and_save_impl_tpu(op, *args, **kwargs)
+  return _orig_run_and_save_backend_select(op, *args, **kwargs)
+
+
+run_and_save_rng_state.py_kernels[torch._C.DispatchKey.BackendSelect] = (
+    _custom_run_and_save_backend_select
+)
+
+
+def _custom_run_and_save_fake_mode(mode, op, *args, **kwargs):
+  """Custom FakeTensorMode for run_and_save_rng_state."""
+  with mode:
+    return _custom_run_and_save_backend_select(op, *args, **kwargs)
+
+
+def _custom_run_and_save_proxy_mode(mode, op, *args, **kwargs):
+  """Custom ProxyTorchDispatchMode for run_and_save_rng_state."""
+  out = _custom_run_and_save_backend_select(op, *args, **kwargs)
+  proxy_args = _pytree.tree_map(mode.tracer.unwrap_proxy, (op, *args))
+  proxy_kwargs = _pytree.tree_map(mode.tracer.unwrap_proxy, kwargs)
+  out_proxy = mode.tracer.create_proxy(
+      "call_function", run_and_save_rng_state, proxy_args, proxy_kwargs
+  )
+  return track_tensor_tree(out, out_proxy, constant=None, tracer=mode.tracer)
+
+
+run_and_save_rng_state.python_key_table[FakeTensorMode] = (
+    _custom_run_and_save_fake_mode
+)
+run_and_save_rng_state.python_key_table[ProxyTorchDispatchMode] = (
+    _custom_run_and_save_proxy_mode
+)
+
+
+def _run_with_impl_tpu(rng_state, op, *args, **kwargs):
+  """TPU implementation for run_with_rng_state."""
+  from torch_tpu._internal.compile import tpu_torch_compile  # pylint: disable=g-import-not-at-top
+
+  device = torch.accelerator.current_accelerator()
+  device_module = getattr(torch, device.type)
+  gen = device_module.default_generators[device.index or 0]
+  current_state = tpu_torch_compile.get_device_state_tensor(gen)
+  tpu_state_bytes = rng_state[:16]
+  tpu_state = tpu_state_bytes.view(torch.uint64)
+  tpu_torch_compile.set_device_state_tensor(gen, tpu_state)
+  out = op(*args, **kwargs)
+  tpu_torch_compile.set_device_state_tensor(gen, current_state)
+  return out
+
+
+run_with_rng_state.py_impl(torch._C.DispatchKey.PrivateUse1)(_run_with_impl_tpu)
+
+_orig_run_with_backend_select = run_with_rng_state.py_kernels[
+    torch._C.DispatchKey.BackendSelect
+]
+
+
+def _custom_run_with_backend_select(rng_state, op, *args, **kwargs):
+  """Custom BackendSelect for run_with_rng_state."""
+  devices = {arg.device.type for arg in args if isinstance(arg, torch.Tensor)}
+  if any(dev == "tpu" for dev in devices) or rng_state.device.type == "tpu":
+    return _run_with_impl_tpu(rng_state, op, *args, **kwargs)
+  return _orig_run_with_backend_select(rng_state, op, *args, **kwargs)
+
+
+run_with_rng_state.py_kernels[torch._C.DispatchKey.BackendSelect] = (
+    _custom_run_with_backend_select
+)
+
+
+def _graphsafe_run_with_impl_tpu(op, *args, rng_state=None, **kwargs):
+  """TPU implementation for graphsafe_run_with_rng_state."""
+  device_idx = rng_state.device.index
+  generator = torch.tpu.default_generators[device_idx]
+  current_state = generator.graphsafe_get_state()
+
+  generator.graphsafe_set_state(rng_state)
+  out = op(*args, **kwargs)
+  generator.graphsafe_set_state(current_state)
+  return out
+
+
+graphsafe_run_with_rng_state.py_impl(torch._C.DispatchKey.PrivateUse1)(
+    _graphsafe_run_with_impl_tpu
+)
+
+_orig_graphsafe_backend_select = graphsafe_run_with_rng_state.py_kernels[
+    torch._C.DispatchKey.BackendSelect
+]
+
+
+def _custom_graphsafe_backend_select(op, *args, rng_state=None, **kwargs):
+  """Custom BackendSelect for graphsafe_run_with_rng_state."""
+  devices = {arg.device.type for arg in args if isinstance(arg, torch.Tensor)}
+  if any(dev == "tpu" for dev in devices) or (
+      rng_state is not None and rng_state.device.type == "tpu"
+  ):
+    return _graphsafe_run_with_impl_tpu(
+        op, *args, rng_state=rng_state, **kwargs
+    )
+  return _orig_graphsafe_backend_select(
+      op, *args, rng_state=rng_state, **kwargs
+  )
+
+
+graphsafe_run_with_rng_state.py_kernels[torch._C.DispatchKey.BackendSelect] = (
+    _custom_graphsafe_backend_select
+)
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
 
@@ -274,7 +475,7 @@ class TpuBackend:
     self._enable_serialization = enable_serialization
     # Stores information about each compiled executable.
     # Organized by order of compilation (index 0 is the first compilation, etc.)
-    self._compiled_executables: list[compiler.CompiledArtifact] = []
+    self._compiled_executables: list[CompiledArtifact] = []
 
   def __call__(
       self,
@@ -290,16 +491,16 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
 
-    if compiler.has_dynamic_symints(example_inputs):
+    if has_dynamic_symints(example_inputs):
       compiler_instance = dynamic_compiler.DynamicCompiler(debug=self._debug)
     else:
-      compiler_instance = compiler.StaticCompiler(debug=self._debug)
+      compiler_instance = StaticCompiler(debug=self._debug)
 
     compiler_instance.execute_pre_grad_passes(graph_module)
 
     if self._enable_serialization:
       fw_compiler = SerializableAOTDispatchCompiler(
-          output_code_ty=compiler.CompiledArtifact,
+          output_code_ty=CompiledArtifact,
           compiler_fn=functools.partial(
               self._compile_graph_module, compiler_instance, True
           ),
@@ -328,7 +529,7 @@ class TpuBackend:
 
   def _compile_graph_module(
       self,
-      compiler_instance: compiler.Compiler,
+      compiler_instance: Compiler,
       is_fwd: bool,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[torch.Tensor],
