@@ -86,7 +86,7 @@ TEST(NormalizeTorchTpuVirtualIncludesFilePath, StripsPrefix) {
 
 TEST(TtError, HeaderPathNormalization) {
   const absl::Status error = MakeErrorFromHeader();
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
 
@@ -123,7 +123,7 @@ TEST(TtError, ReturnsErrorWithCppContext) {
   const absl::Status error = MakeTtError(error::kInternal, "message 42");
   EXPECT_EQ(error.code(), error::kInternal);
   EXPECT_EQ(error.message(), "message 42");
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
   const auto expected_context =
@@ -142,7 +142,7 @@ TEST(TtRetCheck, ReturnsErrorWithCppContext) {
   const absl::Status error = TtRetCheckFail(error::kInternal, "message 42");
   EXPECT_EQ(error.code(), error::kInternal);
   EXPECT_EQ(error.message(), "message 42");
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
   const auto expected_context = absl::StrCat(
@@ -172,7 +172,7 @@ TEST(TtAssignOrReturnTwoArgs, AppendsToCppContext) {
       TtAssignOrReturnFail(error::kInternal, "message 42");
   EXPECT_EQ(error.code(), error::kInternal);
   EXPECT_EQ(error.message(), "message 42");
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
   const auto expected_context =
@@ -197,7 +197,7 @@ TEST(TtAssignOrReturnThreeArgs, AppendsToCppContext) {
       TtAssignOrReturnFail3(error::kInternal, "message 42");
   EXPECT_EQ(error.code(), error::kInternal);
   EXPECT_EQ(error.message(), "message 42 extra");
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
   const auto expected_context =
@@ -220,7 +220,7 @@ TEST(TtReturnIfError, AppendsToCppContext) {
       TtReturnIfErrorFail(error::kInternal, "message 42");
   EXPECT_EQ(error.code(), error::kInternal);
   EXPECT_EQ(error.message(), "message 42");
-  const absl::optional<absl::Cord> cpp_context =
+  const std::optional<absl::Cord> cpp_context =
       error.GetPayload(kCppErrorTraceUrl);
   ASSERT_TRUE(cpp_context.has_value());
   const auto expected_context =
