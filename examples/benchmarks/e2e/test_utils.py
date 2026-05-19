@@ -23,6 +23,7 @@ from typing import Any, Sequence
 from absl import flags
 from absl import logging
 from absl.testing import parameterized
+import torch
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e import performance_utils
@@ -79,6 +80,37 @@ class BenchmarkTest(parameterized.TestCase):
     return benchmark_utils.BACKEND.value == benchmark_utils.Backend.TORCHAX
 
   @classmethod
+  def _unregister_non_comparable_torchax_ops(cls):
+    """Unregisters non-comparable TorchAX ops."""
+    import torchax  # pylint: disable=g-import-not-at-top
+
+    env = torchax.default_env()
+    ops_registry = torchax.ops.ops_registry
+
+    def unregister(d, op):
+      if op in d:
+        del d[op]
+
+    registries = [
+        ops_registry.all_torch_functions,
+        ops_registry.all_aten_ops,
+        env._ops,  # pylint: disable=protected-access
+        env._decomps,  # pylint: disable=protected-access
+    ]
+
+    functions_to_unregister = [
+        # Registered SDPA implementation from TorchAX uses an unsafe softmax
+        # which makes it non comparable to torch_tpu.
+        torch.nn.functional.scaled_dot_product_attention,
+        torch.ops.aten.scaled_dot_product_attention,
+        torch.ops.aten.scaled_dot_product_attention.default,
+    ]
+
+    for registry in registries:
+      for func in functions_to_unregister:
+        unregister(registry, func)
+
+  @classmethod
   def setUpClass(cls):
     super().setUpClass()
     if cls._is_torchax_backend():
@@ -87,6 +119,7 @@ class BenchmarkTest(parameterized.TestCase):
       import torchax
 
       torchax.enable_globally()
+      cls._unregister_non_comparable_torchax_ops()
 
   def run_performance_benchmark_test(
       self,

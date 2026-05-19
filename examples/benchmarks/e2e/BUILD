@@ -107,6 +107,7 @@ torch_tpu_py_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "@pypi//torchax",
     ],
