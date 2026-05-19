@@ -17,6 +17,7 @@
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -319,8 +320,42 @@ void PjrtBackend::Shutdown() {
 }
 
 namespace {
+
+class TpuEventFuture {
+ public:
+  explicit TpuEventFuture(xla::Future<void> future)
+      : future_(std::move(future)), state_(std::make_shared<FutureState>()) {
+    if (future_.IsValid()) {
+      // Use native OnReady callback on PJRT's execution thread pool.
+      // Capture state_ (shared_ptr) by value to prevent UAF if
+      // TpuEventFuture is deleted.
+      future_.OnReady([state = state_](absl::Status s) {
+        if (!s.ok()) {
+          ABSL_LOG(ERROR) << "Async background await failed: " << s;
+        }
+        state->is_ready.store(true, std::memory_order_release);
+      });
+    } else {
+      state_->is_ready.store(true, std::memory_order_release);
+    }
+  }
+
+  bool IsValid() const { return future_.IsValid(); }
+  bool IsReady() const {
+    return state_->is_ready.load(std::memory_order_acquire);
+  }
+  absl::Status Await() { return future_.Await(); }
+
+ private:
+  xla::Future<void> future_;
+  struct FutureState {
+    std::atomic<bool> is_ready{false};
+  };
+  std::shared_ptr<FutureState> state_;
+};
+
 struct StreamState {
-  using SharedFuture = std::shared_ptr<xla::Future<void>>;
+  using SharedFuture = std::shared_ptr<TpuEventFuture>;
 
   absl::Mutex mutex;
   absl::flat_hash_map<std::pair<c10::DeviceIndex, int64_t>,
@@ -373,7 +408,7 @@ void PjrtBackend::MarkStreamActive(c10::DeviceIndex device_index,
   absl::MutexLock lock(state.mutex);
   auto& futures = state.pending_futures[{device_index, stream_id}];
   PruneCompletedFutures(futures);
-  futures.push_back(std::make_shared<xla::Future<void>>(std::move(future)));
+  futures.push_back(std::make_shared<TpuEventFuture>(std::move(future)));
 }
 
 // Blocks the calling thread until all previously enqueued operations on the

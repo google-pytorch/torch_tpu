@@ -283,6 +283,40 @@ class AsyncTransferTest(absltest.TestCase):
         'torch.accelerator.synchronize() failed to wait for H2D transfer.',
     )
 
+  def test_event_query_in_flight(self):
+    """Verifies that Event.query() returns False while a transfer is in-flight."""
+    device = torch.device('tpu')
+    size = 8192  # 8192x8192 int32 = 256MB
+
+    # 1. Warmup: compile the 'a + b' graph and drive materialization.
+    a_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
+    a = a_cpu.to(device)
+    cpu_dst = torch.empty_like(a, device='cpu', pin_memory=True)
+    cpu_dst.copy_(a, non_blocking=True)
+    torch.tpu.synchronize()
+
+    # 2. Main test: Enqueue a large async copy and immediately query.
+    a2 = torch.randint(1, 10, (size, size), dtype=torch.int32).to(device)
+    cpu_dst.copy_(a2, non_blocking=True)
+
+    # Record event after launching the copy
+    event = torch.tpu.Event()
+    event.record()
+
+    # Immediately query event status. Since 256MB copy is in-flight, this
+    # MUST be False.
+    is_done = event.query()
+
+    # Wait for completion
+    event.synchronize()
+
+    # Verify that query returns True after synchronize
+    self.assertTrue(event.query())
+    self.assertFalse(
+        is_done,
+        'Event.query() returned True while transfer was still in-flight!',
+    )
+
 
 if __name__ == '__main__':
   absltest.main()
