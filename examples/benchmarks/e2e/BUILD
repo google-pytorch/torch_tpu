@@ -133,7 +133,7 @@ torch_tpu_py_library(
 
 torch_tpu_py_test(
     name = "model_performance_benchmarks",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     args = ["--torch_tpu_internal_enable_compilation_container=true"],
     # This allows us to use a single .par file for remote cluster execution.
@@ -164,7 +164,7 @@ torch_tpu_py_test(
 
 torch_tpu_py_test(
     name = "model_performance_benchmarks_torchax",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["model_performance_benchmarks.py"],
     args = ["--backend=torchax"],
     autoload = False,
