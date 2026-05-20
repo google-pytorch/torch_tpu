@@ -96,7 +96,7 @@ absl::StatusOr<bool> IsReady(const at::Tensor& tensor) {
     // Deferred and placeholder buffers are not ready.
     return false;
   }
-  TT_ASSIGN_OR_RETURN(auto* pjrt_buffer, buffer_ref.GetOrMaterializeBuffer());
+  TT_ASSIGN_OR_RETURN(auto* pjrt_buffer, buffer_ref.AwaitBuffer());
   return pjrt_buffer->GetReadyFuture().IsReady();
 }
 

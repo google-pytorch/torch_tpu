@@ -266,18 +266,10 @@ void MaterializationWorker::ThreadLoop() {
 
 bool IsSplitPoint(const SharedDeviceBufferList& current_op,
                   const SharedDeviceBufferList* next_op) {
-  const auto* deferred_op = current_op->deferred_op();
+  const auto deferred_op = current_op->deferred_op();
   if (!deferred_op) {
     return false;
   }
-
-  // TODO: Enabling this lowers the initial compilation time, but doesn't affect
-  // the long-term step time.
-#if 0
-  if (deferred_op->has_been_executed()) {
-    return true;
-  }
-#endif
 
   if (deferred_op->split_mode() == OpSplitMode::kSplitAfter ||
       deferred_op->split_mode() == OpSplitMode::kSplitBoth) {
@@ -285,7 +277,7 @@ bool IsSplitPoint(const SharedDeviceBufferList& current_op,
   }
 
   if (next_op) {
-    if (const auto* next_deferred_op = (*next_op)->deferred_op();
+    if (const auto next_deferred_op = (*next_op)->deferred_op();
         next_deferred_op) {
       OpSplitMode split_mode = next_deferred_op->split_mode();
       if (split_mode == OpSplitMode::kSplitBoth ||
@@ -373,7 +365,7 @@ std::vector<absl::flat_hash_set<const DeviceBufferList*>> GetPerRegionUses(
     auto& uses_ = uses[i];
     absl::flat_hash_set<const DeviceBufferList*> visited;
     for (const auto& n : region) {
-      const auto* deferred_op = n->deferred_op();
+      const auto deferred_op = n->deferred_op();
       if (deferred_op) {
         for (const auto& input : deferred_op->inputs()) {
           // A "use" is ANY input to an operation in this region.
@@ -445,10 +437,10 @@ absl::Status MaterializationWorker::MaterializeQueue(
     std::vector<SharedDeviceBufferList> region_outputs;
     for (const auto& n : region) {
       bool must_materialize_node = false;
-      const auto* deferred_op = n->deferred_op();
 
-      if (deferred_op && deferred_op->has_been_executed()) {
-        // The node was already executed.
+      if (!n->is_stale()) {
+        // The node has a live Tensor. It needs to be materialized to avoid
+        // reexecution by later ops dispatched from Python.
         must_materialize_node = true;
       } else if (explicit_targets.contains(n.get())) {
         // The node was explicitly requested by the caller.

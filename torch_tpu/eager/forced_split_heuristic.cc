@@ -38,7 +38,7 @@ void ForcedSplitHeuristic(
     const DeviceBufferList& node,
     absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
         materialization_nodes) {
-  const auto* deferred_op = node.deferred_op();
+  const auto deferred_op = node.deferred_op();
   if (deferred_op == nullptr) {
     return;
   }

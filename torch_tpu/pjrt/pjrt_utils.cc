@@ -217,7 +217,7 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
   }
 
   TT_ASSIGN_OR_RETURN(
-      auto* buffer, buffer_ref.GetOrMaterializeBuffer(),
+      auto* buffer, buffer_ref.AwaitBuffer(),
       _ << " - TpuMemcpyDtoH: DeviceBufferRef has nonzero size, "
            "but does not have a PjRtBuffer to copy from.");
 
@@ -251,7 +251,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
   }
 
   TT_ASSIGN_OR_RETURN(
-      auto* buffer, buffer_ref.GetOrMaterializeBuffer(),
+      auto* buffer, buffer_ref.AwaitBuffer(),
       _ << " - TpuMemcpyDtoHDirect: DeviceBufferRef has nonzero size, "
            "but does not have a PjRtBuffer to copy from.");
 

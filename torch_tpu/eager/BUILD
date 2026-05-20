@@ -136,10 +136,8 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":device_types",
-        "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
@@ -153,9 +151,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_vlog_is_on",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
@@ -164,7 +162,6 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
-        "@xla//xla:future",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/pjrt:pjrt_client",
@@ -261,18 +258,6 @@ torch_tpu_cc_library(
         ":device_buffer",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_set",
-    ],
-)
-
-torch_tpu_cc_library(
-    name = "reexecution_heuristic",
-    srcs = ["reexecution_heuristic.cc"],
-    hdrs = ["reexecution_heuristic.h"],
-    deps = [
-        ":device_buffer",
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log:absl_check",
     ],
 )
 
@@ -810,7 +795,6 @@ torch_tpu_cc_library(
         ":dynamic_op_split_heuristic",
         ":fanout_heuristic",
         ":forced_split_heuristic",
-        ":reexecution_heuristic",
         ":stale_heuristic",
         ":traversal",
         "//torch_tpu/common:flags",

@@ -118,18 +118,10 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     ABSL_VLOG(1) << "[ExecutionTask] Marking output as materialized: "
                  << output.device_buffer_list();
 
-    TT_RETURN_IF_ERROR(output.device_buffer_list()->SetAsMaterialized());
+    output.device_buffer_list()->SetMaterializationPending();
   }
 
   ABSL_VLOG(1) << "[ExecutionTask] Marking all nodes as having been executed";
-
-  // Mark all deferred ops in the split as having been executed (scheduled).
-  for (const auto& node : traversal->execution_order()) {
-    auto* deferred_op = node->deferred_op();
-    if (deferred_op) {
-      deferred_op->mark_executed();
-    }
-  }
 
   std::string task_name;
   if (ABSL_VLOG_IS_ON(1)) {
@@ -147,7 +139,7 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
     std::vector<DeviceBufferRef> outputs, MaterializationReason reason,
     std::string_view task_name) {
   for (const auto& output : outputs) {
-    TT_RETURN_IF_ERROR(output.device_buffer_list()->SetAsMaterialized());
+    output.device_buffer_list()->SetMaterializationPending();
   }
 
   // Create a promise/future that is already done using the executable.
@@ -161,14 +153,7 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 
 void ExecutionTask::SetOutputNodesAsError(absl::Status status) {
   for (const auto& output : outputs_) {
-    auto* absl_nonnull node = output.device_buffer_list().get();
-    auto* materialized_buffers = node->materialized_buffers();
-    if (materialized_buffers == nullptr) {
-      continue;
-    }
-    // SetAsError is idempotent and will no-op if a node successfully
-    // materialized or already had an error set.
-    materialized_buffers->SetAsError(status);
+    output.device_buffer_list()->SetAsError(status);
   }
 }
 
@@ -294,7 +279,7 @@ ExecutionTask::GetArgumentBuffers() {
       case DeviceBufferRefState::kMaterialized: {
         ABSL_VLOG(1) << "kMaterialized DeviceBufferRef index: " << index;
         TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer,
-                            argument.GetOrMaterializeBuffer());
+                            argument.AwaitBuffer());
         root_args.push_back(pjrt_buffer);
         break;
       }

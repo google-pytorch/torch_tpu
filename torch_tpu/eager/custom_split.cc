@@ -23,15 +23,12 @@
 #include "torch_tpu/eager/dynamic_op_split_heuristic.h"
 #include "torch_tpu/eager/fanout_heuristic.h"
 #include "torch_tpu/eager/forced_split_heuristic.h"
-#include "torch_tpu/eager/reexecution_heuristic.h"
 #include "torch_tpu/eager/stale_heuristic.h"
 #include "torch_tpu/eager/traversal.h"
 #include "tsl/profiler/lib/traceme.h"
 
 ABSL_FLAG(bool, torch_tpu_internal_fanout_heuristic, true,
           "Use a materialization heuristic that looks at node fanout.");
-ABSL_FLAG(bool, torch_tpu_internal_reexecution_heuristic, true,
-          "Use a materialization heuristic that materializes on reexecution.");
 ABSL_FLAG(bool, torch_tpu_internal_stale_heuristic, true,
           "Use a materialization heuristic that materializes around the stale "
           "regions of a graph.");
@@ -43,8 +40,6 @@ namespace {
 // Config struct indicating which materialization heuristic flags are enabled.
 struct CustomHeuristics {
   void Initialize() {
-    reexecution =
-        GetFlagOnce<bool, &FLAGS_torch_tpu_internal_reexecution_heuristic>();
     fanout = GetFlagOnce<bool, &FLAGS_torch_tpu_internal_fanout_heuristic>();
     stale = GetFlagOnce<bool, &FLAGS_torch_tpu_internal_stale_heuristic>();
 
@@ -54,7 +49,6 @@ struct CustomHeuristics {
   // Whether the heuristics have been initialized.
   bool initialized = false;
 
-  bool reexecution = false;
   bool fanout = false;
   bool stale = false;
 };
@@ -71,9 +65,6 @@ absl::flat_hash_set<const DeviceBufferList*> CustomSplitRule(
   }
 
   for (const auto& node : traversal.execution_order()) {
-    if (enabled_heuristics.reexecution) {
-      ReexecutionHeuristic(*node, split_points);
-    }
     ForcedSplitHeuristic(*node, split_points);
     DynamicOpSplitHeuristic(*node, split_points);
     if (enabled_heuristics.fanout) {

@@ -182,7 +182,7 @@ TEST_F(SubgraphTest, DeferredOpSubgraphDereference) {
   ASSERT_TRUE(refs_or.ok());
   auto ref = refs_or.value()[0];
 
-  const DeferredOp* op = ref.deferred_op();
+  const DeferredOp* op = ref.deferred_op().get();
   ASSERT_NE(op, nullptr);
 
   // Dereference to the necessary subgraph object via the
@@ -199,14 +199,14 @@ TEST_F(SubgraphTest, MergeAll) {
       OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(refs_a_or.ok());
   auto ref_a = refs_a_or.value()[0];
-  const auto* ref_a_deferred_op = ref_a.deferred_op();
+  const auto* ref_a_deferred_op = ref_a.deferred_op().get();
   ASSERT_NE(ref_a_deferred_op, nullptr);
 
   auto refs_b_or = DeviceBufferList::CreateDeferred(
       OpName::kAdd, DummyBuilder, {}, OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(refs_b_or.ok());
   auto ref_b = refs_b_or.value()[0];
-  const auto* ref_b_deferred_op = ref_b.deferred_op();
+  const auto* ref_b_deferred_op = ref_b.deferred_op().get();
   ASSERT_NE(ref_b_deferred_op, nullptr);
 
   // The subgraphs should be distinct; they haven't been merged.
@@ -232,7 +232,7 @@ TEST_F(SubgraphTest, DistributedCollectivesInSameSubgraph) {
       OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(refs_a_or.ok());
   auto ref_a = refs_a_or.value()[0];
-  const auto* ref_a_deferred_op = ref_a.deferred_op();
+  const auto* ref_a_deferred_op = ref_a.deferred_op().get();
   ASSERT_NE(ref_a_deferred_op, nullptr);
 
   // Record the representative subgraph for ref_a before creating ref_b.
@@ -244,7 +244,7 @@ TEST_F(SubgraphTest, DistributedCollectivesInSameSubgraph) {
       OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(refs_b_or.ok());
   auto ref_b = refs_b_or.value()[0];
-  const auto* ref_b_deferred_op = ref_b.deferred_op();
+  const auto* ref_b_deferred_op = ref_b.deferred_op().get();
   ASSERT_NE(ref_b_deferred_op, nullptr);
 
   const auto* ref_a_subgraph_after =
@@ -279,7 +279,8 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
       OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(collective_refs_a_or.ok());
   auto collective_ref_a = collective_refs_a_or.value()[0];
-  const auto* collective_ref_a_deferred_op = collective_ref_a.deferred_op();
+  const auto* collective_ref_a_deferred_op =
+      collective_ref_a.deferred_op().get();
   ASSERT_NE(collective_ref_a_deferred_op, nullptr);
   const auto* collective_ref_a_subgraph_before =
       collective_ref_a_deferred_op->subgraph()->Find().get();
@@ -289,7 +290,7 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
   ASSERT_TRUE(non_collective_refs_b_or.ok());
   auto non_collective_ref_b = non_collective_refs_b_or.value()[0];
   const auto* non_collective_ref_b_deferred_op =
-      non_collective_ref_b.deferred_op();
+      non_collective_ref_b.deferred_op().get();
   ASSERT_NE(non_collective_ref_b_deferred_op, nullptr);
 
   // The collective and non-collective ops should be in different subgraphs
@@ -302,7 +303,8 @@ TEST_F(SubgraphTest, CollectivesMergeNonCollectives) {
       OpParamCacheKeys::Empty(), {shape});
   ASSERT_TRUE(collective_refs_c_or.ok());
   auto collective_ref_c = collective_refs_c_or.value()[0];
-  const auto* collective_ref_c_deferred_op = collective_ref_c.deferred_op();
+  const auto* collective_ref_c_deferred_op =
+      collective_ref_c.deferred_op().get();
   ASSERT_NE(collective_ref_c_deferred_op, nullptr);
 
   // Creating collective ref_c should merge all three ops into the same

@@ -28,7 +28,7 @@ void StaleHeuristic(const DeviceBufferList& node,
                         materialization_nodes) {
   // Nodes which are live, but depend directly on a stale node, must be
   // materialized so the stale node can be freed.
-  const DeferredOp* const deferred_op = node.deferred_op();
+  const auto deferred_op = node.deferred_op();
   ABSL_CHECK(deferred_op)  // CRASH_OK
       << "Found traversal node that's not a deferred op. This is a torch_tpu "
          "bug.";
