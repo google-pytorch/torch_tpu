@@ -20,6 +20,10 @@ on:
 
   schedule:
     - cron: "0 0 * * *"  # Runs at 00:00 UTC every day
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -28,6 +32,9 @@ permissions:
 jobs:
   run_benchmarks:
     name: Run TorchTPU benchmarks
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:benchmarks')
     uses: google-ml-infra/actions/.github/workflows/run-benchmarks.yaml@39838909a83f01eb2d61de181ea843bb48ee9269
     with:
       registry_file: "examples/benchmarks/benchmark_registry.pbtxt"
