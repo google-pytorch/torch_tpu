@@ -41,6 +41,11 @@ py_library_providing_imports_info(
     ],
     deps = [
         ":pallas_lib",
+        # The "pallas" library doesn't work without this dependency, but it's not obvious
+        # from the import. Therefore we have to tell build_cleaner to keep it.
+        # With this, users of the "pallas" library don't need to add the dependency on "pallas_tpu"
+        # themselves.
+        "//shims/jax:pallas_tpu",  # build_cleaner: keep
     ],
 )
 

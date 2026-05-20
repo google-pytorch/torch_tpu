@@ -75,7 +75,7 @@ absl::StatusOr<DeviceBufferRefArray<2>> Geqrf(const at::Tensor& self,
   tau_dims.push_back(std::min(m, n));
 
   auto op_builder =
-      [&self](mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
+      [self](mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
     const mlir::MlirOp cast_self_op = MaybeCastToFloat(self_op, self);
     TT_ASSIGN_OR_RETURN(const MlirOpResults<2> result_ops,
                         BuildGeqrfShlo(cast_self_op));
@@ -135,7 +135,8 @@ absl::StatusOr<DeviceBufferRefArray<2>> Qr(const at::Tensor& self,
   TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetOutDtype(self));
 
   auto op_builder =
-      [mode](mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
+      [mode = std::string(mode)](
+          mlir::MlirOp self_op) -> absl::StatusOr<MlirOpResults<2>> {
     TT_ASSIGN_OR_RETURN(const MlirOpResults<2> result_ops,
                         BuildQrShlo(self_op, mode));
     return result_ops;

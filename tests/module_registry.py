@@ -26,6 +26,8 @@ instantiated model and factory functions for generating compatible sample
 inputs.
 """
 
+# pylint: disable=g-import-not-at-top
+
 import abc
 from collections.abc import Callable, Sequence
 from importlib import resources
@@ -36,13 +38,37 @@ from typing import Any, Iterator
 
 from absl import flags
 from absl import logging
-import diffusers
-from diffusers.models.auto_model import AutoModel
 from etils import epath
-import timm
 import torch
-import torchvision
-import transformers
+
+try:
+  import diffusers
+  from diffusers.models.auto_model import AutoModel
+
+  _HAS_DIFFUSERS = True
+except ImportError:
+  _HAS_DIFFUSERS = False
+
+try:
+  import timm
+
+  _HAS_TIMM = True
+except ImportError:
+  _HAS_TIMM = False
+
+try:
+  import torchvision
+
+  _HAS_TORCHVISION = True
+except ImportError:
+  _HAS_TORCHVISION = False
+
+try:
+  import transformers
+
+  _HAS_TRANSFORMERS = True
+except ImportError:
+  _HAS_TRANSFORMERS = False
 
 _MAX_SEQ_LEN_HEURISTIC_CAP = 100_000
 
@@ -439,7 +465,7 @@ class TransformersProvider(BaseProvider):
 
     if load_weights:
       model_fn = lambda: transformers.AutoModelForCausalLM.from_pretrained(
-          str(model_dir_or_repo_id)
+          str(model_dir_or_repo_id), **kwargs
       )
       preprocessor_fn = lambda: (
           transformers.AutoTokenizer.from_pretrained(str(model_dir_or_repo_id))
@@ -751,12 +777,17 @@ class ModuleRegistry:
     if base_path is None:
       base_path = _WEIGHTS_BASE_PATH.value
 
-    self._providers: dict[str, BaseProvider] = {
-        "torchvision": TorchvisionProvider(base_path=base_path),
-        "timm": TimmProvider(base_path=base_path),
-        "transformers": TransformersProvider(base_path=base_path),
-        "diffusers": DiffusersProvider(base_path=base_path),
-    }
+    self._providers: dict[str, BaseProvider] = {}
+    if _HAS_TORCHVISION:
+      self._providers["torchvision"] = TorchvisionProvider(base_path=base_path)
+    if _HAS_TIMM:
+      self._providers["timm"] = TimmProvider(base_path=base_path)
+    if _HAS_TRANSFORMERS:
+      self._providers["transformers"] = TransformersProvider(
+          base_path=base_path
+      )
+    if _HAS_DIFFUSERS:
+      self._providers["diffusers"] = DiffusersProvider(base_path=base_path)
 
   def list_all_sources(self) -> list[str]:
     """Returns a list of registered provider keys (e.g., 'torchvision')."""
