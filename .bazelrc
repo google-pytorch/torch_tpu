@@ -192,6 +192,8 @@ common:tsan_py --repo_env=HERMETIC_PYTHON_VERSION=3.12
 common:tsan_py --repo_env=HERMETIC_PYTHON_URL=https://storage.googleapis.com/ml-sysroot-testing/python/cpython-3.12.x-tsan-shared-linux-x86_64-llvm-20-bazel-20260511.tar.gz
 common:tsan_py --repo_env=HERMETIC_PYTHON_SHA256=91db187fb5d98e6361b6416e81a6037dbe5ba745dc3e191ba1ffa06a3108e1b6
 common:tsan_py --repo_env=HERMETIC_PYTHON_PREFIX=cpython-3.12.x-tsan-shared-linux-x86_64-llvm-20-bazel-20260511/
+common:tsan_py --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu
+common:tsan_py --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu
 
 # Config to aid debugging.
 # "standalone" means "local" -- run things locally so its easier to
