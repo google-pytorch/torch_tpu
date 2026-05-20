@@ -248,9 +248,6 @@ void CheckScalarInput() {
       kOpName == OpName::kAddmmDtypeOut ||               //
       kOpName == OpName::kAddmmOut ||                    //
       kOpName == OpName::kArangeStartOut ||              //
-      kOpName == OpName::kBaddbmmDtype ||                //
-      kOpName == OpName::kBaddbmmDtypeOut ||             //
-      kOpName == OpName::kBaddbmmOut ||                  //
       kOpName == OpName::kCdistForward ||                //
       kOpName == OpName::kEluBackwardGradInput ||        //
       kOpName == OpName::kEluOut ||                      //
