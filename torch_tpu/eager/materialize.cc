@@ -115,48 +115,6 @@ void LogDeferredNodes(absl::Span<const SharedDeviceBufferList> nodes,
   }
 }
 
-// Returns nullptr if tracing is disabled. The returned event is only
-// partially populated; FinalizePushTraceEvent must be called after Compile.
-std::unique_ptr<StructuredLogEvent> MaybeStartTraceEvent(
-    const MaterializationTask& task, const Traversal& split_traversal) {
-  if (!StructuredLogBuffer::GetInstance().enabled()) return nullptr;
-  auto event = std::make_unique<StructuredLogEvent>();
-  event->reason = task.reason;
-  event->timestamp = absl::Now();
-  std::string_view first_op;
-  for (const SharedDeviceBufferList& node : split_traversal.execution_order()) {
-    if (const DeferredOp* op = node->deferred_op()) {
-      first_op = torch_tpu::ToString(op->op_name());
-      break;
-    }
-  }
-  event->name = first_op.empty() ? "torchtpu_eager"
-                                 : absl::StrCat("torchtpu_eager/", first_op);
-  return event;
-}
-
-void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
-                            std::string captured_mlir, bool compile_ok,
-                            std::string aten_graph_payload,
-                            const MaterializationTask& task) {
-  event->duration = absl::Now() - event->timestamp;
-  event->cache_hit = captured_mlir.empty();
-  if (!event->cache_hit || !compile_ok) {
-    event->aten_graph_payload = std::move(aten_graph_payload);
-    event->mlir_payload = std::move(captured_mlir);
-  }
-  event->compile_failed = !compile_ok;
-  event->chromium_payload = absl::StrCat(
-      R"({"name":")", absl::CEscape(event->name), R"(","ph":"X","ts":)",
-      absl::ToUnixMicros(event->timestamp), R"(,"dur":)",
-      std::max<int64_t>(0, absl::ToInt64Microseconds(event->duration)),
-      R"(,"cat":"torchtpu_eager","pid":)", getpid(),
-      R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
-      R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
-      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
-  StructuredLogBuffer::GetInstance().Push(std::move(event));
-}
-
 class MaterializationWorker {
  public:
   // This class is move-only.
@@ -293,24 +251,9 @@ class MaterializationWorker {
 
     std::vector<ExecutionTask> execution_tasks;
     for (auto& split_traversal : traversals) {
-      auto event = MaybeStartTraceEvent(task, *split_traversal);
-      std::string captured_mlir;
-      std::string aten_graph_payload;
-      if (event) {
-        aten_graph_payload = split_traversal->ReadableString(task.reason);
-      }
-
-      auto execution_task_or = ExecutionTask::FromTraversal(
-          std::move(split_traversal), task.reason, &mlir_context,
-          event ? &captured_mlir : nullptr);
-
-      if (event) {
-        FinalizePushTraceEvent(std::move(event), std::move(captured_mlir),
-                               execution_task_or.ok(),
-                               std::move(aten_graph_payload), task);
-      }
-
-      TT_ASSIGN_OR_RETURN(auto execution_task, std::move(execution_task_or));
+      TT_ASSIGN_OR_RETURN(auto execution_task, ExecutionTask::FromTraversal(
+                                                   std::move(split_traversal),
+                                                   task.reason, &mlir_context));
       execution_tasks.push_back(std::move(execution_task));
     }
 

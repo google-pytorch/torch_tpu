@@ -54,8 +54,7 @@ class ExecutionTask {
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
       MaterializationReason reason = MaterializationReason::kUnknown,
-      mlir::MLIRContext* absl_nullable mlir_context = nullptr,
-      std::string* absl_nullable out_mlir_text = nullptr);
+      mlir::MLIRContext* absl_nullable mlir_context = nullptr);
 
   // Creates an execution task from a pre-compiled executable.
   // This will set all outputs to the "pending materialization" state.
@@ -85,6 +84,14 @@ class ExecutionTask {
         outputs_(std::move(outputs)),
         compiled_kernel_(std::move(compiled_kernel)),
         reason_(reason) {}
+
+  // Internal helper for ExecutionTask::FromTraversal.
+  // FromTraversal is just this, wrapped in TORCH_TRACE logging.
+  static absl::StatusOr<ExecutionTask> FromTraversalInternal(
+      absl_nonnull std::unique_ptr<Traversal> traversal,
+      MaterializationReason reason = MaterializationReason::kUnknown,
+      mlir::MLIRContext* absl_nullable mlir_context = nullptr,
+      std::string* absl_nullable out_mlir_text = nullptr);
 
   // Runs the execution task and early-returns if there is any failure.
   absl::Status RunInternal();

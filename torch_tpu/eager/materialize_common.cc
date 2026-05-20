@@ -16,7 +16,9 @@
 
 #include "torch_tpu/eager/materialize_common.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <string>
@@ -32,7 +34,10 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
@@ -45,6 +50,7 @@
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
+#include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/pjrt/pjrt_utils.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/xla_data.pb.h"
@@ -83,9 +89,71 @@ absl::Status PropagateBoundedDynamism(Traversal& traversal,
   return absl::OkStatus();
 }
 
+// Returns nullptr if tracing is disabled. The returned event is only
+// partially populated; FinalizePushTraceEvent must be called after Compile.
+std::unique_ptr<StructuredLogEvent> MaybeStartTraceEvent(
+    MaterializationReason reason, const Traversal& split_traversal) {
+  if (!StructuredLogBuffer::GetInstance().enabled()) return nullptr;
+  auto event = std::make_unique<StructuredLogEvent>();
+  event->reason = reason;
+  event->timestamp = absl::Now();
+  std::string_view first_op;
+  for (const SharedDeviceBufferList& node : split_traversal.execution_order()) {
+    if (const DeferredOp* op = node->deferred_op()) {
+      first_op = torch_tpu::ToString(op->op_name());
+      break;
+    }
+  }
+  event->name = first_op.empty() ? "torchtpu_eager"
+                                 : absl::StrCat("torchtpu_eager/", first_op);
+  return event;
+}
+
+void FinalizePushTraceEvent(std::unique_ptr<StructuredLogEvent> event,
+                            std::string captured_mlir, bool compile_ok,
+                            std::string aten_graph_payload) {
+  event->duration = absl::Now() - event->timestamp;
+  event->cache_hit = captured_mlir.empty();
+  if (!event->cache_hit || !compile_ok) {
+    event->aten_graph_payload = std::move(aten_graph_payload);
+    event->mlir_payload = std::move(captured_mlir);
+  }
+  event->compile_failed = !compile_ok;
+  event->chromium_payload = absl::StrCat(
+      R"({"name":")", absl::CEscape(event->name), R"(","ph":"X","ts":)",
+      absl::ToUnixMicros(event->timestamp), R"(,"dur":)",
+      std::max<int64_t>(0, absl::ToInt64Microseconds(event->duration)),
+      R"(,"cat":"torchtpu_eager","pid":)", getpid(),
+      R"(,"tid":0,"args":{"cache_hit":)", event->cache_hit ? "true" : "false",
+      R"(,"compile_failed":)", event->compile_failed ? "true" : "false",
+      R"(,"reason":")", absl::CEscape(ToString(event->reason)), R"("}})");
+  StructuredLogBuffer::GetInstance().Push(std::move(event));
+}
+
 }  // namespace
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
+    absl_nonnull std::unique_ptr<Traversal> traversal,
+    MaterializationReason reason,
+    mlir::MLIRContext* absl_nullable mlir_context) {
+  auto event = MaybeStartTraceEvent(reason, *traversal);
+  if (!event) {
+    return ExecutionTask::FromTraversalInternal(
+        std::move(traversal), reason, mlir_context, /*out_mlir_text=*/nullptr);
+  }
+
+  std::string aten_graph_payload = traversal->ReadableString(reason);
+
+  std::string captured_mlir;
+  auto execution_task_or = ExecutionTask::FromTraversalInternal(
+      std::move(traversal), reason, mlir_context, &captured_mlir);
+
+  FinalizePushTraceEvent(std::move(event), std::move(captured_mlir),
+                         execution_task_or.ok(), std::move(aten_graph_payload));
+  return execution_task_or;
+}
+
+absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalInternal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     MaterializationReason reason, mlir::MLIRContext* absl_nullable mlir_context,
     std::string* absl_nullable out_mlir_text) {
