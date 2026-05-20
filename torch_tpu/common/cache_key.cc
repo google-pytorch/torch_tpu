@@ -515,7 +515,7 @@ GraphKey ShapeDynamismMetadata::GetSliceModuleCacheKey(
     }
 
     int op_index = graph.AddOp(
-        OpName::kSlice, OpParamCacheKeys::Empty(), /*aliased_inputs=*/{},
+        OpName::kSlice, OpParamCacheKeys::Empty(), /*donated_inputs=*/{},
         [&](GraphSignature::OpSignatureBuilder& op) {
           op.AddInput(i);
           op.AddOutput(shapes[i].dimensions(), shapes[i].dtype());
