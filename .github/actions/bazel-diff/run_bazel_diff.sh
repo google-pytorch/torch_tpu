@@ -26,11 +26,24 @@ BAZEL_CONFIG="${4}"
 EXTRA_FLAGS="${5}"
 DISABLE_BAZEL_DIFF="${6:-false}"
 
+# Check if global configuration files were modified. If so, disable bazel-diff
+# to guarantee a full build validation.
+if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
+  git fetch --depth=1 origin "$BASE_SHA"
+  CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$CURRENT_SHA")
+
+  if echo "$CHANGED_FILES" | grep -E -q "^(\.bazelrc|MODULE\.bazel|WORKSPACE)$"; then
+    echo "Global build file (.bazelrc, MODULE.bazel, or WORKSPACE) modified."
+    echo "Forcing a full test run to ensure global configuration validity."
+    DISABLE_BAZEL_DIFF="true"
+  fi
+fi
+
 # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main) or
 # label "ci:disable-bazel-diff" is applied, diff-based testing is invalid. Fall
 # back to running all tests.
 if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
-  echo "No BASE_SHA provided (not a PR) or bazel-diff disabled via PR label. Skipping bazel-diff and running all tests."
+  echo "No BASE_SHA provided (not a PR), bazel-diff disabled via PR label or global configuration files modified. Skipping bazel-diff and running all tests."
 
   set +e
   eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS //...
