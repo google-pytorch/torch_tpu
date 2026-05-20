@@ -238,7 +238,7 @@ class InternalSyncTest(absltest.TestCase):
     node_params = []
     num_lines = 0
     for line in graphviz_string.split("\n"):
-      node_match = re.fullmatch(r"^\d+ (\[.*\])", line)
+      node_match = re.fullmatch(r"^\s*\d+ (\[.*\]);?", line)
       if node_match:
         node_params.append(node_match.group(1))
         continue
@@ -288,9 +288,10 @@ digraph {
         expected_graphviz_string
     )
     s = sync.computation_graphviz(y, z)
+    _, actual_num_lines = self.extract_graphviz_invariants(s)
     for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
+      self.assertIn(node_param, s)
+    self.assertEqual(actual_num_lines, num_lines)
 
   # TODO(bawilson): remove leaf node materialization
   @absltest.skip("Safe rule with leaf nodes forces everything to materialize")
@@ -365,18 +366,19 @@ digraph {
 
     node_params, num_lines = self.extract_graphviz_invariants(expected_before)
     s = sync.computation_graphviz(y, w)
+    _, actual_num_lines = self.extract_graphviz_invariants(s)
     for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
+      self.assertIn(node_param, s)
+    self.assertEqual(actual_num_lines, num_lines)
 
     print(x.cpu())
 
     node_params, num_lines = self.extract_graphviz_invariants(expected_after)
     s = sync.computation_graphviz(y, w)
-
+    _, actual_num_lines = self.extract_graphviz_invariants(s)
     for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
+      self.assertIn(node_param, s)
+    self.assertEqual(actual_num_lines, num_lines)
 
   def test_dump_computation_graphviz(self):
     x = torch.ones(2, 3, device=torch.device("tpu"))
@@ -411,9 +413,10 @@ digraph {
     node_params, num_lines = self.extract_graphviz_invariants(
         expected_graphviz_string
     )
+    _, actual_num_lines = self.extract_graphviz_invariants(s)
     for node_param in node_params:
-      self.assertRegex(s, node_param)
-    self.assertLen(s.split("\n"), num_lines)
+      self.assertIn(node_param, s)
+    self.assertEqual(actual_num_lines, num_lines)
 
   def test_computation_mlir_pytree(self):
     x = torch.ones(2, 3, device=torch.device("tpu"))
