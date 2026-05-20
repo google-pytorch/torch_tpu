@@ -94,6 +94,92 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           )
       )
 
+  def test_addmm_zero_beta_ignores_nan_input(self):
+    """torch.addmm() with zero beta should ignore NaN input."""
+    nan_input_ = torch.ones(2, 2, dtype=torch.float32) * torch.nan
+    mat1 = torch.ones(2, 2, dtype=torch.float32)
+    mat2 = torch.ones(2, 2, dtype=torch.float32)
+    beta = 0.0
+    alpha = 0.0
+
+    # Internal check.
+    assert torch.all(torch.isnan(nan_input_))
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            nan_input_.to(device),
+            mat1.to(device),
+            mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        )
+    )
+
+  def test_addmm_zero_beta_ignores_inf_input(self):
+    """torch.addmm() with zero beta should ignore Inf input."""
+    inf_input_ = torch.ones(2, 2, dtype=torch.float32) * torch.inf
+    mat1 = torch.ones(2, 2, dtype=torch.float32)
+    mat2 = torch.ones(2, 2, dtype=torch.float32)
+    beta = 0.0
+    alpha = 0.0
+
+    # Internal check.
+    assert torch.all(torch.isinf(inf_input_))
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addmm(
+            inf_input_.to(device),
+            mat1.to(device),
+            mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        )
+    )
+
+  def test_addmm_zero_alpha_ignores_nan_mat(self):
+    """torch.addmm() with zero alpha should ignore NaN values in mat1 and mat2."""
+    device = torch.device("tpu")
+    self_input = torch.ones(2, 2, dtype=torch.float32)
+    nan_mat1 = torch.ones(2, 2, dtype=torch.float32) * torch.nan
+    nan_mat2 = torch.ones(2, 2, dtype=torch.float32) * torch.nan
+    beta = 1.0
+    alpha = 0.0
+
+    tpu_result = to(
+        torch.addmm(
+            self_input.to(device),
+            nan_mat1.to(device),
+            nan_mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        ),
+        "cpu",
+    )
+    expected = torch.ones(2, 2, dtype=torch.float32)
+    self.assert_close(golden_result=expected, torch_tpu_result=tpu_result)
+
+  def test_addmm_zero_alpha_ignores_inf_mat(self):
+    """torch.addmm() with zero alpha should ignore Inf values in mat1 and mat2."""
+    device = torch.device("tpu")
+    self_input = torch.ones(2, 2, dtype=torch.float32)
+    inf_mat1 = torch.ones(2, 2, dtype=torch.float32) * torch.inf
+    inf_mat2 = torch.ones(2, 2, dtype=torch.float32) * torch.inf
+    beta = 1.0
+    alpha = 0.0
+
+    tpu_result = to(
+        torch.addmm(
+            self_input.to(device),
+            inf_mat1.to(device),
+            inf_mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        ),
+        "cpu",
+    )
+    expected = torch.ones(2, 2, dtype=torch.float32)
+    self.assert_close(golden_result=expected, torch_tpu_result=tpu_result)
+
   def test_max_pool2d_no_indices(self):
     """Tests nn.functional.max_pool2d without indices."""
     device = torch.device("tpu")
@@ -5829,48 +5915,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
   def test_embedding_dense_backward_scale_grad_false_padding_idx_3(self):
     self._embedding_dense_backward(scale_grad_by_freq=False, padding_idx=3)
-
-  def test_addmm_zero_beta_ignores_nan_input(self):
-    """torch.addmm() with zero beta should ignore NaN input."""
-    nan_input_ = torch.ones(2, 2, dtype=torch.float32) * torch.nan
-    mat1 = torch.ones(2, 2, dtype=torch.float32)
-    mat2 = torch.ones(2, 2, dtype=torch.float32)
-    beta = 0.0
-    alpha = 0.0
-
-    # Internal check.
-    assert torch.all(torch.isnan(nan_input_))
-
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.addmm(
-            nan_input_.to(device),
-            mat1.to(device),
-            mat2.to(device),
-            beta=beta,
-            alpha=alpha,
-        )
-    )
-
-  def test_addmm_zero_beta_ignores_inf_input(self):
-    """torch.addmm() with zero beta should ignore Inf input."""
-    inf_input_ = torch.ones(2, 2, dtype=torch.float32) * torch.inf
-    mat1 = torch.ones(2, 2, dtype=torch.float32)
-    mat2 = torch.ones(2, 2, dtype=torch.float32)
-    beta = 0.0
-    alpha = 0.0
-
-    # Internal check.
-    assert torch.all(torch.isinf(inf_input_))
-
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.addmm(
-            inf_input_.to(device),
-            mat1.to(device),
-            mat2.to(device),
-            beta=beta,
-            alpha=alpha,
-        )
-    )
 
   def test_linspace_steps_zero(self):
     def test_fn(device):
