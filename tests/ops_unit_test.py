@@ -5736,6 +5736,50 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         )
     )
 
+  def test_baddbmm_zero_alpha_ignores_nan_mat(self):
+    """torch.baddbmm() with zero alpha should ignore NaN values in batch1 and batch2."""
+    device = torch.device("tpu")
+    self_input = torch.ones(2, 2, 2, dtype=torch.float32)
+    nan_mat1 = torch.ones(2, 2, 2, dtype=torch.float32) * torch.nan
+    nan_mat2 = torch.ones(2, 2, 2, dtype=torch.float32) * torch.nan
+    beta = 1.0
+    alpha = 0.0
+
+    tpu_result = to(
+        torch.baddbmm(
+            self_input.to(device),
+            nan_mat1.to(device),
+            nan_mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        ),
+        "cpu",
+    )
+    expected = torch.ones(2, 2, 2, dtype=torch.float32)
+    self.assert_close(golden_result=expected, torch_tpu_result=tpu_result)
+
+  def test_baddbmm_zero_alpha_ignores_inf_mat(self):
+    """torch.baddbmm() with zero alpha should ignore Inf values in batch1 and batch2."""
+    device = torch.device("tpu")
+    self_input = torch.ones(2, 2, 2, dtype=torch.float32)
+    inf_mat1 = torch.ones(2, 2, 2, dtype=torch.float32) * torch.inf
+    inf_mat2 = torch.ones(2, 2, 2, dtype=torch.float32) * torch.inf
+    beta = 1.0
+    alpha = 0.0
+
+    tpu_result = to(
+        torch.baddbmm(
+            self_input.to(device),
+            inf_mat1.to(device),
+            inf_mat2.to(device),
+            beta=beta,
+            alpha=alpha,
+        ),
+        "cpu",
+    )
+    expected = torch.ones(2, 2, 2, dtype=torch.float32)
+    self.assert_close(golden_result=expected, torch_tpu_result=tpu_result)
+
   def test_linspace_steps_zero(self):
     def test_fn(device):
       return torch.linspace(0, 10, steps=0, device=device)
