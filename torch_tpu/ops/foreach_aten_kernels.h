@@ -264,7 +264,7 @@ void AtenForeachCopy_(at::TensorList self, at::TensorList src,
 
 std::vector<at::Tensor> AtenForeachNormScalar(
     at::TensorList self, const at::Scalar& ord,
-    const std::optional<c10::ScalarType> dtype);
+    std::optional<c10::ScalarType> dtype);
 
 std::vector<at::Tensor> AtenForeachMax(at::TensorList self);
 
