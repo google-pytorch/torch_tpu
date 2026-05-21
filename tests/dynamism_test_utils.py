@@ -106,6 +106,13 @@ def _should_skip_input_marking(
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
   if dtype in [torch.complex64, torch.complex128]:
     return f"{op_info.name} op is not supported with dtype {dtype}."
+  # TODO(b/449736443): Re-enable 64-bit dtypes once XLA dynamic compilation
+  # bug is fixed.
+  if dtype in [torch.float64, torch.int64]:
+    return (
+        f"Dtype {dtype} is not supported with dynamism due to XLA compiler"
+        " bugs."
+    )
   # _foreach_exp_ does not support integral dtypes on TPU.
   if op_info.name == "_foreach_exp_" and not dtype.is_floating_point:
     return f"{op_info.name} does not support integral dtypes."
@@ -151,8 +158,14 @@ def verify_op_supports_dynamism(
       "masked_scatter",  # unflatten ambiguous error
       "matmul",  # reshapes in the structured delegate
       "nn.functional.adaptive_avg_pool2d",  # sort op fails to infer
+      # TODO(b/449736443): Re-enable batch_norm once XLA dynamic compilation
+      # bug is fixed.
+      "nn.functional.batch_norm",  # correctness failure in dynamic compilation
       "nn.functional.embedding",  # crash in shard 27
       "nn.functional.embedding_bag",  # invalid gather
+      # TODO(b/449736443): Re-enable grid_sample once XLA dynamic compilation
+      # bug is fixed.
+      "nn.functional.grid_sample",  # correctness failure in dynamic compilation
       "nn.functional.interpolate",  # gather with dynamic slice size
       "nn.functional.max_pool3d",  # crash (Aborted)
       "nn.functional.mse_loss",  # binop LHS / RHS mismatch
@@ -166,6 +179,9 @@ def verify_op_supports_dynamism(
       "squeeze",  # unsupported view op - enhance view op to detect squeeze
       "squeeze_copy",  # unsupported view op
       "sum",  # return i64, which has lowering issues
+      # TODO(b/449736443): Re-enable take once XLA dynamic compilation bug is
+      # fixed.
+      "take",  # correctness failure in dynamic compilation
       "to",  # fails numerics (?)
       "tril",  # bad broadcast
       "triu",  # bad broadcast, iota-like
