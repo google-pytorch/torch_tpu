@@ -66,4 +66,28 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "scaled_add_aten_kernels",
+    srcs = ["scaled_add_aten_kernels.cc"],
+    hdrs = ["scaled_add_aten_kernels.h"],
+    deps = [
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/eager:op_dispatcher",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/ops:binary",
+        "//torch_tpu/ops:binary_aten_kernels",
+        "//torch_tpu/ops:nullary_aten_kernels",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops/macros:kernel",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
+    ],
+)
+
 torch_tpu_package_end()

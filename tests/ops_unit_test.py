@@ -5251,6 +5251,36 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   """Tests for custom ops."""
 
+  def test_scaled_add_on_tpu(self):
+    """Tests the torch_tpu.scaled_add custom op on TPU."""
+    device = torch.device("tpu")
+    self_tensor = torch.tensor([1.0, 2.0, 3.0],
+                               dtype=torch.float32, device=device)
+    other_tensor = torch.tensor([4.0, 5.0, 6.0],
+                                dtype=torch.float32, device=device)
+    alpha = 2.5
+
+    out = torch.ops.torch_tpu.scaled_add(self_tensor, other_tensor, alpha)
+    expected = self_tensor.cpu() + alpha * other_tensor.cpu()
+    self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
+  def test_scaled_add_out_on_tpu(self):
+    """Tests torch_tpu.scaled_add out param."""
+    device = torch.device("tpu")
+    self_tensor = torch.tensor([1.0, 2.0, 3.0],
+                               dtype=torch.float32, device=device)
+    other_tensor = torch.tensor([4.0, 5.0, 6.0],
+                                dtype=torch.float32, device=device)
+    alpha = 2.5
+    out = torch.zeros(3, dtype=torch.float32, device=device)
+
+    res = torch.ops.torch_tpu.scaled_add(
+        self_tensor, other_tensor, alpha, out=out
+    )
+    expected = self_tensor.cpu() + alpha * other_tensor.cpu()
+    self.assert_close(golden_result=expected, torch_tpu_result=res.cpu())
+    self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
   def test_ragged_dot_on_tpu(self):
     """Tests the torch_tpu.ragged_dot custom op on TPU."""
     device = torch.device("tpu")

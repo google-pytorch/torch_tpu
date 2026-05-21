@@ -67,6 +67,7 @@
 #include "torch_tpu/ops/embedding/embedding_aten_kernels.h"
 #include "torch_tpu/ops/equal/equal_aten_kernels.h"
 #include "torch_tpu/ops/experimental/ragged_dot_aten_kernels.h"
+#include "torch_tpu/ops/experimental/scaled_add_aten_kernels.h"
 #include "torch_tpu/ops/experimental/send_recv_kernels.h"
 #include "torch_tpu/ops/exponential/exponential_aten_kernels.h"
 #include "torch_tpu/ops/eye/eye_aten_kernels.h"
@@ -803,6 +804,10 @@ TORCH_LIBRARY(torch_tpu, m) {
   m.def(
       "ragged_dot.out(Tensor lhs, Tensor rhs, Tensor grop_sizes, *, "
       "Tensor(a!) out) -> Tensor(a!)");
+  m.def("scaled_add(Tensor self, Tensor other, Scalar alpha) -> Tensor");
+  m.def(
+      "scaled_add.out(Tensor self, Tensor other, Scalar alpha, *, "
+      "Tensor(a!) out) -> Tensor(a!)");
   m.def("optimization_barrier(Tensor[] inputs) -> Tensor[]");
   m.def(
       "stateless_dropout(Tensor rng_state, Tensor input, float p, "
@@ -877,6 +882,8 @@ TORCH_LIBRARY_IMPL(torch_tpu, PrivateUse1, m) {
   Impl(m, OpName::kMaxPool2dBackward, TpuMaxPool2dBackward);
   Impl(m, OpName::kRaggedDot, AtenRaggedDot);
   Impl(m, OpName::kRaggedDotOut, AtenRaggedDotOut);
+  Impl(m, OpName::kScaledAdd, AtenScaledAdd);
+  Impl(m, OpName::kScaledAddOut, AtenScaledAddOut);
   Impl(m, OpName::kTorchTpuOptimizationBarrier, TorchTpuOptimizationBarrier);
   Impl(m, OpName::kTorchTpuStatelessDropout, TorchTpuStatelessDropout);
   Impl(m, OpName::kSetDimensionLogicalSize, SetDimensionLogicalSize);
@@ -886,6 +893,8 @@ TORCH_LIBRARY_IMPL(torch_tpu, PrivateUse1, m) {
 TORCH_LIBRARY_IMPL(torch_tpu, CPU, m) {
   Impl(m, OpName::kRaggedDot, AtenRaggedDot);
   Impl(m, OpName::kRaggedDotOut, AtenRaggedDotOut);
+  Impl(m, OpName::kScaledAdd, AtenScaledAdd);
+  Impl(m, OpName::kScaledAddOut, AtenScaledAddOut);
 }
 
 // Returns a mutable reference to the global CPU fallback mode (defaulted to

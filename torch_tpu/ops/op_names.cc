@@ -1093,6 +1093,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "rsub.Tensor";
     case OpName::kScalarTensor:
       return "scalar_tensor";
+    case OpName::kScaledAdd:
+      return "scaled_add";
+    case OpName::kScaledAddOut:
+      return "scaled_add.out";
     case OpName::kScaledDotProductEfficientAttention:
       return "_scaled_dot_product_efficient_attention";
     case OpName::kScaledDotProductFlashAttention:

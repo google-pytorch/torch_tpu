@@ -303,6 +303,24 @@ def _run_native_layer_norm_backward(
 class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
   """Tests error messages on TPU vs on CPU."""
 
+  def test_scaled_add_shape_mismatch(self):
+    """Tests that scaled_add fails if self and other have incompatible shapes."""
+    device = et.device()
+    if device.type != "tpu":
+      return
+
+    self_tensor = torch.tensor([1.0, 2.0], dtype=torch.float32, device=device)
+    other_tensor = torch.tensor(
+        [1.0, 2.0, 3.0], dtype=torch.float32, device=device
+    )
+    alpha = 1.0
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_add(): The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",  # pylint: disable=line-too-long
+    ):
+      torch.ops.torch_tpu.scaled_add(self_tensor, other_tensor, alpha)
+
   def test_triu_insufficient_dims(self):
     """Tests that triu with insufficient dims fails with expected error."""
     t = torch.ones(1, device=et.device(), dtype=torch.float32)
