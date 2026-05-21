@@ -20,6 +20,7 @@ from typing import List
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
@@ -28,7 +29,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.utils import utils
 
 
-class FunctionTest(absltest.TestCase):
+class FunctionTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -521,6 +522,75 @@ class FunctionTest(absltest.TestCase):
     compiled = torch.compile(func_with_int_put, backend=tpu_backend)
     result_tpu = compiled(3, torch.device("tpu")).to("cpu")
     self.assertEqual(result_tpu, 3)
+
+  @parameterized.named_parameters(
+      (
+          "basic",
+          lambda x, m, v: torch.index_put(x.clone(), [m], v),
+          torch.arange(16, dtype=torch.float32).reshape(4, 4),
+          torch.tensor([
+              [True, False, True, False],
+              [False, True, False, True],
+              [True, False, True, False],
+              [False, True, False, True],
+          ]),
+          torch.arange(1, 9, dtype=torch.float32) * 10,
+      ),
+      (
+          "accumulate",
+          lambda x, m, v: torch.index_put(x.clone(), [m], v, accumulate=True),
+          torch.arange(16, dtype=torch.float32).reshape(4, 4),
+          torch.tensor([
+              [True, False, True, False],
+              [False, True, False, True],
+              [True, False, True, False],
+              [False, True, False, True],
+          ]),
+          torch.arange(1, 9, dtype=torch.float32) * 10,
+      ),
+      (
+          "scalar",
+          lambda x, m, v: torch.index_put(x.clone(), [m], v),
+          torch.arange(16, dtype=torch.float32).reshape(4, 4),
+          torch.tensor([
+              [True, False, True, False],
+              [False, True, False, True],
+              [True, False, True, False],
+              [False, True, False, True],
+          ]),
+          torch.tensor(42.0),
+      ),
+      (
+          "broadcasting_leading",
+          lambda x, m, v: torch.index_put(x, [m], v),
+          torch.zeros(4, 2, dtype=torch.float32),
+          torch.tensor([True, True, True, True]),
+          torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+      ),
+      (
+          "broadcasting_inner",
+          lambda x, m, v: torch.index_put(x, [m], v),
+          torch.zeros(4, 2, dtype=torch.float32),
+          torch.tensor([True, True, True, True]),
+          torch.tensor([[1.0], [2.0], [3.0], [4.0]], dtype=torch.float32),
+      ),
+      (
+          "all_false_mask",
+          lambda x, m, v: torch.index_put(x.clone(), [m], v),
+          torch.arange(16, dtype=torch.float32).reshape(4, 4),
+          torch.zeros(4, 4, dtype=torch.bool),
+          torch.tensor([], dtype=torch.float32),
+      ),
+      (
+          "empty_tensor",
+          lambda x, m, v: torch.index_put(x.clone(), [m], v),
+          torch.zeros(0, 4),
+          torch.zeros(0, 4, dtype=torch.bool),
+          torch.zeros(0),
+      ),
+  )
+  def test_boolean_index_put(self, func, x, mask, values):
+    self._run_and_compare(func, [x, mask, values])
 
   def test_compiled_executable_is_picklable(self):
     """Test that TpuBackend's compiled output can be pickled and unpickled.

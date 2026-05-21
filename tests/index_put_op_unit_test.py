@@ -31,14 +31,31 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
   def _run_index_put(
       self, device, self_tensor, indices_tuple, values_tensor, accumulate=False
   ):
+    device = torch.device(device)
     t = to(self_tensor, device)
     # Ensure indices are on the correct device
     indices = tuple(to(i, device) for i in indices_tuple if i is not None)
     values = to(values_tensor, device)
 
     t_clone = t.clone()
-    t_clone.index_put_(indices, values, accumulate=accumulate)
-    return t_clone
+
+    def fn(t_ref, idxs, vals):
+      return t_ref.index_put_(idxs, vals, accumulate=accumulate)
+
+    is_boolean_mask = (
+        len(indices_tuple) == 1
+        and indices_tuple[0] is not None
+        and indices_tuple[0].dtype == torch.bool
+    )
+
+    if (
+        is_boolean_mask
+        and op_testing.is_compiled_mode()
+        and device.type == "tpu"
+    ):
+      fn = torch.compile(fn, backend="tpu", dynamic=False)
+
+    return fn(t_clone, indices, values)
 
   # pointwise update
   def test_pointwise_2D(self):
@@ -302,6 +319,31 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
             torch.zeros(2, 3, dtype=torch.float32),
             (torch.tensor([True, False]),),
             torch.tensor([[10.0, 20.0, 30.0]], dtype=torch.float32),
+        )
+    )
+
+  def test_boolean_broadcast_values_multiple_rows(self):
+    # Mask selects 4 rows. Values has shape (1, 2) which broadcasts to
+    # (4, 2) by repeating the row. This tests the pre-flattening
+    # broadcasting logic.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(4, 2, dtype=torch.float32),
+            (torch.tensor([True, True, True, True]),),
+            torch.tensor([[1.0, 2.0]], dtype=torch.float32),
+        )
+    )
+
+  def test_boolean_broadcast_inner_dimension(self):
+    # Self has shape (4, 2) and mask selects 4 rows. Values has shape
+    # (4, 1) which broadcasts to (4, 2).
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(4, 2, dtype=torch.float32),
+            (torch.tensor([True, True, True, True]),),
+            torch.tensor([[1.0], [2.0], [3.0], [4.0]], dtype=torch.float32),
         )
     )
 
