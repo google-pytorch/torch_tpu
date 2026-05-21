@@ -614,6 +614,7 @@ enum class OpName {
   kTorchTpuInternalGatherAllSubgroups,
   kTorchTpuOptimizationBarrier,
   kTorchTpuStatelessDropout,
+  kTorchTpuStorageAllocate,
   kTrilIndices,
   kTrilOut,
   kTriuOut,

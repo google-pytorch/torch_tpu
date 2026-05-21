@@ -513,6 +513,7 @@ class TpuAllocator final : public c10::DeviceAllocator {
   TpuAllocator& operator=(const TpuAllocator&) = delete;
 
   c10::DataPtr allocate(size_t nbytes) override {
+    ScopedPythonContextCapturer _(OpName::kTorchTpuStorageAllocate);
     c10::DeviceIndex device_idx = 0;
     if (const auto* device = PjrtBackend::GetInstance().GetDevice()) {
       device_idx =
