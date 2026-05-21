@@ -17,8 +17,11 @@
 #include "torch_tpu/eager/op_dispatcher.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -44,6 +47,7 @@
 #include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
 #include "c10/util/Optional.h"
+#include "c10/util/ThreadLocalDebugInfo.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -161,6 +165,46 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
 
 namespace internal {
 
+// TODO(https://github.com/pytorch/pytorch/issues/56027): use a dedicated slot
+// for dispatch counters.
+inline const auto kDispatchCounterSlot = c10::DebugInfoKind::TEST_INFO_2;
+
+struct DispatchCounterState : public c10::DebugInfoBase {
+  std::shared_ptr<std::atomic<int64_t>> counter =
+      std::make_shared<std::atomic<int64_t>>(0);
+};
+
+void ResetThreadDispatchCount() {
+  auto* state = dynamic_cast<DispatchCounterState*>(
+      c10::ThreadLocalDebugInfo::get(kDispatchCounterSlot));
+  if (state) {
+    state->counter->store(0);
+  } else {
+    auto new_state = std::make_shared<DispatchCounterState>();
+    c10::ThreadLocalDebugInfo::_push(kDispatchCounterSlot, new_state);
+  }
+}
+
+int64_t GetThreadDispatchCount() {
+  auto* state = dynamic_cast<DispatchCounterState*>(
+      c10::ThreadLocalDebugInfo::get(kDispatchCounterSlot));
+  if (state) {
+    return state->counter->load();
+  }
+  return 0;
+}
+
+// Increments the thread-local dispatch count.
+// This is effectively a no-op in production because the state is only pushed
+// to ThreadLocalDebugInfo during unit tests via ResetThreadDispatchCount().
+void IncrementThreadDispatchCount() {
+  auto* state = dynamic_cast<DispatchCounterState*>(
+      c10::ThreadLocalDebugInfo::get(kDispatchCounterSlot));
+  if (state) {
+    state->counter->fetch_add(1);
+  }
+}
+
 // Information about an injected op dispatch failure. Used for internal testing
 // only.
 struct OpDispatchFailure {
@@ -190,6 +234,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
       << "DynamicDispatchOp() called without op_name in options.";
   const OpName op_name = options.op_name.value();
   ABSL_VLOG(1) << "DispatchOp " << op_name;
+  // For op decomposition testing. No-op in prod.
+  IncrementThreadDispatchCount();
   if (ABSL_VLOG_IS_ON(3)) {
     std::stringstream inputs_ss;
     for (int i = 0; i < inputs.size(); ++i) {

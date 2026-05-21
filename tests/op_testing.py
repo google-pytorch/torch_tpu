@@ -57,6 +57,7 @@ from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import compiler_options as compiler
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import utils
+from tests import decomposed_ops_allowlist
 
 # In this file, we use the following naming convention for variables:
 # - golden_*: a value for the device used for computing the golden results
@@ -121,6 +122,12 @@ _COMPUTE_GRAD: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "compute_grad",
     False,
     "Compute the gradient of the op instead of the normal op result.",
+)
+
+_CHECK_DECOMPOSITION: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "check_decomposition",
+    False,
+    "If true, fails the test if an op decomposes unless it is allowlisted.",
 )
 
 _USE_COMPILED: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
@@ -1884,6 +1891,11 @@ class TorchTpuTestBase(TestCase):
       compiler_options = {"xla_optimization_level": opt_level}
     else:
       compiler_options = {}
+
+    check_decomp = _CHECK_DECOMPOSITION.value
+    if check_decomp:
+      tt_testing.reset_thread_dispatch_count()
+
     with compiler.custom_compiler_options(compiler_options):
       torch_tpu_result = self._run_op(
           op=op,
@@ -1896,6 +1908,17 @@ class TorchTpuTestBase(TestCase):
           check_device=check_device,
           check_dynamism=check_dynamism,
       )
+
+    if check_decomp:
+      count = tt_testing.get_thread_dispatch_count()
+      if (
+          count > 1
+          and op_name not in decomposed_ops_allowlist.DECOMPOSED_OPS_ALLOWLIST
+      ):
+        raise RuntimeError(
+            f"Regression! Op '{op_name}' is decomposed ({count} executions) "
+            "but not in allowlist!"
+        )
     golden_thrown = isinstance(golden_result, Exception)
     torch_tpu_thrown = isinstance(torch_tpu_result, Exception)
 

@@ -63,16 +63,24 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_library(
+    name = "decomposed_ops_allowlist",
+    testonly = True,
+    srcs = ["decomposed_ops_allowlist.py"],
+)
+
+torch_tpu_py_library(
     name = "op_testing",
     testonly = True,
     srcs = ["op_testing.py"],
     deps = [
+        ":decomposed_ops_allowlist",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
         "//shims/etils/epath",
         "//shims/safetensors",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/compiler_options",
         "//torch_tpu/_internal/utils",
@@ -272,6 +280,30 @@ torch_tpu_py_test(
         "cpu:8",  # Specify the number of CPUs for reproducible results.
         "nofastbuild",  # Measures performance.
         "requires-net:external",  # For writing remote files.
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils",
+        "//torch_tpu/eager:tpu_aten_kernels",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_decomp",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_decomposition=True",
+        "--max_samples_per_op_dtype=5",  # We only need a few samples to detect decomp
+    ],
+    main = "ops_test.py",
+    shard_count = 10,
+    tags = [
         "requires-tpu-v5lite",
     ],
     deps = [

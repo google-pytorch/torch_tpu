@@ -44,6 +44,10 @@ PYBIND11_MODULE(testing, m) {
         py::arg("op_base_name"), py::arg("failure_message"));
   m.def("reset_eager_state", ResetEagerState,
         "Resets the eager mode maintained state.");
+  m.def("get_thread_dispatch_count", internal::GetThreadDispatchCount,
+        "Returns the thread-local dispatch count.");
+  m.def("reset_thread_dispatch_count", internal::ResetThreadDispatchCount,
+        "Resets the thread-local dispatch count.");
 }
 
 }  // namespace torch_tpu

@@ -215,6 +215,15 @@ namespace internal {
 void SetOpDispatchFailure(std::string op_base_name,
                           std::string failure_message);
 
+// Returns the current thread-local dispatch count.
+int64_t GetThreadDispatchCount();
+
+// Resets the current thread-local dispatch count to 0.
+void ResetThreadDispatchCount();
+
+// Increments the current thread-local dispatch count.
+void IncrementThreadDispatchCount();
+
 // Dispatches an op.
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
 // kNumOutputs> instead.
