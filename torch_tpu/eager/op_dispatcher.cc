@@ -16,28 +16,23 @@
 
 #include "torch_tpu/eager/op_dispatcher.h"
 
-#include <algorithm>
-#include <cstddef>
-#include <deque>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
-#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/flags/declare.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
