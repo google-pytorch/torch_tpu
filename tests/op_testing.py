@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping, Mutable
 import copy
 import enum
 import functools
+import gc
 import gzip
 import logging  # PYTHON_LOGGING_OK=Setting module log level for compile testing
 import os
@@ -1014,6 +1015,10 @@ def print_reproducer(
     fx_reproducer = utils.format_model(wrapped_op_func, *args, pt=True)
   except RuntimeError as e:
     fx_reproducer = e
+  # Force garbage collection to clean up any leaked tracing resources
+  # (Subgraphs, DeviceBufferLists) from format_model before we run the
+  # actual op.
+  gc.collect()
   print("Reproducer for:", subtest_name, flush=True)
   print(fx_reproducer, flush=True)
 

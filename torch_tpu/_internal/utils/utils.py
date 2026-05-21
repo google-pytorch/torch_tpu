@@ -19,6 +19,7 @@ from collections.abc import MutableSequence
 import contextlib
 import enum
 import functools
+import gc
 import os
 import re
 import sys
@@ -633,7 +634,32 @@ def format_model(
   Returns:
     The formatted model as a string.
   """
+  try:
+    return _format_model_impl(
+        model,
+        *input_tensors,
+        params=params,
+        pt=pt,
+        aten=aten,
+        shlo=shlo,
+    )
+  finally:
+    # Tracing under EagerMode.INTERNAL_DEFER_ALL (inside _format_model_impl)
+    # can leak Subgraphs and DeviceBufferLists due to Python/C++ circular
+    # references in proxy_tensor/make_fx. We force garbage collection here
+    # to break those cycles and clean up immediately.
+    gc.collect()
 
+
+def _format_model_impl(
+    model: torch.nn.Module | Callable[..., Any],
+    *input_tensors: torch.Tensor | tuple[torch.Tensor, ...],
+    params: bool,
+    pt: bool,
+    aten: bool,
+    shlo: bool,
+) -> str:
+  """Implementation of format_model."""
   result = ""
   if not isinstance(model, torch.nn.Module):
     if isinstance(input_tensors, torch.Tensor):
@@ -644,7 +670,10 @@ def format_model(
           torch.Tensor, to_placeholder, input_tensors
       )
 
-    model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
+    # Trace the model in INTERNAL_DEFER_ALL mode so that we can capture the full
+    # graph.
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+      model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
 
   if params:
     total = sum(p.numel() for p in model.parameters())
