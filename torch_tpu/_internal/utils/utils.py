@@ -644,7 +644,10 @@ def format_model(
           torch.Tensor, to_placeholder, input_tensors
       )
 
-    model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
+    # Trace the model in INTERNAL_DEFER_ALL mode so that we can capture the full
+    # graph.
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+      model = torch.fx.experimental.proxy_tensor.make_fx(model)(*placeholders)
 
   if params:
     total = sum(p.numel() for p in model.parameters())

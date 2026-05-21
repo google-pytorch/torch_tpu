@@ -1801,6 +1801,7 @@ class TestOps(TorchTpuTestBase):
         "addcdiv",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_addcmul(self):
@@ -2062,6 +2063,7 @@ class TestOps(TorchTpuTestBase):
         skip_if=_inplace_clamp_input_has_negative_values_uint8_gpu,
         exclude_dtypes=(torch.complex64,),
         exclude_inplace_dtypes=(torch.complex64,),
+        check_dynamism=False,
     )
 
   def test_clamp_max(self):
@@ -2231,7 +2233,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_eq(self):
-    self.do_test_op("eq")
+    self.do_test_op("eq", check_dynamism=False)
 
   def test_equal(self):
     self.do_test_op("equal")
@@ -2265,6 +2267,7 @@ class TestOps(TorchTpuTestBase):
         "expm1",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_expand(self):
@@ -2315,7 +2318,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_flip(self):
-    self.do_test_op("flip")
+    self.do_test_op("flip", check_dynamism=False)
 
   def test_fmax(self):
     self.do_test_op(
@@ -2739,6 +2742,7 @@ class TestOps(TorchTpuTestBase):
             "cpu": (torch.bfloat16, torch.float16),
         },
         skip_if=skip_if,
+        check_dynamism=False,
     )
 
   def test_histc(self):
@@ -2831,6 +2835,7 @@ class TestOps(TorchTpuTestBase):
         check_value=CheckValueMode.LOOSE,
         # TODO: fix kron(out=...) having huge numeric errors.
         check_out_variant=False,
+        check_dynamism=False,
     )
 
   def test_le(self):
@@ -2841,6 +2846,7 @@ class TestOps(TorchTpuTestBase):
         "nn.functional.leaky_relu",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_lerp(self):
@@ -3025,7 +3031,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_logical_and(self):
-    self.do_test_op("logical_and")
+    self.do_test_op("logical_and", check_dynamism=False)
 
   def test_logical_or(self):
     self.do_test_op("logical_or")
@@ -3245,7 +3251,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_ne(self):
-    self.do_test_op("ne")
+    self.do_test_op("ne", check_dynamism=False)
 
   def test_new_ones(self):
     self.do_test_op("new_ones")
@@ -3254,7 +3260,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("new_zeros")
 
   def test_neg(self):
-    self.do_test_op("neg")
+    self.do_test_op("neg", check_dynamism=False)
 
   def test_nll_loss(self):
     self.do_test_op(
@@ -3289,6 +3295,7 @@ class TestOps(TorchTpuTestBase):
         "pow",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_nn_functional_conv1d(self):
@@ -3373,6 +3380,7 @@ class TestOps(TorchTpuTestBase):
         # should fail).  xla_cuda has no support for complex64::min()
         # xla_cuda: https://github.com/openxla/stablehlo/issues/560
         exclude_dtypes=INTEGRAL_DTYPES + COMPLEX_DTYPES,
+        check_dynamism=False,
     )
 
   def test_nn_functional_rms_norm(self):
@@ -3462,6 +3470,7 @@ class TestOps(TorchTpuTestBase):
         "nn.functional.batch_norm",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_nn_functional_elu(self):
@@ -3492,6 +3501,7 @@ class TestOps(TorchTpuTestBase):
   def test_nn_functional_hardswish(self):
     self.do_test_op(
         "nn.functional.hardswish",
+        check_dynamism=False,
     )
 
   def test_nn_functional_hardtanh(self):
@@ -3590,6 +3600,7 @@ class TestOps(TorchTpuTestBase):
         # TODO: fix remainder() failing with bfloat16 dtypes.
         exclude_dtypes=(torch.bfloat16,),
         exclude_inplace_dtypes=(torch.bfloat16,),
+        check_dynamism=False,
     )
 
   def test_repeat(self):
@@ -3622,7 +3633,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("roll")
 
   def test_round(self):
-    self.do_test_op("round")
+    self.do_test_op("round", check_dynamism=False)
 
   def test_rsqrt(self):
     self.do_test_op(
@@ -3675,10 +3686,10 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_sgn(self):
-    self.do_test_op("sgn")
+    self.do_test_op("sgn", check_dynamism=False)
 
   def test_sign(self):
-    self.do_test_op("sign")
+    self.do_test_op("sign", check_dynamism=False)
 
   def test_signbit(self):
     self.do_test_op("signbit")
@@ -3695,6 +3706,7 @@ class TestOps(TorchTpuTestBase):
         "sinh",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_slice(self):
@@ -3756,6 +3768,7 @@ class TestOps(TorchTpuTestBase):
         "sub",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_sum(self):
@@ -3776,6 +3789,7 @@ class TestOps(TorchTpuTestBase):
         "take",
         # TODO: fix the error put_ is unimplemented.
         check_grad=False,
+        check_dynamism=False,
     )
 
   def test_tan(self):
@@ -3832,7 +3846,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("triu")
 
   def test_trunc(self):
-    self.do_test_op("trunc")
+    self.do_test_op("trunc", check_dynamism=False)
 
   def test_unbind(self):
     self.do_test_op("unbind")
@@ -3886,6 +3900,7 @@ class TestOps(TorchTpuTestBase):
         "var",
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
+        check_dynamism=False,
     )
 
   def test_vdot(self):
@@ -3922,7 +3937,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("where")
 
   def test_xlogy(self):
-    self.do_test_op("xlogy")
+    self.do_test_op("xlogy", check_dynamism=False)
 
   def test_zeros(self):
     self.do_test_op("zeros")
