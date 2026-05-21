@@ -31,7 +31,28 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+genrule(
+    name = "source_tree_manifest",
+    testonly = True,
+    srcs = [
+        "//torch_tpu:all_py_files_recursive",
+        "//tests:all_py_files_recursive",
+        "//torch_tpu/common:all_cpp_files_recursive",
+    ],
+    outs = ["source_tree_manifest.json"],
+    cmd = "$(location :generate_manifest) $@ $(SRCS)",
+    tools = [":generate_manifest"],
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "generate_manifest",
+    srcs = ["generate_manifest.py"],
+)
+
 exports_files([
     "link_libraries.sh",
     "torch_local_defs.bzl",
+    "wheel_test_diagnostics.py",
+    "sitecustomize.py",
 ])

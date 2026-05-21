@@ -766,6 +766,11 @@ def torch_tpu_py_test(
 
     env_wheel = dict(base_env)
 
+    # Add diagnostics hook to wheel environment. sitecustomize.py is searched
+    # in PYTHONPATH.
+    _prepend_to_env(env_wheel, "PYTHONPATH", "bazel")
+    _prepend_to_env(env_wheel, "PYTHONPATH", "../bazel")
+
     env_local = dict(env_wheel)  # Build on top of wheel paths
     _prepend_to_env(env_local, "LD_LIBRARY_PATH", ":".join(local_ld))
     _prepend_to_env(env_local, "PYTHONPATH", ":".join(local_py))
@@ -775,6 +780,17 @@ def torch_tpu_py_test(
     current_data = kwargs.pop("data", [])
     if _LSAN_SUPPRESSIONS not in current_data:
         current_data.append(_LSAN_SUPPRESSIONS)
+
+    # Add diagnostics files when wheel testing is enabled.
+    current_data += if_oss(select({
+        "//:wheel_test_enabled": [
+            "//bazel:source_tree_manifest",
+            "//bazel:wheel_test_diagnostics.py",
+            "//bazel:sitecustomize.py",
+        ],
+        "//conditions:default": [],
+    }), [])
+
     kwargs["data"] = current_data
 
     # 4. Use select to swap between environments
