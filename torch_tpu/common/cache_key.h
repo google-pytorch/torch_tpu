@@ -337,7 +337,8 @@ using FormattedKey = decltype(FormatParamCacheKey(std::declval<T>()));
 template <typename T>
 FormattedKey<T> FormatParamCacheKey(const std::optional<T>& value);
 template <typename T1, typename T2>
-std::string FormatParamCacheKey(const std::pair<T1, T2>& value);
+std::string FormatParamCacheKey(      //
+    const std::pair<T1, T2>& value);  // STD_PAIR_OK=generic code.
 template <typename T, std::size_t kSize>
 FormattedKey<T> FormatParamCacheKey(const std::array<T, kSize>& value);
 template <typename T>

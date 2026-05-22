@@ -282,8 +282,8 @@ static const CompilerOptionOverrides& GetCompilerOptionOverridesFromEnvVar() {
         if (flag.empty()) {
           continue;
         }
-        std::pair<std::string, std::string> p =
-            absl::StrSplit(flag, absl::MaxSplits('=', 1));
+        std::pair<std::string, std::string>  // STD_PAIR_OK=dictated by absl.
+            p = absl::StrSplit(flag, absl::MaxSplits('=', 1));
         overrides[p.first] = p.second;
       }
     }

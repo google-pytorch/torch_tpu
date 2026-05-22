@@ -217,7 +217,7 @@ mlir::MlirOp SumReduce(mlir::MlirBuilder& builder, mlir::MlirOp input,
 
 }  // namespace
 
-absl::StatusOr<std::pair<at::Tensor, at::Tensor>>
+absl::StatusOr<AttentionForwardOutputs>
 ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
                                    const at::Tensor& key,
                                    const at::Tensor& value,
@@ -307,11 +307,11 @@ ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
     TT_ASSIGN_OR_RETURN(at::Tensor view_out,
                         ContiguousToView(std::move(results[0]), query.strides(),
                                          query.storage_offset()));
-    return std::make_pair(std::move(view_out),
-                          MakeTensor(std::move(results[1])));
+    return AttentionForwardOutputs{std::move(view_out),
+                                   MakeTensor(std::move(results[1]))};
   } else {
-    return std::make_pair(MakeTensor(std::move(results[0])),
-                          MakeTensor(std::move(results[1])));
+    return AttentionForwardOutputs{MakeTensor(std::move(results[0])),
+                                   MakeTensor(std::move(results[1]))};
   }
 }
 

@@ -26,7 +26,12 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<std::pair<at::Tensor, at::Tensor>>
+struct AttentionForwardOutputs {
+  at::Tensor output;   // UNINITIALIZED_TENSOR_OK
+  at::Tensor sum_exp;  // UNINITIALIZED_TENSOR_OK
+};
+
+absl::StatusOr<AttentionForwardOutputs>
 ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
                                    const at::Tensor& key,
                                    const at::Tensor& value,

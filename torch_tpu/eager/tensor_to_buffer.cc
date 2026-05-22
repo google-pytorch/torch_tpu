@@ -608,7 +608,8 @@ class TpuAllocator final : public c10::DeviceAllocator {
         "for TPU.");
   }
 
-  std::pair<size_t, size_t> getMemoryInfo(c10::DeviceIndex device) override {
+  std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.
+  getMemoryInfo(c10::DeviceIndex device) override {
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
       TORCH_WARN("Failed to get allocator stats: ", pjrt_stats_or.status());

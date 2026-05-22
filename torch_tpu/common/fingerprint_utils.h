@@ -66,8 +66,6 @@ struct Fingerprint64Impl {
   }
 };
 
-
-
 // Partial specialization for absl::Span.
 template <typename T>
 struct Fingerprint64Impl<absl::Span<T>, /*kIsSmallIntegral=*/false> {
@@ -127,7 +125,8 @@ struct Fingerprint64Impl<float, /*kIsSmallIntegral=*/false> {
 
 // Partial specialization for std::pair.
 template <typename T, typename U>
-struct Fingerprint64Impl<std::pair<T, U>, /*kIsSmallIntegral=*/false> {
+struct Fingerprint64Impl<std::pair<T, U>,  // STD_PAIR_OK=generic code.
+                         /*kIsSmallIntegral=*/false> {
   [[nodiscard]] static FingerprintType Compute(const std::pair<T, U>& pair) {
     return tsl::FingerprintCat64(Fingerprint(pair.first),
                                  Fingerprint(pair.second));

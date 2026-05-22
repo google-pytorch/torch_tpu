@@ -77,7 +77,8 @@ template <typename T, size_t N>
 template <typename T>
 [[nodiscard]] std::string ToString(const std::optional<T>& value);
 template <typename T1, typename T2>
-[[nodiscard]] std::string ToString(const std::pair<T1, T2>& pair);
+[[nodiscard]] std::string ToString(  //
+    const std::pair<T1, T2>& pair);  // STD_PAIR_OK=generic code.
 template <typename T>
 [[nodiscard]] std::string ToString(const std::vector<T>& vec);
 template <typename T, size_t kSize>
