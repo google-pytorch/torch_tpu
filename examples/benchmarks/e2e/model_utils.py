@@ -1562,6 +1562,53 @@ def ml_layer_model_builder(
         device=device,
     )
 
+  elif model_name == "nn.CTCLoss":
+    num_classes = kwargs["num_classes"]
+    target_len = kwargs["target_len"]
+    blank = kwargs.get("blank", 0)
+    reduction = kwargs.get("reduction", "mean")
+    zero_infinity = kwargs.get("zero_infinity", False)
+
+    class CTCLossModel(torch.nn.Module):
+
+      def __init__(self, blank, reduction, zero_infinity):
+        super().__init__()
+        self.ctc_loss = torch.nn.CTCLoss(
+            blank=blank, reduction=reduction, zero_infinity=zero_infinity
+        )
+        self.dummy_param = torch.nn.Parameter(torch.zeros(1))
+
+      def forward(self, log_probs, targets, input_lengths, target_lengths):
+        loss = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
+        return loss + self.dummy_param * 0.0
+
+    model = CTCLossModel(blank, reduction, zero_infinity)
+
+    def _ctc_loss_shape_fn(bs, seq):
+      log_probs = torch.randn(
+          (seq, bs, num_classes),
+          dtype=weights_dtype,
+          device=device,
+      ).log_softmax(2)
+      if is_training:
+        log_probs.requires_grad_(True)
+      targets = torch.randint(
+          1,
+          num_classes,
+          (bs, target_len),
+          dtype=torch.long,
+          device=device,
+      )
+      input_lengths = torch.full((bs,), seq, dtype=torch.long, device=device)
+      target_lengths = torch.full(
+          (bs,), target_len, dtype=torch.long, device=device
+      )
+      return log_probs, targets, input_lengths, target_lengths
+
+    example_inputs = _generate_inputs(
+        batch_size, sequence_length, _ctc_loss_shape_fn
+    )
+
   else:
     raise ValueError(f"Unknown ML layer model: {model_name}")
 

@@ -1169,3 +1169,36 @@ FFT_CONFIGS = (
     FftConfig(batch_size=32, seq_len=128, hidden_size=768),
     FftConfig(batch_size=32, seq_len=1024, hidden_size=1024),
 )
+
+
+@dataclasses.dataclass
+class CTCLossConfig:
+  batch_size: int
+  seq_len: int
+  num_classes: int
+  target_len: int
+
+
+CTC_LOSS_CONFIGS = (
+    # Default config for smoke test.
+    CTCLossConfig(
+        batch_size=1,
+        seq_len=128,
+        num_classes=40,
+        target_len=30,
+    ),
+    # A typical speech recognition shape.
+    CTCLossConfig(
+        batch_size=32,
+        seq_len=512,
+        num_classes=100,
+        target_len=80,
+    ),
+    # Larger batch / sequence.
+    CTCLossConfig(
+        batch_size=64,
+        seq_len=1024,
+        num_classes=500,
+        target_len=200,
+    ),
+)

@@ -73,6 +73,7 @@ _BOTTLENECK_TIMM_LAYER_BENCHMARK_NAME = "bottleneck_timm"
 _MAXPOOL2D_TIMM_LAYER_BENCHMARK_NAME = "maxpool2d_timm"
 _RELU_TIMM_LAYER_BENCHMARK_NAME = "relu_timm"
 _FFT_LAYER_BENCHMARK_NAME = "fft"
+_CTC_LOSS_LAYER_BENCHMARK_NAME = "ctc_loss"
 
 
 _DYNAMIC_SKIPS = {
@@ -176,6 +177,7 @@ _DYNAMIC_SKIPS = {
     "DeepSeekExpert": (
         "DeepSeekExpert dynamic input generation not yet updated."
     ),
+    "nn.CTCLoss": "CTCLoss dynamic input generation not yet updated.",
 }
 
 
@@ -342,6 +344,41 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
     microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
     self.run_performance_benchmark_test(
         config, _CONV2D_LAYER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.CTC_LOSS_CONFIGS
+      )
+  )
+  def test_ctc_loss(self, run_mode, is_training, layer_config):
+    if run_mode == benchmark_utils.RunMode.COMPILED:
+      self.skipTest(
+          "CTCLoss is not supported in compiled mode due to FakeTensor /"
+          " ScopedPythonContextCapturer limitations."
+      )
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nn.CTCLoss",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "num_classes": layer_config.num_classes,
+                "target_len": layer_config.target_len,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _CTC_LOSS_LAYER_BENCHMARK_NAME, microbenchmark_name
     )
 
   @parameterized.named_parameters(
