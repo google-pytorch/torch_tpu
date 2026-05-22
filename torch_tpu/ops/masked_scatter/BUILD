@@ -24,12 +24,18 @@ torch_tpu_cc_library(
     srcs = ["masked_scatter_aten_kernels.cc"],
     hdrs = ["masked_scatter_aten_kernels.h"],
     deps = [
+        ":masked_scatter",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:fixed_size_span",
+        "//torch_tpu/common:utils",
+        "//torch_tpu/eager:op_dispatcher",
+        "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:nullary_aten_kernels",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/copy_from:copy_from_aten_kernels",
@@ -40,7 +46,27 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/sort:sort_aten_kernels",
         "//torch_tpu/ops/view:view_aten_kernels",
         "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "masked_scatter",
+    srcs = ["masked_scatter.cc"],
+    hdrs = ["masked_scatter.h"],
+    deps = [
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops/cumsum",
+        "//torch_tpu/ops/index_select",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
     ],
 )
 

@@ -17,9 +17,10 @@
 import contextlib
 from typing import Generator
 
+import torch
 from torch_tpu._internal.precision import precision_impl
 
-__all__ = ["precision", "Precision"]
+__all__ = ["precision", "Precision", "dot_algorithm"]
 
 
 # This enum provides a direct binding to the StableHLO precision configuration.
@@ -74,3 +75,39 @@ def precision(mode: Precision) -> Generator[None, None, None]:
   finally:
     # Guarantee the state is restored even if Python code throws an exception.
     precision_impl._pop_precision()  # pylint: disable=protected-access
+
+
+@contextlib.contextmanager
+def dot_algorithm(
+    accumulation_type: torch.dtype,
+    lhs_component_count: int = 1,
+    rhs_component_count: int = 1,
+    num_primitive_operations: int = 1,
+    allow_imprecise_accumulation: bool = False,
+) -> Generator[None, None, None]:
+  """Context manager to set dot algorithm configuration.
+
+  This provides a way to configure the DotAlgorithm for dot_general operations.
+
+  Args:
+      accumulation_type: The accumulation type.
+      lhs_component_count: The LHS component count.
+      rhs_component_count: The RHS component count.
+      num_primitive_operations: The number of primitive operations.
+      allow_imprecise_accumulation: Whether to allow imprecise accumulation.
+
+  Yields:
+      None
+  """
+  config = precision_impl.DotAlgorithmConfig()
+  config.accumulation_type = accumulation_type
+  config.lhs_component_count = lhs_component_count
+  config.rhs_component_count = rhs_component_count
+  config.num_primitive_operations = num_primitive_operations
+  config.allow_imprecise_accumulation = allow_imprecise_accumulation
+
+  precision_impl._push_dot_algorithm(config)  # pylint: disable=protected-access
+  try:
+    yield
+  finally:
+    precision_impl._pop_dot_algorithm()  # pylint: disable=protected-access

@@ -22,6 +22,7 @@ def py_platform_test(name, **kwargs):
 
     # Note: On OSS, we ignore platform-specific attributes or handle via select.
     # Falling back to regular py_test.
+    kwargs.pop("platform", None)
     py_test(
         # PY_TEST_OK=needed for implementing py_platform_test.
         name = name,

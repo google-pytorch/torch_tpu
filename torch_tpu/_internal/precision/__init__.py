@@ -18,5 +18,6 @@ from torch_tpu._internal.precision import precision as _precision
 
 precision = _precision.precision
 Precision = _precision.Precision
+dot_algorithm = _precision.dot_algorithm
 
-__all__ = ["precision", "Precision"]
+__all__ = ["precision", "Precision", "dot_algorithm"]
