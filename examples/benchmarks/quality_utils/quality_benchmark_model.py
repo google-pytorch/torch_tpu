@@ -38,13 +38,13 @@ class MetricProducer(abc.ABC):
   @abc.abstractmethod
   def assess(
       self,
-      model_input: str,
+      model_input: Any,
       benchmark_model: "QualityBenchmarkModel",
-  ) -> torch.Tensor:
+  ) -> torch.Tensor | float:
     """Assess the quality of the model on a given input.
 
     Args:
-      model_input: The input string to assess.
+      model_input: The input to assess.
       benchmark_model: The benchmark model object.
 
     Returns:
@@ -86,6 +86,17 @@ class QualityBenchmarkModel(abc.ABC):
 
   def __init__(self):
     self._model_compiled = False
+
+  @property
+  @abc.abstractmethod
+  def max_seq_len(self) -> int:
+    """The maximum sequence length supported by the model."""
+    raise NotImplementedError
+
+  @abc.abstractmethod
+  def encode(self, text: str) -> list[int]:
+    """Encodes the text into tokens without padding or truncation."""
+    raise NotImplementedError
 
   @abc.abstractmethod
   def initialize(self) -> None:
@@ -139,7 +150,8 @@ class QualityBenchmarkModel(abc.ABC):
     """Formats the input for the model.
 
     Args:
-      raw_input: The raw input to format for the model.
+      raw_input: The raw input to format for the model. Can be either a str or a
+        list[int] of tokens.
 
     Returns:
       A tuple containing the formatted tensor and the length of the unpadded
@@ -223,7 +235,7 @@ def run_quality_benchmark(
     model_compile: bool,
     dataset_iterator: Iterable[Any],
     benchmark_metric: MetricProducer,
-) -> torch.Tensor:
+) -> torch.Tensor | float:
   """Runs quality benchmark for a given model on a dataset.
 
   Args:
@@ -239,19 +251,21 @@ def run_quality_benchmark(
   if model_compile:
     benchmark_model.compile_model()
 
-  score_list = []
+  scores = []
   run_id = 0
 
   for model_input in dataset_iterator:
     score = benchmark_metric.assess(model_input, benchmark_model)
-    h = hashlib.sha256(model_input.encode("utf-8")).hexdigest()
-    logging.info("Score for run %d (HASH: %s): %f", run_id, h, score)
+    # Ensure model_input is a string for hashing if needed, or handle appropriately.
+    # Assuming model_input is string-like or can be converted to str for logging hashing
+    h = hashlib.sha256(str(model_input).encode("utf-8")).hexdigest()
+    logging.info("Score for run %d (HASH: %s): %s", run_id, h, score)
 
     run_id += 1
-    score_list.append(score)
+    scores.append(score)
 
-  if not score_list:
+  if not scores:
     return 0.0
 
-  score_avg = sum(score_list) / len(score_list)
+  score_avg = sum(scores) / len(scores)
   return score_avg
