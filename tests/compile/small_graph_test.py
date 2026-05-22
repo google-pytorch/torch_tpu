@@ -17,6 +17,7 @@
 import os
 import pickle
 from typing import List
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
@@ -935,6 +936,30 @@ class ModuleTest(absltest.TestCase):
     compiled = torch.compile(m_tpu, backend=tpu_backend)
     tpu_compiled_result = _backend.to_device(compiled(*inputs_tpu), "cpu")
     utils.assert_close(tpu_compiled_result, cpu_result, rtol=1e-2, atol=1e-3)
+
+  @unittest.skip("b/515838593")
+  def test_adam_optimizer_gets_captured(self):
+    # Arrange
+    model = torch.nn.Linear(4, 4, device="tpu")
+    model.weight.grad = torch.ones(4, 4, device="tpu")
+    optimizer = torch.optim.AdamW(model.parameters(), capturable=True)
+    data = torch.randn(10, 4, device="tpu")
+
+    @torch.compile(backend="tpu", fullgraph=True)
+    def train_step(model: torch.nn.Module, optimizer=optimizer):
+      out = model(data)
+      loss = (out**2).sum()
+      loss.backward()
+      optimizer.step()
+      return loss
+
+    # Act
+    optimizer.zero_grad()
+    loss = train_step(model, optimizer)
+
+    # Assert: no exception means test passes.
+    loss.cpu()
+    model.weight.grad.cpu()
 
 
 if __name__ == "__main__":
