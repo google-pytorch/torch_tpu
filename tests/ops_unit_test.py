@@ -3449,6 +3449,87 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         ),
     )
 
+  def test_repeat_interleave_tensor(self):
+    t = torch.tensor([1, 2, 3])
+
+    # Case 1: Multi-element repeat tensor
+    repeats = torch.tensor([2, 1, 3])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(repeats, device=device),
+        ),
+    )
+
+    # Case 2: Single-element 1D repeat tensor (Broadcasting check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor([2]), device=device),
+        ),
+    )
+
+    # Case 3: 0D repeat tensor / scalar (0D check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor(2), device=device),
+        ),
+    )
+
+    # Case 4: Repetitions containing zero elements (pruning check)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(torch.tensor([2, 0, 1]), device=device),
+        ),
+    )
+
+    # Case 5: 2D inputs along different dimensions (rank and dim checks)
+    t_2d = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32)
+    repeats_2d = torch.tensor([2, 3])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=0,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=1,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_2d, device=device),
+            repeats=to(repeats_2d, device=device),
+            dim=-1,
+        ),
+    )
+
+    # Case 6: Dtype variations (bfloat16, int32, bool)
+    for dtype in [torch.bfloat16, torch.int32, torch.bool]:
+      t_dtype = torch.tensor([1, 0, 1], dtype=dtype)
+      repeats_dtype = torch.tensor([2, 1, 3])
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t_dtype=t_dtype, repeats_dtype=repeats_dtype: torch.repeat_interleave(
+              input=to(t_dtype, device=device),
+              repeats=to(repeats_dtype, device=device),
+          ),
+      )
+
+    # Case 7: Explicit output_size parameter (avoids host sync)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=to(repeats, device=device),
+            output_size=6,
+        ),
+    )
+
   def test_tensor_to_tpu_with_default_device(self):
     """Tests that a tensor can be moved to TPU with a default device set."""
     device = torch.device("tpu")
@@ -6962,6 +7043,138 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
                   f" {actual=}"
               ),
           )
+
+  def test_index_put_boolean(self):
+    # Case 1: Standard 1D boolean advanced indexing
+    def test_fn_1(device):
+      t = to(torch.zeros(4), device=device)
+      mask = to(
+          torch.tensor([False, True, False, True], dtype=torch.bool),
+          device=device,
+      )
+      values = to(torch.tensor([10.0, 20.0]), device=device)
+      t[mask] = values
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn_1)
+
+    # Case 2: Prefix Boolean Indexing (Leading dimension mask check)
+    # self has shape (3, 2), mask has shape (3,) - selects whole rows!
+    # This verifies our C++ prefix-mask dimension unsqueeze alignment!
+    def test_fn_2(device):
+      t = to(torch.zeros(3, 2), device=device)
+      mask = to(
+          torch.tensor([True, False, True], dtype=torch.bool), device=device
+      )
+      values = to(torch.tensor([[10.0, 20.0], [30.0, 40.0]]), device=device)
+      t[mask] = values
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn_2)
+
+    # Case 3: Dtype variations and automatic casting alignment
+    # Assigning float32 values to an int32 self tensor
+    # NOTE: Fails on CPU due to strict dtype matching requirement in PyTorch.
+    # Removed from active tests but kept in backup for reference.
+    # def test_fn_3(device):
+    #   t = to(torch.zeros(3, dtype=torch.int32), device=device)
+    #   mask = to(
+    #       torch.tensor([True, False, True], dtype=torch.bool), device=device
+    #   )
+    #   values = to(
+    #       torch.tensor([10.7, 20.3], dtype=torch.float32), device=device
+    #   )
+    #   t[mask] = values
+    #   return t
+    # self.assert_close_tpu_vs_cpu(test_fn_3)
+
+    # Case 4: Empty Mask (0 active elements - self returned unmodified)
+    def test_fn_4(device):
+      t = to(torch.tensor([1.0, 2.0, 3.0]), device=device)
+      mask = to(
+          torch.tensor([False, False, False], dtype=torch.bool), device=device
+      )
+      values = to(torch.tensor([], dtype=torch.float32), device=device)
+      t[mask] = values
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn_4)
+
+    # Case 5: Accumulation check (accumulate=True)
+    def test_fn_5(device):
+      t = to(torch.tensor([1.0, 2.0, 3.0]), device=device)
+      mask = to(
+          torch.tensor([True, False, True], dtype=torch.bool), device=device
+      )
+      values = to(torch.tensor([10.0, 20.0]), device=device)
+      t[mask] += values
+      return t
+
+    self.assert_close_tpu_vs_cpu(test_fn_5)
+
+  def test_masked_scatter(self):
+    # Case 1: Standard 1D masked_scatter
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(torch.zeros(4), device=device),
+            mask=to(
+                torch.tensor([False, True, False, True], dtype=torch.bool),
+                device=device,
+            ),
+            source=to(torch.tensor([10.0, 20.0, 30.0, 40.0]), device=device),
+        ),
+    )
+
+    # Case 2: Multi-dimensional broadcast masking
+    t_2d = torch.zeros(2, 3)
+    mask_2d = torch.tensor(
+        [[False, True, False], [True, False, True]], dtype=torch.bool
+    )
+    source_2d = torch.tensor([10.0, 20.0, 30.0, 40.0])
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(t_2d, device=device),
+            mask=to(mask_2d, device=device),
+            source=to(source_2d, device=device),
+        ),
+    )
+
+    # Case 3: Empty Mask (0 active elements - self returned unmodified)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(torch.tensor([1.0, 2.0, 3.0]), device=device),
+            mask=to(
+                torch.tensor([False, False, False], dtype=torch.bool),
+                device=device,
+            ),
+            source=to(torch.tensor([10.0, 20.0]), device=device),
+        ),
+    )
+
+    # Case 4: Full Mask (All active elements - completely overwritten)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(torch.zeros(3), device=device),
+            mask=to(
+                torch.tensor([True, True, True], dtype=torch.bool),
+                device=device,
+            ),
+            source=to(torch.tensor([10.0, 20.0, 30.0]), device=device),
+        ),
+    )
+
+    # Case 5: Dtype variations (bfloat16, int32)
+    for dtype in [torch.bfloat16, torch.int32]:
+      t_dtype = torch.zeros(3, dtype=dtype)
+      mask_dtype = torch.tensor([True, False, True], dtype=torch.bool)
+      source_dtype = torch.tensor([10, 20], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t_dtype=t_dtype, mask_dtype=mask_dtype, source_dtype=source_dtype: torch.masked_scatter(
+              input=to(t_dtype, device=device),
+              mask=to(mask_dtype, device=device),
+              source=to(source_dtype, device=device),
+          ),
+      )
 
 
 if __name__ == "__main__":

@@ -1045,6 +1045,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "remainder.Tensor_out";
     case OpName::kRepeat:
       return "repeat";
+    case OpName::kRepeatInterleaveSelfTensor:
+      return "repeat_interleave.self_Tensor";
     case OpName::kReplicationPad1dBackwardGradInput:
       return "replication_pad1d_backward.grad_input";
     case OpName::kReplicationPad1dOut:

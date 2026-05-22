@@ -72,7 +72,7 @@ at::Tensor& AtenTanhBackwardGradInput(const at::Tensor& grad_output,
                            ConvertTo<mlir::ElementType>(output.scalar_type()));
         auto output_shape = CopyIntVector(output.sizes());
 
-        auto op_builder = [&](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
             -> absl::StatusOr<mlir::MlirOp> {
           auto& [grad_output_op, output_op] = inputs;
           return BuildTanhBackwardGradInputShlo(grad_output_op, output_op);

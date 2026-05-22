@@ -17,10 +17,12 @@
 #ifndef TORCH_TPU_COMMON_CONTEXT_STATES_H_
 #define TORCH_TPU_COMMON_CONTEXT_STATES_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 
 #include "absl/base/nullability.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/layout.h"
@@ -94,6 +96,24 @@ using CustomCompilerOptionsContextState = CompilerOptionOverrides;
 // The state of the `layout` context manager. Null means there's no active
 // layout context.
 using LayoutContextState = absl_nullable std::shared_ptr<const xla::Layout>;
+
+struct DotAlgorithmConfig {
+  c10::ScalarType accumulation_type;
+  int64_t lhs_component_count = 1;
+  int64_t rhs_component_count = 1;
+  int64_t num_primitive_operations = 1;
+  bool allow_imprecise_accumulation = false;
+
+  bool operator==(const DotAlgorithmConfig& other) const {
+    return accumulation_type == other.accumulation_type &&
+           lhs_component_count == other.lhs_component_count &&
+           rhs_component_count == other.rhs_component_count &&
+           num_primitive_operations == other.num_primitive_operations &&
+           allow_imprecise_accumulation == other.allow_imprecise_accumulation;
+  }
+};
+
+using DotAlgorithmContextState = std::optional<DotAlgorithmConfig>;
 
 }  // namespace torch_tpu
 
