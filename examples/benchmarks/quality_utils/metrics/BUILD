@@ -30,6 +30,7 @@ torch_tpu_py_library(
     deps = [
         ":init",  # build_cleaner: keep
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
 )
