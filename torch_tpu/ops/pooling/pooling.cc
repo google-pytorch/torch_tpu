@@ -95,14 +95,14 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
 // (which is symmetric) and ceil mode.
 // Additional high padding could be required when ceil mode is set.
 // This ensures that the last pooling is fully inside the image.
-std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
+std::vector<PaddingSize> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)/(N, C, D, H, W)
-    mlir::ArrayRef<int64_t> kernel_size,  // [K_h, K_w]
-    mlir::ArrayRef<int64_t> stride,       // [S_h, S_w]
-    mlir::ArrayRef<int64_t> padding,      // [P_h, P_w]
-    mlir::ArrayRef<int64_t> dilation,     // [D_h, D_w]
+    mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
+    mlir::ArrayRef<int64_t> stride,             // [S_h, S_w]
+    mlir::ArrayRef<int64_t> padding,            // [P_h, P_w]
+    mlir::ArrayRef<int64_t> dilation,           // [D_h, D_w]
     bool ceil_mode) {
-  std::vector<std::pair<int64_t, int64_t>> ceil_mode_padding;
+  std::vector<PaddingSize> ceil_mode_padding;
 
   for (size_t i = 0; i < padding.size(); ++i) {
     const int64_t P = padding[i];
@@ -116,7 +116,7 @@ std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
     int64_t right_padding = P;
 
     if (!ceil_mode) {
-      ceil_mode_padding.emplace_back(left_padding, right_padding);
+      ceil_mode_padding.push_back({left_padding, right_padding});
       continue;
     }
 
@@ -142,7 +142,7 @@ std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
         right_padding += extra_padding;
       }
     }
-    ceil_mode_padding.emplace_back(left_padding, right_padding);
+    ceil_mode_padding.push_back({left_padding, right_padding});
   }
 
   return ceil_mode_padding;
@@ -153,8 +153,8 @@ std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
 ReduceWindowAttributes GetReduceWindowAttributes(
     mlir::MlirBuilder& builder, Dimensions kernel_size_attr,
     Dimensions stride_attr, Dimensions dilation_attr,
-    std::vector<std::pair<int64_t, int64_t>> padding_pairs,
-    const int64_t spatial_dim_count, const int64_t total_num_dims) {
+    std::vector<PaddingSize> padding_pairs, const int64_t spatial_dim_count,
+    const int64_t total_num_dims) {
   Dimensions kernel_size(2, 1);
   kernel_size.insert(kernel_size.end(), kernel_size_attr.begin(),
                      kernel_size_attr.end());
@@ -177,8 +177,8 @@ ReduceWindowAttributes GetReduceWindowAttributes(
     flat_padding_list.push_back(0);
   }
   for (const auto& dim_padding : padding_pairs) {
-    flat_padding_list.push_back(dim_padding.first);   // low
-    flat_padding_list.push_back(dim_padding.second);  // high
+    flat_padding_list.push_back(dim_padding.left);   // low
+    flat_padding_list.push_back(dim_padding.right);  // high
   }
 
   auto reduce_padding_attr = mlir::DenseIntElementsAttr::get(

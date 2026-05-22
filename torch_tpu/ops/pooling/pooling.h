@@ -43,6 +43,11 @@ struct ReduceWindowAttributes {
   mlir::DenseIntElementsAttr padding;
 };
 
+struct PaddingSize {
+  int64_t left = 0;
+  int64_t right = 0;
+};
+
 // Adds a batch dimension of size 1 if the input tensor doesn't have it.
 absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
                                             int64_t spatial_dim_count);
@@ -58,7 +63,7 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
 
 // Calculates the adjusted (left_padding, right_padding) pairs given the padding
 // (which is symmetric) and ceil mode.
-std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
+std::vector<PaddingSize> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)
     mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
     mlir::ArrayRef<int64_t> stride,             // [S_h, S_w]
@@ -71,8 +76,8 @@ std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
 ReduceWindowAttributes GetReduceWindowAttributes(
     mlir::MlirBuilder& builder, Dimensions kernel_size_attr,
     Dimensions stride_attr, Dimensions dilation_attr,
-    std::vector<std::pair<int64_t, int64_t>> padding_pairs,
-    int64_t spatial_dim_count, int64_t total_num_dims);
+    std::vector<PaddingSize> padding_pairs, int64_t spatial_dim_count,
+    int64_t total_num_dims);
 
 }  // namespace torch_tpu
 
