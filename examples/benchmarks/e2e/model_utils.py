@@ -40,6 +40,22 @@ from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.qwen3_moe import modeling_qwen3_moe
 
 
+def get_vocab_size(config: Any, default: int = 256_000) -> int:
+  """Gets the vocab size from a config, with a fallback default."""
+  direct_vocab_size = getattr(config, "vocab_size", None)
+  if direct_vocab_size is not None:
+    return direct_vocab_size
+
+  text_config = getattr(config, "text_config", None)
+  # this change is specific to Gemma 4
+  if text_config is not None:
+    text_vocab_size = getattr(text_config, "vocab_size", None)
+    if text_vocab_size is not None:
+      return text_vocab_size
+
+  return default
+
+
 @dataclasses.dataclass(frozen=True)
 class DynamicDimension:
   min_value: int
@@ -297,9 +313,11 @@ def huggingface_llm_model_builder(
   example_inputs.pop("attention_mask", None)
 
   if is_training:
+    vocab_size = get_vocab_size(model_cpu.config)
+
     example_inputs["labels"] = torch.randint(
         0,
-        model_cpu.config.vocab_size,
+        vocab_size,
         (batch_size, sequence_length),
         device=device,
         dtype=torch.int64,

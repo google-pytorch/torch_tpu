@@ -38,12 +38,13 @@ from typing import Any, Iterator
 
 from absl import flags
 from absl import logging
+
 from etils import epath
 import torch
 
 try:
   import diffusers
-  from diffusers.models.auto_model import AutoModel
+  from diffusers.models import auto_model
 
   _HAS_DIFFUSERS = True
 except ImportError:
@@ -488,21 +489,25 @@ class TransformersProvider(BaseProvider):
 
     safe_seq_len = min(_get_max_seq_len(config), 512)
 
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
-
     def _input_fn(
         shape=None, device="cpu"
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
       actual_shape = shape if shape is not None else (1, safe_seq_len)
+      vocab_size = getattr(config, "vocab_size", None)
+      if vocab_size is None and hasattr(config, "text_config"):
+        vocab_size = getattr(config.text_config, "vocab_size", None)
+      if vocab_size is None:
+        vocab_size = 32000
+
       return (
           (),
           {
               "input_ids": torch.randint(
-                  0, vocab_size, actual_shape, device=device
+                  0,
+                  vocab_size,
+                  actual_shape,
+                  device=device,
+                  dtype=torch.long,
               ),
               "attention_mask": torch.ones(
                   actual_shape, device=device, dtype=torch.long
@@ -578,7 +583,7 @@ class DiffusersProvider(BaseProvider):
       model_path = self._base_path / name
       try:
         if model_path.exists():
-          raw_config = AutoModel.load_config(
+          raw_config = auto_model.AutoModel.load_config(
               str(model_path), subfolder=subfolder
           )
       except Exception as exc:  # pylint: disable=broad-except
@@ -603,7 +608,7 @@ class DiffusersProvider(BaseProvider):
         with resources.as_file(
             self._FILES.joinpath(str(model_dir / "config.json"))
         ) as f:
-          raw_config = AutoModel.load_config(str(f.parent))
+          raw_config = auto_model.AutoModel.load_config(str(f.parent))
       except Exception as exc:  # pylint: disable=broad-exception-caught
         raise ValueError(
             f"Model config for '{name}' is missing in local resources "
@@ -621,7 +626,7 @@ class DiffusersProvider(BaseProvider):
 
     def _module_factory():
       if load_weights:
-        return AutoModel.from_pretrained(
+        return auto_model.AutoModel.from_pretrained(
             str(model_path),
             torch_dtype=d_type,
             subfolder=subfolder,
