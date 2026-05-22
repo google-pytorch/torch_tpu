@@ -74,9 +74,7 @@
 namespace torch_tpu {
 
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
-    std::vector<DeviceBufferRef> outputs,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        stopping_points) {
+    std::vector<DeviceBufferRef> outputs) {
   ABSL_VLOG(1) << "[Traversal::Create] creating Traversal";
   tsl::profiler::TraceMe t([] { return "Traversal::Create"; });
 
@@ -146,25 +144,14 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
         // and mark it as gray.
         if (auto it = visited_deferred.find(input_node.get());
             it == visited_deferred.end()) {
-          // We found a new deferred node, however if it is a stopping point
-          // then need to treat it as a traversal input.
-          if (!stopping_points.contains(input_node.get())) {
-            // Not a stopping point, add the newly discovered node to the stack.
-            stack.push(input_node);
-            visited_deferred.insert(
-                std::make_pair(input_node.get(), Color::kGray));
-          } else {
-            // A stopping point. Treat it as a graph argument.
-            if (visited_arguments.insert(input).second) {
-              arguments.push_back(input);
-            }
-          }
-
+          // We found a new deferred node.
+          stack.push(input_node);
+          visited_deferred.insert(
+              std::make_pair(input_node.get(), Color::kGray));
         } else if (it->second == Color::kGray) {
           // A rediscovered gray node is pushed on the stack, again.
           stack.push(input_node);
         }
-
       } else {
         // A node without a deferred op is always treated as a graph argument.
         if (visited_arguments.insert(input).second) {
@@ -198,9 +185,7 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
 }
 
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
-    absl::Span<const SharedDeviceBufferList> output_nodes,
-    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        stopping_points) {
+    absl::Span<const SharedDeviceBufferList> output_nodes) {
   std::vector<DeviceBufferRef> outputs_ref;
   for (const auto& output : output_nodes) {
     for (auto i = 0; i < output->size(); ++i) {
@@ -208,7 +193,7 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
       outputs_ref.push_back(std::move(output_ref));
     }
   }
-  return Create(std::move(outputs_ref), stopping_points);
+  return Create(std::move(outputs_ref));
 }
 
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>

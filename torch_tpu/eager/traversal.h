@@ -26,7 +26,6 @@
 
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -105,17 +104,10 @@ class Traversal {
   // Traverses the deferred operations from outputs (roots of the directed
   // acyclic graph) to arguments (leaves of the directed acyclic graph),
   // recording arguments in a deterministic but unspecified order.
-  // Optional parameter `stopping_points` can be used to supply
-  // DeviceBufferLists that should stop the traversal and, hence, be
-  // treated as arguments (even though they may be associated to deferred ops).
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Create(
-      std::vector<DeviceBufferRef> outputs,
-      const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-          stopping_points = {});
+      std::vector<DeviceBufferRef> outputs);
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Create(
-      absl::Span<const SharedDeviceBufferList> output_nodes,
-      const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-          stopping_points = {});
+      absl::Span<const SharedDeviceBufferList> output_nodes);
 
   // Creates a traversal from a given execution order and a given set of
   // outputs.
@@ -218,7 +210,7 @@ class Traversal {
   const PythonContext* absl_nullable GetPythonContext() const;
 
   // Sorts the Traversal's execution_order by op creation index.
-  inline void SortByCreationOrder() {
+  void SortByCreationOrder() {
     std::sort(
         execution_order_.begin(), execution_order_.end(),
         [](const SharedDeviceBufferList& a, const SharedDeviceBufferList& b) {
@@ -230,10 +222,6 @@ class Traversal {
   // Private constructor, only called by Traversal::Create().
   // Definitions:
   //   - arguments_:      the materialized and placeholder nodes in the graph.
-  //                      When using stopping_points (see Traversal::Create),
-  //                      these may include deferred nodes as well, which are
-  //                      pending execution by an earlier Traversal in a
-  //                      sequence of computation graphs.
   //   - execution_order: deferred nodes in the graph. These may be leaf nodes
   //                      (for nullary ops), but are more commonly branch or
   //                      root nodes.

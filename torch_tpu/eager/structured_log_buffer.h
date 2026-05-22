@@ -38,6 +38,7 @@ enum class MaterializationReason {
   kCpuTransfer,
   kScalarConversion,
   kExplicitSync,
+  kInternalSplitPoint,
   kAutogradSync,
   kRepeatedOpDetection,
   kDebugMode,
@@ -55,6 +56,8 @@ constexpr std::string_view ToString(MaterializationReason reason) {
       return "item()";
     case MaterializationReason::kExplicitSync:
       return "synchronize()";
+    case MaterializationReason::kInternalSplitPoint:
+      return "internal_split_point";
     case MaterializationReason::kAutogradSync:
       return "autograd_post_backward";
     case MaterializationReason::kRepeatedOpDetection:

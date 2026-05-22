@@ -93,8 +93,7 @@ TEST(DynamismOpsTest, GetTraversalOutputDimensionsNoBoundedInput) {
 
   std::vector<DeviceBufferRef> outputs = {add_output};
 
-  TF_ASSERT_OK_AND_ASSIGN(auto traversal,
-                          Traversal::Create(outputs, /*stopping_points=*/{}));
+  TF_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create(outputs));
 
   // Call GetTraversalOutputDimensions.
   TF_ASSERT_OK_AND_ASSIGN(
@@ -148,8 +147,7 @@ TEST(DynamismOpsTest, GetTraversalOutputDimensionsWithBoundedInput) {
 
   std::vector<DeviceBufferRef> outputs = {add_output};
 
-  TF_ASSERT_OK_AND_ASSIGN(auto traversal,
-                          Traversal::Create(outputs, /*stopping_points=*/{}));
+  TF_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create(outputs));
 
   // Call GetTraversalOutputDimensions.
   TF_ASSERT_OK_AND_ASSIGN(

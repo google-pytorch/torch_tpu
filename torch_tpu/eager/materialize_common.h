@@ -51,6 +51,19 @@ class ExecutionTask {
   //   * Mark all nodes in the traversal as having been executed
   //   * Begin compiling the traversal into a kernel (or kernels)
   //   * Set all outputs to the "pending materialization" state
+  //   * Log the resulting MLIR to support TORCH_TRACE, if enabled.
+  static absl::StatusOr<ExecutionTask> FromTraversalWithLogging(
+      absl_nonnull std::unique_ptr<Traversal> traversal,
+      MaterializationReason reason = MaterializationReason::kUnknown,
+      mlir::MLIRContext* absl_nullable mlir_context = nullptr);
+
+  // Creates an execution task from a traversal.
+  // This will:
+  //   * Propagate bounded dynamism annotations if needed. This requires a
+  //     non-null mlir_context for a bounded dynamic traversal.
+  //   * Mark all nodes in the traversal as having been executed
+  //   * Begin compiling the traversal into a kernel (or kernels)
+  //   * Set all outputs to the "pending materialization" state
   static absl::StatusOr<ExecutionTask> FromTraversal(
       absl_nonnull std::unique_ptr<Traversal> traversal,
       MaterializationReason reason = MaterializationReason::kUnknown,

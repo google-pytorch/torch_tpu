@@ -24,68 +24,94 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/materialize_common.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 
 namespace torch_tpu {
 
 namespace {
 
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-ApplySplitPointsUnsorted(
-    const Traversal& traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& split_points) {
-  std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
-  for (const auto& node : traversal.execution_order()) {
+absl::StatusOr<std::vector<ExecutionTask>> ApplySplitPointsUnsorted(
+    std::vector<SharedDeviceBufferList> queue,
+    const absl::flat_hash_set<const DeviceBufferList*>& split_points,
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationReason reason,
+    mlir::MLIRContext* absl_nullable mlir_context) {
+  std::vector<ExecutionTask> tasks;
+  for (const auto& node : queue) {
     if (!split_points.contains(node.get())) continue;
-    TT_ASSIGN_OR_RETURN(auto new_traversal,
-                        Traversal::Create({node}, split_points));
-    traversals.push_back(std::move(new_traversal));
+    MaterializationReason split_reason =
+        (required_outputs.contains(node.get())
+             ? reason
+             : MaterializationReason::kInternalSplitPoint);
+    TT_ASSIGN_OR_RETURN(auto new_traversal, Traversal::Create({node}));
+    TT_ASSIGN_OR_RETURN(
+        auto execution_task,
+        ExecutionTask::FromTraversalWithLogging(std::move(new_traversal),
+                                                split_reason, mlir_context));
+    tasks.push_back(std::move(execution_task));
   }
-  return traversals;
+  return tasks;
 }
 
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-ApplySplitPointsSorted(
-    absl_nonnull std::unique_ptr<Traversal> traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& split_points) {
-  std::vector<SharedDeviceBufferList> queue;
-  {
-    auto parts = traversal->IntoParts();
-    queue = std::move(parts.execution_order);
-  }
+absl::StatusOr<std::vector<ExecutionTask>> ApplySplitPointsSorted(
+    std::vector<SharedDeviceBufferList> queue,
+    const absl::flat_hash_set<const DeviceBufferList*>& split_points,
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationReason reason,
+    mlir::MLIRContext* absl_nullable mlir_context) {
   std::vector<SharedDeviceBufferList> execution_order;
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
-  std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
+  std::vector<ExecutionTask> tasks;
   for (auto& node : queue) {
     if (!split_points.contains(node.get())) {
       execution_order.push_back(std::move(node));
     } else {
+      MaterializationReason split_reason =
+          (required_outputs.contains(node.get())
+               ? reason
+               : MaterializationReason::kInternalSplitPoint);
       execution_order.push_back(node);  // intentional copy
       nodes_to_materialize.push_back(std::move(node));
       TT_ASSIGN_OR_RETURN(auto new_traversal,
                           Traversal::CreateFromExecutionOrder(
                               execution_order, nodes_to_materialize));
-      traversals.push_back(std::move(new_traversal));
+      TT_ASSIGN_OR_RETURN(
+          auto execution_task,
+          ExecutionTask::FromTraversalWithLogging(std::move(new_traversal),
+                                                  split_reason, mlir_context));
+      tasks.push_back(std::move(execution_task));
       execution_order.clear();
       nodes_to_materialize.clear();
     }
   }
-  return traversals;
+  return tasks;
 }
 
 }  // namespace
 
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-ApplySplitPoints(
+absl::StatusOr<std::vector<ExecutionTask>> ApplySplitPoints(
     absl_nonnull std::unique_ptr<Traversal> traversal,
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
     const absl::flat_hash_set<const DeviceBufferList*>& split_points,
-    bool use_sorted) {
-  if (use_sorted) {
-    return ApplySplitPointsSorted(std::move(traversal), split_points);
+    bool use_sorted, MaterializationReason reason,
+    mlir::MLIRContext* absl_nullable mlir_context) {
+  std::vector<SharedDeviceBufferList> queue;
+  {
+    Traversal::Parts traversal_parts = traversal->IntoParts();
+    traversal.reset();
+    queue = std::move(traversal_parts.execution_order);
   }
-  return ApplySplitPointsUnsorted(*traversal, split_points);
+  if (use_sorted) {
+    return ApplySplitPointsSorted(std::move(queue), split_points,
+                                  required_outputs, reason, mlir_context);
+  }
+  return ApplySplitPointsUnsorted(std::move(queue), split_points,
+                                  required_outputs, reason, mlir_context);
 }
 
 }  // namespace torch_tpu

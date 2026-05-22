@@ -23,7 +23,10 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
+#include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/materialize_common.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 
 namespace torch_tpu {
@@ -33,10 +36,11 @@ namespace torch_tpu {
 // points. The returned traversals are guaranteed to have only one output, and
 // are organized according to the execution order of the original traversal.
 // This function returns traversals in topological order.
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-SplitTraversal(
+absl::StatusOr<std::vector<ExecutionTask>> SplitTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs);
+    const absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    MaterializationReason reason = MaterializationReason::kUnknown,
+    mlir::MLIRContext* absl_nullable mlir_context = nullptr);
 
 }  // namespace torch_tpu
 

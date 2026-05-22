@@ -528,8 +528,9 @@ absl::Status MaterializationWorker::MaterializeQueue(
     }
     ABSL_VLOG(1) << "==== TRAVERSAL ===\n" << traversal->DebugString();
     // TODO(cbasile): support bounded dynamism, requires an MLIR context
-    TT_ASSIGN_OR_RETURN(auto execution_task, ExecutionTask::FromTraversal(
-                                                 std::move(traversal), reason));
+    TT_ASSIGN_OR_RETURN(
+        auto execution_task,
+        ExecutionTask::FromTraversalWithLogging(std::move(traversal), reason));
     execution_tasks.push_back(std::move(execution_task));
   }
 
