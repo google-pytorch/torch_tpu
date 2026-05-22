@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "description": "Schema for captured ATen operator data in Tritonbench style.",
+  "properties": {
+    "CLUSTER": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": { "type": "string" },
+                "inputs": { "type": "string" }
+              },
+              "required": ["op", "inputs"]
+            }
+          },
+          "count": { "type": "integer" }
+        },
+        "required": ["ops", "count"]
+      }
+    }
+  },
+  "additionalProperties": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "type": "string",
+          "description": "String representation of (args, kwargs) that can be evaluated. Tensors are represented as T([shape], dtype)."
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of times this operator with these inputs was seen."
+        }
+      },
+      "required": ["inputs", "count"]
+    }
+  }
+}

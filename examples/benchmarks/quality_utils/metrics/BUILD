@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -20,9 +20,15 @@ package(
 )
 
 torch_tpu_py_library(
+    name = "init",
+    srcs = ["__init__.py"],
+)
+
+torch_tpu_py_library(
     name = "perplexity_metric",
     srcs = ["perplexity_metric.py"],
     deps = [
+        ":init",  # build_cleaner: keep
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//shims/torch:pytorch",
     ],
@@ -36,6 +42,21 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/utils:log_utils",
         "@pypi//grain",
         "@pypi//tensorflow_datasets",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "perplexity_metric_test",
+    srcs = ["perplexity_metric_test.py"],
+    notest_oss = "Disabled during initial build",
+    deps = [
+        ":perplexity_metric",
+        "//examples:init",  # build_cleaner: keep
+        "//examples/benchmarks:init",  # build_cleaner: keep
+        "//examples/benchmarks/quality_utils:quality_benchmark_model",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
     ],
 )
 

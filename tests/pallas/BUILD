@@ -28,7 +28,6 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/jax:pallas",
-        "//shims/jax:pallas_tpu",  # build_cleaner: keep
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/compile",

@@ -16,11 +16,15 @@
 
 #include "torch_tpu/ops/dot/dot_aten_kernels.h"
 
+#include <optional>
 #include <utility>
 
 #include "absl/status/statusor.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "ATen/core/ATen_fwd.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -48,15 +52,23 @@ absl::StatusOr<DeviceBufferRef> Dot(const at::Tensor& lhs,
                       CheckedGetDotOutputType(lhs, rhs));
 
   const auto current_precision = GetPrecision();
+  const auto current_dot_algorithm =
+      GetContextState<std::optional<DotAlgorithmConfig>>(std::nullopt);
   TT_ASSIGN_OR_RETURN(param_keys,
                       *OpParamCacheKeys::Builder(std::move(param_keys))
-                           .SetParam("precision", current_precision));
+                           .SetParam("precision", current_precision)
+                           .SetParam("dot_algorithm", current_dot_algorithm));
 
   // TODO: XLA doesn't support matmuls with i64, so we convert them to f64.
-  auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+  auto op_builder = [current_precision, current_dot_algorithm,
+                     result_scalar_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [lhs_op, rhs_op] = inputs;
-    return BuildDotShlo(lhs_op, rhs_op, current_precision);
+    auto& ctx = lhs_op.getContext();
+    TT_ASSIGN_OR_RETURN(auto out_type, GetMlirType(ctx, result_scalar_type));
+    auto result_type = mlir::RankedTensorType::get({}, out_type);
+    return BuildDotShlo(lhs_op, rhs_op, current_precision,
+                        current_dot_algorithm, result_type);
   };
   TT_ASSIGN_OR_RETURN(
       auto result,

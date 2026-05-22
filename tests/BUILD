@@ -32,10 +32,10 @@ torch_tpu_py_library(
         "//shims/etils/epath",
         "//shims/safetensors",  # buildcleaner: keep
         "//shims/torch:pytorch",
-        "@pypi//diffusers",
-        "@pypi//timm",
-        "@pypi//torchvision",
-        "@pypi//transformers",
+        "@pypi//diffusers",  # build_cleaner: keep
+        "@pypi//timm",  # build_cleaner: keep
+        "@pypi//torchvision",  # build_cleaner: keep
+        "@pypi//transformers",  # build_cleaner: keep
     ],
 )
 
@@ -912,6 +912,21 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/precision",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "dot_algorithm_test",
+    srcs = ["dot_algorithm_test.py"],
+    main = "dot_algorithm_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/precision",

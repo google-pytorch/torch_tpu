@@ -14,6 +14,8 @@
 
 """Llama3 quality benchmark model."""
 
+from typing import Any
+
 from fairscale.nn.model_parallel import initialize as fairscale_init
 from llama_models.llama3 import generation
 import torch
@@ -86,6 +88,21 @@ class DistributedMetaLlama3QualityBenchmarkModel(
       )
     self._model = self._generator.model
 
+  @property
+  def max_seq_len(self) -> int:
+    return self._max_seq_len
+
+  def encode(self, text: str) -> list[int]:
+    """Encodes the text into tokens without padding or truncation.
+
+    Args:
+      text: The input string to encode.
+
+    Returns:
+      A list of token IDs.
+    """
+    return self._generator.formatter.encode_content(text).tokens
+
   def get_model(self) -> torch.nn.Module:
     """Gets the model from a pre-trained checkpoint."""
     return self._model
@@ -94,20 +111,25 @@ class DistributedMetaLlama3QualityBenchmarkModel(
     """Compiles the model for the target device."""
     self._model = device_utils.torch_compile(self._model, self._device)
 
-  def format(self, text: str) -> quality_benchmark_model.FormattedInput:
+  def format(self, raw_input: Any) -> quality_benchmark_model.FormattedInput:
     """Encodes text for meta llama3 model.
 
     Based on the implementation in llama3/generation.py to generate text.
 
     Args:
-      text: The text to encode.
+      raw_input: The text or tokens to encode.
 
     Returns:
       The encoded text as a tokens tensor with padding and the length of the
       unpadded tokens.
     """
     # Encode text to prompt_tokens.
-    raw_tokens = self._generator.formatter.encode_content(text).tokens
+    if isinstance(raw_input, str):
+      raw_tokens = self.encode(raw_input)
+    elif isinstance(raw_input, list):
+      raw_tokens = raw_input
+    else:
+      raise ValueError(f"Unsupported input type: {type(raw_input)}")
     raw_token_length = len(raw_tokens)
 
     # Create buffer for pad for model interaction.
