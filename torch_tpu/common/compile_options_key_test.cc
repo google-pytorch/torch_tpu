@@ -17,6 +17,7 @@
 #include "torch_tpu/common/compile_options_key.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "gtest/gtest.h"
@@ -25,6 +26,7 @@
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compilation_test_helper.h"
+#include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fingerprint_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"

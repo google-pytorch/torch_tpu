@@ -22,4 +22,55 @@
 ---
 Language:        Cpp
 BasedOnStyle:  Google
+# Merges all separated `#include` statements into a single block, sorts them,
+# and splits them into distinct, prioritized sections based on the
+# `IncludeCategories` definitions below.
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Priority 1: Standard C/C++ headers with angle brackets. A blank line is
+  # added between this section and the next section.
+  - Regex:        '^<.*>$'
+    Priority:     1
+    SortPriority: 1
+  # Priority 2: All other headers sorted by `SortPriority`.
+  # GoogleTest and GoogleMock headers.
+  - Regex:        '^"g(mock|test)/.*"$'
+    Priority:     2
+    SortPriority: 2
+  # Abseil headers.
+  - Regex:        '^"absl/.*"$'
+    Priority:     2
+    SortPriority: 3
+  # LLVM headers.
+  - Regex:        '^"llvm/.*"$'
+    Priority:     2
+    SortPriority: 4
+  # MLIR headers
+  - Regex:        '^"mlir/.*"$'
+    Priority:     2
+    SortPriority: 5
+  # PyTorch headers.
+  - Regex:        '^"(torch|ATen|c10)/.*"$'
+    Priority:     2
+    SortPriority: 6
+  # torch_tpu local project headers
+  - Regex:        '^"torch_tpu/.*"$'
+    Priority:     2
+    SortPriority: 7
+  # StableHLO headers.
+  - Regex:        '^"stablehlo/.*"$'
+    Priority:     2
+    SortPriority: 8
+  # XLA headers (from tensorflow/compiler/xla/.*).
+  - Regex:        '^"xla/.*"$'
+    Priority:     2
+    SortPriority: 9
+  # TSL headers (from tensorflow/tsl/.*).
+  - Regex:        '^"tsl/.*"$'
+    Priority:     2
+    SortPriority: 10
+  # Default catch-all for any other headers.
+  - Regex:        '.*'
+    Priority:     2
+    SortPriority: 100
 ...
