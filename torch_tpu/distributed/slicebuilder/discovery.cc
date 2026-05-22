@@ -113,7 +113,7 @@ GetDistributedWorkerConfiguration() {
   TT_ASSIGN_OR_RETURN(std::string sb_addrs,
                       GetRequiredEnvOnce<kTpuSlicebuilderAddressesEnvVar>());
 
-  std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ',');
+  std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ",");
   if (rank < 0 || rank >= addresses.size()) {
     return TT_ERROR(error::kFailedPrecondition)
            << "RANK " << rank << " is out of bounds for "
@@ -123,7 +123,7 @@ GetDistributedWorkerConfiguration() {
 
   // Get the local port.
   std::string my_addr = addresses[rank];
-  std::vector<std::string> my_parts = absl::StrSplit(my_addr, ':');
+  std::vector<std::string> my_parts = absl::StrSplit(my_addr, ":");
   if (my_parts.size() != 2) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Invalid address format in " << kTpuSlicebuilderAddressesEnvVar
@@ -170,6 +170,36 @@ const absl::StatusOr<int>& GetWorldSizeFromEnvOnce() {
         return world_size;
       }());
   return *world_size;
+}
+
+absl::StatusOr<MeshConfig> GetSlicebuilderMeshConfig(int rank, int world_size,
+                                                     std::string master_addr,
+                                                     int master_port) {
+  const auto& env_sb_addrs = GetEnvOnce<kTpuSlicebuilderAddressesEnvVar>();
+  TT_RET_CHECK(env_sb_addrs.has_value(), error::kFailedPrecondition)
+      << "the " << kTpuSlicebuilderAddressesEnvVar
+      << " environment variable is not set";
+
+  std::vector<std::string> addresses = absl::StrSplit(*env_sb_addrs, ",");
+  TT_RET_CHECK(rank >= 0 && rank < addresses.size(), error::kFailedPrecondition)
+      << "RANK " << rank << " is out of bounds for "
+      << kTpuSlicebuilderAddressesEnvVar << " (size " << addresses.size()
+      << ")";
+
+  std::string my_addr = addresses[rank];
+  std::vector<std::string> my_parts = absl::StrSplit(my_addr, ":");
+  TT_RET_CHECK(my_parts.size() == 2, error::kFailedPrecondition)
+      << "Invalid address format in " << kTpuSlicebuilderAddressesEnvVar
+      << " for current rank: " << my_addr;
+
+  int64_t port;
+  TT_RET_CHECK(absl::SimpleAtoi(my_parts[1], &port), error::kFailedPrecondition)
+      << "Failed to parse port: " << my_parts[1];
+
+  return MeshConfig{
+      .address = std::string(my_parts[0]),
+      .port = port,
+  };
 }
 
 }  // namespace torch_tpu

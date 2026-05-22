@@ -37,8 +37,14 @@ struct DistributedWorkerConfiguration {
   std::string topology;
 };
 
-absl::StatusOr<std::pair<std::string, int64_t>> GetSlicebuilderMeshConfig(
-    int rank, int world_size, std::string master_addr, int master_port);
+struct MeshConfig {
+  std::string address;
+  int64_t port;
+};
+
+absl::StatusOr<MeshConfig> GetSlicebuilderMeshConfig(int rank, int world_size,
+                                                     std::string master_addr,
+                                                     int master_port);
 
 absl::Status InitializeAsDistributedWorker(
     const DistributedWorkerConfiguration& config);
@@ -49,7 +55,7 @@ GetDistributedWorkerConfiguration();
 // Returns the world size from the WORLD_SIZE environment variable.
 //
 // Launcher utilities like torchrun typically set WORLD_SIZE, which we can
-// piggyback on to determine if we're running in single-device mode or
+// piggyback on to determine if we are running in single-device mode or
 // distributed mode when it is set.
 //
 // This function is memoized, so the environment variable is only read once.
