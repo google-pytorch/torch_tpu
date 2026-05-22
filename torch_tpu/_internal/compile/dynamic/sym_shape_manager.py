@@ -301,9 +301,13 @@ class SymShapeManager:
   def _compute_dynamic_scalar_indices(self) -> None:
     """Computes the indices of dynamic scalars in the example inputs."""
     self.dynamic_scalar_indices = set()
+    seen_symints = set()
     for idx, arg in enumerate(self._example_inputs):
       if isinstance(arg, torch.SymInt):
-        self.dynamic_scalar_indices.add(idx)
+        sym_str = str(arg)
+        if sym_str not in seen_symints:
+          self.dynamic_scalar_indices.add(idx)
+          seen_symints.add(sym_str)
 
   def _populate_input_tensors_metadata(self) -> None:
     """Populates metadata for input tensors."""

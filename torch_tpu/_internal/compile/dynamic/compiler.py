@@ -58,6 +58,7 @@ def _get_example_inputs(
       ]
   """
   updated_example_inputs = []
+  seen_symints = set()
   for index, arg in enumerate(example_inputs):
     if isinstance(arg, torch.Tensor):
       num_dynamic_dims = sym_shape_manager.get_num_dynamic_dims(index)
@@ -76,7 +77,13 @@ def _get_example_inputs(
       _, upper = get_symint_bounds(arg)
       updated_example_inputs.append(upper)
       # Add an input for the runtime size placeholder for the symint.
-      updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
+      sym_str = str(arg)
+      if (
+          sym_str in sym_shape_manager.symint_to_placeholder
+          and sym_str not in seen_symints
+      ):
+        updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
+        seen_symints.add(sym_str)
     else:
       updated_example_inputs.append(arg)
 

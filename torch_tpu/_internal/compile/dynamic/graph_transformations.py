@@ -166,18 +166,15 @@ class ScanInputsCreatePlaceholdersPass:
     for node in self._placeholders:
       if sym_utils.is_symint_node(node):
         sym_str = str(node.meta["val"])
-        # Create a new placeholder next to it (always create to keep
-        # signature match).
-        with graph_module.graph.inserting_after(node):
-          size_ph = graph_module.graph.placeholder(f"{sym_str}_size")
+        if sym_str not in self._sym_shape_manager.symint_to_placeholder:
+          # Create a new placeholder next to it
+          with graph_module.graph.inserting_after(node):
+            size_ph = graph_module.graph.placeholder(f"{sym_str}_size")
+          self._sym_shape_manager.symint_to_placeholder[sym_str] = size_ph
 
-        # Store the first placeholder encountered for this sym_str.
-        first_size_ph = (
-            self._sym_shape_manager.symint_to_placeholder.setdefault(
-                sym_str, size_ph
-            )
+        self._sym_shape_manager.symint_node_to_tensor_node[node] = (
+            self._sym_shape_manager.symint_to_placeholder[sym_str]
         )
-        self._sym_shape_manager.symint_node_to_tensor_node[node] = first_size_ph
 
 
 class HandleGenerativeOpsPass:
