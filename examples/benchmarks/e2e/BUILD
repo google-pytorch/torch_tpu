@@ -237,7 +237,9 @@ torch_tpu_py_test(
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//examples/benchmarks/quality_utils/metrics:data_loader",
         "//examples/benchmarks/quality_utils/metrics:perplexity_metric",
+        "//examples/benchmarks/quality_utils/models:llama3_2_1b_quality_benchmark",
         "//examples/benchmarks/quality_utils/models:meta_llama3_quality_benchmark",
+        "//examples/benchmarks/quality_utils/models:qwen3_1_7b_quality_benchmark",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu",
@@ -340,13 +342,13 @@ torch_tpu_py_test(
     main = "layer_performance_benchmarks.py",
     notap = "Tested on guitar workflow.",
     notest_oss = "Disabled during switch from opt-in to opt-out",
+    platform = "//buildenv/platforms/forge/gpu/gb200",
     shard_count = 2,
     strict = True,
     tags = [
         "cpu:4",
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         # Needed for getting xprof links
         "requires-net:external",
     ],
@@ -437,12 +439,12 @@ torch_tpu_py_test(
     main = "model_performance_benchmarks.py",
     notap = "Frequently causes Forge OOM.",
     notest_oss = "Disabled during switch from opt-in to opt-out",
+    platform = "//buildenv/platforms/forge/gpu/gb200",
     shard_count = 2,
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
         "requires-net:external",
     ],
     deps = [
