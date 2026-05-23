@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/base/nullability.h"
 #include "absl/functional/function_ref.h"
 #include "absl/log/absl_check.h"
@@ -41,11 +42,11 @@
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "ATen/core/ATen_fwd.h"
 #include "c10/core/Device.h"
 #include "c10/core/Scalar.h"  // IWYU pragma: keep for c10::Scalar
 #include "c10/core/SymInt.h"
 #include "c10/core/SymIntArrayRef.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
@@ -58,7 +59,6 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 

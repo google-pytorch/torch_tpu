@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/ops/empty.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
@@ -33,12 +35,11 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "llvm/ADT/STLExtras.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/ops/empty.h"
 #include "c10/core/Device.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
+#include "llvm/ADT/STLExtras.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/compilation.h"
@@ -48,7 +49,7 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
@@ -57,7 +58,6 @@
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/profiler/lib/traceme.h"
 
 namespace torch_tpu {
 

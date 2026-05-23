@@ -21,8 +21,8 @@
 #include <ostream>
 
 #include "absl/status/statusor.h"
-#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 // In CUDA, it is possible through the use of as_strided() or unfold() to
 // create a view where some elements appear more than once at different

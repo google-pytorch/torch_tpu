@@ -22,9 +22,9 @@
 #include <utility>
 
 #include "absl/time/time.h"
-#include "torch_tpu/eager/structured_log_buffer.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 
 namespace torch_tpu {
 namespace py = pybind11;

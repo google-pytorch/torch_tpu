@@ -49,8 +49,8 @@
 #include "torch_tpu/eager/materialize_common.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
-#include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
+#include "xla/xla_data.pb.h"
 
 ABSL_FLAG(bool, torch_tpu_internal_enable_new_materialization, false,
           "Enable new materialization algorithm (experimental).");

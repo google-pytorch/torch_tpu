@@ -19,9 +19,9 @@
 
 #include <cstdint>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/shape.h"
 
 namespace torch_tpu {

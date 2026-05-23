@@ -21,12 +21,12 @@
 #include <cstdint>
 #include <utility>
 
-#include "absl/base/no_destructor.h"
-#include "absl/status/status.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "ATen/detail/PrivateUse1HooksInterface.h"
 #include "ATen/ops/empty.h"
+#include "absl/base/no_destructor.h"
+#include "absl/status/status.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
 #include "c10/core/ScalarType.h"
@@ -36,6 +36,7 @@
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "c10/macros/Export.h"
 #include "c10/util/Exception.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/macros/Export.h"
@@ -50,7 +51,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 namespace {

@@ -21,11 +21,11 @@
 #include <cstdint>
 #include <string>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/dimension_types.h"

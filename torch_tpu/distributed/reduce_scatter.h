@@ -18,9 +18,9 @@
 #define TORCH_TPU_DISTRIBUTED_REDUCE_SCATTER_H_
 
 #include "absl/status/statusor.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch_tpu/distributed/types.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

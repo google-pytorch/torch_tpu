@@ -19,14 +19,15 @@
 #include <cstdint>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/ops/empty.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -35,7 +36,6 @@
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/pjrt/pjrt_utils.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "tsl/profiler/lib/traceme.h"
 
 namespace torch_tpu {

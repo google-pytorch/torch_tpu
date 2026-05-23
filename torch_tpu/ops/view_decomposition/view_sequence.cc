@@ -35,8 +35,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "llvm/ADT/STLExtras.h"
 #include "c10/core/TensorImpl.h"
+#include "llvm/ADT/STLExtras.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -52,7 +53,6 @@
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/transpose_primitive.h"
 #include "torch_tpu/ops/view_decomposition/unfold_primitive.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

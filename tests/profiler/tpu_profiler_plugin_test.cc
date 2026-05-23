@@ -16,16 +16,17 @@
 
 #include "torch_tpu/_internal/profiler/tpu_profiler_plugin.h"
 
+#include <kineto/ActivityType.h>
+#include <kineto/Config.h>
+#include <kineto/IActivityProfiler.h>
+
 #include <memory>
 #include <set>
 #include <string>
 
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include <kineto/ActivityType.h>
-#include <kineto/Config.h>
-#include <kineto/IActivityProfiler.h>
+#include "gtest/gtest.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"

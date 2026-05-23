@@ -17,9 +17,12 @@
 #include <cstdint>
 #include <optional>
 
+#include "ATen/core/Reduction.h"
 #include "absl/status/statusor.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "ATen/core/Reduction.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/gather/gather.h"
@@ -28,9 +31,6 @@
 #include "torch_tpu/ops/reductions/reductions.h"
 #include "torch_tpu/ops/reductions/sum.h"
 #include "torch_tpu/ops/scatter/scatter.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 

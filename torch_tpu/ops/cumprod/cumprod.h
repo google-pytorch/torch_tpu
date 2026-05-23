@@ -21,8 +21,8 @@
 #include <optional>
 
 #include "absl/status/statusor.h"
-#include "torch/headeronly/core/ScalarType.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 

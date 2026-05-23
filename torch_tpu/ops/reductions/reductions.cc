@@ -27,10 +27,10 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
-#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
 

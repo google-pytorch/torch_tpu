@@ -22,20 +22,22 @@
 #include <string_view>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/native/Resize.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_join.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/native/Resize.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/Device.h"
 #include "c10/core/Layout.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/Optional.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -52,8 +54,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

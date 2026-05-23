@@ -18,22 +18,22 @@
 
 #include <cstdint>
 
+#include "ATen/OpMathType.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
-#include "ATen/OpMathType.h"
-#include "c10/core/ScalarType.h"
-#include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/to_string.h"
-#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/dtype.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
 

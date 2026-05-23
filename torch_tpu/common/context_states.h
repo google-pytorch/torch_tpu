@@ -21,8 +21,8 @@
 #include <optional>
 
 #include "absl/base/nullability.h"
-#include "torch_tpu/common/compilation_spec.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "torch_tpu/common/compilation_spec.h"
 #include "xla/layout.h"
 
 namespace torch_tpu {

@@ -21,6 +21,9 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/check.h"
 #include "c10/util/intrusive_ptr.h"
+#include "pybind11/chrono.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep or multi_tpu_test fails
@@ -28,9 +31,6 @@
 #include "torch_tpu/distributed/process_group_tpu.h"
 #include "torch_tpu/distributed/utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "pybind11/chrono.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 
 namespace torch_tpu {
 

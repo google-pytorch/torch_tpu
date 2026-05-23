@@ -23,6 +23,9 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty.h"
 #include "absl/algorithm/container.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
@@ -31,9 +34,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/ops/empty.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -48,11 +53,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 
@@ -523,53 +523,53 @@ absl::Status UpdateIndicesForPaddingMode(
   // Index update for reflection padding mode.
   auto i32_type = builder.getOpBuilder().getI32Type();
   if (padding_mode == PaddingMode::kReflection) {
-      if (align_corners) {
-        auto two = MakeConstantLike(in_size, 2);
-        TT_ASSIGN_OR_RETURN(auto double_size, BuildMulShlo(in_size, two));
-        TT_ASSIGN_OR_RETURN(auto double_size_minus_2,
-                            BuildSubShlo(double_size, two));
-        TT_ASSIGN_OR_RETURN(auto double_size_minus_2_broadcast,
-                            BroadcastIfNeeded(double_size_minus_2, src_idx));
-        update_index_fn = [&, double_size_minus_2_broadcast](
-                              mlir::MlirOp& idx) -> absl::Status {
-          auto abs_idx = mlir::stablehlo::Abs(idx);
-          TT_ASSIGN_OR_RETURN(
-              auto mod_idx,
-              BuildFmodTensorShlo(abs_idx, double_size_minus_2_broadcast));
-          TT_ASSIGN_OR_RETURN(
-              auto reflected_idx,
-              BuildSubShlo(double_size_minus_2_broadcast, mod_idx));
-          TT_ASSIGN_OR_RETURN(idx, BuildMinimumShlo(mod_idx, reflected_idx));
-          return absl::OkStatus();
-        };
-      } else {
-        auto four = MakeConstantLike(in_size, 4);
-        TT_ASSIGN_OR_RETURN(auto four_size, BuildMulShlo(in_size, four));
-        TT_ASSIGN_OR_RETURN(auto four_size_broadcast,
-                            BroadcastIfNeeded(four_size, src_idx));
-        auto two_i32 = MakeConstantLike(src_idx, 2, i32_type);
-        update_index_fn = [&, four_size_broadcast,
-                           two_i32](mlir::MlirOp& idx) -> absl::Status {
-          // shifted = 2 * idx + 1
-          TT_ASSIGN_OR_RETURN(auto temp1, BuildMulShlo(idx, two_i32));
-          TT_ASSIGN_OR_RETURN(auto shifted, BuildAddShlo(temp1, one_i32));
+    if (align_corners) {
+      auto two = MakeConstantLike(in_size, 2);
+      TT_ASSIGN_OR_RETURN(auto double_size, BuildMulShlo(in_size, two));
+      TT_ASSIGN_OR_RETURN(auto double_size_minus_2,
+                          BuildSubShlo(double_size, two));
+      TT_ASSIGN_OR_RETURN(auto double_size_minus_2_broadcast,
+                          BroadcastIfNeeded(double_size_minus_2, src_idx));
+      update_index_fn = [&, double_size_minus_2_broadcast](
+                            mlir::MlirOp& idx) -> absl::Status {
+        auto abs_idx = mlir::stablehlo::Abs(idx);
+        TT_ASSIGN_OR_RETURN(
+            auto mod_idx,
+            BuildFmodTensorShlo(abs_idx, double_size_minus_2_broadcast));
+        TT_ASSIGN_OR_RETURN(
+            auto reflected_idx,
+            BuildSubShlo(double_size_minus_2_broadcast, mod_idx));
+        TT_ASSIGN_OR_RETURN(idx, BuildMinimumShlo(mod_idx, reflected_idx));
+        return absl::OkStatus();
+      };
+    } else {
+      auto four = MakeConstantLike(in_size, 4);
+      TT_ASSIGN_OR_RETURN(auto four_size, BuildMulShlo(in_size, four));
+      TT_ASSIGN_OR_RETURN(auto four_size_broadcast,
+                          BroadcastIfNeeded(four_size, src_idx));
+      auto two_i32 = MakeConstantLike(src_idx, 2, i32_type);
+      update_index_fn = [&, four_size_broadcast,
+                         two_i32](mlir::MlirOp& idx) -> absl::Status {
+        // shifted = 2 * idx + 1
+        TT_ASSIGN_OR_RETURN(auto temp1, BuildMulShlo(idx, two_i32));
+        TT_ASSIGN_OR_RETURN(auto shifted, BuildAddShlo(temp1, one_i32));
 
-          auto abs_shifted = mlir::stablehlo::Abs(shifted);
-          TT_ASSIGN_OR_RETURN(
-              auto mod_shifted,
-              BuildFmodTensorShlo(abs_shifted, four_size_broadcast));
-          TT_ASSIGN_OR_RETURN(auto reflected_shifted,
-                              BuildSubShlo(four_size_broadcast, mod_shifted));
-          TT_ASSIGN_OR_RETURN(auto min_shifted,
-                              BuildMinimumShlo(mod_shifted, reflected_shifted));
+        auto abs_shifted = mlir::stablehlo::Abs(shifted);
+        TT_ASSIGN_OR_RETURN(
+            auto mod_shifted,
+            BuildFmodTensorShlo(abs_shifted, four_size_broadcast));
+        TT_ASSIGN_OR_RETURN(auto reflected_shifted,
+                            BuildSubShlo(four_size_broadcast, mod_shifted));
+        TT_ASSIGN_OR_RETURN(auto min_shifted,
+                            BuildMinimumShlo(mod_shifted, reflected_shifted));
 
-          // idx = (min_shifted - 1) / 2
-          TT_ASSIGN_OR_RETURN(auto temp2, BuildSubShlo(min_shifted, one_i32));
-          TT_ASSIGN_OR_RETURN(idx, BuildDivShlo(temp2, two_i32));
-          idx = mlir::stablehlo::Clamp(zero_i32, idx, in_size_minus_1_i32);
-          return absl::OkStatus();
-        };
-      }
+        // idx = (min_shifted - 1) / 2
+        TT_ASSIGN_OR_RETURN(auto temp2, BuildSubShlo(min_shifted, one_i32));
+        TT_ASSIGN_OR_RETURN(idx, BuildDivShlo(temp2, two_i32));
+        idx = mlir::stablehlo::Clamp(zero_i32, idx, in_size_minus_1_i32);
+        return absl::OkStatus();
+      };
+    }
   }
 
   TT_ASSIGN_OR_RETURN(auto in_gt_1,

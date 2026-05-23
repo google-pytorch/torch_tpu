@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/base/optimization.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -36,7 +37,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "ATen/core/ATen_fwd.h"
 #include "c10/core/Device.h"
 #include "c10/util/Optional.h"
 #include "c10/util/StringUtil.h"

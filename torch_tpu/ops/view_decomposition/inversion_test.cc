@@ -19,11 +19,12 @@
 #include <utility>
 #include <variant>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
@@ -34,7 +35,6 @@
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/transpose_primitive.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 namespace {

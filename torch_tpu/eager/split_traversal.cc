@@ -30,8 +30,8 @@
 #include "torch_tpu/eager/safe_materialization_rule.h"
 #include "torch_tpu/eager/split_utils.h"
 #include "torch_tpu/eager/traversal.h"
-#include "xla/xla_data.pb.h"
 #include "tsl/profiler/lib/traceme.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 

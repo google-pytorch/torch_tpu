@@ -16,6 +16,10 @@
 
 #include "torch_tpu/_internal/profiler/tpu_profiler_plugin.h"
 
+#include <kineto/ActivityType.h>
+#include <kineto/Config.h>
+#include <kineto/IActivityProfiler.h>
+#include <kineto/output_base.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -41,21 +45,16 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include <kineto/ActivityType.h>
-#include <kineto/Config.h>
-#include <kineto/IActivityProfiler.h>
-#include <kineto/output_base.h>
+#include "torch/csrc/profiler/standalone/privateuse1_profiler.h"
 #include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/utils.h"
-#include "xla/tsl/platform/env.h"
 #include "tsl/platform/path.h"
 #include "tsl/profiler/lib/profiler_session.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
-
-#include "torch/csrc/profiler/standalone/privateuse1_profiler.h"
+#include "xla/tsl/platform/env.h"
 
 namespace torch_tpu {
 

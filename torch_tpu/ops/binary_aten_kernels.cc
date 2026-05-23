@@ -21,22 +21,28 @@
 #include <utility>
 #include <vector>
 
-#include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
-#include "absl/types/span.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/Types.h"
 #include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/native/Resize.h"
 #include "ATen/ops/div.h"
 #include "ATen/ops/result_type.h"
 #include "ATen/ops/sub.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Types.h"
+#include "stablehlo/dialect/ChloOps.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -56,12 +62,6 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/unary.h"
-#include "stablehlo/dialect/ChloOps.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -1199,21 +1199,20 @@ at::Tensor& AtenPolarOut(const at::Tensor& abs, const at::Tensor& angle,
 at::Tensor& AtenPowScalarOut(const at::Scalar& self, const at::Tensor& exponent,
                              at::Tensor& out) {
   auto promoted_self = PromoteScalar(self);
-  TT_KERNEL(OpName::kPowScalarOut, _, (promoted_self, exponent, out),
-            {
-              TT_THROW_IF_ERROR(CheckPowInputs(self, exponent));
-              // Can't use reverse_operands here because a^b != b^a.
-              // Cast to out tensor dtype to be consistent with PyTorch.
-              TT_ASSIGN_OR_THROW(at::Tensor self_tensor,
-                                 promoted_self.GetTensor(out.scalar_type()));
-              TT_THROW_IF_ERROR(BinaryOpOut(
-                  self_tensor, exponent, out, BuildPowShlo,
-                  // Use kPowOut for cache key as the builder logic is the same
-                  // as for AtenPowTensorTensorOut.
-                  {.op_name = OpName::kPowOut,
-                   .op_param_cache_keys = OpParamCacheKeys::Empty()}));
-              return out;
-            });
+  TT_KERNEL(OpName::kPowScalarOut, _, (promoted_self, exponent, out), {
+    TT_THROW_IF_ERROR(CheckPowInputs(self, exponent));
+    // Can't use reverse_operands here because a^b != b^a.
+    // Cast to out tensor dtype to be consistent with PyTorch.
+    TT_ASSIGN_OR_THROW(at::Tensor self_tensor,
+                       promoted_self.GetTensor(out.scalar_type()));
+    TT_THROW_IF_ERROR(
+        BinaryOpOut(self_tensor, exponent, out, BuildPowShlo,
+                    // Use kPowOut for cache key as the builder logic is the
+                    // same as for AtenPowTensorTensorOut.
+                    {.op_name = OpName::kPowOut,
+                     .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+    return out;
+  });
 }
 
 at::Tensor& AtenPowTensorScalarOut(const at::Tensor& self,

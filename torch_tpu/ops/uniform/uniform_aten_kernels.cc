@@ -19,9 +19,11 @@
 #include <optional>
 #include <utility>
 
-#include "absl/status/status.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
+#include "absl/status/status.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -36,8 +38,6 @@
 #include "torch_tpu/ops/rng_utils.h"
 #include "torch_tpu/ops/uniform/uniform.h"
 #include "torch_tpu/ops/view/view_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

@@ -21,10 +21,12 @@
 #include <tuple>
 #include <utility>
 
-#include "absl/status/statusor.h"
 #include "ATen/core/TensorBase.h"
 #include "ATen/native/Resize.h"
+#include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/autograd/generated/variable_factories.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -38,8 +40,6 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/sort/sort.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -80,19 +80,19 @@ absl::StatusOr<DeviceBufferRefArray<2>> SortHelper(OpParamCacheKeys param_keys,
 std::tuple<at::Tensor&, at::Tensor&> AtenSortValuesStable(
     const at::Tensor& self, std::optional<bool> stable_opt, int64_t dim,
     bool descending, at::Tensor& values, at::Tensor& indices) {
-  TT_KERNEL(
-      OpName::kSortValuesStable, param_keys,
-      (self, stable_opt, dim, descending, values, indices), {
-        bool stable = stable_opt.value_or(false);
-        TT_ASSIGN_OR_THROW((auto [values_buf, indices_buf]),
-                           SortHelper(std::move(param_keys), self,
-                                      /*stable=*/stable, dim, descending));
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(values_buf), values));
-        TT_THROW_IF_ERROR(
-            AssignBufferToAtTensor(std::move(indices_buf), indices));
-        return {values, indices};
-      });
+  TT_KERNEL(OpName::kSortValuesStable, param_keys,
+            (self, stable_opt, dim, descending, values, indices), {
+              bool stable = stable_opt.value_or(false);
+              TT_ASSIGN_OR_THROW(
+                  (auto [values_buf, indices_buf]),
+                  SortHelper(std::move(param_keys), self,
+                             /*stable=*/stable, dim, descending));
+              TT_THROW_IF_ERROR(
+                  AssignBufferToAtTensor(std::move(values_buf), values));
+              TT_THROW_IF_ERROR(
+                  AssignBufferToAtTensor(std::move(indices_buf), indices));
+              return {values, indices};
+            });
 }
 
 }  // namespace torch_tpu

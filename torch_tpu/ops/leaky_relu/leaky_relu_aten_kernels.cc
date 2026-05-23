@@ -19,9 +19,13 @@
 #include <array>
 #include <utility>
 
-#include "absl/status/statusor.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -34,10 +38,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 namespace {
@@ -135,23 +135,21 @@ absl::StatusOr<DeviceBufferRef> LeakyReluBackwardShlo(
 at::Tensor& AtenLeakyReluOut(const at::Tensor& self,
                              const at::Scalar& negative_slope,
                              at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kLeakyReluOut, param_keys, (self, negative_slope, out), {
-        TT_ASSIGN_OR_THROW(mlir::ElementType dtype,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        TT_CHECK_THROW(!IsBoolean(dtype), error::kInvalidArgument)
-            << "boolean dtypes are not supported, got " << self.scalar_type();
-        TT_CHECK_THROW(!IsInteger(dtype, /*includeBool=*/false),
-                       error::kInvalidArgument)
-            << "integer dtypes are not supported, got " << self.scalar_type();
-        TT_CHECK_THROW(!IsComplex(dtype), error::kInvalidArgument)
-            << "complex dtypes are not supported, got " << self.scalar_type();
-        TT_ASSIGN_OR_THROW(
-            auto result_buf,
-            LeakyReluShlo(self, negative_slope, out, std::move(param_keys)));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kLeakyReluOut, param_keys, (self, negative_slope, out), {
+    TT_ASSIGN_OR_THROW(mlir::ElementType dtype,
+                       ConvertTo<mlir::ElementType>(self.scalar_type()));
+    TT_CHECK_THROW(!IsBoolean(dtype), error::kInvalidArgument)
+        << "boolean dtypes are not supported, got " << self.scalar_type();
+    TT_CHECK_THROW(!IsInteger(dtype, /*includeBool=*/false),
+                   error::kInvalidArgument)
+        << "integer dtypes are not supported, got " << self.scalar_type();
+    TT_CHECK_THROW(!IsComplex(dtype), error::kInvalidArgument)
+        << "complex dtypes are not supported, got " << self.scalar_type();
+    TT_ASSIGN_OR_THROW(auto result_buf, LeakyReluShlo(self, negative_slope, out,
+                                                      std::move(param_keys)));
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+    return out;
+  });
 }
 
 at::Tensor& AtenLeakyReluBackwardGradInput(const at::Tensor& grad_output,

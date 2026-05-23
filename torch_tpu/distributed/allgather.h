@@ -19,8 +19,8 @@
 
 #include "absl/status/statusor.h"
 #include "mlir/Support/LLVM.h"
-#include "torch_tpu/distributed/types.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/distributed/types.h"
 
 namespace torch_tpu {
 

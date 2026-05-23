@@ -20,10 +20,12 @@
 #include <tuple>
 #include <utility>
 
-#include "absl/status/statusor.h"
 #include "ATen/core/TensorBase.h"
 #include "ATen/native/Resize.h"
+#include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/autograd/generated/variable_factories.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -36,8 +38,6 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/topk/topk.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

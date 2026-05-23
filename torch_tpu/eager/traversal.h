@@ -33,6 +33,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
@@ -40,7 +41,6 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/ops/python_context.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 // Creates a core abstraction for the process of traversing a graph of deferred
 // ops, preparing them for compilation and execution.

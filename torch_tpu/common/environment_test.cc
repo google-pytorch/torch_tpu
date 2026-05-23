@@ -19,8 +19,8 @@
 #include <cstdlib>
 #include <string>
 
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/distributed/slicebuilder/discovery.h"
 

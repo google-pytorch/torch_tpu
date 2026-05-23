@@ -19,11 +19,11 @@
 #include <string>
 #include <thread>  // NOLINT
 
-#include "gtest/gtest.h"
 #include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/flags.h"
 #include "xla/xla.pb.h"

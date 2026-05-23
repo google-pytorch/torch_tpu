@@ -17,10 +17,12 @@
 #include <string>
 #include <vector>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "ATen/core/TensorBody.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "torch/csrc/autograd/python_variable.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch_tpu/_internal/sync/sync.h"
@@ -32,8 +34,6 @@
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 
 namespace torch_tpu {
 namespace py = pybind11;

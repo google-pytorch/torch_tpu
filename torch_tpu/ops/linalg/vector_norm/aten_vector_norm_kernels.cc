@@ -17,15 +17,17 @@
 #include <optional>
 #include <utility>
 
-#include "absl/log/log.h"
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/sum.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/util/OptionalArrayRef.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -38,8 +40,6 @@
 #include "torch_tpu/ops/reductions/reduction_utils.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

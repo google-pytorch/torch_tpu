@@ -17,8 +17,8 @@
 #include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
 
 #include "gtest/gtest.h"
-#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 namespace torch_tpu {
 namespace {

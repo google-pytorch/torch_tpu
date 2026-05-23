@@ -90,7 +90,6 @@ enum class ExcessPrecisionState {
   kDisallow,
 };
 
-
 // Returns the cached default `xla::ExecutableBuildOptions` instance. This
 // function is memoized, so the XLA_FLAGS environment variable is parsed exactly
 // once.

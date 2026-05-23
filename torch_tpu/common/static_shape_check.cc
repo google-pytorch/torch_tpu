@@ -22,6 +22,7 @@
 #include <string_view>
 #include <vector>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -29,7 +30,6 @@
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"

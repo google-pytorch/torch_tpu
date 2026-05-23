@@ -21,8 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "absl/base/log_severity.h"
 #include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
@@ -34,6 +32,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -71,7 +71,6 @@ CompilationCacheKey DummyKey(int key = 0) {
   return CompilationCacheKey(GraphKey(ShapelessKey(key), DimensionsKey({})),
                              CompileOptionsKey(0));
 }
-
 
 TEST(PerfStatsPrinterTest, EmptyPerEntry) {
   PerfStats stats;

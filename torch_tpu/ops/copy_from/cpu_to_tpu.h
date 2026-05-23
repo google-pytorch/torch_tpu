@@ -17,9 +17,9 @@
 #ifndef TORCH_TPU_OPS_COPY_CPU_TO_TPU_H_
 #define TORCH_TPU_OPS_COPY_CPU_TO_TPU_H_
 
+#include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {

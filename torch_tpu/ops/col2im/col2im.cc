@@ -20,12 +20,12 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
 

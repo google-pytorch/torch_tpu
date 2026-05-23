@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
-#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 // Slice is a view primitive. It reduces the size of a tensor by removing
 // elements at the low indexes, high indexes, and evenly-spaced interior

@@ -20,11 +20,12 @@
 #include <optional>
 #include <vector>
 
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/broadcast_tensors.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
@@ -40,7 +41,6 @@
 #include "torch_tpu/ops/reductions/reductions.h"
 #include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "torch_tpu/ops/sort/sort_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 

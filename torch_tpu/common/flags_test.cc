@@ -18,8 +18,8 @@
 
 #include <string>
 
-#include "gtest/gtest.h"
 #include "absl/flags/flag.h"
+#include "gtest/gtest.h"
 
 ABSL_FLAG(bool, test_bool_flag, true, "Test bool flag");
 ABSL_FLAG(int, test_int_flag, 42, "Test int flag");

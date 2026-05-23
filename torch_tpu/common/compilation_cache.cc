@@ -52,6 +52,7 @@
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/_internal/dynamism/dynamism_ops.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
@@ -71,13 +72,12 @@
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "tsl/platform/numbers.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/xla.pb.h"
-#include "tsl/platform/numbers.h"
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "

@@ -17,6 +17,9 @@
 #ifndef TORCH_TPU_INTERNAL_PROFILER_TPU_PROFILER_H_
 #define TORCH_TPU_INTERNAL_PROFILER_TPU_PROFILER_H_
 
+#include <kineto/ActivityType.h>
+#include <kineto/IActivityProfiler.h>
+
 #include <memory>
 #include <set>
 #include <string>
@@ -25,8 +28,6 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
-#include <kineto/ActivityType.h>
-#include <kineto/IActivityProfiler.h>
 #include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
 #include "torch_tpu/common/utils.h"
 #include "tsl/profiler/lib/profiler_session.h"

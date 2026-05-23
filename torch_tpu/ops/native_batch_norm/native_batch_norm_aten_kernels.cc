@@ -23,12 +23,14 @@
 #include <utility>
 #include <vector>
 
-#include "absl/log/absl_log.h"
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/AccumulateType.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/native/Resize.h"
+#include "absl/log/absl_log.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -42,8 +44,6 @@
 #include "torch_tpu/ops/native_batch_norm/native_batch_norm.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

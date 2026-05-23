@@ -19,8 +19,6 @@
 #include <atomic>
 #include <string>
 
-#include "absl/log/absl_log.h"
-#include "absl/log/log.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/dispatch/Dispatcher.h"
@@ -29,6 +27,8 @@
 #include "ATen/native/DispatchStub.h"
 #include "ATen/native/transformers/attention.h"
 #include "ATen/ops/empty.h"
+#include "absl/log/absl_log.h"
+#include "absl/log/log.h"
 #include "torch/library.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/a_min_max/a_min_max_aten_kernels.h"

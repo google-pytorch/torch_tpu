@@ -20,12 +20,13 @@
 #include <string>
 #include <utility>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "absl/status/status.h"
-#include "absl/types/span.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/status/status.h"
+#include "absl/types/span.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
@@ -37,7 +38,6 @@
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/transpose_primitive.h"
 #include "torch_tpu/ops/view_decomposition/unfold_primitive.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {

@@ -22,9 +22,9 @@
 #include <string_view>
 
 #include "absl/status/statusor.h"
-#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 // Bitcasting type conversions are a type of view primitive, which reinterprets
 // an existing bit pattern as a tensor of a different type and possibly

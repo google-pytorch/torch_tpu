@@ -52,9 +52,9 @@
 #include "torch_tpu/eager/traversal.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/pjrt/pjrt_utils.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/profiler/lib/traceme.h"
 
 ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
 

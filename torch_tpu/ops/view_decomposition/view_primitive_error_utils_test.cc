@@ -16,8 +16,8 @@
 
 #include "torch_tpu/ops/view_decomposition/view_primitive_error_utils.h"
 
-#include "gtest/gtest.h"
 #include "absl/types/span.h"
+#include "gtest/gtest.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/reshape_primitive.h"

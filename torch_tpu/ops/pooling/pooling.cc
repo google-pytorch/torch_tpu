@@ -27,12 +27,12 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
 
@@ -97,10 +97,10 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
 // This ensures that the last pooling is fully inside the image.
 std::vector<std::pair<int64_t, int64_t>> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)/(N, C, D, H, W)
-    mlir::ArrayRef<int64_t> kernel_size,  // [K_h, K_w]
-    mlir::ArrayRef<int64_t> stride,       // [S_h, S_w]
-    mlir::ArrayRef<int64_t> padding,      // [P_h, P_w]
-    mlir::ArrayRef<int64_t> dilation,     // [D_h, D_w]
+    mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
+    mlir::ArrayRef<int64_t> stride,             // [S_h, S_w]
+    mlir::ArrayRef<int64_t> padding,            // [P_h, P_w]
+    mlir::ArrayRef<int64_t> dilation,           // [D_h, D_w]
     bool ceil_mode) {
   std::vector<std::pair<int64_t, int64_t>> ceil_mode_padding;
 

@@ -21,9 +21,9 @@
 
 #include <ostream>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/dimension_types.h"
 
 // A DeviceBufferRef, or a PjRtBuffer, contains information about the shape

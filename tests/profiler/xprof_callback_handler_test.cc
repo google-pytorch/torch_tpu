@@ -21,8 +21,8 @@
 #include <thread>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "ATen/record_function.h"
+#include "gtest/gtest.h"
 
 namespace torch_tpu {
 namespace {

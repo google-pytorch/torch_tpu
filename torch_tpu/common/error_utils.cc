@@ -23,6 +23,8 @@
 #include <string_view>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/log/absl_check.h"
 #include "absl/numeric/int128.h"
 #include "absl/status/status.h"
@@ -31,8 +33,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 #include "c10/core/Device.h"
 #include "c10/core/WrapDimMinimal.h"
 #include "c10/util/ArrayRef.h"  // IWYU pragma: keep for IntArrayRef

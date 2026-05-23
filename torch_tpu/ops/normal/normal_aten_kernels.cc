@@ -21,11 +21,6 @@
 #include <string_view>
 #include <utility>
 
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "llvm/ADT/APFloat.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "mlir/Support/LLVM.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "ATen/native/Resize.h"
@@ -33,6 +28,15 @@
 #include "ATen/ops/scalar_tensor.h"
 #include "ATen/ops/stack.h"
 #include "ATen/ops/zeros_like.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "llvm/ADT/APFloat.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/Support/LLVM.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
@@ -48,10 +52,6 @@
 #include "torch_tpu/ops/rng_utils.h"
 #include "torch_tpu/ops/uniform/uniform.h"
 #include "torch_tpu/ops/view/view_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 namespace {

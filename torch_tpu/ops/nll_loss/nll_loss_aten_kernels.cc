@@ -21,8 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/LegacyTypeDispatch.h"
 #include "ATen/core/Reduction.h"
@@ -30,7 +28,12 @@
 #include "ATen/ops/nll_loss_forward.h"
 #include "ATen/ops/permute.h"
 #include "ATen/ops/reshape.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/util/Optional.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -45,9 +48,6 @@
 #include "torch_tpu/ops/nll_loss/nll_loss.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

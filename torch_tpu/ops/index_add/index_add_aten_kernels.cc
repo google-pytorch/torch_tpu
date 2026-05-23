@@ -19,11 +19,13 @@
 #include <cstdint>
 #include <utility>
 
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -37,8 +39,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 
@@ -95,14 +95,14 @@ absl::StatusOr<DeviceBufferRef> IndexAdd(const at::Tensor& self, int64_t dim,
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
                       ConvertTo<mlir::ElementType>(promoted_scalar_type));
 
-  auto index_add_op_builder = [dim, alpha, computation_dtype](
-                                  FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-    auto& [self, index, source] = inputs;
-    mlir::MlirOp alpha_op = MakeScalarConstant(
-        self.getBuilder(), alpha.toDouble(), computation_dtype);
-    return BuildIndexAddShlo(self, dim, index, source, alpha_op,
-                             computation_dtype);
-  };
+  auto index_add_op_builder =
+      [dim, alpha, computation_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+        auto& [self, index, source] = inputs;
+        mlir::MlirOp alpha_op = MakeScalarConstant(
+            self.getBuilder(), alpha.toDouble(), computation_dtype);
+        return BuildIndexAddShlo(self, dim, index, source, alpha_op,
+                                 computation_dtype);
+      };
 
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(out_scalar_type));

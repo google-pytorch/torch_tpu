@@ -20,9 +20,9 @@
 #include <cstdint>
 #include <ostream>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/algorithm/container.h"
 #include "absl/types/span.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/to_string.h"
 

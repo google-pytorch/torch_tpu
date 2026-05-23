@@ -29,6 +29,7 @@
 #include <variant>
 #include <vector>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
@@ -44,7 +45,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"
-#include "ATen/core/TensorBody.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dtype.h"
@@ -59,11 +60,10 @@
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/traversal.h"
 #include "torch_tpu/experimental/eager/materialize_new.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/profiler/lib/traceme.h"
 
 ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
 

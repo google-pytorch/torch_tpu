@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
@@ -38,6 +39,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "c10/core/Scalar.h"  // IWYU pragma: keep for c10::Scalar
+#include "c10/core/ScalarType.h"
+#include "c10/util/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
@@ -59,10 +63,13 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/WalkResult.h"
-#include "ATen/core/ATen_fwd.h"
-#include "c10/core/Scalar.h"  // IWYU pragma: keep for c10::Scalar
-#include "c10/core/ScalarType.h"
-#include "c10/util/Optional.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/dialect/Version.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/util/complex.h"
@@ -71,17 +78,10 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/ops/python_context.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/dialect/Version.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "stablehlo/transforms/StablehloBroadcastLowering.h"
+#include "tsl/platform/path.h"
 #include "xla/mlir/utils/error_util.h"
 #include "xla/pjrt/mlir_to_hlo.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/path.h"
 
 namespace torch_tpu {
 

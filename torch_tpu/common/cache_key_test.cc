@@ -19,13 +19,11 @@
 #include <string>
 #include <utility>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "absl/status/statusor.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Dimname.h"
 #include "ATen/core/symbol.h"
 #include "ATen/ops/empty.h"
+#include "absl/status/statusor.h"
 #include "c10/core/ConstantSymNodeImpl.h"
 #include "c10/core/Device.h"
 #include "c10/core/SymInt.h"
@@ -34,6 +32,10 @@
 #include "c10/util/ArrayRef.h"
 #include "c10/util/Optional.h"
 #include "c10/util/intrusive_ptr.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
@@ -42,8 +44,6 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -366,7 +366,7 @@ TEST(OpParamCacheKeys, SetParamSymInt) {
   // HWASAN on ARM64.
 #else
   c10::SymNode sym_node =
-      c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t>>(456);
+      c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t> >(456);
   auto params2_or =
       *OpParamCacheKeysBuilder().SetParam("foo", c10::SymInt(sym_node));
   ASSERT_TRUE(params2_or.ok());
@@ -380,7 +380,7 @@ TEST(OpParamCacheKeys, SetParamSymIntArrayRef) {
   // HWASAN on ARM64.
 #else
   c10::SymNode sym_node =
-      c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t>>(456);
+      c10::make_intrusive<c10::ConstantSymNodeImpl<int64_t> >(456);
   c10::SymInt si[] = {c10::SymInt(123), c10::SymInt(sym_node)};
   c10::SymIntArrayRef sir(si);
   auto params_or = *OpParamCacheKeysBuilder().SetParam("foo", sir);

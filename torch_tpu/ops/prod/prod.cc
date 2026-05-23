@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 
+#include "ATen/WrapDimUtils.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
@@ -24,13 +25,12 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
-#include "ATen/WrapDimUtils.h"
-#include "torch_tpu/ops/op_builder_utils.h"
-#include "torch_tpu/ops/reductions/reductions.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/ops/op_builder_utils.h"
+#include "torch_tpu/ops/reductions/reductions.h"
 
 namespace torch_tpu {
 

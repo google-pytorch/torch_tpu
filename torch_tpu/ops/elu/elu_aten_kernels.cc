@@ -20,9 +20,13 @@
 #include <string_view>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "ATen/core/ATen_fwd.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -35,10 +39,6 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -138,15 +138,14 @@ absl::Status CheckIsFloatingPoint(const at::Tensor& tensor,
 at::Tensor& AtenEluOut(const at::Tensor& input, const at::Scalar& alpha,
                        const at::Scalar& scale, const at::Scalar& input_scale,
                        at::Tensor& out) {
-  TT_KERNEL(OpName::kEluOut, param_keys,
-            (input, alpha, scale, input_scale, out), {
-              TT_THROW_IF_ERROR(
-                  CheckIsFloatingPoint(input, /* name= */ "input"));
-              TT_THROW_IF_ERROR(UnaryOpOut(
-                  input, out, GetEluFunctional(alpha, scale, input_scale),
-                  {.op_param_cache_keys = std::move(param_keys)}));
-              return out;
-            });
+  TT_KERNEL(
+      OpName::kEluOut, param_keys, (input, alpha, scale, input_scale, out), {
+        TT_THROW_IF_ERROR(CheckIsFloatingPoint(input, /* name= */ "input"));
+        TT_THROW_IF_ERROR(
+            UnaryOpOut(input, out, GetEluFunctional(alpha, scale, input_scale),
+                       {.op_param_cache_keys = std::move(param_keys)}));
+        return out;
+      });
 }
 
 at::Tensor& AtenEluBackwardGradInput(

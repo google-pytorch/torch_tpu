@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "ATen/core/CachingHostAllocator.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
@@ -33,7 +34,6 @@
 #include "absl/strings/str_join.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
-#include "ATen/core/CachingHostAllocator.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/CachingDeviceAllocator.h"
 #include "c10/core/Device.h"
@@ -47,6 +47,8 @@
 #include "c10/util/Exception.h"
 #include "c10/util/UniqueVoidPtr.h"
 #include "c10/util/intrusive_ptr.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -66,8 +68,6 @@
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

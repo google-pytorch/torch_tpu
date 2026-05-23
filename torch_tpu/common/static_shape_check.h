@@ -19,9 +19,9 @@
 
 #include <string_view>
 
+#include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "ATen/core/TensorBody.h"
 #include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {

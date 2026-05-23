@@ -18,12 +18,13 @@
 #include <optional>
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/ScalarType.h"
 #include "absl/functional/bind_front.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/ScalarType.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -35,7 +36,6 @@
 #include "torch_tpu/ops/prod/prod.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 namespace {

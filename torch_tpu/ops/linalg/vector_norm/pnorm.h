@@ -21,9 +21,9 @@
 
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "torch_tpu/ops/reductions/reductions.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/ops/reductions/reductions.h"
 
 namespace torch_tpu {
 

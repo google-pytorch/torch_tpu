@@ -36,11 +36,13 @@
 #include "c10/core/Stream.h"
 #include "torch_tpu/common/contain.h"
 #include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/common/environment.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/distributed/slicebuilder/discovery.h"
 #include "torch_tpu/eager/device_types.h"
-#include "torch_tpu/common/environment.h"
 #include "torch_tpu/pjrt/pjrt_client.h"
+#include "tsl/profiler/lib/profiler_factory.h"
+#include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
 #include "xla/future.h"
@@ -51,8 +53,6 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/plugin/plugin_names.h"
 #include "xla/tsl/framework/allocator.h"
-#include "tsl/profiler/lib/profiler_factory.h"
-#include "tsl/profiler/lib/profiler_interface.h"
 
 namespace torch_tpu {
 namespace {

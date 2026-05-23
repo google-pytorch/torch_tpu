@@ -26,16 +26,20 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
-#include "mlir/Support/LLVM.h"
-#include "ATen/core/ATen_fwd.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/ScalarType.h"
+#include "mlir/Support/LLVM.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -61,10 +65,6 @@
 #include "torch_tpu/ops/sigmoid/sigmoid_aten_kernels.h"
 #include "torch_tpu/ops/to_copy/to_copy_aten_kernels.h"
 #include "torch_tpu/ops/unary.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -1708,15 +1708,14 @@ void AtenForeachAdd_ScalarList(at::TensorList self,
 
 void AtenForeachAdd_Tensor(at::TensorList self, const at::Tensor& other,
                            const at::Scalar& alpha) {
-  TT_KERNEL(
-      OpName::kForeachAdd_Tensor, _,
-      (self, other, IgnoreInCacheKey(alpha, "Legacy usage")), {
-        std::vector<at::Tensor> other_list(self.size(), other);
-        TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
-        TT_THROW_IF_ERROR(ForeachAssignToTensor(
-            ForeachAddList(self, other_list, alpha, out_dtypes), self,
-            out_dtypes));
-      });
+  TT_KERNEL(OpName::kForeachAdd_Tensor, _,
+            (self, other, IgnoreInCacheKey(alpha, "Legacy usage")), {
+              std::vector<at::Tensor> other_list(self.size(), other);
+              TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
+              TT_THROW_IF_ERROR(ForeachAssignToTensor(
+                  ForeachAddList(self, other_list, alpha, out_dtypes), self,
+                  out_dtypes));
+            });
 }
 
 std::vector<at::Tensor> AtenForeachAddcdivScalar(at::TensorList self,

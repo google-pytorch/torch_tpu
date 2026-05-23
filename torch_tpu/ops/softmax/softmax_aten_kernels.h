@@ -32,11 +32,10 @@ at::Tensor& AtenSoftmaxBackwardDataOut(const at::Tensor& grad_output,
                                        at::ScalarType input_dtype,
                                        at::Tensor& grad_input);
 
-at ::Tensor& AtenLogSoftmaxBackwardDataOut(const at::Tensor& grad_output,
-                                           const at::Tensor& output,
-                                           int64_t dim,
-                                           at::ScalarType input_dtype,
-                                           at::Tensor& grad_input);
+at::Tensor& AtenLogSoftmaxBackwardDataOut(const at::Tensor& grad_output,
+                                          const at::Tensor& output, int64_t dim,
+                                          at::ScalarType input_dtype,
+                                          at::Tensor& grad_input);
 
 at::Tensor& AtenLogSoftmaxOut(const at::Tensor& self, int64_t dim,
                               bool half_to_float, at::Tensor& out);

@@ -19,16 +19,16 @@
 #include <string>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/strings/match.h"
+#include "gtest/gtest.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/shape.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/shape.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {

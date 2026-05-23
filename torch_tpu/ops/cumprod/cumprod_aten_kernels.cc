@@ -20,9 +20,10 @@
 #include <optional>
 #include <utility>
 
-#include "absl/functional/bind_front.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/ScalarType.h"
+#include "absl/functional/bind_front.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -30,7 +31,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 

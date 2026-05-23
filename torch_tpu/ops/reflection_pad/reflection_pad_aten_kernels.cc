@@ -21,13 +21,16 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -42,9 +45,6 @@
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -370,8 +370,8 @@ at::Tensor& AtenReflectionPad1dBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(OpName::kReflectionPad1dBackwardGradInput, param_keys,
             (grad_output, self, padding, grad_input), {
               TT_THROW_IF_ERROR(ReflectionPadHelper(
-                  BuildReflectionPadBackwardShlo,
-                  std::move(param_keys), grad_output, padding, grad_input,
+                  BuildReflectionPadBackwardShlo, std::move(param_keys),
+                  grad_output, padding, grad_input,
                   /*num_pad_dimensions=*/1));
 
               return grad_input;
@@ -385,8 +385,8 @@ at::Tensor& AtenReflectionPad2dBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(OpName::kReflectionPad2dBackwardGradInput, param_keys,
             (grad_output, self, padding, grad_input), {
               TT_THROW_IF_ERROR(ReflectionPadHelper(
-                  BuildReflectionPadBackwardShlo,
-                  std::move(param_keys), grad_output, padding, grad_input,
+                  BuildReflectionPadBackwardShlo, std::move(param_keys),
+                  grad_output, padding, grad_input,
                   /*num_pad_dimensions=*/2));
 
               return grad_input;
@@ -399,8 +399,8 @@ at::Tensor& AtenReflectionPad3dBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(OpName::kReflectionPad3dBackwardGradInput, param_keys,
             (grad_output, self, padding, grad_input), {
               TT_THROW_IF_ERROR(ReflectionPadHelper(
-                  BuildReflectionPadBackwardShlo,
-                  std::move(param_keys), grad_output, padding, grad_input,
+                  BuildReflectionPadBackwardShlo, std::move(param_keys),
+                  grad_output, padding, grad_input,
                   /*num_pad_dimensions=*/3));
 
               return grad_input;

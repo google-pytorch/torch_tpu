@@ -19,13 +19,17 @@
 #include <optional>
 #include <string>
 
+#include "ATen/core/Generator.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/time/time.h"
-#include "ATen/core/Generator.h"
 #include "c10/core/Device.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
+#include "pybind11/chrono.h"
+#include "pybind11/gil.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, needed for at::Tensor mapping
 #include "torch_tpu/_internal/sync/sync.h"
 #include "torch_tpu/common/compilation.h"
@@ -38,10 +42,6 @@
 #include "torch_tpu/eager/tpu_hooks.h"
 #include "torch_tpu/experimental/eager/materialize_new.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "pybind11/chrono.h"
-#include "pybind11/gil.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {

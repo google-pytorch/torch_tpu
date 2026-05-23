@@ -24,6 +24,8 @@
 #include <string>
 #include <utility>
 
+#include "ATen/ExpandUtils.h"
+#include "ATen/core/ATen_fwd.h"
 #include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/absl_check.h"
@@ -33,6 +35,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
+#include "c10/util/Exception.h"
+#include "c10/util/Optional.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -45,21 +50,16 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
-#include "ATen/ExpandUtils.h"
-#include "ATen/core/ATen_fwd.h"
-#include "c10/util/ArrayRef.h"  // IWYU pragma: keep for at::IntArrayRef
-#include "c10/util/Exception.h"
-#include "c10/util/Optional.h"
-#include "torch/csrc/distributed/c10d/Types.hpp"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/fixed_size_span.h"
-#include "torch_tpu/ops/python_context.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
+#include "torch/csrc/distributed/c10d/Types.hpp"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/ops/python_context.h"
 #include "xla/mlir/utils/error_util.h"
 #include "xla/xla_data.pb.h"
 

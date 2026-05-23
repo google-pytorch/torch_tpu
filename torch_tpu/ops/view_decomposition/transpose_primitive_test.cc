@@ -57,6 +57,5 @@ TEST(UpdateLayoutPermute, TensorToTensor) {
   EXPECT_EQ(layout, expected);
 }
 
-
 }  // namespace
 }  // namespace torch_tpu

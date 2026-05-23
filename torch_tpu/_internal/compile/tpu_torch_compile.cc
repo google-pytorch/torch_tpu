@@ -26,6 +26,9 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Generator.h"
+#include "ATen/core/TensorBody.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
@@ -38,9 +41,9 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/Generator.h"
-#include "ATen/core/TensorBody.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/_internal/compile/compiled_mode.h"
@@ -68,9 +71,6 @@
 #include "torch_tpu/ops/view_decomposition/decomposition.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/layout.h"
 #include "xla/mlir/utils/error_util.h"

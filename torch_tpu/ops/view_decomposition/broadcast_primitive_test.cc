@@ -16,8 +16,8 @@
 
 #include "torch_tpu/ops/view_decomposition/broadcast_primitive.h"
 
-#include "gtest/gtest.h"
 #include "absl/types/span.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 namespace torch_tpu {

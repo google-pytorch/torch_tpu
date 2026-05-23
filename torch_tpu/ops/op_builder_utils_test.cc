@@ -22,11 +22,15 @@
 #include <string>
 #include <vector>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "ATen/ops/ones.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/DefaultDtype.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -37,14 +41,6 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Support/LLVM.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
-#include "ATen/ops/ones.h"
-#include "c10/core/DefaultDtype.h"
-#include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -52,6 +48,10 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
+#include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/dtype.h"
+#include "torch_tpu/common/error_utils.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

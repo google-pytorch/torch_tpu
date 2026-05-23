@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/tpu_aten_kernels.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 
 namespace torch_tpu {
 

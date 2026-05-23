@@ -19,8 +19,8 @@
 #include <cstdint>
 #include <utility>
 
-#include "absl/functional/bind_front.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/functional/bind_front.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"

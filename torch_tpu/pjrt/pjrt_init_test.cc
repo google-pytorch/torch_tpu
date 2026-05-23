@@ -16,8 +16,8 @@
 
 #include <cstdlib>
 
-#include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 namespace torch_tpu {

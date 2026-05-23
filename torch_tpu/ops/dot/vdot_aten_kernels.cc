@@ -16,9 +16,11 @@
 
 #include <utility>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "ATen/core/ATen_fwd.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
@@ -32,8 +34,6 @@
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/precision_context.h"
 #include "torch_tpu/ops/unary.h"
-#include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 

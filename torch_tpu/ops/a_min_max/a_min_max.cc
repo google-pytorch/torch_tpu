@@ -19,12 +19,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/ops/op_builder_utils.h"
-#include "torch_tpu/ops/reductions/reductions.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/ops/op_builder_utils.h"
+#include "torch_tpu/ops/reductions/reductions.h"
 
 namespace torch_tpu {
 

@@ -20,7 +20,6 @@
 
 namespace torch_tpu {
 
-
 // masked_fill_.Scalar
 at::Tensor& AtenMaskedFill_Scalar(at::Tensor& self, const at::Tensor& mask,
                                   const at::Scalar& value);

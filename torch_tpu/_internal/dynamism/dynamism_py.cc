@@ -18,14 +18,14 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/pytypes.h"
+#include "pybind11/stl.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch_tpu/_internal/dynamism/dynamism.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_types.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/pytypes.h"
-#include "pybind11/stl.h"
 
 namespace torch_tpu {
 namespace py = pybind11;

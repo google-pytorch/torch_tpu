@@ -20,9 +20,10 @@
 #include <functional>
 #include <utility>
 
-#include "absl/status/status.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "c10/core/ScalarType.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -34,7 +35,6 @@
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/round/round.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 namespace {

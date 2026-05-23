@@ -21,9 +21,9 @@
 
 #include "absl/status/statusor.h"
 #include "mlir/IR/MLIRContext.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/traversal.h"
-#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 namespace torch_tpu {
 

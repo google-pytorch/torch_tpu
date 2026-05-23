@@ -20,9 +20,9 @@
 #include <string>
 #include <utility>
 
+#include "ATen/record_function.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
-#include "ATen/record_function.h"
 #include "torch/csrc/profiler/orchestration/observer.h"
 #include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"

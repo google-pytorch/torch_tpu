@@ -19,13 +19,14 @@
 #include <cstdint>
 #include <utility>
 
-#include "absl/log/absl_log.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_log.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/util/ArrayRef.h"
 #include "c10/util/Optional.h"
 #include "c10/util/accumulate.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
@@ -39,7 +40,6 @@
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/stride/stride_helper.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

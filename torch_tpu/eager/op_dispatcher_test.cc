@@ -21,8 +21,8 @@
 #include <utility>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "ATen/core/ATen_fwd.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/cache_key.h"
 
 namespace torch_tpu {

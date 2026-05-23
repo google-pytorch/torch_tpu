@@ -18,8 +18,8 @@
 
 #include <string>
 
-#include "gtest/gtest.h"
 #include "absl/log/absl_check.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compilation_test_helper.h"
 #include "torch_tpu/pjrt/pjrt_state.h"

@@ -18,9 +18,9 @@
 #include <cstdlib>
 #include <string>
 
-#include "gtest/gtest.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 

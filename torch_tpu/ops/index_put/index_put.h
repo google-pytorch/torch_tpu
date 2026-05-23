@@ -21,8 +21,8 @@
 
 #include "absl/status/statusor.h"
 #include "mlir/Support/LLVM.h"
-#include "torch_tpu/common/dimension_types.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/common/dimension_types.h"
 
 namespace torch_tpu {
 // Builds StableHLO operations to implement the semantics of index_put operation

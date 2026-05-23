@@ -21,13 +21,15 @@
 #include <string_view>
 #include <utility>
 
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/full_like.h"
 #include "ATen/ops/result_type.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "c10/util/string_view.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -41,8 +43,6 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/scatter/scatter.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 namespace {
@@ -134,17 +134,16 @@ at::Tensor& AtenScatterSrcOut(const at::Tensor& self, int64_t dim,
 at::Tensor& AtenScatterValueOut(const at::Tensor& self, int64_t dim,
                                 const at::Tensor& index,
                                 const at::Scalar& value, at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kScatterValueOut, _,
-      (self, IgnoreInCacheKey(dim, "Legacy usage"), index,
-       IgnoreInCacheKey(value, "Legacy usage"), out),
-      {
-        auto value_tensor = TensorFromValue(self, value);
-        TT_ASSIGN_OR_THROW(DeviceBufferRef result,
-                           Scatter(self, dim, index, value_tensor));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kScatterValueOut, _,
+            (self, IgnoreInCacheKey(dim, "Legacy usage"), index,
+             IgnoreInCacheKey(value, "Legacy usage"), out),
+            {
+              auto value_tensor = TensorFromValue(self, value);
+              TT_ASSIGN_OR_THROW(DeviceBufferRef result,
+                                 Scatter(self, dim, index, value_tensor));
+              TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+              return out;
+            });
 }
 
 at::Tensor& AtenScatterReduceOut(const at::Tensor& self, int64_t dim,
@@ -191,20 +190,19 @@ at::Tensor& AtenScatterValueReduceOut(const at::Tensor& self, int64_t dim,
                                       const at::Scalar& value,
                                       std::string_view reduction_op,
                                       at::Tensor& out) {
-  TT_KERNEL(OpName::kScatterValueReduceOut, _,
-            (self, IgnoreInCacheKey(dim, "Legacy usage"), index,
-             IgnoreInCacheKey(value, "Legacy usage"),
-             IgnoreInCacheKey(reduction_op, "Legacy usage"), out),
-            {
-              auto value_tensor = TensorFromValue(self, value);
-              TT_ASSIGN_OR_THROW(ScatterOp scatter_op,
-                                 ParseScatterOp(reduction_op));
-              TT_ASSIGN_OR_THROW(
-                  DeviceBufferRef result,
-                  Scatter(self, dim, index, value_tensor, scatter_op));
-              TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
-              return out;
-            });
+  TT_KERNEL(
+      OpName::kScatterValueReduceOut, _,
+      (self, IgnoreInCacheKey(dim, "Legacy usage"), index,
+       IgnoreInCacheKey(value, "Legacy usage"),
+       IgnoreInCacheKey(reduction_op, "Legacy usage"), out),
+      {
+        auto value_tensor = TensorFromValue(self, value);
+        TT_ASSIGN_OR_THROW(ScatterOp scatter_op, ParseScatterOp(reduction_op));
+        TT_ASSIGN_OR_THROW(DeviceBufferRef result,
+                           Scatter(self, dim, index, value_tensor, scatter_op));
+        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
+        return out;
+      });
 }
 
 at::Tensor& AtenScatterAddOut(const at::Tensor& self, int64_t dim,

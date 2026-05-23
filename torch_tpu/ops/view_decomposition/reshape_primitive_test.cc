@@ -18,9 +18,9 @@
 
 #include <utility>
 
-#include "gtest/gtest.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "gtest/gtest.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
@@ -59,7 +59,6 @@ TEST(UpdateLayoutReshape, VectorToScalar) {
   };
   EXPECT_EQ(layout, expected);
 }
-
 
 TEST(UpdateLayoutReshape, TensorNoOp) {
   StridedLayout layout = {
@@ -136,7 +135,6 @@ TEST(UpdateLayoutReshape, TensorToTensorWithOnes) {
   EXPECT_EQ(layout, expected);
 }
 
-
 TEST(MergeSequentialReshape, ValidMerge) {
   Dimensions contiguous_base_shape = {54};
   ReshapePrimitive current = {.base_sizes = {54}, .new_sizes = {6, 9}};
@@ -152,7 +150,6 @@ TEST(MergeSequentialReshape, ValidMerge) {
 
   EXPECT_EQ(actual_layout, expected_layout);
 }
-
 
 }  // namespace
 }  // namespace torch_tpu

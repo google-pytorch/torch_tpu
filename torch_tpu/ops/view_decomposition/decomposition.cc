@@ -30,6 +30,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -44,7 +45,6 @@
 #include "torch_tpu/ops/view_decomposition/transpose_primitive.h"
 #include "torch_tpu/ops/view_decomposition/unfold_primitive.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 
 namespace torch_tpu {
 

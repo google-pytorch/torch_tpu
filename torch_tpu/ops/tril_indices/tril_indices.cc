@@ -22,11 +22,11 @@
 #include "absl/status/statusor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/ops/nonzero/nonzero.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/ops/nonzero/nonzero.h"
 
 namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildTrilIndicesShlo(mlir::MlirBuilder& builder,

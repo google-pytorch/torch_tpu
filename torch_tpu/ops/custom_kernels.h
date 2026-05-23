@@ -22,8 +22,8 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
 

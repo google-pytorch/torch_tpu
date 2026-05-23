@@ -22,17 +22,13 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Generator.h"
+#include "ATen/ops/full.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "llvm/ADT/SmallVector.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
-#include "ATen/core/ATen_fwd.h"
-#include "ATen/core/Generator.h"
-#include "ATen/ops/full.h"
 #include "c10/core/Device.h"
 #include "c10/core/DispatchKey.h"
 #include "c10/core/DispatchKeySet.h"
@@ -44,6 +40,13 @@
 #include "c10/util/ArrayRef.h"
 #include "c10/util/CallOnce.h"
 #include "c10/util/intrusive_ptr.h"
+#include "llvm/ADT/SmallVector.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch_tpu/common/cache_key.h"
@@ -54,9 +57,6 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
