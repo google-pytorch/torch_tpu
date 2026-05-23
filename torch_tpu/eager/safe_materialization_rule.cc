@@ -37,7 +37,7 @@ absl::flat_hash_set<const DeviceBufferList* absl_nonnull> GetSplitPoints(
     absl::Span<const SharedDeviceBufferList> execution_order) {
   absl::flat_hash_set<const DeviceBufferList* absl_nonnull> split_points;
   for (const auto& node : execution_order) {
-    const auto* deferred_op = node->deferred_op();
+    const auto deferred_op = node->deferred_op();
     if (!deferred_op) continue;
 
     if (deferred_op->split_mode() == OpSplitMode::kSplitAfter ||
@@ -78,14 +78,13 @@ GetMaterializationPoints(
       pending_materialization_points;
 
   for (const auto& node : execution_order) {
-    const auto* deferred_op = node->deferred_op();
+    const auto deferred_op = node->deferred_op();
     if (!deferred_op) continue;
 
     // If there is a dependency edge across a sync point, then any
     // nodes before the split point must be materialized.
     for (const auto& input : deferred_op->inputs()) {
-      if (const auto* input_deferred_op = input.deferred_op();
-          input_deferred_op &&
+      if (input.state() == DeviceBufferRefState::kDeferred &&
           input.device_buffer_list()->creation_index() < synced_to) {
         materialization_points.insert(input.device_buffer_list().get());
       }
@@ -161,9 +160,9 @@ void SplitAllMaterializationPoints(
     }
 
     // Insert any new live edges to deferred ops.
-    if (const auto* deferred_op = node->deferred_op()) {
+    if (const auto deferred_op = node->deferred_op()) {
       for (const auto& input : deferred_op->inputs()) {
-        if (input.deferred_op()) {
+        if (input.state() == DeviceBufferRefState::kDeferred) {
           live_edges.insert(input.device_buffer_list().get());
         }
       }

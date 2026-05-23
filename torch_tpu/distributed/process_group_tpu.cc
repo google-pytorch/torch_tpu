@@ -670,7 +670,7 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::experimental_send(
         const DeviceBufferRef device_buffer,
         GetMaterialized(tensor, MaterializationReason::kDistributedOp));
     TT_ASSIGN_OR_THROW(xla::PjRtBuffer * pjrt_buffer,
-                       device_buffer.GetOrMaterializeBuffer());
+                       device_buffer.AwaitBuffer());
 
     pjrt_buffers.push_back(pjrt_buffer);
     transfer_keys.push_back(

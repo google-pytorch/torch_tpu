@@ -101,7 +101,7 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
     // If the output node has a deferred op, then we must consider it for the
     // DFS traversal; otherwise, it is an input and we store it as such.
     auto& node = output.device_buffer_list();
-    if (node->deferred_op()) {
+    if (node->state() == DeviceBufferRefState::kDeferred) {
       if (visited_deferred.insert(std::make_pair(node.get(), Color::kGray))
               .second) {
         stack.push(node);
@@ -132,7 +132,7 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
       continue;
     }
 
-    const DeferredOp* deferred_op = node->deferred_op();
+    const auto deferred_op = node->deferred_op();
     TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
         << "Expected a deferred op";
 
@@ -225,7 +225,7 @@ Traversal::CreateFromExecutionOrder(
     absl::flat_hash_set<const DeviceBufferList*> defs;
     absl::flat_hash_set<DeviceBufferRef> uses;
     for (const auto& node : execution_order) {
-      const auto* deferred_op = node->deferred_op();
+      const auto deferred_op = node->deferred_op();
       if (deferred_op) {
         for (const auto& input : deferred_op->inputs()) {
           if (defs.find(input.device_buffer_list().get()) == defs.end()) {
@@ -276,7 +276,7 @@ GraphKey Traversal::BuildGraphKey() const {
         graph.AddInput(argument.dimensions(), argument.element_type());
   }
   for (const SharedDeviceBufferList& node : execution_order()) {
-    const DeferredOp* absl_nullable maybe_deferred_op = node->deferred_op();
+    const auto maybe_deferred_op = node->deferred_op();
     ABSL_VLOG(1) << "[Traversal::BuildGraphKey] node: " << node.get()
                  << " maybe_deferred_op: " << maybe_deferred_op;
     ABSL_CHECK(maybe_deferred_op != nullptr);  // CRASH_OK
@@ -439,7 +439,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   std::vector<mlir::MlirOp> deferred_inputs;
   for (const SharedDeviceBufferList& node : execution_order) {
     // Get the deferred op we need to build.
-    const DeferredOp* absl_nullable maybe_deferred_op = node->deferred_op();
+    const auto maybe_deferred_op = node->deferred_op();
     TT_RET_CHECK(maybe_deferred_op, error::kInternal)
         << "DeviceBufferList in execution_order has no deferred op";
     const DeferredOp& deferred_op = *maybe_deferred_op;
@@ -579,8 +579,7 @@ bool IsSimpleNodeTraversal(const Traversal& traversal) {
   absl::Span<const DeviceBufferRef> outputs = traversal.outputs();
   ABSL_CHECK(!outputs.empty());  // CRASH_OK=traversals are nonempty
   const SharedDeviceBufferList& node = outputs[0].device_buffer_list();
-  const DeferredOp* absl_nullable deferred_op = node->deferred_op();
-  if (deferred_op == nullptr) {
+  if (node->state() != DeviceBufferRefState::kDeferred) {
     return false;
   }
   if (node->size() != outputs.size()) {
@@ -625,7 +624,7 @@ void StreamInputDebug(
     case DeviceBufferRefState::kDeferred:
       os << " <- input " << arg_index++;
       {
-        auto* deferred_op = input.deferred_op();
+        const auto deferred_op = input.deferred_op();
         ABSL_CHECK(deferred_op);  // CRASH_OK
         os << " (deferred " << ToString(deferred_op->op_name()) << ")";
       }
@@ -796,7 +795,7 @@ std::string Traversal::ReadableString(MaterializationReason reason) const {
   std::string op_rows;
   size_t op_count = 0;
   for (const SharedDeviceBufferList& node : execution_order_) {
-    const DeferredOp* op = node->deferred_op();
+    const auto op = node->deferred_op();
     if (op == nullptr) continue;
     AppendFxOpRow(op_rows, node, *op, idx_of);
     ++op_count;
@@ -873,7 +872,7 @@ class GraphvizGraph {
       absl::Span<const SharedDeviceBufferList> execution_order) {
     for (const auto& node : execution_order) {
       std::optional<int> maybe_deferred_op_vertex_index = std::nullopt;
-      if (const DeferredOp* deferred_op = node->deferred_op()) {
+      if (const auto deferred_op = node->deferred_op()) {
         maybe_deferred_op_vertex_index =
             AddDeferredOpVertexAndInputEdges(*deferred_op);
       }
@@ -968,7 +967,7 @@ absl::Status Traversal::Validate() const {
     // Validate that all traversal's internal buffers are from deferred ops
     // using either buffer inputs or outputs from previously encountered
     // deferred ops.
-    auto* deferred_op = node->deferred_op();
+    const auto deferred_op = node->deferred_op();
     TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
         << "Missing deferred op at line " << i;
     const auto num_inputs = deferred_op->inputs().size();

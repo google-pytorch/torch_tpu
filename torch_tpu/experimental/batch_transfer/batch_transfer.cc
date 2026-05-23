@@ -202,7 +202,7 @@ absl::StatusOr<DeviceBufferRef> GetPjrtBuffer(const at::Tensor& tpu_tensor,
   TT_ASSIGN_OR_RETURN(
       auto buffer_ref,
       GetMaterialized(tpu_tensor, MaterializationReason::kCpuTransfer));
-  TT_ASSIGN_OR_RETURN(out_buffer, buffer_ref.GetOrMaterializeBuffer());
+  TT_ASSIGN_OR_RETURN(out_buffer, buffer_ref.AwaitBuffer());
   return buffer_ref;
 }
 
