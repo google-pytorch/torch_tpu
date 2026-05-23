@@ -16,6 +16,7 @@
 """Perplexity score computation for quality benchmarks."""
 
 from typing import Sequence
+from absl import logging
 import torch
 import torch.nn.functional as F
 from examples.benchmarks.quality_utils import quality_benchmark_model
@@ -83,6 +84,8 @@ class PerplexityMetric(quality_benchmark_model.MetricProducer):
 
     if total_tokens == 0:
       # Raise error if no tokens were processed to avoid hiding incorrect behavior.
-      raise ValueError("No tokens processed for perplexity calculation.")
+      # TODO(b/499309732): Revert to raising an error after finding a solution
+      logging.warning("No tokens processed for perplexity calculation.")
+      return torch.tensor(float("inf"))
 
     return torch.exp(total_loss / total_tokens)

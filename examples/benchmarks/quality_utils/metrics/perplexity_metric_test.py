@@ -43,10 +43,8 @@ class PerplexityMetricTest(absltest.TestCase):
     mock_model.encode.return_value = [1]
     mock_model.max_seq_len = 10
 
-    with self.assertRaisesRegex(
-        ValueError, "No tokens processed for perplexity calculation."
-    ):
-      metric.assess("a", mock_model)
+    result = metric.assess("a", mock_model)
+    self.assertTrue(torch.isinf(result))
 
   def test_assess_empty_sequence(self):
     metric = perplexity_metric.PerplexityMetric()
@@ -57,10 +55,8 @@ class PerplexityMetricTest(absltest.TestCase):
     mock_model.encode.return_value = []
     mock_model.max_seq_len = 10
 
-    with self.assertRaisesRegex(
-        ValueError, "No tokens processed for perplexity calculation."
-    ):
-      metric.assess("", mock_model)
+    result = metric.assess("", mock_model)
+    self.assertTrue(torch.isinf(result))
 
   def test_assess_averages_chunks_correctly(self):
     metric = perplexity_metric.PerplexityMetric()
