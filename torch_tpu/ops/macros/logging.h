@@ -303,9 +303,6 @@ void CheckScalarInput() {
       kOpName == OpName::kRsub ||                        //
       kOpName == OpName::kScatterValueOut ||             //
       kOpName == OpName::kScatterValueReduceOut ||       //
-      kOpName == OpName::kSoftmaxBackwardDataOut ||      //
-      kOpName == OpName::kSoftplusBackwardGradInput ||   //
-      kOpName == OpName::kSoftplusOut ||                 //
       kOpName == OpName::kSub ||                         //
       kOpName == OpName::kThresholdBackwardGradInput ||  //
       kOpName == OpName::kThresholdOut ||                //
