@@ -195,7 +195,7 @@ absl::Status ApplyRepeatedOpsHeuristic(
   // Note that view operations (like reshapes and transposes) don't go
   // through the op_dispatcher sequence. So the heuristic below considers
   // only non-view ops.
-  const DeferredOp* absl_nullable op = device_buffer_list->deferred_op();
+  const auto op = device_buffer_list->deferred_op();
   ABSL_CHECK(op != nullptr);  // CRASH_OK
   bool found_repetition = false;
   {

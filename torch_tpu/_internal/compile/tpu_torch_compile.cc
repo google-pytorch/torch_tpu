@@ -128,7 +128,7 @@ py::object PyGetDeviceLayoutIfMaterialized(const at::Tensor& tensor) {
   if (!buffer_ref.IsMaterialized()) {
     return py::none();
   }
-  TT_ASSIGN_OR_THROW(auto* pjrt_buffer, buffer_ref.GetOrMaterializeBuffer());
+  TT_ASSIGN_OR_THROW(auto* pjrt_buffer, buffer_ref.AwaitBuffer());
   const auto pjrt_layout = pjrt_buffer->layout();
   if (!pjrt_layout) {
     return py::none();

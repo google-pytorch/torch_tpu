@@ -21,17 +21,14 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <limits>
 #include <memory>
 #include <ostream>
 #include <sstream>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/base/nullability.h"
-#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -39,7 +36,6 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "ATen/core/ATen_fwd.h"
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
 #include "c10/core/impl/DeviceGuardImplInterface.h"
@@ -60,7 +56,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
@@ -76,7 +71,8 @@ bool ShouldPruneNode(const std::shared_ptr<DeviceBufferList>& node) {
   if (!node) {
     return true;
   }
-  const auto* deferred_op = node->deferred_op();
+  const std::shared_ptr<DeferredOp> absl_nullable deferred_op =
+      node->deferred_op();
   bool is_side_effecting_op =
       deferred_op && IsSideEffectingOp(deferred_op->op_name());
   // Side-effecting ops should never be pruned.
@@ -194,8 +190,8 @@ void Subgraph::Merge(std::shared_ptr<Subgraph> s1,
   // Push r2's live, leaf nodes onto r1's queue.
   for (auto& weak_node : r2->queue_) {
     if (auto node = weak_node.lock()) {
-      const auto* deferred_op = node->deferred_op();
-      if (deferred_op && node->num_child_ops() == 0) {
+      if (node->state() == DeviceBufferRefState::kDeferred &&
+          node->num_child_ops() == 0) {
         r1->queue_.push_back(std::move(weak_node));
       }
     }
@@ -276,6 +272,128 @@ std::shared_ptr<Subgraph> Subgraph::Create() {
   return SubgraphRegistry::GetInstance().MakeNewSubgraph();
 }
 
+DeviceBufferRefState DeviceBufferList::Data::state() const {
+  if (materialization_pending_) {
+    return DeviceBufferRefState::kMaterialized;
+  } else if (created_as_placeholder_) {
+    return DeviceBufferRefState::kPlaceholder;
+  } else {
+    return DeviceBufferRefState::kDeferred;
+  }
+}
+
+absl_nullable std::shared_ptr<DeferredOp> DeviceBufferList::Data::deferred_op()
+    const {
+  if (created_as_placeholder_ || materialization_pending_) {
+    // DeviceBufferList::Data that is created in the placeholder state never had
+    // a DeferredOp. DeviceBufferList::Data that is pending materialization may
+    // have had a DeferredOp, but if it did, it has been consumed.
+    return nullptr;
+  }
+  absl::MutexLock lock(deferred_op_mutex_);
+  return deferred_op_;
+}
+
+void DeviceBufferList::Data::SetMaterializationPending() {
+  // Immediately mark the DeviceBufferList::Data as pending materialization, and
+  // check if this was the first time this was called.
+  const bool already_pending = materialization_pending_.exchange(true);
+
+  // If the DeviceBufferList::Data was already pending materialization, or was
+  // created as a placeholder, then we're not responsible for clearing the
+  // DeferredOp and don't need to acquire the mutex.
+  if (already_pending || created_as_placeholder_) return;
+
+  absl::MutexLock lock(deferred_op_mutex_);
+  deferred_op_.reset();
+}
+
+absl::Status DeviceBufferList::Data::SetMaterializationError(
+    absl::Status status) {
+  TT_RET_CHECK(!status.ok(), error::kInvalidArgument)
+      << "can only set a materialization error with a non-OK status. Got: "
+      << status;
+
+  SetMaterializationPending();
+
+  const bool already_started = materialization_started_.exchange(true);
+  TT_RET_CHECK(!already_started, error::kFailedPrecondition)
+      << "attempted to set materialization error after materialization was "
+         "already started";
+
+  materialization_status_ = status;
+  materialization_promise_.Set(status);
+
+  return absl::OkStatus();
+}
+
+absl::Status DeviceBufferList::Data::SetMaterializationStarted(
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+  SetMaterializationPending();
+
+  const bool already_started = materialization_started_.exchange(true);
+  TT_RET_CHECK(!already_started, error::kFailedPrecondition)
+      << "attempted to set materialized buffers after materialization was "
+         "already started";
+
+  buffers_ = std::move(buffers);
+  materialization_promise_.Set(absl::OkStatus());
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
+DeviceBufferList::Data::operator[](int64_t index) const {
+  if (!materialization_future_.IsKnownReady()) {
+    TT_RETURN_IF_ERROR(materialization_future_.Await());
+  }
+
+  if (!materialization_status_.ok()) {
+    return materialization_status_;
+  }
+
+  TT_RET_CHECK(index >= 0 && index < buffers_.size(), error::kInvalidArgument)
+      << "index " << index << " is out of bounds for buffers of size "
+      << buffers_.size();
+  return buffers_[index].get();
+}
+
+std::ostream& DeviceBufferList::Data::PrintDebug(std::ostream& os) const {
+  // The order of these checks is important.
+  // If we get a DeferredOp, then we know that it's in the deferred state.
+  // Otherwise, it could be a placeholder or materialized.
+  if (const auto maybe_deferred_op = deferred_op();
+      maybe_deferred_op != nullptr) {
+    return os << "deferred, op_name: " << maybe_deferred_op->op_name();
+  }
+  if (!materialization_pending_) {
+    // If it's not deferred and not pending materialization, it must be a
+    // placeholder.
+    return os << "placeholder";
+  }
+  if (!materialization_future_.IsReady()) {
+    // If it hasn't finished materialization, then it's pending.
+    return os << "materialized, pending";
+  }
+  if (!materialization_status_.ok()) {
+    // If materialization finished with an error, then report the error.
+    return os << "materialized, error: " << materialization_status_;
+  }
+
+  // Materialization finished without an error. Safe to access buffers_.
+  os << "materialized, ready";
+  xla::PjRtBuffer* maybe_pjrt_buffer = buffers_[0].get();
+  if (maybe_pjrt_buffer == nullptr) {
+    return os << ", null";
+  }
+  const xla::PjRtBuffer* pjrt_buffer = maybe_pjrt_buffer;
+  if (pjrt_buffer->IsDeleted()) {
+    return os << ", deleted";
+  }
+  return os << ", on_device_shape: "
+            << pjrt_buffer->on_device_shape().ToString(true);
+}
+
 size_t DeviceBufferList::size_bytes(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
   const auto xla_type = ConvertTo<xla::PrimitiveType>(shapes_[index].dtype());
@@ -295,8 +413,7 @@ size_t DeviceBufferList::size_bytes(int64_t index) const {
 }
 
 absl::StatusOr<size_t> DeviceBufferList::pjrt_buffer_size(int64_t index) const {
-  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buffer,
-                      GetOrMaterializeBuffer(index));
+  TT_ASSIGN_OR_RETURN(xla::PjRtBuffer* const pjrt_buffer, AwaitBuffer(index));
 
   TT_RET_CHECK(!pjrt_buffer->IsDeleted(), error::kFailedPrecondition)
       << "DeviceBufferRef has a PjRtBuffer, but it is deleted";
@@ -315,67 +432,16 @@ absl::StatusOr<size_t> DeviceBufferList::pjrt_buffer_size(int64_t index) const {
   return xla::ShapeUtil::ByteSizeOf(physical_buffer_shape_estimate);
 }
 
-namespace {
-
-void DebugMaterializedState(std::ostream& os,
-                            const MaterializedBuffers& materialized_buffers) {
-  os << "materialized";
-  if (materialized_buffers.IsAvailable()) {
-    os << ", ready";
-  } else {
-    os << ", pending";
-    return;
-  }
-  if (!materialized_buffers.size()) {
-    os << ", empty";
-    return;
-  }
-  xla::PjRtBuffer* absl_nullable maybe_pjrt_buffer = materialized_buffers[0];
-  if (maybe_pjrt_buffer == nullptr) {
-    os << ", null";
-    return;
-  }
-  const xla::PjRtBuffer* pjrt_buffer = maybe_pjrt_buffer;
-  if (pjrt_buffer->IsDeleted()) {
-    os << ", deleted";
-    return;
-  }
-  os << ", on_device_shape: " << pjrt_buffer->on_device_shape().ToString(true);
-}
-
-void DebugDeferredOpState(std::ostream& os, const DeferredOp& deferred_op) {
-  os << "deferred, op_name: " << deferred_op.op_name();
-}
-
-// Logs the data variant state with one of these formats:
-//   materialized, pjrt_buffer addr 0x1234567890, on_device_shape: f32[8,16]
-//   materialized, pjrt_buffer addr 0x1234567890, deleted
-//   deferred, op_name: add
-//   placeholder
-void DebugDataState(std::ostream& os,
-                    const DeferredOp* absl_nullable deferred_op,
-                    const MaterializedBuffers* absl_nullable buffers,
-                    absl::Span<const int64_t> dimensions) {
-  if (deferred_op != nullptr) {
-    DebugDeferredOpState(os, *deferred_op);
-  } else if (buffers != nullptr) {
-    DebugMaterializedState(os, *buffers);
-  } else {
-    os << "placeholder";
-  }
-}
-
-}  // namespace
-
 std::string DeviceBufferList::DebugString() const {
   std::ostringstream os;
   os << "DeviceBufferList:"
-     << "\n\tAddress: " << this << "\n\tNum buffers: " << size();
-  for (auto i = 0; i < size(); ++i) {
-    os << "\n\t\t=== Buffer " << i << " ===\n\t\t";
-    DebugDataState(os, deferred_op(), materialized_buffers(), dimensions(i));
-  }
+     << "\n\tAddress: " << this << "\n\tNum buffers: " << size() << "\n\t";
+  data_.PrintDebug(os);
   return os.str();
+}
+
+std::ostream& DeviceBufferList::DebugData(std::ostream& os) const {
+  return data_.PrintDebug(os);
 }
 
 std::string DeviceBufferRef::DebugString() const {
@@ -386,21 +452,11 @@ std::string DeviceBufferRef::DebugString() const {
      << "\n\tIndex: " << index_
      << "\n\tShape and type: " << ToString(element_type())
      << ToString(dimensions()) << "\n\tData state: ";
-  DebugDataState(os, deferred_op(), device_buffer_list_->materialized_buffers(),
-                 dimensions());
+  device_buffer_list_->DebugData(os);
   return os.str();
 }
 
-DeviceBufferRefState DeviceBufferList::state(int64_t index) const {
-  ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
-  if (std::holds_alternative<DeferredOp>(data_)) {
-    return DeviceBufferRefState::kDeferred;
-  }
-  if (std::holds_alternative<MaterializedBuffers>(data_)) {
-    return DeviceBufferRefState::kMaterialized;
-  }
-  return DeviceBufferRefState::kPlaceholder;
-}
+DeviceBufferRefState DeviceBufferList::state() const { return data_.state(); }
 
 absl::Span<const int64_t> DeviceBufferList::dimensions(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
@@ -419,33 +475,17 @@ int64_t DeviceBufferList::num_elements(int64_t index) const {
 }
 
 absl::Status DeviceBufferList::Synchronize() const {
-  TT_RET_CHECK(state(0) == DeviceBufferRefState::kMaterialized,
-               error::kFailedPrecondition)
-      << "cannot synchronize a DeviceBufferList that is not materialized";
   for (auto i = 0; i < size(); ++i) {
-    TT_ASSIGN_OR_RETURN(auto* pjrt_buffer, GetOrMaterializeBuffer(i));
-    auto future = pjrt_buffer->GetReadyFuture();
+    TT_ASSIGN_OR_RETURN(auto* buffer, AwaitBuffer(i));
+    auto future = buffer->GetReadyFuture();
     TT_RETURN_IF_ERROR(future.Await());
   }
   return absl::OkStatus();
 }
 
-absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
-DeviceBufferList::GetOrMaterializeBuffer(int64_t index) const {
-  if (std::holds_alternative<MaterializedBuffers>(data_)) {
-    const auto& buffers = std::get<MaterializedBuffers>(data_);
-    TT_RETURN_IF_ERROR(buffers.Await());
-    TT_RET_CHECK(index >= 0 && index < buffers.size(), error::kInvalidArgument)
-        << "Index " << index << " is out of bounds for buffers of size "
-        << buffers.size();
-    xla::PjRtBuffer* maybe_buffer = buffers[index];
-    TT_RET_CHECK(maybe_buffer, error::kFailedPrecondition)
-        << "MaterializedBuffers has no/null PjRtBuffer at index " << index;
-    return maybe_buffer;
-  }
-  return TT_ERROR(error::kFailedPrecondition)
-         << "DeviceBufferList does not have a PjRtBuffer at index " << index
-         << " because it is not materialized";
+absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferList::AwaitBuffer(
+    int64_t index) const {
+  return data_[index];
 }
 
 // Delegate responsibility for deleting the DeviceBufferRef to the
@@ -531,9 +571,10 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   }
 
   // Create the DeferredOp.
-  auto op = DeferredOp(op_name, std::move(op_builder), std::move(inputs),
-                       std::move(op_param_cache_keys), output_shapes, subgraph,
-                       split_mode, std::move(donated_indices));
+  auto op = std::make_unique<DeferredOp>(
+      op_name, std::move(op_builder), std::move(inputs),
+      std::move(op_param_cache_keys), output_shapes, subgraph, split_mode,
+      std::move(donated_indices));
 
   // Wrap the DeferredOp in a DeviceBufferList.
   // Can't use make_shared because the constructor is private.
@@ -683,12 +724,10 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::MakePlaceholder(
   return DeviceBufferRef(std::move(device_buffer), 0);
 }
 
-absl::Status DeviceBufferList::SetAsMaterialized() {
-  ABSL_VLOG(1) << "[SetAsMaterialized] Setting as empty materialized";
-  if (!std::holds_alternative<MaterializedBuffers>(data_)) {
-    data_ = MaterializedBuffers();
-  }
-  return absl::OkStatus();
+void DeviceBufferList::SetMaterializationPending() {
+  ABSL_VLOG(1)
+      << "[SetMaterializationPending] Setting to pending materialization";
+  data_.SetMaterializationPending();
 }
 
 namespace {
@@ -725,20 +764,12 @@ absl::Status ValidateBufferShape(const Shape& at_shape,
 
 }  // namespace
 
-absl::Status DeviceBufferList::SetAsMaterialized(
-    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-  // Call SetAsMaterialized() so as to initialize field data_ with
-  // MaterializedBuffers. The body of this function expects that.
-  TT_RETURN_IF_ERROR(SetAsMaterialized());
-
+absl::Status DeviceBufferList::VerifyMaterialization(
+    absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
+    const {
   TT_RET_CHECK(shapes_.size() == buffers.size(), error::kInvalidArgument)
       << "unexpected number of buffers; expected: " << shapes_.size()
       << " but got: " << buffers.size();
-  auto* materialized_buffers = std::get_if<MaterializedBuffers>(&data_);
-  TT_RET_CHECK(materialized_buffers, error::kInvalidArgument)
-      << "DeviceBufferList is not in a materialized state";
-  TT_RET_CHECK(!materialized_buffers->IsAvailable(), error::kInvalidArgument)
-      << "DeviceBufferList was already made available";
   for (size_t i = 0; i < shapes_.size(); ++i) {
     TT_RET_CHECK(!buffers[i]->IsDeleted(), error::kInvalidArgument)
         << "buffer " << i << " is deleted";
@@ -759,8 +790,25 @@ absl::Status DeviceBufferList::SetAsMaterialized(
         << "; expected: " << ToString(shapes_[i].dtype())
         << " but got: " << ToString(actual_element_type);
   }
+  return absl::OkStatus();
+}
+
+absl::Status DeviceBufferList::SetAsMaterialized(
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
+  if (auto status = VerifyMaterialization(buffers); !status.ok()) {
+    TT_RETURN_IF_ERROR(data_.SetMaterializationError(status));
+    return status;
+  }
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
-  return materialized_buffers->SetAsAvailable(std::move(buffers));
+  return data_.SetMaterializationStarted(std::move(buffers));
+}
+
+void DeviceBufferList::SetAsError(absl::Status error) {
+  auto set_error_status = data_.SetMaterializationError(error);
+  if (!set_error_status.ok()) {
+    ABSL_LOG(ERROR) << "[SetAsError] Failed to set materialization error: "
+                    << set_error_status;
+  }
 }
 
 absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,
@@ -827,7 +875,7 @@ absl::StatusOr<size_t> DeviceBufferRef::pjrt_buffer_size() const {
 }
 
 DeviceBufferRefState DeviceBufferRef::state() const {
-  return device_buffer_list_->state(index_);
+  return device_buffer_list_->state();
 }
 
 bool DeviceBufferRef::IsMaterialized() const {
@@ -850,8 +898,8 @@ bool DeviceBufferRef::IsMaterialized() const {
   return device_buffer_list_->element_type(index_);
 }
 
-[[nodiscard]] const DeferredOp* absl_nullable DeviceBufferRef::deferred_op()
-    const {
+[[nodiscard]] absl_nullable std::shared_ptr<DeferredOp>
+DeviceBufferRef::deferred_op() const {
   return device_buffer_list_->deferred_op();
 }
 
@@ -859,9 +907,9 @@ absl::Status DeviceBufferRef::Synchronize() const {
   return device_buffer_list_->Synchronize();
 }
 
-absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
-DeviceBufferRef::GetOrMaterializeBuffer() const {
-  return device_buffer_list_->GetOrMaterializeBuffer(index_);
+absl::StatusOr<xla::PjRtBuffer* absl_nonnull> DeviceBufferRef::AwaitBuffer()
+    const {
+  return device_buffer_list_->AwaitBuffer(index_);
 }
 
 absl::Status DeviceBufferRef::MarkDynamic(int64_t dimension,

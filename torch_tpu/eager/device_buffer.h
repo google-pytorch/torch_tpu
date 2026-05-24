@@ -26,23 +26,22 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Allocator.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -82,7 +81,7 @@
 //     a single aten operation. Since an aten operation may produce multiple
 //     tensors, a DeviceBufferList can contain multiple DeviceBufferRefs. If the
 //     operation is deferred, it has a DeferredOp; otherwise it usually
-//     contains a MaterializedBuffers (see note below).
+//     contains one or more PjRtBuffers (see note below).
 //   - A DeferredOp represents a single aten operation that has not yet been
 //     executed. It contains a list of DeviceBufferRefs that represent the
 //     inputs to the operation.
@@ -101,7 +100,6 @@
 // Internally, most aten kernel registrations should not need to directly use
 // DeviceBufferList or DeviceBufferRef, instead using the higher-level
 // abstractions provided in op_dispatcher.h and other utility libraries.
-// TODO(b/452027126): investigate thread-safety options
 
 namespace torch_tpu {
 
@@ -111,6 +109,8 @@ namespace torch_tpu {
 // kMaterialized is an absorbing state. Once the data exists, it is immutable.
 // kPlaceholder DeviceBufferRefs cannot change state; they can be used for
 // compilation, but later executions will use different kMaterialized buffers.
+// TODO(bawilson): rename to DeviceBufferList::DataState as this is no longer
+// ref-specific.
 enum class DeviceBufferRefState {
   // The reference is to a materialized, ready-to-use PjRtBuffer.
   kMaterialized,
@@ -292,9 +292,9 @@ class DeviceBufferRef {
   // The element type of the referenced buffer.
   [[nodiscard]] mlir::ElementType element_type() const;
 
-  // If the DeviceBufferRef has a DeferredOp, returns a non-null pointer to
-  // it. Otherwise, return a nullptr.
-  [[nodiscard]] const DeferredOp* absl_nullable deferred_op() const;
+  // If the DeviceBufferRef has a DeferredOp, returns a non-null shared_pointer
+  // to it. Otherwise, return a nullptr.
+  [[nodiscard]] absl_nullable std::shared_ptr<DeferredOp> deferred_op() const;
 
   // Awaits for the device buffer to be ready to read. If the buffer is the
   // output of computation, then also waits for the computation to be done.
@@ -303,7 +303,7 @@ class DeviceBufferRef {
   // Awaits the PjRtBuffer to be materialized, and then returns either the
   // error encountered during materialization, or a pointer to the
   // PjRtBuffer.
-  absl::StatusOr<xla::PjRtBuffer* absl_nonnull> GetOrMaterializeBuffer() const;
+  absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer() const;
 
   // The DeviceBufferList that holds the referenced buffer.
   [[nodiscard]] const SharedDeviceBufferList& device_buffer_list() const {
@@ -575,79 +575,6 @@ class DeferredOp {
                                   const DeferredOp& deferred_op);
 };
 
-// Lightweight wrapper around PjRtBuffers that are "materialized" but not yet
-// available.
-//
-// This is used to allow callers to wait for a set of PjRtBuffers to be ready
-// before accessing them.
-class MaterializedBuffers {
- public:
-  MaterializedBuffers() {
-    auto promise_pair = xla::MakePromise();
-    promise_ = std::move(promise_pair.first);
-    future_ = std::move(promise_pair.second);
-  }
-
-  explicit MaterializedBuffers(
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-      : buffers_(std::move(buffers)) {
-    auto promise_pair = xla::MakePromise();
-    promise_ = std::move(promise_pair.first);
-    future_ = std::move(promise_pair.second);
-
-    // Fulfill the promise immediately, since the buffers are already available.
-    std::move(promise_).Set(absl::OkStatus());
-  }
-
-  // Creates an unavailable MaterializedBuffers object. The Future object will
-  // be used to determine when the buffers become available.
-  MaterializedBuffers(
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers,
-      xla::Future<> future)
-      : future_(std::move(future)), buffers_(std::move(buffers)) {}
-
-  bool IsAvailable() const { return future_.IsReady(); }
-
-  // Wait for the buffers to be materialized.
-  absl::Status Await() const { return future_.Await(); }
-
-  int64_t size() const {
-    TT_CHECK_THROW(IsAvailable(), error::kInternal)
-        << "Attempted to access a PjRtBuffer that is not yet available.";
-    return buffers_.size();
-  }
-
-  // Returns a reference to the PjRtBuffer at the given index, or nullptr if
-  // the index is out of bounds or the buffers are not yet available.
-  xla::PjRtBuffer* absl_nullable operator[](int64_t index) const {
-    if (index < 0 || index >= buffers_.size()) {
-      return nullptr;
-    }
-    if (!IsAvailable()) {
-      return nullptr;
-    }
-    return buffers_[index].get();
-  }
-
-  void SetAsError(absl::Status status) {
-    if (!future_.IsReady()) {
-      promise_.Set(status);
-    }
-  }
-
-  absl::Status SetAsAvailable(
-      std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-    buffers_ = std::move(buffers);
-    promise_.Set(absl::OkStatus());
-    return absl::OkStatus();
-  }
-
- private:
-  xla::Future<> future_;
-  xla::Promise<> promise_;
-  std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
-};
-
 // A DeviceBufferList contains the data backing one or more tensors.
 //
 // Unlike CUDA, where one c10::DataPtr is always a physical data buffer
@@ -742,18 +669,21 @@ class DeviceBufferList {
   static absl::StatusOr<DeviceBufferRef> MakePlaceholder(
       Dimensions dimensions, mlir::ElementType element_type);
 
-  // Sets the DeviceBufferList to a materialized state, initializing the future
-  // to indicate when the buffers become available.
+  // Sets the DeviceBufferList to a pending-materialized state.
   // If the DeviceBufferList is already materialized, this is a no-op.
-  absl::Status SetAsMaterialized();
+  void SetMaterializationPending();
 
   // Sets the DeviceBufferList to a materialized state with the given buffers.
-  // If the DeviceBufferList is already materialized, the previous PjRtBuffers
-  // will be replaced with the new ones.
+  // Returns an error if the DeviceBufferList is already materialized.
   // The number of buffers, and their Shapes must match the existing
-  // DeviceBufferList, otherwise an error is returned and no update is applied.
+  // DeviceBufferList, otherwise the DeviceBufferList will set to an error state
+  // and a copy of the error will be returned.
   absl::Status SetAsMaterialized(
       std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+
+  // Sets the DeviceBufferList to an error state with the given error.
+  // Returns an error if the DeviceBufferList is already materialized.
+  void SetAsError(absl::Status error);
 
   // Sets a dimension to be dynamic.
   absl::Status MarkDynamic(int64_t index, int64_t dimension,
@@ -792,8 +722,8 @@ class DeviceBufferList {
   // determined.
   absl::StatusOr<size_t> pjrt_buffer_size(int64_t index) const;
 
-  // The current state of the indexed buffer, as an enum.
-  [[nodiscard]] DeviceBufferRefState state(int64_t index) const;
+  // The current state of the DeviceBufferList, as an enum.
+  [[nodiscard]] DeviceBufferRefState state() const;
 
   // The logical dimensions of the indexed buffer.
   [[nodiscard]] absl::Span<const int64_t> dimensions(int64_t index) const;
@@ -804,10 +734,9 @@ class DeviceBufferList {
   // The element type of the referenced buffer.
   [[nodiscard]] mlir::ElementType element_type(int64_t index) const;
 
-  // If the DeviceBufferList has a DeferredOp, returns a non-null pointer to
-  // it. Otherwise, return a nullptr.
-  [[nodiscard]] const DeferredOp* absl_nullable deferred_op() const {
-    return std::get_if<DeferredOp>(&data_);
+  // If the DeviceBufferList has a DeferredOp, returns a shared pointer to it.
+  [[nodiscard]] std::shared_ptr<DeferredOp> absl_nullable deferred_op() const {
+    return data_.deferred_op();
   }
 
   // Awaits for the device buffer to be ready to read. If the buffer is the
@@ -817,18 +746,8 @@ class DeviceBufferList {
   // Awaits the PjRtBuffer to be materialized, and then returns either the
   // error encountered during materialization, or a pointer to the
   // PjRtBuffer.
-  absl::StatusOr<xla::PjRtBuffer* absl_nonnull> GetOrMaterializeBuffer(
+  absl::StatusOr<xla::PjRtBuffer* absl_nonnull> AwaitBuffer(
       int64_t index) const;
-
-  // If the DeviceBufferList is materialized, returns a non-null pointer to
-  // the MaterializedBuffers. Otherwise, returns a nullptr.
-  [[nodiscard]] const MaterializedBuffers* absl_nullable materialized_buffers()
-      const {
-    return std::get_if<MaterializedBuffers>(&data_);
-  }
-  [[nodiscard]] MaterializedBuffers* absl_nullable materialized_buffers() {
-    return std::get_if<MaterializedBuffers>(&data_);
-  }
 
   // Returns the representative ID of the subgraph this node belongs to.
   [[nodiscard]] std::shared_ptr<Subgraph> subgraph() const { return subgraph_; }
@@ -848,6 +767,8 @@ class DeviceBufferList {
   int64_t num_child_ops() const { return num_child_ops_; }
   void IncrementNumChildOps() { num_child_ops_++; }
 
+  std::ostream& DebugData(std::ostream& os) const;
+
  private:
   // Private constructor for a DeviceBufferList wrapping a single materialized
   // PjRtBuffer.
@@ -857,21 +778,21 @@ class DeviceBufferList {
   // the type specified by the argument.
   DeviceBufferList(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
                    const mlir::ElementType element_type)
-      : subgraph_(nullptr) {
+      : subgraph_(nullptr), data_(std::move(buffer)) {
     creation_index_ = g_creation_index.fetch_add(1);
 
-    const xla::Shape& on_device_shape = buffer->on_device_shape();
+    auto buffer_or = data_[0];
+    ABSL_CHECK_OK(buffer_or);  // CRASH_OK: we just created it
+    const xla::PjRtBuffer* absl_nonnull buffer_ptr = buffer_or.value();
+
+    const xla::Shape& on_device_shape = buffer_ptr->on_device_shape();
     Shape shape(CopyIntVector(on_device_shape.dimensions()), element_type);
     shapes_.push_back(std::move(shape));
 
-    auto buffer_address = buffer.get();
-    std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
-    buffers.push_back(std::move(buffer));
-    data_ = MaterializedBuffers(std::move(buffers));
     ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (materialized)] Created. Dims: "
                  << ToString(shapes_[0].dimensions())
                  << ", Type: " << ToString(shapes_[0].dtype())
-                 << ", PjRtBuffer: " << buffer_address
+                 << ", PjRtBuffer: " << buffer_ptr
                  << ", creation_index: " << creation_index_;
   }
 
@@ -881,17 +802,23 @@ class DeviceBufferList {
   // The dimensions and element types must match the return values of the
   // DeferredOp's op_builder; if they do not, then there may be compilation
   // failures.
-  DeviceBufferList(DeferredOp deferred_op, std::vector<Shape> shapes,
+  DeviceBufferList(std::unique_ptr<DeferredOp> absl_nonnull deferred_op,
+                   std::vector<Shape> shapes,
                    std::shared_ptr<Subgraph> subgraph)
-      : data_(DeferredOp(std::move(deferred_op))),
-        shapes_(std::move(shapes)),
-        subgraph_(std::move(subgraph)) {
+      : shapes_(std::move(shapes)),
+        subgraph_(std::move(subgraph)),
+        data_(std::move(deferred_op)) {
     creation_index_ = g_creation_index.fetch_add(1);
-    ABSL_VLOG(3)
-        << "[DeviceBuffer CONSTRUCTOR (deferred)] Created. DeferredOp: "
-        << std::get<DeferredOp>(data_).op_name()
-        << ", Number of outputs: " << shapes_.size()
-        << ", Subgraph: " << subgraph_.get();
+
+    if (ABSL_VLOG_IS_ON(3)) {
+      const auto shared_deferred_op = data_.deferred_op();
+      ABSL_CHECK(shared_deferred_op);  // CRASH_OK
+      ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (deferred)] Created. "
+                      "DeferredOp: "
+                   << shared_deferred_op->op_name()
+                   << ", Number of outputs: " << shapes_.size()
+                   << ", Subgraph: " << subgraph_.get();
+    }
   }
 
   // Private constructor for a DeviceBufferList with a single unbacked buffer.
@@ -909,15 +836,14 @@ class DeviceBufferList {
                  << ", Type: " << ToString(shapes_[0].dtype());
   }
 
+  // Helper function to verify that the given buffers are valid for this
+  // DeviceBufferList.
+  absl::Status VerifyMaterialization(
+      absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
+      const;
+
   static std::atomic_uint64_t g_creation_index;
 
-  // The data backing the DeviceBufferList.
-  //   std::monostate: compiled mode placeholder buffers.
-  //   DeferredOp: a deferred operation, with no actual data but an op_builder
-  //     to materialize it when needed.
-  //   MaterializedBuffers: materialized buffers, which may or may not yet be
-  //   backed by PjRtBuffers - however, the materialization has been scheduled.
-  std::variant<std::monostate, DeferredOp, MaterializedBuffers> data_;
   // The shapes of all the buffers in the DeviceBufferList.
   std::vector<Shape> shapes_;
   // The subgraph this node belongs to. Only valid for deferred nodes.
@@ -937,6 +863,158 @@ class DeviceBufferList {
   std::atomic_int64_t live_data_ptrs_ = 0;
   friend c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref, int device_idx);
   friend void DeleteDeviceBufferRef(void* ctx_ptr);
+
+  // A DeviceBufferList::Data is the data backing a DeviceBufferList. It is a
+  // thread-safe class that allows for deferred ops (or placeholders) to later
+  // be replaced with materialized buffers, or with an error if materialization
+  // fails.
+  class Data {
+   public:
+    // Creates a placeholder DeviceBufferList::Data.
+    // This can later be materialized, but will never have a DeferredOp.
+    Data() : created_as_placeholder_(true) {
+      auto [promise, future] = xla::MakePromise<void>();
+      materialization_promise_ = std::move(promise);
+      materialization_future_ = std::move(future);
+    }
+
+    // Creates a DeviceBufferList::Data with a DeferredOp, which can later be
+    // materialized.
+    explicit Data(absl_nonnull std::shared_ptr<DeferredOp> deferred_op)
+        : deferred_op_(std::move(deferred_op)) {
+      auto [promise, future] = xla::MakePromise<void>();
+      materialization_promise_ = std::move(promise);
+      materialization_future_ = std::move(future);
+    }
+
+    // Creates a DeviceBufferList::Data with a materialized PjRtBuffer.
+    explicit Data(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer)
+        : materialization_pending_(true), materialization_started_(true) {
+      buffers_.push_back(std::move(buffer));
+      auto [promise, future] = xla::MakePromise<void>();
+      materialization_promise_ = std::move(promise);
+      materialization_future_ = std::move(future);
+      materialization_promise_.Set(absl::OkStatus());
+    }
+
+    // Returns the DeferredOp backing this DeviceBufferList::Data, if it exists.
+    // Otherwise, returns nullptr.
+    // Returns nullptr for placeholders, or if the DeviceBufferList::Data is
+    // pending materialization or fully materialized.
+    absl_nullable std::shared_ptr<DeferredOp> deferred_op() const;
+
+    // Marks this DeviceBufferList::Data as pending materialization.
+    // This will delete the DeferredOp if it exists.
+    // This is idempotent and safe to call multiple times; the second and later
+    // calls will be no-ops.
+    // This has no effect if the DeviceBufferList::Data is already fully
+    // materialized.
+    void SetMaterializationPending();
+
+    // Marks this DeviceBufferList::Data as having failed to materialize.
+    // If the DeviceBufferList::Data has already started materialization (or was
+    // previously marked as having failed to materialize), this will not modify
+    // the DeviceBufferList::Data and will return an error to the caller.
+    absl::Status SetMaterializationError(absl::Status status);
+
+    // Marks this DeviceBufferList::Data as having successfully started
+    // materialization. If the DeviceBufferList::Data has already started
+    // materialization (or was previously marked as having failed to
+    // materialize), this will not modify the DeviceBufferList::Data, will drop
+    // the PjRtBuffers, and will return an error to the caller.
+    absl::Status SetMaterializationStarted(
+        std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
+
+    // Returns the PjRtBuffer at the given index.
+    // If the DeviceBufferList::Data is not yet materialized, this will block
+    // the caller until it has a PjRtBuffer to return. Returns an error if:
+    //   - The materialization failed, or
+    //   - The index is out of bounds.
+    absl::StatusOr<xla::PjRtBuffer* absl_nonnull> operator[](
+        int64_t index) const;
+
+    // Returns the state of the DeviceBufferList::Data.
+    // WARNING: this is an atomic, point-in-time snapshot. Even if this returns
+    // DeviceBufferRefState::kDeferred, any later calls to deferred_op() may
+    // return a nullptr if the DeviceBufferList::Data is being concurrently
+    // materialized.
+    [[nodiscard]] DeviceBufferRefState state() const;
+
+    // Prints a debug string for the DeviceBufferList::Data into the ostream.
+    std::ostream& PrintDebug(std::ostream& os) const;
+
+   private:
+    // If the DeviceBufferList::Data has a DeferredOp, it is stored here,
+    // protected by a mutex. This ensures that if one thread is trying to access
+    // the DeferredOp, there won't be a data race with another thread that is
+    // clearing it. Marked as mutable so that deferred_op() can be const while
+    // still acquiring the mutex.
+    mutable absl::Mutex deferred_op_mutex_;
+    absl_nullable std::shared_ptr<DeferredOp> deferred_op_
+        ABSL_GUARDED_BY(deferred_op_mutex_);
+
+    // After the DeviceBufferList::Data is materialized, it will either have a
+    // nonempty list of buffers_, or a materialization_status_ that is non-OK.
+    // These are NOT mutex-guarded; once they have been set, they are immutable,
+    // and can be safely read concurrently.
+    // The materialization_started_ flag is used to assign responsibility for
+    // setting these fields, and the materialization_promise_ and
+    // materialization_future_ are used to notify that
+    // the critical section is over and it is safe to read them.
+    absl::Status materialization_status_ = absl::OkStatus();
+    std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
+
+    // The following flags are used to atomically enforce a one-way "ramp":
+    //
+    // (deferred or placeholder) -> materialization pending. The first time this
+    // flag is set, the DeviceBufferList::Data which sets the flag is
+    // responsible for clearing the DeferredOp (not necessary for placeholders).
+    //
+    // materialization_pending -> (materialized or error). The first time that
+    // the materialization_started_ flag is set, the DeviceBufferList::Data
+    // which sets the flag is responsible for setting either the buffers_ or
+    // materialization_status_ field (but not both), and then setting the
+    // materialized_ flag and notifying waiters.
+    //
+    // Once materialized_ is set, materialization_status_ and buffers_ can be
+    // read without locking.
+
+    // If the DeviceBufferList::Data was created as a placeholder, it will never
+    // have a DeferredOp, so the mutex never needs to be acquired.
+    const bool created_as_placeholder_ = false;
+
+    // This is set to true by the first caller to SetMaterializationPending.
+    // This first caller is responsible for clearing the DeferredOp (if it
+    // exists).
+    std::atomic_bool materialization_pending_ = false;
+
+    // This is set to true by the first caller to either
+    // SetMaterializationStarted or SetMaterializationError. This first caller
+    // is responsible for setting the buffers_ or materialization_status_ field,
+    // and then setting the materialization_promise_.
+    std::atomic_bool materialization_started_ = false;
+
+    // When this future returns, the DeviceBufferList::Data has either
+    // successfully started materialization or failed to materialize.
+    // This is NOT mutex-guarded; is is safe to access as soon as the Data is
+    // created, but may not be populated until later.
+    // Once the future is ready and has an OK status, the buffers_ can be
+    // safely accessed without locking.
+    // WARNING: attempting to access a PjRtBuffer before this future is ready
+    // will block the caller until the promise is set by another thread.
+    xla::Future<> materialization_future_;
+
+    // This promise is used to set the materialization_future_. It should only
+    // be set by the first thread to set materialization_started_ to true,
+    // and only after populating the buffers_ field.
+    xla::Promise<> materialization_promise_;
+  };
+
+  // The data backing the DeviceBufferList.
+  // This uses locks and atomics internally to enforce a thread-safe transition
+  // from DeferredOp to a materialized  set of PjRtBuffers (or an error if
+  // materialization fails).
+  Data data_;
 };
 
 }  // namespace torch_tpu

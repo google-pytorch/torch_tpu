@@ -297,7 +297,7 @@ void MaterializationWorker::ThreadLoop() {
 
 bool IsSplitPoint(const SharedDeviceBufferList& current_op,
                   const SharedDeviceBufferList* next_op) {
-  const auto* deferred_op = current_op->deferred_op();
+  const auto deferred_op = current_op->deferred_op();
   if (!deferred_op) {
     return false;
   }
@@ -316,7 +316,7 @@ bool IsSplitPoint(const SharedDeviceBufferList& current_op,
   }
 
   if (next_op) {
-    if (const auto* next_deferred_op = (*next_op)->deferred_op();
+    if (const auto next_deferred_op = (*next_op)->deferred_op();
         next_deferred_op) {
       OpSplitMode split_mode = next_deferred_op->split_mode();
       if (split_mode == OpSplitMode::kSplitBoth ||
@@ -402,7 +402,7 @@ std::vector<absl::flat_hash_set<const DeviceBufferList*>> GetPerRegionUses(
     auto& uses_ = uses[i];
     absl::flat_hash_set<const DeviceBufferList*> visited;
     for (const auto& n : region) {
-      const auto* deferred_op = n->deferred_op();
+      const auto deferred_op = n->deferred_op();
       if (deferred_op) {
         for (const auto& input : deferred_op->inputs()) {
           // A "use" is ANY input to an operation in this region.
