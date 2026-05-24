@@ -85,10 +85,6 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
     return GetMaterialized(src, MaterializationReason::kCpuTransfer);
   }());
 
-  ABSL_CHECK_EQ(materialized_src_buf.state(),  // CRASH_OK
-                DeviceBufferRefState::kMaterialized)
-      << "expected materialized buffer after GetMaterialized";
-
   // Fast path: if the destination tensor is fully allocated, contiguous, and
   // has the exact same size and dtype as the source, we can copy directly
   // into its memory. This enables true non-blocking transfers because we

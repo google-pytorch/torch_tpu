@@ -436,14 +436,20 @@ absl::Status MaterializeImpl(
 
   auto future = GetMaterializationWorker().EnqueueNodes(
       nodes_to_materialize, reason, materialization_mode);  // intentional copy
-  TT_RETURN_IF_ERROR(future.Await()).SetPrepend()
-      << "materialization failed with: ";
 
-  // Check that all nodes to materialize have indeed been materialized.
-  for (auto& node : nodes_to_materialize) {
-    TT_RET_CHECK(node->state() == DeviceBufferRefState::kMaterialized,
-                 error::kInternal)
-        << "Materialization failed for node " << node;
+  if (materialization_mode == MaterializationMode::kSplitGraph) {
+    // SplitTraversal depends on the liveness of at::Tensors.
+    // If the dispatch thread (that called Materialize() or GetMaterialized())
+    // runs concurrently, this creates a race condition that causes unstable
+    // materialization patterns and repeated recompilations.
+    // To avoid this, we block on the materialization future here.
+    TT_RETURN_IF_ERROR(future.Await()).SetPrepend()
+        << "materialization failed with: ";
+    for (auto& node : nodes_to_materialize) {
+      TT_RET_CHECK(node->state() == DeviceBufferRefState::kMaterialized,
+                   error::kInternal)
+          << "Materialization failed for node " << node;
+    }
   }
 
   return absl::OkStatus();
