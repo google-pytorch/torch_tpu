@@ -252,8 +252,6 @@ void CheckScalarInput() {
       kOpName == OpName::kBaddbmmDtypeOut ||             //
       kOpName == OpName::kBaddbmmOut ||                  //
       kOpName == OpName::kCdistForward ||                //
-      kOpName == OpName::kEluBackwardGradInput ||        //
-      kOpName == OpName::kEluOut ||                      //
       kOpName == OpName::kEq ||                          //
       kOpName == OpName::kExponential_ ||                //
       kOpName == OpName::kFill_Scalar ||                 //

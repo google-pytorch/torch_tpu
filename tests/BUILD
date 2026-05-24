@@ -1113,4 +1113,18 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "elu_scratch_test",
+    srcs = ["elu_scratch_test.py"],
+    main = "elu_scratch_test.py",
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
 torch_tpu_package_end()

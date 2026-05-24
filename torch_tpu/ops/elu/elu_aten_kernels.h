@@ -18,7 +18,6 @@
 #define TORCH_TPU_OPS_ELU_ELU_ATEN_KERNELS_H_
 
 #include "ATen/core/ATen_fwd.h"
-#include "ATen/core/TensorBody.h"
 
 namespace torch_tpu {
 
