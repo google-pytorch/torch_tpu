@@ -963,7 +963,6 @@ torch_tpu_cc_test(
     srcs = ["compilation_cache_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     deps = [
         ":cache_key",
         ":compilation",
@@ -973,6 +972,7 @@ torch_tpu_cc_test(
         ":error_utils",
         ":flags",
         ":shape",
+        ":utils",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:contain",
         "//torch_tpu/ops:op_builder_utils",
@@ -1002,7 +1002,6 @@ torch_tpu_cc_test(
     name = "compilation_thread_num_test",
     srcs = ["compilation_thread_num_test.cc"],
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     tags = [
         # Needs exclusive access to machine as we are testing hardware behavior. Without this,
         # `blaze test --runs_per_test` may fail.
@@ -1050,12 +1049,12 @@ torch_tpu_cc_test(
     srcs = ["compilation_parse_xla_options_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     tags = [
         "requires-tpu-v5lite",
     ],
     deps = [
         ":compilation",
+        ":compilation_cache",
         ":compilation_spec",
         ":compilation_test_helper",
         "//shims/torch:torch_headers",
@@ -1075,12 +1074,12 @@ torch_tpu_cc_test(
     srcs = ["compile_options_key_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     tags = [
         "requires-tpu-v5lite",
     ],
     deps = [
         ":compilation",
+        ":compilation_cache",
         ":compilation_spec",
         ":compilation_test_helper",
         ":compile_options_key",
@@ -1218,7 +1217,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     deps = [
         ":cache_key",
         ":dimension_types",

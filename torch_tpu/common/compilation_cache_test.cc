@@ -48,6 +48,7 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/common/utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -114,9 +115,11 @@ TEST(CacheEntryStatsPrinterTest, Works) {
   stats.compilation_duration = absl::Milliseconds(100);
   stats.last_read = absl::FromUnixMillis(1000);
   stats.read_count = 10;
+  std::string expected_last_read =
+      absl::FormatTime(stats.last_read, absl::LocalTimeZone());
   EXPECT_EQ(absl::StrCat(stats),
-            "compilation_duration=100ms, last_read=1969-12-31T16:00:01-"
-            "08:00, read_count=10");
+            absl::StrCat("compilation_duration=100ms, last_read=",
+                         expected_last_read, ", read_count=10"));
 }
 
 class CompilationCacheTest : public testing::Test {
@@ -296,7 +299,13 @@ TEST_F(CompilationCacheTest, PeakMemoryReported) {
 
   PerfStats stats = cache.GetCacheStats();
   ASSERT_TRUE(stats.peak_compilation_memory_bytes.has_value());
-  EXPECT_GT(*stats.peak_compilation_memory_bytes, 0);
+  if (TT_IS_INTERNAL_TORCH_TPU) {
+    EXPECT_GT(*stats.peak_compilation_memory_bytes, 0);
+  } else {
+    // FIXME: Once ContainerPeakHostMemoryBytes() is implemented under open
+    // source (instead of returning a hardcoded stub of 0), assert > 0 here.
+    EXPECT_EQ(*stats.peak_compilation_memory_bytes, 0);
+  }
   ABSL_LOG(INFO) << "Peak compilation memory: "
                  << *stats.peak_compilation_memory_bytes;
 

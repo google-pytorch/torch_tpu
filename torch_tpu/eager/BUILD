@@ -51,7 +51,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Fails due to TPU_LIBRARY_PATH not set.",
     deps = [
         ":op_dispatcher",
         "//shims/torch:aten_headers",
@@ -66,7 +65,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Fails due to TPU_LIBRARY_PATH not set.",
     deps = [
         ":device_buffer",
         ":structured_log_buffer",
@@ -92,7 +90,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     deps = [
         ":device_buffer",
         ":materialize",
@@ -287,7 +284,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled because lazy-init means this requires TPU_LIBRARY_PATH",
     deps = [
         ":device_buffer",
         ":safe_materialization_rule",

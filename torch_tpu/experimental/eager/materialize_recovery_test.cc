@@ -60,6 +60,8 @@ class MaterializeRecoveryTest : public testing::Test {
     CompilationCache::GetInstance().SetOptions({});
   }
 
+  static void TearDownTestSuite() { CompilationCache::ShutDown(); }
+
   void SetUp() override {
     // Enable the experimental new materialization worker
     absl::SetFlag(&FLAGS_torch_tpu_internal_enable_new_materialization, true);

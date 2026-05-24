@@ -513,6 +513,7 @@ def torch_tpu_cc_test(
     data = kwargs.pop("data", [])
     if is_oss():
         data.append("@bazel_tools//tools/bash/runfiles")
+        data.append("//shims/libtpu:libtpu")
     kwargs["data"] = data
 
     result = _check_and_adjust_test_tags(
@@ -695,6 +696,7 @@ def torch_tpu_py_test(
     data = kwargs.pop("data", [])
     if is_oss():
         data.append("@bazel_tools//tools/bash/runfiles")
+        data.append("//shims/libtpu:libtpu")
     kwargs["data"] = data
     result = _check_and_adjust_test_tags(
         name = name,

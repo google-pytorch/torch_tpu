@@ -292,6 +292,7 @@ common:bench --spawn_strategy=standalone,local
 common:ci_cpu --config=ci
 common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu
 common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu
+test:ci_cpu --run_under=//ci:cpu_execute
 
 common:ci_cpu_presubmit --config=ci_cpu
 # Prevent unsubmitted code from polluting the remote cache.

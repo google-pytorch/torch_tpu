@@ -1087,7 +1087,6 @@ test_suite(
 torch_tpu_py_test(
     name = "tracing_test",
     srcs = ["tracing_test.py"],
-    notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

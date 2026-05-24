@@ -11,3 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+sh_binary(
+    name = "cpu_execute",
+    srcs = ["tools/cpu_execute.sh"],
+    data = ["@bazel_tools//tools/bash/runfiles"],
+    visibility = ["//visibility:public"],
+)

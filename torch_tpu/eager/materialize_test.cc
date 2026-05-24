@@ -57,6 +57,8 @@ class MaterializeTest : public testing::Test {
     RegisterTpuAllocator();
     CompilationCache::GetInstance().SetOptions({});
   }
+
+  static void TearDownTestSuite() { CompilationCache::ShutDown(); }
 };
 
 TEST_F(MaterializeTest, EmptyListNoOpSuccess) {

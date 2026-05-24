@@ -18,6 +18,7 @@
 
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
+#include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 namespace torch_tpu {
@@ -28,6 +29,8 @@ using testing::ExitedWithCode;
 class PjRtInitTest : public ::testing::Test {
  protected:
   void TearDown() override { PjrtBackend::GetInstance().Shutdown(); }
+
+  static void TearDownTestSuite() { CompilationCache::ShutDown(); }
 };
 
 TEST_F(PjRtInitTest, InitializePjRtIsLazy) {

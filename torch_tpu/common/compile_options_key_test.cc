@@ -23,6 +23,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "torch_tpu/common/compilation.h"
+#include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compilation_test_helper.h"
 #include "torch_tpu/common/error_utils.h"
@@ -46,6 +47,8 @@ class CompileOptionsKeyTest : public testing::Test {
         {.device_type = "tpu"});
     ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
   }
+
+  static void TearDownTestSuite() { CompilationCache::ShutDown(); }
 };
 
 absl::StatusOr<UniqueCompileOptions> MakeCompilerOptions(CompilationMode mode) {

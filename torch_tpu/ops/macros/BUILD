@@ -83,7 +83,6 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Fails due to TPU_LIBRARY_PATH not set.",
     deps = [
         ":kernel",
         "//shims/torch:aten_headers",
