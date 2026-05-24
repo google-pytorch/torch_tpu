@@ -77,6 +77,7 @@
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/xla.pb.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/numbers.h"
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
