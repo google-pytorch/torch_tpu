@@ -279,9 +279,6 @@ void CheckScalarInput() {
       kOpName == OpName::kForeachSub_List ||             //
       kOpName == OpName::kGe ||                          //
       kOpName == OpName::kGt ||                          //
-      kOpName == OpName::kHardtanh ||                    //
-      kOpName == OpName::kHardtanhOut ||                 //
-      kOpName == OpName::kHardtanh_ ||                   //
       kOpName == OpName::kHistc ||                       //
       kOpName == OpName::kIndexAddOut ||                 //
       kOpName == OpName::kIsInScalarTensorOut ||         //
