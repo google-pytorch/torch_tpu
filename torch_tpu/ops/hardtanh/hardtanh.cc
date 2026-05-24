@@ -17,6 +17,8 @@
 #include "torch_tpu/ops/hardtanh/hardtanh.h"
 
 #include "absl/status/statusor.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
@@ -27,7 +29,9 @@ namespace stablehlo = mlir::stablehlo;
 absl::StatusOr<mlir::MlirOp> BuildHardtanhShlo(mlir::MlirOp input_op,
                                                mlir::MlirOp min_val_op,
                                                mlir::MlirOp max_val_op) {
-  return stablehlo::Clamp(min_val_op, input_op, max_val_op);
+  TT_ASSIGN_OR_RETURN((auto [input_, min_val_, max_val_]),
+                      ApplyBroadcastIfNeeded(input_op, min_val_op, max_val_op));
+  return stablehlo::Clamp(min_val_, input_, max_val_);
 }
 
 }  // namespace torch_tpu
