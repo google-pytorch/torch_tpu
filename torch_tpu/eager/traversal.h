@@ -117,12 +117,15 @@ class Traversal {
       const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
           stopping_points = {});
 
-  // Creates a traversal from a given execution order and a given set of
-  // outputs.
+  // Creates a traversal from a given execution order.
+  // All nodes in the execution order which have no later uses will be treated
+  // as outputs. Any node in "required_outputs" will also be included as an
+  // output, even if it has later uses.
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
   CreateFromExecutionOrder(
       absl::Span<const SharedDeviceBufferList> execution_order,
-      absl::Span<const SharedDeviceBufferList> nodes_to_materialize);
+      const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+          required_outputs = {});
 
   // Composes a cache key for the traversal for the specific compilation mode.
   CompilationCacheKey GetCacheKey(CompilationMode) const {

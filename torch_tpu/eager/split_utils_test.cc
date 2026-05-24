@@ -97,8 +97,9 @@ TEST(SplitUtilsTest, ApplySplitPointsSorted) {
   auto& traversals = traversals_or.value();
 
   // We should get two traversals; one for {a, b} and one for {c, d}.
-  // Node c is not in the graph for any split point; but, because we are using
-  // `use_sorted=true`, it is included in the next traversal (for {d}).
+  // Node c is not an indirect dependency of d, so it is added as an additional
+  // output to ensure all nodes in the execution order are executed by the
+  // compiled function.
   ASSERT_THAT(traversals, testing::SizeIs(2));
   EXPECT_THAT(traversals[0]->execution_order(), testing::SizeIs(2));
   ASSERT_THAT(traversals[0]->outputs(), testing::SizeIs(1));
@@ -107,8 +108,9 @@ TEST(SplitUtilsTest, ApplySplitPointsSorted) {
   ASSERT_THAT(traversals[1]->arguments(), testing::SizeIs(1));
   EXPECT_EQ(traversals[1]->arguments()[0], ref_b);
   EXPECT_THAT(traversals[1]->execution_order(), testing::SizeIs(2));
-  ASSERT_THAT(traversals[1]->outputs(), testing::SizeIs(1));
-  EXPECT_EQ(traversals[1]->outputs()[0], ref_d);
+  ASSERT_THAT(traversals[1]->outputs(), testing::SizeIs(2));
+  EXPECT_EQ(traversals[1]->outputs()[0], ref_c);
+  EXPECT_EQ(traversals[1]->outputs()[1], ref_d);
 }
 
 TEST(SplitUtilsTest, ApplySplitPointsUnsorted) {
@@ -161,6 +163,8 @@ TEST(SplitUtilsTest, ApplySplitPointsUnsorted) {
   // We should get two traversals; one for {a, b} and one for {d}.
   // Node c is not included since it is not a part of the graph for any split
   // point, and with `use_sorted=false`, we retrace the graph each time.
+  // To capture c, we'd need to start the traversal from a "leaf node" set that
+  // includes c.
   ASSERT_THAT(traversals, testing::SizeIs(2));
   EXPECT_THAT(traversals[0]->execution_order(), testing::SizeIs(2));
   ASSERT_THAT(traversals[0]->outputs(), testing::SizeIs(1));

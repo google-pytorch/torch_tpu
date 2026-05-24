@@ -56,20 +56,16 @@ ApplySplitPointsSorted(
     queue = std::move(parts.execution_order);
   }
   std::vector<SharedDeviceBufferList> execution_order;
-  std::vector<SharedDeviceBufferList> nodes_to_materialize;
   std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
   for (auto& node : queue) {
     if (!split_points.contains(node.get())) {
       execution_order.push_back(std::move(node));
     } else {
       execution_order.push_back(node);  // intentional copy
-      nodes_to_materialize.push_back(std::move(node));
       TT_ASSIGN_OR_RETURN(auto new_traversal,
-                          Traversal::CreateFromExecutionOrder(
-                              execution_order, nodes_to_materialize));
+                          Traversal::CreateFromExecutionOrder(execution_order));
       traversals.push_back(std::move(new_traversal));
       execution_order.clear();
-      nodes_to_materialize.clear();
     }
   }
   return traversals;

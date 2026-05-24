@@ -214,42 +214,120 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
 Traversal::CreateFromExecutionOrder(
     absl::Span<const SharedDeviceBufferList> execution_order,
-    absl::Span<const SharedDeviceBufferList> nodes_to_materialize) {
+    const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
+        required_outputs) {
   ABSL_VLOG(1) << "[Traversal::CreateFromExecutionOrder] Creating Traversal";
-  tsl::profiler::TraceMe t(
-      [] { return "Traversal::CreateFromExecutionOrder"; });
+  tsl::profiler::TraceMe t("Traversal::CreateFromExecutionOrder");
 
-  // Compute the traversal inputs.
-  std::vector<DeviceBufferRef> inputs;
-  {
-    absl::flat_hash_set<const DeviceBufferList*> defs;
-    absl::flat_hash_set<DeviceBufferRef> uses;
-    for (const auto& node : execution_order) {
-      const auto deferred_op = node->deferred_op();
-      if (deferred_op) {
-        for (const auto& input : deferred_op->inputs()) {
-          if (defs.find(input.device_buffer_list().get()) == defs.end()) {
-            if (uses.insert(input).second) {
-              inputs.push_back(input);
-            }
-          }
+  // We iterate in reverse order to find output nodes.
+  // After validation, we'll update the output nodes to individual output refs.
+  std::stack<SharedDeviceBufferList> output_node_stack;
+
+  // The first time we see a deferred node as a used input, add it to the map
+  // with the value false (undefined).
+  // When we see it defined in the execution order, mark it as true.
+  // It is a validation failure if:
+  //   - we see a node defined more than once
+  //   - we see a node is used when it was defined later in the execution order
+  // Seeing a node that is not defined means that it is an input from an earlier
+  // traversal in an execution sequence.
+  absl::flat_hash_map<const DeviceBufferList*, bool> used_node_is_defined;
+
+  // It is a validation failure if we don't find all required outputs in the
+  // execution order.
+  size_t required_nodes_found = 0;
+
+  for (auto execution_order_it = execution_order.rbegin();
+       execution_order_it != execution_order.rend(); ++execution_order_it) {
+    const auto& node = *execution_order_it;
+    const auto deferred_op = node->deferred_op();
+    TT_RET_CHECK(deferred_op != nullptr, error::kInvalidArgument)
+        << "execution order contains a node without a deferred op: "
+        << node.get();
+    const bool is_required_output = required_outputs.contains(node.get());
+    if (is_required_output) {
+      ++required_nodes_found;
+    }
+    if (auto used_it = used_node_is_defined.find(node.get());
+        used_it != used_node_is_defined.end()) {
+      const bool already_defined = used_it->second;
+      TT_RET_CHECK(!already_defined, error::kInvalidArgument)
+          << "node " << node.get()
+          << " is defined multiple times in the execution order.";
+      used_it->second = true;
+      // This node has later uses, so it's only an output if explicitly
+      // required.
+      if (is_required_output) {
+        output_node_stack.push(node);
+      }
+    } else {
+      // This node has no later uses, so it's an output.
+      output_node_stack.push(node);
+      used_node_is_defined.insert({node.get(), true});
+    }
+
+    // Take note of all the deferred ops that this deferred op depends on.
+    // These need to be defined before this node in the execution order for it
+    // to be valid.
+    for (const auto& input : deferred_op->inputs()) {
+      auto& input_node = input.device_buffer_list();
+      if (input_node->state() == DeviceBufferRefState::kDeferred) {
+        if (auto used_it = used_node_is_defined.find(input_node.get());
+            used_it != used_node_is_defined.end()) {
+          const bool already_defined = used_it->second;
+          TT_RET_CHECK(!already_defined, error::kInvalidArgument)
+              << "execution order is not topologically sorted. Node "
+              << node.get() << " depends on input " << input_node.get()
+              << " which is defined later in the execution order.";
+        } else {
+          used_node_is_defined.insert({input_node.get(), false});
         }
       }
-      defs.insert(node.get());
+    }
+  }
+
+  // Validate that the execution order is complete.
+  TT_RET_CHECK(required_nodes_found == required_outputs.size(),
+               error::kInvalidArgument)
+      << "not all required outputs were found in the execution order. Expected "
+      << required_outputs.size() << ", but found " << required_nodes_found;
+
+  // Compute the traversal arguments, ordered by first appearance.
+  std::vector<DeviceBufferRef> arguments;
+  {
+    absl::flat_hash_set<DeviceBufferRef> unique_args;
+    for (const auto& node : execution_order) {
+      const auto deferred_op = node->deferred_op();
+      TT_RET_CHECK(deferred_op != nullptr, error::kInvalidArgument)
+          << "execution order contains a node without a deferred op: "
+          << node.get();
+      for (const auto& input : deferred_op->inputs()) {
+        if (auto used_it =
+                used_node_is_defined.find(input.device_buffer_list().get());
+            used_it != used_node_is_defined.end() && used_it->second) {
+          // This node is defined in the traversal, not an argument.
+          continue;
+        }
+        if (unique_args.insert(input).second) {
+          arguments.push_back(input);
+        }
+      }
     }
   }
 
   // Compute the traversal outputs.
   std::vector<DeviceBufferRef> outputs;
-  for (const auto& node : nodes_to_materialize) {
+  while (!output_node_stack.empty()) {
+    const auto& node = output_node_stack.top();
     for (auto i = 0; i < node->size(); ++i) {
       TT_ASSIGN_OR_RETURN(auto output, DeviceBufferRef::Create(node, i));
       outputs.push_back(std::move(output));
     }
+    output_node_stack.pop();
   }
 
   auto traversal = std::unique_ptr<Traversal>(
-      new Traversal(std::move(inputs),
+      new Traversal(std::move(arguments),
                     std::vector<SharedDeviceBufferList>(execution_order.begin(),
                                                         execution_order.end()),
                     std::move(outputs)));
