@@ -256,7 +256,6 @@ void CheckScalarInput() {
       kOpName == OpName::kEluOut ||                      //
       kOpName == OpName::kEq ||                          //
       kOpName == OpName::kExponential_ ||                //
-      kOpName == OpName::kFill_Scalar ||                 //
       kOpName == OpName::kForeachAddList ||              //
       kOpName == OpName::kForeachAddTensor ||            //
       kOpName == OpName::kForeachAdd_List ||             //
