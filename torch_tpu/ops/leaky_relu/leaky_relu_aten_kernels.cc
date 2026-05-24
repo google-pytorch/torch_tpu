@@ -71,8 +71,8 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluBackwardShlo(
   std::array<mlir::MlirOp, 2> broadcasted;
   TT_ASSIGN_OR_RETURN(broadcasted,
                       ApplyBroadcastIfNeeded(self_or_result_op, zero_op));
-  mlir::MlirOp compare_ge_zero = mlir::stablehlo::Compare(
-      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GE);
+  mlir::MlirOp compare_gt_zero = mlir::stablehlo::Compare(
+      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GT);
 
   TT_ASSIGN_OR_RETURN(
       broadcasted, ApplyBroadcastIfNeeded(grad_output_op, negative_slope_op));
@@ -81,42 +81,53 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluBackwardShlo(
   std::array<mlir::MlirOp, 3> select_broadcasted;
   TT_ASSIGN_OR_RETURN(
       select_broadcasted,
-      ApplyBroadcastIfNeeded(compare_ge_zero, grad_output_op, mul_op));
+      ApplyBroadcastIfNeeded(compare_gt_zero, grad_output_op, mul_op));
   return mlir::stablehlo::Select(select_broadcasted[0], select_broadcasted[1],
                                  select_broadcasted[2]);
 }
 
-absl::StatusOr<DeviceBufferRef> LeakyReluShlo(const at::Tensor& self,
-                                              const at::Scalar& negative_slope,
-                                              const at::Tensor& out,
-                                              OpParamCacheKeys param_keys) {
+absl::StatusOr<DeviceBufferRef> AtenLeakyReluTensorHelper(
+    const at::Tensor& self, const at::Tensor& negative_slope,
+    const at::Tensor& out, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(const auto dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+      << "boolean dtypes are not supported, got " << self.scalar_type();
+  TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
+               error::kInvalidArgument)
+      << "integer dtypes are not supported, got " << self.scalar_type();
+  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+      << "complex dtypes are not supported, got " << self.scalar_type();
+
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
-  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
-                      MakeTensor(negative_slope, out.scalar_type()));
 
   auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     return BuildLeakyReluShlo(inputs[0], inputs[1], out_dtype);
   };
-  return DispatchOp<2>(std::move(op_builder), {self, negative_slope_tensor},
+  return DispatchOp<2>(std::move(op_builder), {self, negative_slope},
                        {.out_dtype = out_dtype,
                         .out_dims = CopyIntVector(self.sizes()),
                         .op_param_cache_keys = std::move(param_keys)});
 }
 
-absl::StatusOr<DeviceBufferRef> LeakyReluBackwardShlo(
+absl::StatusOr<DeviceBufferRef> AtenLeakyReluBackwardTensorHelper(
     const at::Tensor& grad_output, const at::Tensor& self_or_result,
-    const at::Scalar& negative_slope, bool self_is_result,
+    const at::Tensor& negative_slope, bool self_is_result,
     OpParamCacheKeys param_keys) {
-  TT_RET_CHECK(!self_is_result || negative_slope.toDouble() >= 0,
+  TT_ASSIGN_OR_RETURN(const auto dtype,
+                      ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
+  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+      << "boolean dtypes are not supported, got " << grad_output.scalar_type();
+  TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
                error::kInvalidArgument)
-      << "expected non-negative slopes for self_is_result=true, got "
-      << negative_slope.toDouble();
+      << "integer dtypes are not supported, got " << grad_output.scalar_type();
+  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+      << "complex dtypes are not supported, got " << grad_output.scalar_type();
+
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
-  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
-                      MakeTensor(negative_slope, grad_output.scalar_type()));
 
   auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
@@ -124,10 +135,34 @@ absl::StatusOr<DeviceBufferRef> LeakyReluBackwardShlo(
                                       out_dtype);
   };
   return DispatchOp<3>(std::move(op_builder),
-                       {grad_output, self_or_result, negative_slope_tensor},
+                       {grad_output, self_or_result, negative_slope},
                        {.out_dtype = out_dtype,
                         .out_dims = CopyIntVector(grad_output.sizes()),
                         .op_param_cache_keys = std::move(param_keys)});
+}
+
+absl::StatusOr<DeviceBufferRef> LeakyReluScalarHelper(
+    const at::Tensor& self, const at::Scalar& negative_slope,
+    const at::Tensor& out, OpParamCacheKeys param_keys) {
+  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
+                      MakeTensor(negative_slope, out.scalar_type()));
+  return AtenLeakyReluTensorHelper(self, negative_slope_tensor, out,
+                                   std::move(param_keys));
+}
+
+absl::StatusOr<DeviceBufferRef> LeakyReluBackwardScalarHelper(
+    const at::Tensor& grad_output, const at::Tensor& self_or_result,
+    const at::Scalar& negative_slope, bool self_is_result,
+    OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(!self_is_result || negative_slope.toDouble() >= 0,
+               error::kInvalidArgument)
+      << "expected non-negative slopes for self_is_result=true, got "
+      << negative_slope.toDouble();
+  TT_ASSIGN_OR_RETURN(at::Tensor negative_slope_tensor,
+                      MakeTensor(negative_slope, grad_output.scalar_type()));
+  return AtenLeakyReluBackwardTensorHelper(
+      grad_output, self_or_result, negative_slope_tensor, self_is_result,
+      std::move(param_keys));
 }
 
 }  // namespace
@@ -135,23 +170,13 @@ absl::StatusOr<DeviceBufferRef> LeakyReluBackwardShlo(
 at::Tensor& AtenLeakyReluOut(const at::Tensor& self,
                              const at::Scalar& negative_slope,
                              at::Tensor& out) {
-  TT_KERNEL(
-      OpName::kLeakyReluOut, param_keys, (self, negative_slope, out), {
-        TT_ASSIGN_OR_THROW(mlir::ElementType dtype,
-                           ConvertTo<mlir::ElementType>(self.scalar_type()));
-        TT_CHECK_THROW(!IsBoolean(dtype), error::kInvalidArgument)
-            << "boolean dtypes are not supported, got " << self.scalar_type();
-        TT_CHECK_THROW(!IsInteger(dtype, /*includeBool=*/false),
-                       error::kInvalidArgument)
-            << "integer dtypes are not supported, got " << self.scalar_type();
-        TT_CHECK_THROW(!IsComplex(dtype), error::kInvalidArgument)
-            << "complex dtypes are not supported, got " << self.scalar_type();
-        TT_ASSIGN_OR_THROW(
-            auto result_buf,
-            LeakyReluShlo(self, negative_slope, out, std::move(param_keys)));
-        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
-        return out;
-      });
+  TT_KERNEL(OpName::kLeakyReluOut, param_keys, (self, negative_slope, out), {
+    TT_ASSIGN_OR_THROW(auto result_buf,
+                       LeakyReluScalarHelper(self, negative_slope, out,
+                                             std::move(param_keys)));
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+    return out;
+  });
 }
 
 at::Tensor& AtenLeakyReluBackwardGradInput(const at::Tensor& grad_output,
@@ -163,14 +188,10 @@ at::Tensor& AtenLeakyReluBackwardGradInput(const at::Tensor& grad_output,
       OpName::kLeakyReluBackward, param_keys,
       (grad_output, self_or_result, negative_slope, self_is_result, grad_input),
       {
-        TT_CHECK_THROW(!self_is_result || negative_slope.toDouble() >= 0,
-                       error::kInvalidArgument)
-            << "self_is_result=true is only"
-               "supported for non-negative slopes";
-        TT_ASSIGN_OR_THROW(
-            auto result_buf,
-            LeakyReluBackwardShlo(grad_output, self_or_result, negative_slope,
-                                  self_is_result, std::move(param_keys)));
+        TT_ASSIGN_OR_THROW(auto result_buf,
+                           LeakyReluBackwardScalarHelper(
+                               grad_output, self_or_result, negative_slope,
+                               self_is_result, std::move(param_keys)));
         TT_THROW_IF_ERROR(
             AssignBufferToAtTensor(std::move(result_buf), grad_input));
         return grad_input;

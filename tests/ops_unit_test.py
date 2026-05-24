@@ -2138,6 +2138,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         )
     )
 
+  def test_leaky_relu_scalar_promotion(self):
+    for dtype in [torch.float32, torch.bfloat16, torch.float64]:
+      for negative_slope in [0.01, 0.2, 1.5]:
+        with self.subTest(dtype=dtype, negative_slope=negative_slope):
+
+          def run_test(device, dtype=dtype, negative_slope=negative_slope):
+            x = torch.tensor(
+                [-2.0, -0.5, 0.0, 1.0, 2.5],
+                dtype=dtype,
+                device=device,
+                requires_grad=True,
+            )
+            y = torch.nn.functional.leaky_relu(x, negative_slope=negative_slope)
+            y.sum().backward()
+            grad = x.grad.clone()
+
+            x_inplace = torch.tensor(
+                [-2.0, -0.5, 0.0, 1.0, 2.5], dtype=dtype, device=device
+            )
+            y_inplace = torch.nn.functional.leaky_relu_(
+                x_inplace, negative_slope=negative_slope
+            )
+
+            return y, grad, y_inplace
+
+          self.assert_close_tpu_vs_cpu(run_test)
+
   def test_concurrent_ops(self):
     """Tests that ops can run concurrently without correctness issues."""
 
