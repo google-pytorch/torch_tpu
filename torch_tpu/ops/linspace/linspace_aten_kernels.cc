@@ -29,9 +29,11 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/common/fixed_size_span.h"
+#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
-#include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -168,8 +170,8 @@ absl::StatusOr<mlir::MlirOp> BuildLinspaceInterpolation(
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLinspaceOp(
-    mlir::MlirBuilder& builder, int64_t steps, const at::Scalar& start,
-    const at::Scalar& end, mlir::ElementType output_mlir_type) {
+    mlir::MlirBuilder& builder, int64_t steps, mlir::MlirOp start_op,
+    mlir::MlirOp end_op, mlir::ElementType output_mlir_type) {
   if (steps == 0) {
     return MakeZeroSizedTensor(builder, output_mlir_type);
   }
@@ -184,8 +186,10 @@ absl::StatusOr<mlir::MlirOp> BuildLinspaceOp(
 
   // PyTorch CPU first casts start and end to output dtype, then converts to
   // compute type.
-  TT_ASSIGN_OR_RETURN(auto start_casted,
-                      MakeConstant(builder, start, output_mlir_type, {}));
+  mlir::MlirOp start_casted = start_op;
+  if (GetTensorTypeOrDie(start_op).getElementType() != mlir_type) {
+    start_casted = mlir::stablehlo::ConvertElementType(start_op, mlir_type);
+  }
   auto start_scalar =
       mlir::stablehlo::ConvertElementType(start_casted, compute_type);
   start_scalar = PrepareScalar(start_scalar, compute_tensor_type);
@@ -198,8 +202,10 @@ absl::StatusOr<mlir::MlirOp> BuildLinspaceOp(
     return start_scalar;
   }
 
-  TT_ASSIGN_OR_RETURN(auto end_casted,
-                      MakeConstant(builder, end, output_mlir_type, {}));
+  mlir::MlirOp end_casted = end_op;
+  if (GetTensorTypeOrDie(end_op).getElementType() != mlir_type) {
+    end_casted = mlir::stablehlo::ConvertElementType(end_op, mlir_type);
+  }
   auto end_scalar =
       mlir::stablehlo::ConvertElementType(end_casted, compute_type);
   end_scalar = PrepareScalar(end_scalar, compute_tensor_type);
@@ -215,39 +221,129 @@ absl::StatusOr<mlir::MlirOp> BuildLinspaceOp(
   return compute_result;
 }
 
-absl::StatusOr<MlirNullaryOpBuilder> GetLinspaceOpBuilder(
-    int64_t steps, const at::Scalar start, const at::Scalar end,
-    const at::ScalarType output_dtype) {
+absl::StatusOr<NAryMlirOpBuilder<2>> GetLinspaceOpBuilder(
+    int64_t steps, const at::ScalarType output_dtype) {
   TT_ASSIGN_OR_RETURN(const auto output_mlir_type,
                       ConvertTo<mlir::ElementType>(output_dtype));
 
-  return [steps, output_mlir_type, start,
-          end](mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
-    return BuildLinspaceOp(builder, steps, start, end, output_mlir_type);
+  return [steps, output_mlir_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+             -> absl::StatusOr<mlir::MlirOp> {
+    auto& [start_op, end_op] = inputs;
+    return BuildLinspaceOp(start_op.getBuilder(), steps, start_op, end_op,
+                           output_mlir_type);
   };
+}
+
+absl::StatusOr<DeviceBufferRef> LinspaceHelper(
+    const at::Tensor& start_tensor, const at::Tensor& end_tensor, int64_t steps,
+    at::ScalarType output_scalar_type, OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(steps >= 0, error::kInvalidArgument)
+      << "expected non-negative steps, got " << steps;
+
+  TT_RET_CHECK(output_scalar_type != at::ScalarType::Bool || steps <= 1,
+               error::kInvalidArgument)
+      << "expected output dtype to be other than bool, got "
+      << output_scalar_type;
+
+  TT_ASSIGN_OR_RETURN(const auto output_mlir_type,
+                      ConvertTo<mlir::ElementType>(output_scalar_type));
+
+  TT_RETURN_IF_ERROR(ValidateTensorByteSize({steps}, output_mlir_type));
+
+  TT_ASSIGN_OR_RETURN(auto op_builder,
+                      GetLinspaceOpBuilder(steps, output_scalar_type));
+
+  TT_ASSIGN_OR_RETURN(
+      auto result_buf,
+      DispatchOp<2>(std::move(op_builder), {start_tensor, end_tensor},
+                    {.out_dtype = output_mlir_type,
+                     .out_dims = {steps},
+                     .op_param_cache_keys = std::move(param_keys)}));
+  return result_buf;
 }
 
 }  // namespace
 
 at::Tensor& AtenLinspaceOut(const at::Scalar& start, const at::Scalar& end,
                             int64_t steps, at::Tensor& out) {
-  TT_KERNEL(OpName::kLinspaceOut, param_keys, (start, end, steps, out), {
-    TT_CHECK_THROW(steps >= 0, error::kInvalidArgument)
-        << "expected non-negative steps, got " << ToString(steps);
+  auto promoted_start = PromoteScalar(start);
+  auto promoted_end = PromoteScalar(end);
+  TT_KERNEL(
+      OpName::kLinspaceOut, param_keys,
+      (promoted_start, promoted_end, steps, out), {
+        TT_ASSIGN_OR_THROW(const at::Tensor start_tensor,
+                           promoted_start.GetTensor(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(const at::Tensor end_tensor,
+                           promoted_end.GetTensor(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            auto result_buf,
+            LinspaceHelper(start_tensor, end_tensor, steps, out.scalar_type(),
+                           std::move(param_keys)));
+        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+        return out;
+      });
+}
 
-    const at::ScalarType output_dtype = out.scalar_type();
-    TT_CHECK_THROW(output_dtype != at::ScalarType::Bool || steps <= 1,
-                   error::kInvalidArgument)
-        << "expected output dtype to be other than bool, got "
-        << ToString(output_dtype);
-    TT_ASSIGN_OR_THROW(auto op_builder,
-                       GetLinspaceOpBuilder(steps, start, end, output_dtype));
+at::Tensor& AtenLinspaceTensorTensorOut(const at::Tensor& start,
+                                        const at::Tensor& end, int64_t steps,
+                                        at::Tensor& out) {
+  TT_CHECK_THROW(start.dim() == 0 && end.dim() == 0, error::kInvalidArgument)
+      << "linspace only supports 0-dimensional start and end tensors, "
+         "but got start with "
+      << start.dim() << " dimension(s) and end with " << end.dim()
+      << " dimension(s).";
+  TT_KERNEL(
+      OpName::kLinspaceTensorTensorOut, param_keys, (start, end, steps, out), {
+        TT_ASSIGN_OR_THROW(auto result_buf,
+                           LinspaceHelper(start, end, steps, out.scalar_type(),
+                                          std::move(param_keys)));
+        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+        return out;
+      });
+}
 
-    TT_THROW_IF_ERROR(ApplyNullaryOpOut(out, std::move(op_builder),
-                                        output_dtype, {steps},
-                                        std::move(param_keys)));
-  });
-  return out;
+at::Tensor& AtenLinspaceTensorScalarOut(const at::Tensor& start,
+                                        const at::Scalar& end, int64_t steps,
+                                        at::Tensor& out) {
+  TT_CHECK_THROW(start.dim() == 0, error::kInvalidArgument)
+      << "linspace only supports 0-dimensional start and end tensors, "
+         "but got start with "
+      << start.dim() << " dimension(s).";
+  auto promoted_end = PromoteScalar(end);
+  TT_KERNEL(
+      OpName::kLinspaceTensorScalarOut, param_keys,
+      (start, promoted_end, steps, out), {
+        TT_ASSIGN_OR_THROW(const at::Tensor end_tensor,
+                           promoted_end.GetTensor(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            auto result_buf,
+            LinspaceHelper(start, end_tensor, steps, out.scalar_type(),
+                           std::move(param_keys)));
+        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+        return out;
+      });
+}
+
+at::Tensor& AtenLinspaceScalarTensorOut(const at::Scalar& start,
+                                        const at::Tensor& end, int64_t steps,
+                                        at::Tensor& out) {
+  TT_CHECK_THROW(end.dim() == 0, error::kInvalidArgument)
+      << "linspace only supports 0-dimensional start and end tensors, "
+         "but got end with "
+      << end.dim() << " dimension(s).";
+  auto promoted_start = PromoteScalar(start);
+  TT_KERNEL(
+      OpName::kLinspaceScalarTensorOut, param_keys,
+      (promoted_start, end, steps, out), {
+        TT_ASSIGN_OR_THROW(const at::Tensor start_tensor,
+                           promoted_start.GetTensor(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            auto result_buf,
+            LinspaceHelper(start_tensor, end, steps, out.scalar_type(),
+                           std::move(param_keys)));
+        TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu

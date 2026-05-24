@@ -815,6 +815,12 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "linalg_vector_norm.out";
     case OpName::kLinspaceOut:
       return "linspace.out";
+    case OpName::kLinspaceScalarTensorOut:
+      return "linspace.Scalar_Tensor_out";
+    case OpName::kLinspaceTensorScalarOut:
+      return "linspace.Tensor_Scalar_out";
+    case OpName::kLinspaceTensorTensorOut:
+      return "linspace.Tensor_Tensor_out";
     case OpName::kLocalScalarDense:
       return "_local_scalar_dense";
     case OpName::kLog10Out:

@@ -2347,11 +2347,70 @@ class TpuVsCpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
   def test_linspace_bool_error(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""linspace(): expected output dtype to be other than bool, got bool""",
+        tpu="""linspace(): expected output dtype to be other than bool, got Bool""",
         cpu=""""linspace_cpu" not implemented for 'Bool'""",
     ):
       out = torch.empty(5, dtype=torch.bool, device=et.device())
       torch.linspace(0, 10, 5, out=out)
+
+  def test_linspace_start_1d_tensor_tensor(self):
+    start = torch.tensor([0.0, 1.0], device=et.device())
+    end = torch.tensor(10.0, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s) and end with 0 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s) and end with 0 dimension(s).""",
+    ):
+      torch.linspace(start, end, 5)
+
+  def test_linspace_start_1d_tensor_scalar(self):
+    start = torch.tensor([0.0, 1.0], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s).""",
+    ):
+      torch.linspace(start, 10.0, 5)
+
+  def test_linspace_end_1d_scalar_tensor(self):
+    end = torch.tensor([10.0, 20.0], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got end with 1 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got end with 1 dimension(s).""",
+    ):
+      torch.linspace(0.0, end, 5)
+
+  def test_linspace_out_start_1d_tensor_tensor(self):
+    start = torch.tensor([0.0, 1.0], device=et.device())
+    end = torch.tensor(10.0, device=et.device())
+    out = torch.empty(5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s) and end with 0 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s) and end with 0 dimension(s).""",
+    ):
+      torch.linspace(start, end, 5, out=out)
+
+  def test_linspace_out_start_1d_tensor_scalar(self):
+    start = torch.tensor([0.0, 1.0], device=et.device())
+    out = torch.empty(5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got start with 1 dimension(s).""",
+    ):
+      torch.linspace(start, 10.0, 5, out=out)
+
+  def test_linspace_out_end_1d_scalar_tensor(self):
+    end = torch.tensor([10.0, 20.0], device=et.device())
+    out = torch.empty(5, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linspace only supports 0-dimensional start and end tensors, but got end with 1 dimension(s).""",
+        cpu="""linspace only supports 0-dimensional start and end tensors, but got end with 1 dimension(s).""",
+    ):
+      torch.linspace(0.0, end, 5, out=out)
 
   def test_arange_infinite_inputs(self):
     """Tests that arange fails on infinite inputs with expected error.

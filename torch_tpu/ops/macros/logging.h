@@ -290,7 +290,6 @@ void CheckScalarInput() {
       kOpName == OpName::kLeakyReluBackward ||           //
       kOpName == OpName::kLeakyReluOut ||                //
       kOpName == OpName::kLinalgVectorNormOut ||         //
-      kOpName == OpName::kLinspaceOut ||                 //
       kOpName == OpName::kLocalScalarDense ||            //
       kOpName == OpName::kLogSoftmaxBackwardDataOut ||   //
       kOpName == OpName::kLt ||                          //

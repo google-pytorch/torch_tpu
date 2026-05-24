@@ -5871,6 +5871,30 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_linspace_scalar_promotion(self):
+    def test_fn(device):
+      start = torch.tensor(1.0, device=device)
+      end = torch.tensor(10.0, device=device)
+      return torch.linspace(start, end, steps=10)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_linspace_scalar_promotion_mixed(self):
+    def test_fn(device):
+      start = 1.0
+      end = torch.tensor(10.0, device=device)
+      return torch.linspace(start, end, steps=10)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
+  def test_linspace_scalar_promotion_mixed_tensor_scalar(self):
+    def test_fn(device):
+      start = torch.tensor(1.0, device=device)
+      end = 10.0
+      return torch.linspace(start, end, steps=10)
+
+    self.assert_close_tpu_vs_cpu(test_fn)
+
   def test_linalg_vector_norm_float_64(self):
 
     def fn(device, norm, dim=None, keepdim=False):

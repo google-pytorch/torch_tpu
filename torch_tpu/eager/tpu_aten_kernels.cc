@@ -530,6 +530,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   Impl(m, OpName::kLinalgSolveTriangularOut, AtenLinalgSolveTriangularOut);
   Impl(m, OpName::kLinalgVectorNormOut, AtenLinalgVectorNormOut);
   Impl(m, OpName::kLinspaceOut, AtenLinspaceOut);
+  Impl(m, OpName::kLinspaceScalarTensorOut, AtenLinspaceScalarTensorOut);
+  Impl(m, OpName::kLinspaceTensorScalarOut, AtenLinspaceTensorScalarOut);
+  Impl(m, OpName::kLinspaceTensorTensorOut, AtenLinspaceTensorTensorOut);
   Impl(m, OpName::kLocalScalarDense, AtenLocalScalarDense);
   Impl(m, OpName::kLog10Out, AtenLog10Out);
   Impl(m, OpName::kLog1pOut, AtenLog1pOut);

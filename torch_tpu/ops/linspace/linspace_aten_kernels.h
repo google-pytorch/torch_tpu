@@ -26,6 +26,18 @@ namespace torch_tpu {
 at::Tensor& AtenLinspaceOut(const at::Scalar& start, const at::Scalar& end,
                             int64_t steps, at::Tensor& out);
 
+at::Tensor& AtenLinspaceTensorTensorOut(const at::Tensor& start,
+                                        const at::Tensor& end, int64_t steps,
+                                        at::Tensor& out);
+
+at::Tensor& AtenLinspaceTensorScalarOut(const at::Tensor& start,
+                                        const at::Scalar& end, int64_t steps,
+                                        at::Tensor& out);
+
+at::Tensor& AtenLinspaceScalarTensorOut(const at::Scalar& start,
+                                        const at::Tensor& end, int64_t steps,
+                                        at::Tensor& out);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_LINSPACE_LINSPACE_ATEN_KERNELS_H_
