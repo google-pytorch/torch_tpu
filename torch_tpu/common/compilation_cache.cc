@@ -354,6 +354,19 @@ void CompilationCache::EvictAll() {
   ABSL_LOG(INFO) << "Compilation cache evicted.";
 }
 
+void CompilationCache::BlockOnInflightCompilations() {
+  if (!IsInitialized()) {
+    return;
+  }
+  absl::MutexLock lock(cache_mutex_);
+  // Wait synchronously under mutex condition until the atomic inflight counter
+  // reaches 0, confirming that all parallel threadpool worker tasks have
+  // fully completed execution and set their promise/future statuses.
+  cache_mutex_.Await(absl::Condition(
+      +[](int64_t* count) { return *count == 0; },
+      &num_inflight_compilations_));
+}
+
 void CompilationCache::SetAllowCacheMode(bool allow) {
   absl::MutexLock lock(cache_mutex_);
   allow_cache_mode_ = allow;
@@ -848,6 +861,12 @@ void CompilationCache::EnqueueCompilation(
     CompilationCacheKey key, ContextedModule contexted_module,
     UniqueCompileOptions compile_options) {
   EnsureInitialized();
+  {
+    absl::MutexLock lock(cache_mutex_);
+    // Increment the atomic inflight compilations counter under cache lock
+    // BEFORE scheduling the background task on the thread pool to block races.
+    num_inflight_compilations_++;
+  }
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
                                 UniqueCompileOptions options) mutable {
@@ -859,6 +878,20 @@ void CompilationCache::EnqueueCompilation(
   compilation_pool_->Schedule(
       [this, key, builder = std::move(executable_builder),
        compile_options = std::move(compile_options)]() mutable {
+        // Define a thread-safe RAII guard inside the scheduled task block.
+        // C++ guarantees stack-allocated objects are destructed during stack
+        // unwinding on all return, abort, and exceptional exit paths. This
+        // ensures the atomic inflight count is safely decremented, fully
+        // preventing thread pool synchronization barriers from deadlocking.
+        struct InflightCompilationGuard {
+          CompilationCache* cache;
+          explicit InflightCompilationGuard(CompilationCache* c) : cache(c) {}
+          ~InflightCompilationGuard() {
+            absl::MutexLock lock(cache->cache_mutex_);
+            cache->num_inflight_compilations_--;
+          }
+        };
+        InflightCompilationGuard guard(this);
         torch_tpu::ScopedMemMeasuringContainer container;
         this->GetFromTier2OrCompile(std::move(key), std::move(builder),
                                     std::move(compile_options));

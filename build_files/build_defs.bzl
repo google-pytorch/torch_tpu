@@ -739,12 +739,16 @@ def torch_tpu_py_test(
     # We define shared library (LD_LIBRARY_PATH) and Python paths (PYTHONPATH) here.
 
     # 1. Define sets of paths
-    # Standard paths for stable PyPI/wheel mode
+    # Standard paths for stable PyPI/wheel mode. Prepend workspace solib
+    # directories at the top to allow the OS runtime dynamic loader to load the
+    # locally compiled C++ extension objects (e.g. pybind binding targets) from the
+    # active CitC client instead of resolving against the stale release wheel.
     std_ld = [
+        "../_solib_k8",
+        "../_solib_x86_64",
         "../pypi_torch/site-packages/torch/lib",
         "../pypi_libtpu/site-packages/libtpu",
         "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal",
-        "../_solib_x86_64",
     ]
 
     # Extra paths for local development mode

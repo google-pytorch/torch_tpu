@@ -393,11 +393,12 @@ std::string DeviceBufferRef::DebugString() const {
 
 DeviceBufferRefState DeviceBufferList::state(int64_t index) const {
   ABSL_CHECK(index >= 0 && index < shapes_.size());  // CRASH_OK
-  if (std::holds_alternative<DeferredOp>(data_)) {
-    return DeviceBufferRefState::kDeferred;
-  }
-  if (std::holds_alternative<MaterializedBuffers>(data_)) {
+  absl::MutexLock lock(mutex_);
+  if (materialized_buffers_ != nullptr) {
     return DeviceBufferRefState::kMaterialized;
+  }
+  if (deferred_op_ != nullptr) {
+    return DeviceBufferRefState::kDeferred;
   }
   return DeviceBufferRefState::kPlaceholder;
 }
@@ -432,20 +433,24 @@ absl::Status DeviceBufferList::Synchronize() const {
 
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
 DeviceBufferList::GetOrMaterializeBuffer(int64_t index) const {
-  if (std::holds_alternative<MaterializedBuffers>(data_)) {
-    const auto& buffers = std::get<MaterializedBuffers>(data_);
-    TT_RETURN_IF_ERROR(buffers.Await());
-    TT_RET_CHECK(index >= 0 && index < buffers.size(), error::kInvalidArgument)
-        << "Index " << index << " is out of bounds for buffers of size "
-        << buffers.size();
-    xla::PjRtBuffer* maybe_buffer = buffers[index];
-    TT_RET_CHECK(maybe_buffer, error::kFailedPrecondition)
-        << "MaterializedBuffers has no/null PjRtBuffer at index " << index;
-    return maybe_buffer;
+  const MaterializedBuffers* mb = nullptr;
+  {
+    absl::MutexLock lock(mutex_);
+    mb = materialized_buffers_.get();
   }
-  return TT_ERROR(error::kFailedPrecondition)
-         << "DeviceBufferList does not have a PjRtBuffer at index " << index
-         << " because it is not materialized";
+  if (mb == nullptr) {
+    return TT_ERROR(error::kFailedPrecondition)
+           << "DeviceBufferList does not have a PjRtBuffer at index " << index
+           << " because it is not materialized";
+  }
+  TT_RETURN_IF_ERROR(mb->Await());
+  TT_RET_CHECK(index >= 0 && index < mb->size(), error::kInvalidArgument)
+      << "Index " << index << " is out of bounds for buffers of size "
+      << mb->size();
+  xla::PjRtBuffer* maybe_buffer = (*mb)[index];
+  TT_RET_CHECK(maybe_buffer, error::kFailedPrecondition)
+      << "MaterializedBuffers has no/null PjRtBuffer at index " << index;
+  return maybe_buffer;
 }
 
 // Delegate responsibility for deleting the DeviceBufferRef to the
@@ -685,8 +690,9 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::MakePlaceholder(
 
 absl::Status DeviceBufferList::SetAsMaterialized() {
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as empty materialized";
-  if (!std::holds_alternative<MaterializedBuffers>(data_)) {
-    data_ = MaterializedBuffers();
+  absl::MutexLock lock(mutex_);
+  if (materialized_buffers_ == nullptr) {
+    materialized_buffers_ = std::make_unique<MaterializedBuffers>();
   }
   return absl::OkStatus();
 }
@@ -727,17 +733,22 @@ absl::Status ValidateBufferShape(const Shape& at_shape,
 
 absl::Status DeviceBufferList::SetAsMaterialized(
     std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
-  // Call SetAsMaterialized() so as to initialize field data_ with
-  // MaterializedBuffers. The body of this function expects that.
+  // Call SetAsMaterialized() so as to initialize materialized_buffers_ if not
+  // already.
   TT_RETURN_IF_ERROR(SetAsMaterialized());
 
   TT_RET_CHECK(shapes_.size() == buffers.size(), error::kInvalidArgument)
       << "unexpected number of buffers; expected: " << shapes_.size()
       << " but got: " << buffers.size();
-  auto* materialized_buffers = std::get_if<MaterializedBuffers>(&data_);
-  TT_RET_CHECK(materialized_buffers, error::kInvalidArgument)
+
+  MaterializedBuffers* mb = nullptr;
+  {
+    absl::MutexLock lock(mutex_);
+    mb = materialized_buffers_.get();
+  }
+  TT_RET_CHECK(mb, error::kInvalidArgument)
       << "DeviceBufferList is not in a materialized state";
-  TT_RET_CHECK(!materialized_buffers->IsAvailable(), error::kInvalidArgument)
+  TT_RET_CHECK(!mb->IsAvailable(), error::kInvalidArgument)
       << "DeviceBufferList was already made available";
   for (size_t i = 0; i < shapes_.size(); ++i) {
     TT_RET_CHECK(!buffers[i]->IsDeleted(), error::kInvalidArgument)
@@ -760,7 +771,7 @@ absl::Status DeviceBufferList::SetAsMaterialized(
         << " but got: " << ToString(actual_element_type);
   }
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
-  return materialized_buffers->SetAsAvailable(std::move(buffers));
+  return mb->SetAsAvailable(std::move(buffers));
 }
 
 absl::Status DeviceBufferList::MarkDynamic(int64_t index, int64_t dimension,

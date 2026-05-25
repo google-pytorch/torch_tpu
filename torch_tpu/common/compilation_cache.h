@@ -228,6 +228,10 @@ class CompilationCache {
   // in-flight compilations to complete.
   void EvictAll() ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
+  // Blocks the calling thread synchronously until all in-flight background
+  // compilations currently scheduled on the thread pool are fully complete.
+  void BlockOnInflightCompilations() ABSL_LOCKS_EXCLUDED(cache_mutex_);
+
   // Sets the cache to allow caching or not. On initialization, the cache is
   // in allow-cache mode by default. We only need to call this function if we
   // want to disable caching (e.g. for debugging or perf analysis).
@@ -465,6 +469,10 @@ class CompilationCache {
   // Lower-priority thread pool for running backup compilations.
   // Set only when tier-3 cache is enabled and local backup task is enabled.
   std::unique_ptr<ThreadPool> backup_compilation_pool_;
+
+  // Tracks the number of in-flight background compilations currently scheduled
+  // and running on the background compilation pool threads.
+  int64_t num_inflight_compilations_ ABSL_GUARDED_BY(cache_mutex_) = 0;
 
   // The cache of successfully compiled and in flight executables.
   absl::flat_hash_map<CompilationCacheKey, CacheEntry,

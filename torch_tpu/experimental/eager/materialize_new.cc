@@ -41,6 +41,7 @@
 #include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/common/compilation.h"
+#include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/error_utils.h"
@@ -108,6 +109,8 @@ class MaterializationWorker {
 
   absl::Status last_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
   std::thread execution_thread_;
+  absl::flat_hash_set<const DeviceBufferList*> pending_nodes_
+      ABSL_GUARDED_BY(mutex_);
 
   MaterializationWorker() {
     Reset();
@@ -185,14 +188,29 @@ absl::Status MaterializationWorker::Materialize(
                        }),
         current_queue.end());
 
-    if (current_queue.empty() && nodes_to_materialize.empty()) {
+    // Filter out nodes that are already targeted and pending materialization in
+    // previous background queue segments to prevent redundant compilations
+    // and executions.
+    std::vector<SharedDeviceBufferList> final_nodes_to_materialize;
+    final_nodes_to_materialize.reserve(nodes_to_materialize.size());
+    for (const auto& node : nodes_to_materialize) {
+      if (pending_nodes_.insert(node.get()).second) {
+        final_nodes_to_materialize.push_back(node);
+      } else {
+        ABSL_VLOG(1) << "[MaterializationWorker::Materialize] Skipping node "
+                     << node.get()
+                     << " because it is already pending materialization.";
+      }
+    }
+
+    if (current_queue.empty() && final_nodes_to_materialize.empty()) {
       return absl::OkStatus();
     }
     ABSL_CHECK(  // CRASH_OK
         queues_[dispatch_queue_id_].nodes_to_materialize.empty());
     queues_[dispatch_queue_id_].nodes_to_materialize.insert(
         queues_[dispatch_queue_id_].nodes_to_materialize.end(),
-        nodes_to_materialize.begin(), nodes_to_materialize.end());
+        final_nodes_to_materialize.begin(), final_nodes_to_materialize.end());
     queues_[dispatch_queue_id_].reason = reason;
     queues_[dispatch_queue_id_].is_full = true;
     IncrementQueueId(dispatch_queue_id_);
@@ -212,6 +230,11 @@ absl::Status MaterializationWorker::BlockOnPendingMaterializations() {
         this, &MaterializationWorker::IsExecutionThreadCaughtUp));
   }
 
+  // Wait for all background compiler threadpool threads to fully complete
+  // static compilation and executable loading before unblocking the caller
+  // thread.
+  CompilationCache::GetInstance().BlockOnInflightCompilations();
+
   ABSL_VLOG(1) << ">>> BlockOnPendingMaterializations DONE";
   return GetAndResetLastStatus();
 }
@@ -225,6 +248,7 @@ void MaterializationWorker::Reset() {
   for (auto& queue : queues_) {
     queue.Reset();
   }
+  pending_nodes_.clear();
   must_exit_ = false;
   last_status_ = absl::OkStatus();
 }
@@ -270,8 +294,41 @@ void MaterializationWorker::ThreadLoop() {
     }
 
     // Materialize the claimed queue without holding the mutex.
-    absl::Status status = MaterializeQueue(current_queue, nodes_to_materialize,
-                                           current_reason, *mlir_context);
+    // If a preceding queue segment failed, a static or dynamic hardware
+    // execution OOM occurred, poisoning the PJRT client device registry. To
+    // protect downstream test iterations from late poison leak cascades, we
+    // abort, drop, and skip all subsequent enqueued queue segments immediately,
+    // marking their output nodes exceptionally errored under inlined blocks,
+    // preventing remote compiler heap allocations from executing and poisoning
+    // the environment.
+    absl::Status status = absl::OkStatus();
+    bool should_skip = false;
+    absl::Status skipped_status;
+    {
+      absl::MutexLock lock(mutex_);
+      if (!last_status_.ok()) {
+        should_skip = true;
+        skipped_status = last_status_;
+      }
+    }
+
+    if (should_skip) {
+      ABSL_VLOG(1)
+          << "[ThreadLoop] Skipping queue segment due to previous error: "
+          << skipped_status;
+      for (const auto& output : nodes_to_materialize) {
+        auto* absl_nonnull node = output.get();
+        auto* materialized_buffers = node->materialized_buffers();
+        if (materialized_buffers == nullptr) {
+          continue;
+        }
+        materialized_buffers->SetAsError(skipped_status);
+      }
+      status = skipped_status;
+    } else {
+      status = MaterializeQueue(current_queue, nodes_to_materialize,
+                                current_reason, *mlir_context);
+    }
 
     {
       absl::MutexLock lock(mutex_);
@@ -288,6 +345,14 @@ void MaterializationWorker::ThreadLoop() {
       std::swap(nodes_to_materialize,
                 queues_[execution_queue_id_].nodes_to_materialize);
       queues_[current_execution_id].queue.clear();
+
+      // Erase completed targets from pending_nodes_ to allow them to be
+      // targeted again by future sync boundaries.
+      for (const auto& node :
+           queues_[execution_queue_id_].nodes_to_materialize) {
+        pending_nodes_.erase(node.get());
+      }
+
       queues_[execution_queue_id_].nodes_to_materialize.clear();
       queues_[current_execution_id].is_full = false;
       IncrementQueueId(execution_queue_id_);
@@ -525,12 +590,19 @@ absl::Status MaterializationWorker::MaterializeQueue(
     execution_tasks.push_back(std::move(execution_task));
   }
 
-  // Launch compiled kernels.
+  // Launch compiled kernels. Run ALL execution tasks sequentially (even if
+  // an earlier task fails) to guarantee that all background compilation and
+  // loading futures mapped to this queue are cleanly blocked on, queried, and
+  // consumed, preventing late device context poison status leaks.
+  absl::Status final_status = absl::OkStatus();
   for (auto& execution_task : execution_tasks) {
-    TT_RETURN_IF_ERROR(execution_task.Run());
+    absl::Status task_status = execution_task.Run();
+    if (!task_status.ok() && final_status.ok()) {
+      final_status = task_status;
+    }
   }
 
-  return absl::OkStatus();
+  return final_status;
 }
 
 }  // namespace

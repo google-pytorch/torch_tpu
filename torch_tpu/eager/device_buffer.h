@@ -807,7 +807,7 @@ class DeviceBufferList {
   // If the DeviceBufferList has a DeferredOp, returns a non-null pointer to
   // it. Otherwise, return a nullptr.
   [[nodiscard]] const DeferredOp* absl_nullable deferred_op() const {
-    return std::get_if<DeferredOp>(&data_);
+    return deferred_op_.get();
   }
 
   // Awaits for the device buffer to be ready to read. If the buffer is the
@@ -824,10 +824,12 @@ class DeviceBufferList {
   // the MaterializedBuffers. Otherwise, returns a nullptr.
   [[nodiscard]] const MaterializedBuffers* absl_nullable materialized_buffers()
       const {
-    return std::get_if<MaterializedBuffers>(&data_);
+    absl::MutexLock lock(mutex_);
+    return materialized_buffers_.get();
   }
   [[nodiscard]] MaterializedBuffers* absl_nullable materialized_buffers() {
-    return std::get_if<MaterializedBuffers>(&data_);
+    absl::MutexLock lock(mutex_);
+    return materialized_buffers_.get();
   }
 
   // Returns the representative ID of the subgraph this node belongs to.
@@ -857,7 +859,7 @@ class DeviceBufferList {
   // the type specified by the argument.
   DeviceBufferList(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
                    const mlir::ElementType element_type)
-      : subgraph_(nullptr) {
+      : deferred_op_(nullptr), subgraph_(nullptr) {
     creation_index_ = g_creation_index.fetch_add(1);
 
     const xla::Shape& on_device_shape = buffer->on_device_shape();
@@ -867,9 +869,10 @@ class DeviceBufferList {
     auto buffer_address = buffer.get();
     std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
     buffers.push_back(std::move(buffer));
-    data_ = MaterializedBuffers(std::move(buffers));
-    ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (materialized)] Created. Dims: "
-                 << ToString(shapes_[0].dimensions())
+    materialized_buffers_ =
+        std::make_unique<MaterializedBuffers>(std::move(buffers));
+    ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (materialized)] Created: "
+                 << this << ", Dims: " << ToString(shapes_[0].dimensions())
                  << ", Type: " << ToString(shapes_[0].dtype())
                  << ", PjRtBuffer: " << buffer_address
                  << ", creation_index: " << creation_index_;
@@ -883,15 +886,15 @@ class DeviceBufferList {
   // failures.
   DeviceBufferList(DeferredOp deferred_op, std::vector<Shape> shapes,
                    std::shared_ptr<Subgraph> subgraph)
-      : data_(DeferredOp(std::move(deferred_op))),
+      : deferred_op_(std::make_unique<DeferredOp>(std::move(deferred_op))),
         shapes_(std::move(shapes)),
         subgraph_(std::move(subgraph)) {
     creation_index_ = g_creation_index.fetch_add(1);
-    ABSL_VLOG(3)
-        << "[DeviceBuffer CONSTRUCTOR (deferred)] Created. DeferredOp: "
-        << std::get<DeferredOp>(data_).op_name()
-        << ", Number of outputs: " << shapes_.size()
-        << ", Subgraph: " << subgraph_.get();
+    ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (deferred)] Created: " << this
+                 << ", DeferredOp: " << deferred_op_->op_name()
+                 << ", Number of outputs: " << shapes_.size()
+                 << ", Subgraph: " << subgraph_.get()
+                 << ", creation_index: " << creation_index_;
   }
 
   // Private constructor for a DeviceBufferList with a single unbacked buffer.
@@ -901,23 +904,26 @@ class DeviceBufferList {
   // The buffer is a compiled mode placeholder, representing data that the
   // compiled executable will expect to be provided as an argument.
   DeviceBufferList(Dimensions dimensions, const mlir::ElementType element_type)
-      : subgraph_(nullptr) {
+      : deferred_op_(nullptr), subgraph_(nullptr) {
     creation_index_ = g_creation_index.fetch_add(1);
     shapes_.emplace_back(std::move(dimensions), element_type);
-    ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (bufferless)] Created. Dims: "
-                 << ToString(shapes_[0].dimensions())
-                 << ", Type: " << ToString(shapes_[0].dtype());
+    ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (bufferless)] Created: " << this
+                 << ", Dims: " << ToString(shapes_[0].dimensions())
+                 << ", Type: " << ToString(shapes_[0].dtype())
+                 << ", creation_index: " << creation_index_;
   }
 
   static std::atomic_uint64_t g_creation_index;
 
+  mutable absl::Mutex mutex_;
   // The data backing the DeviceBufferList.
-  //   std::monostate: compiled mode placeholder buffers.
-  //   DeferredOp: a deferred operation, with no actual data but an op_builder
-  //     to materialize it when needed.
-  //   MaterializedBuffers: materialized buffers, which may or may not yet be
-  //   backed by PjRtBuffers - however, the materialization has been scheduled.
-  std::variant<std::monostate, DeferredOp, MaterializedBuffers> data_;
+  //   deferred_op_: a deferred operation, with no actual data but an op_builder
+  //     to materialize it when needed. Set once at construction, immutable.
+  const std::unique_ptr<DeferredOp> deferred_op_;
+  //   materialized_buffers_: materialized buffers, which may or may not yet be
+  //   backed by PjRtBuffers. Mutable and protected by mutex_.
+  std::unique_ptr<MaterializedBuffers> materialized_buffers_
+      ABSL_GUARDED_BY(mutex_);
   // The shapes of all the buffers in the DeviceBufferList.
   std::vector<Shape> shapes_;
   // The subgraph this node belongs to. Only valid for deferred nodes.

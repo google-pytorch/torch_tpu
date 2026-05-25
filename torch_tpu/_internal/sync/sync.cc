@@ -23,6 +23,7 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/flags/declare.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,12 +33,16 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "ATen/core/TensorBody.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/flags.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/traversal.h"
+#include "torch_tpu/experimental/eager/materialize_new.h"
 #include "xla/hlo/translate/register.h"
+
+ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
 
 namespace torch_tpu {
 
@@ -68,6 +73,11 @@ absl::Status SynchronizeAll(const WaitOnExecution wait) {
 
   TT_RETURN_IF_ERROR(
       Materialize(leaf_nodes, MaterializationReason::kExplicitSync));
+
+  if (GetFlagOnce<bool,
+                  &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
+    TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
+  }
 
   if (wait == WaitOnExecution::kYes) {
     for (const auto& leaf_node : leaf_nodes) {
