@@ -33,6 +33,10 @@ from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import ragged_moe
 from examples.deepseek import model as deepseek_model
 from tests import module_registry
+from torchrec.distributed.test_utils.model_input import ModelInput
+from torchrec.models.dlrm import DLRM
+from torchrec.modules.embedding_configs import EmbeddingBagConfig
+from torchrec.modules.embedding_modules import EmbeddingBagCollection
 from transformers import activations
 from transformers.models.bert import modeling_bert
 from transformers.models.qwen3 import configuration_qwen3
@@ -1763,3 +1767,98 @@ def gemma_ragged_moe_model_builder(
   )
   example_inputs.pop("attention_mask", None)
   return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
+class DLRMWrapper(torch.nn.Module):
+  """Wrapper for DLRM to handle dtype casting for sparse embeddings."""
+
+  def __init__(self, model: DLRM):
+    super().__init__()
+    self.model = model
+
+  def forward(
+      self, dense_features: torch.Tensor, sparse_features: Any
+  ) -> torch.Tensor:
+    embedded_dense = self.model.dense_arch(dense_features)
+    embedded_sparse = self.model.sparse_arch(sparse_features)
+    # Cast sparse embeddings to match dense embeddings dtype (e.g., bfloat16).
+    # This is necessary because the underlying torchrec `EmbeddingBagCollection`
+    # hardcodes a `.float()` cast on the output of its embedding lookups
+    # in `third_party/py/torchrec/modules/embedding_modules.py` (Line 254).
+    # Without this explicit downcast, concatenating dense (bfloat16) and
+    # sparse (float32) features in `InteractionArch` will upcast the
+    # concatenated tensor to float32, triggering a runtime dtype mismatch
+    # error when fed into `over_arch` (which expects bfloat16 weights).
+    embedded_sparse = embedded_sparse.to(dtype=embedded_dense.dtype)
+    concatenated_dense = self.model.inter_arch(
+        dense_features=embedded_dense, sparse_features=embedded_sparse
+    )
+    logits = self.model.over_arch(concatenated_dense)
+    return logits
+
+
+def dlrm_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns a ModelAndInput for the DLRM model."""
+  custom_kwargs = model_and_input_args.custom_kwargs or {}
+
+  num_embeddings = custom_kwargs.get("num_embeddings", 1024)
+  embedding_dim = custom_kwargs.get("embedding_dim", 128)
+  dense_in_features = custom_kwargs.get("dense_in_features", 13)
+  dense_arch_layer_sizes = custom_kwargs.get(
+      "dense_arch_layer_sizes", [512, 256, 128]
+  )
+  over_arch_layer_sizes = custom_kwargs.get(
+      "over_arch_layer_sizes", [1024, 1024, 512, 256, 1]
+  )
+  num_tables = custom_kwargs.get("num_tables", 26)
+  batch_size = model_and_input_args.batch_size
+
+  embedding_bag_configs = [
+      EmbeddingBagConfig(
+          name=f"t{i}",
+          embedding_dim=embedding_dim,
+          num_embeddings=num_embeddings,
+          feature_names=[f"f{i}"],
+      )
+      for i in range(num_tables)
+  ]
+
+  with torch.device("cpu"):
+    ebc = EmbeddingBagCollection(
+        tables=embedding_bag_configs, device=torch.device("cpu")
+    )
+    model = DLRM(
+        embedding_bag_collection=ebc,
+        dense_in_features=dense_in_features,
+        dense_arch_layer_sizes=dense_arch_layer_sizes,
+        over_arch_layer_sizes=over_arch_layer_sizes,
+        dense_device=torch.device("cpu"),
+    )
+
+  model = model.to(device=device, dtype=weights_dtype)
+
+  if is_training:
+    model.train()
+  else:
+    model.eval()
+
+  global_input, _ = ModelInput.generate_global_and_local_batches(
+      world_size=1,
+      batch_size=batch_size,
+      tables=embedding_bag_configs,
+      num_float_features=dense_in_features,
+      device=device,
+  )
+
+  example_inputs = (
+      global_input.float_features.to(dtype=weights_dtype),
+      global_input.idlist_features,
+  )
+
+  wrapped_model = DLRMWrapper(model)
+  return ModelAndInput(model=wrapped_model, example_inputs=example_inputs)
