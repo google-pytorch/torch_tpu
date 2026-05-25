@@ -86,12 +86,13 @@
 //     executed. It contains a list of DeviceBufferRefs that represent the
 //     inputs to the operation.
 //
-// While "materialized" and "deferred" are the most common states, one special
-// "dataless" case also exists. To support full-graph compiled mode, we know the
-// shapes and dtypes of inputs in advance, but we need to trace the FX graph
-// without real data. For this, we define a "placeholder" state, which
-// represents a tensor that will be provided in the future when the compiled
-// function is executed.
+// "Materialized" and "deferred" are the most common states, along with several
+// other states for intermediate steps along the asynchronous compile-execute
+// pipeline. Additionally, one special "dataless" case also exists. To support
+// full-graph compiled mode, we know the shapes and dtypes of inputs in advance,
+// but we need to trace the FX graph without real data. For this, we define a
+// "placeholder" state, which represents a tensor that will be provided in the
+// future when the compiled function is executed.
 //
 // This is generally a low-level implementation detail that should be invisible
 // to most users of PyTorch or libtorch; the at::Tensors at the surface level
@@ -103,23 +104,48 @@
 
 namespace torch_tpu {
 
-// The current evaluation state of a referenced buffer in a DeviceBufferList.
-// The only valid state transition is kDeferred -> kMaterialized, which occurs
-// when a DeferredOp is executed.
-// kMaterialized is an absorbing state. Once the data exists, it is immutable.
-// kPlaceholder DeviceBufferRefs cannot change state; they can be used for
-// compilation, but later executions will use different kMaterialized buffers.
-// TODO(bawilson): rename to DeviceBufferList::DataState as this is no longer
-// ref-specific.
-enum class DeviceBufferRefState {
-  // The reference is to a materialized, ready-to-use PjRtBuffer.
-  kMaterialized,
-  // The reference is to a deferred operation that has not been applied.
-  kDeferred,
-  // The reference represents a tensor for the purposes of compiled mode, but
-  // doesn't actually have any data on-device. All compiled mode leaf inputs
+// The current evaluation state of a referenced DeviceBufferList, provided that
+// it is not in an error state.
+enum class DeviceBufferListState {
+  // The DeviceBufferList represents a tensor for the purposes of compiled mode,
+  // but doesn't actually have any data on-device. All compiled mode leaf inputs
   // must be placeholders, but eager mode tensors should never be placeholders.
+  // Valid transition: kPlaceholder -> kPending. This is used to construct
+  // pending outputs for precompiled executables.
   kPlaceholder,
+  // The DeviceBufferList represents a deferred operation that has not started.
+  // In this state, the DeviceBufferList has a DeferredOp, but AwaitBuffer will
+  // return an error as there is nothing to await.
+  // Valid transition: kDeferred -> kQueued, when a deferred execution is queued
+  // for compilation and execution.
+  kDeferred,
+  // The DeviceBufferList's deferred operation is scheduled for compilation and
+  // execution, but the compilation has not yet started.
+  // In this state, the DeferredOp still exists on the DeviceBufferList, but it
+  // is valid to AwaitBuffer while waiting for the rest of the compilation and
+  // execution to complete.
+  // Valid transition: kQueued -> kPending, when the execution task has reached
+  // the front of the execution queue.
+  kQueued,
+  // The DeviceBufferList is waiting for compilation and earlier executions to
+  // complete.
+  // In this state, the DeferredOp has been removed from the DeviceBufferList,
+  // and it is safe to AwaitBuffer.
+  // Valid transition: kPending -> kExecuting, when the execution task is
+  // pushed onto PjRt's execution queue and PjRtBuffers are created to hold the
+  // results.
+  kPending,
+  // The DeviceBufferList has been put onto PjRt's execution queue
+  // In this state, the DeviceBufferList has PjRtBuffers, but those buffers are
+  // not yet ready to be read.
+  // Valid transition: kExecuting -> kMaterialized, when the execution is
+  // complete and the results are materialized to PjRtBuffers.
+  kExecuting,
+  // The DeviceBufferList has been materialized to PjRtBuffers, and those
+  // PjRtBuffers have valid data.
+  // This is an absorbing state; once a DeviceBufferList is materialized, it
+  // stays materialized.
+  kMaterialized,
 };
 
 enum class OpSplitMode {
@@ -287,9 +313,8 @@ class DeviceBufferRef {
   [[nodiscard]] std::string DebugString() const;
 
   // The current state of the referenced buffer, as an enum.
-  [[nodiscard]] DeviceBufferRefState state() const;
-
-  [[nodiscard]] bool IsMaterialized() const;
+  // Returns an error if there was an error materializing the buffer.
+  absl::StatusOr<DeviceBufferListState> state() const;
 
   [[nodiscard]] const Shape& shape() const;
 
@@ -657,6 +682,10 @@ class DeviceBufferList {
   static absl::StatusOr<DeviceBufferRef> MakePlaceholder(
       Dimensions dimensions, mlir::ElementType element_type);
 
+  // Marks the DeviceBufferList as in the queue for materialization.
+  // If the DeviceBufferList is already materialized, this is a no-op.
+  void SetMaterializationQueued();
+
   // Sets the DeviceBufferList to a pending-materialized state.
   // If the DeviceBufferList is already materialized, this is a no-op.
   void SetMaterializationPending();
@@ -711,7 +740,8 @@ class DeviceBufferList {
   absl::StatusOr<size_t> pjrt_buffer_size(int64_t index) const;
 
   // The current state of the DeviceBufferList, as an enum.
-  [[nodiscard]] DeviceBufferRefState state() const;
+  // Returns an error if there was an error materializing a DeferredOp.
+  absl::StatusOr<DeviceBufferListState> state() const;
 
   // The logical dimensions of the indexed buffer.
   [[nodiscard]] absl::Span<const int64_t> dimensions(int64_t index) const;
@@ -877,7 +907,7 @@ class DeviceBufferList {
 
     // Creates a DeviceBufferList::Data with a materialized PjRtBuffer.
     explicit Data(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer)
-        : materialization_pending_(true), materialization_started_(true) {
+        : queued_(true), pending_(true), executing_(true) {
       buffers_.push_back(std::move(buffer));
       auto [promise, future] = xla::MakePromise<void>();
       materialization_promise_ = std::move(promise);
@@ -890,6 +920,10 @@ class DeviceBufferList {
     // Returns nullptr for placeholders, or if the DeviceBufferList::Data is
     // pending materialization or fully materialized.
     absl_nullable std::shared_ptr<DeferredOp> deferred_op() const;
+
+    // Marks this DeviceBufferList::Data as queued.
+    // This has no effect if the DeviceBufferList::Data was already queued.
+    void SetMaterializationQueued() { queued_ = true; }
 
     // Marks this DeviceBufferList::Data as pending materialization.
     // This will delete the DeferredOp if it exists.
@@ -914,19 +948,24 @@ class DeviceBufferList {
         std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
 
     // Returns the PjRtBuffer at the given index.
-    // If the DeviceBufferList::Data is not yet materialized, this will block
-    // the caller until it has a PjRtBuffer to return. Returns an error if:
+    // If the DeviceBufferList::Data is not yet in the Queued state, this will
+    // immediately error to avoid a deadlock.
+    // If the DeviceBufferList::Data is at least in the Queued state, this will
+    // block the caller until it has a PjRtBuffer to return.
+    // Returns an error if:
     //   - The materialization failed, or
     //   - The index is out of bounds.
     absl::StatusOr<xla::PjRtBuffer* absl_nonnull> operator[](
         int64_t index) const;
 
     // Returns the state of the DeviceBufferList::Data.
+    // Returns an error if there was an error materializing the data.
+    //
     // WARNING: this is an atomic, point-in-time snapshot. Even if this returns
-    // DeviceBufferRefState::kDeferred, any later calls to deferred_op() may
+    // DeviceBufferListState::kDeferred, any later calls to deferred_op() may
     // return a nullptr if the DeviceBufferList::Data is being concurrently
     // materialized.
-    [[nodiscard]] DeviceBufferRefState state() const;
+    absl::StatusOr<DeviceBufferListState> state() const;
 
     // Prints a debug string for the DeviceBufferList::Data into the ostream.
     std::ostream& PrintDebug(std::ostream& os) const;
@@ -954,33 +993,39 @@ class DeviceBufferList {
 
     // The following flags are used to atomically enforce a one-way "ramp":
     //
-    // (deferred or placeholder) -> materialization pending. The first time this
-    // flag is set, the DeviceBufferList::Data which sets the flag is
+    // (deferred or placeholder) -> queued_. This doesn't change any data, but
+    // signals that AwaitBuffer is now safe to call.
+    //
+    // queued -> pending materialization. The first time the pending_ flag is
+    // set, the DeviceBufferList::Data which sets the flag is responsible for
     // responsible for clearing the DeferredOp (not necessary for placeholders).
     //
-    // materialization_pending -> (materialized or error). The first time that
-    // the materialization_started_ flag is set, the DeviceBufferList::Data
-    // which sets the flag is responsible for setting either the buffers_ or
-    // materialization_status_ field (but not both), and then setting the
-    // materialized_ flag and notifying waiters.
+    // pending -> executing. The first time that the executing_ flag is set,
+    // the DeviceBufferList::Data which sets the flag is responsible for setting
+    // either the buffers_ or materialization_status_ field (but not both), and
+    // then setting the materialization_promise_.
     //
-    // Once materialized_ is set, materialization_status_ and buffers_ can be
-    // read without locking.
+    // Once executing_ is set, it is safe to access the buffers_ or
+    // materialization_status_ fields without locking.
 
     // If the DeviceBufferList::Data was created as a placeholder, it will never
     // have a DeferredOp, so the mutex never needs to be acquired.
     const bool created_as_placeholder_ = false;
 
+    // This is set to true by the first caller to SetQueued, or by either
+    // SetMaterializationPending or SetMaterializationStarted.
+    std::atomic_bool queued_ = false;
+
     // This is set to true by the first caller to SetMaterializationPending.
     // This first caller is responsible for clearing the DeferredOp (if it
     // exists).
-    std::atomic_bool materialization_pending_ = false;
+    std::atomic_bool pending_ = false;
 
     // This is set to true by the first caller to either
     // SetMaterializationStarted or SetMaterializationError. This first caller
     // is responsible for setting the buffers_ or materialization_status_ field,
     // and then setting the materialization_promise_.
-    std::atomic_bool materialization_started_ = false;
+    std::atomic_bool executing_ = false;
 
     // When this future returns, the DeviceBufferList::Data has either
     // successfully started materialization or failed to materialize.

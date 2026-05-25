@@ -160,8 +160,11 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
                             << ToString(tensor));
-    TT_RET_CHECK(buffer_ref.state() != DeviceBufferRefState::kDeferred,
-                 error::kInternal)
+    TT_ASSIGN_OR_RETURN(auto state, buffer_ref.state(),
+                        _.SetPrepend()
+                            << "failed to get argument tensor state: "
+                            << ToString(tensor));
+    TT_RET_CHECK(state != DeviceBufferListState::kDeferred, error::kInternal)
         << "argument tensor has deferred ops: " << ToString(tensor);
     ABSL_VLOG(3) << "[ExtractMlirFromGraph] arg_tensor: "
                  << buffer_ref.DebugString();
@@ -175,9 +178,11 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
                         _.SetPrepend()
                             << "failed to get buffer from result tensor: "
                             << ToString(tensor));
-    TT_RET_CHECK(buffer_ref.state() != DeviceBufferRefState::kMaterialized,
-                 error::kInternal)
-        << "result tensor is already materialized: " << ToString(tensor);
+    TT_ASSIGN_OR_RETURN(auto state, buffer_ref.state(),
+                        _.SetPrepend() << "failed to get result tensor state: "
+                                       << ToString(tensor));
+    TT_RET_CHECK(state == DeviceBufferListState::kDeferred, error::kInternal)
+        << "result tensor is already being materialized: " << ToString(tensor);
     ABSL_VLOG(3) << "[ExtractMlirFromGraph] result_tensor: "
                  << buffer_ref.DebugString();
     result_refs.push_back(std::move(buffer_ref));
@@ -216,8 +221,12 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
                             << ToString(tensor));
+    TT_ASSIGN_OR_RETURN(auto state, buffer_ref.state(),
+                        _.SetPrepend()
+                            << "failed to get argument tensor state: "
+                            << ToString(tensor));
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-        buffer_ref.state() != DeviceBufferRefState::kDeferred)
+        state != DeviceBufferListState::kDeferred)
         << "argument tensor has deferred ops: " << ToString(tensor);
     argument_refs.push_back(std::move(buffer_ref));
   }
@@ -230,8 +239,13 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
         auto buffer_ref, GetBuffer(tensor),
         _ << "failed to get device buffer from result tensor: "
           << ToString(tensor));
+    TT_ASSIGN_OR_RETURN(auto state, buffer_ref.state(),
+                        _.SetPrepend()
+                            << "failed to get argument tensor state: "
+                            << ToString(tensor));
     ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-        buffer_ref.state() != DeviceBufferRefState::kMaterialized)
+        state == DeviceBufferListState::kDeferred ||
+        state == DeviceBufferListState::kPlaceholder)
         << "result tensor is already materialized: " << ToString(tensor);
     result_refs.push_back(std::move(buffer_ref));
   }

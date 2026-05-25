@@ -270,7 +270,7 @@ def run_sync_dtensor() -> None:
   dtensor = dtensor + 1
 
   sync.synchronize(dtensor, wait=True)
-  assert sync.is_materialized(dtensor), "DTensor not materialized after sync"
+  assert sync.is_materializing(dtensor), "DTensor not materialized after sync"
   assert sync.is_ready(dtensor), "Dtensor materialized but not ready"
 
   updated_shard = dtensor.to_local().to("cpu")

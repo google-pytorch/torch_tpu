@@ -166,6 +166,10 @@ absl::Status MaterializationWorker::Materialize(
     MaterializationReason reason) {
   tsl::profiler::TraceMe t("Worker_Materialize");
   TT_RETURN_IF_ERROR(GetAndResetLastStatus());
+  for (const auto& node : nodes_to_materialize) {
+    node->SetMaterializationQueued();
+  }
+
   {
     absl::MutexLock lock(mutex_);
     // Wait if the current dispatch queue is being processed.
@@ -499,7 +503,8 @@ absl::Status MaterializationWorker::MaterializeQueue(
     // which is indicated by placeholder inputs.
     bool has_placeholder = false;
     for (const auto& arg : traversal->arguments()) {
-      if (arg.state() == DeviceBufferRefState::kPlaceholder) {
+      TT_ASSIGN_OR_RETURN(auto state, arg.state());
+      if (state == DeviceBufferListState::kPlaceholder) {
         has_placeholder = true;
         break;
       }

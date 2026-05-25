@@ -91,16 +91,18 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   };
 
   // 3. Create a deferred tensor x using the failing builder
-  TF_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_x,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, failing_builder,
-                                       /*inputs=*/{}, OpParamCacheKeys::Empty(),
-                                       {shape}));
+  TF_ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_x,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, failing_builder,
+                              /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape},
+                              OpSplitMode::kNone, /*donated_indices=*/{},
+                              /*skip_subgraph=*/true));
   DeviceBufferRef ref_x = refs_x[0];
 
   // Verify that the tensor is created successfully on the main thread
   // (deferred)
-  EXPECT_EQ(ref_x.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_x.state().ok());
+  EXPECT_EQ(ref_x.state().value(), DeviceBufferListState::kDeferred);
 
   // 4. Trigger materialization on x. This dispatches to the background worker
   // queue.
@@ -116,13 +118,15 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
               testing::HasSubstr("Simulated compilation failure"));
 
   // 6. NOW CREATE A BRAND-NEW, INDEPENDENT TENSOR y
-  TF_ASSERT_OK_AND_ASSIGN(
-      std::vector<DeviceBufferRef> refs_y,
-      DeviceBufferList::CreateDeferred(OpName::kEmpty, healthy_builder,
-                                       /*inputs=*/{}, OpParamCacheKeys::Empty(),
-                                       {shape}));
+  TF_ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_y,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kEmpty, healthy_builder,
+                              /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape},
+                              OpSplitMode::kNone, /*donated_indices=*/{},
+                              /*skip_subgraph=*/true));
   DeviceBufferRef ref_y = refs_y[0];
-  EXPECT_EQ(ref_y.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_y.state().ok());
+  EXPECT_EQ(ref_y.state().value(), DeviceBufferListState::kDeferred);
 
   // 7. Materialize y. Under our change, since last_status_ was reset to Ok,
   // this is allowed!
@@ -133,7 +137,8 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   absl::Status status_y = BlockOnPendingMaterializations();
   EXPECT_TRUE(status_y.ok())
       << "Independent tensor failed to materialize: " << status_y;
-  EXPECT_EQ(ref_y.state(), DeviceBufferRefState::kMaterialized);
+  ASSERT_TRUE(ref_y.state().ok());
+  EXPECT_NE(ref_y.state().value(), DeviceBufferListState::kDeferred);
 
   // 9. VERIFY NATIVE PROMISE ERROR PROPAGATION
   // Even though the global error was reset, accessing x's data or materializing
@@ -163,10 +168,13 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   // b) Downstream operations using x also fail natively:
   TF_ASSERT_OK_AND_ASSIGN(
       std::vector<DeviceBufferRef> refs_z,
-      DeviceBufferList::CreateDeferred(OpName::kAdd, healthy_builder, {ref_x},
-                                       OpParamCacheKeys::Empty(), {shape}));
+      DeviceBufferList::CreateDeferred(
+          OpName::kAdd, healthy_builder, {ref_x}, OpParamCacheKeys::Empty(),
+          {shape}, OpSplitMode::kNone, /*donated_indices=*/{},
+          /*skip_subgraph=*/true));
   DeviceBufferRef ref_z = refs_z[0];
-  EXPECT_EQ(ref_z.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_z.state().ok());
+  EXPECT_EQ(ref_z.state().value(), DeviceBufferListState::kDeferred);
 
   // Materialize z (depends on failed x)
   EXPECT_EQ(Materialize(ref_z, MaterializationReason::kExplicitSync),

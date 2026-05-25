@@ -52,7 +52,7 @@ computation_graphviz = sync.computation_graphviz
 computation_mlir = sync.computation_mlir
 dump_computation_graphviz = sync.dump_computation_graphviz
 synchronize = sync.synchronize
-is_materialized = sync.is_materialized
+is_materializing = sync.is_materializing
 is_ready = sync.is_ready
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
@@ -61,7 +61,7 @@ __all__ = [
     "computation_graphviz",
     "computation_mlir",
     "dump_computation_graphviz",
-    "is_materialized",
+    "is_materializing",
     "is_ready",
     "synchronize",
     # go/keep-sorted end

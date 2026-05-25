@@ -123,6 +123,9 @@ class MaterializationWorker {
                                  MaterializationMode materialization_mode) {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing " << nodes.size()
                  << " nodes for materialization";
+    for (const auto& node : nodes) {
+      node->SetMaterializationQueued();
+    }
     auto [promise, future] = xla::MakePromise<void>();
     absl::MutexLock lock(materialize_mu_);
     materialize_jobs_.push(
@@ -203,14 +206,20 @@ class MaterializationWorker {
     // earlier materialization task. Return an error if any of the nodes are
     // placeholders.
     {
-      absl::Status no_placeholder_status = absl::OkStatus();
-      std::erase_if(all_nodes, [&no_placeholder_status](
+      absl::Status inputs_status = absl::OkStatus();
+      std::erase_if(all_nodes, [&inputs_status](
                                    const SharedDeviceBufferList& node) {
-        switch (node->state()) {
-          case DeviceBufferRefState::kDeferred:
+        auto node_state = node->state();
+        if (!node_state.ok()) {
+          inputs_status = node_state.status();
+          return true;
+        }
+        switch (node_state.value()) {
+          case DeviceBufferListState::kDeferred:
+          case DeviceBufferListState::kQueued:
             return false;
-          case DeviceBufferRefState::kPlaceholder:
-            no_placeholder_status =
+          case DeviceBufferListState::kPlaceholder:
+            inputs_status =
                 TT_ERROR(error::kInternal)
                 << "Materialize was called on a placeholder tensor. This "
                    "should "
@@ -218,12 +227,16 @@ class MaterializationWorker {
                    "compiled mode, which should never try to materialize "
                    "tensors.";
             return true;
-          case DeviceBufferRefState::kMaterialized:
+          case DeviceBufferListState::kPending:
+          case DeviceBufferListState::kExecuting:
+          case DeviceBufferListState::kMaterialized:
+            // This is already part of an earlier ExecutionTask. Don't
+            // re-enqueue it.
             return true;
         }
       });
-      if (!no_placeholder_status.ok()) {
-        return no_placeholder_status;
+      if (!inputs_status.ok()) {
+        return inputs_status;
       }
       if (all_nodes.empty()) {
         // Everything was already materialized, nothing more to do.
@@ -439,9 +452,13 @@ absl::Status MaterializeImpl(
   TT_RETURN_IF_ERROR(future.Await()).SetPrepend()
       << "materialization failed with: ";
 
-  // Check that all nodes to materialize have indeed been materialized.
+  // Check that all nodes to materialize are now in the pending or later state.
   for (auto& node : nodes_to_materialize) {
-    TT_RET_CHECK(node->state() == DeviceBufferRefState::kMaterialized,
+    TT_ASSIGN_OR_RETURN(auto node_state, node->state());
+
+    TT_RET_CHECK((node_state == DeviceBufferListState::kPending ||
+                  node_state == DeviceBufferListState::kExecuting ||
+                  node_state == DeviceBufferListState::kMaterialized),
                  error::kInternal)
         << "Materialization failed for node " << node;
   }

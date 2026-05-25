@@ -67,23 +67,18 @@ enum class WaitOnExecution {
 // function begins may not be included in the synchronization barrier.
 absl::Status SynchronizeAll(WaitOnExecution wait = WaitOnExecution::kNo);
 
-// Checks if the tensor is materialized; that is, if it has a PjRtBuffer
-// associated with it.
-//
-// Note that the PjRtBuffer is itself an asynchronous
-// future, so just because a tensor is materialized doesn't mean it's ready
-// for a host-to-device transfer.
-//
-// Additionally, if the tensor is a view, then this check only reflects the
-// materialization status of the base buffer. The view will always be
-// re-materialized for a device-to-host transfer.
-absl::StatusOr<bool> IsMaterialized(const at::Tensor& tensor);
-
-// Checks the tensor is both materialized and ready, meaning that it both has
-// a PjRtBuffer and that PjRtBuffer has completed execution.
+// Checks if the tensor has started materialization.
 //
 // If the tensor is a view, then this check only reflects the materialization
-// status of the base buffer. The view will always be re-materialized for a
+// status of the base buffer. The view will always be re-materialized for each
+// device-to-host transfer.
+absl::StatusOr<bool> IsMaterializing(const at::Tensor& tensor);
+
+// Checks the tensor has successfully completed materialization, meaning that it
+// both has a PjRtBuffer and that PjRtBuffer has completed execution.
+//
+// If the tensor is a view, then this check only reflects the materialization
+// status of the base buffer. The view will always be re-materialized for each
 // device-to-host transfer.
 absl::StatusOr<bool> IsReady(const at::Tensor& tensor);
 

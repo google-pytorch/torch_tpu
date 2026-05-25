@@ -5075,7 +5075,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     # Zero-sized tensors are constructed as deferred constants, rather than
     # actually transferring 0 bytes.
-    self.assertFalse(sync.is_materialized(tensor_tpu))
+    self.assertFalse(sync.is_materializing(tensor_tpu))
 
   @parameterized.product(
       dtype=[

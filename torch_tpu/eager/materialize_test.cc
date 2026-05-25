@@ -72,10 +72,14 @@ TEST_F(MaterializeTest, MaterializedZeroSizeBufferSuccess) {
   const mlir::ElementType dtype = mlir::ElementType::F32;
   TF_ASSERT_OK_AND_ASSIGN(DeviceBufferRef ref,
                           DeviceBufferList::CreateZeroSize({0}, dtype));
-  EXPECT_EQ(ref.state(), DeviceBufferRefState::kDeferred);
+  auto ref_state = ref.state();
+  ASSERT_TRUE(ref_state.ok());
+  EXPECT_EQ(*ref_state, DeviceBufferListState::kDeferred);
   EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
             absl::OkStatus());
-  EXPECT_EQ(ref.state(), DeviceBufferRefState::kMaterialized);
+  ref_state = ref.state();
+  ASSERT_TRUE(ref_state.ok());
+  EXPECT_NE(*ref_state, DeviceBufferListState::kDeferred);
 }
 
 TEST_F(MaterializeTest, AddLeafNodes) {
@@ -182,11 +186,16 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
   // (a leaf node with no tensors would ordinarily be dropped immediately).
   at::Tensor e = MakeTensor(ref_e);
 
-  EXPECT_EQ(ref_a.state(), DeviceBufferRefState::kDeferred);
-  EXPECT_EQ(ref_b.state(), DeviceBufferRefState::kDeferred);
-  EXPECT_EQ(ref_c.state(), DeviceBufferRefState::kDeferred);
-  EXPECT_EQ(ref_d.state(), DeviceBufferRefState::kDeferred);
-  EXPECT_EQ(ref_e.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_a.state().ok());
+  EXPECT_EQ(ref_a.state().value(), DeviceBufferListState::kDeferred);
+  ASSERT_TRUE(ref_b.state().ok());
+  EXPECT_EQ(ref_b.state().value(), DeviceBufferListState::kDeferred);
+  ASSERT_TRUE(ref_c.state().ok());
+  EXPECT_EQ(ref_c.state().value(), DeviceBufferListState::kDeferred);
+  ASSERT_TRUE(ref_d.state().ok());
+  EXPECT_EQ(ref_d.state().value(), DeviceBufferListState::kDeferred);
+  ASSERT_TRUE(ref_e.state().ok());
+  EXPECT_EQ(ref_e.state().value(), DeviceBufferListState::kDeferred);
 
   // Materialize d. This should trace the entire graph from the leaf nodes
   // c and e.
@@ -194,22 +203,27 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
             absl::OkStatus());
 
   // a is materialized as it has fanout > 1.
-  EXPECT_EQ(ref_a.state(), DeviceBufferRefState::kMaterialized);
+  ASSERT_TRUE(ref_a.state().ok());
+  EXPECT_NE(ref_a.state().value(), DeviceBufferListState::kDeferred);
 
   // b is not materialized; it is only internal to the graph of c, and has
   // neither fanout nor a live Tensor.
-  EXPECT_EQ(ref_b.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_b.state().ok());
+  EXPECT_EQ(ref_b.state().value(), DeviceBufferListState::kDeferred);
 
   // c is materialized by SafeMaterializationRule; it was dispatched before d
   // and has a live Tensor, so it must be materialized.
-  EXPECT_EQ(ref_c.state(), DeviceBufferRefState::kMaterialized);
+  ASSERT_TRUE(ref_c.state().ok());
+  EXPECT_NE(ref_c.state().value(), DeviceBufferListState::kDeferred);
 
   // d is materialized because it was the explicit target of Materialize().
-  EXPECT_EQ(ref_d.state(), DeviceBufferRefState::kMaterialized);
+  ASSERT_TRUE(ref_d.state().ok());
+  EXPECT_NE(ref_d.state().value(), DeviceBufferListState::kDeferred);
 
   // e is not materialized because it was dispatched after the last required
   // node (d).
-  EXPECT_EQ(ref_e.state(), DeviceBufferRefState::kDeferred);
+  ASSERT_TRUE(ref_e.state().ok());
+  EXPECT_EQ(ref_e.state().value(), DeviceBufferListState::kDeferred);
 }
 
 TEST(MaterializeCommonTest, GetCompilationMode) {

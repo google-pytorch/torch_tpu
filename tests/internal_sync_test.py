@@ -44,21 +44,21 @@ class InternalSyncTest(absltest.TestCase):
 
     # Nothing is materialized or ready.
     for tensor in [x, y, z]:
-      self.assertFalse(sync.is_materialized(tensor))
+      self.assertFalse(sync.is_materializing(tensor))
       self.assertFalse(sync.is_ready(tensor))
 
     sync.synchronize(y, wait=False)
 
     # Strict ordering forces x to be materialized along with y.
     # But it may not be ready yet.
-    self.assertTrue(sync.is_materialized(x))
+    self.assertTrue(sync.is_materializing(x))
 
     # y was materialized, but may not be ready yet.
-    self.assertTrue(sync.is_materialized(y))
+    self.assertTrue(sync.is_materializing(y))
 
     # z was not materialized because it was dispatched after the synchronized
     # tensor.
-    self.assertFalse(sync.is_materialized(z))
+    self.assertFalse(sync.is_materializing(z))
 
   def test_sync_no_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -67,14 +67,14 @@ class InternalSyncTest(absltest.TestCase):
 
     # Nothing is materialized or ready.
     for tensor in [x, y, z]:
-      self.assertFalse(sync.is_materialized(tensor))
+      self.assertFalse(sync.is_materializing(tensor))
       self.assertFalse(sync.is_ready(tensor))
 
     sync.synchronize([x, y, z], wait=False)
 
     # Everything is materialized, but may or may not be ready.
     for tensor in [x, y, z]:
-      self.assertTrue(sync.is_materialized(tensor))
+      self.assertTrue(sync.is_materializing(tensor))
 
   def test_sync_and_wait_tensor(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -83,22 +83,22 @@ class InternalSyncTest(absltest.TestCase):
 
     # Nothing is materialized or ready.
     for tensor in [x, y, z]:
-      self.assertFalse(sync.is_materialized(tensor))
+      self.assertFalse(sync.is_materializing(tensor))
       self.assertFalse(sync.is_ready(tensor))
 
     sync.synchronize(y, wait=True)
 
     # Strict ordering forces x to be materialized along with y.
-    self.assertTrue(sync.is_materialized(x))
+    self.assertTrue(sync.is_materializing(x))
     self.assertTrue(sync.is_ready(x))
 
     # y was materialized and is ready.
-    self.assertTrue(sync.is_materialized(y))
+    self.assertTrue(sync.is_materializing(y))
     self.assertTrue(sync.is_ready(y))
 
     # z was not materialized because it was dispatched after the synchronized
     # tensor.
-    self.assertFalse(sync.is_materialized(z))
+    self.assertFalse(sync.is_materializing(z))
 
   def test_sync_and_wait_list(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -106,21 +106,21 @@ class InternalSyncTest(absltest.TestCase):
     z = x + y
 
     # Nothing is materialized or ready.
-    self.assertFalse(sync.is_materialized(x))
+    self.assertFalse(sync.is_materializing(x))
     self.assertFalse(sync.is_ready(x))
-    self.assertFalse(sync.is_materialized(y))
+    self.assertFalse(sync.is_materializing(y))
     self.assertFalse(sync.is_ready(y))
-    self.assertFalse(sync.is_materialized(z))
+    self.assertFalse(sync.is_materializing(z))
     self.assertFalse(sync.is_ready(z))
 
     sync.synchronize([x, y, z], wait=True)
 
     # Everything is materialized and ready.
-    self.assertTrue(sync.is_materialized(x))
+    self.assertTrue(sync.is_materializing(x))
     self.assertTrue(sync.is_ready(x))
-    self.assertTrue(sync.is_materialized(y))
+    self.assertTrue(sync.is_materializing(y))
     self.assertTrue(sync.is_ready(y))
-    self.assertTrue(sync.is_materialized(z))
+    self.assertTrue(sync.is_materializing(z))
     self.assertTrue(sync.is_ready(z))
 
   def test_sync_no_wait_all(self):
@@ -129,34 +129,34 @@ class InternalSyncTest(absltest.TestCase):
     z = torch.ones(12, device=torch.device("tpu"))
 
     # Nothing is materialized or ready.
-    self.assertFalse(sync.is_materialized(x))
+    self.assertFalse(sync.is_materializing(x))
     self.assertFalse(sync.is_ready(x))
-    self.assertFalse(sync.is_materialized(y))
+    self.assertFalse(sync.is_materializing(y))
     self.assertFalse(sync.is_ready(y))
-    self.assertFalse(sync.is_materialized(z))
+    self.assertFalse(sync.is_materializing(z))
     self.assertFalse(sync.is_ready(z))
 
     sync.synchronize(wait=False)
 
     # Everything is materialized, but may or may not be ready.
-    self.assertTrue(sync.is_materialized(x))
-    self.assertTrue(sync.is_materialized(y))
-    self.assertTrue(sync.is_materialized(z))
+    self.assertTrue(sync.is_materializing(x))
+    self.assertTrue(sync.is_materializing(y))
+    self.assertTrue(sync.is_materializing(z))
 
   def test_sync_and_wait_all_materialized(self):
     x = torch.ones(10, device=torch.device("tpu"))
     y = torch.ones(11, device=torch.device("tpu"))
     z = torch.ones(12, device=torch.device("tpu"))
 
-    self.assertFalse(sync.is_materialized(x))
-    self.assertFalse(sync.is_materialized(y))
-    self.assertFalse(sync.is_materialized(z))
+    self.assertFalse(sync.is_materializing(x))
+    self.assertFalse(sync.is_materializing(y))
+    self.assertFalse(sync.is_materializing(z))
 
     sync.synchronize(wait=True)
 
-    self.assertTrue(sync.is_materialized(x))
-    self.assertTrue(sync.is_materialized(y))
-    self.assertTrue(sync.is_materialized(z))
+    self.assertTrue(sync.is_materializing(x))
+    self.assertTrue(sync.is_materializing(y))
+    self.assertTrue(sync.is_materializing(z))
 
   def test_sync_and_wait_all_ready(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -176,7 +176,7 @@ class InternalSyncTest(absltest.TestCase):
   def test_host_to_device_is_materialized(self):
     x = torch.ones(128, device="cpu").to(torch.device("tpu"))
 
-    self.assertTrue(sync.is_materialized(x))
+    self.assertTrue(sync.is_materializing(x))
 
     sync.synchronize(x, wait=True)
 
@@ -187,13 +187,13 @@ class InternalSyncTest(absltest.TestCase):
     tensor = torch.ones(2, 0, 3, dtype=torch.int32, device=torch.device("tpu"))
 
     # It is in a deferred state (constant zero-sized).
-    self.assertFalse(sync.is_materialized(tensor))
+    self.assertFalse(sync.is_materializing(tensor))
     self.assertFalse(sync.is_ready(tensor))
 
     sync.synchronize(tensor, wait=True)
 
     # After synchronization, it should be materialized and ready.
-    self.assertTrue(sync.is_materialized(tensor))
+    self.assertTrue(sync.is_materializing(tensor))
     self.assertTrue(sync.is_ready(tensor))
 
   def test_sync_with_materialized_zero_sized_tensor(self):
@@ -203,13 +203,13 @@ class InternalSyncTest(absltest.TestCase):
     # Send it to the TPU. This should create a deferred zero-sized constant
     # instead of actually transferring 0 bytes.
     tensor = tensor_cpu.to(torch.device("tpu"))
-    self.assertFalse(sync.is_materialized(tensor))
+    self.assertFalse(sync.is_materializing(tensor))
     self.assertFalse(sync.is_ready(tensor))
 
     sync.synchronize(tensor, wait=True)
 
     # After synchronization, it should be materialized and ready.
-    self.assertTrue(sync.is_materialized(tensor))
+    self.assertTrue(sync.is_materializing(tensor))
     self.assertTrue(sync.is_ready(tensor))
 
   def test_sync_list_with_empty_and_non_empty(self):
@@ -226,7 +226,7 @@ class InternalSyncTest(absltest.TestCase):
         RuntimeError,
         "tensor is not on the PrivateUse1 device",
     ):
-      sync.is_materialized(x)
+      sync.is_materializing(x)
 
   def test_is_ready_not_on_tpu(self):
     x = torch.ones(10, device=torch.device("cpu"))

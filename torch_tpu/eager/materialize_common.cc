@@ -403,42 +403,13 @@ ExecutionTask::GetCachedExecutables(std::string_view task_name) {
 
 absl::StatusOr<std::vector<xla::PjRtBuffer* absl_nullable>>
 ExecutionTask::GetArgumentBuffers() {
-  // Check that this task does not have any placeholder arguments.
-  for (const auto& input : arguments_) {
-    if (input.state() == DeviceBufferRefState::kPlaceholder) {
-      return TT_ERROR(error::kInternal)
-             << "Materialize was called on a placeholder tensor. This "
-                "should never happen.\nkPlaceholder tensors should only "
-                "appear in compiled mode, which should never try to "
-                "materialize tensors."
-             << input.DebugString();
-    }
-  }
   std::vector<xla::PjRtBuffer*> root_args;
   for (const auto&& [index, argument] : llvm::enumerate(arguments_)) {
-    switch (argument.state()) {
-      case DeviceBufferRefState::kMaterialized: {
-        ABSL_VLOG(1) << "kMaterialized DeviceBufferRef index: " << index;
-        TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer,
-                            argument.AwaitBuffer());
-        root_args.push_back(pjrt_buffer);
-        break;
-      }
-      case DeviceBufferRefState::kPlaceholder:
-        return TT_ERROR(error::kInternal)
-               << "Materialize was called on a placeholder tensor. This "
-                  "should never happen.\nkPlaceholder tensors should only "
-                  "appear in compiled mode, which should never try to "
-                  "materialize tensors."
-               << argument.DebugString();
-
-      case DeviceBufferRefState::kDeferred:
-        return TT_ERROR(error::kInternal)
-               << "Traversal input is unexpectedly deferred";
-      default:
-        return TT_ERROR(error::kInternal)
-               << "Traversal input has unknown state";
-    }
+    TT_ASSIGN_OR_RETURN(xla::PjRtBuffer * pjrt_buffer, argument.AwaitBuffer(),
+                        _.SetPrepend()
+                            << "failed to get buffer for argument index "
+                            << index << ": ");
+    root_args.push_back(pjrt_buffer);
   }
   return root_args;
 }

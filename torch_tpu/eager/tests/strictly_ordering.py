@@ -44,7 +44,7 @@ def main(argv):
 
   # Ensure that the output_a has already been materialized because it is a leaf
   # in the same subgraph as output_b.
-  assert sync.is_materialized(output_a)
+  assert sync.is_materializing(output_a)
 
 
 if __name__ == "__main__":

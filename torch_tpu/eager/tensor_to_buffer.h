@@ -90,7 +90,7 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 // in the kDeferred state, with a DeferredOp that will convert the inner
 // contiguous base buffer into the view's layout.
 //
-// The returned value may be in any DeviceBufferRefState, including
+// The returned value may be in any DeviceBufferListState, including
 // kMaterialized, kDeferred, and kPlaceholder. Callers are
 // responsible for handling any unexpected states; for example, erroring on a
 // kPlaceholder state before calling a PjRtLoadedExecutable.

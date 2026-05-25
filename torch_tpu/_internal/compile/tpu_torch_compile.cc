@@ -125,7 +125,10 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
 
 py::object PyGetDeviceLayoutIfMaterialized(const at::Tensor& tensor) {
   TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
-  if (!buffer_ref.IsMaterialized()) {
+  if (auto state = buffer_ref.state();
+      !state.ok() || *state == DeviceBufferListState::kDeferred ||
+      *state == DeviceBufferListState::kPlaceholder) {
+    // AwaitBuffer() would fail here, so return None instead.
     return py::none();
   }
   TT_ASSIGN_OR_THROW(auto* pjrt_buffer, buffer_ref.AwaitBuffer());
