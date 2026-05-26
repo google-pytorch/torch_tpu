@@ -396,6 +396,61 @@ class ProfilerIntegrationTest(absltest.TestCase):
         c = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
         tpu_sync.synchronize(c)
 
+  def test_tpu_profiler_config_experimental_options(self):
+    # Verifies that experimental configuration options are correctly serialized,
+    # passed and stored.
+    device = tpu_api.tpu_device()
+    base_output_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp")
+    output_dir = pathlib.Path(base_output_dir) / "tpu_experimental_config"
+    os.makedirs(output_dir, exist_ok=True)
+
+    _cleanup_profile_dir()
+
+    config = TpuProfilerConfig(
+        host_tracer_level=2,
+        experimental_options={
+            "dummy_int_option": 42,
+            "dummy_str_option": "hello",
+            "dummy_bool_option": True,
+        },
+    )
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.PrivateUse1,
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    tpu_xplane_path = pathlib.Path(output_dir) / "xplane.pb"
+    self._get_and_copy_xplane(tpu_xplane_path)
+
+    xspace = xplane_pb2.XSpace.FromString(tpu_xplane_path.read_bytes())
+    options_bytes = _get_profiler_options_bytes(xspace)
+    options = profiler_options_pb2.ProfileOptions.FromString(options_bytes)
+
+    advanced_config = options.advanced_configuration
+
+    with self.subTest(name="dummy_int_option"):
+      self.assertIn("dummy_int_option", advanced_config)
+      self.assertEqual(advanced_config["dummy_int_option"].int64_value, 42)
+
+    with self.subTest(name="dummy_str_option"):
+      self.assertIn("dummy_str_option", advanced_config)
+      self.assertEqual(
+          advanced_config["dummy_str_option"].string_value, "hello"
+      )
+
+    with self.subTest(name="dummy_bool_option"):
+      self.assertIn("dummy_bool_option", advanced_config)
+      self.assertTrue(advanced_config["dummy_bool_option"].bool_value)
+
   def test_concurrent_profiling_and_execution(self):
     stop_workers = False
 

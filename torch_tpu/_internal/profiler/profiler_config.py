@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import pathlib
 
 import torch
@@ -24,6 +25,18 @@ import torch
 class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=protected-access
   """Configuration for TPU-specific profiler options with standard XLA defaults."""
 
+  def _format_experimental_value(self, value: int | bool | str) -> str:
+    """Formats a value for the custom profiler config string."""
+    if isinstance(value, str):
+      # Escape backslashes first, then double quotes to preserve literal
+      # quotes and avoid parsing ambiguity in the backend C++ tokenizer.
+      escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+      return f'"{escaped_value}"'
+    elif isinstance(value, bool):
+      return "true" if value else "false"
+    else:
+      return str(value)
+
   def __init__(
       self,
       *,
@@ -31,6 +44,7 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       device_tracer_level: int = 1,
       python_tracer_level: int = 0,
       run_dir: pathlib.Path | None = None,
+      experimental_options: Mapping[str, int | bool | str] | None = None,
   ):
     """Initializes the TPU profiler configuration.
 
@@ -54,6 +68,9 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         (default), falls back to Kineto's `activitiesLogFile` directory (which
         defaults to "/tmp" if no handler is provided). This ensures TPU and CPU
         traces are co-located in the same directory.
+      experimental_options: Dictionary of experimental profiler options.
+        Supported value types: int, bool, str. Strings will be automatically
+        quoted and escaped.
     """
     run_dir_posix = (
         pathlib.Path(run_dir).as_posix() if run_dir is not None else None
@@ -63,6 +80,11 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         f"device_tracer_level:{device_tracer_level}",
         f"python_tracer_level:{python_tracer_level}",
     ] + ([f"run_dir:{run_dir_posix}"] if run_dir_posix is not None else [])
+
+    if experimental_options:
+      for key, value in experimental_options.items():
+        formatted_val = self._format_experimental_value(value)
+        config_parts.append(f"{key}:{formatted_val}")
 
     # We suppress 'wrong-keyword-args' because 'custom_profiler_config' is
     # explicitly supported by the C++ implementation of _ExperimentalConfig
