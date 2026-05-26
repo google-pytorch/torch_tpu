@@ -83,6 +83,7 @@ py_library_providing_imports_info(
     tags = ["keep_dep"],
     visibility = [
         "//:__subpackages__",
+        "//palton:__subpackages__",
         "//shims/torchtitan:__subpackages__",
         "@pypi//helion:__subpackages__",
         "@pypi//tokamax:__subpackages__",

@@ -20,6 +20,7 @@ package(
     default_applicable_licenses = ["//:license"],
     default_visibility = [
         "//:__subpackages__",
+        "//palton:__subpackages__",
         "//shims/torchtitan:__subpackages__",
         "@pypi//helion:__subpackages__",
         "@pypi//tokamax:__subpackages__",
