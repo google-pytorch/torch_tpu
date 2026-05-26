@@ -27,6 +27,7 @@
 #include "c10/core/Storage.h"
 #include "c10/core/TensorImpl.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 
 // This library connects the DeviceBufferRef/DeviceBufferList/DeferredOp graph
 // structure with aten, offering bidirectional conversion between the two.
@@ -145,6 +146,26 @@ bool IsTpuPinnedPtr(const void* ptr);
 // Registers the TpuAllocator as the allocator for the PrivateUse1 device.
 // This must be called before using the allocator for any device operations.
 void RegisterTpuAllocator();
+
+// Returns a materialized DeviceBufferRef for the logical data in the tensor.
+// This will materialize the base tensor in-place (see Materialize()) if it is
+// deferred.
+// If the tensor is a contiguous base tensor, then it will return this tensor.
+// If it is a view, then an ephemeral DeviceBufferList will be created and
+// materialized.
+// Errors if the tensor's base DeviceBufferRef is a placeholder.
+absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
+                                                MaterializationReason reason);
+
+// Returns a materialized DeviceBufferRefs each input tensor.
+// This will materialize each base tensor in-place (see Materialize()) if it is
+// deferred.
+// All contiguous base tensors will be returned as-is.
+// All views will be materialized into ephemeral DeviceBufferLists.
+// Errors if any of the tensors' base DeviceBufferRefs are placeholders or
+// depend on placeholders.
+absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
+    absl::Span<const at::Tensor> tensors, MaterializationReason reason);
 
 }  // namespace torch_tpu
 

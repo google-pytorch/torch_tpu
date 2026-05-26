@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,7 +37,9 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/op_name_stack.h"
+#include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -209,18 +212,24 @@ using DeviceBufferRefArray = internal::DeviceBufferRefArrayTraits<kSize>::type;
 
 namespace internal {
 
+// Information about an injected op dispatch failure. Used for internal testing
+// only.
+struct OpDispatchFailure {
+  // The base name of the op that is forced to fail. If empty, no op is forced
+  // to fail.
+  std::string op_base_name;
+  // The failure message of the injected op failure.
+  std::string failure_message;
+};
+
+// Returns the injected op dispatch failure.
+[[nodiscard]] OpDispatchFailure& GetOpDispatchFailure();
+
 // Forces the op with the given base name to fail with the given message. This
 // is NOT accumulative. If you call this multiple times, only the last call will
 // take effect. Used for testing only.
 void SetOpDispatchFailure(std::string op_base_name,
                           std::string failure_message);
-
-// Dispatches an op.
-// Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
-// kNumOutputs> instead.
-absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
-    MlirOpBuilder op_builder, std::vector<DeviceBufferRef> inputs,
-    DispatchOpOptions<kDynamicSize> options);
 
 template <int kArity>
 struct OpInputsTraits {
@@ -263,6 +272,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
          "Move the call inside a TT_KERNEL(). Or, if there's a good reason for "
          "not using TT_KERNEL(), use DispatchOp(..., {.op_name = ...}) "
          "instead.";
+  const auto op_name = options.op_name.value();
 
   absl::Span<const at::Tensor> inputs_span;
   if constexpr (kArity == kDynamicSize) {
@@ -277,40 +287,86 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
 
   TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> inputs_vec,
                       GetBuffers(inputs_span));
+
+  // Fail if the op is forced to fail for testing.
+  const std::string_view op_base_name = ToBaseName(op_name);
+  const auto& op_failure = internal::GetOpDispatchFailure();
+  if (op_failure.op_base_name == op_base_name) {
+    return TT_ERROR(error::kInternal) << op_failure.failure_message;
+  }
+
   std::vector<DeviceBufferRef> results;
   if constexpr (kNumOutputs == 1) {
-    TT_ASSIGN_OR_RETURN(
-        results,
-        internal::DynamicDispatchOp(
+    internal::DeferredOpParams params{
+        .op_name = op_name,
+        .op_builder =
             ToMlirOpBuilder<kArity, kNumOutputs>(std::move(op_builder)),
-            std::move(inputs_vec),
-            // Convert DispatchOpOptions<1> to DispatchOpOptions<kDynamicSize>.
-            {.op_name = options.op_name,
-             .out_dtypes = {options.out_dtype},
-             .out_dims_list = {options.out_dims},
-             .computation_dtype = options.computation_dtype,
-             .op_param_cache_keys = std::move(options.op_param_cache_keys),
-             .split_mode = options.split_mode}));
+        .op_param_cache_keys = std::move(options.op_param_cache_keys),
+        .inputs = std::move(inputs_vec),
+        .output_shapes = {Shape(CopyIntVector(options.out_dims),
+                                options.out_dtype)},
+        .computation_dtype = options.computation_dtype,
+        .split_mode = options.split_mode,
+        .donated_indices = std::move(options.donated_indices),
+    };
+    TT_ASSIGN_OR_RETURN(results,
+                        internal::CreateDeferredDeviceBufferList(params));
   } else if constexpr (kNumOutputs == kDynamicSize) {
-    TT_ASSIGN_OR_RETURN(
-        results,
-        internal::DynamicDispatchOp(
+    const auto& out_dtypes = options.out_dtypes;
+    const auto& out_dims_list = options.out_dims_list;
+    const int num_outputs = out_dtypes.size();
+    ABSL_CHECK_EQ(num_outputs,  // CRASH_OK=indicates invalid kernel
+                  out_dims_list.size())
+        << "Mismatching output sizes, num_outputs = " << num_outputs
+        << ", out_dims_list.size() = " << out_dims_list.size();
+    std::vector<Shape> output_shapes;
+    output_shapes.reserve(num_outputs);
+    for (int i = 0; i < num_outputs; ++i) {
+      output_shapes.emplace_back(CopyIntVector(out_dims_list[i]),
+                                 out_dtypes[i]);
+    }
+
+    internal::DeferredOpParams params{
+        .op_name = op_name,
+        .op_builder =
             ToMlirOpBuilder<kArity, kNumOutputs>(std::move(op_builder)),
-            std::move(inputs_vec), std::move(options)));
-  } else {  // kNumOutputs >= 2 and is known at compile time.
-    TT_ASSIGN_OR_RETURN(
-        results,
-        internal::DynamicDispatchOp(
+        .op_param_cache_keys = std::move(options.op_param_cache_keys),
+        .inputs = std::move(inputs_vec),
+        .output_shapes = std::move(output_shapes),
+        .computation_dtype = options.computation_dtype,
+        .split_mode = options.split_mode,
+        .donated_indices = std::move(options.donated_indices),
+    };
+    TT_ASSIGN_OR_RETURN(results,
+                        internal::CreateDeferredDeviceBufferList(params));
+  } else {
+    const auto& out_dtypes = options.out_dtypes;
+    const auto& out_dims_list = options.out_dims_list;
+    const int num_outputs = out_dtypes.size();
+    ABSL_CHECK_EQ(num_outputs,  // CRASH_OK=indicates invalid kernel
+                  out_dims_list.size())
+        << "Mismatching output sizes, num_outputs = " << num_outputs
+        << ", out_dims_list.size() = " << out_dims_list.size();
+    std::vector<Shape> output_shapes;
+    output_shapes.reserve(num_outputs);
+    for (int i = 0; i < num_outputs; ++i) {
+      output_shapes.emplace_back(CopyIntVector(out_dims_list[i]),
+                                 out_dtypes[i]);
+    }
+
+    internal::DeferredOpParams params{
+        .op_name = op_name,
+        .op_builder =
             ToMlirOpBuilder<kArity, kNumOutputs>(std::move(op_builder)),
-            std::move(inputs_vec),
-            // Convert DispatchOpOptions<kNumOutputs> to
-            // DispatchOpOptions<kDynamicSize>.
-            {.op_name = options.op_name,
-             .out_dtypes = options.out_dtypes,
-             .out_dims_list = options.out_dims_list,
-             .computation_dtype = options.computation_dtype,
-             .op_param_cache_keys = std::move(options.op_param_cache_keys),
-             .split_mode = options.split_mode}));
+        .op_param_cache_keys = std::move(options.op_param_cache_keys),
+        .inputs = std::move(inputs_vec),
+        .output_shapes = std::move(output_shapes),
+        .computation_dtype = options.computation_dtype,
+        .split_mode = options.split_mode,
+        .donated_indices = std::move(options.donated_indices),
+    };
+    TT_ASSIGN_OR_RETURN(results,
+                        internal::CreateDeferredDeviceBufferList(params));
   }
   if constexpr (kNumOutputs == kDynamicSize) {
     return std::move(results);

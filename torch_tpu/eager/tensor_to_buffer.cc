@@ -27,6 +27,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/flags/declare.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -53,11 +54,19 @@
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/flags.h"
+#include "torch_tpu/common/status_builder.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
+#include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
+#include "torch_tpu/experimental/eager/materialize_new.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/host_memory_allocator.h"
+
+ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
 
 namespace torch_tpu {
 
@@ -514,6 +523,123 @@ bool IsTpuPinnedPtr(const void* ptr) {
 void RegisterTpuAllocator() {
   c10::SetAllocator(GetPrivateUse1DeviceType(), GetTpuAllocator());
   at::setHostAllocator(GetPrivateUse1DeviceType(), GetTpuPinnedAllocator());
+}
+
+namespace {
+
+// Translates a raw background execution Out-of-Memory (OOM) error to a
+// high-level exception that is easy to understand by PyTorch users. Under
+// experimental asynchronous materialization, compilation and execution are
+// enqueued to the background thread. If an execution OOM happens in the
+// background, it is caught early during BlockOnPendingMaterializations() inside
+// GetMaterialized(), bypassing the standard copy-transfer wrapper's
+// (TranslateXlaTensorOomError) execution blocks. We replicate the OOM mapping
+// here to ensure user exception signature consistency.
+absl::Status TranslateXlaOomError(const absl::Status& status,
+                                  const at::Tensor& tensor) {
+  if (!IsXlaOomError(status)) {
+    return status;
+  }
+  auto dtype_or = ConvertTo<mlir::ElementType>(tensor.scalar_type());
+  if (!dtype_or.ok()) {
+    return status;
+  }
+  return TT_ERROR(error::kResourceExhausted)
+         << "the TPU ran out of memory while awaiting the materialization of "
+            "value "
+         << ToString(*dtype_or) << "[" << absl::StrJoin(tensor.sizes(), ", ")
+         << "]:\n"
+         << status.message();
+}
+
+absl::Status MaybeBlockOnPendingMaterializationsNew(const at::Tensor& tensor) {
+  if (GetFlagOnce<bool,
+                  &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
+    // Under experimental asynchronous materialization, the main thread blocks
+    // and awaits for the background worker compilation and execution thread to
+    // catch up before returning the resolved device buffer reference.
+    auto status = BlockOnPendingMaterializations();
+    if (!status.ok()) {
+      if (IsXlaOomError(status)) {
+        // 1. If it is an execution OOM error, translate it to standard format
+        //    while preserving the default copy caller context prefix
+        //    ("to_copy").
+        return TranslateXlaOomError(status, tensor);
+      } else {
+        // 2. If it is a compilation error, wrap the existing status natively
+        //    via StatusBuilder to preserve the background thread's original
+        //    operator name context payload (e.g., "gather", "scatter",
+        //    "cumprod") captured during graph construction under
+        //    ScopedPythonContextProvider. Do NOT reconstruct the status (e.g.
+        //    using TT_ERROR), as that would overwrite the payload with the copy
+        //    thread's "to_copy" wrapper.
+        return ::torch_tpu::StatusBuilder(std::move(status)).SetPrepend()
+               << "materialization failed with: ";
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<DeviceBufferRef> GetMaterialized(const at::Tensor& tensor,
+                                                MaterializationReason reason) {
+  tsl::profiler::TraceMe trace("GetMaterialized");
+  // Make sure the base DeviceBufferRef is materialized
+  const auto* tensor_impl = tensor.unsafeGetTensorImpl();
+  TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined";
+  TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
+                      GetBaseBuffer(*tensor_impl));
+  TT_RETURN_IF_ERROR(
+      Materialize(base_buffer_ref, reason, MaterializationMode::kSplitGraph));
+
+  // Get the view DeviceBufferRef (may be the same as the base)
+  TT_ASSIGN_OR_RETURN(const DeviceBufferRef view_buffer_ref, GetBuffer(tensor));
+  // Materialize the view (no-op if the tensor is a continuous base tensor)
+  TT_RETURN_IF_ERROR(
+      Materialize(view_buffer_ref, reason, MaterializationMode::kSplitGraph));
+  // The new materialization algorithm needs us to block here until all pending
+  // jobs are done.
+  TT_RETURN_IF_ERROR(MaybeBlockOnPendingMaterializationsNew(tensor));
+
+  return view_buffer_ref;
+}
+
+absl::StatusOr<std::vector<DeviceBufferRef>> GetMaterialized(
+    absl::Span<const at::Tensor> tensors, MaterializationReason reason) {
+  tsl::profiler::TraceMe trace("GetMaterialized (batch)");
+  if (tensors.empty()) {
+    return std::vector<DeviceBufferRef>();
+  }
+  // Materialize all of the base DeviceBufferRefs (in a single execution)
+  std::vector<DeviceBufferRef> base_buffer_refs;
+  base_buffer_refs.reserve(tensors.size());
+  for (const at::Tensor& tensor : tensors) {
+    const auto* tensor_impl = tensor.unsafeGetTensorImpl();
+    TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined";
+    TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
+                        GetBaseBuffer(*tensor_impl));
+    base_buffer_refs.push_back(base_buffer_ref);
+  }
+  TT_RETURN_IF_ERROR(
+      Materialize(base_buffer_refs, reason, MaterializationMode::kSplitGraph));
+
+  // Materialize all of the views (no-op if all tensors are contiguous bases)
+  std::vector<DeviceBufferRef> view_buffer_refs;
+  view_buffer_refs.reserve(tensors.size());
+  for (const at::Tensor& tensor : tensors) {
+    TT_ASSIGN_OR_RETURN(const DeviceBufferRef view_buffer_ref,
+                        GetBuffer(tensor));
+    view_buffer_refs.push_back(view_buffer_ref);
+  }
+  TT_RETURN_IF_ERROR(
+      Materialize(view_buffer_refs, reason, MaterializationMode::kSplitGraph));
+  // The new materialization algorithm needs us to block here until all pending
+  // jobs are done.
+  TT_RETURN_IF_ERROR(MaybeBlockOnPendingMaterializationsNew(tensors[0]));
+
+  return view_buffer_refs;
 }
 
 }  // namespace torch_tpu

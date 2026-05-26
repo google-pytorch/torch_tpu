@@ -41,7 +41,6 @@
 #include "c10/util/accumulate.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -49,7 +48,6 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
-#include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -114,13 +112,19 @@ void Subgraph::PruneAndReturnLeafNodes(
   unprunable_side_effects_.clear();
 }
 
-void Subgraph::push(std::weak_ptr<DeviceBufferList> device_buffer) {
+void Subgraph::push(std::weak_ptr<DeviceBufferList> device_buffer,
+                    bool is_side_effect) {
   absl::MutexLock lock(mu_);
   if (queue_.size() >= queue_.capacity()) {
     // Try to free up capacity by pruning down to just the live leaf nodes.
     Prune();
   }
   queue_.push_back(std::move(device_buffer));
+  if (is_side_effect) {
+    if (auto shared_buffer = device_buffer.lock()) {
+      AnchorSideEffect(std::move(shared_buffer));
+    }
+  }
 }
 
 void Subgraph::AnchorSideEffect(
@@ -540,11 +544,42 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateMaterialized(
   return DeviceBufferRef(std::move(device_buffer_list), 0);
 }
 
+absl_nonnull std::shared_ptr<Subgraph> PrepareSubgraph(
+    absl::Span<const DeviceBufferRef> inputs, OpName op_name) {
+  std::shared_ptr<Subgraph> subgraph = nullptr;
+  if (IsDistributedOp(op_name)) {
+    // Each distributed op acts as a barrier; all prior operations (connected
+    // or not) that were created before it must be considered part of the same
+    // graph so that proper ordering is maintained.
+    // Otherwise, two independent collective operations could be isolated in
+    // disconnected subgraphs, and different rank processes could have
+    // different orderings of these subgraphs, leading to a deadlock.
+    subgraph = SubgraphRegistry::GetInstance().MergeAll();
+  }
+
+  for (const auto& input : inputs) {
+    if (auto input_subgraph = input.device_buffer_list()->subgraph()) {
+      auto input_rep = input_subgraph->Find();
+      if (!subgraph) {
+        subgraph = input_rep;
+      } else if (subgraph != input_rep) {
+        Subgraph::Merge(subgraph, input_rep);
+        subgraph = subgraph->Find();
+      }
+    }
+  }
+
+  if (!subgraph) {
+    return Subgraph::Create();
+  }
+  return subgraph;
+}
+
 absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
     OpName op_name, MlirOpBuilder op_builder,
     std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
     std::vector<Shape> output_shapes, OpSplitMode split_mode,
-    Indices donated_indices, bool skip_subgraph) {
+    Indices donated_indices, absl_nullable std::shared_ptr<Subgraph> subgraph) {
   // Validate that the output shapes are valid.
   for (const auto& output_shape : output_shapes) {
     TT_RETURN_IF_ERROR(ValidateTensorByteSize(output_shape.dimensions(),
@@ -552,54 +587,16 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   }
   int64_t num_outputs = output_shapes.size();
 
-  std::shared_ptr<Subgraph> subgraph = nullptr;
-
-  if (!skip_subgraph) {
-    if (IsDistributedOp(op_name)) {
-      // Each distributed op acts as a barrier; all prior operations (connected
-      // or not) that were created before it must be considered part of the same
-      // graph so that proper ordering is maintained.
-      // Otherwise, two independent collective operations could be isolated in
-      // disconnected subgraphs, and different rank processes could have
-      // different orderings of these subgraphs, leading to a deadlock.
-      subgraph = SubgraphRegistry::GetInstance().MergeAll();
-    }
-
-    for (const auto& input : inputs) {
-      if (auto input_subgraph = input.device_buffer_list()->subgraph()) {
-        auto input_rep = input_subgraph->Find();
-        if (!subgraph) {
-          subgraph = input_rep;
-        } else if (subgraph != input_rep) {
-          Subgraph::Merge(subgraph, input_rep);
-          subgraph = subgraph->Find();
-        }
-      }
-    }
-
-    if (!subgraph) {
-      subgraph = Subgraph::Create();
-    }
-  }
-
   // Create the DeferredOp.
   auto op = std::make_unique<DeferredOp>(
       op_name, std::move(op_builder), std::move(inputs),
-      std::move(op_param_cache_keys), output_shapes, subgraph, split_mode,
-      std::move(donated_indices));
+      std::move(op_param_cache_keys), output_shapes, std::move(subgraph),
+      split_mode, std::move(donated_indices));
 
   // Wrap the DeferredOp in a DeviceBufferList.
   // Can't use make_shared because the constructor is private.
   auto device_buffer = std::shared_ptr<DeviceBufferList>(
       new DeviceBufferList(std::move(op), std::move(output_shapes)));
-
-  if (subgraph) {
-    subgraph->push(std::weak_ptr<DeviceBufferList>(device_buffer));
-    if (IsSideEffectingOp(op_name) &&
-        GetEagerMode() != EagerMode::kInternalDeferAll) {
-      subgraph->AnchorSideEffect(device_buffer);
-    }
-  }
 
   // Construct one DeviceBufferRef for each output.
   std::vector<DeviceBufferRef> device_buffer_refs;

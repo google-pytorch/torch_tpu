@@ -18,14 +18,56 @@
 #define TORCH_TPU_EAGER_DEVICE_BUFFER_UTILS_H_
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/ops/op_builder_utils.h"
+#include "torch_tpu/ops/op_names.h"
+
 namespace torch_tpu {
+
+namespace internal {
+
+// Parameters for creating a deferred DeviceBufferList.
+struct DeferredOpParams {
+  // The name of the operation, see op_names.h for possible values.
+  OpName op_name;
+  // The MLIR op builder for the operation. It must take a vector of MlirOps as
+  // inputs and return a vector of MlirOps as outputs.
+  MlirOpBuilder op_builder;
+  // The cache keys for the operation. See cache_key.h for more details.
+  OpParamCacheKeys op_param_cache_keys;
+  // The inputs to the operation. May be empty for nullary ops, but must match
+  // the number of inputs expected by the op builder.
+  std::vector<DeviceBufferRef> inputs;
+  // The output shapes and types of the operation. Must match the number of
+  // outputs returned by the op builder.
+  std::vector<Shape> output_shapes;
+  // If specified, forces all inputs to be cast to this dtype before the op
+  // builder is applied. The output types are still determined by the
+  // output_shapes.
+  std::optional<mlir::ElementType> computation_dtype = std::nullopt;
+  // The split mode for the operation. See device_buffer.h for more details.
+  OpSplitMode split_mode = OpSplitMode::kNone;
+  // The indices of the donated inputs. This is primarily used by custom ops
+  // (such as Pallas ops).
+  Indices donated_indices = {};
+};
+
+// Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
+// kNumOutputs> instead, or one of the other public functions in this file like
+// CreateEmptyDeviceBufferRef.
+absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
+    DeferredOpParams& params);
+
+}  // namespace internal
 
 // Creates a deferred DeviceBufferList containing a constant tensor value,
 // based on a 1D byte array.

@@ -702,6 +702,56 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
   return IsDistributedOp(op_name);
 }
 
+// Returns true if the op would would be metadata-only on CUDA.
+// When creating these ops, we should usually not need to materialize them,
+// even in kDeferNever mode.
+[[nodiscard]] inline bool IsMetadataOnly(OpName op_name) {
+  switch (op_name) {
+    case OpName::kAlias:
+    case OpName::kAsStrided:
+    case OpName::kAsStridedInverse:
+    case OpName::kReshapeAlias:
+    case OpName::kUnsqueeze:
+    case OpName::kUnsqueezeCopy:
+    case OpName::kUnsqueezeCopyOut:
+    case OpName::kUnsqueeze_:
+    case OpName::kView:
+    case OpName::kViewAsComplex:
+    case OpName::kViewAsReal:
+      // On CUDA, view operations are not separate kernels, they're just read
+      // patterns from a provided CUDA buffer.
+      // Similarly, writes to buffers are just pointer dereferences.
+      return true;
+    case OpName::kDetach:
+    case OpName::kDetach_:
+      // Detach removes the grad tensor on the CPU, but doesn't have any
+      // associated compute.
+      return true;
+    case OpName::kEmpty:
+    case OpName::kEmptyMemoryFormat:
+    case OpName::kEmptyStrided:
+      // "Empty" ops on CUDA are allocation events, which don't have any
+      // associated compute.
+      return true;
+    case OpName::kTorchTpuInternalConstant:
+      // Constant ops are compiled-mode only.
+      return true;
+    case OpName::kResize_:
+      // Resize_ behaves either like a view or allocation event, depending on
+      // if it is increasing or decreasing the tensor size.
+      // Either way, there's no associated compute.
+      return true;
+    case OpName::kSet_:
+    case OpName::kSet_SourceStorage:
+    case OpName::kSet_SourceStorageOffset:
+    case OpName::kSet_SourceTensor:
+      // The "set" ops change the relationship between a Tensor and storage, but
+      // don't change the values in that storage.
+      return true;
+    default:
+      return false;
+  }
+}
 namespace internal {
 
 // Specialization for `OpName`.

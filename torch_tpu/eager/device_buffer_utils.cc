@@ -19,10 +19,14 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "absl/base/nullability.h"
+#include "absl/flags/declare.h"
 #include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -30,17 +34,25 @@
 #include "absl/types/span.h"
 #include "c10/util/accumulate.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/eager_mode.h"
+#include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/repeated_ops_heuristic.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
+#include "torch_tpu/experimental/eager/materialize_new.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -50,7 +62,106 @@
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"
 
+ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
+
 namespace torch_tpu {
+
+namespace internal {
+
+absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
+    DeferredOpParams& params) {
+  if (params.computation_dtype) {
+    params.op_builder = [computation_dtype = *params.computation_dtype,
+                         op_builder = std::move(params.op_builder)](
+                            mlir::MlirBuilder& builder,
+                            absl::Span<mlir::MlirOp> inputs)
+        -> absl::StatusOr<DynamicMlirOpResults> {
+      mlir::Type computation_type =
+          mlir::getElementType(builder.getContext(), computation_dtype);
+      std::vector<mlir::MlirOp> casted_inputs;
+      casted_inputs.reserve(inputs.size());
+      for (auto input : inputs) {
+        const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+        if (input_type.getElementType() != computation_type) {
+          input = mlir::stablehlo::ConvertElementType(input, computation_dtype);
+        }
+        casted_inputs.push_back(input);
+      }
+      return op_builder(builder, absl::MakeSpan(casted_inputs));
+    };
+  }
+
+  auto eager_mode = GetEagerMode();
+  absl_nullable std::shared_ptr<Subgraph> subgraph = nullptr;
+  if (((eager_mode == EagerMode::kDeferNever) ||
+       (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking)) &&
+      !IsMetadataOnly(params.op_name)) {
+    // In either kDeferNever mode, we want to enqueue each op's execution as
+    // quickly as possible to unblock the main thread.
+    // To achieve this, we skip connecting the newly-created node to any
+    // Subgraph, and we use kFullGraph to skip the SplitTraveral logic.
+    // Skipping SplitTraversal means we need to manually apply kSplitBefore for
+    // relevant ops.
+    if (IsSplitBefore(params.split_mode)) {
+      // Most of the time, this Materialize() should be a no-op; all non-view,
+      // non-`empty()` tensors should already be materialized.
+      // If this isn't the case, then using kSplitGraph will insert additional
+      // materialization points to ensure all deferred inputs are materialized
+      // or dropped.
+      TT_RETURN_IF_ERROR(Materialize(params.inputs,
+                                     MaterializationReason::kDebugMode,
+                                     MaterializationMode::kSplitGraph));
+    }
+    // Don't block here even in kDeferNeverAndLaunchBlocking mode; we'll block
+    // after the new op is dispatched.
+  } else {
+    // If we're not in kDeferNever mode, we need to connect the new op to a
+    // subgraph (new or existing).
+    subgraph = PrepareSubgraph(params.inputs, params.op_name);
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferRef> results,
+      DeviceBufferList::CreateDeferred(
+          params.op_name, std::move(params.op_builder),
+          std::move(params.inputs), std::move(params.op_param_cache_keys),
+          std::move(params.output_shapes), params.split_mode,
+          std::move(params.donated_indices), subgraph));
+  if (subgraph) {
+    subgraph->Find()->push(results[0].device_buffer_list());
+  }
+
+  if (IsMetadataOnly(params.op_name)) {
+    // Don't eagerly materialize metadata-only ops.
+    return results;
+  }
+
+  if ((eager_mode == EagerMode::kDeferNever) ||
+      (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking)) {
+    auto& device_buffer_list = results[0].device_buffer_list();
+    TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
+                                   MaterializationReason::kDebugMode,
+                                   MaterializationMode::kFullGraph));
+    if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
+      TT_RETURN_IF_ERROR(device_buffer_list->Synchronize());
+    }
+
+  } else if (eager_mode != EagerMode::kInternalDeferAll) {
+    if (GetFlagOnce<bool,
+                    &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
+      TT_RETURN_IF_ERROR(OnNewOpDispatch(results[0].device_buffer_list()));
+    }
+
+    if (MustApplyRepeatedOpsHeuristic()) {
+      TT_RETURN_IF_ERROR(
+          ApplyRepeatedOpsHeuristic(results[0].device_buffer_list()));
+    }
+  }
+
+  return results;
+}
+
+}  // namespace internal
 
 absl::StatusOr<DeviceBufferRef> CreateConstantDeviceBufferRef(
     std::vector<char> cpu_tensor_data, Dimensions dimensions,
@@ -117,13 +228,16 @@ absl::StatusOr<DeviceBufferRef> CreateConstantDeviceBufferRef(
         mlir::stablehlo::Constant(builder, dense_elements_attr)};
   };
 
-  // OpSplitMode is kNone; we don't need to split around a constant.
-  // No device inputs, so no aliased inputs.
-  TT_ASSIGN_OR_RETURN(
-      auto results,
-      DeviceBufferList::CreateDeferred(
-          op_name, std::move(op_builder), /*inputs=*/{},
-          std::move(op_param_cache_keys), std::move(output_shapes)));
+  internal::DeferredOpParams params{
+      .op_name = op_name,
+      .op_builder = std::move(op_builder),
+      .op_param_cache_keys = std::move(op_param_cache_keys),
+      .inputs = {},
+      .output_shapes = std::move(output_shapes),
+  };
+
+  TT_ASSIGN_OR_RETURN(auto results,
+                      internal::CreateDeferredDeviceBufferList(params));
   TT_RET_CHECK(results.size() == 1, error::kInternal)
       << "CreateConstantDeviceBufferRef should return exactly one output";
   return std::move(results[0]);
@@ -143,12 +257,16 @@ absl::StatusOr<DeviceBufferRef> CreateEmptyDeviceBufferRef(
         BuildFillUninitialized(builder, element_type, dimensions)};
   };
   Shape output_shape(std::move(dimensions), element_type);
+
+  internal::DeferredOpParams params{
+      .op_name = OpName::kEmpty,
+      .op_builder = std::move(op_builder),
+      .op_param_cache_keys = OpParamCacheKeys::Empty(),
+      .inputs = {},
+      .output_shapes = {std::move(output_shape)},
+  };
   TT_ASSIGN_OR_RETURN(auto results,
-                      DeviceBufferList::CreateDeferred(
-                          OpName::kEmpty, std::move(op_builder), /*inputs=*/{},
-                          OpParamCacheKeys::Empty(), {std::move(output_shape)},
-                          OpSplitMode::kNone,
-                          /*donated_indices=*/{}));
+                      internal::CreateDeferredDeviceBufferList(params));
   ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
   return std::move(results[0]);
 }
@@ -347,12 +465,17 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
   output_shapes.emplace_back(CopyIntVector(view_dimensions), view_element_type);
 
   // Create the deferred op.
-  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> deferred_refs,
-                      DeviceBufferList::CreateDeferred(
-                          op_name, std::move(op_builder), std::move(inputs),
-                          std::move(param_keys), std::move(output_shapes)));
-  ABSL_CHECK_EQ(deferred_refs.size(), 1);  // CRASH_OK
-  return std::move(deferred_refs[0]);
+  internal::DeferredOpParams params{
+      .op_name = op_name,
+      .op_builder = std::move(op_builder),
+      .op_param_cache_keys = std::move(param_keys),
+      .inputs = std::move(inputs),
+      .output_shapes = std::move(output_shapes),
+  };
+  TT_ASSIGN_OR_RETURN(auto results,
+                      internal::CreateDeferredDeviceBufferList(params));
+  ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
+  return std::move(results[0]);
 }
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
@@ -404,12 +527,17 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
                            .SetParam("storage_offset", view_storage_offset));
 
   // Create the deferred DeviceBufferRef.
-  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> deferred_refs,
-                      DeviceBufferList::CreateDeferred(
-                          op_name, std::move(op_builder), std::move(inputs),
-                          std::move(param_keys), std::move(output_shapes)));
-  ABSL_CHECK_EQ(deferred_refs.size(), 1);  // CRASH_OK
-  return std::move(deferred_refs[0]);
+  internal::DeferredOpParams params{
+      .op_name = op_name,
+      .op_builder = std::move(op_builder),
+      .op_param_cache_keys = std::move(param_keys),
+      .inputs = std::move(inputs),
+      .output_shapes = std::move(output_shapes),
+  };
+  TT_ASSIGN_OR_RETURN(auto results,
+                      internal::CreateDeferredDeviceBufferList(params));
+  ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
+  return std::move(results[0]);
 }
 
 }  // namespace torch_tpu

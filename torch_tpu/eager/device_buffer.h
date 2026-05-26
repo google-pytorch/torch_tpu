@@ -164,12 +164,10 @@ class Subgraph : public std::enable_shared_from_this<Subgraph> {
   // Creates a new subgraph and registers it with the subgraph registry.
   static std::shared_ptr<Subgraph> Create();
 
-  // Pushes a deferred node onto this subgraph's queue.
-  void push(std::weak_ptr<DeviceBufferList> device_buffer);
-
-  // Anchors a strong pointer to prevent pruning of side-effecting/barrier
-  // nodes.
-  void AnchorSideEffect(std::shared_ptr<DeviceBufferList> device_buffer);
+  // Pushes a deferred node onto this subgraph's queue, and anchors it if it is
+  // a side-effecting/barrier node.
+  void push(std::weak_ptr<DeviceBufferList> device_buffer,
+            bool is_side_effect = false);
 
   // Returns the representative subgraph (root of the DSU tree).
   std::shared_ptr<Subgraph> Find();
@@ -188,6 +186,10 @@ class Subgraph : public std::enable_shared_from_this<Subgraph> {
   void PruneAndReturnLeafNodes(
       std::vector<SharedDeviceBufferList>& leaf_nodes_out)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  // Anchors a strong pointer to prevent pruning of side-effecting/barrier
+  // nodes.
+  void AnchorSideEffect(std::shared_ptr<DeviceBufferList> device_buffer);
 
   absl::Mutex mu_;
   std::shared_ptr<Subgraph> parent_ ABSL_GUARDED_BY(mu_);
@@ -382,6 +384,13 @@ class DeviceBufferRef {
   // Initialized to -1 to avoid uninitialized memory.
   int64_t index_ = -1;
 };
+
+// Prepares the subgraph for the given DeviceBufferRefs and op name.
+// This should be provided to DeviceBufferList::CreateDeferred, and afterwards,
+// the SharedDeviceBufferList should added to this subgraph using
+// Subgraph::push().
+absl_nonnull std::shared_ptr<Subgraph> PrepareSubgraph(
+    absl::Span<const DeviceBufferRef> inputs, OpName op_name);
 
 // Creates a c10::DataPtr to hold the given DeviceBufferRef on the given
 // PrivateUse1 device index.
@@ -622,7 +631,7 @@ class DeviceBufferList {
       std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
       std::vector<Shape> output_shapes,
       OpSplitMode split_mode = OpSplitMode::kNone, Indices donated_indices = {},
-      bool skip_subgraph = false);
+      absl_nullable std::shared_ptr<Subgraph> subgraph = nullptr);
 
   // Creates a DeviceBufferList that represents a compiled-mode placeholder.
   // This is a buffer that is not backed by any data, but is used to represent

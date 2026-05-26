@@ -16,37 +16,23 @@
 
 #include "torch_tpu/eager/op_dispatcher.h"
 
-#include <algorithm>
-#include <cstddef>
-#include <deque>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ATen/ScalarOps.h"
 #include "ATen/core/ATen_fwd.h"
-#include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
-#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
-#include "absl/flags/declare.h"
-#include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/util/Optional.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Types.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -54,26 +40,17 @@
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
-#include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/eager_mode.h"
-#include "torch_tpu/eager/materialize.h"
-#include "torch_tpu/eager/repeated_ops_heuristic.h"
-#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
-#include "torch_tpu/experimental/eager/materialize_new.h"
 #include "torch_tpu/ops/copy_from/cpu_to_tpu.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "tsl/profiler/lib/traceme.h"
-
-ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_new_materialization);
 
 namespace torch_tpu {
 namespace {
@@ -162,18 +139,7 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
 
 namespace internal {
 
-// Information about an injected op dispatch failure. Used for internal testing
-// only.
-struct OpDispatchFailure {
-  // The base name of the op that is forced to fail. If empty, no op is forced
-  // to fail.
-  std::string op_base_name;
-  // The failure message of the injected op failure.
-  std::string failure_message;
-};
-
-// Returns the injected op dispatch failure.
-[[nodiscard]] static OpDispatchFailure& GetOpDispatchFailure() {
+[[nodiscard]] OpDispatchFailure& GetOpDispatchFailure() {
   static absl::NoDestructor<OpDispatchFailure> failure;
   return *failure;
 }
@@ -182,122 +148,6 @@ void SetOpDispatchFailure(std::string op_base_name,
                           std::string failure_message) {
   GetOpDispatchFailure() = {std::move(op_base_name),
                             std::move(failure_message)};
-}
-
-absl::StatusOr<std::vector<DeviceBufferRef>> DynamicDispatchOp(
-    MlirOpBuilder op_builder, std::vector<DeviceBufferRef> inputs,
-    DispatchOpOptions<kDynamicSize> options) {
-  ABSL_CHECK(options.op_name.has_value())  // CRASH_OK
-      << "DynamicDispatchOp() called without op_name in options.";
-  const OpName op_name = options.op_name.value();
-  ABSL_VLOG(1) << "DispatchOp " << op_name;
-  if (ABSL_VLOG_IS_ON(3)) {
-    std::stringstream inputs_ss;
-    for (int i = 0; i < inputs.size(); ++i) {
-      inputs_ss << " input " << i << ": " << ToString(inputs[i].dimensions())
-                << " dtype=" << ToString(inputs[i].element_type());
-    }
-    ABSL_VLOG(3) << inputs_ss.str();
-  }
-
-  // Fail if the op is forced to fail for testing.
-  const std::string_view op_base_name = ToBaseName(op_name);
-  const auto& op_failure = GetOpDispatchFailure();
-  if (op_failure.op_base_name == op_base_name) {
-    return TT_ERROR(error::kInternal) << op_failure.failure_message;
-  }
-
-  const auto& out_dtypes = options.out_dtypes;
-  const auto& out_dims_list = options.out_dims_list;
-  const int num_outputs = out_dtypes.size();
-  ABSL_CHECK_EQ(num_outputs,  // CRASH_OK=indicates invalid kernel
-                out_dims_list.size())
-      << "Mismatching output sizes, num_outputs = " << num_outputs
-      << ", out_dims_list.size() = " << out_dims_list.size();
-
-  if (options.computation_dtype) {
-    op_builder = [computation_dtype = *options.computation_dtype,
-                  op_builder = std::move(op_builder)](
-                     mlir::MlirBuilder& builder,
-                     absl::Span<mlir::MlirOp> inputs)
-        -> absl::StatusOr<DynamicMlirOpResults> {
-      mlir::Type computation_type =
-          mlir::getElementType(builder.getContext(), computation_dtype);
-      std::vector<mlir::MlirOp> casted_inputs;
-      casted_inputs.reserve(inputs.size());
-      for (auto input : inputs) {
-        const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-        if (input_type.getElementType() != computation_type) {
-          input = mlir::stablehlo::ConvertElementType(input, computation_dtype);
-        }
-        casted_inputs.push_back(input);
-      }
-      return op_builder(builder, absl::MakeSpan(casted_inputs));
-    };
-  }
-
-  // Always create a deferred node to define the graph; we may or may not
-  // then immediately execute it.
-  std::vector<Shape> output_shapes;
-  output_shapes.reserve(num_outputs);
-  for (int i = 0; i < num_outputs; ++i) {
-    output_shapes.emplace_back(CopyIntVector(out_dims_list[i]), out_dtypes[i]);
-  }
-
-  auto eager_mode = GetEagerMode();
-  bool skip_subgraph = false;
-  if ((eager_mode == EagerMode::kDeferNever) ||
-      (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking)) {
-    // In either kDeferNever mode, we want to enqueue each op's execution as
-    // quickly as possible to unblock the main thread.
-    // To achieve this, we skip connecting the newly-created node to any
-    // Subgraph, and we use kFullGraph to skip the SplitTraveral logic.
-    // Skipping SplitTraversal means we need to manually apply kSplitBefore for
-    // relevant ops.
-    skip_subgraph = true;
-    if (IsSplitBefore(options.split_mode)) {
-      // Most of the time, this Materialize() should be a no-op; all non-view,
-      // non-`empty()` tensors should already be materialized.
-      // If this isn't the case, then using kSplitGraph will insert additional
-      // materialization points to ensure all deferred inputs are materialized
-      // or dropped.
-      TT_RETURN_IF_ERROR(Materialize(inputs, MaterializationReason::kDebugMode,
-                                     MaterializationMode::kSplitGraph));
-    }
-    // Don't block here even in kDeferNeverAndLaunchBlocking mode; we'll block
-    // after the new op is dispatched.
-  }
-
-  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> results,
-                      DeviceBufferList::CreateDeferred(
-                          op_name, std::move(op_builder), std::move(inputs),
-                          std::move(options.op_param_cache_keys),
-                          std::move(output_shapes), options.split_mode,
-                          std::move(options.donated_indices), skip_subgraph));
-
-  if ((eager_mode == EagerMode::kDeferNever) ||
-      (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking)) {
-    auto& device_buffer_list = results[0].device_buffer_list();
-    TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
-                                   MaterializationReason::kDebugMode,
-                                   MaterializationMode::kFullGraph));
-    if (eager_mode == EagerMode::kDeferNeverAndLaunchBlocking) {
-      TT_RETURN_IF_ERROR(device_buffer_list->Synchronize());
-    }
-
-  } else if (eager_mode != EagerMode::kInternalDeferAll) {
-    if (GetFlagOnce<bool,
-                    &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-      TT_RETURN_IF_ERROR(OnNewOpDispatch(results[0].device_buffer_list()));
-    }
-
-    if (MustApplyRepeatedOpsHeuristic()) {
-      TT_RETURN_IF_ERROR(
-          ApplyRepeatedOpsHeuristic(results[0].device_buffer_list()));
-    }
-  }
-
-  return results;
 }
 
 std::string FormatParamCacheKey(const std::optional<PromotedScalar>& value) {
