@@ -196,26 +196,28 @@ def get_peak_memory_hbm(
   Returns:
     The peak memory usage in MB.
   """
-  if device == 'cuda':
+  if device in ('cuda', 'tpu'):
     peak_memory_usage_mb = (
-        torch.cuda.memory.max_memory_allocated() / _BYTES_IN_MB
+        torch.accelerator.max_memory_allocated() / _BYTES_IN_MB
     )
   elif device == 'cpu':
     total = psutil.virtual_memory().total
     percentage = psutil.Process(os.getpid()).memory_percent()
     peak_memory_usage_mb = percentage / 100.0 * total / _BYTES_IN_MB
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu', 'jax'):
-    peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
+  elif device in ('xla_cuda', 'xla_cpu', 'jax'):
+    peak_memory_usage_mb = (
+        torch.accelerator.max_memory_allocated() / _BYTES_IN_MB
+    )
   else:
     raise ValueError(f'Unsupported device: {device}')
   return peak_memory_usage_mb
 
 
 def reset_peak_memory_stats(device):
-  if device == 'cuda':
-    torch.cuda.memory.reset_max_memory_allocated()
-  elif device in ('tpu', 'cpu', 'xla_cuda', 'xla_cpu', 'jax'):
+  if device == 'jax':
     pass
+  elif device in ('cuda', 'tpu', 'cpu', 'xla_cuda', 'xla_cpu'):
+    torch.accelerator.reset_peak_memory_stats()
   else:
     raise ValueError(f'Unsupported device: {device}')
 

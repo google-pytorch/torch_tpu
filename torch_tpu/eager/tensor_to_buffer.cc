@@ -418,13 +418,10 @@ class TpuAllocator final : public c10::DeviceAllocator {
     // Map available stats
     using StatType = c10::CachingAllocator::StatType;
 
-    // Both allocated_bytes and active_bytes are fulfilled by bytes in use by
-    // PjRt. There is no differentiation between the two in the underlying stats
-    // implementation.
     stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
-        pjrt_stats.bytes_in_use;
+        pjrt_stats.bytes_in_use + pjrt_stats.bytes_reserved;
     stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
-        pjrt_stats.peak_bytes_in_use;
+        pjrt_stats.peak_allocated_bytes;
 
     stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
         pjrt_stats.bytes_in_use;
