@@ -21,6 +21,7 @@ device (either CPU or GPU, depending on the test mode).
 import collections.abc
 import copy
 from typing import Any
+import unittest
 
 from absl.testing import absltest
 import torch
@@ -2885,6 +2886,16 @@ class TestOps(TorchTpuTestBase):
         ),
     )
 
+  @unittest.skip(
+      "SIGABRT in ConvertRaggedDotOp compiler lowering, tracked in b/516896882"
+  )
+  def test_ragged_dot(self):
+    self.do_test_op(
+        "torch_tpu.ragged_dot",
+        check_value=CheckValueMode.LOOSE,
+        check_grad=False,
+    )
+
   def test_linalg_lu_solve(self):
     self.do_test_op(
         "linalg.lu_solve",
@@ -3456,6 +3467,12 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op(
         "nn.functional.elu",
         # TODO: look into making this STRICT.
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_elu_backward(self):
+    self.do_test_op(
+        "elu_backward",
         check_value=CheckValueMode.LOOSE,
     )
 

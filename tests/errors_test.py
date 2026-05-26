@@ -5961,6 +5961,42 @@ Supported combinations for non-constant padding:
     ):
       torch._scaled_mm(mat1, mat2, scale_a, scale_b)
 
+  def test_linalg_solve_ex_rank_too_low(self):
+    a = torch.ones(4, device=et.device())
+    b = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg.solve: The input tensor A must have at least 2 dimensions.""",
+        cpu="""linalg.solve: The input tensor A must have at least 2 dimensions.""",
+    ):
+      torch.linalg.solve_ex(a, b)
+
+  def test_linalg_solve_ex_rectangular_matrix(self):
+    a = torch.ones(4, 2, device=et.device())
+    b = torch.ones(4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg.solve: A must be batches of square matrices, but they are 4 by 2 matrices""",
+        cpu="""linalg.solve: A must be batches of square matrices, but they are 4 by 2 matrices""",
+    ):
+      torch.linalg.solve_ex(a, b)
+
+  def test_linalg_vector_norm_invalid_dim(self):
+    x = torch.randn(2, 3, device=et.device())
+    with et.assert_raises_message(
+        IndexError,
+        tpu="""Dimension out of range (expected to be in range of [-2, 1], but got 2)""",
+    ):
+      torch.linalg.vector_norm(x, dim=2)
+
+  def test_linalg_vector_norm_invalid_ord(self):
+    x = torch.randn(2, 3, device=et.device())
+    with et.assert_raises_message(
+        TypeError,
+        tpu="""linalg_vector_norm(): argument 'ord' must be Number, not str""",
+    ):
+      torch.linalg.vector_norm(x, ord="invalid")
+
 
 if __name__ == "__main__":
   absltest.main()

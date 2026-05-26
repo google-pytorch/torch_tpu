@@ -94,6 +94,472 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
           )
       )
 
+  def test_addmv(self):
+    """Tests torch.addmv for various shapes, dtypes, non-contiguous inputs, and parameters."""
+    # standard shapes: mat (n, m), vec (m), input (n)
+    shapes = [
+        ((4, 5), (5,), (4,)),
+        ((1, 5), (5,), (1,)),
+        ((5, 1), (1,), (5,)),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for (mat_shape, vec_shape, input_shape), dtype in itertools.product(
+        shapes, dtypes
+    ):
+      mat = torch.randn(mat_shape, dtype=dtype)
+      vec = torch.randn(vec_shape, dtype=dtype)
+      input_t = torch.randn(input_shape, dtype=dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.bfloat16:
+        rtol = 1e-2
+        atol = 2e-3
+      elif dtype == torch.float16:
+        rtol = 1e-3
+        atol = 1e-3
+
+      # Test normal
+      self.assert_close_tpu_vs_cpu(
+          lambda device, m=mat, v=vec, i=input_t: torch.addmv(
+              i.to(device), m.to(device), v.to(device)
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+      # Test alpha/beta params
+      self.assert_close_tpu_vs_cpu(
+          lambda device, m=mat, v=vec, i=input_t: torch.addmv(
+              i.to(device), m.to(device), v.to(device), alpha=1.5, beta=-0.5
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+      # Test beta = 0 (should ignore input)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, m=mat, v=vec, i=input_t: torch.addmv(
+              i.to(device), m.to(device), v.to(device), beta=0.0
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test empty dimensions/tensors
+    # mat: (0, 5), vec: (5,), input: (0,)
+    mat_empty = torch.randn(0, 5, dtype=torch.float32)
+    vec_empty = torch.randn(5, dtype=torch.float32)
+    input_empty = torch.randn(0, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, m=mat_empty, v=vec_empty, i=input_empty: torch.addmv(
+            i.to(device), m.to(device), v.to(device)
+        )
+    )
+
+    # mat: (5, 0), vec: (0,), input: (5,)
+    mat_empty2 = torch.randn(5, 0, dtype=torch.float32)
+    vec_empty2 = torch.randn(0, dtype=torch.float32)
+    input_empty2 = torch.randn(5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, m=mat_empty2, v=vec_empty2, i=input_empty2: torch.addmv(
+            i.to(device), m.to(device), v.to(device)
+        )
+    )
+
+    # Test non-contiguous inputs
+    mat_large = torch.randn(8, 10, dtype=torch.float32)
+    vec_large = torch.randn(10, dtype=torch.float32)
+    input_large = torch.randn(8, dtype=torch.float32)
+
+    mat_nc = mat_large[::2, ::2]  # shape (4, 5)
+    vec_nc = vec_large[::2]  # shape (5,)
+    input_nc = input_large[::2]  # shape (4,)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, m=mat_nc, v=vec_nc, i=input_nc: torch.addmv(
+            i.to(device), m.to(device), v.to(device)
+        )
+    )
+
+  def test_baddbmm(self):
+    """Tests torch.baddbmm for various shapes, broadcasting, dtypes, non-contiguous inputs, and parameters."""
+    # standard shapes: (b, N, M), (b, M, P), (b, N, P)
+    shapes = [
+        ((2, 3, 4), (2, 4, 5), (2, 3, 5)),
+        ((1, 3, 4), (1, 4, 5), (1, 3, 5)),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for (b1_shape, b2_shape, input_shape), dtype in itertools.product(
+        shapes, dtypes
+    ):
+      b1 = torch.randn(b1_shape, dtype=dtype)
+      b2 = torch.randn(b2_shape, dtype=dtype)
+      input_t = torch.randn(input_shape, dtype=dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.float32:
+        rtol = 1e-2
+        atol = 1e-2
+      elif dtype == torch.bfloat16:
+        rtol = 2e-2
+        atol = 2e-2
+      elif dtype == torch.float16:
+        rtol = 1e-2
+        atol = 1e-2
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b1=b1, b2=b2, i=input_t: torch.baddbmm(
+              i.to(device), b1.to(device), b2.to(device)
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+      # Test parameters alpha/beta
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b1=b1, b2=b2, i=input_t: torch.baddbmm(
+              i.to(device), b1.to(device), b2.to(device), alpha=1.5, beta=-0.5
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test broadcasting of input
+    b1 = torch.randn(2, 3, 4, dtype=torch.float32)
+    b2 = torch.randn(2, 4, 5, dtype=torch.float32)
+    input_shapes = [
+        (1, 3, 5),
+        (2, 1, 5),
+        (2, 3, 1),
+        (1, 1, 5),
+        (1, 1, 1),
+    ]
+    for input_shape in input_shapes:
+      input_t = torch.randn(input_shape, dtype=torch.float32)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b1=b1, b2=b2, i=input_t: torch.baddbmm(
+              i.to(device), b1.to(device), b2.to(device)
+          ),
+          rtol=1e-2,
+          atol=1e-2,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test empty dimensions (b=0, M=0)
+    # b=0
+    b1_e1 = torch.randn(0, 3, 4, dtype=torch.float32)
+    b2_e1 = torch.randn(0, 4, 5, dtype=torch.float32)
+    input_e1 = torch.randn(0, 3, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_e1, b2=b2_e1, i=input_e1: torch.baddbmm(
+            i.to(device), b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # M=0
+    b1_e2 = torch.randn(2, 3, 0, dtype=torch.float32)
+    b2_e2 = torch.randn(2, 0, 5, dtype=torch.float32)
+    input_e2 = torch.randn(2, 3, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_e2, b2=b2_e2, i=input_e2: torch.baddbmm(
+            i.to(device), b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test non-contiguous inputs
+    b1_large = torch.randn(4, 6, 8, dtype=torch.float32)
+    b2_large = torch.randn(4, 8, 10, dtype=torch.float32)
+    input_large = torch.randn(4, 6, 10, dtype=torch.float32)
+
+    b1_nc = b1_large[::2, ::2, ::2]  # shape (2, 3, 4)
+    b2_nc = b2_large[::2, ::2, ::2]  # shape (2, 4, 5)
+    input_nc = input_large[::2, ::2, ::2]  # shape (2, 3, 5)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_nc, b2=b2_nc, i=input_nc: torch.baddbmm(
+            i.to(device), b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_bmm(self):
+    """Tests torch.bmm for various shapes, dtypes, non-contiguous inputs, and edge cases."""
+    shapes = [
+        ((2, 3, 4), (2, 4, 5)),
+        ((1, 3, 4), (1, 4, 5)),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for (b1_shape, b2_shape), dtype in itertools.product(shapes, dtypes):
+      b1 = torch.randn(b1_shape, dtype=dtype)
+      b2 = torch.randn(b2_shape, dtype=dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.float32:
+        rtol = 1e-2
+        atol = 1e-2
+      elif dtype == torch.bfloat16:
+        rtol = 2e-2
+        atol = 2e-2
+      elif dtype == torch.float16:
+        rtol = 1e-2
+        atol = 1e-2
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, b1=b1, b2=b2: torch.bmm(b1.to(device), b2.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test empty dimensions (b=0, M=0)
+    b1_e1 = torch.randn(0, 3, 4, dtype=torch.float32)
+    b2_e1 = torch.randn(0, 4, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_e1, b2=b2_e1: torch.bmm(
+            b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    b1_e2 = torch.randn(2, 3, 0, dtype=torch.float32)
+    b2_e2 = torch.randn(2, 0, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_e2, b2=b2_e2: torch.bmm(
+            b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test non-contiguous inputs
+    b1_large = torch.randn(4, 6, 8, dtype=torch.float32)
+    b2_large = torch.randn(4, 8, 10, dtype=torch.float32)
+
+    b1_nc = b1_large[::2, ::2, ::2]  # shape (2, 3, 4)
+    b2_nc = b2_large[::2, ::2, ::2]  # shape (2, 4, 5)
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, b1=b1_nc, b2=b2_nc: torch.bmm(
+            b1.to(device), b2.to(device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_elu(self):
+    """Tests torch.elu / nn.functional.elu for various shapes, alpha parameters, dtypes, and non-contiguous inputs."""
+    shapes = [
+        (2, 3),
+        (1, 5, 5),
+        (),  # scalar
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+    alphas = [1.0, 0.5, 2.0]
+
+    for shape, dtype, alpha in itertools.product(shapes, dtypes, alphas):
+      x = torch.randn(shape, dtype=dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.bfloat16:
+        rtol = 1e-2
+        atol = 1e-2
+      elif dtype == torch.float16:
+        rtol = 1e-3
+        atol = 1e-3
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, a=alpha: torch.nn.functional.elu(
+              x.to(device), alpha=a
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test non-contiguous inputs
+    x_large = torch.randn(4, 6, dtype=torch.float32)
+    x_nc = x_large[::2, ::2]  # shape (2, 3)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_nc: torch.nn.functional.elu(x.to(device)),
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test empty tensors
+    x_empty = torch.randn(0, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_empty: torch.nn.functional.elu(x.to(device)),
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_elu_backward(self):
+    """Tests torch.ops.aten.elu_backward for various shapes, parameters, dtypes, and non-contiguous inputs."""
+    shapes = [
+        (2, 3),
+        (1, 5, 5),
+        (),  # scalar
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+    alphas = [1.0, 0.5]
+    scales = [1.0, 2.0]
+    input_scales = [1.0, 0.5]
+
+    for shape, dtype, alpha, scale, input_scale in itertools.product(
+        shapes, dtypes, alphas, scales, input_scales
+    ):
+      for is_result in [True, False]:
+        grad_output = torch.randn(shape, dtype=dtype)
+        self_or_result = torch.randn(shape, dtype=dtype)
+
+        rtol = None
+        atol = None
+        if dtype == torch.bfloat16:
+          rtol = 1e-2
+          atol = 1e-2
+        elif dtype == torch.float16:
+          rtol = 1e-3
+          atol = 1e-3
+
+        self.assert_close_tpu_vs_cpu(
+            lambda device, g=grad_output, s=self_or_result, ir=is_result, a=alpha, sc=scale, isc=input_scale: (
+                torch.ops.aten.elu_backward(
+                    g.to(device), a, sc, isc, ir, s.to(device)
+                )
+            ),
+            rtol=rtol,
+            atol=atol,
+            check_value=CheckValueMode.LOOSE,
+        )
+
+    # Test non-contiguous inputs
+    grad_large = torch.randn(4, 6, dtype=torch.float32)
+    self_large = torch.randn(4, 6, dtype=torch.float32)
+
+    grad_nc = grad_large[::2, ::2]
+    self_nc = self_large[::2, ::2]
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, g=grad_nc, s=self_nc: (
+            torch.ops.aten.elu_backward(
+                g.to(device), 1.0, 1.0, 1.0, False, s.to(device)
+            )
+        ),
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test empty tensors
+    grad_empty = torch.randn(0, 5, dtype=torch.float32)
+    self_empty = torch.randn(0, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, g=grad_empty, s=self_empty: (
+            torch.ops.aten.elu_backward(
+                g.to(device), 1.0, 1.0, 1.0, False, s.to(device)
+            )
+        ),
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_lgamma(self):
+    """Tests torch.lgamma for various shapes, dtypes, non-contiguous inputs, and positive/negative ranges."""
+    shapes = [
+        (3, 4),
+        (1, 12),
+        (),  # scalar
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes, dtypes):
+      # lgamma is only defined for non-integers in negative numbers.
+      # We will use positive numbers (0.1 to 10) and some fractional negatives
+      # (-0.5, -1.5).
+      x_pos = torch.rand(shape, dtype=dtype) * 10.0 + 0.1
+      if len(shape) > 0:
+        # construct matching size by indexing/repeating
+        num_elements = math.prod(shape)
+        vals = torch.tensor([-0.5, -1.5, -2.5], dtype=dtype)
+        # repeat and slice to exactly match num_elements
+        x_neg = vals.repeat((num_elements + 2) // 3)[:num_elements].reshape(
+            shape
+        )
+      else:
+        x_neg = torch.tensor(-0.5, dtype=dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.float32:
+        rtol = 1e-3
+        atol = 1e-3
+      elif dtype == torch.bfloat16:
+        rtol = 2e-2
+        atol = 2e-2
+      elif dtype == torch.float16:
+        rtol = 1e-3
+        atol = 1e-3
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_pos: torch.lgamma(x.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_neg: torch.lgamma(x.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test empty / zero-element tensors
+    x_empty = torch.randn(0, 5, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_empty: torch.lgamma(x.to(device)),
+        rtol=1e-3,
+        atol=1e-3,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test non-contiguous inputs
+    x_large = torch.rand(6, 8, dtype=torch.float32) * 5.0 + 0.5
+    x_nc = x_large[::2, ::2]  # shape (3, 4)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_nc: torch.lgamma(x.to(device)),
+        rtol=1e-3,
+        atol=1e-3,
+        check_value=CheckValueMode.LOOSE,
+    )
+
+    # Test negative integer poles (should evaluate to positive infinity without
+    # exceptions)
+    x_poles = torch.tensor([0.0, -1.0, -2.0], dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_poles: torch.lgamma(x.to(device)),
+        check_value=CheckValueMode.LOOSE,
+    )
+
   def test_max_pool2d_no_indices(self):
     """Tests nn.functional.max_pool2d without indices."""
     device = torch.device("tpu")
@@ -7238,6 +7704,571 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
               source=to(source_dtype, device=device),
           ),
       )
+
+  def _get_tolerances_and_mode(self, dtype):
+    if dtype == torch.bfloat16:
+      return 1e-2, 1e-2, CheckValueMode.LOOSE
+    elif dtype == torch.float16:
+      return 1e-3, 1e-3, CheckValueMode.LOOSE
+    else:
+      return 1e-5, 1e-5, CheckValueMode.LOOSE
+
+  def test_linalg_inv_ex(self):
+    """Tests torch.linalg.inv_ex for shapes, batches, singular matrices, dtypes."""
+    shapes = [
+        (3, 3),
+        (2, 4, 4),
+        (2, 3, 5, 5),
+        (0, 0),
+        (2, 0, 0),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes, dtypes):
+      a = torch.randn(shape, dtype=dtype)
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test normal invertible
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a: torch.linalg.inv_ex(a.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+      # Test with check_errors=True
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a: torch.linalg.inv_ex(
+              a.to(device), check_errors=True
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+    for dtype in dtypes:
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test singular matrix (all zeros)
+      a_singular = torch.zeros(3, 3, dtype=dtype)
+      if is_low_prec:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_singular: torch.linalg.inv_ex(a.to(device)),
+            allow_failure=True,
+            check_exception_type=False,
+        )
+      else:
+        _, cpu_info = torch.linalg.inv_ex(a_singular.to("cpu"))
+        _, tpu_info = torch.linalg.inv_ex(a_singular.to("tpu"))
+        self.assertTrue((cpu_info > 0).all())
+        self.assertTrue((tpu_info.to("cpu") > 0).all())
+
+      # Batch singular matrix
+      a_batch_singular = torch.randn(2, 3, 3, dtype=dtype)
+      a_batch_singular[0] = 0.0
+      if is_low_prec:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_batch_singular: torch.linalg.inv_ex(
+                a.to(device)
+            ),
+            allow_failure=True,
+            check_exception_type=False,
+        )
+      else:
+        _, cpu_info = torch.linalg.inv_ex(a_batch_singular.to("cpu"))
+        _, tpu_info = torch.linalg.inv_ex(a_batch_singular.to("tpu"))
+        self.assertTrue((cpu_info > 0).any())
+        self.assertTrue((tpu_info.to("cpu") > 0).any())
+
+      # Test non-contiguous input
+      a_large = torch.randn(6, 6, dtype=dtype)
+      a_nc = a_large[::2, ::2]
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a_nc: torch.linalg.inv_ex(a.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+  def test_linalg_lu(self):
+    """Tests torch.linalg.lu for shapes, batches, dtypes, and non-contiguous inputs."""
+    shapes = [
+        (3, 3),
+        (3, 5),
+        (5, 3),
+        (2, 4, 4),
+        (2, 3, 4),
+        (0, 0),
+        (2, 0, 0),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes, dtypes):
+      a = torch.randn(shape, dtype=dtype)
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test normal with pivot=True (skip empty shapes due to TPU argmax
+      # pivoting bug)
+      is_empty = any(s == 0 for s in shape)
+      if not is_empty:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a: torch.linalg.lu(a.to(device), pivot=True),
+            rtol=rtol,
+            atol=atol,
+            check_value=mode,
+            allow_failure=is_low_prec,
+            check_exception_type=False,
+        )
+
+    for dtype in dtypes:
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test non-contiguous input
+      a_large = torch.randn(6, 8, dtype=dtype)
+      a_nc = a_large[::2, ::2]
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a_nc: torch.linalg.lu(a.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+  def test_linalg_lu_factor_ex(self):
+    """Tests torch.linalg.lu_factor_ex for shapes, batches, pivots, and dtypes."""
+    shapes = [
+        (3, 3),
+        (2, 4, 4),
+        (2, 3, 5, 5),
+        (0, 0),
+        (2, 0, 0),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes, dtypes):
+      a = torch.randn(shape, dtype=dtype)
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test normal with pivot=True (skip empty shapes due to TPU argmax
+      # pivoting bug)
+      is_empty = any(s == 0 for s in shape)
+      if not is_empty:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a: torch.linalg.lu_factor_ex(
+                a.to(device), pivot=True
+            ),
+            rtol=rtol,
+            atol=atol,
+            check_value=mode,
+            allow_failure=is_low_prec,
+            check_exception_type=False,
+        )
+
+    for dtype in dtypes:
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test non-contiguous input
+      a_large = torch.randn(6, 6, dtype=dtype)
+      a_nc = a_large[::2, ::2]
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a_nc: torch.linalg.lu_factor_ex(a.to(device)),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+  def test_linalg_lu_solve(self):
+    """Tests torch.linalg.lu_solve for shapes, batches, left param, and non-contiguous inputs."""
+    shapes = [
+        ((3, 3), (3, 2)),
+        ((4, 4), (4, 1)),
+        ((0, 0), (0, 0)),
+    ]
+    batch_shapes = [
+        ((2, 3, 3), (2, 3, 2)),
+        ((2, 3, 4, 4), (2, 3, 4, 3)),
+        ((2, 0, 0), (2, 0, 0)),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for (a_shape, b_shape), dtype in itertools.product(
+        shapes + batch_shapes, dtypes
+    ):
+      a = torch.randn(a_shape, dtype=dtype)
+      b = torch.randn(b_shape, dtype=dtype)
+
+      a_f32 = a.to(torch.float32)
+      lu_f32, pivots = torch.linalg.lu_factor(a_f32)
+      lu = lu_f32.to(dtype)
+
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+
+      # Test left=True
+      def solve_left(device, lu=lu, piv=pivots, b=b):
+        if device == "cpu":
+          return torch.linalg.lu_solve(
+              lu.to(torch.float32), piv, b.to(torch.float32), left=True
+          )
+        return torch.linalg.lu_solve(
+            lu.to(device), piv.to(device), b.to(device), left=True
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          solve_left,
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          check_dtype=False,
+      )
+
+    for dtype in dtypes:
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+
+      # Test left=False
+      a = torch.randn(3, 3, dtype=dtype)
+      b = torch.randn(2, 3, dtype=dtype)
+
+      a_f32 = a.to(torch.float32)
+      lu_f32, pivots = torch.linalg.lu_factor(a_f32)
+      lu = lu_f32.to(dtype)
+
+      def solve_right(device, lu=lu, piv=pivots, b=b):
+        if device == "cpu":
+          return torch.linalg.lu_solve(
+              lu.to(torch.float32), piv, b.to(torch.float32), left=False
+          )
+        return torch.linalg.lu_solve(
+            lu.to(device), piv.to(device), b.to(device), left=False
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          solve_right,
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          check_dtype=False,
+      )
+
+      # Test non-contiguous input (both lu, pivots, and b strided)
+      a = torch.randn(3, 3, dtype=dtype)
+      a_f32 = a.to(torch.float32)
+      lu_f32, pivots = torch.linalg.lu_factor(a_f32)
+      lu = lu_f32.to(dtype)
+
+      # Place in larger tensors and slice to construct strided non-contiguous
+      # inputs
+      lu_large = torch.zeros(6, 6, dtype=dtype)
+      lu_large[::2, ::2] = lu
+      lu_nc = lu_large[::2, ::2]
+
+      pivots_large = torch.zeros(6, dtype=torch.int32)
+      pivots_large[::2] = pivots
+      pivots_nc = pivots_large[::2]
+
+      b_large = torch.randn(6, 4, dtype=dtype)
+      b_nc = b_large[::2, ::2]
+
+      def solve_nc(device, lu=lu_nc, piv=pivots_nc, b=b_nc):
+        if device == "cpu":
+          return torch.linalg.lu_solve(
+              lu.to(torch.float32), piv, b.to(torch.float32)
+          )
+        return torch.linalg.lu_solve(
+            lu.to(device), piv.to(device), b.to(device)
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          solve_nc,
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          check_dtype=False,
+      )
+
+  def test_linalg_solve_ex(self):
+    """Tests torch.linalg.solve_ex for shapes, batches, singular cases, dtypes, non-contiguous."""
+    shapes = [
+        ((3, 3), (3, 2)),
+        ((4, 4), (4, 1)),
+        ((0, 0), (0, 0)),
+    ]
+    batch_shapes = [
+        ((2, 3, 3), (2, 3, 2)),
+        ((2, 3, 4, 4), (2, 3, 4, 3)),
+        ((2, 0, 0), (2, 0, 0)),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for (a_shape, b_shape), dtype in itertools.product(
+        shapes + batch_shapes, dtypes
+    ):
+      a = torch.randn(a_shape, dtype=dtype)
+      b = torch.randn(b_shape, dtype=dtype)
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test left=True
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a, b=b: torch.linalg.solve_ex(
+              a.to(device), b.to(device), left=True
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+      # Test with check_errors=True
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a, b=b: torch.linalg.solve_ex(
+              a.to(device), b.to(device), left=True, check_errors=True
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+    for dtype in dtypes:
+      rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+      is_low_prec = dtype in [torch.bfloat16, torch.float16]
+
+      # Test left=False
+      a = torch.randn(3, 3, dtype=dtype)
+      b = torch.randn(2, 3, dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a, b=b: torch.linalg.solve_ex(
+              a.to(device), b.to(device), left=False
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+      # Test singular matrix (all zeros)
+      a_singular = torch.zeros(3, 3, dtype=dtype)
+      b = torch.randn(3, 2, dtype=dtype)
+      if is_low_prec:
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a_singular, b=b: torch.linalg.solve_ex(
+                a.to(device), b.to(device)
+            ),
+            allow_failure=True,
+            check_exception_type=False,
+        )
+      else:
+        _, cpu_info = torch.linalg.solve_ex(a_singular.to("cpu"), b.to("cpu"))
+        _, tpu_info = torch.linalg.solve_ex(a_singular.to("tpu"), b.to("tpu"))
+        self.assertTrue((cpu_info > 0).all())
+        self.assertTrue((tpu_info.to("cpu") > 0).all())
+
+      # Test non-contiguous slice
+      a_large = torch.randn(6, 6, dtype=dtype)
+      a_nc = a_large[::2, ::2]
+      b_large = torch.randn(6, 4, dtype=dtype)
+      b_nc = b_large[::2, ::2]
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=a_nc, b=b_nc: torch.linalg.solve_ex(
+              a.to(device), b.to(device)
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=mode,
+          allow_failure=is_low_prec,
+          check_exception_type=False,
+      )
+
+  def test_linalg_solve_triangular(self):
+    """Tests torch.linalg.solve_triangular for left/upper/unitriangular permutations, batching, non-contiguous."""
+    shapes = [
+        ((3, 3), (3, 2)),
+        ((4, 4), (4, 1)),
+        ((0, 0), (0, 0)),
+    ]
+    batch_shapes = [
+        ((2, 3, 3), (2, 3, 2)),
+        ((2, 0, 0), (2, 0, 0)),
+    ]
+    dtype = torch.float32
+    rtol, atol, mode = self._get_tolerances_and_mode(dtype)
+
+    for a_shape, b_shape in shapes + batch_shapes:
+      a = torch.randn(a_shape, dtype=dtype)
+      diag_indices = torch.arange(a.size(-1))
+      if a.dim() == 2:
+        a[diag_indices, diag_indices] = (
+            a[diag_indices, diag_indices].abs() + 1.0
+        )
+      else:
+        for i in range(a.size(0)):
+          a[i, diag_indices, diag_indices] = (
+              a[i, diag_indices, diag_indices].abs() + 1.0
+          )
+
+      b = torch.randn(b_shape, dtype=dtype)
+
+      for upper, left, unitriangular in itertools.product(
+          [True, False], [True, False], [True, False]
+      ):
+        if left:
+          if a.size(-2) != b.size(-2):
+            continue
+        else:
+          b_compatible = (
+              torch.randn(b.size(-2), a.size(-1), dtype=dtype)
+              if b.dim() == 2
+              else torch.randn(b.size(0), b.size(-2), a.size(-1), dtype=dtype)
+          )
+          b = b_compatible
+
+        self.assert_close_tpu_vs_cpu(
+            lambda device, a=a, b=b, u=upper, l=left, ut=unitriangular: (
+                torch.linalg.solve_triangular(
+                    a.to(device),
+                    b.to(device),
+                    upper=u,
+                    left=l,
+                    unitriangular=ut,
+                )
+            ),
+            rtol=rtol,
+            atol=atol,
+            check_value=mode,
+        )
+
+    # Test non-contiguous inputs
+    a_large = torch.randn(6, 6, dtype=dtype)
+    diag_indices = torch.arange(3)
+    a_nc = a_large[::2, ::2].clone()
+    a_nc[diag_indices, diag_indices] = (
+        a_nc[diag_indices, diag_indices].abs() + 1.0
+    )
+
+    b_large = torch.randn(6, 4, dtype=dtype)
+    b_nc = b_large[::2, ::2]
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, a=a_nc, b=b_nc: torch.linalg.solve_triangular(
+            a.to(device), b.to(device), upper=True, left=True
+        ),
+        rtol=rtol,
+        atol=atol,
+        check_value=mode,
+    )
+
+  def test_lu_unpack(self):
+    """Tests torch.lu_unpack for various shapes, batched pivots, dtypes, and non-contiguous inputs."""
+    shapes = [
+        (3, 5),  # M < N
+        (4, 4),  # M == N
+        (5, 3),  # M > N
+    ]
+    batch_shapes = [
+        (2, 3, 5),
+        (2, 3, 4, 4),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes + batch_shapes, dtypes):
+      # lu_factor is not supported for low precision dtypes (float16, bfloat16)
+      # on CPU.
+      # Generate factorized lu on CPU using float32, then cast to the target
+      # dtype.
+      a_cpu_f32 = torch.randn(shape, dtype=torch.float32)
+      lu_cpu_f32, pivots_cpu = torch.linalg.lu_factor(a_cpu_f32)
+      lu_cpu = lu_cpu_f32.to(dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.bfloat16:
+        rtol = 1e-2
+        atol = 2e-3
+      elif dtype == torch.float16:
+        rtol = 1e-3
+        atol = 1e-3
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, lu=lu_cpu, piv=pivots_cpu: torch.lu_unpack(
+              lu.to(device), piv.to(device)
+          ),
+          rtol=rtol,
+          atol=atol,
+          check_value=CheckValueMode.LOOSE,
+      )
+
+    # Test non-contiguous inputs (both lu and pivots strided)
+    a = torch.randn(3, 3, dtype=torch.float32)
+    lu_valid, pivots_valid = torch.linalg.lu_factor(a)
+
+    lu_large = torch.zeros(6, 6, dtype=torch.float32)
+    pivots_large = torch.zeros(6, dtype=torch.int32)
+
+    lu_large[::2, ::2] = lu_valid
+    pivots_large[::2] = pivots_valid
+
+    lu_nc = lu_large[::2, ::2]
+    pivots_nc = pivots_large[::2]
+
+    self.assert_close_tpu_vs_cpu(
+        lambda device, lu=lu_nc, piv=pivots_nc: torch.lu_unpack(
+            lu.to(device), piv.to(device)
+        ),
+        check_value=CheckValueMode.LOOSE,
+    )
+
+  def test_sqrt(self):
+    """Tests torch.sqrt for standard/empty shapes, float/half dtypes, and non-contiguous slices."""
+    shapes = [
+        (4,),
+        (2, 3),
+        (0,),
+        (2, 0, 3),
+    ]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    for shape, dtype in itertools.product(shapes, dtypes):
+      x = torch.randn(shape).abs().to(dtype)
+
+      rtol = None
+      atol = None
+      if dtype == torch.bfloat16:
+        rtol = 1e-2
+        atol = 2e-3
+      elif dtype == torch.float16:
+        rtol = 1e-3
+        atol = 1e-3
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x: torch.sqrt(x.to(device)),
+          rtol=rtol,
+          atol=atol,
+      )
+
+    # Test non-contiguous inputs
+    x_large = torch.randn(10, 10).abs().to(torch.float32)
+    x_nc = x_large[::2, ::2]
+    self.assert_close_tpu_vs_cpu(
+        lambda device, x=x_nc: torch.sqrt(x.to(device))
+    )
 
 
 if __name__ == "__main__":

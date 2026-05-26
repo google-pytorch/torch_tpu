@@ -505,6 +505,28 @@ class DynamismTest(parameterized.TestCase):
     args = (torch.ones(1, 16, 5, 128),)
     self._run_bounded_dynamism_test(reshape_fn, mark_dynamic, *args)
 
+  def test_mm_dynamic_shapes(self):
+    """Tests mm op with dynamic shapes reusing compiles."""
+
+    def dyn_mm(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 20)
+      return torch.mm(x, y)
+
+    # Compile for mat1 shape (5, 10)
+    mat1_1 = torch.randn(5, 10, device="cpu").to(self.device)
+    mat2 = torch.randn(10, 8, device="cpu").to(self.device)
+    res_1 = dyn_mm(mat1_1, mat2)
+    with CompilationCounter(self.device) as counter:
+      res_1.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+
+    # Call compatible shape (12, 10) -> should hit cache!
+    mat1_2 = torch.randn(12, 10, device="cpu").to(self.device)
+    res_2 = dyn_mm(mat1_2, mat2)
+    with CompilationCounter(self.device) as counter:
+      res_2.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
 
 if __name__ == "__main__":
   absltest.main()

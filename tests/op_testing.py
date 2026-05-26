@@ -182,8 +182,82 @@ class OpVariant(enum.Enum):
   OUT = "out"  # op(..., out=...)
 
 
+def sample_inputs_elu_backward(
+    op_info, device, dtype, requires_grad=False, **kwargs
+):
+  """Generates sample inputs for the elu_backward operator."""
+  del op_info, kwargs  # Unused
+  shapes = [
+      (2, 3),
+      (1, 5, 5),
+      (),
+  ]
+  alphas = [1.0, 0.5]
+  scales = [1.0, 2.0]
+  input_scales = [1.0, 0.5]
+
+  for shape in shapes:
+    for alpha in alphas:
+      for scale in scales:
+        for input_scale in input_scales:
+          for is_result in [True, False]:
+            grad_output = common_utils.make_tensor(
+                shape, device=device, dtype=dtype, requires_grad=requires_grad
+            )
+            self_or_result = common_utils.make_tensor(
+                shape, device=device, dtype=dtype, requires_grad=requires_grad
+            )
+            yield SampleInput(
+                grad_output,
+                args=(alpha, scale, input_scale, is_result, self_or_result),
+            )
+
+
+def sample_inputs_ragged_dot(
+    op_info, device, dtype, requires_grad=False, **kwargs
+):
+  """Generates sample inputs for the ragged_dot operator."""
+  del op_info, requires_grad, kwargs  # Unused
+  configs = [
+      (5, 4, 3, 2, [1, 4]),
+      (4, 3, 2, 5, [1, 1, 0, 1, 1]),
+      (10, 8, 6, 3, [3, 4, 3]),
+  ]
+  for m, k, n, g, group_sizes_list in configs:
+    lhs = torch.randn(m, k, dtype=dtype, device=device)
+    rhs = torch.randn(g, k, n, dtype=dtype, device=device)
+    group_sizes = torch.tensor(
+        group_sizes_list, dtype=torch.int32, device=device
+    )
+    yield SampleInput(
+        lhs,
+        args=(rhs, group_sizes),
+    )
+
+
 # Ops not included in the list of tested ops for pytorch.
-_ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
+_ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [  # pylint: disable=invalid-name
+    OpInfo(
+        "torch_tpu.ragged_dot",
+        op=torch.ops.torch_tpu.ragged_dot,
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=sample_inputs_ragged_dot,
+        supports_out=True,
+        assert_autodiffed=False,
+        supports_forward_ad=False,
+        supports_fwgrad_bwgrad=False,
+    ),
+    OpInfo(
+        "elu_backward",
+        op=torch.ops.aten.elu_backward,
+        aten_name="elu_backward",
+        dtypes=common_dtype.floating_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=sample_inputs_elu_backward,
+        assert_autodiffed=False,
+        supports_forward_ad=False,
+        supports_fwgrad_bwgrad=False,
+        supports_out=False,
+    ),
     OpInfo(
         "torch.ops.aten._unsafe_view",
         op=lambda x, shape: x.view(shape),

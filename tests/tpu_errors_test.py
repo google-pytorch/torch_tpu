@@ -1620,6 +1620,26 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch._scaled_mm(mat1, mat2, scale_a, scale_b, use_fast_accum=True)
 
+  def test_linalg_lu_non_pivoting_failure(self):
+    """Tests that linalg_lu fails on TPU if pivot is False."""
+    device = et.device()
+    a = torch.randn(3, 3, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu(): non-pivoting decomposition is not supported""",
+    ):
+      torch.linalg.lu(a, pivot=False)
+
+  def test_linalg_lu_factor_ex_non_pivoting_failure(self):
+    """Tests that linalg_lu_factor_ex fails on TPU if pivot is False."""
+    device = et.device()
+    a = torch.randn(3, 3, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""linalg_lu_factor_ex(): non-pivoting decomposition is not supported""",
+    ):
+      torch.linalg.lu_factor_ex(a, pivot=False)
+
 
 if __name__ == "__main__":
   absltest.main()
