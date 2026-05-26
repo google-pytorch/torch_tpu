@@ -163,6 +163,21 @@ class _DeviceModule(abc.ABC):
     return cls._current_device
 
   @classmethod
+  def _get_generator(cls, device: torch.device) -> torch.Generator:
+    """Returns the default generator for the given device.
+
+    This is required for graphsafe RNG operations in AOTAutograd.
+
+    Args:
+      device: The torch.device object.
+
+    Returns:
+      The default torch.Generator for the specified device.
+    """
+    idx = device.index if device.index is not None else cls.current_device()
+    return cls.default_generators[idx]
+
+  @classmethod
   def set_device(
       cls, device: int | str | torch.device
   ) -> None:  # This is in torch/cuda/__init__.py.

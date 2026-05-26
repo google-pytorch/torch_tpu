@@ -15,11 +15,35 @@ from absl import logging
 import torch
 from torch._dynamo import decorators
 from torch._dynamo.backends import registry
+from torch._functorch._aot_autograd import utils as aot_utils
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile._backend import TpuBackend
 
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")
+
+
+def _initialize_graphsafe_rng():
+  """Initializes graphsafe RNG operations for TPU.
+
+  Registers 'privateuseone' (TPU) for graphsafe RNG and enables
+  necessary config flags.
+  """
+  aot_utils.register_graphsafe_rng_device_type("privateuseone")
+  # Add "tpu" to the supported device types for graphsafe RNG, as torch_tpu
+  # renames "privateuseone" to "tpu".
+  aot_utils._GRAPHSAFE_RNG_DEVICE_TYPES.add("tpu")  # pylint: disable=protected-access
+
+  # pylint: disable=protected-access
+  torch._functorch.config.graphsafe_rng_functionalization = True
+  torch._functorch.config.functionalize_rng_ops = False
+  # pylint: enable=protected-access
+
+
+# TODO: b/496168350 - Remove if-condition once generic graphsafe RNG is
+# available in OSS PyTorch release.
+if hasattr(aot_utils, "register_graphsafe_rng_device_type"):
+  _initialize_graphsafe_rng()
 
 # pylint: disable=protected-access
 _COLLECTIVE_OPS = (
