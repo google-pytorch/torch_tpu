@@ -55,7 +55,7 @@ torch_tpu_py_test(
     name = "aten_op_benchmarks",
     srcs = ["aten_op_benchmarks.py"],
     data = glob(["captured_ops/*.json"]),
-    shard_count = 10,
+    shard_count = 30,
     tags = ["requires-tpu-v5lite"],
     deps = [
         ":op_input_loader",

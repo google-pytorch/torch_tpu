@@ -44,7 +44,7 @@ from examples.benchmarks.ops.op_input_loader import deserialize_args
 
 DEVICE = flags.DEFINE_string("device", "tpu", "Device to run benchmarks on.")
 MIN_RUN_TIME = flags.DEFINE_float(
-    "min_run_time", 5.0, "Minimum run time for blocked_autorange."
+    "min_run_time", 2.0, "Minimum run time for blocked_autorange."
 )
 
 
@@ -89,14 +89,16 @@ def get_test_cases() -> (
 
   if not capture_file_str:
     if os.path.exists(captured_ops_dir):
-      capture_files = glob.glob(os.path.join(captured_ops_dir, "*.json"))
+      capture_files = sorted(
+          glob.glob(os.path.join(captured_ops_dir, "*.json"))
+      )
       logging.info(
           f"Defaulting to all JSON files in {captured_ops_dir}: {capture_files}"
       )
     else:
       capture_files = [os.path.join(script_dir, "minimal_ops.json")]
   else:
-    capture_files = [f.strip() for f in capture_file_str.split(",")]
+    capture_files = sorted([f.strip() for f in capture_file_str.split(",")])
 
   from collections import defaultdict
 
@@ -110,9 +112,11 @@ def get_test_cases() -> (
     try:
       with open(cf, "r") as f:
         data = json.load(f)
-        for op_name, items in data.items():
+        # Sort keys of data to ensure deterministic op order processing
+        for op_name in sorted(data.keys()):
           if op_name == "CLUSTER":
             continue
+          items = data[op_name]
           for item in items:
             inputs_str = item["inputs"]
             count = item.get("count", 1)
@@ -125,36 +129,42 @@ def get_test_cases() -> (
     except Exception as e:
       logging.error(f"Failed to load capture file {cf}: {e}")
 
-  # Calculate total frequency for each operator across all files
+  # Calculate total frequency for each operator across all files stable-sorted
   op_frequencies = {}
-  for op_name, inputs_map in aggregated_data.items():
+  for op_name in sorted(aggregated_data.keys()):
+    inputs_map = aggregated_data[op_name]
     total_count = 0
-    for inputs_str, sources in inputs_map.items():
-      total_count += sum(sources.values())
+    for inputs_str in sorted(inputs_map.keys()):
+      sources = inputs_map[inputs_str]
+      total_count += sum(sources[src] for src in sorted(sources.keys()))
     op_frequencies[op_name] = total_count
 
-  # Filter by TOP_N
+  # Filter by TOP_N and sort deterministically
   top_n = int(os.environ.get("TOP_N", "0"))  # 0 means all
   if top_n > 0:
-    sorted_ops = sorted(
-        op_frequencies.items(), key=lambda x: x[1], reverse=True
-    )[:top_n]
+    # Sort by frequency (descending), and primary by op_name (ascending) for stability
+    sorted_ops = sorted(op_frequencies.items(), key=lambda x: (-x[1], x[0]))[
+        :top_n
+    ]
     target_op_names = [op[0] for op in sorted_ops]
     logging.info(f"Filtering to Top {top_n} operators: {target_op_names}")
   else:
-    target_op_names = list(aggregated_data.keys())
+    target_op_names = sorted(aggregated_data.keys())
 
   cases = []
   for op_name in target_op_names:
     inputs_map = aggregated_data[op_name]
-    for i, (inputs_str, sources) in enumerate(inputs_map.items()):
-      for run_mode_str in ["eager", "compiled"]:
+    sorted_inputs = sorted(inputs_map.keys())
+    for i, inputs_str in enumerate(sorted_inputs):
+      sources = inputs_map[inputs_str]
+      for run_mode_str in sorted(["eager", "compiled"]):
         # Create a safe test name
         safe_op_name = op_name.replace(".", "_").replace(":", "_")
         test_name = f"{safe_op_name}_case{i}_{run_mode_str}"
 
         source_metrics = {}
-        for source, count in sources.items():
+        for source in sorted(sources.keys()):
+          count = sources[source]
           total = file_total_counts[source]
           weight = count / total if total > 0 else 0.0
           source_metrics[source] = {"count": float(count), "weight": weight}
@@ -162,6 +172,8 @@ def get_test_cases() -> (
         cases.append(
             (test_name, op_name, i, inputs_str, run_mode_str, source_metrics)
         )
+  # Sort cases by test name to guarantee a perfectly stable list across shards
+  cases.sort(key=lambda x: x[0])
   return cases
 
 
