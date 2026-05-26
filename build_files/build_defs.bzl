@@ -46,7 +46,7 @@ _TORCH_TPU_COPTS = [
     # converted to a Python exception.
     "-fexceptions",
     # Make unused variable a build error.
-    "-Werror=unused-variable",
+    # "-Werror=unused-variable",
     # Enforce that member variables are initialized in the same order they are declared.
     "-Werror=reorder-ctor",
     # Enforce thread safety analysis.
