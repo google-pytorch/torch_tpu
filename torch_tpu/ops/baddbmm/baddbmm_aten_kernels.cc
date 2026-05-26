@@ -17,6 +17,7 @@
 #include "torch_tpu/ops/baddbmm/baddbmm_aten_kernels.h"
 
 #include <complex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -44,6 +46,7 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/precision_context.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -99,15 +102,25 @@ mlir::MlirOp BuildSanitizedScalarOp(mlir::MlirBuilder& builder,
 
 absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     mlir::MlirOp self_op, mlir::MlirOp batch1_op, mlir::MlirOp batch2_op,
-    const at::Scalar& beta, const at::Scalar& alpha, at::ScalarType out_dtype) {
+    const at::Scalar& beta, const at::Scalar& alpha, at::ScalarType out_dtype,
+    mlir::stablehlo::Precision precision,
+    std::optional<DotAlgorithmConfig> dot_algorithm) {
   auto& builder = self_op.getBuilder();
   TT_ASSIGN_OR_RETURN(mlir::ElementType out_dtype_mlir,
                       ConvertTo<mlir::ElementType>(out_dtype));
 
-  const auto current_precision = GetPrecision();
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp bmm_res,
-      BuildBmmShlo(batch1_op, batch2_op, out_dtype_mlir, current_precision));
+  const mlir::RankedTensorType batch1_type = GetTensorTypeOrDie(batch1_op);
+  const mlir::RankedTensorType batch2_type = GetTensorTypeOrDie(batch2_op);
+  mlir::MLIRContext& ctx = batch1_op.getContext();
+  TT_ASSIGN_OR_RETURN(auto out_mlir_type, GetMlirType(ctx, out_dtype_mlir));
+  auto bmm_result_type = mlir::RankedTensorType::get(
+      {batch1_type.getShape()[0], batch1_type.getShape()[1],
+       batch2_type.getShape()[2]},
+      out_mlir_type);
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp bmm_res,
+                      BuildBmmShlo(batch1_op, batch2_op, precision,
+                                   dot_algorithm, bmm_result_type));
   auto calc_type = GetTensorTypeOrDie(bmm_res).getElementType();
 
   // If alpha is not 1, multiply bmm_res by alpha.
@@ -150,8 +163,16 @@ absl::StatusOr<DeviceBufferRef> Baddbmm(
 
   const std::vector<at::Tensor> inputs = {self, batch1, batch2};
 
+  const auto current_precision = GetPrecision();
+  const auto current_dot_algorithm = GetDotAlgorithm();
+
+  TT_ASSIGN_OR_RETURN(param_keys,
+                      *OpParamCacheKeys::Builder(std::move(param_keys))
+                           .SetParam("precision", current_precision)
+                           .SetParam("dot_algorithm", current_dot_algorithm));
+
   auto op_builder =
-      [beta, alpha, out_dtype](
+      [beta, alpha, out_dtype, current_precision, current_dot_algorithm](
           absl::Span<mlir::MlirOp> inputs_op,
           mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
     ABSL_CHECK_EQ(  // CRASH_OK=Dispatcher parameter binding safety boundary.
@@ -160,7 +181,8 @@ absl::StatusOr<DeviceBufferRef> Baddbmm(
     const mlir::MlirOp batch1_op = inputs_op[1];
     const mlir::MlirOp batch2_op = inputs_op[2];
     return BuildBaddbmmShlo(self_op, batch1_op, batch2_op, beta, alpha,
-                            out_dtype);
+                            out_dtype, current_precision,
+                            current_dot_algorithm);
   };
 
   TT_ASSIGN_OR_RETURN(

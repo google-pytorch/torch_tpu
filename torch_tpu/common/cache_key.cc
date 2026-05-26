@@ -50,6 +50,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -178,6 +179,10 @@ void AppendPromotedScalarPointers(
   if (!arg.ValueMatchesExclude()) {
     promoted_scalars.push_back(arg.state().get());
   }
+}
+
+std::string FormatParamCacheKey(const DotAlgorithmConfig& value) {
+  return value.ToString();
 }
 
 }  // namespace internal

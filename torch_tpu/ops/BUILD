@@ -198,6 +198,8 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
         "//torch_tpu/common:context_manager",
+        "//torch_tpu/common:context_states",
+        "//torch_tpu/common:error_utils",
         "@stablehlo//:stablehlo_ops",
     ],
 )

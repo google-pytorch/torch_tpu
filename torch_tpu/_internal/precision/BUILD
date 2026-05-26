@@ -29,11 +29,18 @@ pybind_extension(
     common_lib_packages = [
         "torch_tpu/common",
     ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
     wrap_py_init = True,
     deps = [
+        "//shims/torch",
+        "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/common:context_manager",
+        "//torch_tpu/common:context_states",
         "//torch_tpu/ops:precision_context",
         "@stablehlo//:stablehlo_ops",
     ],
@@ -64,6 +71,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":precision_impl",
+        "//shims/torch:pytorch",
     ],
 )
 
@@ -73,7 +81,10 @@ torch_tpu_cc_library(
     srcs = ["precision_impl.cc"],
     deps = [
         "//shims/pybind11",
+        "//shims/torch:torch_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/common:context_manager",
+        "//torch_tpu/common:context_states",
         "//torch_tpu/ops:precision_context",
         "@stablehlo//:stablehlo_ops",
     ],

@@ -14,12 +14,17 @@
 
 #include "torch_tpu/ops/dot/vdot_aten_kernels.h"
 
+#include <optional>
 #include <utility>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "ATen/core/ATen_fwd.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/to_string.h"
@@ -29,6 +34,7 @@
 #include "torch_tpu/ops/dot/dot.h"
 #include "torch_tpu/ops/dot/dot_checks.h"
 #include "torch_tpu/ops/macros/kernel.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/precision_context.h"
 #include "torch_tpu/ops/unary.h"
@@ -40,9 +46,11 @@ namespace torch_tpu {
 namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildVdotShlo(
-    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision,
+    std::optional<DotAlgorithmConfig> dot_algorithm, mlir::Type result_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp conjugated_lhs, BuildConjPhysicalShlo(lhs));
-  return BuildDotShlo(conjugated_lhs, rhs, precision);
+  return BuildDotShlo(conjugated_lhs, rhs, precision, dot_algorithm,
+                      result_type);
 }
 
 absl::Status CheckInputs(const at::Tensor& lhs, const at::Tensor& rhs) {
@@ -64,14 +72,21 @@ absl::StatusOr<DeviceBufferRef> Vdot(const at::Tensor& lhs,
   TT_ASSIGN_OR_RETURN(auto result_scalar_type,
                       CheckedGetDotOutputType(lhs, rhs));
   const auto current_precision = GetPrecision();
+  const auto current_dot_algorithm = GetDotAlgorithm();
   TT_ASSIGN_OR_RETURN(param_keys,
                       *OpParamCacheKeys::Builder(std::move(param_keys))
-                           .SetParam("precision", current_precision));
+                           .SetParam("precision", current_precision)
+                           .SetParam("dot_algorithm", current_dot_algorithm));
 
-  auto op_builder = [current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+  auto op_builder = [current_precision, current_dot_algorithm,
+                     result_scalar_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [lhs_op, rhs_op] = inputs;
-    return BuildVdotShlo(lhs_op, rhs_op, current_precision);
+    auto& ctx = lhs_op.getContext();
+    TT_ASSIGN_OR_RETURN(auto out_type, GetMlirType(ctx, result_scalar_type));
+    auto result_type = mlir::RankedTensorType::get({}, out_type);
+    return BuildVdotShlo(lhs_op, rhs_op, current_precision,
+                         current_dot_algorithm, result_type);
   };
 
   TT_ASSIGN_OR_RETURN(

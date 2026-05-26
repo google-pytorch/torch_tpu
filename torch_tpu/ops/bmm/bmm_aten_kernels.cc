@@ -21,6 +21,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "ATen/core/ATen_fwd.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -92,17 +93,27 @@ absl::StatusOr<DeviceBufferRef> Bmm(const at::Tensor& self,
   Dimensions output_dims_vec = {self.size(0), self.size(1), mat2.size(2)};
 
   const auto current_precision = GetPrecision();
+  const auto current_dot_algorithm = GetDotAlgorithm();
   TT_ASSIGN_OR_RETURN(param_keys,
                       *OpParamCacheKeys::Builder(std::move(param_keys))
-                           .SetParam("precision", current_precision));
+                           .SetParam("precision", current_precision)
+                           .SetParam("dot_algorithm", current_dot_algorithm));
 
-  auto op_builder = [output_dtype_mlir,
-                     current_precision](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+  auto op_builder =
+      [output_dtype_mlir, current_precision,
+       current_dot_algorithm](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, mat2_op] = inputs;
-    TT_ASSIGN_OR_RETURN(
-        auto result,
-        BuildBmmShlo(self_op, mat2_op, output_dtype_mlir, current_precision));
+    auto self_type = GetTensorTypeOrDie(self_op);
+    auto mat2_type = GetTensorTypeOrDie(mat2_op);
+    auto result_type = mlir::RankedTensorType::get(
+        {self_type.getShape()[0], self_type.getShape()[1],
+         mat2_type.getShape()[2]},
+        getElementType(self_op.getContext(), output_dtype_mlir));
+
+    TT_ASSIGN_OR_RETURN(auto result,
+                        BuildBmmShlo(self_op, mat2_op, current_precision,
+                                     current_dot_algorithm, result_type));
     return result;
   };
   TT_ASSIGN_OR_RETURN(

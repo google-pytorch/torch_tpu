@@ -54,6 +54,7 @@
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/compile_options_key.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -288,6 +289,7 @@ absl::StatusOr<std::string> FormatParamCacheKey(at::Scalar value);
     const mlir::stablehlo::Precision value) {
   return std::string(mlir::stablehlo::stringifyPrecision(value));
 }
+[[nodiscard]] std::string FormatParamCacheKey(const DotAlgorithmConfig& value);
 [[nodiscard]] inline std::string FormatParamCacheKey(const double value) {
   return LosslessToString(value);
 }

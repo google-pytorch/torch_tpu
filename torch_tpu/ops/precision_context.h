@@ -17,6 +17,9 @@
 #ifndef TORCH_TPU_OPS_PRECISION_CONTEXT_H_
 #define TORCH_TPU_OPS_PRECISION_CONTEXT_H_
 
+#include <optional>
+
+#include "torch_tpu/common/context_states.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace torch_tpu {
@@ -28,6 +31,9 @@ namespace torch_tpu {
 
 // Returns the current python thread's precision.
 mlir::stablehlo::Precision GetPrecision();
+
+// Returns the current python thread's dot algorithm.
+std::optional<DotAlgorithmConfig> GetDotAlgorithm();
 
 }  // namespace torch_tpu
 

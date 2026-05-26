@@ -24,6 +24,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/native/Resize.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -99,12 +100,17 @@ absl::StatusOr<DeviceBufferRef> Mm(
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
   const auto current_precision = GetPrecision();
+  const auto current_dot_algorithm = GetDotAlgorithm();
+
   TT_ASSIGN_OR_RETURN(param_keys,
                       *OpParamCacheKeys::Builder(std::move(param_keys))
-                           .SetParam("precision", current_precision));
+                           .SetParam("precision", current_precision)
+                           .SetParam("dot_algorithm", current_dot_algorithm));
+
   bool needs_conversion = (lhs.scalar_type() != target_scalar_type);
 
-  auto op_builder = [current_precision, target_elem_dtype,
+  auto op_builder = [current_precision, current_dot_algorithm,
+                     target_elem_dtype,
                      needs_conversion](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp lhs_op = inputs[0];
@@ -115,7 +121,14 @@ absl::StatusOr<DeviceBufferRef> Mm(
       rhs_op = mlir::stablehlo::ConvertElementType(rhs_op, target_elem_dtype);
     }
 
-    return BuildMmShlo(lhs_op, rhs_op, current_precision);
+    auto lhs_type = GetTensorTypeOrDie(lhs_op);
+    auto rhs_type = GetTensorTypeOrDie(rhs_op);
+    auto result_type = mlir::RankedTensorType::get(
+        {lhs_type.getShape()[0], rhs_type.getShape()[1]},
+        getElementType(lhs_op.getContext(), target_elem_dtype));
+
+    return BuildMmShlo(lhs_op, rhs_op, current_precision, current_dot_algorithm,
+                       result_type);
   };
 
   TT_ASSIGN_OR_RETURN(

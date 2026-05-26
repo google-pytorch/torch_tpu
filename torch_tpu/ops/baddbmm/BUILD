@@ -28,6 +28,7 @@ torch_tpu_cc_library(
         "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:context_states",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
@@ -49,6 +50,7 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
     ],
 )
 

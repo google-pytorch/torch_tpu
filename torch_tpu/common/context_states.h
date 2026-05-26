@@ -17,10 +17,14 @@
 #ifndef TORCH_TPU_COMMON_CONTEXT_STATES_H_
 #define TORCH_TPU_COMMON_CONTEXT_STATES_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "absl/base/nullability.h"
+#include "absl/strings/str_cat.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/layout.h"
@@ -94,6 +98,53 @@ using CustomCompilerOptionsContextState = CompilerOptionOverrides;
 // The state of the `layout` context manager. Null means there's no active
 // layout context.
 using LayoutContextState = absl_nullable std::shared_ptr<const xla::Layout>;
+
+class DotAlgorithmConfig {
+ public:
+  DotAlgorithmConfig(c10::ScalarType accumulation_type,
+                     int64_t lhs_component_count, int64_t rhs_component_count,
+                     int64_t num_primitive_operations,
+                     bool allow_imprecise_accumulation)
+      : accumulation_type_(accumulation_type),
+        lhs_component_count_(lhs_component_count),
+        rhs_component_count_(rhs_component_count),
+        num_primitive_operations_(num_primitive_operations),
+        allow_imprecise_accumulation_(allow_imprecise_accumulation) {}
+
+  bool operator==(const DotAlgorithmConfig& other) const {
+    return accumulation_type_ == other.accumulation_type_ &&
+           lhs_component_count_ == other.lhs_component_count_ &&
+           rhs_component_count_ == other.rhs_component_count_ &&
+           num_primitive_operations_ == other.num_primitive_operations_ &&
+           allow_imprecise_accumulation_ == other.allow_imprecise_accumulation_;
+  }
+
+  std::string ToString() const {
+    return absl::StrCat(c10::toString(accumulation_type_), "_",
+                        lhs_component_count_, "_", rhs_component_count_, "_",
+                        num_primitive_operations_, "_",
+                        allow_imprecise_accumulation_ ? "t" : "f");
+  }
+
+  c10::ScalarType accumulation_type() const { return accumulation_type_; }
+  int64_t lhs_component_count() const { return lhs_component_count_; }
+  int64_t rhs_component_count() const { return rhs_component_count_; }
+  int64_t num_primitive_operations() const { return num_primitive_operations_; }
+  bool allow_imprecise_accumulation() const {
+    return allow_imprecise_accumulation_;
+  }
+
+ private:
+  c10::ScalarType accumulation_type_;
+  int64_t lhs_component_count_;
+  int64_t rhs_component_count_;
+  int64_t num_primitive_operations_;
+  bool allow_imprecise_accumulation_;
+};
+
+// std::nullopt is intended to be used as the default value. It represents that
+// the user didn't set the context state.
+using DotAlgorithmContextState = std::optional<DotAlgorithmConfig>;
 
 }  // namespace torch_tpu
 

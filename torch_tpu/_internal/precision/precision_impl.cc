@@ -14,9 +14,16 @@
  * limitations under the License.
  */
 
+#include <cstdint>
+#include <optional>
+
+#include "torch/extension.h"
+#include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/context_manager.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/ops/precision_context.h"
 #include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace torch_tpu {
@@ -32,6 +39,31 @@ PYBIND11_MODULE(precision_impl, m) {
       .value("HIGHEST",
              Precision::HIGHEST)  // EXPLICIT_PRECISION_OK=root usage
       .export_values();
+
+  pybind11::class_<DotAlgorithmConfig>(m, "DotAlgorithmConfig")
+      .def(pybind11::init<c10::ScalarType, int64_t, int64_t, int64_t, bool>(),
+           pybind11::arg("accumulation_type"),
+           pybind11::arg("lhs_component_count"),
+           pybind11::arg("rhs_component_count"),
+           pybind11::arg("num_primitive_operations"),
+           pybind11::arg("allow_imprecise_accumulation"))
+      .def_property_readonly("accumulation_type",
+                             &DotAlgorithmConfig::accumulation_type)
+      .def_property_readonly("lhs_component_count",
+                             &DotAlgorithmConfig::lhs_component_count)
+      .def_property_readonly("rhs_component_count",
+                             &DotAlgorithmConfig::rhs_component_count)
+      .def_property_readonly("num_primitive_operations",
+                             &DotAlgorithmConfig::num_primitive_operations)
+      .def_property_readonly("allow_imprecise_accumulation",
+                             &DotAlgorithmConfig::allow_imprecise_accumulation);
+
+  m.def("_get_dot_algorithm", &GetDotAlgorithm,
+        "Internal get for context manager");
+  m.def("_push_dot_algorithm", &PushContextState<DotAlgorithmContextState>,
+        "Internal push for context manager");
+  m.def("_pop_dot_algorithm", &PopContextState<DotAlgorithmContextState>,
+        "Internal pop for context manager");
 
   m.def("_get_precision", &GetPrecision, "Internal get for context manager");
   m.def("_push_precision", &PushContextState<Precision>,

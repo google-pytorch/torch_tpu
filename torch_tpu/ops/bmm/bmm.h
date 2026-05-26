@@ -17,17 +17,20 @@
 #ifndef TORCH_TPU_OPS_BMM_BMM_H_
 #define TORCH_TPU_OPS_BMM_BMM_H_
 
+#include <optional>
+
 #include "absl/status/statusor.h"
+#include "torch_tpu/common/context_states.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
 
-absl::StatusOr<mlir::MlirOp> BuildBmmShlo(mlir::MlirOp self_op,
-                                          mlir::MlirOp mat2_op,
-                                          mlir::ElementType out_dtype,
-                                          mlir::stablehlo::Precision precision);
+absl::StatusOr<mlir::MlirOp> BuildBmmShlo(
+    mlir::MlirOp self_op, mlir::MlirOp mat2_op,
+    mlir::stablehlo::Precision precision,
+    std::optional<DotAlgorithmConfig> dot_algorithm, mlir::Type result_type);
 
 }  // namespace torch_tpu
 

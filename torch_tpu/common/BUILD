@@ -49,7 +49,9 @@ torch_tpu_cc_library(
         ":compilation_spec",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/strings",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla:shape_util",
     ],
@@ -782,6 +784,7 @@ torch_tpu_cc_library(
     hdrs = ["cache_key.h"],
     deps = [
         ":compile_options_key",
+        ":context_states",
         ":dimension_types",
         ":dtype",
         ":error_utils",

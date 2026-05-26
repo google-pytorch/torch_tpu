@@ -138,6 +138,7 @@ class _DeviceModule(abc.ABC):
 
   Precision = _precision_module.Precision  # pylint: disable=invalid-name
   precision = _precision_module.precision
+  dot_algorithm = _precision_module.dot_algorithm
   # A sequence of default generators, one per device, matching the exact
   # type and behavior of PyTorch's native `torch.cuda.default_generators`.
   default_generators = _DefaultGeneratorsProperty()
