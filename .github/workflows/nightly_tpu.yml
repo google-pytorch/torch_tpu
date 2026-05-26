@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   run_tests:
-    name: "Nightly on ${{ matrix.job_info.runner }}"
+    name: "Nightly on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:tpu-nightly')

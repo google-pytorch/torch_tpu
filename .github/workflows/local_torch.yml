@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   build_and_test_wheel:
-    name: "Build and Test Wheel on ${{ matrix.job_info.runner }}"
+    name: "Build and Test Wheel on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     # Run nightly, or on PRs explicitly tagged with 'ci:local-torch'.
     if: >-
       github.event_name == 'schedule' ||

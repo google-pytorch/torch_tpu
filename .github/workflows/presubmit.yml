@@ -51,14 +51,15 @@ concurrency:
 
 jobs:
   run_tests:
-    name: "Presubmit on ${{ matrix.job_info.runner }}"
+    name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     # Available self-hosted runners.
     strategy:
       fail-fast: false
       matrix:
         job_info: [
           {
-            runner: "linux-x86-n2-16",
+            name: "CPU",
+            runner: "linux-x86-n4-16",
             config: "ci_cpu_presubmit",
             extra_flags: "",
           },

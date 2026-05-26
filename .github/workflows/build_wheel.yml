@@ -52,13 +52,14 @@ concurrency:
 jobs:
   # TODO(pganssle): Migrate to cibuildwheel
   build_wheels:
-    name: "Build wheel on ${{ matrix.job_info.runner }}"
+    name: "Build wheel on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     strategy:
       matrix:
         job_info:
           [
             {
-              runner: "linux-x86-n2-16",
+              name: "CPU",
+              runner: "linux-x86-n4-16",
               container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest",
             },
           ]
@@ -121,30 +122,29 @@ jobs:
           python3 -m twine upload --repository-url https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry $WHEEL_DIR/torch_tpu-*.whl
 
   test_wheels:
-    name: Test wheel on ${{ matrix.custom_name }}
+    name: Test wheel on ${{ matrix.custom_name || matrix.runner }}
     if: github.event_name != 'schedule'
     needs: build_wheels
     strategy:
       matrix:
         include:
           - name: CPU
-            runner: linux-x86-n2-16
+            runner: linux-x86-n4-16
             config: "wheel_test_cpu"
             extra_flags: ""
-            custom_name: linux-x86-n2-16
+            custom_name: CPU
           - name: TPU
             runner: linux-x86-ct5lp-224-8tpu
             config: "wheel_test_tpu"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
-            custom_name: linux-x86-ct5lp-224-8tpu
           - name: "CPU (CUDA wheel)"
-            runner: linux-x86-n2-16
+            runner: linux-x86-n4-16
             config: "wheel_test_cpu"
             extra_flags: ""
             wheel_version: "cuda"
             custom_name: "CPU (CUDA wheel)"
           - name: "CPU (PyTorch Nightly)"
-            runner: linux-x86-n2-16
+            runner: linux-x86-n4-16
             config: "wheel_test_cpu"
             extra_flags: ""
             wheel_version: "nightly"

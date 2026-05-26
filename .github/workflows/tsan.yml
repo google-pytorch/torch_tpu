@@ -46,7 +46,7 @@ concurrency:
 
 jobs:
   run_tests:
-    name: "TSan Build and Test on ${{ matrix.job_info.runner }}"
+    name: "TSan Build and Test on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:tsan')
@@ -54,7 +54,8 @@ jobs:
       matrix:
         job_info: [
           {
-            runner: "linux-x86-n2-16",
+            name: "CPU",
+            runner: "linux-x86-n4-16",
             config: "ci_cpu",
           }
         ]
