@@ -603,9 +603,10 @@ class TpuAllocator final : public c10::DeviceAllocator {
   }
 
   void resetPeakStats(c10::DeviceIndex device) override {
-    TORCH_WARN_ONCE(
-        "torch.accelerator.memory.reset_peak_memory_stats is not implemented "
-        "for TPU.");
+    auto status = PjrtBackend::GetInstance().ClearAllocatorStats();
+    if (!status.ok()) {
+      TORCH_WARN("Failed to reset peak memory stats: ", status.ToString());
+    }
   }
 
   std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.

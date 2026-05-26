@@ -292,6 +292,14 @@ absl::StatusOr<tsl::AllocatorStats> PjrtBackend::GetAllocatorStats() {
   return device->GetAllocatorStats();
 }
 
+absl::Status PjrtBackend::ClearAllocatorStats() {
+  xla::PjRtDevice* device = GetDevice();
+  if (device == nullptr) {
+    return TT_ERROR(error::kInternal) << "PjRt device is not initialized";
+  }
+  return device->ClearMemoryStats();
+}
+
 absl::StatusOr<xla::PjRtClient::HostAllocator*>
 PjrtBackend::GetHostAllocator() {
   xla::PjRtClient* client = GetClient();

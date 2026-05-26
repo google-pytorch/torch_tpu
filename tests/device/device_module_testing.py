@@ -16,6 +16,7 @@
 
 import abc
 import contextlib
+import gc
 import threading
 from typing import Final
 from unittest import mock
@@ -100,9 +101,37 @@ class DeviceModuleBase(absltest.TestCase, metaclass=abc.ABCMeta):
     self.assertIn("reserved_bytes.all.current", stats)
     self.assertIn("reserved_bytes.all.peak", stats)
 
-  @absltest.skip(reason="b/502954625: Fails if any other test allocates memory")
+  def test_reset_memory_stats(self):
+    """Tests that resetting memory stats works correctly."""
+    # 1. Reset stats to establish a clean baseline where peak == current
+    torch.accelerator.reset_peak_memory_stats()
+
+    allocated_before = torch.accelerator.memory_allocated()
+    max_allocated_before = torch.accelerator.max_memory_allocated()
+    self.assertEqual(max_allocated_before, allocated_before)
+
+    # 2. Allocate some memory (e.g., 4MB)
+    size_in_bytes = 4 * 1024 * 1024
+    num_elements = size_in_bytes // 4
+    t = torch.randn(num_elements, device="cpu").to(
+        torch.accelerator.current_accelerator()
+    )
+    # 3. Verify peak memory increased
+    max_allocated_after = torch.accelerator.max_memory_allocated()
+    self.assertEqual(max_allocated_after, max_allocated_before + size_in_bytes)
+    # 4. Free the allocated tensor
+    del t
+    gc.collect()
+
+    # 5. Reset peak memory stats again
+    torch.accelerator.reset_peak_memory_stats()
+
+    max_allocated_after_reset = torch.accelerator.max_memory_allocated()
+    self.assertEqual(max_allocated_after_reset, max_allocated_before)
+
   def test_memory_allocation(self):
     """Tests that memory allocation works with the device."""
+    torch.accelerator.reset_peak_memory_stats()
     # Get initial state
     allocated_before = torch.accelerator.memory_allocated()
     max_allocated_before = torch.accelerator.max_memory_allocated()

@@ -38,6 +38,11 @@ class XlaCpuDeviceModuleTest(
   def test_memory_allocation(self):
     return super().test_memory_allocation()
 
+  # Test fails because allocator for xla_cpu is not a DeviceAllocator
+  @absltest.expectedFailure
+  def test_reset_memory_stats(self):
+    return super().test_reset_memory_stats()
+
 
 if __name__ == "__main__":
   absltest.main()
