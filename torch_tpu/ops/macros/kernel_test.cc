@@ -83,6 +83,11 @@ void NewKernel1(int ndim) {
             { AtenOp2(true); });
 }
 
+void ForwardingKernel(bool cond) {
+  TT_FORWARDING_KERNEL(OpName::kClampOut, (IgnoreInCacheKey(cond, "testing")),
+                       { AtenOp2(cond); });
+}
+
 TEST(TtKernel, PrependRootOpName) {
   bool thrown_c10_error = false;
   const int ndim = 1;
@@ -95,6 +100,20 @@ TEST(TtKernel, PrependRootOpName) {
     EXPECT_EQ(std::string(e.what_without_backtrace()), "cat(): some error");
     EXPECT_THAT(std::string(e.what()),
                 StartsWith("cat(): some error\n"
+                           "Exception raised from foo() at bar.cc:43 "));
+  }
+  EXPECT_TRUE(thrown_c10_error);
+}
+
+TEST(TtKernel, ForwardingPrependRootOpName) {
+  bool thrown_c10_error = false;
+  try {
+    ForwardingKernel(true);
+  } catch (const c10::Error& e) {
+    thrown_c10_error = true;
+    EXPECT_EQ(std::string(e.what_without_backtrace()), "clamp(): some error");
+    EXPECT_THAT(std::string(e.what()),
+                StartsWith("clamp(): some error\n"
                            "Exception raised from foo() at bar.cc:43 "));
   }
   EXPECT_TRUE(thrown_c10_error);

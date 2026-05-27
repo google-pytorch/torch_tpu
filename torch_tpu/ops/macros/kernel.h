@@ -121,6 +121,37 @@
     })                                                                        \
   } while (false)
 
+// TT_FORWARDING_KERNEL(op_name, (arg1, arg2, ...), statements) wraps the
+// implementation of a thin forwarding (wrapper) kernel that delegates to
+// another ATen kernel (e.g., converting a Scalar to a Tensor and calling the
+// Tensor version of the same op).
+//
+// It sets up the ScopedForwardingGuard to bypass the CompositeOpCheck for the
+// delegated call, captures the Python context, and performs standard logging/
+// error translation.
+//
+// Unlike TT_KERNEL, it does not compute parameter cache keys (param_keys)
+// because it delegates the actual graph construction to the underlying kernel.
+//
+// Arguments:
+//   op_name: The name of the op (e.g., OpName::kAddReluScalar).
+//   (arg1, arg2, ...): The exact parameter list of the kernel function.
+//   statements: The forwarding logic (e.g., converting a scalar to a tensor and
+//       returning the result of the tensor-based kernel call).
+#define TT_FORWARDING_KERNEL(op_name, args, ...)                       \
+  do {                                                                 \
+    ::torch_tpu::internal::ScopedOpName _scoped_op_name(op_name);      \
+    ::torch_tpu::internal::ScopedForwardingGuard _forwarding_guard;    \
+    TT_CHECK_AND_LOG_FORWARDING_KERNEL_ARGS_(op_name,                  \
+                                             TT_REMOVE_PARENS_(args)); \
+    ::torch_tpu::ScopedPythonContextCapturer _capturer(op_name);       \
+    try {                                                              \
+      __VA_ARGS__;                                                     \
+    } catch (const ::torch_tpu::TtError& e) {                          \
+      ::torch_tpu::TranslateToC10ErrorAndThrow(e);                     \
+    }                                                                  \
+  } while (false)
+
 // Collects pointers to all PromotedScalar-typed arguments into the given
 // vector.
 #define TT_COLLECT_PROMOTED_SCALAR_POINTERS_(scalars, ...)                    \

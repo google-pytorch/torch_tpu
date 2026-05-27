@@ -120,6 +120,45 @@ namespace torch_tpu {
     }                                                                          \
   } while (false)
 
+// Do not use this macro directly. Detail of TT_FORWARDING_KERNEL().
+#define TT_CHECK_AND_LOG_FORWARDING_KERNEL_ARGS_(op_name, ...)         \
+  TT_CHECK_AND_LOG_FORWARDING_KERNEL_ARGS_IMPL_(op_name __VA_OPT__(, ) \
+                                                    __VA_ARGS__)
+
+#define TT_CHECK_AND_LOG_FORWARDING_KERNEL_ARGS_IMPL_(op_name, ...)            \
+  do {                                                                         \
+    static_assert(::torch_tpu::internal::ArgsAreIdentifiers(#__VA_ARGS__),     \
+                  "The op parameter list passed to TT_FORWARDING_KERNEL() "    \
+                  "must contain only identifier names.");                      \
+    constexpr std::string_view _func_sig = __PRETTY_FUNCTION__;                \
+    static_assert(                                                             \
+        ::torch_tpu::internal::CountFunctionParams(_func_sig) ==               \
+            std::tuple_size_v<decltype(std::forward_as_tuple(__VA_ARGS__))>,   \
+        "TT_FORWARDING_KERNEL() called with mismatching number of "            \
+        "arguments to the kernel function signature.");                        \
+    if (ABSL_VLOG_IS_ON(1)) {                                                  \
+      std::ostringstream _ss;                                                  \
+      ::torch_tpu::internal::LogKernelName(_ss, op_name);                      \
+      const std::vector<std::string_view> _arg_names =                         \
+          TT_ARGS_AS_STRINGS_(__VA_ARGS__);                                    \
+      ::torch_tpu::internal::LogKernelArgs(                                    \
+          _ss, _arg_names __VA_OPT__(, ) __VA_ARGS__);                         \
+      ABSL_LOG(INFO) << "[FORWARD] " << _ss.str();                             \
+    }                                                                          \
+    if constexpr (::torch_tpu::internal::kDebugMode) {                         \
+      static const bool _checked = [&] {                                       \
+        ::torch_tpu::internal::CheckTtKernelArgList<op_name,                   \
+                                                    /*kIsForwarding=*/true>(   \
+            ::torch_tpu::internal::KernelArgCheckerContext{                    \
+                TT_NORMALIZED_FILE, __LINE__, _func_sig,                       \
+                ::torch_tpu::internal::ParseArgTypesOrEmpty(_func_sig),        \
+                TT_ARGS_AS_STRINGS_(__VA_ARGS__)} __VA_OPT__(, ) __VA_ARGS__); \
+        return true;                                                           \
+      }();                                                                     \
+      static_cast<void>(_checked); /* VOID_CAST_OK=dummy result. */            \
+    }                                                                          \
+  } while (false)
+
 namespace internal {
 
 inline void LogKernelName(std::ostream& ss, std::string_view op_name) {
@@ -230,6 +269,7 @@ struct is_inlined_vector_int64<absl::InlinedVector<int64_t, kSize>>
 enum class UsesScalarInput {
   kNo,
   kYes,
+  kForwarding,
 };
 
 // Reports a compiler error if the given op uses Scalar inputs in
@@ -313,7 +353,9 @@ void CheckScalarInput() {
       kOpName == OpName::kVarOut ||                      //
       // go/keep-sorted end
       false;  // The `false` case is for nice code formatting.
-  if constexpr (kUse == UsesScalarInput::kYes) {
+  if constexpr (kUse == UsesScalarInput::kForwarding) {
+    // Forwarding is safe.
+  } else if constexpr (kUse == UsesScalarInput::kYes) {
     static_assert(
         kIsLegacyViolation,
         "Don't use Scalar inputs with TT_KERNEL(). Promote them to "
@@ -329,7 +371,7 @@ void CheckScalarInput() {
 }
 
 // Crashes if the type T does not match the given argument's type string.
-template <OpName kOpName, typename T>
+template <OpName kOpName, bool kIsForwarding, typename T>
 void CheckKernelArgType(  // NOLINT: cognitive complexity
     const KernelArgCheckerContext& context, const int arg_idx) {
   const std::string_view arg_name = context.tt_kernel_arg_names[arg_idx];
@@ -348,7 +390,8 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
         normalized_arg_type_in_func_sig == "at::Tensor")
         << message();
   } else if constexpr (std::is_same_v<T, at::Scalar>) {
-    CheckScalarInput<kOpName, UsesScalarInput::kYes>();
+    CheckScalarInput<kOpName, kIsForwarding ? UsesScalarInput::kForwarding
+                                            : UsesScalarInput::kYes>();
     ABSL_CHECK_EQ(  // CRASH_OK
         normalized_arg_type_in_func_sig, "at::Scalar")
         << message();
@@ -379,7 +422,8 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
         normalized_arg_type_in_func_sig, "std::optional<std::string_view>")
         << message();
   } else if constexpr (std::is_same_v<T, std::optional<at::Scalar>>) {
-    CheckScalarInput<kOpName, UsesScalarInput::kYes>();
+    CheckScalarInput<kOpName, kIsForwarding ? UsesScalarInput::kForwarding
+                                            : UsesScalarInput::kYes>();
     ABSL_CHECK_EQ(  // CRASH_OK
         normalized_arg_type_in_func_sig, "std::optional<at::Scalar>")
         << message();
@@ -568,7 +612,8 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
                   "c10::IListRef<at::OptionalTensorRef>")
         << message();
   } else if constexpr (std::is_same_v<T, at::ArrayRef<at::Scalar>>) {
-    CheckScalarInput<kOpName, UsesScalarInput::kYes>();
+    CheckScalarInput<kOpName, kIsForwarding ? UsesScalarInput::kForwarding
+                                            : UsesScalarInput::kYes>();
     ABSL_CHECK_EQ(normalized_arg_type_in_func_sig,  // CRASH_OK
                   "at::ArrayRef<at::Scalar>")
         << message();
@@ -578,7 +623,8 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
         << message();
   } else if constexpr (is_ignored_in_cache_key<T>::value) {
     // The argument is IgnoreInCacheKey(x), so we check the type of x.
-    CheckKernelArgType<kOpName, typename T::value_type>(context, arg_idx);
+    CheckKernelArgType<kOpName, kIsForwarding, typename T::value_type>(context,
+                                                                       arg_idx);
   } else if constexpr (std::is_same_v<T, PromotedScalar>) {
     CheckScalarInput<kOpName, UsesScalarInput::kNo>();
     // The argument is a PromotedScalar, so we check it matches an at::Scalar
@@ -614,23 +660,25 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
 // one.
 //
 // Base case: 0 arguments to validate.
-template <OpName kOpName>
+template <OpName kOpName, bool kIsForwarding = false>
 inline void CheckKernelArgTypes(const KernelArgCheckerContext& context,
                                 const int arg_idx) {}
 
 // Recursive case: validate the next argument and then call the function
 // recursively with the remaining arguments.
-template <OpName kOpName, typename T, typename... Args>
+template <OpName kOpName, bool kIsForwarding = false, typename T,
+          typename... Args>
 inline void CheckKernelArgTypes(const KernelArgCheckerContext& context,
                                 const int arg_idx, const T& arg,
                                 const Args&... rest_args) {
-  CheckKernelArgType<kOpName, T>(context, arg_idx);
-  CheckKernelArgTypes<kOpName>(context, arg_idx + 1, rest_args...);
+  CheckKernelArgType<kOpName, kIsForwarding, T>(context, arg_idx);
+  CheckKernelArgTypes<kOpName, kIsForwarding>(context, arg_idx + 1,
+                                              rest_args...);
 }
 
 // Checks that the arguments passed to TT_KERNEL() match the arguments for the
 // kernel function that encloses the TT_KERNEL() call.
-template <OpName kOpName, typename... Args>
+template <OpName kOpName, bool kIsForwarding = false, typename... Args>
 inline void CheckTtKernelArgList(const KernelArgCheckerContext& context,
                                  const Args&... args) {
   // 1. Check that the arguments contain no duplicates.
@@ -645,7 +693,7 @@ inline void CheckTtKernelArgList(const KernelArgCheckerContext& context,
   }
 
   // 2. Check that the argument types match the kernel function signature.
-  CheckKernelArgTypes<kOpName>(context, 0, args...);
+  CheckKernelArgTypes<kOpName, kIsForwarding>(context, 0, args...);
 }
 
 }  // namespace internal

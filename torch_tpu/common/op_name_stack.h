@@ -60,6 +60,30 @@ class ScopedOpName {
   ScopedOpName& operator=(const ScopedOpName&) = delete;
 };
 
+// ScopedForwardingGuard is an RAII guard that temporarily activates a
+// thread-local forwarding context, allowing sub-kernel delegation without
+// triggering the JIT/CompositeOpCheck crash. This guard only affects the
+// current calling thread.
+//
+// This RAII scope is usually managed automatically via the
+// TT_FORWARDING_KERNEL() macro.
+class ScopedForwardingGuard {
+ public:
+  ScopedForwardingGuard();
+  ~ScopedForwardingGuard();
+
+  // Returns true if the calling thread is currently inside a forwarding scope.
+  static bool IsForwardingActive();
+
+  ScopedForwardingGuard(const ScopedForwardingGuard&) = delete;
+  ScopedForwardingGuard& operator=(const ScopedForwardingGuard&) = delete;
+  ScopedForwardingGuard(ScopedForwardingGuard&&) = delete;
+  ScopedForwardingGuard& operator=(ScopedForwardingGuard&&) = delete;
+
+ private:
+  bool previous_state_;
+};
+
 }  // namespace internal
 }  // namespace torch_tpu
 
