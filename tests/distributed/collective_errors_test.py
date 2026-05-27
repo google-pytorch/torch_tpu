@@ -298,6 +298,27 @@ def run_reduce_scatter_tensor_errors() -> None:
     torch.distributed.reduce_scatter_tensor(output, input_invalid)
 
 
+def run_reduce_scatter_tensor_coalesced_errors() -> None:
+  """Tests reduce_scatter_tensor_coalesced errors."""
+  dist.init_process_group(backend="tpu_dist")
+  world_size = int(os.environ["WORLD_SIZE"])
+
+  # We construct mismatched inputs/outputs: 2 inputs, 1 output tensor.
+  x1 = torch.zeros((world_size, 2), device="tpu")
+  x2 = torch.zeros((world_size, 3), device="tpu")
+
+  out1 = torch.zeros((2,), device="tpu")
+
+  pg = dist.group.WORLD
+
+  expected_msg = (
+      "distributed.reduce_scatter_tensor_coalesced(): inputs and outputs must"
+      " have the same size, got 2 inputs and 1 outputs"
+  )
+  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
+    pg.reduce_scatter_tensor_coalesced([out1], [x1, x2])
+
+
 def run_gather_wrong_input_size() -> None:
   """Tests gather failure when input_tensors.size() != 1."""
   dist.init_process_group(backend="tpu_dist")
@@ -515,6 +536,14 @@ class CollectiveErrorsTest(et.TpuOnlyErrorTestBase):
         nproc_per_node=8,
         fn=singlehost_wrapper.tpu_env_wrapper(
             run_reduce_scatter_tensor_errors, world_size=8
+        ),
+    )
+
+  def test_reduce_scatter_tensor_coalesced_errors(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_reduce_scatter_tensor_coalesced_errors, world_size=8
         ),
     )
 

@@ -393,7 +393,7 @@ def run_reduce_scatter_tensor_concat() -> None:
 
 
 def run_reduce_scatter_tensor_avg() -> None:
-  """Tests reduce_scatter_tensor with an AVG reduction op."""
+  """Tests reduce_scatter_tensor_avg functionality."""
   rank = int(os.environ["RANK"])
   world_size = int(os.environ["WORLD_SIZE"])
 
@@ -413,6 +413,39 @@ def run_reduce_scatter_tensor_avg() -> None:
   expected = x_full_cpu.mean(dim=0).view(-1, 3, 4)[rank]
 
   utils.assert_close(output_cpu, expected)
+
+
+# pylint: disable=g-code-after-main
+def run_reduce_scatter_tensor_coalesced() -> None:
+  """Tests reduce_scatter_tensor_coalesced functionality."""
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+
+  # Construct input tensors for all ranks (each unreduced, full-size) on CPU:
+  torch.manual_seed(42)
+  x1_full_cpu = torch.randn((world_size, world_size, 2))
+  x2_full_cpu = torch.randn((world_size, world_size, 3))
+
+  # Every rank gets a different unreduced full-size tensor:
+  x1 = x1_full_cpu[rank].to(device="tpu")
+  x2 = x2_full_cpu[rank].to(device="tpu")
+
+  out1 = torch.zeros((2,), device="tpu")
+  out2 = torch.zeros((3,), device="tpu")
+
+  # Call the operator on the process group
+  pg = dist.group.WORLD
+  pg.reduce_scatter_tensor_coalesced([out1, out2], [x1, x2])
+
+  # Compare outputs
+  out1_cpu = out1.cpu()
+  out2_cpu = out2.cpu()
+
+  expected1 = x1_full_cpu.sum(dim=0)[rank]
+  expected2 = x2_full_cpu.sum(dim=0)[rank]
+
+  utils.assert_close(out1_cpu, expected1, rtol=1e-4, atol=1e-6)
+  utils.assert_close(out2_cpu, expected2, rtol=1e-4, atol=1e-6)
 
 
 def run_broadcast() -> None:
@@ -861,6 +894,15 @@ class CollectiveOpsTest(absltest.TestCase):
             _test_wrapper, world_size=self._world_size
         ),
         test_fn=run_reduce_scatter_tensor_avg,
+    )
+
+  def test_reduce_scatter_tensor_coalesced(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_reduce_scatter_tensor_coalesced,
     )
 
   def test_broadcast(self):
