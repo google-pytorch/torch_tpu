@@ -106,6 +106,9 @@ jobs:
           bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
+      - name: Show wheel sha256sum before upload
+        run: |
+          sha256sum dist/*.whl
       - name: Check wheel metadata
         run: uv run --isolated --with twine twine check $WHEEL_DIR/*.whl
       - name: Upload wheel to GCS for wheel testing
@@ -183,6 +186,12 @@ jobs:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
+      - name: Show wheel sha256sum after download
+        run: |
+          sha256sum dist/*.whl
+      - name: Print PyTorch version used in wheel tests
+        run: |
+          bash ci/wheel/install_and_print_version.sh ${{ matrix.python_version }}
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -194,7 +203,8 @@ jobs:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
-          extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
+          extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }} --test_env=TORCH_TPU_PYTORCH_BUILD_VERSION
+
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
   test_wheels_tpu:
@@ -254,6 +264,9 @@ jobs:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
+      - name: Print PyTorch version used in wheel tests
+        run: |
+          bash ci/wheel/install_and_print_version.sh ${{ matrix.python_version }}
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -265,5 +278,6 @@ jobs:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
-          extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
+          extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }} --test_env=TORCH_TPU_PYTORCH_BUILD_VERSION
           disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
