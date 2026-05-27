@@ -392,6 +392,7 @@ def _smoke_test_files(device: str) -> Sequence[str]:
   smoke_test_files: Mapping[str, Sequence[str]] = {
       "common": (
           "tests/import_test.py",
+          "tests/pytorch_build_version_test.py",
           "tests/execution_mode_test.py",
       ),
       "tpu": (
@@ -409,6 +410,10 @@ def _install_and_run_smoke_tests(
 ) -> None:
   """Install the dist/ wheel plus install_args, then run the smoke tests."""
   session.install(str(_dist_wheel(session)), "pytest>=9", *install_args)
+  # Each session resolves its own torch, and the multi-ABI wheel picks a glue
+  # to match; log which combination this session ended up with so a failure
+  # (or a silent mis-dispatch) can be read straight off the CI log.
+  session.run("python", "ci/wheel/print_torch_version.py")
   # sys-level capture (not the fd-level default): fd capture swallows
   # C-level stderr, so when a native extension aborts the process at import
   # the abort message is lost with it -- only the faulthandler traceback

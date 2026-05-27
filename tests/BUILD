@@ -345,6 +345,19 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_test(
+    name = "pytorch_build_version_test",
+    srcs = ["pytorch_build_version_test.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_versioned_so_loader",
+        "//src/torch_tpu/_internal:env",
+    ],
+)
+
 torch_tpu_py_library(
     name = "seed_test_utils",
     testonly = True,

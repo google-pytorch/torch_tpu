@@ -38,6 +38,7 @@ torch_tpu_cc_library(
         "//csrc/common:pybind_error_utils",
         "//csrc/common:utils",
         "//shims/pybind11",
+        "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_log",
     ],
 )

@@ -200,6 +200,8 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
           gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # Compare against the build job's "sha256sum before upload".
+          sha256sum dist/*.whl
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -254,6 +256,8 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
           gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # Compare against the build job's "sha256sum before upload".
+          sha256sum dist/*.whl
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -288,6 +292,8 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
           gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # Compare against the build job's "sha256sum before upload".
+          sha256sum dist/*.whl
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -344,6 +350,8 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
           gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # Compare against the build job's "sha256sum before upload".
+          sha256sum dist/*.whl
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -404,6 +412,8 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
           gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+          # Compare against the build job's "sha256sum before upload".
+          sha256sum dist/*.whl
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:

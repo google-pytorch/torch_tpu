@@ -48,6 +48,11 @@ runs:
         read -ra EXTRA_ARGS <<< "${EXTRA_BAZEL_ARGS}"
         ci/build_wheels.sh --output-dir dist "${PYTHON_VERSION}" -- \
           --color=yes --curses=no ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    # Logged here and again after download in the test jobs, so a mismatch
+    # between the wheel built and the wheel tested is visible in the CI log.
+    - name: Show wheel sha256sum before upload
+      shell: bash
+      run: sha256sum dist/*.whl
     - name: Check wheel metadata
       shell: bash
       run: |

@@ -25,6 +25,7 @@
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/common/utils.h"
 #include "pybind11/stl.h"
+#include "torch/csrc/api/include/torch/version.h"
 
 namespace torch_tpu {
 namespace {
@@ -134,6 +135,11 @@ TT_PYBIND11_MODULE(env, m) {
 #else
   m.attr("TORCH_TPU_IS_OPTIMIZED_BUILD") = false;
 #endif
+  // The PyTorch release ("major.minor.patch") whose headers this extension was
+  // compiled against. In the multi-ABI wheel each per-version glue is built
+  // against a different PyTorch, so this identifies the glue that is actually
+  // loaded, as opposed to `torch.__version__`, which is the installed PyTorch.
+  m.attr("PYTORCH_BUILD_VERSION") = TORCH_VERSION;
   m.def("set_libtpu_version", &SetLibtpuVersion, pybind11::arg("version"));
   m.def("get_libtpu_version", &GetLibtpuVersionString);
   m.def("reset_libtpu_version_for_testing", &ResetLibtpuVersionForTesting);
