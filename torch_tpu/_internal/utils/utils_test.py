@@ -18,6 +18,7 @@ from typing import Any
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import dynamism
+from torch_tpu._internal import env
 from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import utils
 
@@ -84,6 +85,11 @@ class AllTest(absltest.TestCase):
   def setUp(self):
     super().setUp()
     self.device = torch.device("xla_cpu")
+
+  def test_pytorch_build_version(self):
+    version = env.PYTORCH_BUILD_VERSION
+    self.assertNotEqual(version, "unknown")
+    self.assertRegex(version, r"^\d+(\.\d+)?(\.\d+)?")
 
   def test_compare_strict_mode(self):
     t_tpu = torch.arange(8).reshape((4, 2)).to(torch.float32)

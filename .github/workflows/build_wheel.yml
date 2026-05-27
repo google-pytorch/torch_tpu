@@ -78,12 +78,18 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+      - name: Print PyTorch version in build environment
+        run: |
+          bazel run -c opt --config=wheel_common //ci/wheel:print_torch_version
       - name: Build wheel
         run: |
           WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
           bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
+      - name: Show wheel sha256sum before upload
+        run: |
+          sha256sum dist/*.whl
       - name: Check wheel metadata
         run: uv run --isolated --with twine twine check $WHEEL_DIR/*.whl
       - name: Upload wheel to GCS for wheel testing
@@ -183,6 +189,12 @@ jobs:
         if: matrix.wheel_version == 'nightly'
         run: |
           pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
+      - name: Show wheel sha256sum after download
+        run: |
+          sha256sum dist/*.whl
+      - name: Print PyTorch version used in wheel tests
+        run: |
+          bazel run --config=${{ matrix.config }} //ci/wheel:print_torch_version
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:

@@ -63,8 +63,7 @@ using PrivateUse1ProfilerFactory = std::function<  // STD_FUNCTION_OK
 class PrivateUse1ProfilerRegistry {
  public:
   static __attribute__((weak)) PrivateUse1ProfilerRegistry& instance();
-  __attribute__((weak)) void registerFactory(
-      PrivateUse1ProfilerFactory factory);
+  void registerFactory(PrivateUse1ProfilerFactory factory);
 };
 }  // namespace torch::profiler::impl
 #include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
@@ -330,7 +329,7 @@ namespace {
 
 struct TpuProfilerRegisterer {
   TpuProfilerRegisterer() {
-    if (torch::profiler::impl::PrivateUse1ProfilerRegistry::instance !=
+    if (&torch::profiler::impl::PrivateUse1ProfilerRegistry::instance !=
         nullptr) {
       torch::profiler::impl::PrivateUse1ProfilerRegistry::instance()
           .registerFactory(

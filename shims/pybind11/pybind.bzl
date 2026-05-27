@@ -14,10 +14,12 @@
 
 """Stub for the pybind11 extension."""
 
-load("@xla//third_party/py/rules_pywrap:pywrap.default.bzl", _pybind_extension = "pybind_extension")
+load("@xla//xla/tsl:tsl.bzl", "tsl_pybind_extension_opensource")
 
 def pybind_extension(name, **kwargs):
     # On OSS we have not needed any python dependencies for these. If that
     # changes we will need to incorporate these dependencies.
     kwargs.pop("py_deps", None)
-    _pybind_extension(name = name, **kwargs)
+    kwargs.pop("common_lib_packages", None)
+    kwargs.pop("wrap_py_init", None)
+    tsl_pybind_extension_opensource(name = name, **kwargs)
