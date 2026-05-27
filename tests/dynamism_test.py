@@ -505,6 +505,81 @@ class DynamismTest(parameterized.TestCase):
     args = (torch.ones(1, 16, 5, 128),)
     self._run_bounded_dynamism_test(reshape_fn, mark_dynamic, *args)
 
+  def test_exp_dynamic_shapes(self):
+    """Tests exp op with dynamic shapes."""
+
+    def dyn_exp(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      return torch.exp(x)
+
+    x = torch.randn(7, device="cpu").to(self.device)
+    res_x = dyn_exp(x)
+    with CompilationCounter(self.device) as counter:
+      res_x.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+
+    y = torch.randn(4, device="cpu").to(self.device)
+    res_y = dyn_exp(y)
+    with CompilationCounter(self.device) as counter:
+      res_y.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
+    z = torch.randn(9, device="cpu").to(self.device)
+    res_z = dyn_exp(z)
+    with CompilationCounter(self.device) as counter:
+      res_z.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
+  def test_log_dynamic_shapes(self):
+    """Tests log op with dynamic shapes."""
+
+    def dyn_log(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      return torch.log(x)
+
+    x = (torch.rand(7, device="cpu") + 0.1).to(self.device)
+    res_x = dyn_log(x)
+    with CompilationCounter(self.device) as counter:
+      res_x.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+
+    y = (torch.rand(4, device="cpu") + 0.1).to(self.device)
+    res_y = dyn_log(y)
+    with CompilationCounter(self.device) as counter:
+      res_y.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
+    z = (torch.rand(9, device="cpu") + 0.1).to(self.device)
+    res_z = dyn_log(z)
+    with CompilationCounter(self.device) as counter:
+      res_z.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
+  def test_abs_dynamic_shapes(self):
+    """Tests abs op with dynamic shapes."""
+
+    def dyn_abs(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      return torch.abs(x)
+
+    x = torch.randn(7, device="cpu").to(self.device)
+    res_x = dyn_abs(x)
+    with CompilationCounter(self.device) as counter:
+      res_x.cpu()
+    self.assertEqual(counter.num_cache_hits(), 0)
+
+    y = torch.randn(4, device="cpu").to(self.device)
+    res_y = dyn_abs(y)
+    with CompilationCounter(self.device) as counter:
+      res_y.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
+    z = torch.randn(9, device="cpu").to(self.device)
+    res_z = dyn_abs(z)
+    with CompilationCounter(self.device) as counter:
+      res_z.cpu()
+    self.assertEqual(counter.num_cache_hits(), 1)
+
 
 if __name__ == "__main__":
   absltest.main()

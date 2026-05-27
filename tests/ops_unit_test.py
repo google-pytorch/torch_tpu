@@ -1640,23 +1640,23 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     # If not clamped, ceil(src_idx) becomes 4, which is OOB (valid: 0, 1, 2, 3).
 
     tpu_device = torch.device("tpu")
-    N, C = 1, 1
-    H_in, W_in = 4, 4
+    n, c = 1, 1
+    h_in, w_in = 4, 4
     # We use a large output size that triggers the precision issue.
     # We only need one dimension to trigger it, but we'll scale both.
-    H_out, W_out = 22, 22
+    h_out, w_out = 22, 22
 
     # Create input with known values (e.g., indices) to easily check correctness
-    x = torch.arange(H_in * W_in, dtype=torch.float32).reshape(N, C, H_in, W_in)
+    x = torch.arange(h_in * w_in, dtype=torch.float32).reshape(n, c, h_in, w_in)
     x_tpu = x.to(tpu_device)
 
     # We expect the last pixel to be exactly the last pixel of the input
     # because align_corners=True maps corner to corner.
     out_tpu = torch.nn.functional.interpolate(
-        x_tpu, size=(H_out, W_out), mode="bilinear", align_corners=True
+        x_tpu, size=(h_out, w_out), mode="bilinear", align_corners=True
     )
     out_cpu = torch.nn.functional.interpolate(
-        x, size=(H_out, W_out), mode="bilinear", align_corners=True
+        x, size=(h_out, w_out), mode="bilinear", align_corners=True
     )
 
     self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
@@ -1674,24 +1674,25 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     #   If -1 wraps to last element (1), we get mixed result.
     #   val[0]=10, val[1]=20.
     #   lambda = -0.25 - (-1) = 0.75.
-    #   res = val[-1]*(1-0.75) + val[0]*0.75 = 20*0.25 + 10*0.75 = 5 + 7.5 = 12.5.
+    #   res = val[-1]*(1-0.75) + val[0]*0.75 = 20*0.25 + 10*0.75
+    #       = 5 + 7.5 = 12.5.
     # Expected (clamped): val[0] = 10.
 
     tpu_device = torch.device("tpu")
-    N, C = 1, 1
-    H_in, W_in = 1, 2
-    H_out, W_out = 1, 4
+    n, c = 1, 1
+    h_in, w_in = 1, 2
+    h_out, w_out = 1, 4
 
     x = torch.tensor([10.0, 20.0], dtype=torch.float32).reshape(
-        N, C, H_in, W_in
+        n, c, h_in, w_in
     )
     x_tpu = x.to(tpu_device)
 
     out_tpu = torch.nn.functional.interpolate(
-        x_tpu, size=(H_out, W_out), mode="bilinear", align_corners=False
+        x_tpu, size=(h_out, w_out), mode="bilinear", align_corners=False
     )
     out_cpu = torch.nn.functional.interpolate(
-        x, size=(H_out, W_out), mode="bilinear", align_corners=False
+        x, size=(h_out, w_out), mode="bilinear", align_corners=False
     )
 
     self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
@@ -5396,6 +5397,445 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         atol=1e-2,
     )
 
+  def test_bitwise_and(self):
+    dtypes = [
+        torch.int32,
+        torch.int64,
+        torch.int16,
+        torch.int8,
+        torch.uint8,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      x = torch.tensor([1, 2, 3, 4], dtype=dtype)
+      y = torch.tensor([3, 2, 1, 0], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.bitwise_and(x.to(device), y.to(device))
+      )
+      # Strided
+      x_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [3, 9, 4]], dtype=dtype)
+      y_2d = torch.tensor([[3, 9, 2], [9, 9, 9], [1, 9, 0]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.bitwise_and(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          )
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.bitwise_and(
+              x.to(device), y.to(device)
+          )
+      )
+
+  def test_bitwise_not(self):
+    dtypes = [
+        torch.int32,
+        torch.int64,
+        torch.int16,
+        torch.int8,
+        torch.uint8,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      x = torch.tensor([1, 2, 3, 4], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x: torch.bitwise_not(x.to(device))
+      )
+      # Strided
+      x_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [3, 9, 4]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d: torch.bitwise_not(x.to(device)[::2, ::2])
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty: torch.bitwise_not(x.to(device))
+      )
+
+  def test_bitwise_left_shift_comprehensive(self):
+    dtypes = [torch.int32, torch.int64, torch.int16, torch.int8, torch.uint8]
+    for dtype in dtypes:
+      x = torch.tensor([1, 2, 3, 4], dtype=dtype)
+      y = torch.tensor([1, 2, 1, 2], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.bitwise_left_shift(
+              x.to(device), y.to(device)
+          )
+      )
+      # Strided
+      x_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [3, 9, 4]], dtype=dtype)
+      y_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [2, 9, 1]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.bitwise_left_shift(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          )
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.bitwise_left_shift(
+              x.to(device), y.to(device)
+          )
+      )
+
+  def test_bitwise_right_shift_comprehensive(self):
+    dtypes = [torch.int32, torch.int64, torch.int16, torch.int8, torch.uint8]
+    for dtype in dtypes:
+      x = torch.tensor([8, 8, 8, 8], dtype=dtype)
+      y = torch.tensor([1, 2, 1, 2], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.bitwise_right_shift(
+              x.to(device), y.to(device)
+          )
+      )
+      # Strided
+      x_2d = torch.tensor([[8, 9, 8], [9, 9, 9], [8, 9, 8]], dtype=dtype)
+      y_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [2, 9, 1]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.bitwise_right_shift(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          )
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.bitwise_right_shift(
+              x.to(device), y.to(device)
+          )
+      )
+
+  def test_bitwise_or_comprehensive(self):
+    dtypes = [
+        torch.int32,
+        torch.int64,
+        torch.int16,
+        torch.int8,
+        torch.uint8,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      x = torch.tensor([1, 2, 3, 4], dtype=dtype)
+      y = torch.tensor([3, 2, 1, 0], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.bitwise_or(x.to(device), y.to(device))
+      )
+      # Strided
+      x_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [3, 9, 4]], dtype=dtype)
+      y_2d = torch.tensor([[3, 9, 2], [9, 9, 9], [1, 9, 0]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.bitwise_or(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          )
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.bitwise_or(
+              x.to(device), y.to(device)
+          )
+      )
+
+  def test_bitwise_xor_comprehensive(self):
+    dtypes = [
+        torch.int32,
+        torch.int64,
+        torch.int16,
+        torch.int8,
+        torch.uint8,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      x = torch.tensor([1, 2, 3, 4], dtype=dtype)
+      y = torch.tensor([3, 2, 1, 0], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.bitwise_xor(x.to(device), y.to(device))
+      )
+      # Strided
+      x_2d = torch.tensor([[1, 9, 2], [9, 9, 9], [3, 9, 4]], dtype=dtype)
+      y_2d = torch.tensor([[3, 9, 2], [9, 9, 9], [1, 9, 0]], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.bitwise_xor(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          )
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.bitwise_xor(
+              x.to(device), y.to(device)
+          )
+      )
+
+  def test_logical_and(self):
+    dtypes = [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.int32,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      check_value = CheckValueMode.STRICT
+      rtol, atol = None, None
+      if dtype in (torch.bfloat16, torch.float16):
+        check_value = CheckValueMode.LOOSE
+        rtol = 1e-2
+        atol = 1e-3
+
+      if dtype in (torch.float32, torch.bfloat16, torch.float16):
+        x = torch.tensor([0.0, 1.5, 0.0, -2.0], dtype=dtype)
+        y = torch.tensor([0.0, 0.0, 3.14, 1.0], dtype=dtype)
+        x_2d = torch.tensor(
+            [[0.0, 9.0, 1.5], [9.0, 9.0, 9.0], [0.0, 9.0, -2.0]], dtype=dtype
+        )
+        y_2d = torch.tensor(
+            [[0.0, 9.0, 0.0], [9.0, 9.0, 9.0], [3.14, 9.0, 1.0]], dtype=dtype
+        )
+      elif dtype == torch.int32:
+        x = torch.tensor([0, 2, 0, -3], dtype=dtype)
+        y = torch.tensor([0, 0, 5, 1], dtype=dtype)
+        x_2d = torch.tensor([[0, 9, 2], [9, 9, 9], [0, 9, -3]], dtype=dtype)
+        y_2d = torch.tensor([[0, 9, 0], [9, 9, 9], [5, 9, 1]], dtype=dtype)
+      else:  # bool
+        x = torch.tensor([False, True, False, True], dtype=dtype)
+        y = torch.tensor([False, False, True, True], dtype=dtype)
+        x_2d = torch.tensor(
+            [[False, True, True], [True, True, True], [False, True, True]],
+            dtype=dtype,
+        )
+        y_2d = torch.tensor(
+            [[False, True, False], [True, True, True], [True, True, True]],
+            dtype=dtype,
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.logical_and(
+              x.to(device), y.to(device)
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Strided
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.logical_and(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.logical_and(
+              x.to(device), y.to(device)
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+
+  def test_logical_or(self):
+    dtypes = [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.int32,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      check_value = CheckValueMode.STRICT
+      rtol, atol = None, None
+      if dtype in (torch.bfloat16, torch.float16):
+        check_value = CheckValueMode.LOOSE
+        rtol = 1e-2
+        atol = 1e-3
+
+      if dtype in (torch.float32, torch.bfloat16, torch.float16):
+        x = torch.tensor([0.0, 1.5, 0.0, -2.0], dtype=dtype)
+        y = torch.tensor([0.0, 0.0, 3.14, 1.0], dtype=dtype)
+        x_2d = torch.tensor(
+            [[0.0, 9.0, 1.5], [9.0, 9.0, 9.0], [0.0, 9.0, -2.0]], dtype=dtype
+        )
+        y_2d = torch.tensor(
+            [[0.0, 9.0, 0.0], [9.0, 9.0, 9.0], [3.14, 9.0, 1.0]], dtype=dtype
+        )
+      elif dtype == torch.int32:
+        x = torch.tensor([0, 2, 0, -3], dtype=dtype)
+        y = torch.tensor([0, 0, 5, 1], dtype=dtype)
+        x_2d = torch.tensor([[0, 9, 2], [9, 9, 9], [0, 9, -3]], dtype=dtype)
+        y_2d = torch.tensor([[0, 9, 0], [9, 9, 9], [5, 9, 1]], dtype=dtype)
+      else:  # bool
+        x = torch.tensor([False, True, False, True], dtype=dtype)
+        y = torch.tensor([False, False, True, True], dtype=dtype)
+        x_2d = torch.tensor(
+            [[False, True, True], [True, True, True], [False, True, True]],
+            dtype=dtype,
+        )
+        y_2d = torch.tensor(
+            [[False, True, False], [True, True, True], [True, True, True]],
+            dtype=dtype,
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.logical_or(x.to(device), y.to(device)),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Strided
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.logical_or(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.logical_or(
+              x.to(device), y.to(device)
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+
+  def test_logical_xor(self):
+    dtypes = [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.int32,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      check_value = CheckValueMode.STRICT
+      rtol, atol = None, None
+      if dtype in (torch.bfloat16, torch.float16):
+        check_value = CheckValueMode.LOOSE
+        rtol = 1e-2
+        atol = 1e-3
+
+      if dtype in (torch.float32, torch.bfloat16, torch.float16):
+        x = torch.tensor([0.0, 1.5, 0.0, -2.0], dtype=dtype)
+        y = torch.tensor([0.0, 0.0, 3.14, 1.0], dtype=dtype)
+        x_2d = torch.tensor(
+            [[0.0, 9.0, 1.5], [9.0, 9.0, 9.0], [0.0, 9.0, -2.0]], dtype=dtype
+        )
+        y_2d = torch.tensor(
+            [[0.0, 9.0, 0.0], [9.0, 9.0, 9.0], [3.14, 9.0, 1.0]], dtype=dtype
+        )
+      elif dtype == torch.int32:
+        x = torch.tensor([0, 2, 0, -3], dtype=dtype)
+        y = torch.tensor([0, 0, 5, 1], dtype=dtype)
+        x_2d = torch.tensor([[0, 9, 2], [9, 9, 9], [0, 9, -3]], dtype=dtype)
+        y_2d = torch.tensor([[0, 9, 0], [9, 9, 9], [5, 9, 1]], dtype=dtype)
+      else:  # bool
+        x = torch.tensor([False, True, False, True], dtype=dtype)
+        y = torch.tensor([False, False, True, True], dtype=dtype)
+        x_2d = torch.tensor(
+            [[False, True, True], [True, True, True], [False, True, True]],
+            dtype=dtype,
+        )
+        y_2d = torch.tensor(
+            [[False, True, False], [True, True, True], [True, True, True]],
+            dtype=dtype,
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x, y=y: torch.logical_xor(
+              x.to(device), y.to(device)
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Strided
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d, y=y_2d: torch.logical_xor(
+              x.to(device)[::2, ::2], y.to(device)[::2, ::2]
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      y_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty, y=y_empty: torch.logical_xor(
+              x.to(device), y.to(device)
+          ),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+
+  def test_logical_not(self):
+    dtypes = [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.int32,
+        torch.bool,
+    ]
+    for dtype in dtypes:
+      check_value = CheckValueMode.STRICT
+      rtol, atol = None, None
+      if dtype in (torch.bfloat16, torch.float16):
+        check_value = CheckValueMode.LOOSE
+        rtol = 1e-2
+        atol = 1e-3
+
+      if dtype in (torch.float32, torch.bfloat16, torch.float16):
+        x = torch.tensor([0.0, 1.5, 0.0, -2.0], dtype=dtype)
+        x_2d = torch.tensor(
+            [[0.0, 9.0, 1.5], [9.0, 9.0, 9.0], [0.0, 9.0, -2.0]], dtype=dtype
+        )
+      elif dtype == torch.int32:
+        x = torch.tensor([0, 2, 0, -3], dtype=dtype)
+        x_2d = torch.tensor([[0, 9, 2], [9, 9, 9], [0, 9, -3]], dtype=dtype)
+      else:  # bool
+        x = torch.tensor([False, True, False, True], dtype=dtype)
+        x_2d = torch.tensor(
+            [[False, True, True], [True, True, True], [False, True, True]],
+            dtype=dtype,
+        )
+
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x: torch.logical_not(x.to(device)),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Strided
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_2d: torch.logical_not(x.to(device)[::2, ::2]),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+      # Empty
+      x_empty = torch.tensor([], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x=x_empty: torch.logical_not(x.to(device)),
+          check_value=check_value,
+          rtol=rtol,
+          atol=atol,
+      )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   """Tests for custom ops."""
@@ -7238,6 +7678,614 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
               source=to(source_dtype, device=device),
           ),
       )
+
+  def _test_unary_trig_op(
+      self,
+      op: Any,
+      input_range: tuple[float, float],
+      edge_cases: list[torch.Tensor] | None = None,
+  ):
+    shapes = [(), (0,), (5,), (4, 3), (2, 3, 4)]
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+
+    def get_tolerance_and_mode(dtype):
+      if dtype == torch.float32:
+        return 1e-5, 1e-5, CheckValueMode.STRICT
+      return 1e-2, 1e-3, CheckValueMode.LOOSE
+
+    for shape in shapes:
+      for dtype in dtypes:
+        if 0 in shape:
+          x = torch.empty(shape, dtype=dtype)
+        else:
+          numel = math.prod(shape) if shape else 1
+          if numel == 1:
+            val = (input_range[0] + input_range[1]) / 2.0
+            x = torch.tensor([val], dtype=dtype).reshape(())
+          else:
+            x = torch.linspace(
+                input_range[0], input_range[1], numel, dtype=dtype
+            ).reshape(shape)
+
+        rtol, atol, mode = get_tolerance_and_mode(dtype)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, x=x: op(to(x, device)),
+            check_value=mode,
+            rtol=rtol,
+            atol=atol,
+        )
+
+    # Strided layouts
+    for dtype in dtypes:
+      x_large = torch.linspace(
+          input_range[0], input_range[1], 48, dtype=dtype
+      ).reshape(8, 6)
+      x_stride = x_large[::2, ::2]
+      self.assertFalse(x_stride.is_contiguous())
+      rtol, atol, mode = get_tolerance_and_mode(dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, x_stride=x_stride: op(to(x_stride, device)),
+          check_value=mode,
+          rtol=rtol,
+          atol=atol,
+      )
+
+    if edge_cases is not None:
+      for x_edge in edge_cases:
+        for dtype in dtypes:
+          x_edge_dtype = x_edge.to(dtype=dtype)
+          rtol, atol, mode = get_tolerance_and_mode(dtype)
+          self.assert_close_tpu_vs_cpu(
+              lambda device, x_edge_dtype=x_edge_dtype: (
+                  op(to(x_edge_dtype, device))
+              ),
+              check_value=mode,
+              rtol=rtol,
+              atol=atol,
+          )
+
+  def test_acos(self):
+    self._test_unary_trig_op(
+        torch.acos,
+        input_range=(-1.0, 1.0),
+        edge_cases=[torch.tensor([-1.5, 1.5])],
+    )
+
+  def test_asin(self):
+    self._test_unary_trig_op(
+        torch.asin,
+        input_range=(-1.0, 1.0),
+        edge_cases=[torch.tensor([-1.5, 1.5])],
+    )
+
+  def test_atan(self):
+    self._test_unary_trig_op(
+        torch.atan,
+        input_range=(-5.0, 5.0),
+    )
+
+  def test_cos(self):
+    self._test_unary_trig_op(
+        torch.cos,
+        input_range=(-3.14, 3.14),
+    )
+
+  def test_ceil(self):
+    self._test_unary_trig_op(
+        torch.ceil,
+        input_range=(-5.0, 5.0),
+        edge_cases=[torch.tensor([-1.0, -0.5, 0.0, 0.5, 1.0])],
+    )
+
+  def test_erf(self):
+    self._test_unary_trig_op(
+        torch.erf,
+        input_range=(-3.0, 3.0),
+    )
+
+  def test_exponential_output_properties(self):
+    dtypes = [torch.float32, torch.bfloat16, torch.float16]
+    for dtype in dtypes:
+      with self.subTest(dtype=dtype):
+        x = torch.empty((100, 100), dtype=dtype, device="tpu")
+        res = x.exponential_(1.5)
+        self.assertEqual(res.shape, (100, 100))
+        self.assertEqual(res.device.type, "tpu")
+        self.assertEqual(res.dtype, dtype)
+        self.assertIs(res, x)
+        self.assertTrue((res >= 0.0).all())
+
+        mean_val = res.mean().item()
+        self.assertAlmostEqual(mean_val, 1.0 / 1.5, delta=0.05)
+
+        x_empty = torch.empty((0,), dtype=dtype, device="tpu")
+        res_empty = x_empty.exponential_(1.5)
+        self.assertEqual(res_empty.shape, (0,))
+        self.assertEqual(res_empty.device.type, "tpu")
+
+        x_large = torch.empty((8, 6), dtype=dtype, device="tpu")
+        x_stride = x_large[::2, ::2]
+        self.assertFalse(x_stride.is_contiguous())
+        res_stride = x_stride.exponential_(1.5)
+        self.assertIs(res_stride, x_stride)
+        self.assertTrue((res_stride >= 0.0).all())
+
+  def test_abs(self):
+    self._test_unary_trig_op(
+        torch.abs,
+        input_range=(-5.0, 5.0),
+        edge_cases=[torch.tensor([-1.5, 0.0, 1.5])],
+    )
+
+  def test_isneginf(self):
+    self._test_unary_trig_op(
+        torch.isneginf,
+        input_range=(-10.0, 10.0),
+        edge_cases=[torch.tensor([-float("inf"), float("inf"), 0.0, -1.0])],
+    )
+
+  def test_isposinf(self):
+    self._test_unary_trig_op(
+        torch.isposinf,
+        input_range=(-10.0, 10.0),
+        edge_cases=[torch.tensor([-float("inf"), float("inf"), 0.0, -1.0])],
+    )
+
+  def test_neg(self):
+    self._test_unary_trig_op(
+        torch.neg,
+        input_range=(-5.0, 5.0),
+    )
+
+  def test_sgn(self):
+    self._test_unary_trig_op(
+        torch.sgn,
+        input_range=(-5.0, 5.0),
+        edge_cases=[torch.tensor([-0.0, 0.0, -1.5, 2.5])],
+    )
+
+  def test_sign(self):
+    self._test_unary_trig_op(
+        torch.sign,
+        input_range=(-5.0, 5.0),
+        edge_cases=[torch.tensor([-0.0, 0.0, -1.5, 2.5])],
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      value=[0.5, 2],
+  )
+  def test_addcdiv(self, dtype, value):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t = torch.randn(shape, dtype=dtype)
+      t1 = torch.randn(shape, dtype=dtype)
+      t2 = torch.randn(shape, dtype=dtype).abs() + 0.1
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t, t1=t1, t2=t2: torch.addcdiv(
+              to(t, device), to(t1, device), to(t2, device), value=value
+          ),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+    # Strided layouts
+    t_large = torch.randn(8, 6, dtype=dtype)
+    t1_large = torch.randn(8, 6, dtype=dtype)
+    t2_large = torch.randn(8, 6, dtype=dtype).abs() + 0.1
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addcdiv(
+            to(t_large[::2, ::2], device),
+            to(t1_large[::2, ::2], device),
+            to(t2_large[::2, ::2], device),
+            value=value,
+        ),
+        rtol=1e-3 if dtype == torch.float32 else 1e-2,
+        atol=1e-3 if dtype == torch.float32 else 1e-2,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+      value=[0.5, 2],
+  )
+  def test_addcmul(self, dtype, value):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t = torch.randn(shape, dtype=dtype)
+      t1 = torch.randn(shape, dtype=dtype)
+      t2 = torch.randn(shape, dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t=t, t1=t1, t2=t2: torch.addcmul(
+              to(t, device), to(t1, device), to(t2, device), value=value
+          ),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+    # Strided layouts
+    t_large = torch.randn(8, 6, dtype=dtype)
+    t1_large = torch.randn(8, 6, dtype=dtype)
+    t2_large = torch.randn(8, 6, dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.addcmul(
+            to(t_large[::2, ::2], device),
+            to(t1_large[::2, ::2], device),
+            to(t2_large[::2, ::2], device),
+            value=value,
+        ),
+        rtol=1e-3 if dtype == torch.float32 else 1e-2,
+        atol=1e-3 if dtype == torch.float32 else 1e-2,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+  )
+  def test_div_comprehensive(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t1 = torch.randn(shape, dtype=dtype)
+      t2 = torch.randn(shape, dtype=dtype).abs() + 0.1
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1, t2=t2: torch.div(
+              to(t1, device), to(t2, device)
+          ),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+      # Div by scalar
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1: torch.div(to(t1, device), 2.5),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+    # Strided layouts
+    t1_large = torch.randn(8, 6, dtype=dtype)
+    t2_large = torch.randn(8, 6, dtype=dtype).abs() + 0.1
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.div(
+            to(t1_large[::2, ::2], device), to(t2_large[::2, ::2], device)
+        ),
+        rtol=1e-3 if dtype == torch.float32 else 1e-2,
+        atol=1e-3 if dtype == torch.float32 else 1e-2,
+    )
+    # Division by zero (edge cases with floats promoting to inf/nan)
+    t_zeros = torch.zeros(5, dtype=dtype)
+    t_ones = torch.ones(5, dtype=dtype)
+    t_negs = -torch.ones(5, dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t_ones=t_ones, t_zeros=t_zeros: torch.div(
+            to(t_ones, device), to(t_zeros, device)
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t_negs=t_negs, t_zeros=t_zeros: torch.div(
+            to(t_negs, device), to(t_zeros, device)
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device, t_zeros=t_zeros: torch.div(
+            to(t_zeros, device), to(t_zeros, device)
+        )
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.int32, torch.bfloat16],
+  )
+  def test_isin(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      elements = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(0, 10, shape)
+      )
+      test_elements = torch.tensor([1, 2, 3, 4, 5], dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, elements=elements, test_elements=test_elements: (
+              torch.isin(to(elements, device), to(test_elements, device))
+          )
+      )
+    # Strided layouts
+    elements_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(0, 10, (8, 6))
+    )
+    test_elements = torch.tensor([1, 2, 3, 4, 5], dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.isin(
+            to(elements_large[::2, ::2], device), to(test_elements, device)
+        )
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16],
+  )
+  def test_lerp(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      start = torch.randn(shape, dtype=dtype)
+      end = torch.randn(shape, dtype=dtype)
+      weight_tensor = torch.randn(shape, dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, start=start, end=end, weight=weight_tensor: (
+              torch.lerp(to(start, device), to(end, device), to(weight, device))
+          ),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, start=start, end=end: torch.lerp(
+              to(start, device), to(end, device), 0.5
+          ),
+          rtol=1e-3 if dtype == torch.float32 else 1e-2,
+          atol=1e-3 if dtype == torch.float32 else 1e-2,
+      )
+    # Strided layouts
+    start_large = torch.randn(8, 6, dtype=dtype)
+    end_large = torch.randn(8, 6, dtype=dtype)
+    weight_large = torch.randn(8, 6, dtype=dtype)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.lerp(
+            to(start_large[::2, ::2], device),
+            to(end_large[::2, ::2], device),
+            to(weight_large[::2, ::2], device),
+        ),
+        rtol=1e-3 if dtype == torch.float32 else 1e-2,
+        atol=1e-3 if dtype == torch.float32 else 1e-2,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.float16, torch.int32],
+  )
+  def test_mul_comprehensive(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t1 = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-5, 5, shape)
+      )
+      t2 = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-5, 5, shape)
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1, t2=t2: torch.mul(
+              to(t1, device), to(t2, device)
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1: torch.mul(
+              to(t1, device), 3.0 if dtype != torch.int32 else 3
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+    # Strided layouts
+    t1_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-5, 5, (8, 6))
+    )
+    t2_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-5, 5, (8, 6))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.mul(
+            to(t1_large[::2, ::2], device), to(t2_large[::2, ::2], device)
+        ),
+        rtol=1e-3 if dtype != torch.int32 else None,
+        atol=1e-3 if dtype != torch.int32 else None,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_pow_comprehensive(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t1 = torch.randn(shape, dtype=dtype).abs() + 0.1
+      t2 = torch.randn(shape, dtype=dtype).abs() + 0.1
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1, t2=t2: torch.pow(
+              to(t1, device), to(t2, device)
+          ),
+          rtol=1e-2,
+          atol=1e-2,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1: torch.pow(to(t1, device), 2.0),
+          rtol=1e-2,
+          atol=1e-2,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t2=t2: torch.pow(2.0, to(t2, device)),
+          rtol=1e-2,
+          atol=1e-2,
+      )
+    # Strided layouts
+    t1_large = torch.randn(8, 6, dtype=dtype).abs() + 0.1
+    t2_large = torch.randn(8, 6, dtype=dtype).abs() + 0.1
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.pow(
+            to(t1_large[::2, ::2], device), to(t2_large[::2, ::2], device)
+        ),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.int32],
+  )
+  def test_remainder_comprehensive(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t1 = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-10, 10, shape)
+      )
+      t2 = (
+          (torch.randn(shape).to(dtype).abs() + 0.5)
+          if dtype != torch.int32
+          else torch.randint(1, 5, shape)
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1, t2=t2: torch.remainder(
+              to(t1, device), to(t2, device)
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1: torch.remainder(
+              to(t1, device), 3.0 if dtype != torch.int32 else 3
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+    # Strided layouts
+    t1_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-10, 10, (8, 6))
+    )
+    t2_large = (
+        (torch.randn(8, 6).to(dtype).abs() + 0.5)
+        if dtype != torch.int32
+        else torch.randint(1, 5, (8, 6))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.remainder(
+            to(t1_large[::2, ::2], device), to(t2_large[::2, ::2], device)
+        ),
+        rtol=1e-3 if dtype != torch.int32 else None,
+        atol=1e-3 if dtype != torch.int32 else None,
+    )
+    if dtype != torch.int32:
+      t_zeros = torch.zeros(5, dtype=dtype)
+      t_ones = torch.ones(5, dtype=dtype)
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t_ones=t_ones, t_zeros=t_zeros: torch.remainder(
+              to(t_ones, device), to(t_zeros, device)
+          )
+      )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.int32],
+      alpha=[1, 2],
+  )
+  def test_rsub_comprehensive(self, dtype, alpha):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      t1 = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-5, 5, shape)
+      )
+      t2 = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-5, 5, shape)
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1, t2=t2: torch.rsub(
+              to(t1, device), to(t2, device), alpha=alpha
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+      self.assert_close_tpu_vs_cpu(
+          lambda device, t1=t1: torch.rsub(
+              to(t1, device), 5.0 if dtype != torch.int32 else 5, alpha=alpha
+          ),
+          rtol=1e-3 if dtype != torch.int32 else None,
+          atol=1e-3 if dtype != torch.int32 else None,
+      )
+    # Strided layouts
+    t1_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-5, 5, (8, 6))
+    )
+    t2_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-5, 5, (8, 6))
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.rsub(
+            to(t1_large[::2, ::2], device),
+            to(t2_large[::2, ::2], device),
+            alpha=alpha,
+        ),
+        rtol=1e-3 if dtype != torch.int32 else None,
+        atol=1e-3 if dtype != torch.int32 else None,
+    )
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16, torch.int32],
+  )
+  def test_floor_divide_inplace(self, dtype):
+    shapes = [(), (0,), (5,), (4, 3)]
+    for shape in shapes:
+      x = (
+          torch.randn(shape).to(dtype)
+          if dtype != torch.int32
+          else torch.randint(-10, 10, shape)
+      )
+      other = (
+          (torch.randn(shape).to(dtype).abs() + 0.5)
+          if dtype != torch.int32
+          else torch.randint(1, 5, shape)
+      )
+
+      def run_inplace(device, x=x, other=other):
+        x_dev = to(x, device).clone()
+        other_dev = to(other, device)
+        res = x_dev.floor_divide_(other_dev)
+        if device == "tpu":
+          self.assertIs(res, x_dev)
+        return res
+
+      self.assert_close_tpu_vs_cpu(run_inplace)
+
+      def run_inplace_scalar(device, x=x):
+        x_dev = to(x, device).clone()
+        res = x_dev.floor_divide_(3 if dtype == torch.int32 else 3.0)
+        if device == "tpu":
+          self.assertIs(res, x_dev)
+        return res
+
+      self.assert_close_tpu_vs_cpu(run_inplace_scalar)
+
+    # Strided layouts
+    x_large = (
+        torch.randn(8, 6).to(dtype)
+        if dtype != torch.int32
+        else torch.randint(-10, 10, (8, 6))
+    )
+    other_large = (
+        (torch.randn(8, 6).to(dtype).abs() + 0.5)
+        if dtype != torch.int32
+        else torch.randint(1, 5, (8, 6))
+    )
+
+    def run_inplace_strided(device):
+      x_dev = to(x_large, device).clone()
+      other_dev = to(other_large, device)
+      x_stride = x_dev[::2, ::2]
+      other_stride = other_dev[::2, ::2]
+      res = x_stride.floor_divide_(other_stride)
+      if device == "tpu":
+        self.assertIs(res, x_stride)
+      return res
+
+    self.assert_close_tpu_vs_cpu(run_inplace_strided)
 
 
 if __name__ == "__main__":

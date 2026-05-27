@@ -5961,6 +5961,222 @@ Supported combinations for non-constant padding:
     ):
       torch._scaled_mm(mat1, mat2, scale_a, scale_b)
 
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "bitwise_and_float32",
+          "op_name": "bitwise_and",
+          "op": torch.bitwise_and,
+          "dtype": torch.float32,
+          "dtype_name_tpu": "float32",
+          "dtype_name_cpu": "Float",
+      },
+      {
+          "testcase_name": "bitwise_and_bfloat16",
+          "op_name": "bitwise_and",
+          "op": torch.bitwise_and,
+          "dtype": torch.bfloat16,
+          "dtype_name_tpu": "bfloat16",
+          "dtype_name_cpu": "BFloat16",
+      },
+      {
+          "testcase_name": "bitwise_or_float32",
+          "op_name": "bitwise_or",
+          "op": torch.bitwise_or,
+          "dtype": torch.float32,
+          "dtype_name_tpu": "float32",
+          "dtype_name_cpu": "Float",
+      },
+      {
+          "testcase_name": "bitwise_or_bfloat16",
+          "op_name": "bitwise_or",
+          "op": torch.bitwise_or,
+          "dtype": torch.bfloat16,
+          "dtype_name_tpu": "bfloat16",
+          "dtype_name_cpu": "BFloat16",
+      },
+      {
+          "testcase_name": "bitwise_xor_float32",
+          "op_name": "bitwise_xor",
+          "op": torch.bitwise_xor,
+          "dtype": torch.float32,
+          "dtype_name_tpu": "float32",
+          "dtype_name_cpu": "Float",
+      },
+      {
+          "testcase_name": "bitwise_xor_bfloat16",
+          "op_name": "bitwise_xor",
+          "op": torch.bitwise_xor,
+          "dtype": torch.bfloat16,
+          "dtype_name_tpu": "bfloat16",
+          "dtype_name_cpu": "BFloat16",
+      },
+  )
+  def test_bitwise_ops_unsupported_dtypes(
+      self,
+      op_name: str,
+      op: Any,
+      dtype: torch.dtype,
+      dtype_name_tpu: str,
+      dtype_name_cpu: str,
+  ):
+    x = torch.ones(5, dtype=torch.int64, device=et.device())
+    y = torch.ones(5, dtype=torch.int64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the dtype of the first argument to be neither floating-point nor complex, got {dtype_name_tpu}""",
+        cpu=f""""{op_name}_cpu" not implemented for '{dtype_name_cpu}'""",
+    ):
+      op(x.to(dtype), y)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name}(): expected the dtype of the second argument to be neither floating-point nor complex, got {dtype_name_tpu}""",
+        cpu=f""""{op_name}_cpu" not implemented for '{dtype_name_cpu}'""",
+    ):
+      op(x, y.to(dtype))
+
+  @parameterized.named_parameters(
+      {
+          "testcase_name": "bitwise_left_shift_float32",
+          "op_name_tpu": "bitwise_left_shift",
+          "op_name_cpu": "lshift",
+          "op": torch.bitwise_left_shift,
+          "dtype": torch.float32,
+          "dtype_name_tpu": "float32",
+          "dtype_name_cpu": "Float",
+      },
+      {
+          "testcase_name": "bitwise_left_shift_bfloat16",
+          "op_name_tpu": "bitwise_left_shift",
+          "op_name_cpu": "lshift",
+          "op": torch.bitwise_left_shift,
+          "dtype": torch.bfloat16,
+          "dtype_name_tpu": "bfloat16",
+          "dtype_name_cpu": "BFloat16",
+      },
+      {
+          "testcase_name": "bitwise_left_shift_bool",
+          "op_name_tpu": "bitwise_left_shift",
+          "op_name_cpu": "lshift",
+          "op": torch.bitwise_left_shift,
+          "dtype": torch.bool,
+          "dtype_name_tpu": "bool",
+          "dtype_name_cpu": "Bool",
+      },
+      {
+          "testcase_name": "bitwise_right_shift_float32",
+          "op_name_tpu": "bitwise_right_shift",
+          "op_name_cpu": "rshift",
+          "op": torch.bitwise_right_shift,
+          "dtype": torch.float32,
+          "dtype_name_tpu": "float32",
+          "dtype_name_cpu": "Float",
+      },
+      {
+          "testcase_name": "bitwise_right_shift_bfloat16",
+          "op_name_tpu": "bitwise_right_shift",
+          "op_name_cpu": "rshift",
+          "op": torch.bitwise_right_shift,
+          "dtype": torch.bfloat16,
+          "dtype_name_tpu": "bfloat16",
+          "dtype_name_cpu": "BFloat16",
+      },
+      {
+          "testcase_name": "bitwise_right_shift_bool",
+          "op_name_tpu": "bitwise_right_shift",
+          "op_name_cpu": "rshift",
+          "op": torch.bitwise_right_shift,
+          "dtype": torch.bool,
+          "dtype_name_tpu": "bool",
+          "dtype_name_cpu": "Bool",
+      },
+  )
+  def test_bitwise_shift_unsupported_dtypes(
+      self,
+      op_name_tpu: str,
+      op_name_cpu: str,
+      op: Any,
+      dtype: torch.dtype,
+      dtype_name_tpu: str,
+      dtype_name_cpu: str,
+  ):
+    if et.TEST_MODE.value == "cpu" and dtype == torch.bool:
+      # CPU supports shifting booleans, so no exception is expected.
+      return
+
+    x = torch.ones(5, dtype=torch.int64, device=et.device())
+    y = torch.ones(5, dtype=torch.int64, device=et.device())
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name_tpu}(): expected the dtype of the first argument to be integer, got {dtype_name_tpu}""",
+        cpu=f""""{op_name_cpu}_cpu" not implemented for '{dtype_name_cpu}'""",
+    ):
+      op(x.to(dtype), y)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=f"""{op_name_tpu}(): expected the dtype of the second argument to be integer, got {dtype_name_tpu}""",
+        cpu=f""""{op_name_cpu}_cpu" not implemented for '{dtype_name_cpu}'""",
+    ):
+      op(x, y.to(dtype))
+
+  def test_pow_boolean_errors(self):
+    if et.TEST_MODE.value == "cpu":
+      return
+
+    x = torch.tensor([True, False], device=et.device(), dtype=torch.bool)
+    expected_pattern = re.compile(
+        r".*expected the dtype of the first argument not to be boolean, got"
+        r" [Bb]ool.*",
+        re.DOTALL,
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_pattern,
+    ):
+      torch.pow(x, 2)
+
+  def test_floor_divide_errors(self):
+    x_bool = torch.tensor([True, False], device=et.device(), dtype=torch.bool)
+    y = torch.tensor([2, 2], device=et.device())
+    tpu_pattern_bool = re.compile(
+        r".*expected dtype of the first argument to be neither complex nor"
+        r" bool, got [Bb]ool.*",
+        re.DOTALL,
+    )
+    cpu_pattern_bool = re.compile(
+        r".*result type Long can't be cast to the desired output type Bool.*",
+        re.DOTALL,
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_pattern_bool,
+        cpu=cpu_pattern_bool,
+    ):
+      x_bool.clone().floor_divide_(y)
+
+    x_complex = torch.tensor(
+        [1 + 2j, 3 + 4j], device=et.device(), dtype=torch.complex64
+    )
+    tpu_pattern_complex = re.compile(
+        r".*expected dtype of the first argument to be neither complex nor"
+        r" bool, got [Cc]omplex.*",
+        re.DOTALL,
+    )
+    cpu_pattern_complex = re.compile(
+        r".*div_floor_cpu.*not implemented for.*[Cc]omplex.*", re.DOTALL
+    )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=tpu_pattern_complex,
+        cpu=cpu_pattern_complex,
+    ):
+      x_complex.clone().floor_divide_(y)
+
 
 if __name__ == "__main__":
   absltest.main()
