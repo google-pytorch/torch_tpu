@@ -14,7 +14,7 @@
 
 """TorchTPU support for torch.export to MLIR."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 import contextlib
 import copy
 import dataclasses
@@ -435,6 +435,17 @@ def enable_tracebacks(value: bool | None = True):
     tpu_torch_compile.pop_enable_tracebacks()
 
 
+@contextlib.contextmanager
+def export_mode() -> Iterator[None]:
+  """Enters and exits TorchTPU export mode."""
+  tpu_torch_compile.enter_export_mode()
+  try:
+    yield
+  finally:
+    tpu_torch_compile.exit_export_mode()
+    tpu_torch_compile.clear_export_mode_default_device_generators()
+
+
 # TODO(cnchan): change build_mlir_module default to False after migrating all
 # test usages with the new traverse_and_compile API.
 def fx_to_mlir(
@@ -471,33 +482,45 @@ def fx_to_mlir(
   device_module = getattr(torch, device.type)
 
   # Add the default RNG generator for the device to the args.
+  default_device_index = device.index or 0
+  default_generator = device_module.default_generators[default_device_index]
   argument_generators = [
       arg for arg in args if isinstance(arg, torch.Generator)
-  ] + [device_module.default_generators[device.index or 0]]
+  ] + [default_generator]
 
-  orig_generator_states = {}
-  for gen in argument_generators:
-    orig_generator_states[gen] = gen.graphsafe_get_state().clone_state()
+  export_mode_generators = {
+      gen: tpu_torch_compile.make_export_mode_device_generator(gen)
+      for gen in argument_generators
+  }
 
-    # Plumb a placeholder tensor to trace the generator's device rng state.
-    # This intercepts the C++ backend's state so that random operations
-    # are correctly chained against this placeholder during graph capture.
-    device_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
-    begin_state_tensor = tpu_torch_compile.placeholder_like(device_state_tensor)
-    tpu_torch_compile.set_device_state_tensor(gen, begin_state_tensor)
+  # Set export-mode override for the default generator.
+  tpu_torch_compile.clear_export_mode_default_device_generators()
+  tpu_torch_compile.set_export_mode_default_device_generator(
+      export_mode_generators[default_generator]
+  )
 
-    # Add placeholder to the argument tensors for traversal.
-    argument_tensors.append(begin_state_tensor)
+  # Include the state tensors from the export-mode generators in the arguments
+  # for graph traversal, as these represent mutable RNG states within the graph.
+  argument_tensors.extend(
+      tpu_torch_compile.get_device_state_tensor(export_mode_generators[gen])
+      for gen in argument_generators
+  )
 
-  try:
+  with export_mode():
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       # We clone the args so that inplace updates do not overwrite the
       # placeholder args. These copies will be removed in the compiled code so
       # there is no performance impact.
       # Remove once b/491716758 is implemented.
-      cloned_args = (
-          x.clone() if isinstance(x, torch.Tensor) else x for x in args
-      )
+      cloned_args = []
+      for x in args:
+        if isinstance(x, torch.Tensor):
+          cloned_args.append(x.clone())
+        elif isinstance(x, torch.Generator):
+          cloned_args.append(export_mode_generators[x])
+        else:
+          cloned_args.append(x)
+
       fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
 
     result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(
@@ -506,9 +529,10 @@ def fx_to_mlir(
 
     # Plumb the final state tensor as the last output of the graph so that
     # the updated RNG state can be returned from the executable and persisted.
-    for gen in argument_generators:
-      end_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
-      result_tensors.append(end_state_tensor)
+    result_tensors.extend(
+        tpu_torch_compile.get_device_state_tensor(export_mode_generators[gen])
+        for gen in argument_generators
+    )
 
     # Check if the module updates the default generator state.
     begin_default_state_tensor = argument_tensors[-1]
@@ -528,10 +552,6 @@ def fx_to_mlir(
         argument_tensors=argument_tensors,
         build_mlir_module=build_mlir_module,
     )
-  finally:
-    # Restore original generator states.
-    for gen in argument_generators:
-      gen.graphsafe_set_state(orig_generator_states[gen])
 
   return ExportedMlir(
       module=compile_result.module,

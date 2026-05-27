@@ -59,23 +59,18 @@ class _DefaultGeneratorsProperty:
   """Descriptor that acts exactly like a tuple of default generators.
 
   Mirrors the type and lazy initialization behavior of PyTorch's native
-  `torch.cuda.default_generators`.
+  `torch.cuda.default_generators`, while dynamically reflecting export
+  overrides.
   """
-
-  def __init__(self):
-    self._cached_tuple = None
 
   def __get__(self, instance, owner):
     if owner is None:
       return ()
-    if self._cached_tuple is None:
-      # Ensure initialized
-      owner.current_device()
-      self._cached_tuple = tuple(
-          _device_ops_backend.get_default_generator(i)
-          for i in range(owner.device_count())
-      )
-    return self._cached_tuple
+    owner.current_device()
+    return tuple(
+        _device_ops_backend.get_default_generator(i)
+        for i in range(owner.device_count())
+    )
 
 
 def _rng_validate_device_index(

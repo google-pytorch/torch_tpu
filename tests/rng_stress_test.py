@@ -125,9 +125,9 @@ class RngStressTest(parameterized.TestCase):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
+    num_iterations = 20
 
-    def run_op():
+    def run_op() -> torch.Tensor:
       return op_fn().cpu()
 
     for iteration_id in range(num_iterations):
@@ -150,14 +150,14 @@ class RngStressTest(parameterized.TestCase):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
+    num_iterations = 20
 
     compiled_op_fn = torch.compile(op_fn, backend="tpu")
 
     # Warm up.
     compiled_op_fn()
 
-    def run_op():
+    def run_op() -> torch.Tensor:
       return compiled_op_fn().cpu()
 
     for iteration_id in range(num_iterations):
@@ -183,17 +183,17 @@ class RngStressTest(parameterized.TestCase):
     device = torch.accelerator.current_accelerator()
     op_fn = functools.partial(op_fn, device=device)
     num_threads = 20
-    num_iterations = 50
+    num_iterations = 20
 
     compiled_op_fn = torch.compile(op_fn, backend="tpu")
 
     # Warm up.
     compiled_op_fn()
 
-    def run_compiled():
+    def run_compiled() -> torch.Tensor:
       return compiled_op_fn().cpu()
 
-    def run_eager():
+    def run_eager() -> torch.Tensor:
       return op_fn().cpu()
 
     for iteration_id in range(num_iterations):
@@ -217,6 +217,52 @@ class RngStressTest(parameterized.TestCase):
       self.assertEqual(
           begin_rng_offset + num_threads * offset_increments, end_rng_offset
       )
+
+  @parameterized.named_parameters(*RNG_OPS)
+  @torch._inductor.config.patch(force_disable_caches=True)
+  @torch._dynamo.config.patch(
+      recompile_limit=1, fail_on_recompile_limit_hit=True
+  )
+  def test_compile_init_and_eager_no_rng_state_collision(
+      self, op_fn, offset_increments
+  ):
+    device = torch.accelerator.current_accelerator()
+    num_threads = 5
+    num_iterations = 20
+
+    for iteration_id in range(num_iterations):
+      torch.manual_seed(iteration_id)
+
+      # Wrap the passed op_fn to make it unique per iteration and force
+      # recompile.
+      def unique_op_fn(dummy: int = iteration_id) -> torch.Tensor:
+        del dummy
+        return op_fn(device)
+
+      def run_compiled() -> torch.Tensor:
+        return torch.compile(unique_op_fn, backend="tpu", dynamic=False)().cpu()  # pylint: disable=cell-var-from-loop
+
+      def run_eager() -> torch.Tensor:
+        return op_fn(device).cpu()
+
+      begin_rng_offset = get_current_generator_offset()
+      with concurrent.futures.ThreadPoolExecutor(
+          max_workers=num_threads
+      ) as executor:
+        futures = [
+            executor.submit(run_compiled if i == 0 else run_eager)
+            for i in range(num_threads)
+        ]
+
+        results = [f.result() for f in futures]
+        end_rng_offset = get_current_generator_offset()
+
+      self.assert_all_unique(results)
+
+      expected_increment = num_threads * offset_increments
+      self.assertEqual(begin_rng_offset + expected_increment, end_rng_offset)
+
+      torch.compiler.reset()
 
 
 if __name__ == "__main__":

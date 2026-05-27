@@ -36,12 +36,6 @@
 
 namespace torch_tpu {
 
-// Represents the number of elements and bit width consumed by an RNG operation.
-struct RngUsage {
-  int64_t num_elements = -1;
-  int64_t bit_width = -1;
-};
-
 // Dispatches an RNG operation, handling locking, state retrieval, and
 // advancement. `dispatch_func` must use the provided state tensor and return
 // the output buffers. If `usage` is not provided, the RNG advancement
@@ -51,9 +45,9 @@ struct RngUsage {
 template <typename DispatchFunc>
 absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
     c10::optional<at::Generator> generator, DispatchFunc dispatch_func,
-    const std::optional<RngUsage>& usage = std::nullopt) {
-  auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
-      generator, GetDefaultDeviceGenerator());
+    const std::optional<RngUsage>& usage) {
+  auto* gen = at::check_generator<DeviceGeneratorImplBase>(
+      generator.has_value() ? generator.value() : GetDefaultDeviceGenerator());
 
   // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
   std::scoped_lock<std::mutex> lock(gen->mutex_);

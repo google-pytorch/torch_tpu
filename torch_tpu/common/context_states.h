@@ -89,6 +89,21 @@ enum class TracebackMode {
 // The state of the `enable_tracebacks` context manager.
 using EnableTracebacksContextState = std::optional<TracebackMode>;
 
+// The export mode.
+// This mode is enabled during graph capture (e.g., torch.compile or export)
+// in the torch_tpu backend. It ensures that operations (especially RNG ones)
+// do not accidentally modify the global default states, which might
+// be used concurrently by eager execution in another thread.
+enum class ExportMode {
+  // Export mode is disabled.
+  kDisabled,
+  // Export mode is enabled.
+  kEnabled,
+};
+
+// The state of the `export_mode` context manager.
+using ExportModeContextState = ExportMode;
+
 // The state of the `spmd_safe` context manager.
 using IsSpmdSafeContextState = bool;
 

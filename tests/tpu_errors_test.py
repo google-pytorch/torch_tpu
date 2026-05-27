@@ -26,6 +26,7 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
+from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 
@@ -70,6 +71,17 @@ def _make_lu_unpack_outputs(
       torch.empty(l, device=et.device()),
       torch.empty(u, device=et.device()),
   )
+
+
+def _clear_export_mode_generators_worker():
+  # Initialize TPU
+  _ = torch.tensor([1.0], device="tpu")
+  gen = torch.Generator(device="tpu")
+  tpu_torch_compile.set_export_mode_default_device_generator(gen, 0)
+  tpu_torch_compile.clear_export_mode_default_device_generators()
+  tpu_torch_compile.enter_export_mode()
+  # This should crash
+  torch.rand(1, device="tpu")
 
 
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase, parameterized.TestCase):
@@ -1600,6 +1612,32 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.tpu.get_rng_state(1)
 
+  def test_set_export_mode_default_device_generator_invalid_device(self):
+    expected_msg = re.compile(
+        r"The device_index is invalid, expected an index between 0 and \d+"
+        r" got 100"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_msg,
+    ):
+      tpu_torch_compile.set_export_mode_default_device_generator(None, 100)
+
+  def test_clear_export_mode_generators_kills_mutant(self):
+    # This test verifies that clear_export_mode_default_device_generators
+    # actually clears the generators.
+    # We run it in a subprocess (via g3_multiprocessing) because it is expected
+    # to crash (SIGABRT) when we try to use a generator that was cleared.
+    ctx = g3_multiprocessing.get_context(g3_multiprocessing.ABSL_SPAWN)
+    p = ctx.Process(target=_clear_export_mode_generators_worker)
+    p.start()
+    p.join()
+    # It should crash, so exit code should be non-zero.
+    # If the mutant survived, it would exit with 0.
+    self.assertNotEqual(
+        p.exitcode, 0, msg="Subprocess exited with 0, mutant survived!"
+    )
+
   def test_scaled_mm_invalid_shapes(self):
     """Tests that scaled_mm fails if matrix sizes are not divisible by 16."""
     # This constraint is specific to TPU implementation.
@@ -1657,4 +1695,4 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
 
 if __name__ == "__main__":
-  absltest.main()
+  g3_multiprocessing.handle_test_main(absltest.main)

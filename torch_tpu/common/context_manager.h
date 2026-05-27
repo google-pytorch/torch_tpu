@@ -54,6 +54,7 @@ using ContextManagerState = std::variant<
     CustomCompilerOptionsContextState,  // for `custom_compiler_options`
     EagerModeContextState,              // for `eager_mode`
     EnableTracebacksContextState,       // for `enable_tracebacks`
+    ExportModeContextState,             // for `export_mode`
     IsSpmdSafeContextState,             // for `spmd_safe`
     LayoutContextState,                 // for `layout`
     PrecisionContextState,              // for `precision`
