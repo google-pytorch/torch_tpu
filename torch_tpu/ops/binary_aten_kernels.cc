@@ -717,37 +717,12 @@ at::Tensor& AtenAddReluOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor AtenAddReluScalar(const at::Tensor& self, const at::Scalar& other,
                              const at::Scalar& alpha) {
-  PromotedScalar promoted_other = PromoteScalar(other);
-  MaybePromotedScalar promoted_alpha =
-      PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
-  TT_KERNEL(
-      OpName::kAddReluScalar, param_keys,
-      (self, promoted_other, promoted_alpha), {
-        TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
-
-        at::ScalarType promoted_scalar_type = at::result_type(self, other);
-        TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(self.sizes(), promoted_scalar_type, self.device()));
-
-        TT_ASSIGN_OR_THROW(const at::Tensor other_tensor,
-                           promoted_other.GetTensor(promoted_scalar_type));
-
-        if (promoted_alpha.IsOne()) {
-          TT_THROW_IF_ERROR(
-              BinaryOpOut(self, other_tensor, out, BuildAddReluShlo,
-                          {.op_param_cache_keys = std::move(param_keys)}));
-          return out;
-        }
-
-        TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(promoted_scalar_type));
-
-        TT_THROW_IF_ERROR(TernaryOpOut(
-            self, other_tensor, alpha_tensor, out, BuildAlphaAddReluShlo,
-            {.op_param_cache_keys = std::move(param_keys)}));
-        return out;
-      });
+  TT_FORWARDING_KERNEL(OpName::kAddReluScalar, (self, other, alpha), {
+    const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    TT_ASSIGN_OR_THROW(const at::Tensor other_tensor,
+                       PromoteScalar(other).GetTensor(promoted_scalar_type));
+    return AtenAddReluTensor(self, other_tensor, alpha);
+  });
 }
 
 at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
@@ -783,14 +758,12 @@ at::Tensor AtenAddReluTensor(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenAddRelu_Scalar(at::Tensor& self, const at::Scalar& other,
                                const at::Scalar& alpha) {
-  TT_KERNEL(OpName::kAddRelu_Scalar, _,
-            (self, IgnoreInCacheKey(other, "Legacy usage"),
-             IgnoreInCacheKey(alpha, "Legacy usage")),
-            {
-              TT_ASSIGN_OR_THROW(auto wrapped_other, MakeTensor(other));
-              AtenAddReluOut(self, wrapped_other, alpha, self);
-              return self;
-            });
+  TT_FORWARDING_KERNEL(OpName::kAddRelu_Scalar, (self, other, alpha), {
+    const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    TT_ASSIGN_OR_THROW(const at::Tensor other_tensor,
+                       PromoteScalar(other).GetTensor(promoted_scalar_type));
+    return AtenAddRelu_Tensor(self, other_tensor, alpha);
+  });
 }
 
 at::Tensor& AtenAddRelu_Tensor(at::Tensor& self, const at::Tensor& other,

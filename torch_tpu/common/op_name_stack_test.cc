@@ -49,6 +49,45 @@ TEST(OpNameStackTest, NestedScopedOpNamesBehaveAsStack) {
   EXPECT_EQ(OpNameStack::Top(), OpName::kAdd);
 }
 
+TEST(OpNameStackTest, ScopedForwardingGuardTransitionsState) {
+  EXPECT_FALSE(ScopedForwardingGuard::IsForwardingActive());
+  {
+    ScopedForwardingGuard guard1;
+    EXPECT_TRUE(ScopedForwardingGuard::IsForwardingActive());
+    {
+      ScopedForwardingGuard guard2;
+      EXPECT_TRUE(ScopedForwardingGuard::IsForwardingActive());
+    }
+    EXPECT_TRUE(ScopedForwardingGuard::IsForwardingActive());
+  }
+  EXPECT_FALSE(ScopedForwardingGuard::IsForwardingActive());
+}
+
+#if GTEST_HAS_DEATH_TEST
+TEST(OpNameStackTest, ForwardingGuardCorrectlyBypassesCompositeOpCheck) {
+  // Setup: With the guard active, pushing a nested op under a non-whitelisted
+  // parent (e.g. kSoftmaxOut) is allowed and bypasses the check.
+  {
+    ScopedOpName parent_op(OpName::kSoftmaxOut);
+    {
+      ScopedForwardingGuard guard;
+      ScopedOpName nested_op(OpName::kSub);
+      EXPECT_EQ(OpNameStack::Top(), OpName::kSub);
+    }
+    EXPECT_EQ(OpNameStack::Top(), OpName::kSoftmaxOut);
+  }
+
+  // Without the guard, pushing a nested op under a non-whitelisted parent
+  // must trigger a raw CompositeOpCheck crash.
+  EXPECT_DEATH(
+      {
+        ScopedOpName parent_op(OpName::kSoftmaxOut);
+        ScopedOpName nested_op(OpName::kSub);
+      },
+      "CompositeOpCheck: Op _softmax.out is decomposed into sub");
+}
+#endif
+
 }  // namespace
 }  // namespace internal
 }  // namespace torch_tpu

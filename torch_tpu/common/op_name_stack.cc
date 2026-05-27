@@ -46,6 +46,24 @@ thread_local  // CPP_THREAD_LOCAL_OK=needed only in the dispatching thread.
     std::stack<OpName>
         OpNameStack::stack_;  // NOLINT
 
+namespace {
+// needed only in the dispatching thread for forwarding checks.
+thread_local bool is_forwarding_active_ = false;  // CPP_THREAD_LOCAL_OK=disp
+}  // namespace
+
+ScopedForwardingGuard::ScopedForwardingGuard()
+    : previous_state_(is_forwarding_active_) {
+  is_forwarding_active_ = true;
+}
+
+ScopedForwardingGuard::~ScopedForwardingGuard() {
+  is_forwarding_active_ = previous_state_;
+}
+
+bool ScopedForwardingGuard::IsForwardingActive() {
+  return is_forwarding_active_;
+}
+
 void OpNameStack::Push(OpName op_name) {
   static absl::Mutex mutex(absl::kConstInit);  // Protects known_composite_ops.
   static absl::NoDestructor<absl::flat_hash_set<OpName>> known_composite_ops({
@@ -286,7 +304,7 @@ void OpNameStack::Push(OpName op_name) {
       OpName::kZero_,
       // go/keep-sorted end
   });
-  if (!stack_.empty()) {
+  if (!stack_.empty() && !ScopedForwardingGuard::IsForwardingActive()) {
     // This op is delegated from the op at the top of the stack.
     const OpName composite = stack_.top();
     absl::MutexLock lock(mutex);
