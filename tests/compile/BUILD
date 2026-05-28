@@ -46,6 +46,7 @@ torch_tpu_py_test(
     name = "small_graph_test",
     srcs = ["small_graph_test.py"],
     tags = [
+        "nomsan",  # b/516945438
         "requires-net:external",
         "requires-tpu-v5lite",
     ],

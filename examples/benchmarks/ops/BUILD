@@ -56,7 +56,10 @@ torch_tpu_py_test(
     srcs = ["aten_op_benchmarks.py"],
     data = glob(["captured_ops/*.json"]),
     shard_count = 10,
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "nomsan",  # b/516945438
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":op_input_loader",
         "//examples/benchmarks/e2e:benchmark_utils",
@@ -70,6 +73,6 @@ torch_tpu_py_test(
         "//torch_tpu",
         "@pypi//numpy",
     ],
-)  # This must be the last line in the BUILD file.
+)
 
 torch_tpu_package_end()
