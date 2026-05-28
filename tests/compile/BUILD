@@ -378,4 +378,29 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "cummax_cumsum_compile_benchmark_test",
+    timeout = "eternal",
+    srcs = ["cummax_cumsum_compile_benchmark_test.py"],
+    notap = "Slow benchmark test.",
+    tags = [
+        "cpu:1",  # For (hopefully) less noise.
+        "nofastbuild",  # Measures performance.
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/etils/epath",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal:testing",
+        "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "@pypi//tabulate",
+    ],
+)
+
 torch_tpu_package_end()
