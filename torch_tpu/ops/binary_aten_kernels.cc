@@ -76,12 +76,26 @@ namespace internal {
 // later try to extract their TPU buffers.
 absl::StatusOr<std::vector<at::Tensor>> MoveCpuScalarsToTpu(
     absl::Span<const at::Tensor> tensors) {
+  // Find a reference TPU tensor to use for scalar type promotion.
+  const at::Tensor* ref_tensor = nullptr;
+  for (const auto& tensor : tensors) {
+    if (tensor.device().type() == GetPrivateUse1DeviceType()) {
+      ref_tensor = &tensor;
+      break;
+    }
+  }
+
   std::vector<at::Tensor> tpu_tensors;
   tpu_tensors.reserve(tensors.size());
   for (const auto& tensor : tensors) {
     // MakeTensor uses a cache to deduplicate scalar tensors.
     if (tensor.device().type() == c10::DeviceType::CPU && tensor.numel() == 1) {
-      TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor, MakeTensor(tensor.item()));
+      at::ScalarType target_type = tensor.scalar_type();
+      if (ref_tensor != nullptr) {
+        target_type = at::result_type(*ref_tensor, tensor.item());
+      }
+      TT_ASSIGN_OR_RETURN(at::Tensor tpu_tensor,
+                          MakeTensor(tensor.item(), target_type));
       tpu_tensors.push_back(std::move(tpu_tensor));
     } else {
       tpu_tensors.push_back(tensor);

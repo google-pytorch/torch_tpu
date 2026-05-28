@@ -62,10 +62,6 @@ absl::StatusOr<DeviceBufferRef> MakeBuffer(
     const at::Scalar& scalar,
     c10::optional<at::ScalarType> scalar_type_opt = std::nullopt) {
   at::ScalarType scalar_type = scalar_type_opt.value_or(scalar.type());
-  if (scalar_type == at::ScalarType::ComplexDouble) {
-    // TPU does not support complex128. Use complex64 instead.
-    scalar_type = at::ScalarType::ComplexFloat;
-  }
   if (GetEagerMode() != EagerMode::kInternalDeferAll) {
     // Variable execution mode: materialize the scalar to a DeviceBufferRef.
     // This treats the scalar as an argument rather than a constant, which
