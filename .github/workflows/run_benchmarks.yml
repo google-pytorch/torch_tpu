@@ -32,6 +32,7 @@ jobs:
     with:
       registry_file: "examples/benchmarks/benchmark_registry.pbtxt"
       ml_actions_ref: "39838909a83f01eb2d61de181ea843bb48ee9269"
+      runner: "linux-x86-n4-16"
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
       pub_sub_gcp_topic_id: "private-torch-tpu-prod"
