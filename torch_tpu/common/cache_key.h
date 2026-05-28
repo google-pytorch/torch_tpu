@@ -715,7 +715,7 @@ class ShapelessKey {
   explicit ShapelessKey(FingerprintType key) : key_(key) {}
 
   struct Hash {
-    [[nodiscard]] inline size_t operator()(const ShapelessKey key) const {
+    [[nodiscard]] size_t operator()(const ShapelessKey key) const {
       return key.key_;
     }
   };
@@ -765,7 +765,7 @@ class DimensionsKey {
 class GraphKey {
  public:
   struct Hash {
-    [[nodiscard]] inline size_t operator()(GraphKey key) const {
+    [[nodiscard]] size_t operator()(GraphKey key) const {
       return FingerprintCat(key.shapeless_key().key(),
                             key.dimensions_key().key());
     }
@@ -802,7 +802,7 @@ void AbslStringify(Sink& sink, const GraphKey key) {
 class CompilationCacheKey {
  public:
   struct Hash {
-    [[nodiscard]] inline size_t operator()(CompilationCacheKey key) const {
+    [[nodiscard]] size_t operator()(CompilationCacheKey key) const {
       const auto& graph_key = key.graph_key();
       const auto& compile_options_key = key.compile_options_key();
 
