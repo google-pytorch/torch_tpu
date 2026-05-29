@@ -60,6 +60,7 @@
 #include "torch_tpu/ops/dot/dot_aten_kernels.h"
 #include "torch_tpu/ops/dot/vdot_aten_kernels.h"
 #include "torch_tpu/ops/dropout/dropout_aten_kernels.h"
+#include "torch_tpu/ops/dtensor/dtensor_ops.h"
 #include "torch_tpu/ops/dynamic/dynamic_arange/dynamic_arange.h"
 #include "torch_tpu/ops/dynamic/set_dimension_logical_size/set_dimension_logical_size.h"
 #include "torch_tpu/ops/elu/elu_aten_kernels.h"
@@ -857,6 +858,12 @@ TORCH_LIBRARY(torch_tpu, m) {
   // behaviors.
   m.def("experimental_send(Tensor[] tensors, int dst, int tag) -> Any");
   m.def("experimental_recv(Tensor[] tensors, int src, int tag) -> Any");
+  m.def(
+      "sdy_sharding(Tensor x, str mesh_sdy_format, str placements_sdy_format, "
+      "int[] target_shape, bool is_input) -> Tensor");
+  m.def(
+      "sdy_sharding_constraint(Tensor x, str mesh_sdy_format, str "
+      "placements_sdy_format) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(torch_tpu, Meta, m) {
@@ -874,6 +881,15 @@ TORCH_LIBRARY_IMPL(torch_tpu, Meta, m) {
           at::IntArrayRef kernel_size, at::IntArrayRef stride,
           at::IntArrayRef padding, at::IntArrayRef dilation,
           bool ceil_mode) { return at::empty(self.sizes(), self.options()); });
+  Impl(m, OpName::kSdySharding,
+       [](const at::Tensor& x, std::string_view mesh_sdy_format,
+          std::string_view placements_sdy_format, at::IntArrayRef target_shape,
+          bool is_input) { return at::empty(target_shape, x.options()); });
+  Impl(m, OpName::kSdyShardingConstraint,
+       [](const at::Tensor& x, std::string_view mesh_sdy_format,
+          std::string_view placements_sdy_format) {
+         return at::empty(x.sizes(), x.options());
+       });
 }
 
 TORCH_LIBRARY_IMPL(torch_tpu, PrivateUse1, m) {
@@ -886,6 +902,8 @@ TORCH_LIBRARY_IMPL(torch_tpu, PrivateUse1, m) {
   Impl(m, OpName::kTorchTpuOptimizationBarrier, TorchTpuOptimizationBarrier);
   Impl(m, OpName::kSetDimensionLogicalSize, SetDimensionLogicalSize);
   Impl(m, OpName::kDynamicArange, DynamicArange);
+  Impl(m, OpName::kSdySharding, SdySharding);
+  Impl(m, OpName::kSdyShardingConstraint, SdyShardingConstraint);
 }
 
 TORCH_LIBRARY_IMPL(torch_tpu, CPU, m) {

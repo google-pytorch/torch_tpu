@@ -1135,6 +1135,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "scatter.value_out";
     case OpName::kScatterValueReduceOut:
       return "scatter.value_reduce_out";
+    case OpName::kSdySharding:
+      return "sdy_sharding";
+    case OpName::kSdyShardingConstraint:
+      return "sdy_sharding_constraint";
     case OpName::kSetDimensionLogicalSize:
       return "set_dimension_logical_size";
     case OpName::kSet_:

@@ -579,6 +579,8 @@ enum class OpName {
   kScatterSrcOut,
   kScatterValueOut,
   kScatterValueReduceOut,
+  kSdySharding,
+  kSdyShardingConstraint,
   kSetDimensionLogicalSize,
   kSet_,
   kSet_SourceStorage,

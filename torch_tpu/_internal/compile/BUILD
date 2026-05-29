@@ -64,6 +64,8 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":dtensor_rewriter",
+        ":dtensor_sentinels",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
@@ -238,6 +240,22 @@ pybind_extension(
         "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dtensor_sentinels",
+    srcs = ["dtensor_sentinels.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dtensor_rewriter",
+    srcs = ["dtensor_rewriter.py"],
+    deps = [
+        "//shims/torch:pytorch",
     ],
 )
 

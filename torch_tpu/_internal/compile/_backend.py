@@ -319,6 +319,36 @@ class TpuBackend:
         self._compile_graph_module, compiler_instance, False
     )
 
+    options = kwargs.get("options", {})
+    partitioning_engine = options.get("partitioning_engine", "dtensor")
+    self._partitioning_engine = partitioning_engine
+
+    if partitioning_engine == "shardy":
+      # Import sentinels to register autograd and strategy Strategy strategies
+      # pylint: disable=g-import-not-at-top
+      from torch_tpu._internal.compile import dtensor_rewriter
+      from torch_tpu._internal.compile import dtensor_sentinels as _
+      # pylint: enable=g-import-not-at-top
+
+      # 1. Rewrite high-level Dynamo graph in-place PRE-AOT, resolving
+      # specifications from eager inputs!
+      # This returns unwrapped physical local tensors to pass to AOTAutograd
+      example_inputs = dtensor_rewriter.rewrite_fx_graph(
+          graph_module, example_inputs
+      )
+
+      # Monkeypatch cost model to avoid fake group communication overhead
+      # during compile tracing
+      # pylint: disable=g-import-not-at-top
+      import torch.distributed.tensor._collective_utils as collective_utils
+      # pylint: enable=g-import-not-at-top
+      collective_utils.redistribute_cost.__code__ = (
+          lambda *args, **kwargs: 0.0
+      ).__code__
+      collective_utils.one_step_redistribute_cost.__code__ = (
+          lambda *args, **kwargs: 0.0
+      ).__code__
+
     with _serialization_context(self._enable_serialization) as captured_entry:
       result = aot_autograd(
           fw_compiler=fw_compiler,
@@ -364,6 +394,7 @@ class TpuBackend:
         example_inputs,
     )
 
+    compiler_instance._shardy_metadata = self  # pylint: disable=protected-access
     executable = compiler_instance(graph_module, example_inputs, is_fwd=is_fwd)
 
     self._compiled_executables.append(executable)
