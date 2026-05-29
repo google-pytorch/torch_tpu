@@ -274,9 +274,13 @@ class DeviceBufferRef {
   // yet started materialization.
   [[nodiscard]] bool is_deferred() const;
 
-  // Returns true if this DeviceBufferRef has started materialization.
-  // It may or may not have completed materialization.
+  // Returns true if this DeviceBufferRef has been enqueued for materialization
   [[nodiscard]] bool is_materializing() const;
+
+  // Returns true if this DeviceBufferRef has been processed by the
+  // materialization worker, and is waiting for either its StableHLO module to
+  // be compiled or for earlier-enqueued ops to complete.
+  [[nodiscard]] bool is_pending() const;
 
   // Returns true if this DeviceBufferRef is executing.
   // The execution may or may not have completed.
@@ -623,6 +627,11 @@ class DeviceBufferList {
   static absl::StatusOr<DeviceBufferRef> CreatePending(
       Dimensions dimensions, mlir::ElementType element_type);
 
+  // Signals that this DeviceBufferList is in the queue for materialization.
+  // Returns the old enqueued status of the DeviceBufferList; so, "false" means
+  // that this was the first time the DeviceBufferList was enqueued.
+  bool SetAsMaterializationQueued();
+
   // Sets the DeviceBufferList to a pending-materialized state.
   // If the DeviceBufferList is already materialized, this is a no-op.
   // Returns an error if the DeviceBufferList is a placeholder, as placeholders
@@ -691,6 +700,9 @@ class DeviceBufferList {
   [[nodiscard]] bool is_materializing() const {
     return data_.is_materializing();
   }
+
+  // Returns true if this DeviceBufferList is enqueued for materialization.
+  [[nodiscard]] bool is_pending() const { return data_.is_pending(); }
 
   // Returns true if this DeviceBufferList is executing.
   // The execution may or may not have completed.
@@ -873,7 +885,9 @@ class DeviceBufferList {
 
     // Creates a DeviceBufferList::Data with a materialized PjRtBuffer.
     explicit Data(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer)
-        : materialization_pending_(true), materialization_started_(true) {
+        : materialization_queued_(true),
+          materialization_pending_(true),
+          materialization_started_(true) {
       buffers_.push_back(std::move(buffer));
       auto [promise, future] = xla::MakePromise<void>();
       materialization_promise_ = std::move(promise);
@@ -896,6 +910,13 @@ class DeviceBufferList {
     // Returns the subgraph for this DeviceBufferList::Data, if it exists.
     // Otherwise, returns nullptr.
     absl_nullable std::shared_ptr<Subgraph> subgraph() const;
+
+    // Signals that this DeviceBufferList::Data is in the queue for
+    // materialization using an atomic exchange.
+    // This is idempotent and safe to call multiple times.
+    bool SetAsMaterializationQueued() {
+      return materialization_queued_.exchange(true);
+    }
 
     // Marks this DeviceBufferList::Data as pending materialization.
     // This will delete the DeferredOp if it exists.
@@ -922,8 +943,11 @@ class DeviceBufferList {
         std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers);
 
     // Returns the PjRtBuffer at the given index.
-    // If the DeviceBufferList::Data is not yet materialized, this will block
-    // the caller until it has a PjRtBuffer to return. Returns an error if:
+    // If the DeviceBufferList::Data is queued but not yet materialized, this
+    // will block the caller until it has a PjRtBuffer to return.
+    // Returns an error if:
+    //   - The DeviceBufferList::Data is a placeholder,
+    //   - The DeviceBufferList::Data is not yet queued for materialization,
     //   - The materialization failed, or
     //   - The index is out of bounds.
     absl::StatusOr<xla::PjRtBuffer* absl_nonnull> operator[](
@@ -939,11 +963,16 @@ class DeviceBufferList {
       return !placeholder_ && !materialization_pending_;
     }
 
-    // Returns true if this DeviceBufferList::Data has started materialization.
-    // It may or may not have completed materialization.
+    // Returns true if this DeviceBufferList::Data has been enqueued for
+    // materialization.
     [[nodiscard]] bool is_materializing() const {
-      return materialization_pending_;
+      return materialization_queued_;
     }
+
+    // Returns true if this DeviceBufferList::Data has been processed by the
+    // materialization worker, and is waiting for either its StableHLO module to
+    // be compiled or for earlier-enqueued ops to complete.
+    [[nodiscard]] bool is_pending() const { return materialization_pending_; }
 
     // Returns true if this DeviceBufferList::Data is executing.
     // The execution may or may not have completed.
@@ -986,7 +1015,11 @@ class DeviceBufferList {
 
     // The following flags are used to atomically enforce a one-way "ramp":
     //
-    // deferred -> materialization pending. The first time this flag is set, the
+    // deferred -> materialization queued. As soon as a deferred op is pushed to
+    // the materialization worker, this flag is set to true. The DeferredOp is
+    // still retained in this state, as it is needed for compiling the MLIR.
+    //
+    // queued -> materialization pending. The first time this flag is set, the
     // DeviceBufferList::Data which sets the flag is responsible for clearing
     // the DeferredOp.
     //
@@ -998,6 +1031,11 @@ class DeviceBufferList {
     //
     // Once the materialization_future_ is ready, materialization_status_ and
     // buffers_ can beread without locking.
+
+    // This is set to true when the DeferredOp is enqueued for materialization.
+    // If it is enqueued multiple times, the materialization worker will ignore
+    // the second and later requests.
+    std::atomic_bool materialization_queued_ = false;
 
     // This is set to true by the first caller to SetAsPendingMaterialization.
     // This first caller is responsible for clearing the DeferredOp (if it

@@ -120,6 +120,15 @@ class MaterializationWorker {
                  << " nodes for materialization";
     auto [promise, future] = xla::MakePromise<void>();
     absl::MutexLock lock(materialize_mu_);
+    // Remove any nodes that are already in the queue.
+    // Do this while holding the mutex to avoid a race where multiple threads
+    // enqueue the same set of nodes in different orders, causing deadlocks.
+    std::erase_if(nodes, [](const SharedDeviceBufferList& node) {
+      // Possible values here:
+      //   - true: the node was already in the queue, and should be erased.
+      //   - false: the node was not in the queue, and should be kept.
+      return node->SetAsMaterializationQueued();
+    });
     materialize_jobs_.push(
         MaterializationTask{.nodes_to_materialize = std::move(nodes),
                             .completion_promise = std::move(promise),
@@ -378,7 +387,7 @@ absl::Status MaterializeImpl(
   // Check that all nodes to materialize have been put into the "pending
   // materialization" state.
   for (auto& node : nodes_to_materialize) {
-    TT_RET_CHECK(node->is_materializing(), error::kInternal)
+    TT_RET_CHECK(node->is_pending(), error::kInternal)
         << "Materialization failed for node " << node;
   }
 

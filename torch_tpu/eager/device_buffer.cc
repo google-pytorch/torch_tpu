@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
-#include <limits>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -30,7 +29,6 @@
 #include <vector>
 
 #include "absl/base/nullability.h"
-#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -41,7 +39,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/context_states.h"
-#include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -349,6 +346,9 @@ absl::StatusOr<xla::PjRtBuffer* absl_nonnull>
 DeviceBufferList::Data::operator[](int64_t index) const {
   TT_RET_CHECK(!placeholder_, error::kFailedPrecondition)
       << "placeholders do not have buffers";
+  TT_RET_CHECK(materialization_queued_, error::kFailedPrecondition)
+      << "buffer is deferred and not yet queued for materialization, call "
+         "Materialize() before awaiting";
 
   if (!materialization_future_.IsKnownReady()) {
     TT_RETURN_IF_ERROR(materialization_future_.Await());
@@ -597,6 +597,10 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePending(
   auto device_buffer = std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
       std::move(dimensions), element_type, /*placeholder=*/false));
   return DeviceBufferRef(std::move(device_buffer), 0);
+}
+
+bool DeviceBufferList::SetAsMaterializationQueued() {
+  return data_.SetAsMaterializationQueued();
 }
 
 absl::Status DeviceBufferList::SetAsPendingMaterialization() {
@@ -863,12 +867,12 @@ void DeviceBufferRef::IncrementNumChildOps() const {
 }
 
 template <>
-inline void HashCombine<Shape>(std::size_t& h, const Shape& shape) {
-  HashCombine(h, shape.dimensions().size());
-  for (auto dim : shape.dimensions()) {
-    HashCombine(h, dim);
+inline void HashCombine<Shape>(std::size_t& seed, const Shape& v) {
+  HashCombine(seed, v.dimensions().size());
+  for (auto dim : v.dimensions()) {
+    HashCombine(seed, dim);
   }
-  HashCombine(h, static_cast<size_t>(shape.dtype()));
+  HashCombine(seed, static_cast<size_t>(v.dtype()));
 }
 
 size_t DeferredOp::Hash() const {

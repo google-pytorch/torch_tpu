@@ -328,14 +328,26 @@ absl::Status MaterializationWorker::Materialize(
                        }),
         current_queue.end());
 
-    if (current_queue.empty() && nodes_to_materialize.empty()) {
-      return absl::OkStatus();
-    }
     ABSL_CHECK(  // CRASH_OK
         queues_[dispatch_queue_id_].nodes_to_materialize.empty());
     queues_[dispatch_queue_id_].nodes_to_materialize.insert(
         queues_[dispatch_queue_id_].nodes_to_materialize.end(),
         nodes_to_materialize.begin(), nodes_to_materialize.end());
+    // Remove any nodes that are already being materialized.
+    std::erase_if(queues_[dispatch_queue_id_].nodes_to_materialize,
+                  [](const SharedDeviceBufferList& node) {
+                    // Possible values here:
+                    //   - true:  the node was already in the queue, and should
+                    //            be erased.
+                    //   - false: the node was not in the queue, and should be
+                    //            kept.
+                    return node->SetAsMaterializationQueued();
+                  });
+
+    if (current_queue.empty() && nodes_to_materialize.empty()) {
+      return absl::OkStatus();
+    }
+
     queues_[dispatch_queue_id_].reason = reason;
     queues_[dispatch_queue_id_].is_full = true;
     IncrementQueueId(dispatch_queue_id_);
