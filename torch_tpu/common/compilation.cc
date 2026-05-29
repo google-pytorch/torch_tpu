@@ -559,8 +559,10 @@ static absl::StatusOr<CustomCompilerOptionsContextState> MakeCompilationContext(
 static const CustomCompilerOptionsContextState& GetDefaultCompilationContext() {
   static const absl::NoDestructor<CustomCompilerOptionsContextState> ctx([] {
     auto context = MakeCompilationContext(/*overrides=*/{});
-    ABSL_CHECK(context.ok());  // CRASH_OK=implies obvious compiler option
-                               // misconfiguration if it happens.
+    ABSL_CHECK(context.ok())  // CRASH_OK
+      << "Failed to create default compilation context: "
+      << context.status();
+
     return std::move(*context);
   }());
   return *ctx;
