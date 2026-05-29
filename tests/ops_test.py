@@ -538,6 +538,11 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.bfloat16: {"rtol": 3e-2, "atol": 3.2e-2},
         torch.float16: {"rtol": 9.8e-4, "atol": 4e-3},
     },
+    "nn.functional.logsigmoid": {
+        torch.bfloat16: {"rtol": 1e-2, "atol": 1e-2},
+        torch.float16: {"rtol": 1e-3, "atol": 1e-3},
+        torch.float32: {"rtol": 3e-4, "atol": 1e-4},
+    },
     "nn.functional.mse_loss": {
         torch.bfloat16: {"rtol": 7e-3, "atol": 3e-1},
         torch.float16: {"rtol": 6.2e-4, "atol": 3.2e-2},
@@ -2999,6 +3004,9 @@ class TestOps(TorchTpuTestBase):
         # TODO: look into making this STRICT.
         check_value=CheckValueMode.LOOSE,
     )
+
+  def test_log_sigmoid(self):
+    self.do_test_op("nn.functional.logsigmoid")
 
   def test_log_softmax(self):
     self.do_test_op(

@@ -208,6 +208,8 @@ void OpNameStack::Push(OpName op_name) {
       OpName::kLinalgSolveExOut,
       OpName::kLinalgVectorNormOut,
       OpName::kLocalScalarDense,
+      OpName::kLogSigmoidBackwardGradInput,
+      OpName::kLogSigmoidForwardOutput,
       OpName::kLogicalAndOut,
       OpName::kLogicalNotOut,
       OpName::kLogicalOrOut,

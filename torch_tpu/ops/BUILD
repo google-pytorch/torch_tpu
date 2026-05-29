@@ -408,6 +408,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/clamp:clamp_aten_kernels",
         "//torch_tpu/ops/copy_from:copy_from_aten_kernels",
         "//torch_tpu/ops/linalg/vector_norm:aten_vector_norm_kernels",
+        "//torch_tpu/ops/log_sigmoid:log_sigmoid_aten_kernels",
         "//torch_tpu/ops/macros:kernel",
         "//torch_tpu/ops/min_max:min_max_aten_kernels",
         "//torch_tpu/ops/round",

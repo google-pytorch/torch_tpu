@@ -3721,6 +3721,96 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     self.assert_close_tpu_vs_cpu(compute)
 
   @parameterized.product(dtype=[torch.float32, torch.bfloat16])
+  def test_log_sigmoid(self, dtype):
+    input_value = torch.linspace(-6, 6, 16, dtype=dtype).reshape(4, 4)
+
+    def compute(device):
+      x = input_value.clone().detach().to(device).requires_grad_(True)
+      y = torch.ops.aten.log_sigmoid(x)
+      y.sum().backward()
+      return y, x.grad
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(
+          compute, atol=2e-2, rtol=1e-2, check_value=CheckValueMode.LOOSE
+      )
+    else:
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-3, rtol=1e-3)
+
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
+  def test_log_sigmoid_forward_out(self, dtype):
+    input_value = torch.linspace(-6, 6, 16, dtype=dtype).reshape(4, 4)
+
+    def compute(device):
+      x = input_value.clone().detach().to(device)
+      output = torch.empty_like(x)
+      buffer = torch.empty_like(x)
+      torch.ops.aten.log_sigmoid_forward.output(x, output=output, buffer=buffer)
+      return output, buffer
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(
+          compute, atol=2e-2, rtol=1e-2, check_value=CheckValueMode.LOOSE
+      )
+    else:
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-3, rtol=1e-3)
+
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
+  def test_log_sigmoid_backward_out(self, dtype):
+    input_value = torch.linspace(-6, 6, 16, dtype=dtype).reshape(4, 4)
+
+    def compute(device):
+      x = input_value.clone().detach().to(device)
+      # Get output and buffer via forward first
+      output = torch.empty_like(x)
+      buffer = torch.empty_like(x)
+      torch.ops.aten.log_sigmoid_forward.output(x, output=output, buffer=buffer)
+
+      grad_output = torch.ones_like(x)
+      grad_input = torch.empty_like(x)
+      torch.ops.aten.log_sigmoid_backward.grad_input(
+          grad_output, x, buffer, grad_input=grad_input
+      )
+      return grad_input
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(
+          compute, atol=2e-2, rtol=1e-2, check_value=CheckValueMode.LOOSE
+      )
+    else:
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-3, rtol=1e-3)
+
+  def test_log_sigmoid_out_mismatched_shape(self):
+    # 1. Test empty (0-size) out tensor resizing (different numel)
+    x_cpu = torch.randn(4, 4)
+    x_tpu = x_cpu.to("tpu")
+
+    output_cpu = torch.empty(0)
+    torch.ops.aten.log_sigmoid.out(x_cpu, out=output_cpu)
+
+    output_tpu = torch.empty(0, device="tpu")
+    torch.ops.aten.log_sigmoid.out(x_tpu, out=output_tpu)
+
+    self.assertEqual(output_tpu.cpu().size(), output_cpu.size())
+    self.assertTrue(
+        torch.allclose(output_tpu.cpu(), output_cpu, atol=1e-3, rtol=1e-3)
+    )
+
+    # 2. Test same numel but different shape out tensor resizing
+    output_cpu_same = torch.empty(16, 1)
+    torch.ops.aten.log_sigmoid.out(x_cpu, out=output_cpu_same)
+
+    output_tpu_same = torch.empty(16, 1, device="tpu")
+    torch.ops.aten.log_sigmoid.out(x_tpu, out=output_tpu_same)
+
+    self.assertEqual(output_tpu_same.cpu().size(), output_cpu_same.size())
+    self.assertTrue(
+        torch.allclose(
+            output_tpu_same.cpu(), output_cpu_same, atol=1e-3, rtol=1e-3
+        )
+    )
+
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16])
   def test_hardswish(self, dtype):
     # Scale by 5 to have coverage of the x < -3 and x >= 3 piecewise branches
     input_value = torch.randn(4, 4, dtype=dtype) * 5
