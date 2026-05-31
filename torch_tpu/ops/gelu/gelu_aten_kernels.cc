@@ -16,7 +16,6 @@
 
 #include "torch_tpu/ops/gelu/gelu_aten_kernels.h"
 
-#include <functional>
 #include <string>
 #include <utility>
 
