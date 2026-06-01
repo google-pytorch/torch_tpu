@@ -20,14 +20,12 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "absl/base/nullability.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
