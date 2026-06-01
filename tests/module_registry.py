@@ -374,8 +374,10 @@ class TransformersProvider(BaseProvider):
       "huggingface_transformers/model_configs"
   )
 
-  def __init__(self, base_path: str | None = None):
-    super().__init__(base_path=base_path, subdir="transformers")
+  def __init__(
+      self, base_path: str | None = None, subdir: str = "transformers"
+  ):
+    super().__init__(base_path=base_path, subdir=subdir)
 
   def list_modules(self) -> list[str]:
     """Lists the names of all models available from this provider.
@@ -491,7 +493,11 @@ class TransformersProvider(BaseProvider):
               architectures[0],
           )
 
-      model_fn = lambda: model_cls(config)
+      model_fn = lambda: (
+          model_cls.from_config(config)
+          if hasattr(model_cls, "from_config")
+          else model_cls(config)
+      )
       preprocessor_fn = None
 
     safe_seq_len = min(_get_max_seq_len(config), 512)
@@ -506,21 +512,20 @@ class TransformersProvider(BaseProvider):
       if vocab_size is None:
         vocab_size = 32000
 
-      return (
-          (),
-          {
-              "input_ids": torch.randint(
-                  0,
-                  vocab_size,
-                  actual_shape,
-                  device=device,
-                  dtype=torch.long,
-              ),
-              "attention_mask": torch.ones(
-                  actual_shape, device=device, dtype=torch.long
-              ),
-          },
-      )
+      kwargs = {
+          "input_ids": torch.randint(
+              0, vocab_size, actual_shape, device=device, dtype=torch.long
+          ),
+          "attention_mask": torch.ones(
+              actual_shape, device=device, dtype=torch.long
+          ),
+      }
+      if getattr(config, "is_encoder_decoder", False):
+        kwargs["decoder_input_ids"] = torch.randint(
+            0, vocab_size, actual_shape, device=device, dtype=torch.long
+        )
+
+      return (), kwargs
 
     return ModuleSpec(model_fn, _input_fn, preprocessor_fn, config)
 
