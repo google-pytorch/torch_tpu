@@ -148,7 +148,15 @@ absl::StatusOr<std::vector<at::Tensor>> ConvertBooleanIndicesToPositional(
         indexed_dims.push_back(dim_indexed++);
       }
     } else {
-      index_tensors.push_back(index_tensor);
+      at::Tensor index_tensor_norm = index_tensor;
+      if (index_tensor.scalar_type() == c10::ScalarType::Int ||
+          index_tensor.scalar_type() == c10::ScalarType::Long) {
+        int64_t dim_size = self.sizes()[dim_indexed];
+        index_tensor_norm =
+            at::where(at::lt(index_tensor, 0), at::add(index_tensor, dim_size),
+                      index_tensor);
+      }
+      index_tensors.push_back(index_tensor_norm);
       indexed_dims.push_back(dim_indexed++);
     }
   }

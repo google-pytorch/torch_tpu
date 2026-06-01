@@ -108,6 +108,30 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  # negative indexing regression tests
+  def test_negative_indexing_1d(self):
+    def run_test(device):
+      t = torch.arange(8, dtype=torch.float32, device=device)
+      idx = torch.tensor([-1], dtype=torch.int, device=device)
+      t[idx] = torch.tensor(99.0, device=device)
+      return t
+
+    self.assert_close_tpu_vs_cpu(run_test)
+
+  def test_negative_indexing_3d(self):
+    def run_test(device):
+      results = []
+      dim_size = 4
+      for i in [1, 2, dim_size]:
+        t = torch.zeros(2, 3, dim_size, dtype=torch.float32, device=device)
+        idx = torch.tensor([-i], dtype=torch.int, device=device)
+        v = torch.full((2, 3, 1), 99.0, dtype=torch.float32, device=device)
+        t[:, :, idx] = v
+        results.append(t)
+      return torch.stack(results)
+
+    self.assert_close_tpu_vs_cpu(run_test)
+
   # accumulate=True
   def test_accumulate_2D_broadcast(self):
     # Broadcast shape is (2, 3)
