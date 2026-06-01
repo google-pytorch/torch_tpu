@@ -1,0 +1,172 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: vLLM Perf Eval
+
+on:
+  # Enable remote connections. Add a workflow dispatch to enable halting.
+  # See go/ml-github-actions:connect#enable-workflow-dispatch.
+  workflow_dispatch:
+    inputs:
+      halt-for-connection:
+        description: 'Should this workflow run wait for a remote connection?'
+        type: choice
+        default: 'no'
+        options:
+          - 'yes'
+          - 'no'
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  actions: read
+
+# Concurrency for postsubmit:
+# We generally want to run every postsubmit to ensure a clean history,
+# but if multiple merges happen rapidly, older runs will be cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vllm_perf_eval:
+    name: "vLLM Perf and Eval"
+    runs-on: linux-x86-tpu7x-224-4tpu
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+    timeout-minutes: 180
+
+    env:
+      FORCE_COLOR: "1"
+      UV_NO_CACHE: "1"
+      TQDM_MININTERVAL: "30"
+
+    steps:
+      - name: Redirect torch_tpu cache off /dev/shm
+        run: |
+          mkdir -p /tmp/torch_tpu_cache
+          ln -sfn /tmp/torch_tpu_cache /dev/shm/torch_tpu_cache
+
+      - name: Checkout torch_tpu
+        uses: actions/checkout@v5
+
+      - name: Install SSH
+        run: |
+          apt-get update && apt-get install -y openssh-client || true
+
+      - name: Checkout torchtpu-vllm
+        uses: actions/checkout@v5
+        with:
+          repository: google-pytorch/torchtpu-vllm
+          path: torchtpu-vllm
+          ref: main
+          ssh-key: ${{ secrets.TORCHTPU_VLLM_DEPLOY_KEY }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Virtual Environment
+        run: |
+          uv venv
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Download wheel from GCS for current commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          WORKFLOW_FILE="build_wheel.yml"
+
+          mkdir dist
+          set +e
+          for i in {1..30}; do
+            RUN_INFO=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$WORKFLOW_FILE/runs?branch=${{ github.head_ref || github.ref_name }}" \
+              | python3 ci/find_successful_run.py)
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 2 ]; then
+              echo "ERROR: No runs found for this commit. Failing immediately."
+              exit 1
+            fi
+
+            if [ -n "$RUN_INFO" ]; then
+              read RUN_NUMBER RUN_ATTEMPT <<< "$RUN_INFO"
+              break
+            fi
+            echo "Waiting for build_wheel workflow to complete successfully... ($i/30)"
+            sleep 60
+          done
+          set -e
+
+          if [ -z "$RUN_NUMBER" ]; then
+            echo "Error: build_wheel workflow not found or failed after 30 minutes."
+            exit 1
+          fi
+
+          GCS_PATH="gs://torch-tpu-ci-transient/artifacts/Build and Test Wheels/$RUN_NUMBER/$RUN_ATTEMPT"
+          gcloud storage cp "$GCS_PATH/*.whl" dist/
+
+      - name: Install torchtpu-vllm with local wheel override
+        run: |
+          cd torchtpu-vllm
+
+          WHEEL_FILE=$(ls ../dist/*.whl | head -n 1)
+          if [ -z "$WHEEL_FILE" ]; then
+            echo "Error: No wheel found in ../dist/"
+            exit 1
+          fi
+          WHEEL_ABS_PATH=$(realpath "$WHEEL_FILE")
+          echo "torch_tpu @ file://$WHEEL_ABS_PATH" > overrides.txt
+
+          uv --no-config pip install .[test,benchmarking] \
+            --override overrides.txt --prerelease allow
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Run perf and eval guard configs
+        shell: bash
+        env:
+          MODEL_IMPL_TYPE: vllm
+          BENCHMARK_WARMUP_RUNS: "1"
+        run: |
+          cd torchtpu-vllm
+          ./scripts/vllm/benchmarking/run_benchmarks.sh --config qwen3-coder-30b-fp8-tp8-ep --results-dir /tmp/perf_eval_qwen3
+          python3 scripts/vllm/benchmarking/check_regression.py --mode perf --results-dir /tmp/perf_eval_qwen3 --baseline scripts/vllm/benchmarking/baselines/perf/qwen3-coder-30b-fp8-tp8-ep.baseline.json
+
+  notify_failure:
+    name: Notify Failed Runs
+    needs: vllm_perf_eval
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get current date
+        id: date
+        if: contains(needs.vllm_perf_eval.result, 'failure')
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Check whether the job failed
+        if: contains(needs.vllm_perf_eval.result, 'failure')
+        uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label-name: "ci:vllm-perf-eval-failed"
+          title-template: "Failed vLLM Perf and Eval (${{ steps.date.outputs.date }})"
