@@ -86,6 +86,7 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/runtime/device_id.h"
 #include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
