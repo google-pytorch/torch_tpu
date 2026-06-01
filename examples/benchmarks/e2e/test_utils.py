@@ -147,11 +147,18 @@ class BenchmarkTest(parameterized.TestCase):
           f"Run mode {config.run_mode} not applicable to platform {platform}"
       )
 
-    if self._is_torchax_backend() and config.run_mode not in [
-        benchmark_utils.RunMode.COMPILED,
-        benchmark_utils.RunMode.EAGER_DEFAULT,
-    ]:
-      self.skipTest("TorchAX only supports compiled and eager default modes.")
+    if (
+        self._is_torchax_backend()
+        and config.run_mode != benchmark_utils.RunMode.COMPILED
+    ):
+      self.skipTest("TorchAX only supports compiled run mode.")
+
+    if self._is_torchax_backend() and platform in (
+        benchmark_utils.Platform.B200_8,
+        benchmark_utils.Platform.B200_4,
+        benchmark_utils.Platform.B200_1,
+    ):
+      self.skipTest("TorchAX is not supported for GPU benchmarks.")
 
     # MlCompass only looks for base test name after the benchmark run.
     base_test_name = get_base_test_name(
