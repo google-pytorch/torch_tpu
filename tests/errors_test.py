@@ -6593,7 +6593,7 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         NotImplementedError if et.is_on_tpu() else RuntimeError,
-        tpu="""scaled_dot_product_efficient_attention_backward(): materialization failed with: unsupported dtype for sdpa custom kernel""",
+        tpu="""scaled_dot_product_efficient_attention_backward(): unsupported dtype for sdpa custom kernel""",
         gpu="""Only fp32, half & bf16 supported at the moment""",
         message_reviewed_by="gunhyun",
     ):

@@ -285,6 +285,37 @@ class ScaledDotProductAttentionGenerateTest(parameterized.TestCase):
     out.cpu()
     grad.cpu()
 
+  @parameterized.parameters(True, False)
+  def test_lse_overrideable(self, is_causal):
+    q = torch.randn(2, 4, 512, 128)
+    k = torch.randn(2, 4, 512, 128)
+    v = torch.randn(2, 4, 512, 128)
+
+    result = torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+        q.tpu(),
+        k.tpu(),
+        v.tpu(),
+        attn_bias=None,
+        dropout_p=0.0,
+        is_causal=is_causal,
+        scale=None,
+    )
+
+    # Returns padded values for now, this needs fixing!
+    lse = result[1].cpu()
+
+    scale = 1.0 / (q.size(-1) ** 0.5)
+    logits = torch.matmul(q, k.transpose(2, 3)) * scale
+    if is_causal:
+      # Apply causal mask!
+      seq_len = q.size(-2)
+      mask = torch.ones(seq_len, seq_len, device=q.device).tril()
+      logits = logits.masked_fill(mask == 0, -float("inf"))
+    lse_ref = torch.logsumexp(logits, dim=-1)
+
+    self.assertEqual(lse.shape, lse_ref.shape)
+    np.testing.assert_allclose(lse, lse_ref, rtol=1e-3, atol=5e-3)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -9557,6 +9557,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   )
   def test_scaled_dot_product_attention(self, config: ops_test_data.SdpaConfig):
     """Tests torch.nn.functional.scaled_dot_product_attention."""
+
     torch.manual_seed(5432)
     q = torch.randn(
         config.batch_size,
@@ -9601,9 +9602,9 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
       q_t = q.clone().detach().to(device)
       k_t = k.clone().detach().to(device)
       v_t = v.clone().detach().to(device)
-      q_t.requires_grad_(True)
-      k_t.requires_grad_(True)
-      v_t.requires_grad_(True)
+      q_t.requires_grad_(config.requires_grad)
+      k_t.requires_grad_(config.requires_grad)
+      v_t.requires_grad_(config.requires_grad)
 
       with torch.nn.attention.sdpa_kernel(
           torch.nn.attention.SDPBackend.MATH
@@ -9620,47 +9621,54 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
             scale=config.scale,
         )
 
-      y.sum().backward()
-      return {
-          "y": y,
-          "q_grad": q_t.grad,
-          "k_grad": k_t.grad,
-          "v_grad": v_t.grad,
-      }
+      results = {"y": y}
+      if config.requires_grad:
+        y.sum().backward()
+        results.update({
+            "q_grad": q_t.grad,
+            "k_grad": k_t.grad,
+            "v_grad": v_t.grad,
+        })
+      return results
 
     cpu_results = compute("cpu")
     tpu_results = compute("tpu")
 
     # The gradient of the first token is zero with causal attention.
-    if config.is_causal:
+    if config.is_causal and "q_grad" in cpu_results:
       with self.subTest("causal_query_first_token_grad_is_zero"):
         self.assertTrue((tpu_results["q_grad"][..., 0, :] == 0.0).all())
       cpu_results["q_grad"] = cpu_results["q_grad"][..., 1:, :]
       tpu_results["q_grad"] = tpu_results["q_grad"][..., 1:, :]
 
-    def check_sim(cpu, tpu):
+    def check_sim(cpu, tpu, key):
       # TODO(willfroom): We should also check the min similarity but currently
       # the flash implementation has a few outliers that we need to investigate
       # first.
       mean_sim_bound = 0.9999
       sim = torch.nn.functional.cosine_similarity(cpu, tpu, dim=-1)
-      self.assertGreater(sim.mean().item(), mean_sim_bound)
+      self.assertGreater(
+          sim.mean().item(),
+          mean_sim_bound,
+          f"similarity check failed for {key}",
+      )
 
-    def assert_close(cpu, tpu):
+    def assert_close(cpu, tpu, key):
       rtol, atol = 5e-2, 1e-1
       self.assert_close(
           golden_result=cpu,
           torch_tpu_result=tpu,
           rtol=rtol,
           atol=atol,
+          preamble=f"close check failed for {key}",
       )
 
     for key in cpu_results:
       with self.subTest(key):
         cpu_tensor = cpu_results[key].cpu()
         tpu_tensor = tpu_results[key].cpu()
-        check_sim(cpu_tensor, tpu_tensor)
-        assert_close(cpu_tensor, tpu_tensor)
+        check_sim(cpu_tensor, tpu_tensor, key)
+        assert_close(cpu_tensor, tpu_tensor, key)
 
   def test_sdpa_masked_out_row(self):
     """Check that a masked out row does not contain NaNs."""

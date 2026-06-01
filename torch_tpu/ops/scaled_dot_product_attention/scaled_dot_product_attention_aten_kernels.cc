@@ -17,31 +17,47 @@
 #include "torch_tpu/ops/scaled_dot_product_attention/scaled_dot_product_attention_aten_kernels.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "ATen/Context.h"
 #include "ATen/SDPBackend.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBase.h"
+#include "ATen/core/grad_mode.h"
+#include "ATen/ops/empty.h"
 #include "ATen/ops/zeros.h"
-#include "absl/base/no_destructor.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "c10/core/DeviceType.h"
 #include "c10/core/ScalarType.h"
 #include "c10/util/Exception.h"
 #include "c10/util/Optional.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/OwningOpRef.h"
+#include "llvm/ADT/STLExtras.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeRange.h"
+#include "mlir/IR/Value.h"
+#include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/_internal/mosaic/op_builders.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -49,93 +65,38 @@
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
-#include "torch_tpu/ops/custom_kernels.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/reductions/reductions.h"
+#include "torch_tpu/ops/reductions/sum.h"
+#include "torch_tpu/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 #include "torch_tpu/ops/scaled_dot_product_attention/helpers.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_bwd_bf16_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_bwd_bf16_non_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_bwd_f32_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_bwd_f32_non_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_fwd_bf16_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_fwd_bf16_non_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_fwd_f32_causal_mlir_embed.h"
-#include "torch_tpu/ops/scaled_dot_product_attention/kernels/sdpa_fwd_f32_non_causal_mlir_embed.h"
 #include "torch_tpu/ops/scaled_dot_product_attention/scaled_dot_product_attention_shlo.h"
 #include "torch_tpu/ops/view_decomposition/contiguous_to_view.h"
-#include "xla/pjrt/mlir_to_hlo.h"
 
 namespace torch_tpu {
 
 namespace {
 
-absl::StatusOr<std::string_view> GetSdpaForwardKernel(at::ScalarType dtype,
-                                                      bool is_causal) {
-  static const absl::NoDestructor<
-      absl::flat_hash_map<std::pair<at::ScalarType, bool>, std::string_view>>
-      kKernelMap({
-          {{at::kFloat, true},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_fwd_f32_causal_mlir_data),
-               sdpa_fwd_f32_causal_mlir_len)},
-          {{at::kFloat, false},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_fwd_f32_non_causal_mlir_data),
-               sdpa_fwd_f32_non_causal_mlir_len)},
-          {{at::kBFloat16, true},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_fwd_bf16_causal_mlir_data),
-               sdpa_fwd_bf16_causal_mlir_len)},
-          {{at::kBFloat16, false},
-           std::string_view(reinterpret_cast<const char*>(
-                                sdpa_fwd_bf16_non_causal_mlir_data),
-                            sdpa_fwd_bf16_non_causal_mlir_len)},
-      });
-
-  auto it = kKernelMap->find({dtype, is_causal});
-  if (it == kKernelMap->end()) {
-    return TT_ERROR(error::kPythonNotImplementedError)
-           << "unsupported dtype for sdpa custom kernel";
+absl::Status CheckDtype(at::ScalarType dtype) {
+  if (dtype == at::kFloat || dtype == at::kBFloat16) {
+    return absl::OkStatus();
   }
-  return it->second;
+  return TT_ERROR(error::kPythonNotImplementedError)
+         << "unsupported dtype for sdpa custom kernel";
 }
 
-absl::StatusOr<std::string_view> GetSdpaBackwardKernel(at::ScalarType dtype,
-                                                       bool is_causal) {
-  static const absl::NoDestructor<
-      absl::flat_hash_map<std::pair<at::ScalarType, bool>, std::string_view>>
-      kKernelMap({
-          {{at::kFloat, true},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_bwd_f32_causal_mlir_data),
-               sdpa_bwd_f32_causal_mlir_len)},
-          {{at::kFloat, false},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_bwd_f32_non_causal_mlir_data),
-               sdpa_bwd_f32_non_causal_mlir_len)},
-          {{at::kBFloat16, true},
-           std::string_view(
-               reinterpret_cast<const char*>(sdpa_bwd_bf16_causal_mlir_data),
-               sdpa_bwd_bf16_causal_mlir_len)},
-          {{at::kBFloat16, false},
-           std::string_view(reinterpret_cast<const char*>(
-                                sdpa_bwd_bf16_non_causal_mlir_data),
-                            sdpa_bwd_bf16_non_causal_mlir_len)},
-      });
-
-  auto it = kKernelMap->find({dtype, is_causal});
-  if (it == kKernelMap->end()) {
-    return TT_ERROR(error::kPythonNotImplementedError)
-           << "unsupported dtype for sdpa custom kernel";
-  }
-  return it->second;
-}
-
-absl::StatusOr<at::Tensor> ScaledDotProductFusedAttentionImpl(
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor>>
+ScaledDotProductFusedAttentionInternal(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
-    bool is_causal, std::optional<double> scale) {
+    const std::optional<at::Tensor>& attn_mask, bool is_causal,
+    std::optional<double> scale, bool return_lse) {
+  TT_RETURN_IF_ERROR(CheckDtype(query.scalar_type()));
+
   int rank = query.ndimension();
   int batch_size = 1;
   for (int i = 0; i < rank - 3; i++) batch_size *= query.size(i);
@@ -150,19 +111,83 @@ absl::StatusOr<at::Tensor> ScaledDotProductFusedAttentionImpl(
   // capturing the 'at::Tensor query' handle. This prevents locking 'query' and
   // its entire autograd graph in memory, avoiding high peak HBM consumption.
   const int64_t head_dim = query.size(rank - 1);
-  auto op_builder = [rank, batch_size, out_dims, query_scalar_type, is_causal,
-                     scale, head_dim](FixedSizeSpan<mlir::MlirOp, 3> inputs)
-      -> absl::StatusOr<mlir::MlirOp> {
-    auto [query_mlir, key_mlir, value_mlir] = inputs;
+  const int64_t num_heads = query.size(rank - 3);
+  const int64_t kv_num_heads = key.size(rank - 3);
+  const int64_t vo_head_dim = value.size(rank - 1);
+  const int64_t q_seq_len = query.size(rank - 2);
+  const int64_t kv_seq_len = key.size(rank - 2);
 
-    mlir::MlirBuilder& builder = query_mlir.getBuilder();
+  auto op_builder =
+      [rank, batch_size, out_dims, query_scalar_type, is_causal, scale,
+       head_dim, num_heads, kv_num_heads, vo_head_dim, q_seq_len, kv_seq_len,
+       return_lse](
+          absl::Span<mlir::MlirOp> inputs,
+          mlir::MlirBuilder& builder) -> absl::StatusOr<DynamicMlirOpResults> {
+    mlir::MlirOp query_mlir = inputs[0];
+    mlir::MlirOp key_mlir = inputs[1];
+    mlir::MlirOp value_mlir = inputs[2];
+    mlir::MlirOp mask_mlir;
+    if (inputs.size() == 4) {
+      mask_mlir = inputs[3];
+      mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask_mlir);
+      int mask_rank = mask_type.getRank();
+      if (mask_rank > 4) {
+        mask_mlir = flatten_batch_dims(mask_mlir, batch_size, rank - 3);
+      } else if (mask_rank < 4) {
+        int prefix_dims = 4 - mask_rank;
+        mlir::SmallVector<int64_t> new_dims(prefix_dims, 1);
+        new_dims.append(mask_type.getShape().begin(),
+                        mask_type.getShape().end());
+        mask_mlir = mlir::stablehlo::Reshape(mask_mlir, new_dims);
+      }
+    }
 
-    TT_ASSIGN_OR_RETURN(std::string_view kernel_mlir,
-                        GetSdpaForwardKernel(query_scalar_type, is_causal));
+    mlir::torch_tpu::FlashAttnConfig config;
+    config.return_lse = return_lse;
+    TT_ASSIGN_OR_RETURN(config.element_type,
+                        ConvertTo<mlir::ElementType>(query_scalar_type));
+    config.batch_size = batch_size;
+    config.num_heads = num_heads;
+    const bool is_mqa = kv_num_heads < num_heads;
+    int64_t head_count_ratio = 1;
+    if (is_mqa) {
+      if (num_heads % kv_num_heads != 0) {
+        return TT_ERROR(error::kInvalidArgument)
+               << "num_heads must be divisible by kv_num_heads for MQA/GQA";
+      }
+      config.kv_num_heads = num_heads;
+      head_count_ratio = num_heads / kv_num_heads;
+    } else {
+      config.kv_num_heads = kv_num_heads;
+    }
+    config.qk_head_dim = head_dim;
+    config.vo_head_dim = vo_head_dim;
+    config.q_sequence_length = q_seq_len;
+    config.kv_sequence_length = kv_seq_len;
+    config.is_causal = is_causal;
+    config.scale = scale.value_or(1.0 / std::sqrt(head_dim));
+    config.contract_precision_qk_dot =
+        query_scalar_type == at::kFloat
+            ? mlir::torch_tpu::ContractPrecision::kF32
+            : mlir::torch_tpu::ContractPrecision::kBF16;
+    config.contract_precision_root_dot = config.contract_precision_qk_dot;
+    config.has_attn_bias = mask_mlir.isValid();
 
-    TT_ASSIGN_OR_RETURN(
-        mlir::OwningOpRef<mlir::ModuleOp> imported_kernel,
-        xla::ParseMlirModuleString(kernel_mlir, builder.getContext()));
+    if (mask_mlir.isValid()) {
+      auto shape = GetTensorTypeOrDie(mask_mlir).getShape();
+      for (auto [idx, dim] : llvm::enumerate(shape)) {
+        if (dim == 1) {
+          config.mask_broadcast_dims.push_back(idx);
+        }
+      }
+    }
+
+    TT_ASSIGN_OR_RETURN(std::string kernel_mlir,
+                        mlir::torch_tpu::CreateKernel(config));
+
+    builder.getContext().getOrLoadDialect<mlir::scf::SCFDialect>();
+    builder.getContext().getOrLoadDialect<mlir::vector::VectorDialect>();
+    builder.getContext().getOrLoadDialect<mlir::math::MathDialect>();
 
     // Flatten batch dimensions of inputs.
     mlir::MlirOp query_4d =
@@ -171,42 +196,119 @@ absl::StatusOr<at::Tensor> ScaledDotProductFusedAttentionImpl(
     mlir::MlirOp value_4d =
         flatten_batch_dims(value_mlir, batch_size, rank - 3);
 
-    mlir::MlirOp scale_value = GetScaleDefaulted(builder, scale, head_dim);
+    if (is_mqa) {
+      auto replicate = [&](mlir::MlirOp input, int64_t seq_len, int64_t h_dim) {
+        auto broadcast_type = mlir::RankedTensorType::get(
+            {batch_size, kv_num_heads, head_count_ratio, seq_len, h_dim},
+            GetTensorTypeOrDie(input).getElementType());
+        mlir::MlirOp broadcasted_input = mlir::stablehlo::BroadcastInDim(
+            broadcast_type, input, {0, 1, 3, 4});
+        return mlir::stablehlo::Reshape(
+            broadcasted_input, {batch_size, num_heads, seq_len, h_dim});
+      };
+      key_4d = replicate(key_4d, kv_seq_len, head_dim);
+      value_4d = replicate(value_4d, kv_seq_len, vo_head_dim);
+    }
 
-    // Specialize the kernel given the inputs.
-    std::array<mlir::MlirOp, 4> input_array = {query_4d, key_4d, value_4d,
-                                               scale_value};
-    TT_ASSIGN_OR_RETURN(
-        auto results, BuildSpecializedMlirKernel(builder, imported_kernel.get(),
-                                                 absl::MakeSpan(input_array)));
+    Dimensions out_dims_4d = {batch_size, num_heads, q_seq_len, vo_head_dim};
+    auto out_type = mlir::RankedTensorType::get(
+        out_dims_4d, GetTensorTypeOrDie(query_mlir).getElementType());
 
-    // Unflatten batch dimensions of output.
-    mlir::MlirOp out_batch = results[0];
-    mlir::MlirOp out = unflatten_batch_dims(out_batch, out_dims);
+    mlir::SmallVector<mlir::Value, 4> operands{
+        query_4d.getValue(), key_4d.getValue(), value_4d.getValue()};
+    if (mask_mlir.isValid()) {
+      operands.push_back(mask_mlir.getValue());
+    }
 
-    return out;
+    mlir::SmallVector<mlir::Type, 2> result_types = {out_type};
+    auto query_type = GetTensorTypeOrDie(query_mlir);
+    Dimensions lse_dims(query_type.getShape().begin(),
+                        query_type.getShape().end() - 1);
+    Dimensions lse_dims_4d = {batch_size, num_heads, 1, q_seq_len};
+
+    if (return_lse) {
+      // LSE is 4D [B, N, 1, S]
+      auto ml_type = mlir::RankedTensorType::get(
+          lse_dims_4d, builder.getOpBuilder().getF32Type());
+      result_types.push_back(ml_type);
+    }
+
+    auto custom_call = mlir::torch_tpu::CreateCustomCallOp(
+        builder.getOpBuilder(), builder.getLoc(), kernel_mlir, operands,
+        result_types);
+
+    DynamicMlirOpResults results;
+    results.push_back(unflatten_batch_dims(
+        mlir::MlirOp(builder, custom_call.getResult(0)), out_dims));
+
+    if (return_lse) {
+      results.push_back(unflatten_batch_dims(
+          mlir::MlirOp(builder, custom_call.getResult(1)), lse_dims));
+    }
+
+    return results;
   };
 
-  TT_ASSIGN_OR_RETURN(auto param_keys, *OpParamCacheKeysBuilder()
-                                            .SetParam("is_causal", is_causal)
-                                            .SetParam("scale", scale));
+  TT_ASSIGN_OR_RETURN(auto param_keys,
+                      *OpParamCacheKeysBuilder()
+                           .SetParam("is_causal", is_causal)
+                           .SetParam("scale", scale)
+                           .SetParam("attn_mask", attn_mask)
+                           .SetParam("return_lse", return_lse));
+
+  std::vector<at::Tensor> dispatch_inputs = {query, key, value};
+
+  if (attn_mask.has_value() && attn_mask->defined()) {
+    dispatch_inputs.push_back(*attn_mask);
+  }
+
+  Dimensions lse_dims(query.sizes().begin(), query.sizes().end() - 1);
+  std::vector<mlir::ElementType> out_dtypes = {out_dtype};
+  std::vector<absl::Span<const int64_t>> out_dims_list = {out_dims};
+  if (return_lse) {
+    out_dtypes.push_back(mlir::ElementType::F32);
+    out_dims_list.push_back(lse_dims);
+  }
+
+  TT_ASSIGN_OR_RETURN(auto results,
+                      (DispatchOp<kDynamicSize, kDynamicSize>(
+                          std::move(op_builder), dispatch_inputs,
+                          {.out_dtypes = out_dtypes,
+                           .out_dims_list = out_dims_list,
+                           .op_param_cache_keys = std::move(param_keys)})));
 
   TT_ASSIGN_OR_RETURN(
-      auto result,
-      DispatchOp<3>(std::move(op_builder), {query, key, value},
-                    {.out_dtype = out_dtype,
-                     .out_dims = out_dims,
-                     .op_param_cache_keys = std::move(param_keys)}));
-  TT_ASSIGN_OR_RETURN(
       at::Tensor strided_result,
-      ContiguousToView(result, query.strides(), query.storage_offset()));
-  return strided_result;
+      ContiguousToView(results[0], query.strides(), query.storage_offset()));
+
+  if (return_lse) {
+    return {{strided_result, MakeTensor(std::move(results[1]))}};
+  } else {
+    return {{strided_result,
+             at::empty(lse_dims, query.options().dtype(at::kFloat))}};
+  }
+}
+
+absl::StatusOr<std::tuple<at::Tensor, at::Tensor>>
+ScaledDotProductFusedAttentionWithLseImpl(
+    const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask, bool is_causal,
+    std::optional<double> scale) {
+  const bool return_lse =
+      at::GradMode::is_enabled() &&
+      (query.requires_grad() || key.requires_grad() || value.requires_grad());
+  return ScaledDotProductFusedAttentionInternal(query, key, value, attn_mask,
+                                                is_causal, scale, return_lse);
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
-ScaledDotProductFusedAttentionBackwardImpl(
+ScaledDotProductFusedAttentionBackwardWithLseImpl(
     const at::Tensor& grad_out, const at::Tensor& query, const at::Tensor& key,
-    const at::Tensor& value, std::optional<double> scale, bool is_causal) {
+    const at::Tensor& value, const at::Tensor& out, const at::Tensor& logsumexp,
+    std::optional<at::Tensor> attn_bias, std::optional<double> scale,
+    bool is_causal) {
+  TT_RETURN_IF_ERROR(CheckDtype(query.scalar_type()));
+
   int rank = query.ndimension();
   int batch_size = 1;
   for (int i = 0; i < rank - 3; i++) batch_size *= query.size(i);
@@ -219,19 +321,99 @@ ScaledDotProductFusedAttentionBackwardImpl(
   // capturing the 'at::Tensor query' handle. This prevents locking 'query' and
   // its entire autograd graph in memory, avoiding high peak HBM consumption.
   const int64_t head_dim = query.size(rank - 1);
-  auto op_builder = [rank, batch_size, query_scalar_type, is_causal, scale,
-                     head_dim](FixedSizeSpan<mlir::MlirOp, 4> inputs)
-      -> absl::StatusOr<MlirOpResults<3>> {
-    auto [grad_out_mlir, query_mlir, key_mlir, value_mlir] = inputs;
+  const int64_t num_heads = query.size(rank - 3);
+  const int64_t kv_num_heads = key.size(rank - 3);
+  const int64_t vo_head_dim = value.size(rank - 1);
+  const int64_t q_seq_len = query.size(rank - 2);
+  const int64_t kv_seq_len = key.size(rank - 2);
 
-    mlir::MlirBuilder& builder = grad_out_mlir.getBuilder();
+  auto op_builder =
+      [rank, batch_size, query_scalar_type, is_causal, scale, head_dim,
+       num_heads, kv_num_heads, vo_head_dim, q_seq_len, kv_seq_len](
+          absl::Span<mlir::MlirOp> inputs,
+          mlir::MlirBuilder& builder) -> absl::StatusOr<MlirOpResults<3>> {
+    mlir::MlirOp grad_out_mlir = inputs[0];
+    mlir::MlirOp query_mlir = inputs[1];
+    mlir::MlirOp key_mlir = inputs[2];
+    mlir::MlirOp value_mlir = inputs[3];
+    mlir::MlirOp logsumexp_mlir = inputs[4];
+    mlir::MlirOp out_mlir = inputs[5];
 
-    TT_ASSIGN_OR_RETURN(std::string_view kernel_mlir,
-                        GetSdpaBackwardKernel(query_scalar_type, is_causal));
+    // Compute di in SHLO
+    mlir::Type f32_type = builder.getOpBuilder().getF32Type();
+    mlir::MlirOp out_f32 =
+        mlir::stablehlo::ConvertElementType(out_mlir, f32_type);
+    mlir::MlirOp grad_out_f32 =
+        mlir::stablehlo::ConvertElementType(grad_out_mlir, f32_type);
 
-    TT_ASSIGN_OR_RETURN(
-        mlir::OwningOpRef<mlir::ModuleOp> imported_kernel,
-        xla::ParseMlirModuleString(kernel_mlir, builder.getContext()));
+    TT_ASSIGN_OR_RETURN(auto mul_di, BuildMulShlo(out_f32, grad_out_f32));
+    TT_ASSIGN_OR_RETURN(auto di_shlo, BuildSumShlo(mul_di, {rank - 1},
+                                                   ReductionMode::kDropDims));
+
+    // Reshape di_shlo to 4D [B_flat, N, 1, S]
+    Dimensions aux_dims_4d = {batch_size, num_heads, 1, q_seq_len};
+    mlir::MlirOp di_4d = mlir::stablehlo::Reshape(di_shlo, aux_dims_4d);
+
+    mlir::MlirOp mask_mlir;
+    if (inputs.size() == 7) {
+      mask_mlir = inputs[6];
+      mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask_mlir);
+      int mask_rank = mask_type.getRank();
+      if (mask_rank > 4) {
+        mask_mlir = flatten_batch_dims(mask_mlir, batch_size, rank - 3);
+      } else if (mask_rank < 4) {
+        int prefix_dims = 4 - mask_rank;
+        mlir::SmallVector<int64_t> new_dims(prefix_dims, 1);
+        new_dims.append(mask_type.getShape().begin(),
+                        mask_type.getShape().end());
+        mask_mlir = mlir::stablehlo::Reshape(mask_mlir, new_dims);
+      }
+    }
+
+    mlir::torch_tpu::FlashAttnConfig config;
+    TT_ASSIGN_OR_RETURN(config.element_type,
+                        ConvertTo<mlir::ElementType>(query_scalar_type));
+    config.batch_size = batch_size;
+    config.num_heads = num_heads;
+    const bool is_mqa = kv_num_heads < num_heads;
+    int64_t head_count_ratio = 1;
+    if (is_mqa) {
+      if (num_heads % kv_num_heads != 0) {
+        return TT_ERROR(error::kInvalidArgument)
+               << "num_heads must be divisible by kv_num_heads for MQA/GQA";
+      }
+      config.kv_num_heads = num_heads;
+      head_count_ratio = num_heads / kv_num_heads;
+    } else {
+      config.kv_num_heads = kv_num_heads;
+    }
+    config.qk_head_dim = head_dim;
+    config.vo_head_dim = vo_head_dim;
+    config.q_sequence_length = q_seq_len;
+    config.kv_sequence_length = kv_seq_len;
+    config.is_causal = is_causal;
+    config.scale = scale.value_or(1.0 / std::sqrt(head_dim));
+    config.has_attn_bias = mask_mlir.isValid();
+
+    if (mask_mlir.isValid()) {
+      auto shape = GetTensorTypeOrDie(mask_mlir).getShape();
+      for (auto [idx, dim] : llvm::enumerate(shape)) {
+        if (dim == 1) {
+          config.mask_broadcast_dims.push_back(idx);
+        }
+      }
+    }
+
+    config.contract_precision_qk_dot =
+        query_scalar_type == at::kFloat
+            ? mlir::torch_tpu::ContractPrecision::kF32
+            : mlir::torch_tpu::ContractPrecision::kBF16;
+    config.contract_precision_root_dot = config.contract_precision_qk_dot;
+
+    TT_ASSIGN_OR_RETURN(std::string dkv_kernel_mlir,
+                        mlir::torch_tpu::CreateBackwardDkvKernel(config));
+    TT_ASSIGN_OR_RETURN(std::string dq_kernel_mlir,
+                        mlir::torch_tpu::CreateBackwardDqKernel(config));
 
     mlir::MlirOp grad_out_batch =
         flatten_batch_dims(grad_out_mlir, batch_size, rank - 3);
@@ -241,17 +423,77 @@ ScaledDotProductFusedAttentionBackwardImpl(
     mlir::MlirOp value_batch =
         flatten_batch_dims(value_mlir, batch_size, rank - 3);
 
-    mlir::MlirOp scale_value = GetScaleDefaulted(builder, scale, head_dim);
+    if (is_mqa) {
+      auto replicate = [&](mlir::MlirOp input, int64_t seq_len, int64_t h_dim) {
+        auto broadcast_type = mlir::RankedTensorType::get(
+            {batch_size, kv_num_heads, head_count_ratio, seq_len, h_dim},
+            GetTensorTypeOrDie(input).getElementType());
+        mlir::MlirOp broadcasted_input = mlir::stablehlo::BroadcastInDim(
+            broadcast_type, input, {0, 1, 3, 4});
+        return mlir::stablehlo::Reshape(
+            broadcasted_input, {batch_size, num_heads, seq_len, h_dim});
+      };
+      key_batch = replicate(key_batch, kv_seq_len, head_dim);
+      value_batch = replicate(value_batch, kv_seq_len, vo_head_dim);
+    }
 
-    std::array<mlir::MlirOp, 5> input_array = {
-        grad_out_batch, query_batch, key_batch, value_batch, scale_value};
-    TT_ASSIGN_OR_RETURN(
-        auto results, BuildSpecializedMlirKernel(builder, imported_kernel.get(),
-                                                 absl::MakeSpan(input_array)));
+    // Reshape logsumexp to 4D [B_flat, N, 1, S]
+    mlir::MlirOp logsumexp_4d =
+        mlir::stablehlo::Reshape(logsumexp_mlir, aux_dims_4d);
 
-    mlir::MlirOp& grad_query_batch = results[0];
-    mlir::MlirOp& grad_key_batch = results[1];
-    mlir::MlirOp& grad_value_batch = results[2];
+    std::vector<mlir::Value> dkv_inputs = {
+        query_batch.getValue(),  key_batch.getValue(),
+        value_batch.getValue(),  grad_out_batch.getValue(),
+        logsumexp_4d.getValue(), di_4d.getValue()};
+
+    if (mask_mlir.isValid()) {
+      dkv_inputs.push_back(mask_mlir.getValue());
+    }
+
+    auto dkv_custom_call = mlir::torch_tpu::CreateCustomCallOp(
+        builder.getOpBuilder(), builder.getLoc(), dkv_kernel_mlir, dkv_inputs,
+        {key_batch.getType(), value_batch.getType()});
+
+    mlir::MlirOp out_batch = flatten_batch_dims(out_mlir, batch_size, rank - 3);
+
+    std::vector<mlir::Value> dq_inputs = {
+        query_batch.getValue(),  key_batch.getValue(),
+        value_batch.getValue(),  grad_out_batch.getValue(),
+        logsumexp_4d.getValue(), di_4d.getValue()};
+
+    if (mask_mlir.isValid()) {
+      dq_inputs.push_back(mask_mlir.getValue());
+    }
+
+    dq_inputs.push_back(out_batch.getValue());
+
+    auto dq_custom_call = mlir::torch_tpu::CreateCustomCallOp(
+        builder.getOpBuilder(), builder.getLoc(), dq_kernel_mlir, dq_inputs,
+        {query_batch.getType()});
+
+    mlir::MlirOp grad_key_batch(builder, dkv_custom_call.getResult(0));
+    mlir::MlirOp grad_value_batch(builder, dkv_custom_call.getResult(1));
+    mlir::MlirOp grad_query_batch(builder, dq_custom_call.getResult(0));
+
+    if (is_mqa) {
+      auto reduce_gradients =
+          [&](mlir::MlirOp grad_batch, int64_t seq_len,
+              int64_t h_dim) -> absl::StatusOr<mlir::MlirOp> {
+        mlir::MlirOp reshaped_grad = mlir::stablehlo::Reshape(
+            grad_batch,
+            {batch_size, kv_num_heads, head_count_ratio, seq_len, h_dim});
+        TT_ASSIGN_OR_RETURN(
+            mlir::MlirOp reduced_grad,
+            BuildSumShlo(reshaped_grad, {2}, ReductionMode::kDropDims));
+        return reduced_grad;
+      };
+      TT_ASSIGN_OR_RETURN(
+          grad_key_batch,
+          reduce_gradients(grad_key_batch, kv_seq_len, head_dim));
+      TT_ASSIGN_OR_RETURN(
+          grad_value_batch,
+          reduce_gradients(grad_value_batch, kv_seq_len, vo_head_dim));
+    }
 
     mlir::MlirOp grad_query =
         unflatten_batch_dims(grad_query_batch, query_mlir);
@@ -264,12 +506,19 @@ ScaledDotProductFusedAttentionBackwardImpl(
 
   TT_ASSIGN_OR_RETURN(auto param_keys, *OpParamCacheKeysBuilder()
                                             .SetParam("is_causal", is_causal)
-                                            .SetParam("scale", scale));
+                                            .SetParam("scale", scale)
+                                            .SetParam("attn_mask", attn_bias));
+
+  std::vector<at::Tensor> dispatch_inputs = {grad_out, query,     key,
+                                             value,    logsumexp, out};
+  if (attn_bias.has_value() && attn_bias->defined()) {
+    dispatch_inputs.push_back(*attn_bias);
+  }
 
   TT_ASSIGN_OR_RETURN(
       auto results,
-      (DispatchOp<4, 3>(
-          std::move(op_builder), {grad_out, query, key, value},
+      (DispatchOp<kDynamicSize, 3>(
+          std::move(op_builder), dispatch_inputs,
           {.out_dtypes = {out_dtype, out_dtype, out_dtype},
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
@@ -352,7 +601,6 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool consistent_ranks = query.ndimension() == key.ndimension() &&
                                 query.ndimension() == value.ndimension();
         bool has_batch = query.ndimension() >= 4;
-        bool has_mask = attn_mask.has_value();
         bool has_dropout = dropout_p != 0.0;
 
         if (flash_enabled && c10::get_privateuse1_backend() != "xla_cpu") {
@@ -361,7 +609,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                query.scalar_type() == at::ScalarType::BFloat16);
           if (supported_flash_dtype &&
               IsSupportedFlashAttentionShape(query, key, value) &&
-              consistent_ranks && !has_mask && !has_dropout) {
+              consistent_ranks && !has_dropout) {
             return static_cast<int64_t>(at::SDPBackend::flash_attention);
           } else {
             // Use c10::str rather than absl::StrCat as it will convert enums
@@ -531,15 +779,11 @@ AtenScaledDotProductEfficientAttention(
             {
               // Unused arguments: attn_bias, compute_log_sumexp, dropout_p,
               // scale.
-              TT_ASSIGN_OR_THROW(auto out,
-                                 ScaledDotProductFusedAttentionImpl(
-                                     query, key, value, is_causal, scale));
-              int64_t batch = get_batch_size(query.sizes());
-              int64_t heads = query.size(query.ndimension() - 3);
-              int64_t q_seq_len = query.size(query.ndimension() - 2);
-
-              at::Tensor logsumexp = at::zeros(
-                  {batch, heads, q_seq_len}, query.options().dtype(at::kFloat));
+              TT_ASSIGN_OR_THROW(auto results,
+                                 ScaledDotProductFusedAttentionInternal(
+                                     query, key, value, attn_bias, is_causal,
+                                     scale, compute_log_sumexp));
+              auto [out, logsumexp] = results;
               at::Tensor philox_seed =
                   at::zeros({1}, query.options().dtype(at::kLong));
               at::Tensor philox_offset =
@@ -568,8 +812,9 @@ AtenScaledDotProductEfficientAttentionBackward(
        IgnoreInCacheKey(scale, "Delegates to implementation")),
       {
         TT_ASSIGN_OR_THROW(auto result,
-                           ScaledDotProductFusedAttentionBackwardImpl(
-                               grad_out, query, key, value, scale, is_causal));
+                           ScaledDotProductFusedAttentionBackwardWithLseImpl(
+                               grad_out, query, key, value, out, logsumexp,
+                               attn_bias, scale, is_causal));
 
         const at::Tensor zero = AtenEfficientZeroTensor(
             {0}, grad_out.scalar_type(), /*layout_opt=*/c10::nullopt,
@@ -589,20 +834,14 @@ std::tuple<at::Tensor, at::Tensor> AtenScaledDotProductFlashAttention(
   TT_KERNEL(OpName::kScaledDotProductFlashAttention, _,
             (query, key, value, IgnoreInCacheKey(dropout_p, "Unused"),
              IgnoreInCacheKey(is_causal, "Delegates to implementation"),
-             IgnoreInCacheKey(attn_mask, "Unused"),
+             IgnoreInCacheKey(attn_mask, "Delegates to implementation"),
              IgnoreInCacheKey(scale, "Delegates to implementation")),
             {
-              TT_ASSIGN_OR_THROW(auto out,
-                                 ScaledDotProductFusedAttentionImpl(
-                                     query, key, value, is_causal, scale));
-              int64_t batch = get_batch_size(query.sizes());
-              int64_t heads = query.size(query.ndimension() - 3);
-              int64_t q_seq_len = query.size(query.ndimension() - 2);
-              // We don't currently use this for the backward pass, so we return
-              // a dummy tensor.
-              at::Tensor logsumexp = at::zeros({batch, heads, q_seq_len},
-                                               out.options().dtype(at::kFloat));
-              return {out, logsumexp};
+              TT_ASSIGN_OR_THROW(
+                  auto out,
+                  ScaledDotProductFusedAttentionWithLseImpl(
+                      query, key, value, attn_mask, is_causal, scale));
+              return out;
             });
 }
 
@@ -620,8 +859,9 @@ AtenScaledDotProductFlashAttentionBackward(
              IgnoreInCacheKey(scale, "Delegates to implementation")),
             {
               TT_ASSIGN_OR_THROW(
-                  auto out, ScaledDotProductFusedAttentionBackwardImpl(
-                                grad_out, query, key, value, scale, is_causal));
+                  auto out, ScaledDotProductFusedAttentionBackwardWithLseImpl(
+                                grad_out, query, key, value, out, logsumexp,
+                                attn_mask, scale, is_causal));
 
               return out;
             });

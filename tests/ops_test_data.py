@@ -70,6 +70,7 @@ class SdpaConfig:
   backend: torch.nn.attention.SDPBackend = (
       torch.nn.attention.SDPBackend.FLASH_ATTENTION
   )
+  requires_grad: bool = True
 
 
 SDPA_CONFIGS = (
@@ -164,6 +165,17 @@ SDPA_CONFIGS = (
         v_head_dim=128,
         is_causal=True,
     ),
+    # Explicit MQA config (kv_num_heads=1)
+    SdpaConfig(
+        batch_size=2,
+        q_seq_len=512,
+        kv_seq_len=512,
+        q_num_heads=8,
+        kv_num_heads=1,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=True,
+    ),
     # AFM v7 configs
     SdpaConfig(
         batch_size=2,
@@ -177,15 +189,35 @@ SDPA_CONFIGS = (
     ),
     # Configs for testing attn_bias.
     SdpaConfig(
-        q_seq_len=128,
-        kv_seq_len=128,
+        q_seq_len=512,
+        kv_seq_len=512,
         q_num_heads=8,
         kv_num_heads=8,
         qk_head_dim=64,
         v_head_dim=64,
         is_causal=False,
         attn_bias_type=torch.bool,
-        backend=torch.nn.attention.SDPBackend.OVERRIDEABLE,
+    ),
+    SdpaConfig(
+        q_seq_len=512,
+        kv_seq_len=512,
+        q_num_heads=8,
+        kv_num_heads=8,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=False,
+        attn_bias_type=torch.bfloat16,
+    ),
+    # Configs with requires_grad=False
+    SdpaConfig(
+        q_seq_len=512,
+        kv_seq_len=512,
+        q_num_heads=8,
+        kv_num_heads=8,
+        qk_head_dim=64,
+        v_head_dim=64,
+        is_causal=True,
+        requires_grad=False,
     ),
     SdpaConfig(
         q_seq_len=128,
@@ -195,7 +227,7 @@ SDPA_CONFIGS = (
         qk_head_dim=64,
         v_head_dim=64,
         is_causal=False,
-        attn_bias_type=torch.bfloat16,
+        requires_grad=False,
         backend=torch.nn.attention.SDPBackend.OVERRIDEABLE,
     ),
 )
