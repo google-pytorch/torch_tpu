@@ -153,6 +153,13 @@ class BenchmarkTest(parameterized.TestCase):
     ]:
       self.skipTest("TorchAX only supports compiled and eager default modes.")
 
+    if self._is_torchax_backend() and platform in (
+        benchmark_utils.Platform.B200_8,
+        benchmark_utils.Platform.B200_4,
+        benchmark_utils.Platform.B200_1,
+    ):
+      self.skipTest("TorchAX is not supported for GPU benchmarks.")
+
     # MlCompass only looks for base test name after the benchmark run.
     base_test_name = get_base_test_name(
         self._testMethodName, microbenchmark_name
