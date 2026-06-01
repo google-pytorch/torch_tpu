@@ -72,7 +72,7 @@ absl::StatusOr<mlir::MlirOp> BitsToUniform(mlir::MlirOp random_bits,
     random_bits_as_float_type = from_type.clone(op_builder.getF16Type());
   } else {
     return TT_ERROR(error::kInvalidArgument)
-           << "unsupported float type for uniform";
+           << "!!!!!!!!unsupported float type for uniform";
   }
 
   // Float is 1 sign bit, k exponent bits, and n mantissa bits. Exponent is
