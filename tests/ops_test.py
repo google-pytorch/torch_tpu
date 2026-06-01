@@ -3991,24 +3991,5 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("linalg.qr")
 
 
-def setUpModule() -> None:
-  """Called by absltest.main() after flags are parsed but before tests are run."""
-
-  op_testing.set_up_test_module()
-
-  if (
-      op_testing._torch_tpu_vs_gpu_mode() and not op_testing.is_compiled_mode()
-  ) or op_testing._torch_tpu_vs_cpu_mode():
-    assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
-  else:
-    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
-
-
-def tearDownModule() -> None:
-  """Called by absltest.main() after running all tests."""
-
-  op_testing.tear_down_test_module()
-
-
 if __name__ == "__main__":
   absltest.main()

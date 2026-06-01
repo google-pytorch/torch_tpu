@@ -68,7 +68,6 @@ torch_tpu_py_library(
     srcs = ["op_testing.py"],
     deps = [
         "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
         "//shims/etils/epath",
         "//shims/safetensors",
         "//shims/torch:pytorch",
@@ -78,6 +77,7 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/device:_device_ops_backend",
         "//torch_tpu/_internal/utils",
         "//torch_tpu/eager:tpu_aten_kernels",
+        "@pypi//pytest",
     ],
 )
 
@@ -126,9 +126,12 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
-        "--print_op_inputs=1",
+        "--torch-tpu-device=tpu",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    env = {
+        "PRINT_OP_INPUTS": "1",
+    },
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 50,
@@ -139,6 +142,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -155,6 +159,7 @@ torch_tpu_py_test(
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
+        "--torch-tpu-device=tpu",
         "--compute_grad=True",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
@@ -167,6 +172,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -201,6 +207,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -234,6 +241,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -262,10 +270,12 @@ torch_tpu_py_test(
         # go/keep-sorted start
         "--alsologtostderr",
         "--max_samples_per_op_dtype=10",
-        "--print_op_inputs=2",
         "--test_mode=perf",
         # go/keep-sorted end
     ],
+    env = {
+        "PRINT_OP_INPUTS": "2",
+    },
     main = "ops_test.py",
     nolocal = "slow test",
     nopresubmit_oss = "This slow test is enabled in nightly.",
@@ -276,6 +286,7 @@ torch_tpu_py_test(
         "requires-net:external",  # For writing remote files.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -293,9 +304,11 @@ torch_tpu_py_test(
     srcs = ["ops_test.py"],
     args = [
         "--check_dynamism_using_seed=-1",
-        "--print_op_inputs=1",
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
+    env = {
+        "PRINT_OP_INPUTS": "1",
+    },
     main = "ops_test.py",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 32,
@@ -304,6 +317,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -340,6 +354,7 @@ torch_tpu_py_test(
     tags = [
         "requires-gpu-sm80",
     ],
+    use_pytest = True,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -363,6 +378,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":op_testing",
         ":ops_test_data",
@@ -427,6 +443,7 @@ torch_tpu_py_test(
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
     ],
+    use_pytest = True,
     deps = [
         ":op_testing",
         ":ops_test_data",

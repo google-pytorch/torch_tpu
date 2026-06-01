@@ -18,7 +18,7 @@ See go/torch-tpu-op-test for more details.
 """
 
 import collections
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
 import copy
 import enum
 import functools
@@ -38,8 +38,8 @@ from typing import Any, Final, IO
 import unittest
 
 from absl import flags
-from absl.testing import absltest
 from etils import epath
+import pytest
 import safetensors.torch as st
 import torch
 from torch.testing._internal import autograd_function_db
@@ -146,14 +146,18 @@ _OPT_LEVEL: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
     " 'O0', 'O1', 'O2', 'O3', and 'O4'. Only used in the perf mode.",
 )
 
-_PRINT_OP_INPUTS: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
-    "print_op_inputs",
-    0,
-    "Print the inputs and reproducer function for the ops being tested. Useful"
-    " for debugging. Set to 0 for no printing, 1 for to print op input"
-    " summaries (no data), or 2 to include verbose / real tensor data for"
-    " reproducers.",
-)
+
+def _get_print_op_inputs() -> int:
+  """Return whether the PRINT_OP_INPUTS environment variable is truthy.
+
+  If so, the tests should print the inputs and reproducer function for the
+  ops being tested. This is useful for debugging.
+
+  Set to 0 for no printing, 1 to print op input summaries (no data) or 2
+  to include verbose / real tensor data for reproducers.
+  """
+  return int(os.environ.get("PRINT_OP_INPUTS", 0))
+
 
 _UPDATE_PERF_DATA: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "update_perf_data",
@@ -1172,6 +1176,7 @@ def _compiled_supports_op(
   return key not in compiled_deny_list
 
 
+@pytest.mark.usefixtures("device_type")
 class TorchTpuTestBase(TestCase):
   """Base class for TorchTPU tests."""
 
@@ -1915,11 +1920,12 @@ class TorchTpuTestBase(TestCase):
 
     torch_tpu_printable_input = _to_torch_tpu_printable_input(golden_input)
     torch_tpu_printable_input.name = subtest_name
-    if _PRINT_OP_INPUTS.value > 0:
+    print_op_inputs = _get_print_op_inputs()
+    if print_op_inputs > 0:
       # TODO b/486861095
       if op.name != "normal":
         print_reproducer(subtest_name, op, golden_input, variant)
-      print_op_input(torch_tpu_printable_input, data=_PRINT_OP_INPUTS.value > 1)
+      print_op_input(torch_tpu_printable_input, data=print_op_inputs > 1)
 
     opt_level = _OPT_LEVEL.value
     if opt_level:
@@ -2468,8 +2474,13 @@ def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
   return float_bits.view(dtype)
 
 
-def set_up_test_module() -> None:
-  """Sets up the entire test module."""
+@pytest.fixture(scope="session", autouse=True)
+def set_up_test_module(request) -> Iterator[None]:
+  """Sets up the entire test module.
+
+  Args:
+    request: The pytest request object.
+  """
 
   if _gen_gpu_golden_mode() and not torch.cuda.is_available():
     print(
@@ -2500,9 +2511,14 @@ def set_up_test_module() -> None:
 
   # Pick a random seed for the test.
   global _RANDOM_SEED
-  if absltest.FLAGS["test_random_seed"].present:
-    # The user explicitly passed --test_random_seed=N, so we use that value.
-    _RANDOM_SEED = absltest.FLAGS.test_random_seed
+  try:
+    randomly_seed = request.config.getoption("--randomly-seed")
+  except ValueError:
+    randomly_seed = None
+
+  if randomly_seed is not None:
+    # The user explicitly passed --randomly-seed, so we use that value.
+    _RANDOM_SEED = randomly_seed
   elif (
       _torch_tpu_vs_cpu_mode()
       and _device_ops_backend._is_optimized_build()  # pylint: disable=protected-access
@@ -2518,7 +2534,6 @@ def set_up_test_module() -> None:
 
   # Set the random seed for Python and Torch.
   _seed_rngs(_RANDOM_SEED)
-  print(f"Repro with --test_random_seed={_RANDOM_SEED}", flush=True)
   print(f"Torch initial seed: {torch.initial_seed()}", flush=True)
 
   # Assert that `torch.get_default_dtype()` returns `torch.float` when `setUp`
@@ -2528,6 +2543,12 @@ def set_up_test_module() -> None:
   if _torch_tpu_vs_gpu_mode():
     print("Running in TorchTPU vs GPU mode.", flush=True)
     _load_golden_files()
+    if not is_compiled_mode():
+      assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+    else:
+      assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+    yield
+    tear_down_test_module()
     return
 
   if _perf_mode():
@@ -2601,6 +2622,16 @@ def set_up_test_module() -> None:
       # Override the default generator with our tie-breaking generator
       # This handles the base op and its variants (like 'out')
       op.sample_inputs_func = create_unique_samples(op.sample_inputs_func)
+
+  if (
+      _torch_tpu_vs_gpu_mode() and not is_compiled_mode()
+  ) or _torch_tpu_vs_cpu_mode():
+    assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+  else:
+    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+
+  yield
+  tear_down_test_module()
 
 
 def tear_down_test_module() -> None:

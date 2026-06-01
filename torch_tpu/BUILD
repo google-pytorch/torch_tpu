@@ -1,14 +1,3 @@
-load("@rules_license//rules:license.bzl", "license")
-load("@torch_tpu_version//:version.bzl", OSS_WHEEL_VERSION = "WHEEL_VERSION")  # copybara:comment(oss-only)
-load(
-    "//build_files:build_defs.bzl",
-    "if_oss",
-    "torch_tpu_package_end",
-    "torch_tpu_py_library",
-)
-load("//build_files:entry_points.bzl", "ENTRY_POINTS")
-load("//build_files:py_dist_info.bzl", "py_dist_info")
-
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +11,17 @@ load("//build_files:py_dist_info.bzl", "py_dist_info")
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+load("@rules_license//rules:license.bzl", "license")
+load("@torch_tpu_version//:version.bzl", OSS_WHEEL_VERSION = "WHEEL_VERSION")  # copybara:comment(oss-only)
+load(
+    "//build_files:build_defs.bzl",
+    "if_oss",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
+load("//build_files:entry_points.bzl", "ENTRY_POINTS")
+load("//build_files:py_dist_info.bzl", "py_dist_info")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
 WHEEL_VERSION = "0.0.0"
@@ -94,6 +94,16 @@ py_library_providing_imports_info(
     ) + [
         ":_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
+    ],
+)
+
+torch_tpu_py_library(
+    name = "conftest",
+    testonly = True,
+    srcs = ["conftest.py"],
+    deps = [
+        "//shims/absl_py/flags",
+        "@pypi//pytest",
     ],
 )
 
