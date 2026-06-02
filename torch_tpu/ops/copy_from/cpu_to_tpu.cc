@@ -23,10 +23,9 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
@@ -43,21 +42,19 @@ absl::StatusOr<DeviceBufferRef> CopyCpuToTpuBuffer(const at::Tensor& src,
                   "contiguous with dtype "
                << ToString(src.scalar_type()) << ". Tensor: " << ToString(src);
 
-  TT_ASSIGN_OR_RETURN(
-      const auto dtype,
-      ConvertTo<mlir::ElementType>(contiguous_src_for_tpu.scalar_type()));
+  TT_ASSIGN_OR_RETURN(TpuLayout tpu_layout,
+                      ResolveTpuLayout(contiguous_src_for_tpu));
 
   if (contiguous_src_for_tpu.numel() == 0) {
     // If there's no data to actually copy, then we can just create a zero-sized
     // buffer directly and avoid blocking on host/device synchronization.
-    Dimensions zero_sized_dimensions(contiguous_src_for_tpu.sizes().begin(),
-                                     contiguous_src_for_tpu.sizes().end());
-    return CreateZeroSizeDeviceBufferRef(std::move(zero_sized_dimensions),
-                                         dtype);
+    return CreateZeroSizeDeviceBufferRef(std::move(tpu_layout.sizes),
+                                         tpu_layout.element_type);
   }
 
   return TpuMallocAndMemcpyHtoD(
-      contiguous_src_for_tpu.data_ptr(), dtype, contiguous_src_for_tpu.sizes(),
+      contiguous_src_for_tpu.data_ptr(), tpu_layout.element_type,
+      tpu_layout.sizes,
       non_blocking ? std::make_optional(contiguous_src_for_tpu) : std::nullopt);
 }
 

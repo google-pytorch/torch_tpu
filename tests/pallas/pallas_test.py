@@ -24,6 +24,7 @@ from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 import jax.export
+import jax.numpy as jnp
 from packaging import version
 import torch
 from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
@@ -989,6 +990,175 @@ class TestPallasCompat(absltest.TestCase):
         self.assertTrue(issubclass(w[0].category, DeprecationWarning))
         self.assertEqual(str(w[0].message), "test message")
         self.assertIn("pallas_test.py", w[0].filename)
+
+  def test_fp4_pallas(self):
+
+    # Check hardware support
+    try:
+      device_kind = jax.devices()[0].device_kind
+      if any(old in device_kind for old in ["v2", "v3", "v4"]):
+        self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
+    except (RuntimeError, IndexError):
+      pass
+
+    def copy_kernel(x_ref, o_ref):
+      o_ref[...] = x_ref[...]
+
+    x_pt = torch.tensor(
+        [[17, 34], [51, 68]], dtype=torch.uint8, device="tpu"
+    ).view(torch.float4_e2m1fn_x2)
+
+    @pallas.jax_op("custom::test_fp4_pallas_op")
+    def copy_op(x: jax.Array) -> jax.Array:
+      return pl.pallas_call(
+          copy_kernel,
+          out_shape=jax.ShapeDtypeStruct((2, 4), jax.numpy.float4_e2m1fn),
+      )(x)
+
+    out = copy_op(x_pt)
+    self.assertEqual(out.shape, x_pt.shape)
+    self.assertEqual(out.dtype, x_pt.dtype)
+    self.assertEqual(out.view(torch.uint8).cpu().tolist(), [[17, 34], [51, 68]])
+
+  def test_fp4_unpack_repro(self):
+
+    try:
+      device_kind = jax.devices()[0].device_kind
+      if any(old in device_kind for old in ["v2", "v3", "v4"]):
+        self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
+    except (RuntimeError, IndexError):
+      pass
+
+    def fn_unpack(u8: jax.Array) -> jax.Array:
+      f = jax.lax.bitcast_convert_type(u8, jax.numpy.float4_e2m1fn)
+      return jax.numpy.reshape(f, f.shape[:-2] + (-1,))
+
+    u8_t = torch.zeros((8, 256), dtype=torch.uint8, device="tpu")
+
+    # B1: uint8 in -> fp4 out
+    op = pallas.jax_op("repro::unpack", fn_unpack)
+    out = op(u8_t)
+
+    self.assertEqual(out.dtype, torch.float4_e2m1fn_x2)
+    self.assertEqual(out.shape, (8, 256))  # PyTorch represents packed shape
+
+  def test_fp4_identity_repro(self):
+
+    try:
+      device_kind = jax.devices()[0].device_kind
+      if any(old in device_kind for old in ["v2", "v3", "v4"]):
+        self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
+    except (RuntimeError, IndexError):
+      pass
+
+    def fn_identity(x: jax.Array) -> jax.Array:
+      return x
+
+    u8_t = torch.zeros((8, 256), dtype=torch.uint8)
+    fp4_t = u8_t.view(torch.float4_e2m1fn_x2).to("tpu")
+
+    # B2: fp4 in -> fp4 out
+    op = pallas.jax_op("repro::identity", fn_identity)
+    out = op(fp4_t)
+
+    self.assertEqual(out.dtype, torch.float4_e2m1fn_x2)
+    self.assertEqual(out.shape, fp4_t.shape)
+
+  def test_fp4_non_contiguous_error(self):
+
+    u8_t = torch.zeros((8, 256), dtype=torch.uint8)
+    fp4_t = u8_t.view(torch.float4_e2m1fn_x2).to("tpu")
+
+    # Transpose to make it non-contiguous
+    fp4_t_transposed = fp4_t.t()
+    self.assertFalse(fp4_t_transposed.is_contiguous())
+
+    def fn_identity(x: jax.Array) -> jax.Array:
+      return x
+
+    op = pallas.jax_op("repro::identity_error", fn_identity)
+
+    with self.assertRaisesRegex(
+        ValueError,
+        "expected packed dimension of float4_e2m1fn_x2 tensor to be "
+        "contiguous \\(stride 1\\)",
+    ):
+      op(fp4_t_transposed)
+
+  def test_fp4_outer_non_contiguous_supported(self):
+
+    try:
+      device_kind = jax.devices()[0].device_kind
+      if any(old in device_kind for old in ["v2", "v3", "v4"]):
+        self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
+    except (RuntimeError, IndexError):
+      pass
+
+    u8_t = torch.zeros((8, 256), dtype=torch.uint8)
+    fp4_t = u8_t.view(torch.float4_e2m1fn_x2).to("tpu")
+
+    # Slice to make it non-contiguous in outer dimensions, but stride(-1) is
+    # still 1
+    fp4_t_sliced = fp4_t[::2, :]
+    self.assertFalse(fp4_t_sliced.is_contiguous())
+    self.assertEqual(fp4_t_sliced.stride(-1), 1)
+
+    def fn_identity(x: jax.Array) -> jax.Array:
+      return x
+
+    op = pallas.jax_op("repro::identity_sliced", fn_identity)
+    out = op(fp4_t_sliced)
+
+    self.assertEqual(out.dtype, torch.float4_e2m1fn_x2)
+    self.assertEqual(out.shape, fp4_t_sliced.shape)
+
+  def test_fp4_compile_doubling_repro(self):
+    """Verifies that JAX tracing sees the correct logical shape of FP4 tensors.
+
+    Specifically, it ensures that a float4_e2m1fn_x2 tensor (which is packed
+    2-to-a-byte) exposes its logical shape (e.g. doubled last dimension relative
+    to the container) to JAX during tracing, rather than the physical container
+    shape, so that shape invariants with other tensors (like scales) hold.
+    """
+    try:
+      device_kind = jax.devices()[0].device_kind
+      if any(old in device_kind for old in ["v2", "v3", "v4"]):
+        self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
+    except (RuntimeError, IndexError):
+      pass
+
+    def probe(w: jax.Array, s: jax.Array) -> jax.Array:
+      # gmm_v2-style invariant: the fp4 weight's LOGICAL last-dim must equal the
+      # per-logical-channel scale's last-dim. This assert runs during tracing.
+      self.assertEqual(
+          w.shape[-1],
+          s.shape[-1],
+          f"FP4SHAPE w.shape[-1]={w.shape[-1]} != s.shape[-1]={s.shape[-1]}",
+      )
+      # Use the arguments so they are not optimized away by JAX.
+      w_f = w.astype(jnp.float32)
+      s_f = s.astype(jnp.float32)
+      dummy = jnp.sum(w_f) + jnp.sum(s_f)
+      return jnp.zeros((1, 4), dtype=jnp.bfloat16) + dummy.astype(jnp.bfloat16)
+
+    op = pallas.jax_op("repro::fp4_shape_probe", probe)
+
+    w = (
+        torch.zeros((4, 8), dtype=torch.uint8)
+        .view(torch.float4_e2m1fn_x2)
+        .to("tpu")
+    )
+    s = torch.zeros((16,), dtype=torch.float32).to("tpu")
+
+    # Eager should pass
+    op(w, s)
+
+    # Compiled should also pass!
+    @torch.compile(backend="tpu")
+    def f(a, b):
+      return op(a, b)
+
+    f(w, s)
 
 
 if __name__ == "__main__":

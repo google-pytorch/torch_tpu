@@ -50,8 +50,7 @@ absl::StatusOr<at::Tensor> AsStrided(const at::Tensor& self,
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE==PyTorch catches this error first.
       self.defined(), error::kInvalidArgument)
       << "the input tensor cannot be undefined";
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref,
-                      GetBaseBuffer(*self.unsafeGetTensorImpl()));
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(self));
 
   const int64_t storage_numel = base_buffer_ref.num_elements();
   const mlir::ElementType storage_element_type = base_buffer_ref.element_type();

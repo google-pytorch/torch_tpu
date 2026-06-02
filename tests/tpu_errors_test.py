@@ -355,17 +355,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.empty(2, dtype=torch.complex32, device="tpu")
 
-  @et.why_tpu_only("TODO: support float4_e2m1fn_x2 on TPU.")
-  def test_dtype_float4_e2m1fn_x2_unsupported(self):
-    # The float4_e2m1fn_x2 dtype represents 2x f4e2m1fn values packed into 8bits
-    # which is different from XLA's supported single-value f4e2m1fn dtype.
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""empty(): TorchTPU does not yet support dtype float4_e2m1fn_x2""",
-        message_reviewed_by="wan",
-    ):
-      torch.empty(2, dtype=torch.float4_e2m1fn_x2, device="tpu")
-
   @et.why_tpu_only("TODO: support complex32 on TPU.")
   def test_empty_strided(self):
     with et.assert_raises_message(
@@ -960,6 +949,53 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       op(tensor, out=out)
 
+  @et.why_tpu_only(
+      "TODO: make the behavior consistent between TPU and CPU - the latter"
+      " doesn't check pivots rank."
+  )
+  def test_lu_unpack_pivots_invalid_rank(self):
+    data = torch.ones(2, 4, 4, device=et.device())
+
+    # TODO: b/485613841 remove this test when the divergence is resolved.
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile("Expected LU_pivots to have shape.*"),
+    ):
+      pivots = torch.tensor(1, device=et.device(), dtype=torch.int32)
+      torch.lu_unpack(data, pivots)
+
+    # TODO: b/483972819 remove this test when the divergence is resolved.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lu_unpack(): expected the first output tensor to be a 3D tensor (pivots dimension + 1), got 1D of shape [4]""",
+    ):
+      pivots = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
+      out = _make_lu_unpack_outputs(p=(4,), l=(2, 4, 4), u=(2, 4, 4))
+      torch.lu_unpack(data, pivots, out=out)
+
+  @et.why_tpu_only(
+      "TODO: make the behavior consistent between TPU and CPU - the latter"
+      " doesn't check pivots dimensions."
+  )
+  def test_lu_unpack_pivots_invalid_dimension(self):
+    data = torch.ones(2, 4, 4, device=et.device())
+
+    # TODO: b/485613841 remove this test when the divergence is resolved.
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile("Expected LU_pivots to have shape.*"),
+    ):
+      pivots = torch.ones(2, 5, device=et.device(), dtype=torch.int32)
+      torch.lu_unpack(data, pivots)
+
+    # TODO: b/485613841 remove this test when the divergence is resolved.
+    with et.assert_raises_message(
+        ValueError,
+        tpu=re.compile("Expected LU_pivots to have shape.*"),
+    ):
+      pivots = torch.ones(3, 4, device=et.device(), dtype=torch.int32)
+      torch.lu_unpack(data, pivots)
+
   # CPU kernel raises an `IndexError`, instead of a `RuntimeError`, because it
   # tries to get `pivots.size(-1)` of a 0-dim tensor.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
@@ -978,24 +1014,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""linalg_lu_solve(): pivots must have at least 1 dimension, got 0""",
     ):
       torch.linalg.lu_solve(lu, pivots, b, out=out)
-
-  # CPU kernel raises an `IndexError`, instead of a `RuntimeError`, because it
-  # tries to get `pivots.size(-1)` of a 0-dim tensor.
-  @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
-  def test_lu_unpack_pivots_rank_too_low(self):
-    lu_data = torch.ones(4, 4, device=et.device())
-    lu_pivots = torch.tensor(0, device=et.device(), dtype=torch.int32)
-
-    # Call the out overload of lu_unpack() op.
-    out = _make_lu_unpack_outputs(p=(4, 4), l=(4, 4), u=(4, 4))
-
-    # TODO: b/485613841 also test CPU when the TPU kernel is fixed, raising an
-    # `IndexError`, instead of an `RuntimeError`.
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""lu_unpack(): lu_pivots must have at least 1 dimension, got 0""",
-    ):
-      torch.lu_unpack(lu_data, lu_pivots, out=out)
 
   # CPU kernel runs successfully, broadcasting the inputs.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
@@ -1954,12 +1972,74 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     """Tests prod() with a TPU input and CPU out tensor."""
     t = torch.tensor([1.0, 2.0, 3.0], device=et.device())
     out = torch.empty(1, device="cpu")
-
     with et.assert_raises_message(
         RuntimeError,
         tpu="""prod(): expected the output tensor to be on 'tpu', got 'cpu'""",
     ):
       torch.prod(t, dim=0, out=out)
+
+  @et.why_tpu_only("FP4 is only supported on TPU.")
+  def test_fp4_non_contiguous_get_buffer_error(self):
+    """Tests that non-contiguous FP4 view raises on D2H copy."""
+    device = et.device()
+    # Initialize by viewing uint8 as FP4
+    x_uint8 = torch.tensor([[17, 34], [51, 68]], dtype=torch.uint8)
+    x = x_uint8.view(torch.float4_e2m1fn_x2).to(device)
+
+    # Transpose to make it non-contiguous on TPU
+    x_t = x.t()
+    self.assertFalse(x_t.is_contiguous())
+
+    # Copy non-contiguous TPU tensor back to CPU should fail cleanly
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""to_copy(): expected packed dimension to be contiguous (stride 1) for float4_e2m1fn_x2 view, got stride 2""",
+    ):
+      x_t.to("cpu")
+
+  @et.why_tpu_only("FP4 is only supported on TPU.")
+  def test_fp4_non_contiguous_assign_buffer_error(self):
+    """Tests that copying to non-contiguous FP4 view raises an error."""
+    device = et.device()
+    # Dest is non-contiguous
+    dest_uint8 = torch.tensor([[17, 34], [51, 68]], dtype=torch.uint8)
+    dest = dest_uint8.view(torch.float4_e2m1fn_x2).to(device)
+    dest_t = dest.t()
+    self.assertFalse(dest_t.is_contiguous())
+
+    # Src is contiguous
+    src_uint8 = torch.tensor([[17, 34], [51, 68]], dtype=torch.uint8)
+    src = src_uint8.view(torch.float4_e2m1fn_x2).to(device)
+    self.assertTrue(src.is_contiguous())
+
+    # Copying to a non-contiguous view should fail in AssignBufferToAtTensor
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): expected packed dimension to be contiguous (stride 1) for float4_e2m1fn_x2 view, got stride 2""",
+    ):
+      dest_t.copy_(src)
+
+  @et.why_tpu_only("FP4 is only supported on TPU.")
+  def test_fp4_scalar_creation_error(self):
+    """Tests that creating a scalar FP4 tensor raises an error."""
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""empty(): expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, got 0-dimensional""",
+    ):
+      torch.empty((), dtype=torch.float4_e2m1fn_x2, device="tpu")
+
+  @et.why_tpu_only("FP4 is only supported on TPU.")
+  def test_copy_tpu_to_tpu_fp4_zero_dim(self):
+    """Tests copying zero-dimensional FP4 tensor on TPU raises an error."""
+    src = torch.tensor(17, dtype=torch.uint8, device="tpu").view(
+        torch.float4_e2m1fn_x2
+    )
+    dest = torch.tensor(0.0, dtype=torch.float32, device="tpu")
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""copy_(): expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, got 0-dimensional""",
+    ):
+      dest.copy_(src)
 
 
 if __name__ == "__main__":

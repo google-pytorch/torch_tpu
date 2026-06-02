@@ -17,15 +17,14 @@
 #ifndef TORCH_TPU_EAGER_DEVICE_BUFFER_UTILS_H_
 #define TORCH_TPU_EAGER_DEVICE_BUFFER_UTILS_H_
 
-#include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -96,15 +95,12 @@ absl::StatusOr<DeviceBufferRef> CreateZeroSizeDeviceBufferRef(
 
 // Creates a DeviceBufferRef representing a view of a base DeviceBufferRef.
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
-    DeviceBufferRef base_buffer_ref, absl::Span<const int64_t> view_dimensions,
-    absl::Span<const int64_t> view_strides, int64_t view_storage_offset,
-    mlir::ElementType view_element_type, bool view_is_conj);
+    DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
+    bool view_is_conj);
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    absl::Span<const int64_t> view_dimensions,
-    absl::Span<const int64_t> view_strides, int64_t view_storage_offset,
-    mlir::ElementType view_element_type, bool view_is_conj);
+    const TpuLayout& tpu_layout, bool view_is_conj);
 
 }  // namespace torch_tpu
 

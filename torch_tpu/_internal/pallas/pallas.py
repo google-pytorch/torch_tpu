@@ -36,8 +36,10 @@ try:
   # process, hitting deadlocks when each framework tried to access the PJRT
   # plugin. Unclear if this applies for trace-only, but we may need to better
   # protect against this, see @requires_jax in PT/XLA repo.
+  # pylint: disable=g-import-not-at-top
   import jax
   import jax.export
+  # pylint: enable=g-import-not-at-top
 except ImportError as ex:
   raise ImportError(
       "JAX/Pallas is not available. Please install JAX to use this API."
@@ -60,7 +62,7 @@ TORCH_TO_JAX_DTYPE_MAP = frozendict.frozendict({
     torch.float8_e5m2: jax.numpy.float8_e5m2.dtype,
     torch.float8_e5m2fnuz: jax.numpy.float8_e5m2fnuz.dtype,
     torch.float8_e8m0fnu: jax.numpy.float8_e8m0fnu.dtype,
-    # torch.float4_e2m1fn_x2: jax.numpy.float4_e2m1fn.dtype,  # x2 is packed
+    torch.float4_e2m1fn_x2: jax.numpy.float4_e2m1fn.dtype,  # x2 is packed
     # torch.half: jax.numpy.float16.dtype,  # PT alias type
     torch.uint8: jax.numpy.uint8.dtype,
     torch.uint16: jax.numpy.uint16.dtype,
@@ -91,6 +93,9 @@ TORCH_TO_JAX_DTYPE_MAP = frozendict.frozendict({
     # torch.bits8: jax.numpy.bits8.dtype,
     # torch.bits16: jax.numpy.bits16.dtype,
 })
+# NOTE: If multiple Torch dtypes map to the same JAX dtype in the future,
+# JAX_TO_TORCH_DTYPE_MAP will only preserve the last one. Handle duplicates
+# explicitly if unpacked float4 types are added.
 JAX_TO_TORCH_DTYPE_MAP = {v: k for k, v in TORCH_TO_JAX_DTYPE_MAP.items()}
 
 
@@ -133,14 +138,26 @@ def jax_placeholder(
     raise NotImplementedError(
         f"Unsupported dtype for pallas kernels: {tensor.dtype}"
     )
+
+  jax_shape = list(tensor.shape)
+  if tensor.dtype == torch.float4_e2m1fn_x2 and len(jax_shape) > 0:
+    if tensor.stride(-1) != 1:
+      raise ValueError(
+          "expected packed dimension of float4_e2m1fn_x2 tensor to be "
+          f"contiguous (stride 1), got stride {tensor.stride(-1)} "
+          f"(all strides: {tensor.stride()})"
+      )
+    jax_shape[-1] *= 2
+  jax_shape = tuple(jax_shape)
+
   if mesh is not None:
     return jax.ShapeDtypeStruct(
-        get_global_shape(tensor.shape, mesh, partition_spec),
+        get_global_shape(jax_shape, mesh, partition_spec),
         jax_dtype,
         sharding=jax.sharding.NamedSharding(mesh, partition_spec),
     )
   else:
-    return jax.ShapeDtypeStruct(tensor.shape, jax_dtype)
+    return jax.ShapeDtypeStruct(jax_shape, jax_dtype)
 
 
 def jax_placeholders(
@@ -166,8 +183,15 @@ def torch_placeholder(
 ) -> torch.Tensor | None:
   """Converts a jax output to a torch tensor for return type.
 
-  JAX JIT functions only support tensor and None types, all other POD types will
-  error.
+  JAX JIT functions only support tensor and None types, all other POD types
+  will error.
+
+  Args:
+    tensor: The JAX tensor to convert.
+    mesh: Optional physical mesh.
+
+  Returns:
+    The converted PyTorch tensor, or None.
   """
   if not isinstance(tensor, jax.core.ShapedArray):
     # Preserve POD constants / None types
@@ -181,8 +205,19 @@ def torch_placeholder(
     raise NotImplementedError(
         f"Unsupported dtype for pallas kernels: {tensor.dtype}"
     )
+  torch_shape = list(get_local_shape(tensor.shape, mesh, tensor.sharding.spec))
+  if torch_dtype == torch.float4_e2m1fn_x2 and len(torch_shape) > 0:
+    if torch_shape[-1] % 2 != 0:
+      raise ValueError(
+          "expected last dimension of JAX local shape to be even to convert "
+          f"to packed PyTorch dtype {torch_dtype}, got {torch_shape[-1]} "
+          f"(local shape: {torch_shape}, global: {tensor.shape})"
+      )
+    torch_shape[-1] //= 2
+  torch_shape = tuple(torch_shape)
+
   return torch.empty(
-      get_local_shape(tensor.shape, mesh, tensor.sharding.spec),
+      torch_shape,
       dtype=torch_dtype,
       device="tpu",
   )
@@ -780,8 +815,10 @@ def jax_op(
       jax_args = jax_placeholders(
           args, mesh=mesh, partition_specs=input_partition_specs
       )
+      # pylint: disable=protected-access
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = wrapped_fn.exported(*jax_args, **kwargs)
+      # pylint: enable=protected-access
       return lowered.out_tree.unflatten(
           torch_placeholder(aval, mesh=mesh) for aval in lowered.out_avals
       )
