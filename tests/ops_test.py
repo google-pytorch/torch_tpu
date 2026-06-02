@@ -1802,7 +1802,7 @@ class TestOps(TorchTpuTestBase):
         # TODO: stablehlo gradients for Real/Imag/Abs on complex are not
         # working.
         skip_if=lambda _1, _2, op_input: (
-            op_testing._COMPUTE_GRAD.value
+            op_testing.compute_grad_enabled()
             and op_input.input_value.dtype == torch.complex64
         ),
     )
@@ -2328,7 +2328,7 @@ class TestOps(TorchTpuTestBase):
 
   def test_fft_rfft(self):
     exclude_dtypes = [torch.float64]
-    if op_testing._torch_tpu_vs_gpu_mode():
+    if op_testing.torch_tpu_vs_gpu_mode():
       # TODO: b/518595804 - PyTorch currently does not support half precision
       # FFTs for PrivateUse1 backends. See promote_type_fft in SpectralOps.cpp.
       exclude_dtypes.extend([torch.float16, torch.bfloat16])
@@ -2340,7 +2340,7 @@ class TestOps(TorchTpuTestBase):
 
   def test_fft_fft(self):
     exclude_dtypes = [torch.float64]
-    if op_testing._torch_tpu_vs_gpu_mode():
+    if op_testing.torch_tpu_vs_gpu_mode():
       # TODO: b/518595804 - PyTorch currently does not support half precision
       # FFTs for PrivateUse1 backends. See promote_type_fft in SpectralOps.cpp.
       exclude_dtypes.extend([torch.float16, torch.bfloat16])
@@ -2352,7 +2352,7 @@ class TestOps(TorchTpuTestBase):
 
   def test_fft_ifft(self):
     exclude_dtypes = [torch.float64]
-    if op_testing._torch_tpu_vs_gpu_mode():
+    if op_testing.torch_tpu_vs_gpu_mode():
       # TODO: b/518595804 - PyTorch currently does not support half precision
       # FFTs for PrivateUse1 backends. See promote_type_fft in SpectralOps.cpp.
       exclude_dtypes.extend([torch.float16, torch.bfloat16])
@@ -2364,7 +2364,7 @@ class TestOps(TorchTpuTestBase):
 
   def test_fft_irfft(self):
     exclude_dtypes = [torch.float64]
-    if op_testing._torch_tpu_vs_gpu_mode():
+    if op_testing.torch_tpu_vs_gpu_mode():
       # TODO: b/518595804 - PyTorch currently does not support half precision
       # FFTs for PrivateUse1 backends. See promote_type_fft in SpectralOps.cpp.
       exclude_dtypes.extend([torch.float16, torch.bfloat16])
@@ -2678,7 +2678,7 @@ class TestOps(TorchTpuTestBase):
       # at index 0 of `op_input.args`.
       if ord_val is None and len(op_input.args) > 0:
         ord_val = op_input.args[0]
-      if op_testing._COMPUTE_GRAD.value and ord_val is not None:
+      if op_testing.compute_grad_enabled() and ord_val is not None:
         try:
           if float(ord_val) < 0:
             return f"Skip ord={ord_val} as it has issues on TPU."
@@ -3989,25 +3989,6 @@ class TestOps(TorchTpuTestBase):
   @op_testing.skip_unless_torch_tpu_vs_gpu_mode
   def test_linalg_qr(self):
     self.do_test_op("linalg.qr")
-
-
-def setUpModule() -> None:
-  """Called by absltest.main() after flags are parsed but before tests are run."""
-
-  op_testing.set_up_test_module()
-
-  if (
-      op_testing._torch_tpu_vs_gpu_mode() and not op_testing.is_compiled_mode()
-  ) or op_testing._torch_tpu_vs_cpu_mode():
-    assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
-  else:
-    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
-
-
-def tearDownModule() -> None:
-  """Called by absltest.main() after running all tests."""
-
-  op_testing.tear_down_test_module()
 
 
 if __name__ == "__main__":

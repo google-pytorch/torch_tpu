@@ -26,6 +26,7 @@ load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
+load("//shims/pytest:pytest_defs.bzl", "pytest_test")
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -625,6 +626,7 @@ def torch_tpu_py_test(
         args = None,
         shuffle_tests = True,
         autoload = True,
+        use_pytest = False,
         extra_pywrap_deps = ["//torch_tpu/common:pywrap_torch_tpu"],
         strict = False,
         size = None,
@@ -690,9 +692,10 @@ def torch_tpu_py_test(
              "and circular dependencies between files.")
 
     args = args or []
+    deps_to_add = ["//torch_tpu:conftest"]
     if shuffle_tests:
         # Shuffle test cases to avoid test ordering dependencies.
-        args = args + ["--test_randomize_ordering_seed=random"]
+        deps_to_add = deps_to_add + ["@pypi//pytest_randomly"]
 
     # See the comment about suppress_failure_output in torch_tpu_cc_test
     # for more details.
@@ -815,7 +818,6 @@ def torch_tpu_py_test(
         fail("torch_tpu_py_test must include \"//torch_tpu\" in its deps to " +
              "ensure that torch_tpu is loaded.")
 
-    deps_to_add = []
     if use_pywrap_rules():
         deps_to_add = extra_pywrap_deps
 
@@ -834,16 +836,26 @@ def torch_tpu_py_test(
         deps + deps_to_add,
     )
 
-    if platform:
+    if use_pytest:
+        rule = pytest_test
+        kwargs.pop("main", None)
+
+        # pytest_test uses 'tests' instead of 'srcs' for test files
+        kwargs["tests"] = srcs
+        kwargs["srcs"] = []
+    elif platform:
         rule = py_platform_test
         kwargs["platform"] = platform
+        kwargs["srcs"] = srcs
     elif strict:
         rule = pytype_strict_contrib_test
+        kwargs["srcs"] = srcs
     else:
         rule = py_test
+        kwargs["srcs"] = srcs
+
     rule(
         name = name,
-        srcs = srcs,
         args = args,
         size = size,
         timeout = timeout,

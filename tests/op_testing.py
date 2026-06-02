@@ -18,7 +18,7 @@ See go/torch-tpu-op-test for more details.
 """
 
 import collections
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
 import copy
 import enum
 import functools
@@ -38,8 +38,8 @@ from typing import Any, Final, IO
 import unittest
 
 from absl import flags
-from absl.testing import absltest
 from etils import epath
+import pytest
 import safetensors.torch as st
 import torch
 from torch.testing._internal import autograd_function_db
@@ -97,82 +97,71 @@ class TestMode(enum.Enum):
   PERF = "perf"  # Measure op performance.
 
 
-_TEST_MODE: Final[flags.FlagHolder[TestMode]] = flags.DEFINE_enum_class(
-    "test_mode", TestMode.TORCH_TPU_VS_CPU, TestMode, "Mode to run the test in."
-)
+def _test_mode_env() -> str:
+  return os.environ.get("TORCH_TPU_TEST_MODE", "torch_tpu_vs_cpu")
 
-# The --dtypes flag accepts a comma-separated list of dtypes. We define this
-# as a list of strings, where each string is either the name of a dtype or
-# "all".
-_DTYPES: Final[flags.FlagHolder[Sequence[str]]] = flags.DEFINE_list(
-    "dtypes",
-    ["all"],
-    "dtypes to test. Can be a comma-separated list of dtype names (e.g. "
-    " 'float32,bfloat16'), or a single 'all'.",
-)
 
-_MAX_SAMPLES_PER_OP_DTYPE: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
-    "max_samples_per_op_dtype",
-    -1,
-    "Maximum number of samples to test for each (op variant, dtype) pair. "
-    "Negative values mean no limit.",
-)
+def _get_dtypes() -> Sequence[str]:
+  val = os.environ.get("TORCH_TPU_TEST_DTYPES", "all")
+  return [s.strip() for s in val.split(",")]
 
-_COMPUTE_GRAD: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
-    "compute_grad",
-    False,
-    "Compute the gradient of the op instead of the normal op result.",
-)
 
-_USE_COMPILED: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
-    "use_compiled",
-    False,
-    "Use compiled torch_tpu backend.",
-)
+def _get_max_samples() -> int:
+  return int(os.environ.get("TORCH_TPU_MAX_SAMPLES", "-1"))
 
-_CHECK_DYNAMISM_USING_SEED: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
-    "check_dynamism_using_seed",
-    0,
-    "If non-zero, marks a random dimension as bounded dynamic and runs the ops"
-    " test, comparing bounded XLA result with PyTorch CPU result. Only picks"
-    " dimensions with size >=2, and bounds for size+10. Allows for explicitly"
-    " setting the seed value for reproducibility, or -1 for random seed.",
-)
 
-_OPT_LEVEL: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
-    "opt_level",
-    "",
-    "Optimization level to run the test with. Valid options are '' (default),"
-    " 'O0', 'O1', 'O2', 'O3', and 'O4'. Only used in the perf mode.",
-)
+def _get_compute_grad() -> bool:
+  return os.environ.get("TORCH_TPU_COMPUTE_GRAD", "False").lower() in (
+      "true",
+      "1",
+      "yes",
+  )
 
-_PRINT_OP_INPUTS: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
-    "print_op_inputs",
-    0,
-    "Print the inputs and reproducer function for the ops being tested. Useful"
-    " for debugging. Set to 0 for no printing, 1 for to print op input"
-    " summaries (no data), or 2 to include verbose / real tensor data for"
-    " reproducers.",
-)
 
-_UPDATE_PERF_DATA: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
-    "update_perf_data",
-    False,
-    "Update the output perf data files. Currently only used in the perf mode.",
-)
+def compute_grad_enabled() -> bool:
+  """Returns true if gradient computation is enabled."""
+  return _get_compute_grad()
 
-_ANALYZE: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
-    "analyze",
-    False,
-    "Analyze the performance results stored in `--perf_dir`.",
-)
 
-_PERF_DIR: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
-    "perf_dir",
-    "",
-    "Directory for storing the performance results. Must be a "
-    "non-empty string in the perf mode.",
-)
+def _get_check_dynamism_seed() -> int:
+  return int(os.environ.get("TORCH_TPU_CHECK_DYNAMISM_SEED", "0"))
+
+
+def _get_opt_level() -> str:
+  return os.environ.get("TORCH_TPU_OPT_LEVEL", "")
+
+
+def _get_print_op_inputs() -> int:
+  """Return whether the PRINT_OP_INPUTS environment variable is truthy.
+
+  If so, the tests should print the inputs and reproducer function for the
+  ops being tested. This is useful for debugging.
+
+  Set to 0 for no printing, 1 to print op input summaries (no data) or 2
+  to include verbose / real tensor data for reproducers.
+  """
+  return int(os.environ.get("PRINT_OP_INPUTS", 0))
+
+
+def _get_update_perf_data() -> bool:
+  return os.environ.get("TORCH_TPU_UPDATE_PERF_DATA", "False").lower() in (
+      "true",
+      "1",
+      "yes",
+  )
+
+
+def _get_analyze() -> bool:
+  return os.environ.get("TORCH_TPU_ANALYZE", "False").lower() in (
+      "true",
+      "1",
+      "yes",
+  )
+
+
+def _get_perf_dir() -> str:
+  return os.environ.get("TORCH_TPU_PERF_DIR", "")
+
 
 _NUM_RUNS_PER_SUBTEST: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
     "num_runs_per_subtest",
@@ -297,11 +286,11 @@ NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
 @functools.lru_cache(maxsize=None)
 def _dtypes_to_test() -> Sequence[torch.dtype]:
   """Returns the dtypes to test."""
-
-  if "all" in _DTYPES.value:
+  dtypes = _get_dtypes()
+  if "all" in dtypes:
     return NUMERIC_DTYPES
   else:
-    return tuple(_parse_dtype(dtype_str) for dtype_str in _DTYPES.value)
+    return tuple(_parse_dtype(dtype_str) for dtype_str in dtypes)
 
 
 @functools.lru_cache(maxsize=1)
@@ -437,10 +426,11 @@ def _add_perf_result(result: PerfResult) -> None:
 
 def _perf_dir() -> epath.Path:
   """Returns the perf directory."""
+  perf_dir_path = _get_perf_dir()
   assert (
-      _PERF_DIR.value
+      perf_dir_path
   ), "--perf_dir must be set to a non-empty string when --test_mode=perf."
-  return epath.Path(_PERF_DIR.value)
+  return epath.Path(perf_dir_path)
 
 
 def _get_test_shard() -> int:
@@ -687,27 +677,34 @@ def _make_tensors_empty(x: _pytree.PyTree) -> _pytree.PyTree:
 
 def _gen_gpu_golden_mode() -> bool:
   """Returns true if the test is running in gen_gpu_golden mode."""
-  return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
+  return _test_mode_env() == "gen_gpu_golden"
 
 
 def _torch_tpu_vs_cpu_mode() -> bool:
   """Returns true if the test is running in torch_tpu_vs_cpu mode."""
-  return _TEST_MODE.value == TestMode.TORCH_TPU_VS_CPU
+  return _test_mode_env() == "torch_tpu_vs_cpu"
 
 
-def _torch_tpu_vs_gpu_mode() -> bool:
+def torch_tpu_vs_gpu_mode() -> bool:
   """Returns true if the test is running in torch_tpu_vs_gpu mode."""
-  return _TEST_MODE.value == TestMode.TORCH_TPU_VS_GPU
+  return _test_mode_env() == "torch_tpu_vs_gpu"
+
+
+_torch_tpu_vs_gpu_mode = torch_tpu_vs_gpu_mode
 
 
 def _perf_mode() -> bool:
   """Returns true if the test is running in perf mode."""
-  return _TEST_MODE.value == TestMode.PERF
+  return _test_mode_env() == "perf"
 
 
 def is_compiled_mode() -> bool:
   """Returns true if --use_compiled is set."""
-  return _USE_COMPILED.value
+  return os.environ.get("TORCH_TPU_USE_COMPILED", "False").lower() in (
+      "true",
+      "1",
+      "yes",
+  )
 
 
 def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
@@ -1070,7 +1067,7 @@ def _should_skip_dtype(
   """Returns true if the dtype should be skipped for the test."""
   return dtype in exclude_dtypes or (
       # Gradients only work for complex and floating-point dtypes.
-      _COMPUTE_GRAD.value
+      _get_compute_grad()
       and not dtype.is_complex
       and not dtype.is_floating_point
   )
@@ -1172,6 +1169,7 @@ def _compiled_supports_op(
   return key not in compiled_deny_list
 
 
+@pytest.mark.usefixtures("device_type")
 class TorchTpuTestBase(TestCase):
   """Base class for TorchTPU tests."""
 
@@ -1193,6 +1191,7 @@ class TorchTpuTestBase(TestCase):
 
     # Device used for computing the golden results, or None if the golden
     # results are read from the golden file.
+    test_mode_val = TestMode(_test_mode_env())
     self.golden_device = {
         # go/keep-sorted start
         TestMode.GEN_GPU_GOLDEN: torch.device("cuda"),
@@ -1200,17 +1199,17 @@ class TorchTpuTestBase(TestCase):
         TestMode.TORCH_TPU_VS_CPU: torch.device("cpu"),
         TestMode.TORCH_TPU_VS_GPU: None,
         # go/keep-sorted end
-    }[_TEST_MODE.value]
+    }[test_mode_val]
 
-    if _TEST_MODE.value in (TestMode.TORCH_TPU_VS_CPU, TestMode.PERF):
+    if test_mode_val in (TestMode.TORCH_TPU_VS_CPU, TestMode.PERF):
       self.golden_device_type = "cpu"
-    elif _TEST_MODE.value in (
+    elif test_mode_val in (
         TestMode.GEN_GPU_GOLDEN,
         TestMode.TORCH_TPU_VS_GPU,
     ):
       self.golden_device_type = "gpu"
     else:
-      self.fail(f"Unknown test mode: {_TEST_MODE.value}")
+      self.fail(f"Unknown test mode: {test_mode_val}")
 
   def set_accuracy_overrides(
       self,
@@ -1466,7 +1465,7 @@ class TorchTpuTestBase(TestCase):
         return []
       raise
     if max_samples is None:
-      max_samples = _MAX_SAMPLES_PER_OP_DTYPE.value
+      max_samples = _get_max_samples()
     if max_samples >= 0 and len(golden_samples) > max_samples:
       print(
           f">>> Taking {max_samples} random samples from "
@@ -1615,7 +1614,8 @@ class TorchTpuTestBase(TestCase):
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       op_func = torch.compile(op_func, dynamic=False, backend=backend)
 
-    if _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu"):
+    check_dynamism_seed = _get_check_dynamism_seed()
+    if check_dynamism_seed and device == torch.device("tpu"):
       if not check_dynamism:
         self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
 
@@ -1630,7 +1630,7 @@ class TorchTpuTestBase(TestCase):
         self.skipTest(skip)
 
       # Use a seed value to enable reproducing a failure deterministically.
-      seed = _CHECK_DYNAMISM_USING_SEED.value
+      seed = check_dynamism_seed
       seed = seed if seed > 0 else (time.time_ns() % 100000)
       print(f">>>> Reproduce using `--check_dynamism_using_seed={seed}`")
       self.dynamism_mark_dynamic_fn(
@@ -1915,13 +1915,14 @@ class TorchTpuTestBase(TestCase):
 
     torch_tpu_printable_input = _to_torch_tpu_printable_input(golden_input)
     torch_tpu_printable_input.name = subtest_name
-    if _PRINT_OP_INPUTS.value > 0:
+    print_op_inputs = _get_print_op_inputs()
+    if print_op_inputs > 0:
       # TODO b/486861095
       if op.name != "normal":
         print_reproducer(subtest_name, op, golden_input, variant)
-      print_op_input(torch_tpu_printable_input, data=_PRINT_OP_INPUTS.value > 1)
+      print_op_input(torch_tpu_printable_input, data=print_op_inputs > 1)
 
-    opt_level = _OPT_LEVEL.value
+    opt_level = _get_opt_level()
     if opt_level:
       compiler_options = {"xla_optimization_level": opt_level}
     else:
@@ -2189,7 +2190,7 @@ class TorchTpuTestBase(TestCase):
         exclude_inplace_dtypes
     )
     skip_output_indices = skip_output_indices or []
-    compute_grad = _COMPUTE_GRAD.value
+    compute_grad = _get_compute_grad()
     use_compiled = is_compiled_mode()
 
     if compute_grad and not check_grad:
@@ -2468,8 +2469,13 @@ def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
   return float_bits.view(dtype)
 
 
-def set_up_test_module() -> None:
-  """Sets up the entire test module."""
+@pytest.fixture(scope="session", autouse=True)
+def set_up_test_module(request) -> Iterator[None]:
+  """Sets up the entire test module.
+
+  Args:
+    request: The pytest request object.
+  """
 
   if _gen_gpu_golden_mode() and not torch.cuda.is_available():
     print(
@@ -2500,9 +2506,14 @@ def set_up_test_module() -> None:
 
   # Pick a random seed for the test.
   global _RANDOM_SEED
-  if absltest.FLAGS["test_random_seed"].present:
-    # The user explicitly passed --test_random_seed=N, so we use that value.
-    _RANDOM_SEED = absltest.FLAGS.test_random_seed
+  try:
+    randomly_seed = request.config.getoption("--randomly-seed")
+  except ValueError:
+    randomly_seed = None
+
+  if randomly_seed is not None:
+    # The user explicitly passed --randomly-seed, so we use that value.
+    _RANDOM_SEED = randomly_seed
   elif (
       _torch_tpu_vs_cpu_mode()
       and _device_ops_backend._is_optimized_build()  # pylint: disable=protected-access
@@ -2518,7 +2529,6 @@ def set_up_test_module() -> None:
 
   # Set the random seed for Python and Torch.
   _seed_rngs(_RANDOM_SEED)
-  print(f"Repro with --test_random_seed={_RANDOM_SEED}", flush=True)
   print(f"Torch initial seed: {torch.initial_seed()}", flush=True)
 
   # Assert that `torch.get_default_dtype()` returns `torch.float` when `setUp`
@@ -2528,10 +2538,16 @@ def set_up_test_module() -> None:
   if _torch_tpu_vs_gpu_mode():
     print("Running in TorchTPU vs GPU mode.", flush=True)
     _load_golden_files()
+    if not is_compiled_mode():
+      assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+    else:
+      assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+    yield
+    tear_down_test_module()
     return
 
   if _perf_mode():
-    if _ANALYZE.value:
+    if _get_analyze():
       _analyze_perf_data()
       sys.exit(0)  # Don't run the tests.
     else:
@@ -2580,7 +2596,7 @@ def set_up_test_module() -> None:
               op_info, device, dtype, requires_grad, **kwargs
           ):
             if (
-                _COMPUTE_GRAD.value
+                _get_compute_grad()
                 and isinstance(sample.input, torch.Tensor)
                 and sample.input.is_floating_point()
             ):
@@ -2602,13 +2618,23 @@ def set_up_test_module() -> None:
       # This handles the base op and its variants (like 'out')
       op.sample_inputs_func = create_unique_samples(op.sample_inputs_func)
 
+  if (
+      _torch_tpu_vs_gpu_mode() and not is_compiled_mode()
+  ) or _torch_tpu_vs_cpu_mode():
+    assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+  else:
+    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+
+  yield
+  tear_down_test_module()
+
 
 def tear_down_test_module() -> None:
   """Tears down the entire test module."""
 
   if _gen_gpu_golden_mode():
     _save_golden_file()
-  elif _perf_mode() and _UPDATE_PERF_DATA.value:
+  elif _perf_mode() and _get_update_perf_data():
     _save_perf_data()
 
 
