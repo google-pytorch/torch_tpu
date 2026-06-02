@@ -22,17 +22,13 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <utility>
-#include <vector>
 
-#include "absl/base/const_init.h"
 #include "absl/base/no_destructor.h"
-#include "absl/flags/declare.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
-#include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "torch_tpu/common/env_vars.h"
