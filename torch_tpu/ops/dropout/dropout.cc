@@ -32,7 +32,7 @@
 
 namespace torch_tpu {
 
-absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
+absl::StatusOr<MlirOpResults<3>> BuildDropoutTrainShlo(
     mlir::MlirOp rng_input_state, mlir::MlirOp input, double p) {
   ABSL_VLOG(1) << "[BuildDropoutTrainShlo] input: "
                << mlir::debugString(input.getValue()) << ", p: " << p;
@@ -56,6 +56,7 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
       op_builder, input.getValue().getLoc(), rng_input_state_type,
       input_type_uint64, algorithm, rng_input_state.getValue());
 
+  auto rng_output_state = mlir::MlirOp(builder, rng_op.getOutputState());
   mlir::MlirOp rng_output_op = mlir::MlirOp(builder, rng_op.getOutput());
   const mlir::RankedTensorType rng_output_op_type =
       GetTensorTypeOrDie(rng_output_op);
@@ -92,7 +93,7 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
   auto scale_const = MakeConstantLike(input, scale);
   auto output = mlir::stablehlo::Mul(masked_input_op, scale_const);
 
-  return {{output, mask_op}};
+  return {{rng_output_state, output, mask_op}};
 }
 
 absl::StatusOr<MlirOpResults<1>> BuildDropoutBackwardShlo(

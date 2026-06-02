@@ -17,9 +17,9 @@
 #include "torch_tpu/ops/randperm/randperm_aten_kernels.h"
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
@@ -35,10 +35,10 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
-#include "torch_tpu/ops/rng_utils.h"
 
 namespace torch_tpu {
 namespace {
@@ -103,27 +103,34 @@ at::Tensor& AtenRandpermGeneratorOut(c10::SymInt n,
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-    const int64_t num_elements = n_int;
-    const int64_t bit_width = 64;
+    auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
+        generator, GetDefaultDeviceGenerator());
 
-    TT_THROW_IF_ERROR(DispatchRngOp(
-        out, generator,
-        [n_int, output_dtype, out, &param_keys](at::Tensor rng_input_state)
-            -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-          TT_ASSIGN_OR_RETURN(
-              auto buf,
-              DispatchOp<1>(
-                  [n_int, output_dtype](mlir::MlirOp rng_input_state) {
-                    return BuildRandpermShlo(rng_input_state, n_int,
-                                             output_dtype);
-                  },
-                  {rng_input_state},
-                  {.out_dtype = output_dtype,
-                   .out_dims = out.sizes(),
-                   .op_param_cache_keys = std::move(param_keys)}));
-          return std::vector<DeviceBufferRef>{std::move(buf)};
-        },
-        RngUsage{num_elements, bit_width}));
+    at::Tensor rng_input_state;  // UNINITIALIZED_TENSOR_OK
+    {
+      // See Note [Acquire lock when using random generators]
+      // NOLINTNEXTLINE
+      std::scoped_lock<std::mutex> lock(gen->mutex_);
+      // Query the current RNG state and advance it.
+      TT_ASSIGN_OR_THROW(rng_input_state,
+                         gen->GetAndAdvanceDeviceStateTensor(n_int, 64));
+    }
+
+    // Dispatch the actual randperm.
+    auto randperm_op_builder =
+        [n_int, output_dtype](
+            mlir::MlirOp rng_input_state) -> absl::StatusOr<mlir::MlirOp> {
+      return BuildRandpermShlo(rng_input_state, n_int, output_dtype);
+    };
+
+    TT_ASSIGN_OR_THROW(
+        auto output_buf,
+        (DispatchOp<1>(std::move(randperm_op_builder), {rng_input_state},
+                       {.out_dtype = output_dtype,
+                        .out_dims = out.sizes(),
+                        .op_param_cache_keys = std::move(param_keys)})));
+
+    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(output_buf), out));
     return out;
   });
 }

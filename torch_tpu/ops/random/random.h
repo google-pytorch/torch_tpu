@@ -30,7 +30,7 @@ namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> RandomBitsToUniform(
     mlir::MlirOp random_bits, mlir::ElementType element_type);
 
-absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp rng_input_state,
+absl::StatusOr<MlirOpResults<2>> BuildRandomShlo(mlir::MlirOp rng_input_state,
                                                  Dimensions dims,
                                                  mlir::ElementType output_dtype,
                                                  int64_t from, int64_t to);

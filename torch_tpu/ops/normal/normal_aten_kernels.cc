@@ -17,11 +17,9 @@
 #include "torch_tpu/ops/normal/normal_aten_kernels.h"
 
 #include <cmath>
-#include <cstdint>
 #include <optional>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
@@ -32,7 +30,6 @@
 #include "ATen/ops/zeros_like.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "llvm/ADT/APFloat.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/Support/LLVM.h"
@@ -64,7 +61,7 @@ namespace {
 // our random generator state in eager/device_gen_impl.h and pass it to
 // shlo::RngBitGenerator to generate random bits. We then use those to sample
 // from distributions. Note: shlo::Rng doesn't support a custom seed/algorithm.
-absl::StatusOr<MlirOpResults<1>> BuildStandardNormalShloLike(
+absl::StatusOr<MlirOpResults<2>> BuildStandardNormalShloLike(
     mlir::MlirOp self, mlir::MlirOp rng_state) {
   auto self_type = GetTensorTypeOrDie(self);
   TT_ASSIGN_OR_RETURN(auto mlir_type,
@@ -78,14 +75,13 @@ absl::StatusOr<MlirOpResults<1>> BuildStandardNormalShloLike(
   from_ap.next(/*nextDown=*/false);
   double from = from_ap.convertToDouble();
   TT_ASSIGN_OR_RETURN(
-      auto uniform_results,
+      (auto [rng_output_state, uniform_op]),
       BuildUniformShlo(rng_state, from, 1.0, self_type.getShape(), mlir_type));
-  auto uniform_op = uniform_results;
   auto erf_inv_op = mlir::chlo::ErfInv(uniform_op);
   auto two = MakeConstantLike(erf_inv_op, 2.0, mlir_type);
   auto sqrt_two = mlir::stablehlo::Sqrt(two);
   auto gaussian_op = mlir::stablehlo::Mul(erf_inv_op, sqrt_two);
-  return gaussian_op;
+  return {{rng_output_state, gaussian_op}};
 }
 
 // Generates a tensor of normal random numbers with the given shape, mean,
@@ -96,14 +92,13 @@ absl::StatusOr<MlirOpResults<1>> BuildStandardNormalShloLike(
 // `std_scale` is set to 1/sqrt(2) for complex types so that the resulting
 // joint variance equals the requested standard deviation squared.
 // For real types, `std_scale` is simply 1.0.
-absl::StatusOr<MlirOpResults<1>> BuildNormalShloLike(mlir::MlirOp self,
+absl::StatusOr<MlirOpResults<2>> BuildNormalShloLike(mlir::MlirOp self,
                                                      mlir::MlirOp rng_state,
                                                      mlir::MlirOp mean,
                                                      mlir::MlirOp std,
                                                      mlir::MlirOp std_scale) {
-  TT_ASSIGN_OR_RETURN(auto std_normal_results,
+  TT_ASSIGN_OR_RETURN((auto [rng_output_state, std_normal]),
                       BuildStandardNormalShloLike(self, rng_state));
-  auto std_normal = std_normal_results;
   TT_ASSIGN_OR_RETURN(mean, BroadcastIfNeeded(mean, self));
   TT_ASSIGN_OR_RETURN(std, BroadcastIfNeeded(std, self));
   TT_ASSIGN_OR_RETURN(std_scale, BroadcastIfNeeded(std_scale, self));
@@ -116,12 +111,12 @@ absl::StatusOr<MlirOpResults<1>> BuildNormalShloLike(mlir::MlirOp self,
   auto std_scaled = mlir::stablehlo::Mul(std, std_scale);
   auto normal_with_variance = mlir::stablehlo::Mul(std_normal, std_scaled);
   auto normal = mlir::stablehlo::Add(normal_with_variance, mean);
-  return normal;
+  return {{rng_output_state, normal}};
 }
 
-absl::StatusOr<NAryMlirOpBuilder<5, 1>> GetNormalFunctional() {
+absl::StatusOr<NAryMlirOpBuilder<5, 2>> GetNormalFunctional() {
   return [](FixedSizeSpan<mlir::MlirOp, 5> inputs)
-             -> absl::StatusOr<MlirOpResults<1>> {
+             -> absl::StatusOr<MlirOpResults<2>> {
     auto [self, rng_state, mean, std, std_scale] = inputs;
     return BuildNormalShloLike(self, rng_state, mean, std, std_scale);
   };
@@ -188,22 +183,16 @@ absl::StatusOr<DeviceBufferRef> NormalLike(
                       ConvertTo<mlir::ElementType>(self_real.scalar_type()));
 
   TT_ASSIGN_OR_RETURN(auto builder, GetNormalFunctional());
-
   return DispatchRngOpAndReturnBuffer(
-      generator,
-      [builder = std::move(builder), self_real, mean_real, std_real, std_scale,
-       mlir_type](at::Tensor rng_input_state) mutable
-          -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-        TT_ASSIGN_OR_RETURN(
-            auto buf,
-            (DispatchOp<5, 1>(
-                std::move(builder),
-                {self_real, rng_input_state, mean_real, std_real, std_scale},
-                {.out_dtype = mlir_type,
-                 .out_dims = self_real.sizes(),
-                 .op_param_cache_keys = OpParamCacheKeys::Empty(),
-                 .split_mode = OpSplitMode::kSplitAfter})));
-        return std::vector<DeviceBufferRef>{std::move(buf)};
+      generator, [builder = std::move(builder), self_real, mean_real, std_real,
+                  std_scale, mlir_type](at::Tensor rng_input_state) mutable {
+        return DispatchOp<5, 2>(
+            std::move(builder),
+            {self_real, rng_input_state, mean_real, std_real, std_scale},
+            {.out_dtypes = {mlir::ElementType::UI64, mlir_type},
+             .out_dims_list = {{2}, self_real.sizes()},
+             .op_param_cache_keys = OpParamCacheKeys::Empty(),
+             .split_mode = OpSplitMode::kSplitAfter});
       });
 }
 

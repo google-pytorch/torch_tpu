@@ -262,11 +262,12 @@ digraph {
   5 [label="set_offset"];
   6 [shape="box", label=" uint64[2]"];
   7 [label="uniform_"];
-  8 [shape="box", label="x: float32[2, 3]"];
-  9 [label="sum.IntList_out"];
-  10 [shape="box", label="z: float32[]"];
-  11 [label="pow.out"];
-  12 [shape="box", label="y: float32[2, 3]"];
+  8 [shape="box", label=" uint64[2]"];
+  9 [shape="box", label="x: float32[2, 3]"];
+  10 [label="sum.IntList_out"];
+  11 [shape="box", label="z: float32[]"];
+  12 [label="pow.out"];
+  13 [shape="box", label="y: float32[2, 3]"];
 
   // Edges:
   1 -> 2
@@ -276,11 +277,12 @@ digraph {
   5 -> 6
   6 -> 7
   7 -> 8
-  8 -> 9
+  7 -> 9
   9 -> 10
-  8 -> 11
-  0 -> 11
-  11 -> 12
+  10 -> 11
+  9 -> 12
+  0 -> 12
+  12 -> 13
 }
 """
 

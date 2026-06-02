@@ -103,7 +103,7 @@ absl::StatusOr<mlir::MlirOp> BitsToUniform(mlir::MlirOp random_bits,
   return stablehlo::Add(from, scaled_op);
 }
 
-absl::StatusOr<MlirOpResults<1>> BuildUniformShlo(
+absl::StatusOr<MlirOpResults<2>> BuildUniformShlo(
     mlir::MlirOp rng_input_state, const double from, const double to,
     const llvm::ArrayRef<int64_t> sizes, const mlir::ElementType mlir_type) {
   const mlir::RankedTensorType rng_input_state_type =
@@ -131,7 +131,7 @@ absl::StatusOr<MlirOpResults<1>> BuildUniformShlo(
   mlir::MlirOp rng_output_op = mlir::MlirOp(builder, rng_bits_op.getOutput());
   TT_ASSIGN_OR_RETURN(auto result,
                       BitsToUniform(rng_output_op, from_op, to_op));
-  return result;
+  return {{rng_output_state, result}};
 }
 
 }  // namespace torch_tpu

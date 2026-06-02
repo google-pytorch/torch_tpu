@@ -30,7 +30,7 @@ namespace torch_tpu {
 // Uses the philox algorithm and `rng_input_state` to generate random u64s and
 // convert them to uniformly distributed random number in [to, from) of the
 // desired type and shape.
-absl::StatusOr<MlirOpResults<1>> BuildUniformShlo(mlir::MlirOp rng_input_state,
+absl::StatusOr<MlirOpResults<2>> BuildUniformShlo(mlir::MlirOp rng_input_state,
                                                   double from, double to,
                                                   llvm::ArrayRef<int64_t> sizes,
                                                   mlir::ElementType mlir_type);

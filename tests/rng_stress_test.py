@@ -24,47 +24,29 @@ from absl.testing import parameterized
 import torch
 
 RNG_OPS = (
-    (
-        "rand",
-        lambda device: torch.rand(100, device=device),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
-    ),
-    (
-        "randn",
-        lambda device: torch.randn(100, device=device),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
-    ),
+    ("rand", lambda device: torch.rand(100, device=device)),
+    ("randn", lambda device: torch.randn(100, device=device)),
     (
         "bernoulli",
         lambda device: torch.full((100,), 0.5, device=device).bernoulli_(),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
     ),
     (
         "exponential",
         lambda device: torch.ones(100, device=device).exponential_(),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
     ),
-    (
-        "random",
-        lambda device: torch.zeros(100, device=device).random_(),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
-    ),
-    (
-        "uniform",
-        lambda device: torch.zeros(100, device=device).uniform_(),
-        25,  # Offset increment: 100 (size) * 32 (bits) // 128 (philox step).
-    ),
+    ("random", lambda device: torch.zeros(100, device=device).random_()),
+    ("uniform", lambda device: torch.zeros(100, device=device).uniform_()),
     (
         "dropout",
         lambda device: torch.nn.functional.dropout(
             torch.ones(100, device=device), p=0.5
         ),
-        50,  # Offset increment: 100 (size) * 64 (bits) // 128 (philox step).
+        50,  # offset increment: 100 (size) * 64 (bits) // 128 (philox step)
     ),
     (
         "randperm",
         lambda device: torch.randperm(100, device=device),
-        50,  # Offset increment: 100 (size) * 64 (bits) // 128 (philox step).
+        50,  # offset increment: 100 (size) * 64 (bits) // 128 (philox step)
     ),
 )
 

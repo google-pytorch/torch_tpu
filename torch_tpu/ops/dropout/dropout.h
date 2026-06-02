@@ -25,11 +25,7 @@ namespace torch_tpu {
 
 // Builds the SHLO for dropout in the train mode. When train=False, dropout is
 // a no-op, so doesn't require a builder.
-//
-// Returns:
-//   A pair of MlirOpResults, the first for the output tensor and the second for
-//   the mask tensor.
-absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
+absl::StatusOr<MlirOpResults<3>> BuildDropoutTrainShlo(
     mlir::MlirOp rng_input_state, mlir::MlirOp input, double p);
 
 // Builds the SHLO for dropout backward.

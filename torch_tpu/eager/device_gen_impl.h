@@ -86,14 +86,11 @@ class DeviceGeneratorImpl : public c10::GeneratorImpl {
   // Validates the shape, dtype, and device of the RNG state tensor.
   absl::Status CheckDeviceStateTensor(const at::Tensor& rng_state) const;
 
-  // Advances the generator's state by the amount specified
+  // Returns the current device-resident rng_state tensor. This also
+  // advances the generator's state by the amount specified
   // (num_elements * bit_width).
-  absl::Status AdvanceDeviceStateTensor(int64_t num_elements,
-                                        int64_t bit_width);
-
-  // Returns the internal TPU RNG state tensor.
-  // This is a 1D uint64 tensor of 2 elements: {seed, offset}.
-  at::Tensor DeviceStateTensor() const;
+  absl::StatusOr<at::Tensor> GetAndAdvanceDeviceStateTensor(
+      int64_t num_elements, int64_t bit_width);
 
  private:
   template <typename DispatchFunc>
@@ -113,6 +110,10 @@ class DeviceGeneratorImpl : public c10::GeneratorImpl {
   void set_state(const c10::TensorImpl& new_state) override;
   void graphsafe_set_state(
       const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override;
+
+  // Returns the internal TPU RNG state tensor.
+  // This is a 1D uint64 tensor of 2 elements: {seed, offset}.
+  at::Tensor DeviceStateTensor() const;
 
   // Sets the internal TPU RNG state tensor.
   // Validates the shape, dtype, and device of the provided tensor.

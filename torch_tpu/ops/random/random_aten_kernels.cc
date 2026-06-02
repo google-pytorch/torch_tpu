@@ -21,7 +21,6 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "ATen/Context.h"
 #include "ATen/Dispatch.h"
@@ -56,11 +55,11 @@ namespace torch_tpu {
 
 namespace {
 
-NAryMlirOpBuilder<1, 1> GetRandomFunctional(Dimensions dims,
+NAryMlirOpBuilder<1, 2> GetRandomFunctional(Dimensions dims,
                                             mlir::ElementType output_dtype,
                                             int64_t from, int64_t to) {
   return [dims, output_dtype, from,
-          to](mlir::MlirOp rng_state) -> absl::StatusOr<MlirOpResults<1>> {
+          to](mlir::MlirOp rng_state) -> absl::StatusOr<MlirOpResults<2>> {
     return BuildRandomShlo(rng_state, dims, output_dtype, from, to);
   };
 }
@@ -122,21 +121,14 @@ absl::Status Random(at::Tensor& self, c10::optional<at::Generator> generator,
   TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
   auto dims = CopyIntVector(self.sizes());
-
-  return DispatchRngOp(
-      self, generator,
-      [&](at::Tensor rng_input_state)
-          -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-        TT_ASSIGN_OR_RETURN(
-            auto buf,
-            (DispatchOp<1, 1>(GetRandomFunctional(dims, output_dtype, from, to),
-                              {rng_input_state},
-                              {.out_dtype = output_dtype,
-                               .out_dims = self.sizes(),
-                               .op_param_cache_keys = std::move(param_keys),
-                               .split_mode = OpSplitMode::kSplitAfter})));
-        return std::vector<DeviceBufferRef>{std::move(buf)};
-      });
+  return DispatchRngOp(self, generator, [&](at::Tensor rng_input_state) {
+    return DispatchOp<1, 2>(
+        GetRandomFunctional(dims, output_dtype, from, to), {rng_input_state},
+        {.out_dtypes = {mlir::ElementType::UI64, output_dtype},
+         .out_dims_list = {{2}, self.sizes()},
+         .op_param_cache_keys = std::move(param_keys),
+         .split_mode = OpSplitMode::kSplitAfter});
+  });
 }
 
 }  // namespace

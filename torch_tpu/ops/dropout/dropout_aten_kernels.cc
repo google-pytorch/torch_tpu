@@ -16,7 +16,6 @@
 
 #include "torch_tpu/ops/dropout/dropout_aten_kernels.h"
 
-#include <cstdint>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -48,18 +47,10 @@ namespace torch_tpu {
 
 namespace {
 
-// Builds the SHLO for dropout in the train mode.
-//
-// Parameters:
-//   input: The input tensor.
-//   p: The dropout rate.
-// Returns:
-//   A pair of MlirOpResults, the first for the output tensor and the second for
-//   the mask tensor.
-NAryMlirOpBuilder<2, 2> GetDropoutFunctional(const at::Tensor& input,
+NAryMlirOpBuilder<2, 3> GetDropoutFunctional(const at::Tensor& input,
                                              double p) {
   return [p](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-             -> absl::StatusOr<MlirOpResults<2>> {
+             -> absl::StatusOr<MlirOpResults<3>> {
     auto& [rng_state, input] = inputs;
     return BuildDropoutTrainShlo(rng_state, input, p);
   };
@@ -95,25 +86,17 @@ std::tuple<at::Tensor, at::Tensor> AtenDropout(const at::Tensor& input,
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(input.scalar_type()));
 
-    const int64_t num_elements = input.numel();
-    // The StableHLO generates a uint64 random tensor to produce the dropout
-    // mask.
-    const int64_t bit_width = 64;
-
     TT_ASSIGN_OR_THROW(
         auto results,
-        DispatchRngOpGeneral(
-            std::nullopt,
-            [&](at::Tensor rng_input_state) {
-              return DispatchOp<2, 2>(
-                  GetDropoutFunctional(input, p), {rng_input_state, input},
-                  {.out_dtypes = {output_dtype, mlir::ElementType::PRED},
-                   .out_dims_list = {input.sizes(), input.sizes()},
-                   .op_param_cache_keys = std::move(param_keys)});
-            },
-            RngUsage{num_elements, bit_width}));
+        DispatchRngOpGeneral(std::nullopt, [&](at::Tensor rng_input_state) {
+          return DispatchOp<2, 3>(
+              GetDropoutFunctional(input, p), {rng_input_state, input},
+              {.out_dtypes = {mlir::ElementType::UI64, output_dtype,
+                              mlir::ElementType::PRED},
+               .out_dims_list = {{2}, input.sizes(), input.sizes()},
+               .op_param_cache_keys = std::move(param_keys)});
+        }));
 
-    // [output, mask]
     return {MakeTensor(std::move(results[0])),
             MakeTensor(std::move(results[1]))};
   });

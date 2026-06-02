@@ -103,7 +103,7 @@ absl::StatusOr<mlir::MlirOp> AddLowerBound(
   return mlir::stablehlo::Convert(output_type, in_range_op);
 }
 
-absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp state,
+absl::StatusOr<MlirOpResults<2>> BuildRandomShlo(mlir::MlirOp state,
                                                  Dimensions dims,
                                                  mlir::ElementType output_dtype,
                                                  int64_t from, int64_t to) {
@@ -162,7 +162,7 @@ absl::StatusOr<MlirOpResults<1>> BuildRandomShlo(mlir::MlirOp state,
       BitsToRandomIntegersInRange(rng_output_op, diff_op, range_is_power_of_2));
   TT_ASSIGN_OR_RETURN(auto result, AddLowerBound(numbers_in_range,
                                                  output_tensor_type, from_op));
-  return result;
+  return {{rng_output_state, result}};
 }
 
 }  // namespace torch_tpu

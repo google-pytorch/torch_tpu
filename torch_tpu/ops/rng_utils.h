@@ -17,9 +17,7 @@
 #ifndef TORCH_TPU_OPS_RNG_UTILS_H_
 #define TORCH_TPU_OPS_RNG_UTILS_H_
 
-#include <cstdint>
 #include <mutex>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -28,7 +26,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
-#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_gen_impl.h"
@@ -36,78 +33,66 @@
 
 namespace torch_tpu {
 
-// Represents the number of elements and bit width consumed by an RNG operation.
-struct RngUsage {
-  int64_t num_elements = -1;
-  int64_t bit_width = -1;
-};
-
-// Dispatches an RNG operation, handling locking, state retrieval, and
-// advancement. `dispatch_func` must use the provided state tensor and return
-// the output buffers. If `usage` is not provided, the RNG advancement
-// parameters (num_elements and bit_width) are inferred from the first output
-// buffer. Otherwise, the explicit `usage` values are used (required when the
-// output type/shape does not match the actual RNG consumption, e.g., dropout).
+// Dispatches an RNG operation, handling the common pattern of acquiring the
+// generator, locking it, getting the state, invoking the operation, and
+// updating the state. Returns all output buffers except the new RNG state.
+//
+// Parameters:
+//   generator: Optional generator to use. If not provided, the default
+//     device generator is used.
+//   dispatch_func: A callable that takes an `at::Tensor` (the current RNG
+//     state) and returns an `absl::StatusOr` of a container of DeviceBufferRef
+//     (e.g., std::array or std::vector), where the first element is the new
+//     RNG state.
 template <typename DispatchFunc>
 absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
-    c10::optional<at::Generator> generator, DispatchFunc dispatch_func,
-    const std::optional<RngUsage>& usage = std::nullopt) {
+    c10::optional<at::Generator> generator, DispatchFunc dispatch_func) {
   auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
       generator, GetDefaultDeviceGenerator());
 
   // NOLINTNEXTLINE(build/c++11) - std::mutex required by PyTorch
   std::scoped_lock<std::mutex> lock(gen->mutex_);
+  at::Tensor rng_input_state = gen->DeviceStateTensor();
+
   TT_ASSIGN_OR_RETURN(auto results_array,
-                      std::move(dispatch_func)(gen->DeviceStateTensor()));
+                      std::move(dispatch_func)(rng_input_state));
 
-  int64_t num_elements = -1;
-  int64_t bit_width = -1;
-
-  if (usage.has_value()) {
-    num_elements = usage->num_elements;
-    bit_width = usage->bit_width;
-  } else {
-    ABSL_CHECK(!results_array.empty())  // CRASH_OK
-        << "Expected at least one output buffer to infer RNG parameters";
-    const auto& first_result = results_array[0];
-    num_elements = first_result.num_elements();
-    bit_width = TorchEquivalentBitwidth(first_result.element_type());
-  }
-
-  // Advance the generator state when dispatch_func returns successfully.
-  TT_RETURN_IF_ERROR(gen->AdvanceDeviceStateTensor(num_elements, bit_width));
-
-  return std::vector<DeviceBufferRef>(
+  std::vector<DeviceBufferRef> results(
       std::make_move_iterator(results_array.begin()),
       std::make_move_iterator(results_array.end()));
+
+  ABSL_CHECK(!results.empty())  // CRASH_OK
+      << "RNG op must produce at least one output (the new state).";
+
+  auto rng_output_state = MakeTensor(std::move(results[0]));
+  TT_RETURN_IF_ERROR(gen->SetDeviceStateTensor(rng_output_state));
+
+  results.erase(results.begin());
+  return results;
 }
 
-// Helper that wraps `DispatchRngOpGeneral` and returns the single output buffer
-// produced by `dispatch_func`. Supports optional explicit RNG advancement
-// parameters; if not specified, they are inferred from the returned buffer.
+// Like `DispatchRngOpGeneral` but expects the dispatch function to return
+// exactly one output buffer (in addition to the new RNG state). Returns
+// that single output buffer.
 template <typename DispatchFunc>
 absl::StatusOr<DeviceBufferRef> DispatchRngOpAndReturnBuffer(
-    c10::optional<at::Generator> generator, DispatchFunc dispatch_func,
-    const std::optional<RngUsage>& usage = std::nullopt) {
+    c10::optional<at::Generator> generator, DispatchFunc dispatch_func) {
   TT_ASSIGN_OR_RETURN(
-      auto results,
-      DispatchRngOpGeneral(generator, std::move(dispatch_func), usage));
+      auto results, DispatchRngOpGeneral(generator, std::move(dispatch_func)));
   ABSL_CHECK_EQ(results.size(), 1)  // CRASH_OK
       << "Expected 1 output buffer, got " << results.size();
   return std::move(results[0]);
 }
 
-// Helper that wraps `DispatchRngOpAndReturnBuffer` and assigns the single
-// output buffer to `result_tensor`. Supports optional explicit RNG advancement
-// parameters; if not specified, they are inferred from the returned buffer.
+// Like `DispatchRngOpAndReturnBuffer` but assigns the output buffer to
+// `result_tensor`.
 template <typename DispatchFunc>
-absl::Status DispatchRngOp(
-    at::Tensor& result_tensor, c10::optional<at::Generator> generator,
-    DispatchFunc dispatch_func,
-    const std::optional<RngUsage>& usage = std::nullopt) {
+absl::Status DispatchRngOp(at::Tensor& result_tensor,
+                           c10::optional<at::Generator> generator,
+                           DispatchFunc dispatch_func) {
   TT_ASSIGN_OR_RETURN(
       DeviceBufferRef output_buf,
-      DispatchRngOpAndReturnBuffer(generator, std::move(dispatch_func), usage));
+      DispatchRngOpAndReturnBuffer(generator, std::move(dispatch_func)));
   return AssignBufferToAtTensor(std::move(output_buf), result_tensor);
 }
 

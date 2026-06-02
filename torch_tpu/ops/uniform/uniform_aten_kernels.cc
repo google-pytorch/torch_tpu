@@ -16,16 +16,12 @@
 
 #include "torch_tpu/ops/uniform/uniform_aten_kernels.h"
 
-#include <cstdint>
 #include <optional>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -47,7 +43,7 @@ namespace torch_tpu {
 
 namespace {
 
-NAryMlirOpBuilder<1, 1> GetUniformFunctional(Dimensions dims,
+NAryMlirOpBuilder<1, 2> GetUniformFunctional(Dimensions dims,
                                              mlir::ElementType output_dtype,
                                              double from, double to) {
   return [dims, output_dtype, from, to](mlir::MlirOp rng_input_state) {
@@ -78,20 +74,15 @@ at::Tensor& AtenUniform_(at::Tensor& self, double from, double to,
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self_real.scalar_type()));
     auto dims = CopyIntVector(self_real.sizes());
-
-    TT_THROW_IF_ERROR(DispatchRngOp(
-        self_real, generator,
-        [&](at::Tensor rng_input_state)
-            -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-          TT_ASSIGN_OR_RETURN(
-              auto buf, (DispatchOp<1, 1>(
-                            GetUniformFunctional(dims, output_dtype, from, to),
-                            {rng_input_state},
-                            {.out_dtype = output_dtype,
-                             .out_dims = self_real.sizes(),
-                             .op_param_cache_keys = std::move(param_keys),
-                             .split_mode = OpSplitMode::kSplitAfter})));
-          return std::vector<DeviceBufferRef>{std::move(buf)};
+    TT_THROW_IF_ERROR(
+        DispatchRngOp(self_real, generator, [&](at::Tensor rng_input_state) {
+          return DispatchOp<1, 2>(
+              GetUniformFunctional(dims, output_dtype, from, to),
+              {rng_input_state},
+              {.out_dtypes = {mlir::ElementType::UI64, output_dtype},
+               .out_dims_list = {{2}, self_real.sizes()},
+               .op_param_cache_keys = std::move(param_keys),
+               .split_mode = OpSplitMode::kSplitAfter});
         }));
     return self;
   });

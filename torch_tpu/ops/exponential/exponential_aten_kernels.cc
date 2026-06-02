@@ -19,12 +19,10 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
-#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -34,7 +32,6 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
-#include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -45,7 +42,7 @@
 namespace torch_tpu {
 namespace {
 
-absl::StatusOr<MlirOpResults<1>> BuildExponentialShlo(
+absl::StatusOr<MlirOpResults<2>> BuildExponentialShlo(
     mlir::MlirOp rng_input_state, const double lambd,
     const llvm::ArrayRef<int64_t> sizes, const mlir::ElementType mlir_type) {
   // Generate uniform distribution in [0, 1).
@@ -53,7 +50,8 @@ absl::StatusOr<MlirOpResults<1>> BuildExponentialShlo(
       auto uniform_results,
       BuildUniformShlo(rng_input_state, 0.0, 1.0, sizes, mlir_type));
 
-  mlir::MlirOp u = uniform_results;
+  mlir::MlirOp rng_output_state = uniform_results[0];
+  mlir::MlirOp u = uniform_results[1];
   auto& builder = u.getBuilder();
 
   // exponential = -ln(1 - U) / lambda
@@ -72,10 +70,10 @@ absl::StatusOr<MlirOpResults<1>> BuildExponentialShlo(
   auto neg_log = mlir::stablehlo::Neg(log_one_minus_u);
   auto result = mlir::stablehlo::Div(neg_log, lambd_op);
 
-  return result;
+  return {{rng_output_state, result}};
 }
 
-NAryMlirOpBuilder<1, 1> GetExponentialFunctional(Dimensions dims,
+NAryMlirOpBuilder<1, 2> GetExponentialFunctional(Dimensions dims,
                                                  mlir::ElementType output_dtype,
                                                  double lambd) {
   return [dims, output_dtype, lambd](mlir::MlirOp rng_input_state) {
@@ -98,19 +96,14 @@ at::Tensor& AtenExponential_(at::Tensor& self, double lambd,
     TT_ASSIGN_OR_THROW(mlir::ElementType output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
     auto dims = CopyIntVector(self.sizes());
-
-    TT_THROW_IF_ERROR(DispatchRngOp(
-        self, generator,
-        [&](at::Tensor rng_input_state)
-            -> absl::StatusOr<std::vector<DeviceBufferRef>> {
-          TT_ASSIGN_OR_RETURN(
-              auto buf, (DispatchOp<1, 1>(
-                            GetExponentialFunctional(dims, output_dtype, lambd),
-                            {rng_input_state},
-                            {.out_dtype = output_dtype,
-                             .out_dims = self.sizes(),
-                             .op_param_cache_keys = std::move(param_keys)})));
-          return std::vector<DeviceBufferRef>{std::move(buf)};
+    TT_THROW_IF_ERROR(
+        DispatchRngOp(self, generator, [&](at::Tensor rng_input_state) {
+          return DispatchOp<1, 2>(
+              GetExponentialFunctional(dims, output_dtype, lambd),
+              {rng_input_state},
+              {.out_dtypes = {mlir::ElementType::UI64, output_dtype},
+               .out_dims_list = {{2}, self.sizes()},
+               .op_param_cache_keys = std::move(param_keys)});
         }));
     return self;
   });
