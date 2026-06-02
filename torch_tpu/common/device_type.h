@@ -36,7 +36,7 @@ enum class PjRtDeviceType {
 };
 
 // Returns the device type for TPU.
-[[nodiscard]] inline constexpr c10::DeviceType GetPrivateUse1DeviceType() {
+[[nodiscard]] constexpr c10::DeviceType GetPrivateUse1DeviceType() {
   return c10::DeviceType::PrivateUse1;
 }
 
