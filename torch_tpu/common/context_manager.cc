@@ -17,6 +17,7 @@
 #include "torch_tpu/common/context_manager.h"
 
 #include <memory>
+#include <string_view>
 
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
@@ -31,6 +32,9 @@ void DisallowThisThreadToAccessContextState() {
   allow_context_state_access = false;
 }
 
+constexpr std::string_view kEnableTracesbacksName = "ENABLE_TRACESBACKS";
+const c10::DebugInfoKind kEnableTracebacks(&kEnableTracesbacksName);
+
 namespace internal {
 
 void CrashIfContextStateAccessIsDisallowed() {
@@ -42,6 +46,8 @@ void CrashIfContextStateAccessIsDisallowed() {
 }
 
 void PushContextStateUntyped(ContextManagerState state) {
+  static_cast<void>(kEnableTracebacks);  // VOID_CAST_OK=testing
+
   // Get the current top node of the shared slot to use as parent.
   const auto* const top = dynamic_cast<ContextManagerNode*>(
       c10::ThreadLocalDebugInfo::get(internal::kTpuContextSlot));
