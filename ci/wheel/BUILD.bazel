@@ -88,6 +88,7 @@ pytype_strict_library(
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
         "//torch_tpu/api",
+        "//torch_tpu/experimental",
     ],
     visibility = ["//visibility:public"],
 )

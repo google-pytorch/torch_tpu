@@ -14,6 +14,8 @@
 
 """TorchTPU library."""
 
+# pylint: disable=g-statement-before-imports
+
 try:
   import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
 
@@ -23,3 +25,12 @@ except ImportError:
   pass
 
 # TODO: b/477401982 - Introduce a new flag module to hold all TorchTPU flags.
+
+
+def __getattr__(name):  # pylint: disable=invalid-name
+  if name == "experimental":
+    from torch_tpu import experimental  # pylint: disable=g-import-not-at-top
+
+    globals()["experimental"] = experimental
+    return experimental
+  raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

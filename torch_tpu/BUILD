@@ -57,7 +57,6 @@ torch_tpu_py_library(
     ],
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/device:_tpu_backend_config",
@@ -94,6 +93,7 @@ py_library_providing_imports_info(
     ) + [
         ":_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
+        "//torch_tpu/experimental",
     ],
 )
 
