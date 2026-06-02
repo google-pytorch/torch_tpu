@@ -152,6 +152,16 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     y = torch.rsqrt(x)
     print(f"rsqrt(complex64) result: {y}")
 
+  def test_normal_compile_complex(self):
+    @torch.compile(fullgraph=True)
+    def fn(mean, std):
+      return torch.normal(mean, std)
+
+    mean = torch.zeros(4, dtype=torch.complex64, device="tpu")
+    std = torch.ones(4, device="tpu")
+    res = fn(mean, std)
+    self.assertEqual(res.shape, (4,))
+
   def test_gather_scalar_grad(self):
     del self  # self is unused in this test.
     device = torch.device("tpu")

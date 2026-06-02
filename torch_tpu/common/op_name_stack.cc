@@ -50,6 +50,7 @@ void OpNameStack::Push(OpName op_name) {
   static absl::Mutex mutex(absl::kConstInit);  // Protects known_composite_ops.
   static absl::NoDestructor<absl::flat_hash_set<OpName>> known_composite_ops({
       // go/keep-sorted start
+
       OpName::kAbsOut,
       OpName::kAdaptiveAvgPool2d,
       OpName::kAdaptiveAvgPool2dBackward,
@@ -201,13 +202,9 @@ void OpNameStack::Push(OpName op_name) {
       OpName::kNllLoss2dForward,
       OpName::kNonzero,
       OpName::kNonzeroOut,
-      OpName::kNormalFloatTensor,
       OpName::kNormalFloatTensorOut,
-      OpName::kNormalTensorFloat,
       OpName::kNormalTensorFloatOut,
-      OpName::kNormalTensorTensor,
       OpName::kNormalTensorTensorOut,
-      OpName::kNormal_,
       OpName::kPolarOut,
       OpName::kProd,
       OpName::kProdDimOut,
