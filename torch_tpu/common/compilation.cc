@@ -34,10 +34,13 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_split.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/Pass/PassManager.h"
+#include "stablehlo/transforms/Passes.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/context_manager.h"
@@ -50,6 +53,7 @@
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/translate/register.h"
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/service/computation_placer.h"
@@ -80,6 +84,8 @@ namespace {
 constexpr std::string_view kOptimizationLevelOption = "xla_optimization_level";
 constexpr std::string_view kMemoryFittingLevelOption =
     "xla_memory_fitting_level";
+constexpr std::string_view kUseShardyPartitionerOption =
+    "xla_use_shardy_partitioner";
 
 // Represents the state of the "allow excess precision" compiler option.
 enum class ExcessPrecisionState {
@@ -124,6 +130,20 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
     const MlirComputationBuilder& computation_builder) {
   auto context = MakeMlirContext();
   TT_ASSIGN_OR_RETURN(auto module, computation_builder(*context));
+
+  mlir::PassManager pm(module->getContext());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::stablehlo::createStablehloLegalizeDeprecatedOpsPass());
+  pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::mhlo::createLegalizeEinsumToDotGeneralPass());
+  pm.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
+
+  if (mlir::failed(pm.run(*module))) {
+    return TT_ERROR(error::kInternal)
+           << "Failed to run MLIR legalization passes.";
+  }
+
   return ContextedModule(std::move(context), std::move(module));
 }
 
@@ -417,6 +437,10 @@ absl::Status ApplyCompilerOptionOverrides(
       TT_ASSIGN_OR_RETURN(const auto level, ParseEffortLevel(value));
       compile_options.executable_build_options.set_memory_fitting_level(level);
       // LINT.ThenChange(:xla_executable_build_options_fingerprint)
+    } else if (key == kUseShardyPartitionerOption) {
+      bool use_shardy = (value == "true" || value == "1");
+      compile_options.executable_build_options.set_use_shardy_partitioner(
+          use_shardy);
     } else {
       // Apply a new override by replacing the entry with the same key, if
       // present, or by appending the new (key, value) pair at the end fo the

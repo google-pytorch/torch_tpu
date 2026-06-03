@@ -303,6 +303,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "dynamic_arange";
     case OpName::kEfficientZeroTensor:
       return "_efficientzerotensor";
+    case OpName::kEinsum:
+      return "einsum";
     case OpName::kEluBackwardGradInput:
       return "elu_backward.grad_input";
     case OpName::kEluOut:
@@ -1237,6 +1239,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sparse_dense_matmul_grad_with_sgd";
     case OpName::kSplitWithSizesCopyOut:
       return "split_with_sizes_copy.out";
+    case OpName::kSpmdMetadata:
+      return "spmd_metadata";
     case OpName::kSqrtOut:
       return "sqrt.out";
     case OpName::kSub:

@@ -728,6 +728,27 @@ class FunctionTest(absltest.TestCase):
     # The values should be the same as well.
     utils.assert_close(actual=result.cpu(), expected=expected)
 
+  def test_unary_einsum(self):
+    def simple(x):
+      return torch.einsum("ii->i", x)
+
+    x = torch.randn(5, 5, device=torch.device("tpu"))
+    executables = self._run_and_compare(simple, [x], debug=True)
+    self.assertLen(executables, 1)
+    self.assertIn("stablehlo.einsum", executables[0].mlir_text)
+    self.assertIn('config = ",ii->i"', executables[0].mlir_text)
+
+  def test_binary_einsum(self):
+    def simple(x, y):
+      return torch.einsum("ij,jk->ik", x, y)
+
+    x = torch.randn(4, 5, device=torch.device("tpu"))
+    y = torch.randn(5, 6, device=torch.device("tpu"))
+    executables = self._run_and_compare(simple, [x, y], debug=True)
+    self.assertLen(executables, 1)
+    self.assertIn("stablehlo.dot_general", executables[0].mlir_text)
+    self.assertIn("contracting_dims = [1] x [0]", executables[0].mlir_text)
+
 
 class ModuleTest(absltest.TestCase):
 

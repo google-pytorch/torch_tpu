@@ -263,16 +263,29 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       are made to match the expected output of the original FX graph,
       potentially after being processed by `reconstruct_fx_outputs_fn`.
     """
+    import torch.distributed.tensor as dist_tensor
+
     # aot_autograd with SerializableAOTDispatchCompiler passes args as a
     # single list: fn([t1, t2, ...]). Unwrap when we detect this pattern.
+    original_args = args
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]
+      original_args = args
+
+    is_list = isinstance(args, list)
+    unwrapped_args = []
+    for arg in args:
+      if isinstance(arg, dist_tensor.DTensor):
+        unwrapped_args.append(arg.to_local())
+      else:
+        unwrapped_args.append(arg)
+    unwrapped_args_tuple = unwrapped_args if is_list else tuple(unwrapped_args)
 
     device = torch.accelerator.current_accelerator()
     device_module = getattr(torch, device.type)
 
     # Update RNG state as the last argument.
-    generators = [arg for arg in args if type(arg) is torch.Generator]  # pylint: disable=unidiomatic-typecheck
+    generators = [arg for arg in unwrapped_args_tuple if type(arg) is torch.Generator]  # pylint: disable=unidiomatic-typecheck
     if self._updates_default_generator_state:
       generators.append(device_module.default_generators[device.index or 0])
 
@@ -293,7 +306,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
           tpu_torch_compile.get_device_state_tensor(gen) for gen in generators
       ]
       executable_args = (
-          *self._take_tensor_args(args),
+          *self._take_tensor_args(unwrapped_args_tuple),
           *device_state_tensors,
       )
 
@@ -328,7 +341,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         tpu_torch_compile.set_device_state_tensor(gen, device_state_tensor)
 
     if self._reconstruct_fx_outputs_fn is not None:
-      outputs = self._reconstruct_fx_outputs_fn(args, outputs)
+      outputs = self._reconstruct_fx_outputs_fn(original_args, outputs)
 
     return outputs
 

@@ -67,8 +67,10 @@
 #include "torch_tpu/ops/dot/dot_aten_kernels.h"
 #include "torch_tpu/ops/dot/vdot_aten_kernels.h"
 #include "torch_tpu/ops/dropout/dropout_aten_kernels.h"
+#include "torch_tpu/ops/dtensor/dtensor_ops_kernels.h"
 #include "torch_tpu/ops/dynamic/dynamic_arange/dynamic_arange.h"
 #include "torch_tpu/ops/dynamic/set_dimension_logical_size/set_dimension_logical_size.h"
+#include "torch_tpu/ops/einsum/einsum_aten_kernels.h"
 #include "torch_tpu/ops/elu/elu_aten_kernels.h"
 #include "torch_tpu/ops/embedding/embedding_aten_kernels.h"
 #include "torch_tpu/ops/equal/equal_aten_kernels.h"
@@ -408,6 +410,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kDivOutMode>(m, AtenDivOutMode);
   ImplStable<OpName::kDot>(m, AtenDot);
   ImplStable<OpName::kEfficientZeroTensor>(m, AtenEfficientZeroTensor);
+  ImplStable<OpName::kEinsum>(m, AtenEinsum);
   ImplStable<OpName::kEluBackwardGradInput>(m, AtenEluBackwardGradInput);
   ImplStable<OpName::kEluOut>(m, AtenEluOut);
   ImplStable<OpName::kEmbeddingBag>(m, AtenEmbeddingBag);
@@ -1056,6 +1059,9 @@ TORCH_LIBRARY(tpu, m) {
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor activations_grad, Tensor learning_rate, int device_batch_size, "
       "int max_ids_per_partition, int max_unique_ids_per_partition) -> Tensor");
+  m.def(
+      "spmd_metadata(Tensor x, str mesh_spec, str sharding_spec_in, "
+      "str sharding_spec_out, int[] global_shape, str kind) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(tpu, Meta, m) {
@@ -1105,6 +1111,13 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return std::make_tuple(at::empty_like(embedding_table),
                                at::empty_like(accumulator));
       });
+  ImplStable<OpName::kSpmdMetadata>(
+      m,
+      [](const at::Tensor& x, std::string_view mesh_spec,
+         std::string_view sharding_spec_in, std::string_view sharding_spec_out,
+         at::IntArrayRef global_shape, std::string_view kind) {
+        return at::empty(global_shape, x.options());
+      });
 }
 
 TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
@@ -1128,6 +1141,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
       m, AtenSparseDenseMatmulGradWithSgd);
   ImplExperimental<OpName::kSparseDenseMatmulGradWithAdagrad>(
       m, AtenSparseDenseMatmulGradWithAdagrad);
+  ImplStable<OpName::kSpmdMetadata>(m, SpmdMetadata);
 }
 
 TORCH_LIBRARY_IMPL(tpu, CPU, m) {
@@ -1135,6 +1149,10 @@ TORCH_LIBRARY_IMPL(tpu, CPU, m) {
   ImplExperimental<OpName::kRaggedDotOut>(m, AtenRaggedDotOut);
   ImplExperimental<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
   ImplExperimental<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
+}
+
+TORCH_LIBRARY_IMPL(aten, Meta, m) {
+  ImplStable<OpName::kEinsum>(m, AtenEinsumMeta);
 }
 
 // Returns a mutable reference to the global CPU fallback mode (defaulted to

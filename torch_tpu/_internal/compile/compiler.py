@@ -127,6 +127,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
     pass
 
 
+
 def has_dynamic_symints(args: Any) -> bool:
   """Checks whether truly dynamic SymInt inputs or shapes exist.
 
@@ -153,6 +154,64 @@ def has_dynamic_symints(args: Any) -> bool:
         return True
 
   return False
+
+
+def _concretize_tensor_for_placeholder(tensor: torch.Tensor) -> torch.Tensor:
+  """Converts a potentially symbolic FakeTensor to a dummy real CPU tensor with concrete shapes and strides."""
+  has_symbolic = False
+  if hasattr(tensor, "size"):
+    has_symbolic = has_symbolic or any(
+        isinstance(s, torch.SymInt) for s in tensor.size()
+    )
+  if hasattr(tensor, "stride"):
+    has_symbolic = has_symbolic or any(
+        isinstance(s, torch.SymInt) for s in tensor.stride()
+    )
+
+  try:
+    offset = tensor.storage_offset()
+    if isinstance(offset, torch.SymInt):
+      has_symbolic = True
+  except Exception:
+    has_symbolic = True
+
+  if not has_symbolic:
+    return tensor
+
+  try:
+    concrete_sizes = [int(s) for s in tensor.size()]
+    concrete_strides = [int(s) for s in tensor.stride()]
+    concrete_offset = int(tensor.storage_offset())
+  except Exception as e:
+    raise NotImplementedError(
+        "TPU backend static compiler cannot compile tensor with unresolved"
+        f" dynamic shapes: {tensor}. Please enable dynamism in TpuBackend or"
+        " ensure shapes are static."
+    ) from e
+
+  if any(s < 0 for s in concrete_strides):
+    raise NotImplementedError(
+        "Negative strides are not supported in concretization helper yet."
+    )
+
+  if len(concrete_sizes) == 0:
+    return torch.empty((), dtype=tensor.dtype, device="cpu")
+
+  max_offset = concrete_offset
+  for size, stride in zip(concrete_sizes, concrete_strides):
+    if size > 0:
+      max_offset += (size - 1) * stride
+
+  base_numel = max_offset + 1
+  base_tensor = torch.empty((base_numel,), dtype=tensor.dtype, device="cpu")
+  view_tensor = base_tensor.as_strided(
+      concrete_sizes, concrete_strides, concrete_offset
+  )
+
+  if tensor.requires_grad:
+    view_tensor.requires_grad_(True)
+
+  return view_tensor
 
 
 class StaticCompiler(Compiler):
@@ -247,12 +306,14 @@ class StaticCompiler(Compiler):
       #     placeholders will error.
       # (2) Act as TPU-compatible FakeTensors, so that tracing does not depend
       #     on tensor data.
-      placeholder_args = [
-          tpu_torch_compile.placeholder_like(arg)
-          if isinstance(arg, torch.Tensor)
-          else arg
-          for arg in example_inputs
-      ]
+      placeholder_args = []
+      for arg in example_inputs:
+        if isinstance(arg, torch.Tensor):
+          concretized_arg = _concretize_tensor_for_placeholder(arg)
+          ph = tpu_torch_compile.placeholder_like(concretized_arg)
+          placeholder_args.append(ph)
+        else:
+          placeholder_args.append(arg)
 
       with dynamo_timed("torchtpu_fx_to_mlir"):
         exported_mlir = torch_tpu_export.fx_to_mlir(

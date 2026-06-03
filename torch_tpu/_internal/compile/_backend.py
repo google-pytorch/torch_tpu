@@ -34,6 +34,8 @@ from collections.abc import Callable, Iterator, Sequence
 import contextlib
 import functools
 import hashlib
+import os
+import sys
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -44,8 +46,12 @@ from torch._functorch._aot_autograd import graph_compile as _graph_compile
 from torch._functorch._aot_autograd.schemas import AOTAutogradCacheInfo
 from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompiler
 import torch._functorch.config as functorch_config
+import torch.distributed.tensor._collective_utils as collective_utils
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import dtensor_rewriter
+from torch_tpu._internal.compile import dtensor_sentinels
+from torch_tpu._internal.compile import layout_optimizer
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
 
@@ -283,6 +289,7 @@ class TpuBackend:
     # Stores information about each compiled executable.
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[compiler.CompiledArtifact] = []
+    dtensor_sentinels.ensure_registered()
 
   def __call__(
       self,
@@ -307,6 +314,8 @@ class TpuBackend:
     else:
       compiler_instance = compiler.StaticCompiler(debug=self._debug)
 
+    compiler_instance.resolved_param_specs = {}
+    compiler_instance.resolved_output_specs = []
     compiler_instance.execute_pre_grad_passes(graph_module)
 
     # DynamicCompiler artifacts are not pickleable yet, so only static
@@ -331,16 +340,158 @@ class TpuBackend:
         self._compile_graph_module, compiler_instance, False
     )
 
+    options = kwargs.get("options", {})
+    partitioning_engine = options.get("partitioning_engine", "dtensor")
+    self._partitioning_engine = partitioning_engine
+
+    logging.info(
+        "[SDY]: original dynamo graph:\n%s",
+        graph_module.print_readable(print_output=False),
+    )
+    if partitioning_engine == "shardy":
+      sys.stderr.write(
+          "[SDY_DEBUG] Original Dynamo"
+          f" Graph:\n{graph_module.print_readable(print_output=False)}\n"
+      )
+
+    if partitioning_engine == "shardy":
+      example_inputs = dtensor_rewriter.rewrite_dynamo_graph(
+          graph_module,
+          example_inputs,
+          compiler_instance.resolved_param_specs,
+          compiler_instance.resolved_output_specs,
+      )
+      layout_optimizer.eliminate_back_to_back_sentinels(graph_module)
+      # Extract mesh
+      device_mesh = None
+      for spec in compiler_instance.resolved_output_specs:
+        if spec is not None:
+          device_mesh = spec[0]
+          break
+      if device_mesh is None:
+        for spec in compiler_instance.resolved_param_specs.values():
+          if spec is not None:
+            device_mesh = spec.mesh
+            break
+      self._device_mesh = device_mesh
+      logging.info("[SDY] Extracted device mesh: %s", device_mesh)
+
+      logging.info(
+          "[SDY]: dynamo graph after dtensor rewrite:\n%s",
+          graph_module.print_readable(print_output=False),
+      )
+      sys.stderr.write(
+          "[SDY_DEBUG] Dynamo Graph after"
+          f" rewrite:\n{graph_module.print_readable(print_output=False)}\n"
+      )
+
+      # Monkeypatch cost model to avoid fake group communication overhead
+      collective_utils.redistribute_cost.__code__ = (
+          lambda *args, **kwargs: 0.0
+      ).__code__
+      collective_utils.one_step_redistribute_cost.__code__ = (
+          lambda *args, **kwargs: 0.0
+      ).__code__
+
+    class DebugDispatchMode(torch.utils._python_dispatch.TorchDispatchMode):
+
+      def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        if kwargs is None:
+          kwargs = {}
+        logging.info("[DEBUG_DISPATCH] Calling %s with types %s", func, types)
+
+        def print_arg(prefix, arg):
+          if isinstance(arg, torch.Tensor):
+            has_spec = hasattr(arg, "_spec") and arg._spec is not None
+            local_tensor = getattr(arg, "_local_tensor", None)
+            local_type = (
+                type(local_tensor) if local_tensor is not None else None
+            )
+            logging.info(
+                "%s Tensor: type=%s, shape=%s, has_spec=%s, "
+                "local_type=%s, device=%s",
+                prefix,
+                type(arg),
+                getattr(arg, "shape", None),
+                has_spec,
+                local_type,
+                getattr(arg, "device", None),
+            )
+          elif isinstance(arg, (list, tuple)):
+            for i, a in enumerate(arg):
+              print_arg(f"{prefix}[{i}]", a)
+          elif isinstance(arg, dict):
+            for k, v in arg.items():
+              print_arg(f"{prefix}[{k}]", v)
+
+        print_arg("  arg", args)
+        print_arg("  kwarg", kwargs)
+        try:
+          res = func(*args, **kwargs)
+          print_arg("  res", res)
+          return res
+        except Exception as e:
+          logging.info("[DEBUG_DISPATCH] Exception in %s: %s", func, e)
+          raise e
+
     with _serialization_context(enable_serialization) as captured_entry:
-      result = aot_autograd(
-          fw_compiler=fw_compiler,
-          bw_compiler=bw_compiler,
-          keep_inference_input_mutations=False,
-      )(graph_module, example_inputs)
+      with DebugDispatchMode():
+        result = aot_autograd(
+            fw_compiler=fw_compiler,
+            bw_compiler=bw_compiler,
+            keep_inference_input_mutations=False,
+        )(graph_module, example_inputs)
+
+      for i, exe in enumerate(self._compiled_executables):
+        if (
+            hasattr(exe, "graph_module_debug_str")
+            and exe.graph_module_debug_str
+        ):
+          logging.info(
+              f"[SDY]: {partitioning_engine=}, Compiled Executable %d"
+              " ATen:\n%s",
+              i,
+              exe.graph_module_debug_str,
+          )
+        if hasattr(exe, "mlir_text"):
+          logging.info(
+              f"[SDY]: {partitioning_engine=}, Compiled Executable %d"
+              " MLIR:\n%s",
+              i,
+              exe.mlir_text,
+          )
 
       if captured_entry is not None and captured_entry[0] is not None:
         entry = captured_entry[0]
         result.serialize = lambda: entry
+
+      if (
+          partitioning_engine == "shardy"
+          and compiler_instance.resolved_output_specs
+      ):
+
+        def wrap_outputs(*args, **kwargs):
+          import torch.distributed.tensor as dist_tensor
+
+          outputs = result(*args, **kwargs)
+          flat_outputs, out_spec = _pytree.tree_flatten(outputs)
+          wrapped_flat = []
+          for out, spec in zip(
+              flat_outputs, compiler_instance.resolved_output_specs
+          ):
+            if spec is not None and isinstance(out, torch.Tensor):
+              wrapped_flat.append(
+                  dist_tensor.DTensor.from_local(
+                      out, spec[0], spec[1], run_check=False
+                  )
+              )
+            else:
+              wrapped_flat.append(out)
+          return _pytree.tree_unflatten(wrapped_flat, out_spec)
+
+        if hasattr(result, "serialize"):
+          wrap_outputs.serialize = result.serialize
+        return wrap_outputs
 
       return result
 
@@ -376,7 +527,17 @@ class TpuBackend:
         example_inputs,
     )
 
-    executable = compiler_instance(graph_module, example_inputs, is_fwd=is_fwd)
+    from torch_tpu._internal.compiler_options import custom_compiler_options
+
+    compiler_instance._shardy_metadata = self  # pylint: disable=protected-access
+
+    if self._partitioning_engine == "shardy":
+      ctx = custom_compiler_options({"xla_use_shardy_partitioner": "true"})
+    else:
+      ctx = contextlib.nullcontext()
+
+    with ctx:
+      executable = compiler_instance(graph_module, example_inputs, is_fwd=is_fwd)
 
     self._compiled_executables.append(executable)
 

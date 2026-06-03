@@ -78,9 +78,13 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":dtensor_rewriter",
+        ":dtensor_sentinels",
+        ":layout_optimizer",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
+        "//torch_tpu/_internal/compiler_options",
         "//torch_tpu/_internal/utils",
     ],
 )
@@ -345,6 +349,31 @@ torch_tpu_cc_test(
         "@stablehlo//:stablehlo_ops",
         "@xla//xla/mlir/utils:error_util",
         "@xla//xla/tsl/platform:statusor",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dtensor_sentinels",
+    srcs = ["dtensor_sentinels.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dtensor_rewriter",
+    srcs = ["dtensor_rewriter.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/distributed:tpu_distributed",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "layout_optimizer",
+    srcs = ["layout_optimizer.py"],
+    deps = [
+        "//shims/torch:pytorch",
     ],
 )
 

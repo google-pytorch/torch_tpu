@@ -41,6 +41,7 @@
 #include "absl/types/span.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
@@ -49,6 +50,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -393,6 +395,37 @@ mlir::MlirOp CreateArgumentOp(mlir::func::FunctionBuilder& fb,
   return result;
 }
 
+void PropagateSdyShardingToResults(mlir::ModuleOp module) {
+  auto func_op = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!func_op) return;
+
+  auto& block = func_op.getBody().front();
+  if (block.empty()) return;
+  auto return_op = mlir::dyn_cast<mlir::func::ReturnOp>(block.getTerminator());
+  if (!return_op) return;
+
+  for (unsigned i = 0; i < return_op.getNumOperands(); ++i) {
+    mlir::Value operand = return_op.getOperand(i);
+    if (auto constraint_op =
+            mlir::dyn_cast_or_null<mlir::sdy::ShardingConstraintOp>(
+                operand.getDefiningOp())) {
+      mlir::sdy::TensorShardingAttr sharding_attr = constraint_op.getSharding();
+      if (sharding_attr) {
+        func_op.setResultAttr(i, "sdy.sharding", sharding_attr);
+        ABSL_VLOG(2) << "[PropagateSdyShardingToResults] Set result " << i
+                     << " sharding to: " << mlir::debugString(sharding_attr);
+      }
+      // Replace the return operand with the input to the sharding constraint
+      mlir::Value input_val = constraint_op->getOperand(0);
+      return_op.setOperand(i, input_val);
+      // Erase the constraint op if it is no longer used
+      if (constraint_op->getResult(0).use_empty()) {
+        constraint_op->erase();
+      }
+    }
+  }
+}
+
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
@@ -500,6 +533,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
 
   mlir::func::Return(fb, results);
   auto module = mb.build();
+  PropagateSdyShardingToResults(*module);
 
   // Identify which arguments to the Traversal are donated.
   Indices donated_arguments;

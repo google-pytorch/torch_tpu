@@ -105,6 +105,41 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "dtensor_sentinels_test",
+    srcs = ["dtensor_sentinels_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:dtensor_sentinels",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "dtensor_backend_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["dtensor_backend_test.py"],
+    notest_oss = "Disabled in OSS due to infra limitations on distributed tests",
+    shard_count = 2,
+    tags = [
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests/distributed:distributed_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/compile:dtensor_rewriter",
+        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "random_ops_test",
     srcs = ["random_ops_test.py"],
     tags = [
