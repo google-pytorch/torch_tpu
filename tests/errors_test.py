@@ -3260,7 +3260,7 @@ Supported combinations for non-constant padding:
     x = torch.ones(5, dtype=torch.int64, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""_lshift__(): expected the dtype of the second argument to be integer, got float64""",
+        tpu="""__lshift__(): expected the dtype of the second argument to be integer, got float64""",
         cpu=""""lshift_cpu" not implemented for 'Float'""",
         message_reviewed_by="wan",
     ):
@@ -6308,6 +6308,28 @@ Supported combinations for non-constant padding:
         cpu="""expected scalar type ComplexDouble but found Float""",
     ):
       torch.ops.aten._fft_c2r(t, [0], 0, 4)
+
+  def test_dunder_lshift_unsupported_dtype(self):
+    x = torch.tensor([1.0], device=et.device())
+    y = torch.tensor([1.0], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""__lshift__(): expected the dtype of the first argument to be integer, got float32""",
+        cpu=""""lshift_cpu" not implemented for 'Float'""",
+        message_reviewed_by="wan",
+    ):
+      x << y  # pylint: disable=pointless-statement
+
+  def test_dunder_rshift_unsupported_dtype(self):
+    x = torch.tensor([1.0], device=et.device())
+    y = torch.tensor([1.0], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""__rshift__(): expected the dtype of the first argument to be integer, got float32""",
+        cpu=""""rshift_cpu" not implemented for 'Float'""",
+        message_reviewed_by="wan",
+    ):
+      x >> y  # pylint: disable=pointless-statement
 
 
 if __name__ == "__main__":

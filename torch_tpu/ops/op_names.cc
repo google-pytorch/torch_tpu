@@ -1357,8 +1357,13 @@ std::string_view ToBaseName(const OpName op_name) {
     return "_ctc_loss";
   }
 
+  // Remove leading underscore (internal op) if present.
+  //
+  // Exception: if op_name is a dunder method (e.g. __lshift__), do not remove
+  // the leading underscore.
   auto full_name = ToString(op_name);
-  if (!full_name.empty() && full_name[0] == '_') {
+  if (!full_name.empty() && full_name.front() == '_' &&
+      !full_name.starts_with("__")) {
     full_name.remove_prefix(1);
   }
 
