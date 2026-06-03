@@ -26,21 +26,6 @@ BAZEL_CONFIG="${4}"
 EXTRA_FLAGS="${5}"
 DISABLE_BAZEL_DIFF="${6:-false}"
 
-# TODO: b/515417327 - Check bazel-diff's native built-in solution
-# `--seed-filepaths` for handling changes to global configuration files.
-# Check if global configuration files were modified. If so, disable bazel-diff
-# to guarantee a full build validation.
-if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
-  git fetch --depth=1 origin "$BASE_SHA"
-  CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$CURRENT_SHA")
-
-  if echo "$CHANGED_FILES" | grep -E -q "^(\.bazelrc|MODULE\.bazel|WORKSPACE)$"; then
-    echo "Global build file (.bazelrc, MODULE.bazel, or WORKSPACE) modified."
-    echo "Forcing a full test run to ensure global configuration validity."
-    DISABLE_BAZEL_DIFF="true"
-  fi
-fi
-
 # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main) or
 # label "ci:disable-bazel-diff" is applied, diff-based testing is invalid. Fall
 # back to running all tests.
@@ -60,16 +45,29 @@ echo "Downloading bazel-diff..."
 # https://github.com/Tinder/bazel-diff/issues/320
 curl -fLo /tmp/bazel-diff.jar https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
 
+# Generates global configuration seed files dynamically.
+generate_seed_filepaths() {
+  local seed_file="$WORKSPACE_DIR/seed_filepaths.txt"
+  rm -f "$seed_file"
+  for f in .bazelrc MODULE.bazel WORKSPACE; do
+    if [ -f "$WORKSPACE_DIR/$f" ]; then
+      echo "$WORKSPACE_DIR/$f" >> "$seed_file"
+    fi
+  done
+}
+
 echo "--- Generating Base Hashes ---"
 echo "PR detected. Fetching exact base SHA: $BASE_SHA"
 git fetch --depth=1 origin "$BASE_SHA"
 git checkout "$BASE_SHA"
-java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/base_hashes.json"
+generate_seed_filepaths
+java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" --seed-filepaths "$WORKSPACE_DIR/seed_filepaths.txt" "$WORKSPACE_DIR/base_hashes.json"
 
 echo "--- Generating PR Hashes ---"
 echo "Checking out current SHA: $CURRENT_SHA"
 git checkout "$CURRENT_SHA"
-java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/pr_hashes.json"
+generate_seed_filepaths
+java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" --seed-filepaths "$WORKSPACE_DIR/seed_filepaths.txt" "$WORKSPACE_DIR/pr_hashes.json"
 
 echo "--- Determining Impacted Targets ---"
 java -jar /tmp/bazel-diff.jar get-impacted-targets \
