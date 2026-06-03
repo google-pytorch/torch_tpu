@@ -175,7 +175,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
 // Input shape: (B..., R, C)
 // Output shape: (B..., R(R-1)/2)
 absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
-                                                  double p) {
+                                                  mlir::MlirOp p_op, double p) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   const mlir::Type element_type = input_type.getElementType();
@@ -216,7 +216,8 @@ absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
     return BuildZeroNorm(diff_op, /*reduce_dim=*/1, element_type);
   } else {
     // General case for p-norm
-    return BuildPNormShlo(diff_op, p, {1}, ReductionMode::kDropDims, out_type);
+    return BuildPNormShlo(diff_op, p_op, p, {1}, ReductionMode::kDropDims,
+                          out_type);
   }
 }
 
@@ -674,7 +675,9 @@ at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,
 }
 
 at::Tensor AtenPdistForward(const at::Tensor& self, double p) {
-  TT_KERNEL(OpName::kPdistForward, param_keys, (self, p), {
+  PromotedScalar p_scalar = PromoteScalar(at::Scalar(p));
+  TT_KERNEL(OpName::kPdistForward, param_keys, (self, p_scalar), {
+    TT_THROW_IF_ERROR(param_keys.SetParam("p", p));
     TT_ASSIGN_OR_THROW(auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
 
@@ -695,13 +698,18 @@ at::Tensor AtenPdistForward(const at::Tensor& self, double p) {
     // because empty tensors are supported for these dtypes
     TT_THROW_IF_ERROR(CheckNotBFloatOrHalf(self, /* name= */ "input"));
 
-    auto op_builder = [p](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-      return BuildPdistForwardHlo(input, p);
+    TT_ASSIGN_OR_THROW(at::Tensor p_tensor,
+                       p_scalar.GetTensor(self.scalar_type()));
+
+    auto op_builder = [p](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [input, p_op] = inputs;
+      return BuildPdistForwardHlo(input, p_op, p);
     };
 
     TT_ASSIGN_OR_THROW(
         auto result_buf,
-        DispatchOp<1>(std::move(op_builder), self,
+        DispatchOp<2>(std::move(op_builder), {self, p_tensor},
                       {.out_dtype = out_dtype,
                        .out_dims = output_shape,
                        .op_param_cache_keys = std::move(param_keys)}));

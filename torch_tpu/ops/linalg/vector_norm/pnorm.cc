@@ -27,6 +27,8 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 
@@ -35,6 +37,16 @@ namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::MlirOp input_op, double ord, absl::Span<const int64_t> reduce_dims,
     ReductionMode reduction_mode, mlir::ElementType out_type) {
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  mlir::MlirOp ord_op = MakeScalarConstant(builder, ord, out_type);
+  return BuildPNormShlo(input_op, ord_op, ord, reduce_dims, reduction_mode,
+                        out_type);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
+    mlir::MlirOp input_op, mlir::MlirOp ord_op, double ord,
+    absl::Span<const int64_t> reduce_dims, ReductionMode reduction_mode,
+    mlir::ElementType out_type) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   auto mlir_type = mlir::getElementType(builder.getContext(), out_type);
 
@@ -87,6 +99,8 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::ElementType maybe_upcasted_out_type = out_type;
     mlir::Type maybe_upcasted_mlir_type = mlir_type;
 
+    mlir::MlirOp pow_ord = ord_op;
+
     if (out_type == mlir::ElementType::F16 ||
         out_type == mlir::ElementType::BF16) {
       maybe_upcasted_out_type = mlir::ElementType::F32;
@@ -98,9 +112,12 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
                                                      maybe_upcasted_out_type);
     }
 
-    mlir::MlirOp pow_ord =
-        MakeConstantLike(input_op, ord, maybe_upcasted_out_type);
-    input_op = mlir::stablehlo::Pow(input_op, pow_ord);
+    if (maybe_upcasted_out_type != out_type) {
+      pow_ord =
+          mlir::stablehlo::ConvertElementType(pow_ord, maybe_upcasted_out_type);
+    }
+
+    TT_ASSIGN_OR_RETURN(input_op, BuildPowShlo(input_op, pow_ord));
     auto reduce_fn = [maybe_upcasted_mlir_type](mlir::RegionBuilder& rb) {
       mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
           maybe_upcasted_mlir_type, rb.getRegion(), rb.getOpBuilder());
@@ -109,9 +126,11 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
         BuildReductionShlo(input_op, reduce_dims, maybe_upcasted_mlir_type,
                            init_val, reduce_fn, reduction_mode);
 
-    mlir::MlirOp root =
-        MakeConstantLike(reduction_res, 1.0 / ord, maybe_upcasted_out_type);
-    auto res_root = mlir::stablehlo::Pow(reduction_res, root);
+    auto one = MakeScalarConstant(builder, 1.0, maybe_upcasted_out_type);
+    auto one_bcast =
+        mlir::stablehlo::BroadcastInDim(GetTensorTypeOrDie(pow_ord), one, {});
+    TT_ASSIGN_OR_RETURN(auto root, BuildDivShlo(one_bcast, pow_ord));
+    TT_ASSIGN_OR_RETURN(auto res_root, BuildPowShlo(reduction_res, root));
 
     if (maybe_upcasted_out_type != out_type) {
       return mlir::stablehlo::ConvertElementType(res_root, out_type);
