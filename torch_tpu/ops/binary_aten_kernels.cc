@@ -648,7 +648,7 @@ absl::Status BitwiseShiftScalarHelper(const at::Tensor& self,
 }
 
 absl::Status SubHelperOut(const at::Tensor& a, const at::Tensor& b,
-                          MaybePromotedScalar promoted_alpha,
+                          const MaybePromotedScalar& promoted_alpha,
                           at::ScalarType out_dtype, at::Tensor& out,
                           OpParamCacheKeys& param_keys) {
   // As an optimization, skip the scaling if alpha is 1.
@@ -1373,7 +1373,7 @@ at::Tensor AtenRsubTensor(const at::Tensor& self, const at::Tensor& other,
         at::Tensor out,
         MakeEmptyTensor(output_dims, promoted_scalar_type, self.device()));
 
-    TT_THROW_IF_ERROR(SubHelperOut(other, self, std::move(promoted_alpha),
+    TT_THROW_IF_ERROR(SubHelperOut(other, self, promoted_alpha,
                                    promoted_scalar_type, out, param_keys));
     return out;
   });
@@ -1386,7 +1386,7 @@ at::Tensor& AtenSubOut(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
     TT_THROW_IF_ERROR(CheckSubInputs(self, other));
 
-    TT_THROW_IF_ERROR(SubHelperOut(self, other, std::move(promoted_alpha),
+    TT_THROW_IF_ERROR(SubHelperOut(self, other, promoted_alpha,
                                    out.scalar_type(), out, param_keys));
     return out;
   });

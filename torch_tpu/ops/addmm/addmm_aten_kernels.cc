@@ -118,7 +118,7 @@ absl::Status CheckInputBroadcast(const at::Tensor& self,
 
 absl::StatusOr<DeviceBufferRef> AddMm(
     const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2,
-    MaybePromotedScalar beta, PromotedScalar alpha,
+    const MaybePromotedScalar& beta, const PromotedScalar& alpha,
     at::ScalarType out_scalar_type, OpParamCacheKeys& param_keys) {
   TT_RET_CHECK(self.scalar_type() != at::kBool &&
                    mat1.scalar_type() != at::kBool &&
@@ -212,8 +212,8 @@ at::Tensor& AtenAddmmOut(const at::Tensor& self, const at::Tensor& mat1,
             << torch_tpu::ToString(out.scalar_type());
         TT_ASSIGN_OR_THROW(
             auto result_buffer,
-            AddMm(self, mat1, mat2, std::move(promoted_beta),
-                  std::move(promoted_alpha), out.scalar_type(), param_keys));
+            AddMm(self, mat1, mat2, promoted_beta, promoted_alpha,
+                  out.scalar_type(), param_keys));
         at::IntArrayRef output_sizes_array_ref(result_buffer.dimensions());
         ABSL_VLOG(3) << "calling at::native::resize_output for out tensor with "
                         "target shape: ["
@@ -233,10 +233,9 @@ at::Tensor AtenAddmmDtype(const at::Tensor& self, const at::Tensor& mat1,
   PromotedScalar promoted_alpha = PromoteScalar(alpha);
   TT_KERNEL(OpName::kAddmmDtype, param_keys,
             (self, mat1, mat2, out_dtype, promoted_beta, promoted_alpha), {
-              TT_ASSIGN_OR_THROW(
-                  auto result_buffer,
-                  AddMm(self, mat1, mat2, std::move(promoted_beta),
-                        std::move(promoted_alpha), out_dtype, param_keys));
+              TT_ASSIGN_OR_THROW(auto result_buffer,
+                                 AddMm(self, mat1, mat2, promoted_beta,
+                                       promoted_alpha, out_dtype, param_keys));
               return MakeTensor(std::move(result_buffer));
             });
 }
@@ -257,9 +256,8 @@ at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self, const at::Tensor& mat1,
             << torch_tpu::ToString(out_dtype);
         TT_ASSIGN_OR_THROW(  // ERROR_COV_INFEASIBLE=errors from addmm
                              // tested individually.
-            auto result_buffer,
-            AddMm(self, mat1, mat2, std::move(promoted_beta),
-                  std::move(promoted_alpha), out_dtype, param_keys));
+            auto result_buffer, AddMm(self, mat1, mat2, promoted_beta,
+                                      promoted_alpha, out_dtype, param_keys));
         TT_THROW_IF_ERROR(  // ERROR_COV_INFEASIBLE=No user triggerable errors.
             AssignBufferToAtTensor(std::move(result_buffer), out));
         return out;

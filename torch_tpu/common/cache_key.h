@@ -119,7 +119,7 @@ class PromotedScalar {
   // Returns the tensor value. Must be called at least once when the op
   // succeeds.
   absl::StatusOr<at::Tensor> GetTensor(
-      std::optional<at::ScalarType> scalar_type_opt = std::nullopt);
+      std::optional<at::ScalarType> scalar_type_opt = std::nullopt) const;
 
   // Formats the scalar for logging.
   [[nodiscard]] std::string ToString() const;
@@ -165,7 +165,7 @@ class MaybePromotedScalar {
   // Returns the tensor value. Must be called at least once when the op
   // succeeds, unless the value matches an exclude.
   absl::StatusOr<at::Tensor> GetTensor(
-      std::optional<at::ScalarType> scalar_type_opt = std::nullopt);
+      std::optional<at::ScalarType> scalar_type_opt = std::nullopt) const;
 
   // Formats the scalar for logging.
   [[nodiscard]] std::string ToString() const;
