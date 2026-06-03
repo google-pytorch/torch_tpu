@@ -263,6 +263,11 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       return mlir::ElementType::F8E5M2FNUZ;
     case xla::PrimitiveType::F8E4M3FNUZ:
       return mlir::ElementType::F8E4M3FNUZ;
+    // FP6 types
+    case xla::PrimitiveType::F6E3M2FN:
+      return mlir::ElementType::F6E3M2FN;
+    case xla::PrimitiveType::F6E2M3FN:
+      return mlir::ElementType::F6E2M3FN;
     // MX types
     case xla::PrimitiveType::F8E8M0FNU:
       return mlir::ElementType::F8E8M0FNU;
