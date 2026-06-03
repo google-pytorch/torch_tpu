@@ -23,15 +23,13 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_log.h"
 #include "c10/core/SymIntArrayRef.h"
+#include "c10/core/TensorImpl.h"
 #include "c10/util/ArrayRef.h"
 #include "c10/util/Optional.h"
 #include "c10/util/accumulate.h"
-#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/MemoryFormat.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -40,7 +38,6 @@
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/stride/stride_helper.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -84,14 +81,14 @@ const at::Tensor& AtenResize_(
           // Take a view on the new tensor corresponding to the existing data.
           Strides base_strides =
               CalculateStridesContiguous(base_buffer_ref.dimensions());
-          c10::SymIntArrayRef base_sizes_sym =
-              c10::fromIntArrayRefKnownNonNegative(
-                  base_buffer_ref.dimensions());
-          c10::SymIntArrayRef base_strides_sym =
-              c10::fromIntArrayRefKnownNonNegative(base_strides);
-          at::Tensor view_on_empty =
-              AtenAsStrided(larger_empty, base_sizes_sym, base_strides_sym,
-                            /*storage_offset=*/0);
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef empty_buffer_ref,
+              GetBaseBuffer(*larger_empty.unsafeGetTensorImpl()));
+          TT_ASSIGN_OR_THROW(
+              at::Tensor view_on_empty,
+              MakeShallowView(larger_empty, empty_buffer_ref,
+                              base_buffer_ref.dimensions(), base_strides,
+                              /*storage_offset=*/0));
 
           // Copy the existing data into the view window. This will leave some
           // elements uninitialized in the resized tensor.

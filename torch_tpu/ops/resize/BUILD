@@ -29,10 +29,8 @@ torch_tpu_cc_library(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
-        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
-        "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:tensor_to_buffer",
@@ -42,8 +40,6 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/macros:kernel",
         "//torch_tpu/ops/stride:stride_helper",
         "@com_google_absl//absl/log:absl_log",
-        "@stablehlo//:attr_type_builder_util",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 

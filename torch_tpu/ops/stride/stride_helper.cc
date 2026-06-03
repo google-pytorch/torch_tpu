@@ -17,17 +17,26 @@
 #include "torch_tpu/ops/stride/stride_helper.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Storage.h"
+#include "c10/core/TensorImpl.h"
+#include "c10/util/ArrayRef.h"
+#include "c10/util/intrusive_ptr.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/common/utils.h"
+#include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {
 
@@ -161,6 +170,28 @@ absl::Status CheckProvidedLayoutDataFitsInStorage(
       << storage_nbytes << " (actual storage size), got " << required_nbytes;
 
   return absl::OkStatus();
+}
+
+absl::StatusOr<at::Tensor> MakeShallowView(
+    const at::Tensor& base, const DeviceBufferRef& base_buffer_ref,
+    at::IntArrayRef sizes, at::IntArrayRef strides, int64_t storage_offset) {
+  const int64_t storage_numel = base_buffer_ref.num_elements();
+  const mlir::ElementType storage_element_type = base_buffer_ref.element_type();
+  TT_ASSIGN_OR_RETURN(mlir::ElementType tensor_element_type,
+                      ConvertTo<mlir::ElementType>(base.scalar_type()));
+  Dimensions sizes_vec = CopyIntVector(sizes);
+  Strides strides_vec = CopyIntVector(strides);
+  TT_RETURN_IF_ERROR(CheckProvidedLayoutDataFitsInStorage(
+      storage_numel, storage_element_type, sizes_vec, strides_vec,
+      storage_offset, tensor_element_type));
+
+  c10::Storage storage_copy = base.storage();
+  at::Tensor tensor(c10::make_intrusive<c10::TensorImpl>(
+      c10::TensorImpl::VIEW, std::move(storage_copy), base.key_set(),
+      base.dtype()));
+  tensor.unsafeGetTensorImpl()->set_sizes_and_strides(sizes, strides,
+                                                      storage_offset);
+  return tensor;
 }
 
 }  // namespace torch_tpu

@@ -218,7 +218,6 @@ void OpNameStack::Push(OpName op_name) {
           OpName::kReplicationPad2dBackward,
           OpName::kReplicationPad3dBackward,
           OpName::kReshapeAlias,
-          OpName::kResize_,
           OpName::kRngSeed,
           OpName::kRshiftTensor,
           OpName::kRsub,
