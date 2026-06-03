@@ -107,13 +107,9 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   EXPECT_EQ(Materialize(ref_x, MaterializationReason::kExplicitSync),
             absl::OkStatus());
 
-  // 5. Block on pending materializations. This must fail with the compiled
-  // background error!
-  absl::Status status_x = BlockOnPendingMaterializations();
-  EXPECT_FALSE(status_x.ok());
-  EXPECT_EQ(status_x.code(), error::kInternal);
-  EXPECT_THAT(status_x.message(),
-              testing::HasSubstr("Simulated compilation failure"));
+  // Block on pending materializations. This will cause ref_x to be populated
+  // with the compilation error.
+  BlockOnPendingMaterializations();
 
   // 6. NOW CREATE A BRAND-NEW, INDEPENDENT TENSOR y
   TF_ASSERT_OK_AND_ASSIGN(
@@ -124,16 +120,18 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   DeviceBufferRef ref_y = refs_y[0];
   EXPECT_TRUE(ref_y.is_deferred());
 
-  // 7. Materialize y. Under our change, since last_status_ was reset to Ok,
-  // this is allowed!
+  // 7. Materialize y. y does not depend on x, so this should succeed.
   EXPECT_EQ(Materialize(ref_y, MaterializationReason::kExplicitSync),
             absl::OkStatus());
 
-  // 8. Block on pending materializations for y. This MUST succeed!
-  absl::Status status_y = BlockOnPendingMaterializations();
+  // 8. Block on pending materializations for y, and successfully get its
+  // materialized buffer.
+  BlockOnPendingMaterializations();
+  EXPECT_TRUE(ref_y.is_executing());
+  auto status_y = ref_y.AwaitBuffer();
+  EXPECT_TRUE(ref_y.is_materialized());
   EXPECT_TRUE(status_y.ok())
       << "Independent tensor failed to materialize: " << status_y;
-  EXPECT_TRUE(ref_y.is_materializing());
 
   // 9. VERIFY NATIVE PROMISE ERROR PROPAGATION
   // Even though the global error was reset, accessing x's data or materializing
@@ -150,8 +148,7 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
   // already in the "materialized error" state
   EXPECT_EQ(Materialize(ref_x, MaterializationReason::kExplicitSync),
             absl::OkStatus());
-  absl::Status status_x_retry = BlockOnPendingMaterializations();
-  EXPECT_TRUE(status_x_retry.ok());
+  BlockOnPendingMaterializations();
 
   // ...but the inner error on ref_x is still the same:
   auto after_retry_status = ref_x.AwaitBuffer();
@@ -174,10 +171,11 @@ TEST_F(MaterializeRecoveryTest, IndependentTensorsRecoverOnEagerError) {
 
   // Blocking on materializations of z should fail with the exact same error,
   // as the error successfully propagated from x -> z!
-  absl::Status status_z = BlockOnPendingMaterializations();
+  BlockOnPendingMaterializations();
+  auto status_z = ref_z.AwaitBuffer();
   EXPECT_FALSE(status_z.ok());
-  EXPECT_EQ(status_z.code(), error::kInternal);
-  EXPECT_THAT(status_z.message(),
+  EXPECT_EQ(status_z.status().code(), error::kInternal);
+  EXPECT_THAT(status_z.status().message(),
               testing::HasSubstr("Simulated compilation failure"));
 }
 

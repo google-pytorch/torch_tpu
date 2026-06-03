@@ -531,58 +531,11 @@ void RegisterTpuAllocator() {
 
 namespace {
 
-// Translates a raw background execution Out-of-Memory (OOM) error to a
-// high-level exception that is easy to understand by PyTorch users. Under
-// experimental asynchronous materialization, compilation and execution are
-// enqueued to the background thread. If an execution OOM happens in the
-// background, it is caught early during BlockOnPendingMaterializations() inside
-// MaterializeAndReturn(), bypassing the standard copy-transfer wrapper's
-// (TranslateXlaTensorOomError) execution blocks. We replicate the OOM mapping
-// here to ensure user exception signature consistency.
-absl::Status TranslateXlaOomError(const absl::Status& status,
-                                  const at::Tensor& tensor) {
-  if (!IsXlaOomError(status)) {
-    return status;
-  }
-  auto dtype_or = ConvertTo<mlir::ElementType>(tensor.scalar_type());
-  if (!dtype_or.ok()) {
-    return status;
-  }
-  return TT_ERROR(error::kResourceExhausted)
-         << "the TPU ran out of memory while awaiting the materialization of "
-            "value "
-         << ToString(*dtype_or) << "[" << absl::StrJoin(tensor.sizes(), ", ")
-         << "]:\n"
-         << status.message();
-}
-
-absl::Status MaybeBlockOnPendingMaterializationsNew(const at::Tensor& tensor) {
+void MaybeBlockOnPendingMaterializationsNew(const at::Tensor& tensor) {
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-    // Under experimental asynchronous materialization, the main thread blocks
-    // and awaits for the background worker compilation and execution thread to
-    // catch up before returning the resolved device buffer reference.
-    auto status = BlockOnPendingMaterializations();
-    if (!status.ok()) {
-      if (IsXlaOomError(status)) {
-        // 1. If it is an execution OOM error, translate it to standard format
-        //    while preserving the default copy caller context prefix
-        //    ("to_copy").
-        return TranslateXlaOomError(status, tensor);
-      } else {
-        // 2. If it is a compilation error, wrap the existing status natively
-        //    via StatusBuilder to preserve the background thread's original
-        //    operator name context payload (e.g., "gather", "scatter",
-        //    "cumprod") captured during graph construction under
-        //    ScopedPythonContextProvider. Do NOT reconstruct the status (e.g.
-        //    using TT_ERROR), as that would overwrite the payload with the copy
-        //    thread's "to_copy" wrapper.
-        return ::torch_tpu::StatusBuilder(std::move(status)).SetPrepend()
-               << "materialization failed with: ";
-      }
-    }
+    BlockOnPendingMaterializations();
   }
-  return absl::OkStatus();
 }
 
 }  // namespace
@@ -641,7 +594,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> MaterializeAndReturn(
   nodes_to_materialize.clear();
   // The new materialization algorithm needs us to block here until all pending
   // jobs are done.
-  TT_RETURN_IF_ERROR(MaybeBlockOnPendingMaterializationsNew(tensors[0]));
+  MaybeBlockOnPendingMaterializationsNew(tensors[0]);
   return buffers_to_return;
 }
 

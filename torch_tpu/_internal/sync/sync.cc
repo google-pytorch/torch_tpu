@@ -77,7 +77,7 @@ absl::Status SynchronizeAll(const WaitOnExecution wait) {
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
     // Ensure that all dispatched graphs have been materialized.
-    TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
+    BlockOnPendingMaterializations();
   }
 
   if (wait == WaitOnExecution::kYes) {

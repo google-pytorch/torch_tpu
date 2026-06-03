@@ -348,9 +348,14 @@ absl::Status MaterializeImpl(
 
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-    TT_RETURN_IF_ERROR(MaterializeImplNew(nodes_to_materialize, reason));
+    MaterializeImplNew(nodes_to_materialize, reason);
     if (GetEagerMode() == EagerMode::kDeferNeverAndLaunchBlocking) {
-      TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
+      BlockOnPendingMaterializations();
+      for (const auto& node : nodes_to_materialize) {
+        TT_RET_CHECK(node->is_executing(), error::kInternal)
+            << "expected materialization to have started after "
+               "BlockOnPendingMaterializations";
+      }
     }
     return absl::OkStatus();
   }

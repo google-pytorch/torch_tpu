@@ -127,7 +127,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
     // This ensures all arguments are fully compiled and materialized on the
     // device before the old execution worker attempts to retrieve their
     // buffers, preventing deterministic "unexpectedly deferred" crashes.
-    TT_RETURN_IF_ERROR(BlockOnPendingMaterializations());
+    BlockOnPendingMaterializations();
   }
 
   // After materialization, each argument buffer will be a materialized,

@@ -219,15 +219,16 @@ class MaterializationWorker {
   }
 
   // Callback to be invoked upon dispatching a new deferred op.
-  absl::Status OnNewOpDispatch(
-      const SharedDeviceBufferList& device_buffer_list);
+  void OnNewOpDispatch(const SharedDeviceBufferList& device_buffer_list);
 
   // Materialize all ops dispatched so far.
-  absl::Status Materialize(
+  // Failures are reported through materialization_status_ on nodes in
+  // nodes_to_materialize.
+  void Materialize(
       absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
       MaterializationReason reason);
 
-  absl::Status BlockOnPendingMaterializations();
+  void BlockOnPendingMaterializations();
 
   void Reset();
 
@@ -257,7 +258,6 @@ class MaterializationWorker {
   QueueState queues_[kNumQueues] ABSL_GUARDED_BY(mutex_);
   bool must_exit_ ABSL_GUARDED_BY(mutex_);
 
-  absl::Status last_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
   std::thread execution_thread_;
 
   MaterializationWorker() {
@@ -266,13 +266,6 @@ class MaterializationWorker {
   }
 
   ~MaterializationWorker() { Exit(); }
-
-  absl::Status GetAndResetLastStatus() {
-    absl::MutexLock lock(mutex_);
-    absl::Status status = std::move(last_status_);
-    last_status_ = absl::OkStatus();
-    return status;
-  }
 
   void IncrementQueueId(int& id) { id = (id + 1) % kNumQueues; }
 
@@ -292,23 +285,20 @@ class MaterializationWorker {
   void ThreadLoop();
 };
 
-absl::Status MaterializationWorker::OnNewOpDispatch(
+void MaterializationWorker::OnNewOpDispatch(
     const SharedDeviceBufferList& device_buffer_list) {
   tsl::profiler::TraceMe t("Worker_OnNewOpDispatch");
-  TT_RETURN_IF_ERROR(GetAndResetLastStatus());
   absl::MutexLock lock(mutex_);
   // Wait if the current dispatch queue is being processed.
   mutex_.Await(
       absl::Condition(this, &MaterializationWorker::IsReadyToDispatch));
   queues_[dispatch_queue_id_].queue.push_back(device_buffer_list);
-  return absl::OkStatus();
 }
 
-absl::Status MaterializationWorker::Materialize(
+void MaterializationWorker::Materialize(
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     MaterializationReason reason) {
   tsl::profiler::TraceMe t("Worker_Materialize");
-  TT_RETURN_IF_ERROR(GetAndResetLastStatus());
   {
     absl::MutexLock lock(mutex_);
     // Wait if the current dispatch queue is being processed.
@@ -329,7 +319,7 @@ absl::Status MaterializationWorker::Materialize(
         current_queue.end());
 
     if (current_queue.empty() && nodes_to_materialize.empty()) {
-      return absl::OkStatus();
+      return;
     }
     ABSL_CHECK(  // CRASH_OK
         queues_[dispatch_queue_id_].nodes_to_materialize.empty());
@@ -340,14 +330,11 @@ absl::Status MaterializationWorker::Materialize(
     queues_[dispatch_queue_id_].is_full = true;
     IncrementQueueId(dispatch_queue_id_);
   }
-  return absl::OkStatus();
 }
 
-absl::Status MaterializationWorker::BlockOnPendingMaterializations() {
+void MaterializationWorker::BlockOnPendingMaterializations() {
   tsl::profiler::TraceMe t("Worker_BlockOnPendingMaterializations");
   ABSL_VLOG(1) << ">>> BlockOnPendingMaterializations";
-  TT_RETURN_IF_ERROR(GetAndResetLastStatus());
-
   {
     absl::MutexLock lock(mutex_);
     // Wait for the execution thread to be caught up.
@@ -356,7 +343,6 @@ absl::Status MaterializationWorker::BlockOnPendingMaterializations() {
   }
 
   ABSL_VLOG(1) << ">>> BlockOnPendingMaterializations DONE";
-  return GetAndResetLastStatus();
 }
 
 void MaterializationWorker::Reset() {
@@ -369,7 +355,6 @@ void MaterializationWorker::Reset() {
     queue.Reset();
   }
   must_exit_ = false;
-  last_status_ = absl::OkStatus();
 }
 
 void MaterializationWorker::Exit() {
@@ -427,7 +412,6 @@ void MaterializationWorker::ThreadLoop() {
         for (const auto& node : nodes_to_materialize) {
           node->SetAsError(status);
         }
-        last_status_ = status;
       }
 
       // In order to avoid capacity reallocation in
@@ -447,13 +431,12 @@ void MaterializationWorker::ThreadLoop() {
 
 }  // namespace
 
-absl::Status OnNewOpDispatch(const SharedDeviceBufferList& device_buffer_list) {
+void OnNewOpDispatch(const SharedDeviceBufferList& device_buffer_list) {
   ABSL_VLOG(1) << ">>> OnNewOpDispatch " << device_buffer_list->DebugString();
-  return MaterializationWorker::GetInstance().OnNewOpDispatch(
-      device_buffer_list);
+  MaterializationWorker::GetInstance().OnNewOpDispatch(device_buffer_list);
 }
 
-absl::Status MaterializeImplNew(
+void MaterializeImplNew(
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     MaterializationReason reason) {
   ABSL_VLOG(1) << ">>> MaterializeImplNew " << nodes_to_materialize.size();
@@ -461,7 +444,7 @@ absl::Status MaterializeImplNew(
                                                           reason);
 }
 
-absl::Status BlockOnPendingMaterializations() {
+void BlockOnPendingMaterializations() {
   ABSL_VLOG(1) << ">>> BlockOnPendingMaterializations";
   return MaterializationWorker::GetInstance().BlockOnPendingMaterializations();
 }

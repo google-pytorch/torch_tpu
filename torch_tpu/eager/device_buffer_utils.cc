@@ -172,7 +172,7 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
   const auto& device_buffer_list = results[0].device_buffer_list();
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
-    TT_RETURN_IF_ERROR(OnNewOpDispatch(device_buffer_list));
+    OnNewOpDispatch(device_buffer_list);
   }
 
   // Don't consider metadata-only ops for the repeated ops heuristic.
