@@ -152,10 +152,13 @@ absl::StatusOr<at::Tensor> ScaledDotProductFusedAttentionImpl(
   // capturing the 'at::Tensor query' handle. This prevents locking 'query' and
   // its entire autograd graph in memory, avoiding high peak HBM consumption.
   const int64_t head_dim = query.size(rank - 1);
-  auto op_builder = [rank, batch_size, out_dims, query_scalar_type, is_causal,
-                     scale, head_dim](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+  auto op_builder = [key, rank, batch_size, out_dims, query_scalar_type,
+                     is_causal, scale, head_dim,
+                     &value](FixedSizeSpan<mlir::MlirOp, 3> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     auto [query_mlir, key_mlir, value_mlir] = inputs;
+    key.scalar_type();
+    value.scalar_type();
 
     mlir::MlirBuilder& builder = query_mlir.getBuilder();
 
