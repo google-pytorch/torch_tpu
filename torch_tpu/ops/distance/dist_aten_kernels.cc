@@ -128,8 +128,9 @@ mlir::MlirOp BroadcastCdistInput(mlir::MlirOp op,
 // x2 shape: (B..., R2, C)
 // Output shape: (B..., R1, R2)
 absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
-    mlir::MlirOp x1_op, mlir::MlirOp x2_op, double p, int64_t compute_mode,
-    const Dimensions common_batch_shape, int64_t r1, int64_t r2, int64_t c) {
+    mlir::MlirOp x1_op, mlir::MlirOp x2_op, mlir::MlirOp p_op, double p,
+    int64_t compute_mode, const Dimensions common_batch_shape, int64_t r1,
+    int64_t r2, int64_t c) {
   const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
   const mlir::Type element_type = x1_type.getElementType();
   TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
@@ -164,7 +165,7 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
   } else {
     // General case for p-norm
     TT_ASSIGN_OR_RETURN(auto result,
-                        BuildPNormShlo(diff_op, p, {reduce_dim_idx},
+                        BuildPNormShlo(diff_op, p_op, p, {reduce_dim_idx},
                                        ReductionMode::kDropDims, out_type));
     return result;
   };
@@ -558,62 +559,69 @@ absl::Status CheckNotBFloatOrHalf(const at::Tensor& tensor,
 
 at::Tensor AtenCdistForward(const at::Tensor& x1, const at::Tensor& x2,
                             double p, std::optional<int64_t> compute_mode) {
-  TT_KERNEL(OpName::kCdistForward, param_keys, (x1, x2, p, compute_mode), {
-    TT_ASSIGN_OR_THROW(auto out_dtype,
-                       ConvertTo<mlir::ElementType>(x1.scalar_type()));
+  PromotedScalar p_scalar = PromoteScalar(at::Scalar(p));
+  TT_KERNEL(
+      OpName::kCdistForward, param_keys, (x1, x2, p_scalar, compute_mode), {
+        TT_THROW_IF_ERROR(param_keys.SetParam("p", p));
+        TT_ASSIGN_OR_THROW(auto out_dtype,
+                           ConvertTo<mlir::ElementType>(x1.scalar_type()));
 
-    TT_THROW_IF_ERROR(CheckIsFloatingPoint(x1, "first argument's"));
-    TT_THROW_IF_ERROR(CheckIsFloatingPoint(x2, "second argument's"));
+        TT_THROW_IF_ERROR(CheckIsFloatingPoint(x1, "first argument's"));
+        TT_THROW_IF_ERROR(CheckIsFloatingPoint(x2, "second argument's"));
 
-    TT_CHECK_THROW(p >= 0, error::kInvalidArgument)
-        << "expected the p value to be >= 0, got " << p;
+        TT_CHECK_THROW(p >= 0, error::kInvalidArgument)
+            << "expected the p value to be >= 0, got " << p;
 
-    const int64_t mode = compute_mode.value_or(0);
-    const int64_t c = x1.size(-1);
-    const int64_t r1 = x1.size(-2);
-    const int64_t r2 = x2.size(-2);
+        TT_ASSIGN_OR_THROW(at::Tensor p_tensor,
+                           p_scalar.GetTensor(x1.scalar_type()));
 
-    Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
-    Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
-    TT_ASSIGN_OR_THROW(Dimensions common_batch_shape,
-                       InferSize(batch_tensor1, batch_tensor2));
+        const int64_t mode = compute_mode.value_or(0);
+        const int64_t c = x1.size(-1);
+        const int64_t r1 = x1.size(-2);
+        const int64_t r2 = x2.size(-2);
 
-    // Output shape: (B_common..., R1, R2)
-    Dimensions output_shape(common_batch_shape);
-    output_shape.insert(output_shape.end(), {r1, r2});
+        Dimensions batch_tensor1(x1.sizes().begin(), x1.sizes().end() - 2);
+        Dimensions batch_tensor2(x2.sizes().begin(), x2.sizes().end() - 2);
+        TT_ASSIGN_OR_THROW(Dimensions common_batch_shape,
+                           InferSize(batch_tensor1, batch_tensor2));
 
-    // If the output shape contains a 0 dimension, return an empty tensor
-    for (int64_t dim : output_shape) {
-      if (dim == 0) {
+        // Output shape: (B_common..., R1, R2)
+        Dimensions output_shape(common_batch_shape);
+        output_shape.insert(output_shape.end(), {r1, r2});
+
+        // If the output shape contains a 0 dimension, return an empty tensor
+        for (int64_t dim : output_shape) {
+          if (dim == 0) {
+            TT_ASSIGN_OR_THROW(
+                at::Tensor out,
+                MakeEmptyTensor(output_shape, x1.scalar_type(), x1.device()));
+            return out;
+          }
+        }
+
+        // Add check for bf16 and float16 after the empty dimension check,
+        // because they are supported for empty tensors but not for non-empty
+        // ones.
+        TT_THROW_IF_ERROR(CheckNotBFloatOrHalf(x1, "first argument's"));
+        TT_THROW_IF_ERROR(CheckNotBFloatOrHalf(x2, "second argument's"));
+
+        auto op_builder = [p, mode, common_batch_shape, r1, r2,
+                           c](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [x1_op, x2_op, p_op] = inputs;
+          return BuildCdistForwardShlo(x1_op, x2_op, p_op, p, mode,
+                                       common_batch_shape, r1, r2, c);
+        };
+
         TT_ASSIGN_OR_THROW(
-            at::Tensor out,
-            MakeEmptyTensor(output_shape, x1.scalar_type(), x1.device()));
-        return out;
-      }
-    }
+            auto result_buf,
+            DispatchOp<3>(std::move(op_builder), {x1, x2, p_tensor},
+                          {.out_dtype = out_dtype,
+                           .out_dims = output_shape,
+                           .op_param_cache_keys = std::move(param_keys)}));
 
-    // Add check for bf16 and float16 after the empty dimension check,
-    // because they are supported for empty tensors but not for non-empty ones.
-    TT_THROW_IF_ERROR(CheckNotBFloatOrHalf(x1, "first argument's"));
-    TT_THROW_IF_ERROR(CheckNotBFloatOrHalf(x2, "second argument's"));
-
-    auto op_builder = [p, mode, common_batch_shape, r1, r2,
-                       c](FixedSizeSpan<mlir::MlirOp, 2> inputs)
-        -> absl::StatusOr<mlir::MlirOp> {
-      auto& [x1_op, x2_op] = inputs;
-      return BuildCdistForwardShlo(x1_op, x2_op, p, mode, common_batch_shape,
-                                   r1, r2, c);
-    };
-
-    TT_ASSIGN_OR_THROW(
-        auto result_buf,
-        DispatchOp<2>(std::move(op_builder), {x1, x2},
-                      {.out_dtype = out_dtype,
-                       .out_dims = output_shape,
-                       .op_param_cache_keys = std::move(param_keys)}));
-
-    return MakeTensor(std::move(result_buf));
-  });
+        return MakeTensor(std::move(result_buf));
+      });
 }
 
 at::Tensor AtenCdistBackward(const at::Tensor& grad, const at::Tensor& x1,

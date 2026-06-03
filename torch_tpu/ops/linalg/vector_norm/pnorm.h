@@ -31,6 +31,11 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
     mlir::MlirOp input_op, double ord, absl::Span<const int64_t> reduce_dims,
     ReductionMode reduction_mode, mlir::ElementType out_type);
 
+absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
+    mlir::MlirOp input_op, mlir::MlirOp ord_op, double ord,
+    absl::Span<const int64_t> reduce_dims, ReductionMode reduction_mode,
+    mlir::ElementType out_type);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_OPS_LINALG_VECTOR_NORM_PNORM_H_

@@ -52,6 +52,8 @@ torch_tpu_cc_library(
     srcs = ["pnorm.cc"],
     hdrs = ["pnorm.h"],
     deps = [
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/ops:binary",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops/reductions",
         "@com_google_absl//absl/log:absl_check",
