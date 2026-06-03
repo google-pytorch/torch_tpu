@@ -101,10 +101,10 @@ xla::PrimitiveType ToXlaType(const mlir::ElementType element_type) {
       return xla::PrimitiveType::F8E3M4;
     case mlir::ElementType::F8E4M3B11FNUZ:
       return xla::PrimitiveType::F8E4M3B11FNUZ;
-    // These types have no corresponding xla::PrimitiveType.
     case mlir::ElementType::F6E2M3FN:
+      return xla::PrimitiveType::F6E2M3FN;
     case mlir::ElementType::F6E3M2FN:
-      break;
+      return xla::PrimitiveType::F6E3M2FN;
       // Deliberately omitting the default case. Without the default case, if an
       // enum value is added in the future and the author forgets to update this
       // switch statement, the C++ compiler will generate a warning (treated as
@@ -268,6 +268,10 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       return mlir::ElementType::F8E8M0FNU;
     case xla::PrimitiveType::F4E2M1FN:
       return mlir::ElementType::F4E2M1FN;
+    case xla::PrimitiveType::F6E2M3FN:
+      return mlir::ElementType::F6E2M3FN;
+    case xla::PrimitiveType::F6E3M2FN:
+      return mlir::ElementType::F6E3M2FN;
     // Complex types
     case xla::PrimitiveType::C64:
       return mlir::ElementType::COMPLEXF32;
