@@ -313,7 +313,7 @@ common:ci_tpu_presubmit --config=remote_execution_readonly
 
 # Settings for presubmit and postsubmit on TPU v6.
 common:ci_tpu_on_v6 --config=ci_tpu_base
-common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6
+common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit
 
 # Settings for presubmit and postsubmit on TPU v7.
 common:ci_tpu_on_v7 --config=ci_tpu_base
@@ -390,7 +390,7 @@ common:wheel_test_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresub
 
 # Settings for wheel test on TPU v6.
 common:wheel_test_tpu_on_v6 --config=wheel_test_tpu
-common:wheel_test_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6
+common:wheel_test_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded
 
 # Settings for wheel test on TPU v7.
 common:wheel_test_tpu_on_v7 --config=wheel_test_tpu
