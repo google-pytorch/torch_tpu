@@ -8,6 +8,7 @@ load(
 )
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//build_files:py_dist_info.bzl", "py_dist_info")
+load("//gws/tools/gwsq/v3:gwsq_test.bzl", "gwsq_test")
 
 # Copyright 2025 Google LLC
 #
@@ -94,6 +95,11 @@ py_library_providing_imports_info(
         ":_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
     ],
+)
+
+gwsq_test(
+    name = "torchtpu_force_submit_approvers_test",
+    src = "torchtpu_force_submit_approvers.gwsq",
 )
 
 torch_tpu_package_end()
