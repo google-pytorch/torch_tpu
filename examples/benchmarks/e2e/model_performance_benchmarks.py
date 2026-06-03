@@ -51,6 +51,8 @@ _HF_GEMMA_2_2B_BENCHMARK_NAME = "hf_gemma_2_2b"
 _HF_QWEN3_0_6B_BENCHMARK_NAME = "hf_qwen3_0_6b"
 _HF_QWEN3_4B_BENCHMARK_NAME = "hf_qwen3_4b"
 _HF_QWEN3_8B_BENCHMARK_NAME = "hf_qwen3_8b"
+_HF_QWEN3_VL_EMBEDDING_8B_BENCHMARK_NAME = "hf_qwen3_vl_embedding_8b"
+_HF_QWEN3_VL_235B_INSTRUCT_BENCHMARK_NAME = "hf_qwen3_vl_235b_instruct"
 _HF_LLAMA_3_1_8B_BENCHMARK_NAME = "hf_llama_3_1_8b"
 _HF_LLAMA_3_2_3B_BENCHMARK_NAME = "hf_llama_3_2_3b"
 _HF_LLAMA_3_2_TINY_BENCHMARK_NAME = "hf_llama_3_2_tiny"
@@ -824,6 +826,59 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         eval_factory=benchmark_function_db.huggingface_eval_factory,
     )
     self.run_performance_benchmark_test(config, _HF_QWEN3_8B_BENCHMARK_NAME)
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+      ])
+  )
+  def test_qwen3_vl_embedding_8b_forward(self, run_mode):
+    """Tests the forward pass of Qwen3-VL-Embedding-8B."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.TORCH_CPU,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="Qwen/Qwen3-VL-Embedding-8B",
+            sequence_length=512,
+            batch_size=1,
+        ),
+        model_and_input_factory=model_utils.huggingface_llm_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _HF_QWEN3_VL_EMBEDDING_8B_BENCHMARK_NAME
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+      ])
+  )
+  def test_qwen3_vl_235b_instruct_forward(self, run_mode):
+    """Tests the forward pass of Qwen3-VL-235B-Instruct."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="Qwen/Qwen3-VL-235B-A22B-Instruct",
+            sequence_length=512,
+            batch_size=1,
+        ),
+        model_and_input_factory=model_utils.huggingface_llm_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _HF_QWEN3_VL_235B_INSTRUCT_BENCHMARK_NAME
+    )
 
   # ============================================================================
   # 4. GPT-OSS Architecture Family

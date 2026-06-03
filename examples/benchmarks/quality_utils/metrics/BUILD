@@ -39,6 +39,7 @@ torch_tpu_py_library(
     name = "data_loader",
     srcs = ["data_loader.py"],
     deps = [
+        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//torch_tpu/_internal/utils:log_utils",
         "@pypi//grain",

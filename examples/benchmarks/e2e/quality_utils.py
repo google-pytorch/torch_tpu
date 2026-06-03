@@ -19,7 +19,6 @@ from typing import Sequence
 
 from absl import logging
 from torch import distributed as dist
-from torch.google import distributed as g3_distributed
 from torch_tpu._internal.distributed import gpu_env
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import log_utils
@@ -36,6 +35,8 @@ N_PROC_MAP = {
     benchmark_utils.Platform.B200_4: 4,
     benchmark_utils.Platform.B200_8: 8,
     benchmark_utils.Platform.GFC_2X2X1: 8,
+    benchmark_utils.Platform.V6E_2X2: 4,
+    benchmark_utils.Platform.V6E_2X4: 8,
 }
 
 
@@ -147,27 +148,31 @@ def _run_distributed_benchmark(
     benchmark_name: str,
 ) -> None:
   """Runs the benchmark for the given config."""
-  if benchmark_utils.PLATFORM.value == benchmark_utils.Platform.GFC_2X2X1:
-    singlehost_wrapper.prepare_tpu_environment()
+  from torch.google import distributed as g3_distributed
+
+  platform = benchmark_utils.PLATFORM.value
+  if platform in (
+      benchmark_utils.Platform.GFC_2X2X1,
+      benchmark_utils.Platform.V6E_2X2,
+      benchmark_utils.Platform.V6E_2X4,
+  ):
+    world_size = N_PROC_MAP[platform]
     run_worker = singlehost_wrapper.tpu_env_wrapper(
         _run_torch_tpu_worker,
-        world_size=8,
+        world_size=world_size,
     )
     g3_distributed.torchrun(
         run_worker,
-        nproc_per_node=N_PROC_MAP[benchmark_utils.PLATFORM.value],
+        nproc_per_node=world_size,
     )(
         config,
         test_method_name,
         benchmark_name,
     )
-  elif (
-      benchmark_utils.PLATFORM_DEVICE_MAP[benchmark_utils.PLATFORM.value]
-      == "cuda"
-  ):
+  elif benchmark_utils.PLATFORM_DEVICE_MAP[platform] == "cuda":
     g3_distributed.torchrun(
         gpu_env.run_in_workers,
-        nproc_per_node=N_PROC_MAP[benchmark_utils.PLATFORM.value],
+        nproc_per_node=N_PROC_MAP[platform],
     )(
         _run_single_process_benchmark,
         config,

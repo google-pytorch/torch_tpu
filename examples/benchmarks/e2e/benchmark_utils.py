@@ -90,6 +90,10 @@ class Platform(enum.Enum):
   XLA_CPU = "xla_cpu"
   TORCH_CPU = "torch_cpu"
   V5E_1X1 = "v5e_1x1"
+  V6E_2X2 = "v6e_2x2"
+  V6E_2X4 = "v6e_2x4"
+  V6E_4X4 = "v6e_4x4"
+  V6E_4X8 = "v6e_4x8"
 
 
 class Backend(enum.Enum):
@@ -182,12 +186,20 @@ PLATFORM_DEVICE_MAP = {
     Platform.TORCH_CPU: "cpu",
     Platform.XLA_CPU: "xla_cpu",
     Platform.V5E_1X1: "tpu",
+    Platform.V6E_2X2: "tpu",
+    Platform.V6E_2X4: "tpu",
+    Platform.V6E_4X4: "tpu",
+    Platform.V6E_4X8: "tpu",
 }
 
 PLATFORM_TO_NODE_CONFIG = {
     Platform.GFC_2X2X2: {"num_nodes": 2, "nproc_per_node": 8},
     Platform.GFC_2X2X4: {"num_nodes": 4, "nproc_per_node": 8},
     Platform.GFC_2X4X4: {"num_nodes": 8, "nproc_per_node": 8},
+    Platform.V6E_2X2: {"num_nodes": 1, "nproc_per_node": 4},
+    Platform.V6E_2X4: {"num_nodes": 1, "nproc_per_node": 8},
+    Platform.V6E_4X4: {"num_nodes": 2, "nproc_per_node": 8},
+    Platform.V6E_4X8: {"num_nodes": 4, "nproc_per_node": 8},
 }
 
 
@@ -246,6 +258,8 @@ class BenchmarkCategory(enum.Enum):
   TIMM = "timm"
   QWEN_RAGGED_MOE = "qwen_ragged_moe"
   QWEN3_5_MOE = "qwen3_5_moe"
+  QWEN = "qwen"
+
   GEMMA_RAGGED_MOE = "gemma_ragged_moe"
   TORCHAUDIO = "torchaudio"
   INTERNAL_MODEL = "internal_model"

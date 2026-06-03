@@ -218,44 +218,259 @@ class DistStrat(enum.Enum):
   FSDP = "fsdp"
 
 
+def _materialize_module_on_device(module, device="cpu", dtype=torch.bfloat16):
+  """Recursive materialization of all meta parameters/buffers in the module to device."""
+  for name, param in module.named_parameters(recurse=True):
+    if param.device.type == "meta":
+      atoms = name.split(".")
+      parent = module
+      for atom in atoms[:-1]:
+        parent = getattr(parent, atom)
+      param_name = atoms[-1]
+      new_param = torch.nn.Parameter(
+          torch.empty(param.shape, dtype=dtype, device=device)
+      )
+      setattr(parent, param_name, new_param)
+
+  for name, buf in module.named_buffers(recurse=True):
+    if buf.device.type == "meta":
+      atoms = name.split(".")
+      parent = module
+      for atom in atoms[:-1]:
+        parent = getattr(parent, atom)
+      buf_name = atoms[-1]
+      new_buf = torch.empty(buf.shape, dtype=buf.dtype, device=device)
+      parent.register_buffer(buf_name, new_buf, persistent=True)
+
+
+def _load_submodule_weights(
+    module: torch.nn.Module,
+    prefix: str,
+    weights_base_path: str,
+    weight_map: dict[str, str],
+) -> None:
+  """Loads weights for a specific submodule key-by-key, grouping by safetensors file."""
+  import gc
+  import os
+  from absl import logging
+  from safetensors import torch as st_torch
+
+  rank = (
+      torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+  )
+  world_size = (
+      torch.distributed.get_world_size()
+      if torch.distributed.is_initialized()
+      else 1
+  )
+
+  # Group parameters by safetensors file to load each file at most once per layer
+  param_files = {}
+  for name, param in module.named_parameters(recurse=True):
+    global_name = prefix + name
+    sf_file = weight_map.get(global_name)
+    if sf_file:
+      sf_path = os.path.join(weights_base_path, sf_file)
+      param_files.setdefault(sf_path, []).append((name, param, global_name))
+
+  for sf_path, params in param_files.items():
+    loaded_tensors = {}
+    local_sf_path = sf_path
+    was_copied = False
+
+    if rank == 0:
+      logging.info("Rank 0 loading safetensors file for submodule: %s", sf_path)
+      is_local = True
+      try:
+        with open(sf_path, "rb") as f:
+          pass
+      except (FileNotFoundError, OSError):
+        is_local = False
+
+      if not is_local:
+        from torch_tpu._internal.shims.pyglib import gfile
+        import tempfile
+
+        temp_dir = tempfile.gettempdir()
+        local_sf_path = os.path.join(temp_dir, os.path.basename(sf_path))
+        logging.info(
+            "Rank 0 copying %s to local temp path: %s", sf_path, local_sf_path
+        )
+        gfile.Copy(sf_path, local_sf_path, overwrite=True)
+        was_copied = True
+
+      loaded_tensors = st_torch.load_file(local_sf_path)
+
+    for name, param, global_name in params:
+      if rank == 0:
+        param.data.copy_(loaded_tensors[global_name])
+
+      if world_size > 1:
+        torch.distributed.broadcast(param.data, src=0)
+
+      if rank == 0:
+        del loaded_tensors[global_name]
+        gc.collect()
+
+    if rank == 0:
+      del loaded_tensors
+      gc.collect()
+      if was_copied and os.path.exists(local_sf_path):
+        logging.info("Rank 0 removing local temp path: %s", local_sf_path)
+        os.remove(local_sf_path)
+
+
 def _load_fsdp_model(
     model: torch.nn.Module,
-    model_cpu: torch.nn.Module,
+    model_cpu: torch.nn.Module | None,
     device: torch.device,
+    load_weights: bool = False,
+    weights_path: str | None = None,
 ) -> torch.nn.Module:
-  """Loads an FSDP-sharded on-device model from a CPU model.
-
-  This function assumes a typical HF Transformer structure.
+  """Loads an FSDP-sharded on-device model using layer-by-layer materialization and sharding.
 
   Args:
       model: The model to be initialized. Initially it should be on the meta
         device.
-      model_cpu: A CPU copy of model with full weights.
+      model_cpu: A CPU copy of model with full weights (optional).
       device: The target device for the sharded model (e.g., 'tpu').
+      load_weights: Whether to load model weights.
+      weights_path: Optional explicit path to the weights directory.
 
   Returns:
       The FSDP-sharded model with weights loaded on the specified device.
   """
-  for layer in model.model.layers:
-    fsdp.fully_shard(layer)
-  fsdp.fully_shard(model)
-  model.to_empty(device=device)
+  import json
+  import os
+  from absl import flags
+  from absl import logging
 
-  empty_sharded_sd = model.state_dict()
-  sharded_sd = {}
-  for param_name, full_cpu_tensor in model_cpu.state_dict().items():
-    sharded_empty_param = empty_sharded_sd.get(param_name)
-    if sharded_empty_param is None:
-      continue
-    sharded_tensor = dt.distribute_tensor(
-        full_cpu_tensor,
-        device_mesh=sharded_empty_param.device_mesh,
-        placements=sharded_empty_param.placements,
-        src_data_rank=None,
+  if load_weights:
+    if not weights_path:
+      weights_path = (
+          flags.FLAGS.weights_base_path
+          if "weights_base_path" in flags.FLAGS
+          else ""
+      )
+    if not weights_path:
+      raise ValueError(
+          "load_weights is True but weights_path is not provided and"
+          " weights_base_path flag is not set."
+      )
+
+    from torch_tpu._internal.shims.pyglib import gfile
+
+    # Check and load safetensors index file
+    index_path = os.path.join(weights_path, "model.safetensors.index.json")
+    if not gfile.Exists(index_path):
+      raise FileNotFoundError(
+          f"Safetensors index file not found at: {index_path}"
+      )
+
+    with gfile.GFile(index_path, "r") as f:
+      index_data = json.load(f)
+    weight_map = index_data.get("weight_map", {})
+
+    # 1. Materialize and load embeddings
+    logging.info("Materializing and sharding embed_tokens...")
+    if hasattr(model.model, "embed_tokens"):
+      embed_tokens = model.model.embed_tokens
+      embed_prefix = "model.embed_tokens."
+    elif hasattr(model.model, "language_model") and hasattr(
+        model.model.language_model, "embed_tokens"
+    ):
+      embed_tokens = model.model.language_model.embed_tokens
+      embed_prefix = "model.language_model.embed_tokens."
+    else:
+      raise AttributeError("Could not find embed_tokens module in model.model")
+
+    _materialize_module_on_device(embed_tokens, device=device)
+    _load_submodule_weights(
+        embed_tokens,
+        embed_prefix,
+        weights_path,
+        weight_map,
     )
-    sharded_sd[param_name] = torch.nn.Parameter(sharded_tensor)
+    fsdp.fully_shard(embed_tokens)
 
-  model.load_state_dict(sharded_sd, assign=True)
+    # If vision tower blocks exist:
+    if hasattr(model, "visual"):
+      logging.info("Materializing and sharding visual patch_embed...")
+      _materialize_module_on_device(model.visual.patch_embed, device=device)
+      _load_submodule_weights(
+          model.visual.patch_embed,
+          "visual.patch_embed.",
+          weights_path,
+          weight_map,
+      )
+      fsdp.fully_shard(model.visual.patch_embed)
+
+      logging.info("Materializing and sharding visual blocks incrementally...")
+      for i, block in enumerate(model.visual.blocks):
+        _materialize_module_on_device(block, device=device)
+        _load_submodule_weights(
+            block, f"visual.blocks.{i}.", weights_path, weight_map
+        )
+        fsdp.fully_shard(block)
+
+    # 2. Loop over LLM decoder layers incrementally
+    logging.info(
+        "Materializing and sharding LLM decoder layers incrementally..."
+    )
+    if hasattr(model.model, "language_model"):
+      decoder_layers = model.model.language_model.layers
+      prefix_template = "model.language_model.layers.{i}."
+    else:
+      decoder_layers = model.model.layers
+      prefix_template = "model.layers.{i}."
+
+    for i, layer in enumerate(decoder_layers):
+      _materialize_module_on_device(layer, device=device)
+      _load_submodule_weights(
+          layer, prefix_template.format(i=i), weights_path, weight_map
+      )
+      fsdp.fully_shard(layer)
+
+    # 3. Materialize and load remaining top-level parameters (lm_head, norm, etc.)
+    logging.info("Materializing and sharding top-level model parameters...")
+    _materialize_module_on_device(model, device=device)
+    _load_submodule_weights(model, "", weights_path, weight_map)
+    fsdp.fully_shard(model)
+
+  else:
+    # Fallback branch when load_weights is False
+    # Apply FSDP recursively
+    if hasattr(model, "visual") and hasattr(model.visual, "blocks"):
+      for block in model.visual.blocks:
+        fsdp.fully_shard(block)
+
+    if hasattr(model.model, "language_model"):
+      for layer in model.model.language_model.layers:
+        fsdp.fully_shard(layer)
+    else:
+      for layer in model.model.layers:
+        fsdp.fully_shard(layer)
+    fsdp.fully_shard(model)
+
+    model.to_empty(device=device)
+    if model_cpu is not None:
+      empty_sharded_sd = model.state_dict()
+      sharded_sd = {}
+      for param_name, full_cpu_tensor in model_cpu.state_dict().items():
+        sharded_empty_param = empty_sharded_sd.get(param_name)
+        if sharded_empty_param is None:
+          continue
+        sharded_tensor = dt.distribute_tensor(
+            full_cpu_tensor,
+            device_mesh=sharded_empty_param.device_mesh,
+            placements=sharded_empty_param.placements,
+            src_data_rank=None,
+        )
+        sharded_sd[param_name] = torch.nn.Parameter(sharded_tensor)
+      model.load_state_dict(sharded_sd, assign=True)
+    else:
+      model.apply(_init_model_weights)
+
   return model
 
 
@@ -294,17 +509,20 @@ def huggingface_llm_model_builder(
   modify_config_hook = model_and_input_args.custom_kwargs.get(
       "modify_config_hook", None
   )
+  load_weights = model_and_input_args.custom_kwargs.get("load_weights", False)
 
   registry = get_module_registry()
   module_spec = registry.get_module_spec(
       "transformers",
       model_name,
-      load_weights=False,
+      load_weights=load_weights,
       modify_config_hook=modify_config_hook,
   )
 
-  with torch.device("cpu"):
-    model_cpu = module_spec.module_factory().to(weights_dtype)
+  model_cpu = None
+  if not load_weights:
+    with torch.device("cpu"):
+      model_cpu = module_spec.module_factory().to(weights_dtype)
 
   _, example_inputs = module_spec.sample_inputs_factory(
       (batch_size, sequence_length), str(device)
@@ -316,7 +534,7 @@ def huggingface_llm_model_builder(
   example_inputs.pop("attention_mask", None)
 
   if is_training:
-    vocab_size = get_vocab_size(model_cpu.config)
+    vocab_size = get_vocab_size(module_spec.config)
 
     example_inputs["labels"] = torch.randint(
         0,
@@ -329,9 +547,23 @@ def huggingface_llm_model_builder(
 
   model: torch.nn.Module
   if dist_strat == DistStrat.NONE:
-    model = model_cpu.to(device)
+    if load_weights:
+      # If single device but load_weights is True, instantiate on device and load
+      # Wait, if we want to load weights, let's do standard Hugging Face load or incremental loader.
+      # But for DistStrat.NONE with load_weights, since the spec already supports loading weights
+      # we can just use module_spec.module_factory().to(device)!
+      with torch.device(device):
+        model = module_spec.module_factory().to(weights_dtype)
+    else:
+      assert model_cpu is not None
+      model = model_cpu.to(device)
   elif dist_strat == DistStrat.DDP:
-    model = model_cpu.to(device)
+    if load_weights:
+      with torch.device(device):
+        model = module_spec.module_factory().to(weights_dtype)
+    else:
+      assert model_cpu is not None
+      model = model_cpu.to(device)
     model.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
@@ -343,12 +575,49 @@ def huggingface_llm_model_builder(
     )
   elif dist_strat == DistStrat.FSDP:
     with torch.device("meta"):
-      model_meta = module_spec.module_factory().to(weights_dtype)
+      if load_weights:
+        import transformers
+
+        config = module_spec.config
+        architectures = getattr(config, "architectures", [])
+        model_cls = transformers.AutoModelForCausalLM
+        if architectures:
+          try:
+            model_cls = getattr(transformers, architectures[0])
+          except AttributeError:
+            pass
+        model_meta = model_cls(config).to(weights_dtype)
+      else:
+        model_meta = module_spec.module_factory().to(weights_dtype)
     model_meta.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
+    # Construct weights_path dynamically using hf_transformers_weights_dir flag and model_name
+    weights_path = None
+    if load_weights:
+      from absl import flags
+      import os
+      import pathlib
+
+      base_dir = (
+          flags.FLAGS.hf_transformers_weights_dir
+          if "hf_transformers_weights_dir" in flags.FLAGS
+          else os.environ.get("TORCH_TPU_HF_WEIGHTS_DIR", "")
+      )
+      if not base_dir:
+        raise ValueError(
+            "load_weights is True but weights directory is not provided. Set"
+            " hf_transformers_weights_dir flag or TORCH_TPU_HF_WEIGHTS_DIR env"
+            " var."
+        )
+      weights_path = str(pathlib.Path(base_dir) / model_name)
+
     model = _load_fsdp_model(
-        model=model_meta, model_cpu=model_cpu, device=device
+        model=model_meta,
+        model_cpu=model_cpu,
+        device=device,
+        load_weights=load_weights,
+        weights_path=weights_path,
     )
   else:
     raise ValueError(f"Distributed strategy {dist_strat} unrecognized")

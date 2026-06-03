@@ -101,4 +101,22 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_library(
+    name = "qwen3_vl_quality_benchmark",
+    testonly = 1,
+    srcs = ["qwen3_vl_quality_benchmark.py"],
+    deps = [
+        "//examples/benchmarks/e2e:device_utils",
+        "//examples/benchmarks/e2e:model_utils",
+        "//examples/benchmarks/e2e:performance_utils",
+        "//examples/benchmarks/quality_utils:quality_benchmark_model",
+        "//shims/torch:pytorch",
+        "//tests:module_registry",
+        "//torch_tpu",
+        "//torch_tpu:_loader",
+        "@pypi//pillow",
+        "@pypi//transformers",
+    ],
+)
+
 torch_tpu_package_end()
