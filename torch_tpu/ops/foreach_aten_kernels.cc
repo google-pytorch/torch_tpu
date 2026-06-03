@@ -582,7 +582,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> ForeachUnaryOp(
 
 std::vector<DeviceBufferRef> ForeachAddList(
     at::TensorList self, at::TensorList other,
-    MaybePromotedScalar promoted_alpha, DtypeSpan out_dtypes,
+    const MaybePromotedScalar& promoted_alpha, DtypeSpan out_dtypes,
     OpParamCacheKeys param_keys = OpParamCacheKeys::Empty()) {
   // self and other are guaranteed to have the same size.
   // The error is handled by the upstream torch.
@@ -1639,7 +1639,7 @@ std::vector<at::Tensor> AtenForeachAddList(at::TensorList self,
         }
 
         return ForeachConvertToTensor(
-            ForeachAddList(self, other, std::move(promoted_alpha), out_dtypes,
+            ForeachAddList(self, other, promoted_alpha, out_dtypes,
                            std::move(param_keys)),
             out_dtypes);
       });
@@ -1698,8 +1698,8 @@ std::vector<at::Tensor> AtenForeachAddTensor(at::TensorList self,
         std::vector<at::Tensor> other_list(self.size(), other);
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, other_list));
         return ForeachConvertToTensor(
-            ForeachAddList(self, other_list, std::move(promoted_alpha),
-                           out_dtypes, std::move(param_keys)),
+            ForeachAddList(self, other_list, promoted_alpha, out_dtypes,
+                           std::move(param_keys)),
             out_dtypes);
       });
 }
@@ -1711,8 +1711,8 @@ void AtenForeachAdd_List(at::TensorList self, at::TensorList other,
             {
               TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
               TT_THROW_IF_ERROR(ForeachAssignToTensor(
-                  ForeachAddList(self, other, std::move(promoted_alpha),
-                                 out_dtypes, std::move(param_keys)),
+                  ForeachAddList(self, other, promoted_alpha, out_dtypes,
+                                 std::move(param_keys)),
                   self, out_dtypes));
             });
 }
@@ -1768,8 +1768,8 @@ void AtenForeachAdd_Tensor(at::TensorList self, const at::Tensor& other,
               std::vector<at::Tensor> other_list(self.size(), other);
               TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
               TT_THROW_IF_ERROR(ForeachAssignToTensor(
-                  ForeachAddList(self, other_list, std::move(promoted_alpha),
-                                 out_dtypes, std::move(param_keys)),
+                  ForeachAddList(self, other_list, promoted_alpha, out_dtypes,
+                                 std::move(param_keys)),
                   self, out_dtypes));
             });
 }
@@ -2397,8 +2397,8 @@ std::vector<at::Tensor> AtenForeachSubList(at::TensorList self,
         }
 
         return ForeachConvertToTensor(
-            ForeachAddList(self, other, std::move(promoted_neg_alpha),
-                           out_dtypes, std::move(param_keys)),
+            ForeachAddList(self, other, promoted_neg_alpha, out_dtypes,
+                           std::move(param_keys)),
             out_dtypes);
       });
 }
@@ -2430,8 +2430,8 @@ void AtenForeachSub_List(at::TensorList self, at::TensorList other,
         }
 
         TT_THROW_IF_ERROR(ForeachAssignToTensor(
-            ForeachAddList(self, other, std::move(promoted_neg_alpha),
-                           out_dtypes, std::move(param_keys)),
+            ForeachAddList(self, other, promoted_neg_alpha, out_dtypes,
+                           std::move(param_keys)),
             self, out_dtypes));
       });
 }

@@ -187,7 +187,7 @@ PromotedScalar::PromotedScalar(Promoter promoter, at::Scalar scalar)
                                            .scalar = std::move(scalar)})) {}
 
 absl::StatusOr<at::Tensor> PromotedScalar::GetTensor(
-    std::optional<at::ScalarType> scalar_type_opt) {
+    std::optional<at::ScalarType> scalar_type_opt) const {
   state_->tensor_used = true;
   return state_->promoter(state_->scalar, scalar_type_opt);
 }
@@ -236,7 +236,7 @@ bool MaybePromotedScalar::IsOne() const {
 }
 
 absl::StatusOr<at::Tensor> MaybePromotedScalar::GetTensor(
-    std::optional<at::ScalarType> scalar_type_opt) {
+    std::optional<at::ScalarType> scalar_type_opt) const {
   ABSL_CHECK(!value_matches_exclude_)  // CRASH_OK
       << "GetTensor() called when the scalar value " << ToString()
       << " should not be promoted.";
