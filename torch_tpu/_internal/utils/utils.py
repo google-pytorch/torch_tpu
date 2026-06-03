@@ -472,8 +472,27 @@ def _assert_tensor_close(
     # indices, so we need to parse the message and extract the indices.
     details = ""
     if _RE_SCALAR_COMP_FAILURE.search(msg):
-      details += f"\nAbsolute difference allowed: up to {atol:.3g}\n"
-      details += f"Relative difference allowed: up to {rtol:.3g}\n"
+      atol_str = "None"
+      rtol_str = "None"
+      display_rtol = rtol
+      display_atol = atol
+      if not callable(display_atol):
+        try:
+          display_rtol, display_atol = _lookup_tolerances(
+              actual, expected, display_rtol, display_atol
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
+      if isinstance(display_atol, (int, float)):
+        atol_str = f"{display_atol:.3g}"
+      elif display_atol is not None:
+        atol_str = str(display_atol)
+      if isinstance(display_rtol, (int, float)):
+        rtol_str = f"{display_rtol:.3g}"
+      elif display_rtol is not None:
+        rtol_str = str(display_rtol)
+      details += f"\nAbsolute difference allowed: up to {atol_str}\n"
+      details += f"Relative difference allowed: up to {rtol_str}\n"
     else:
       for index in get_indices(msg):
         golden_elem = expected[index]

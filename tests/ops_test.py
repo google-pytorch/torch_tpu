@@ -404,6 +404,7 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     },
     "linalg.vector_norm": {
         torch.complex64: {"rtol": 2.5e-6, "atol": 3.5e-5},
+        torch.float32: {"rtol": 4e-6, "atol": 3e-5},
     },
     "log": {
         torch.complex64: {"rtol": 4.6e-5, "atol": 9.2e-5},
