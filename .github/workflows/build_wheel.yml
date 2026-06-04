@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Trigger CI run 2
 name: Build and Test Wheels
 
 on:
@@ -126,6 +127,7 @@ jobs:
     if: github.event_name != 'schedule'
     needs: build_wheels
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: CPU
@@ -133,29 +135,35 @@ jobs:
             config: "wheel_test_cpu"
             extra_flags: ""
             custom_name: CPU
+            allowed_to_fail: false
           - name: TPU
             runner: linux-x86-ct5lp-224-8tpu
             config: "wheel_test_tpu"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            allowed_to_fail: false
           - name: "CPU (CUDA wheel)"
             runner: linux-x86-n4-16
             config: "wheel_test_cpu"
-            extra_flags: ""
+            extra_flags: '--define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
             wheel_version: "cuda"
             custom_name: "CPU (CUDA wheel)"
+            allowed_to_fail: true
           - name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n4-16
             config: "wheel_test_cpu"
-            extra_flags: ""
+            extra_flags: '--define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
             wheel_version: "nightly"
             custom_name: "CPU (PyTorch Nightly)"
+            allowed_to_fail: true
           - name: "TPU (PyTorch Nightly)"
             runner: linux-x86-tpu7x-224-4tpu
             config: "wheel_test_tpu_on_v7"
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
             wheel_version: "nightly"
             custom_name: "TPU (PyTorch Nightly)"
+            allowed_to_fail: true
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.allowed_to_fail }}
     container:
       image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
       options: --privileged
@@ -179,10 +187,16 @@ jobs:
         if: matrix.wheel_version == 'cuda'
         run: |
           pip download dist/*.whl -d dist/
+          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
+          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
+          echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Download PyTorch Nightly Wheel to verify the override mechanism
         if: matrix.wheel_version == 'nightly'
         run: |
           pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
+          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
+          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
+          echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
@@ -194,4 +208,4 @@ jobs:
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }}
-          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
