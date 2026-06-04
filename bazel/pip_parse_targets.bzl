@@ -14,6 +14,7 @@
 
 """Macro phase bzl code for pip_parse customizations."""
 
+load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@rules_cc//cc:cc_import.bzl", "cc_import")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
@@ -44,50 +45,24 @@ def define_extra_torch_targets():
         ],
     )
 
-    # This is a subset of all the `.so` files bundled into the PyTorch wheel.
-    # More libraries can be added here as necessary.
-    standard_libs = [
-        "libc10",
-        "libtorch_cpu",
-        "libtorch_python",
-        "libshm",
-    ]
+    lib_targets = []
+    for lib in native.glob(["site-packages/torch/lib/lib*.so*"]):
+        basename = paths.basename(lib)
+        so_offset = basename.find(".so")
+        target_name = basename[:so_offset]
 
-    for lib_name in standard_libs:
+        # NOTE: Some of the libs depend on each other, however, which depend
+        # on which depends on the torch version and build. Unfortunately, we
+        # can't inspect them during this build phase, so can't automatically
+        # construct the DAG of dependencies.
         cc_import(
-            name = lib_name,
-            shared_library = "site-packages/torch/lib/{}.so".format(lib_name),
+            name = target_name,
+            shared_library = lib,
         )
-
-    cc_library(
-        name = "libtorch",
-        srcs = native.glob([
-            "site-packages/torch/lib/libtorch.so",
-            "site-packages/torch/lib/libtorch.dylib",
-        ]),
-        deps = [
-            ":libc10",
-            ":libtorch_cpu",
-            ":libshm",
-        ],
-        visibility = ["//visibility:public"],
-    )
-
-    cc_library(
-        name = "libtorch_global_deps",
-        deps = [
-            ":libc10",
-            ":libtorch_cpu",
-        ],
-        visibility = ["//visibility:public"],
-    )
+        lib_targets.append(target_name)
 
     cc_library(
         name = "torch_libs",
-        deps = [
-            ":libtorch",
-            ":libtorch_python",
-            ":libtorch_global_deps",
-        ],
+        deps = lib_targets,
         visibility = ["//visibility:public"],
     )

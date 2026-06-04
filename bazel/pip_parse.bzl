@@ -62,9 +62,7 @@ def torch_tpu_pip_parse():
         extra_hub_aliases = {
             "torch": [
                 "torch_headers",
-                "libc10",
-                "libtorch_cpu",
-                "libtorch_python",
+                "torch_libs",
             ],
         },
     )

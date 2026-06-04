@@ -752,7 +752,6 @@ pywrap_library(
     name = "pywrap_torch_tpu",
     extra_deps = [
         ":torch_rpath_flags",
-        "//shims/torch:torch_python",
     ],
     visibility = ["//:__subpackages__"],
     deps = [

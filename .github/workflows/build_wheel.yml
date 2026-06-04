@@ -126,6 +126,7 @@ jobs:
     if: github.event_name != 'schedule'
     needs: build_wheels
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: CPU
