@@ -35,6 +35,7 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/flags.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -64,15 +65,14 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
 }
 
 absl::Status SynchronizeAll(const WaitOnExecution wait) {
-  const std::vector<SharedDeviceBufferList> leaf_nodes =
-      SubgraphRegistry::GetInstance().MergeAll()->GetLeafNodes();
-
-  if (leaf_nodes.empty()) {
+  const std::vector<SharedDeviceBufferList> needs_sync =
+      GetAllLiveUnsyncedDataPtrs();
+  if (needs_sync.empty()) {
     return absl::OkStatus();
   }
 
   TT_RETURN_IF_ERROR(
-      Materialize(leaf_nodes, MaterializationReason::kExplicitSync));
+      Materialize(needs_sync, MaterializationReason::kExplicitSync));
 
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
@@ -81,8 +81,8 @@ absl::Status SynchronizeAll(const WaitOnExecution wait) {
   }
 
   if (wait == WaitOnExecution::kYes) {
-    for (const auto& leaf_node : leaf_nodes) {
-      TT_RETURN_IF_ERROR(leaf_node->Synchronize());
+    for (const auto& node : needs_sync) {
+      TT_RETURN_IF_ERROR(node->Synchronize());
     }
   }
 

@@ -184,12 +184,15 @@ torch_tpu_cc_library(
     deps = [
         ":device_buffer",
         ":device_buffer_utils",
+        ":eager_mode",
+        ":events_queue",
         ":materialize",
         ":structured_log_buffer",
         "//shims/torch:aten_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/common:context_states",
         "//torch_tpu/common:device_type",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
@@ -827,6 +830,53 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "events_queue",
+    srcs = ["events_queue.cc"],
+    hdrs = ["events_queue.h"],
+    deps = [
+        ":device_buffer",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "events_queue_test",
+    srcs = ["events_queue_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    # To initialize PjRt, we need to explicitly set environment variable
+    # TPU_LIBRARY_PATH to point to libtpu.so for C++ tests before starting
+    # running the tests, which is not needed for Python tests.
+    # TODO(bawilson): Run this test in OSS CI instead of using the hack
+    nobuild_oss = "Use oss_events_queue_test instead in OSS CI",
+    deps = [
+        ":device_buffer",
+        ":device_buffer_utils",
+        ":events_queue",
+        ":materialize",
+        ":structured_log_buffer",
+        ":tensor_to_buffer",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
+        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
     ],
 )
 

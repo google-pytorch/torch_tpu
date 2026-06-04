@@ -52,6 +52,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -60,6 +61,8 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
+#include "torch_tpu/eager/eager_mode.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/experimental/eager/materialize_new.h"
@@ -593,6 +596,13 @@ void DeleteDeviceBufferRef(void* ctx_ptr) {
     ABSL_VLOG(3) << "[c10::DataPtr deleter] deleting "
                  << ref_ptr->DebugString();
     ref_ptr->device_buffer_list()->DecrementLiveDataPtrs();
+    // Don't check eager mode here.
+    // Compiled mode trace tensors are never registered with
+    // RecordNewDataPtrCreated, so recording their deletion is harmless.
+    // Failing to record the deletion of an eager mode tensor (if it
+    // happens during a torch.compile trace) would be a bug as the refcount
+    // would never go to zero.
+    RecordDataPtrDestroyed(*ref_ptr);
   }
   delete ref_ptr;
 }
@@ -601,6 +611,12 @@ c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref, const int device_idx) {
   auto* absl_nonnull const raw_ref_ptr =
       new DeviceBufferRef(std::move(buffer_ref));
   raw_ref_ptr->device_buffer_list()->IncrementLiveDataPtrs();
+  // Tensors created during the torch.compile trace process don't need to be
+  // tracked for the purposes of synchronization, as they can't be
+  // materialized anyway.
+  if (GetEagerMode() != EagerMode::kInternalDeferAll) {
+    RecordNewDataPtrCreated(*raw_ref_ptr);
+  }
   return c10::DataPtr(raw_ref_ptr, raw_ref_ptr, DeleteDeviceBufferRef,
                       c10::Device(GetPrivateUse1DeviceType(), device_idx));
 }
