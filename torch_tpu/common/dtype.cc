@@ -101,10 +101,10 @@ xla::PrimitiveType ToXlaType(const mlir::ElementType element_type) {
       return xla::PrimitiveType::F8E3M4;
     case mlir::ElementType::F8E4M3B11FNUZ:
       return xla::PrimitiveType::F8E4M3B11FNUZ;
-    // These types have no corresponding xla::PrimitiveType.
     case mlir::ElementType::F6E2M3FN:
+      return xla::PrimitiveType::F6E2M3FN;
     case mlir::ElementType::F6E3M2FN:
-      break;
+      return xla::PrimitiveType::F6E3M2FN;
       // Deliberately omitting the default case. Without the default case, if an
       // enum value is added in the future and the author forgets to update this
       // switch statement, the C++ compiler will generate a warning (treated as
@@ -268,6 +268,10 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       return mlir::ElementType::F8E8M0FNU;
     case xla::PrimitiveType::F4E2M1FN:
       return mlir::ElementType::F4E2M1FN;
+    case xla::PrimitiveType::F6E2M3FN:
+      return mlir::ElementType::F6E2M3FN;
+    case xla::PrimitiveType::F6E3M2FN:
+      return mlir::ElementType::F6E3M2FN;
     // Complex types
     case xla::PrimitiveType::C64:
       return mlir::ElementType::COMPLEXF32;
@@ -340,6 +344,10 @@ absl::StatusOr<mlir::ElementType> ToElementType(mlir::Type type) {
               [](auto) { return mlir::ElementType::F8E5M2FNUZ; })
           .Case<mlir::Float8E8M0FNUType>(
               [](auto) { return mlir::ElementType::F8E8M0FNU; })
+          .Case<mlir::Float6E2M3FNType>(
+              [](auto) { return mlir::ElementType::F6E2M3FN; })
+          .Case<mlir::Float6E3M2FNType>(
+              [](auto) { return mlir::ElementType::F6E3M2FN; })
           .Case<mlir::ComplexType>([](mlir::ComplexType complex_type)
                                        -> std::optional<mlir::ElementType> {
             mlir::Type element_type = complex_type.getElementType();
@@ -590,7 +598,8 @@ bool IsSupportedBufferType(mlir::ElementType type) {
            mlir::ElementType::F8E4M3FN, mlir::ElementType::F8E4M3B11FNUZ,
            mlir::ElementType::F8E3M4, mlir::ElementType::F8E5M2FNUZ,
            mlir::ElementType::F8E4M3FNUZ, mlir::ElementType::F8E8M0FNU,
-           mlir::ElementType::F4E2M1FN,
+           mlir::ElementType::F4E2M1FN, mlir::ElementType::F6E2M3FN,
+           mlir::ElementType::F6E3M2FN,
            // Complex types
            mlir::ElementType::COMPLEXF32, mlir::ElementType::COMPLEXF64});
   return kSupportedTypes->contains(type);
