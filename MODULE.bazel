@@ -55,13 +55,15 @@ single_version_override(
 bazel_dep(name = "xla")
 bazel_dep(name = "rules_ml_toolchain")
 
+include("//bazel:xla_revision.bzl")
+
 archive_override(
     module_name = "xla",
-    integrity = "sha256-vFowe22DxrNXhlELvgVvG7JPwzyGYaUa6SeMC5mO18A=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:xla_bazel8.patch"],
-    strip_prefix = "xla-704f71ae2f1103782243faec6cf8e1363e6a8bf3",
-    urls = ["https://github.com/openxla/xla/archive/704f71ae2f1103782243faec6cf8e1363e6a8bf3.tar.gz"],
+    sha256 = XLA_SHA256,
+    strip_prefix = "xla-" + XLA_COMMIT,
+    urls = ["https://github.com/openxla/xla/archive/" + XLA_COMMIT + ".tar.gz"],
 )
 
 archive_override(
