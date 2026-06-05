@@ -35,6 +35,7 @@ torch_tpu_py_test(
     notap = "Fails - missing op upsample_nearest2d.out.",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "ignore_for_dep=third_party.torch_tpu.api",
         "requires-accel-hbm",
         "requires-gpu-sm80",
         "requires-net:external",
@@ -62,6 +63,7 @@ torch_tpu_py_test(
     notap = "slow test",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "ignore_for_dep=third_party.torch_tpu.api",
         "requires-gpu-sm80",
         "requires-net:external",
     ],
@@ -115,6 +117,7 @@ torch_tpu_py_test(
     notap = "slow test",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "ignore_for_dep=third_party.torch_tpu.api",
         "requires-accel-hbm",
         "requires-gpu-sm80",
         "requires-net:external",

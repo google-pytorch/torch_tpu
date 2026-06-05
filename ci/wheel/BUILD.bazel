@@ -61,8 +61,6 @@ remap_pywrap_binaries(
 pytype_strict_library(
     name = "all_torch_tpu_files",
     srcs = [
-        "//torch_tpu",
-        "//torch_tpu:_loader",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compiler_options",
         "//torch_tpu/_internal/device:_device_module",
@@ -89,6 +87,7 @@ pytype_strict_library(
         "//torch_tpu/_internal/utils:hardware",
         "//torch_tpu/_internal/utils:log_utils",
         "//torch_tpu/_internal/utils:tracer_utils",
+        "//torch_tpu/api",
     ],
     visibility = ["//visibility:public"],
 )

@@ -302,6 +302,7 @@ torch_tpu_py_test(
     notap = "slow example",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "ignore_for_dep=third_party.torch_tpu.api",
         "requires-gpu-sm70-only",  # v100 has 16 or 32 GB HBM.
     ],
     deps = [
@@ -375,6 +376,7 @@ torch_tpu_py_test(
     notap = "slow example",
     notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
+        "ignore_for_dep=third_party.torch_tpu.api",
         "local",
         "requires-gpu-sm80",  # A100 or above
         "requires-net:external",

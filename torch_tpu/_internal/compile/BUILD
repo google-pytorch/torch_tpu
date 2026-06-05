@@ -38,6 +38,9 @@ torch_tpu_py_library(
     srcs = [
         "__init__.py",
     ],
+    tags = [
+        "ignore_for_dep=third_party.py.torch_tpu.api",
+    ],
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
