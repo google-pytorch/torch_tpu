@@ -38,6 +38,7 @@ try:
   # protect against this, see @requires_jax in PT/XLA repo.
   import jax
   import jax.export
+  from jax._src.lib.mlir import ir
 except ImportError as ex:
   raise ImportError(
       "JAX/Pallas is not available. Please install JAX to use this API."
@@ -395,6 +396,85 @@ def _get_torch_signature(signature: inspect.Signature):
 _KernelResultT = Sequence[torch.Tensor] | torch.Tensor | None
 
 
+def _collect_disabled_safety_checks(
+    jit_fn: Any, *args, **kwargs
+) -> list["jax.export.DisabledSafetyCheck"]:
+  """Builds disabled_checks so jax.export can serialize ALL custom_call targets.
+
+  jax.export refuses to serialize a module containing a `custom_call` whose
+  target is not on jax's compatibility allowlist, e.g. libtpu intrinsics such as
+  @SparseDenseMatmulOp emitted by jax_tpu_embedding. Pallas kernels lower to the
+  allowlisted @tpu_custom_call and are unaffected.
+
+  Since torch_tpu consumes the exported StableHLO directly (it does not rely on
+  jax's cross-version compatibility guarantee), we lower the jitted fn for the
+  given abstract args, walk the StableHLO module for every custom_call target,
+  and disable the per-target serialization safety check for each one. Passing a
+  disabled check for an already-allowlisted target is harmless, so this
+  auto-collection is safe to do unconditionally; allowlisted-only kernels end up
+  with checks that are no-ops.
+
+  Returns an empty list (and silently gives up) if lowering fails for any
+  reason, so the subsequent jax.export.export raises its normal error.
+  """
+  try:
+    module = jit_fn.lower(*args, **kwargs).compiler_ir(dialect="stablehlo")
+  except Exception:  # noqa: BLE001 - best-effort; fall back to no disabled checks
+    return []
+  targets: set[str] = set()
+
+  def _visit(op):
+    for region in op.regions:
+      for block in region.blocks:
+        for inner in block.operations:
+          if inner.operation.name == "stablehlo.custom_call":
+            targets.add(
+                ir.StringAttr(
+                    inner.operation.attributes["call_target_name"]
+                ).value
+            )
+          _visit(inner.operation)
+
+  _visit(module.operation)
+  return [
+      jax.export.DisabledSafetyCheck.custom_call(t) for t in sorted(targets)
+  ]
+
+
+class _DisabledChecksExporter:
+  """Lazily exports `jit_fn` with auto-collected custom_call disabled_checks.
+
+  jax.export.export bakes `disabled_checks` in at export() time, but the set of
+  custom_call targets is only known once the function is lowered for concrete
+  abstract args (shapes/dtypes), which torch_tpu only has at call time. This
+  wrapper defers `jax.export.export(...)` until first invocation: it lowers
+  `jit_fn` for the supplied avals, collects every custom_call target, then calls
+  the real exporter with `disabled_checks` for those targets (plus a
+  deserialization platform check, harmless for trace-only use). Subsequent
+  invocations reuse the same configured exporter.
+  """
+
+  def __init__(self, jit_fn: Any):
+    self._jit_fn = jit_fn
+    self._exporter = None
+
+  def __call__(self, *args, **kwargs):
+    # Forward compatibility is handled by the export_ignore_forward_compatibility
+    # context manager that JaxCallable.__call__ / jax_op wrap this call in, which
+    # covers both this deferred export and the subsequent lowering.
+    if self._exporter is None:
+      disabled_checks = _collect_disabled_safety_checks(
+          self._jit_fn, *args, **kwargs
+      )
+      # Also disable the deserialization-time platform check; torch_tpu always
+      # deserializes on the same tpu platform it exported for.
+      disabled_checks.append(jax.export.DisabledSafetyCheck.platform())
+      self._exporter = jax.export.export(
+          self._jit_fn, platforms=["tpu"], disabled_checks=disabled_checks
+      )
+    return self._exporter(*args, **kwargs)
+
+
 class JaxCallable:
   """A torch callable function that wraps a JAX function.
 
@@ -445,10 +525,9 @@ class JaxCallable:
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
     self.static_argnums = static_argnums
-    # Ignore forward compatibility as we are directly using the exported
-    # StableHLO. Without this flag we can be missing the latest optimizations.
-    with jax._src.config.export_ignore_forward_compatibility(True):
-      self.exported = jax.export.export(jit_fn, platforms=["tpu"])
+    # Defer export to first call and auto-disable jax.export's per-target
+    # custom_call serialization safety check; see _DisabledChecksExporter.
+    self.exported = _DisabledChecksExporter(jit_fn)
     if input_output_aliases is not None:
       warnings.warn(
           "input_output_aliases is deprecated and will be removed soon. Please"
