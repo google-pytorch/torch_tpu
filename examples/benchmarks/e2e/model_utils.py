@@ -1767,6 +1767,105 @@ def vjepa_2_model_builder(
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 
+def huggingface_sam3_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns a ModelAndInput for the SAM3 model.
+
+  Args:
+      model_and_input_args: The model and input args.
+      device: The device to load the model and inputs on.
+      weights_dtype: The data type for the model weights.
+      is_training: Whether the model is in training mode or eval mode.
+
+  Returns:
+      A ModelAndInput dataclass containing the loaded SAM3 model and example
+      inputs.
+  """
+  from transformers.models.sam3_video.modeling_sam3_video import Sam3VideoInferenceSession
+
+  model_name = model_and_input_args.model_name
+  registry = get_module_registry()
+  module_spec = registry.get_module_spec(
+      "transformers",
+      model_name,
+      load_weights=False,
+  )
+  config = module_spec.config
+
+  tracker_config = getattr(config, "tracker_config", None)
+  if tracker_config is not None:
+    image_size = getattr(tracker_config, "image_size", 1008)
+  else:
+    vision_config = getattr(config, "vision_config", None)
+    backbone_config = (
+        getattr(vision_config, "backbone_config", None)
+        if vision_config
+        else None
+    )
+    image_size = (
+        getattr(backbone_config, "image_size", 1008)
+        if backbone_config
+        else 1008
+    )
+
+  video_shape = (2, 3, image_size, image_size)
+
+  with torch.device(device), set_default_dtype(weights_dtype):
+    model = module_spec.module_factory()
+    model.apply(_init_model_weights)
+
+    video = torch.randn(video_shape, dtype=weights_dtype)
+    session = Sam3VideoInferenceSession(
+        video=video,
+        video_height=image_size,
+        video_width=image_size,
+        inference_device=device,
+        inference_state_device=device,
+        video_storage_device=device,
+        dtype=weights_dtype,
+    )
+    prompt_id = session.add_prompt("dummy prompt")
+    detector_config = getattr(config, "detector_config", None)
+    text_config = (
+        getattr(detector_config, "text_config", None)
+        if detector_config
+        else None
+    )
+    text_vocab_size = (
+        getattr(text_config, "vocab_size", 49408) if text_config else 49408
+    )
+    text_seq_len = (
+        getattr(text_config, "max_position_embeddings", 32)
+        if text_config
+        else 32
+    )
+    session.prompt_input_ids[prompt_id] = torch.randint(
+        0,
+        text_vocab_size,
+        (1, text_seq_len),
+        dtype=torch.long,
+    )
+    session.prompt_attention_masks[prompt_id] = torch.ones(
+        (1, text_seq_len), dtype=torch.long
+    )
+
+    example_inputs = {
+        "inference_session": session,
+        "frame_idx": 0,
+    }
+
+  if is_training:
+    model.train()
+  else:
+    model.eval()
+
+  return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
 def _apply_tensor_parallel_plan(
     module,
     name_prefix="",

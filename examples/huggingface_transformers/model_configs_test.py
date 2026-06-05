@@ -41,6 +41,25 @@ class ModelConfigsTest(absltest.TestCase):
     # Assert
     # No assertion. Test passes if no exception is raised.
 
+  def test_sam3_config(self):
+    # Arrange
+    model_id = "facebook/sam3"
+
+    # Act
+    config = model_configs.create_config_loader(model_id)()
+
+    # Assert
+    self.assertEqual(config.model_type, "sam3_video")
+
+  def test_sam3_model_instantiation(self):
+    import transformers
+    import inspect
+
+    model_id = "facebook/sam3"
+    config = model_configs.create_config_loader(model_id)()
+    model = transformers.AutoModel.from_config(config)
+    self.assertIsNotNone(model)
+
 
 if __name__ == "__main__":
   absltest.main()
