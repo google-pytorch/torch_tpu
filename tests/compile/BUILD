@@ -378,4 +378,18 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "issue_tensor_in_forward_test",
+    srcs = ["issue_tensor_in_forward_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+    ],
+)
+
 torch_tpu_package_end()
