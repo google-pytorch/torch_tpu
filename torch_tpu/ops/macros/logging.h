@@ -287,8 +287,10 @@ void CheckPrimitiveInput() {
   // Is this op an existing violation of the primitive promotion pattern?
   constexpr bool kIsLegacyViolation =
       // clang-format off
-      // DO NOT ADD NEW ENTRIES TO THIS LIST.
-      // TODO(b/500083970): make this list empty.
+      // DO NOT ADD NEW ENTRIES TO THIS LIST unless the primitive parameter
+      // is used as a compile-time MLIR attribute (e.g., BatchNorm eps,
+      // Conv groups, reduction dims) and cannot be promoted to a Tensor.
+      // TODO(b/500083970): Remove all migratable ops from this list.
       // go/keep-sorted start
       kOpName == OpName::kAllOut ||                                      //
       kOpName == OpName::kAminmaxOut ||                                  //
@@ -436,7 +438,11 @@ void CheckPrimitiveInput() {
         kIsLegacyViolation,
         "Don't use restricted primitive inputs (int, double, int64_t, "
         "std::optional) with TT_KERNEL(). Promote them to Tensors via "
-        "PromoteScalar(at::Scalar(val)) first.");
+        "PromoteScalar(at::Scalar(val)) first. "
+        "EXCEPTION: If the parameter must be used as a compile-time MLIR "
+        "attribute (e.g., BatchNorm eps, Conv groups, reduction dims), it "
+        "cannot be promoted. In this case, you must add the OpName to the "
+        "CheckPrimitiveInput allowlist in logging.h.");
   } else {
     // Exempt existing partially migrated ops. The ops below have some
     // primitive inputs but are already partially migrated to use Tensor inputs.
