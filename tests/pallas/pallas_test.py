@@ -25,6 +25,7 @@ from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.pallas import pallas as pallas_impl
 from torch_tpu._internal.utils import utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -116,6 +117,28 @@ def jax_add_or_subtract_vectors_wrapper(
   out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
   wrapped = functools.partial(_add_or_subtract_vectors_kernel, mode)
   return pl.pallas_call(wrapped, out_shape=out_shape)(x, y)
+
+
+# A custom_call target that is NOT on jax.export's compatibility allowlist,
+# mirroring a libtpu intrinsic like @SparseDenseMatmulOp (which jax_tpu_embedding
+# emits via jax.ffi.ffi_lowering). The target need not be executable: this only
+# exercises jax.export's *serialization* policy, which keys off the target name,
+# so no real kernel and no on-device execution are required.
+_NON_ALLOWLISTED_TARGET = "TorchTpuNonAllowlistedTestOp"
+
+
+def _non_allowlisted_custom_call(x: jax.Array) -> jax.Array:
+  return jax.ffi.ffi_call(
+      _NON_ALLOWLISTED_TARGET, jax.ShapeDtypeStruct(x.shape, x.dtype)
+  )(x)
+
+
+@pallas.jax_op("pallas::approx_max_k_top4")
+def approx_max_k_top4(x: jax.Array) -> jax.Array:
+  # Lowers to custom_call @ApproxTopK whose comparator is emitted as a separate
+  # called_computations subfunction (a 2-function module), exercising the
+  # multi-function MoveCustomMlirKernel import path.
+  return jax.lax.approx_max_k(x, 4)[0]
 
 
 class TestPallasKernels(absltest.TestCase):
@@ -931,6 +954,38 @@ class TestPallasKernels(absltest.TestCase):
       self.assertEqual(grad_x.item(), 2.0 * -37.0 - 3.0)
       # grad_y = grad_mul * x + grad_add (passes straight through)
       self.assertEqual(grad_y.item(), 2.0 * -4.0 - 3.0)
+
+  def test_jax_op_custom_call(self):
+    # jax_op custom_call hosting: jax_op must host a custom_call whose target
+    # is not on jax.export's compatibility allowlist (auto disabled_checks),
+    # and a multi-function kernel whose custom_call references a helper via
+    # called_computations (multi-function MoveCustomMlirKernel import).
+    x = jax.numpy.zeros((4,), jax.numpy.float32)
+    with self.assertRaisesRegex(ValueError, "no compatibility guarantees"):
+      jax.export.export(jax.jit(_non_allowlisted_custom_call))(x)
+
+    # The fix end-to-end: _collect_disabled_safety_checks finds the
+    # non-allowlisted target, and _DisabledChecksExporter uses it to export past
+    # jax.export's serialization check that rejects it without the fix (see the
+    # test above).
+    jit_fn = jax.jit(_non_allowlisted_custom_call)
+    x = jax.numpy.zeros((4,), jax.numpy.float32)
+    exported = pallas_impl._DisabledChecksExporter(jit_fn)(x)
+    self.assertIsInstance(exported, jax.export.Exported)
+
+  def test_jax_op_multi_function(self):
+    # approx_max_k lowers to custom_call @ApproxTopK with a called_computations
+    # comparator subfunction (a 2-function module), so hosting it via jax_op
+    # exercises the multi-function MoveCustomMlirKernel import. arange's four
+    # largest (124..127) are separated by 1.0, so approx_max_k returns them
+    # exactly.
+    x = torch.arange(128, dtype=torch.float32)
+    out = approx_max_k_top4(x.to(self.device))
+    self.assertIsInstance(out, torch.Tensor)
+    self.assertEqual(out.device.type, "tpu")
+    got = torch.sort(out.cpu()).values
+    expected = torch.sort(torch.topk(x, 4).values).values
+    utils.assert_close(got, expected)
 
 
 if __name__ == "__main__":
