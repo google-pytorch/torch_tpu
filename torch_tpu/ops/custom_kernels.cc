@@ -22,7 +22,6 @@
 #include <string_view>
 #include <vector>
 
-#include "absl/algorithm/container.h"
 #include "absl/base/no_destructor.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
@@ -108,9 +107,9 @@ absl::Status ValidateAndEraseShapeAssertions(mlir::ModuleOp module) {
   return absl::OkStatus();
 }
 
-// Given a custom MLIR kernel, move it to the destination module and
-// return the moved function. Custom kernel must be refined and have a single
-// function.
+// Given a custom MLIR kernel, move it (the entry function plus any helper
+// functions referenced via custom_call called_computations) to the destination
+// module and return the moved entry function. Custom kernel must be refined.
 absl::StatusOr<mlir::func::FuncOp> MoveCustomMlirKernel(
     mlir::ModuleOp custom_kernel, mlir::ModuleOp dst_module,
     std::optional<std::string_view> kernel_id_str = std::nullopt) {
@@ -125,17 +124,21 @@ absl::StatusOr<mlir::func::FuncOp> MoveCustomMlirKernel(
   mlir::SymbolTable& dst_st = symbol_tables.getSymbolTable(dst_module);
   mlir::SymbolTable& src_st = symbol_tables.getSymbolTable(custom_kernel);
 
-  // Rename all functions in the module to be unique.
+  // Collect the kernel's functions (the entry plus any helper functions
+  // referenced via a custom_call's called_computations).
   auto funcs = custom_kernel.getOps<mlir::func::FuncOp>();
-  const size_t num_funcs = absl::c_distance(funcs);
-  // After running the inliner pass, the kernel must only have 1 function.
-  ABSL_CHECK(  // CRASH_OK=Infra only handles importing a single function.
-      num_funcs == 1)
-      << "custom kernel must have exactly one function after specialization, "
-         "got "
-      << num_funcs;
 
+  // jax.export emits one public entry function plus any private helper
+  // functions referenced by a custom_call's called_computations (e.g. a fused
+  // optimizer like @adagrad-t0 from tpu_sparse_dense_matmul_grad). Identify the
+  // entry as the public function (fall back to the first).
   mlir::func::FuncOp src_main = *funcs.begin();
+  for (auto func : funcs) {
+    if (func.isPublic()) {
+      src_main = func;
+      break;
+    }
+  }
   if (kernel_id_str.has_value()) {
     // Rename the function to the given kernel id string.
     // A kernel id string is expected to be something like
@@ -154,6 +157,19 @@ absl::StatusOr<mlir::func::FuncOp> MoveCustomMlirKernel(
     ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
         mlir::succeeded(src_st.renameToUnique(src_main, &dst_st)))
         << "failed to rename function " << src_main.getName().str();
+  }
+
+  // Rename the remaining (helper) functions uniquely too -- e.g. a function
+  // referenced by a custom_call's called_computations (such as a fused
+  // optimizer). renameToUnique also updates those symbol references, so they
+  // stay valid after the functions are cloned into the destination module.
+  for (auto func : funcs) {
+    if (func == src_main) {
+      continue;
+    }
+    ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
+        mlir::succeeded(src_st.renameToUnique(func, &dst_st)))
+        << "failed to rename function " << func.getName().str();
   }
 
   // Now clone the unique functions into the destination module.
