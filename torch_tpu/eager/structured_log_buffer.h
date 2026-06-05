@@ -43,6 +43,7 @@ enum class MaterializationReason {
   kDebugMode,
   kDistributedOp,
   kCompileModeExecution,
+  kOpSplitMode,
 };
 
 constexpr std::string_view ToString(MaterializationReason reason) {
@@ -65,6 +66,8 @@ constexpr std::string_view ToString(MaterializationReason reason) {
       return "distributed_op";
     case MaterializationReason::kCompileModeExecution:
       return "compile_mode_execution";
+    case MaterializationReason::kOpSplitMode:
+      return "op_split_mode";
   }
   return "unknown";
 }

@@ -148,7 +148,7 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
     const auto deferred_op = device_buffer_list->deferred_op();
     ABSL_CHECK(deferred_op != nullptr);  // CRASH_OK=just created it
     TT_RETURN_IF_ERROR(Materialize(deferred_op->inputs(),
-                                   MaterializationReason::kDebugMode,
+                                   MaterializationReason::kOpSplitMode,
                                    MaterializationMode::kSplitGraph));
     // Don't block here even in kDeferNeverAndLaunchBlocking mode; block after
     // the new op, not after its inputs.
@@ -168,15 +168,30 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
 
 // Handles post-op creation events for the kDeferAndFuse eager mode.
 absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
-                                  const OpName op_name) {
+                                  const OpName op_name,
+                                  const OpSplitMode split_mode) {
   const auto& device_buffer_list = results[0].device_buffer_list();
   if (GetFlagOnce<bool,
                   &FLAGS_torch_tpu_internal_enable_new_materialization>()) {
     TT_RETURN_IF_ERROR(OnNewOpDispatch(device_buffer_list));
   }
+  if (IsMetadataOnly(op_name)) {
+    // Don't eagerly materialize metadata-only ops.
+    // Don't consider metadata-only ops for the repeated ops heuristic.
+    return absl::OkStatus();
+  }
+  if (IsSplitBefore(split_mode)) {
+    const auto deferred_op = device_buffer_list->deferred_op();
+    ABSL_CHECK(deferred_op != nullptr);  // CRASH_OK=just created it
+    TT_RETURN_IF_ERROR(Materialize(deferred_op->inputs(),
+                                   MaterializationReason::kOpSplitMode,
+                                   MaterializationMode::kSplitGraph));
+  }
 
-  // Don't consider metadata-only ops for the repeated ops heuristic.
-  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
+  if (IsSplitAfter(split_mode)) {
+    return Materialize(device_buffer_list, MaterializationReason::kOpSplitMode,
+                       MaterializationMode::kSplitGraph);
+  } else if (MustApplyRepeatedOpsHeuristic()) {
     return ApplyRepeatedOpsHeuristic(device_buffer_list);
   }
   return absl::OkStatus();
@@ -223,7 +238,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
                                             /*block=*/true));
       break;
     case EagerMode::kDeferAndFuse:
-      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results, params.op_name));
+      TT_RETURN_IF_ERROR(
+          DeferAndFuseDispatch(results, params.op_name, params.split_mode));
       break;
     case EagerMode::kInternalDeferAll:
       // Do not register the DeferredOp with the materialize_new
