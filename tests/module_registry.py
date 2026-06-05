@@ -106,6 +106,17 @@ _WEIGHTS_BASE_PATH = flags.DEFINE_string(
     "Default base location of model configs and weights.",
 )
 
+try:
+  # TODO(yihaow): Import torchrec directly after the migration is done.
+  from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
+  from torchrec.modules.embedding_modules import EmbeddingBagCollection
+  from torchrec.modules.embedding_configs import EmbeddingBagConfig
+  from torchrec.examples.retrieval.modules.two_tower import TwoTower
+
+  _HAS_TORCHREC = True
+except ImportError:
+  _HAS_TORCHREC = False
+
 
 class Modality(enum.Enum):
   MULTIMODAL = "multimodal"
@@ -1000,6 +1011,123 @@ class DiffusersProvider(BaseProvider):
     return ModuleSpec(_module_factory, _input_factory, config=config_dict)
 
 
+class TwoTowerProvider(BaseProvider):
+  """Provider for Torchrec Two Tower models.
+
+  Note:
+    TorchRec models typically do not have standardized pre-trained weights or
+    configuration files like Hugging Face models. This provider serves a
+    preset model architecture initialized with random weights and generates
+    dummy KeyedJaggedTensor inputs.
+  """
+
+  def __init__(self, base_path: str | None = None):
+    super().__init__(base_path=base_path)
+
+  def list_modules(self) -> list[str]:
+    """Lists the names of all models available from this provider.
+
+    Returns:
+      A list of model name strings. Since these are dynamically generated
+      presets, we return a hardcoded list.
+    """
+    return ["default/two_tower"]
+
+  def get_module_spec(
+      self,
+      name: str,
+      *,
+      load_weights: bool = False,
+      modify_config_hook: Callable[[Any], Any] | None = None,
+      **kwargs,
+  ) -> ModuleSpec:
+    """Creates a ModuleSpec for a TorchRec Two Tower model.
+
+    Args:
+      name: Name of the model (e.g., 'two_tower').
+      load_weights: Must be False. TorchRec presets do not support loading
+        weights.
+      modify_config_hook: Must be None. Not supported without a standard config
+        object.
+      **kwargs: Additional keyword arguments passed to the model constructor.
+
+    Returns:
+      A ModuleSpec containing the model factory and input factory.
+
+    Raises:
+      NotImplementedError: If load_weights=True or modify_config_hook is used.
+    """
+    if load_weights:
+      raise NotImplementedError(
+          "load_weights=True is not supported for TorchRec model."
+      )
+
+    if modify_config_hook is not None:
+      raise NotImplementedError(
+          "modify_config_hook is not supported for TorchRec models."
+      )
+
+    embedding_dim = 64
+    vocab_size = 30000
+    layer_sizes = [256, 128, 64]
+
+    def _model_fn():
+      device = kwargs.get("device", torch.device("cpu"))
+      configs = [
+          EmbeddingBagConfig(
+              name="query_table",
+              embedding_dim=embedding_dim,
+              num_embeddings=vocab_size,
+              feature_names=["query_feature"],
+          ),
+          EmbeddingBagConfig(
+              name="candidate_table",
+              embedding_dim=embedding_dim,
+              num_embeddings=vocab_size,
+              feature_names=["candidate_feature"],
+          ),
+      ]
+
+      ebc = EmbeddingBagCollection(tables=configs, device=device)
+
+      return TwoTower(
+          embedding_bag_collection=ebc, layer_sizes=layer_sizes, device=device
+      )
+
+    def _input_fn(shape=None, device="cpu"):
+      # Fallback to batch_size=32 if shape is not provided
+      actual_shape = shape if shape is not None else (32, 1)
+      batch_size = actual_shape[0]
+
+      keys = ["query_feature", "candidate_feature"]
+      lengths = torch.ones(
+          batch_size * len(keys),
+          dtype=torch.int32,
+          device=device,
+      )
+      values = torch.randint(
+          0,
+          vocab_size,
+          (batch_size * len(keys),),
+          dtype=torch.int32,
+          device=device,
+      )
+      kjt = KeyedJaggedTensor(
+          keys=keys,
+          values=values,
+          lengths=lengths,
+          length_per_key=[batch_size, batch_size],
+      ).to(device)
+
+      return ((), {"kjt": kjt})
+
+    # Preset model do not have config and preprocessor_fn.
+    preprocessor_fn = None
+    config = None
+
+    return ModuleSpec(_model_fn, _input_fn, preprocessor_fn, config)
+
+
 class ModuleRegistry:
   """Central registry for managing multiple model providers."""
 
@@ -1030,6 +1158,8 @@ class ModuleRegistry:
       )
     if _HAS_DIFFUSERS:
       self._providers["diffusers"] = DiffusersProvider(base_path=base_path)
+    if _HAS_TORCHREC:
+      self._providers["torchrec"] = TwoTowerProvider(base_path=base_path)
 
   def list_all_sources(self) -> list[str]:
     """Returns a list of registered provider keys (e.g., 'torchvision')."""

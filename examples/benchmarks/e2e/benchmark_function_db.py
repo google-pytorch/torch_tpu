@@ -232,6 +232,37 @@ def simple_train_factory() -> (
   return train_step
 
 
+# ==============================================================================
+# 5. Torchrec eval factories
+# ==============================================================================
+
+
+def torchrec_eval_factory() -> Callable[..., Any]:
+  """Creates a benchmark function for Hugging Face model evaluation.
+
+  Returns:
+    A callable step function that executes a forward pass on the model under
+    `torch.no_grad` and returns the output logits.
+  """
+
+  def step_fn(
+      model: torch.nn.Module,
+      inputs: Any,
+      optimizer: torch.optim.Optimizer | None = None,
+  ) -> torch.Tensor:
+    del optimizer  # Unused
+    # TODO(bbahl): Change to inference mode after fixing error in
+    # torch.inference_mode(). Currently it raises: RuntimeError: Cannot set
+    # version_counter for inference tensor in torch.embedding.
+    with torch.no_grad():
+      result = model(**inputs)
+      if hasattr(result, "logits"):
+        result = result.logits
+      return result
+
+  return step_fn
+
+
 # TODO(lukeboyer): Refactor generic_train_factory later to improve failure debugging.
 def generic_train_factory(
     grad_accumulation_steps: int,

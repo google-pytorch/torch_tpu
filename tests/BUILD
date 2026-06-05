@@ -36,12 +36,13 @@ torch_tpu_py_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/etils/epath",
-        "//shims/safetensors",  # buildcleaner: keep
+        "//shims/safetensors",
         "//shims/torch:pytorch",
-        "@pypi//diffusers",  # build_cleaner: keep
-        "@pypi//timm",  # build_cleaner: keep
-        "@pypi//torchvision",  # build_cleaner: keep
-        "@pypi//transformers",  # build_cleaner: keep
+        "@pypi//diffusers",
+        "@pypi//timm",
+        "@pypi//torchrec",
+        "@pypi//torchvision",
+        "@pypi//transformers",
     ],
 )
 

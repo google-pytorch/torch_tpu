@@ -46,7 +46,6 @@ from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
 from transformers.models.qwen3_moe import modeling_qwen3_moe
 
-
 def get_vocab_size(config: Any, default: int = 256_000) -> int:
   """Gets the vocab size from a config, with a fallback default."""
   direct_vocab_size = getattr(config, "vocab_size", None)
@@ -200,7 +199,6 @@ def _get_base_qwen3_config():
   })
   config._attn_implementation = "eager"  # pylint: disable=protected-access
   return config
-
 
 @dataclasses.dataclass
 class ModelAndInput:
@@ -2053,4 +2051,30 @@ def gemma_ragged_moe_model_builder(
       (batch_size, sequence_length), str(device)
   )
   example_inputs.pop("attention_mask", None)
+  return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
+def two_tower_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns a ModelAndInput for the preset Two Tower model."""
+  del is_training  # Unused
+  model_name = model_and_input_args.model_name
+  batch_size = model_and_input_args.batch_size
+
+  # Extract any custom kwargs provided.
+  custom_kwargs = getattr(model_and_input_args, "custom_kwargs", {})
+  registry = get_module_registry()
+  module_spec = registry.get_module_spec(
+      "torchrec", model_name, device=device, **custom_kwargs
+  )
+
+  model = module_spec.module_factory()
+
+  _, example_inputs = module_spec.sample_inputs_factory(
+      (batch_size, 1), str(device)
+  )
   return ModelAndInput(model=model, example_inputs=example_inputs)

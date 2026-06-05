@@ -60,6 +60,8 @@ _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
+_TORCHREC_TWO_TOWER_BENCHMARK_NAME = "torchrec_two_tower"
+
 
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
@@ -1376,6 +1378,34 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     )
     self.run_performance_benchmark_test(
         config, _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME
+    )
+
+  # ============================================================================
+  # 10. Torchrec
+  # ============================================================================
+
+  @parameterized.named_parameters(test_utils.generate_run_mode_configs())
+  def test_torchrec_two_tower_forward(self, run_mode):
+    """Tests the forward pass of the TorchRec Two Tower preset model."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[benchmark_utils.Platform.GFC_1X1X1],
+        benchmark_category=benchmark_utils.BenchmarkCategory.TORCHREC,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="two_tower",
+            batch_size=128,
+            custom_kwargs={
+                "vocab_size": 30000,
+                "embedding_dim": 64,
+                "layer_sizes": [256, 128, 64],
+            },
+        ),
+        model_and_input_factory=model_utils.two_tower_model_builder,
+        eval_factory=benchmark_function_db.torchrec_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _TORCHREC_TWO_TOWER_BENCHMARK_NAME
     )
 
 
