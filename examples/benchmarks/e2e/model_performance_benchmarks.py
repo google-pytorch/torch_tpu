@@ -60,6 +60,7 @@ _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
+_TORCHREC_DLRM_V3_BENCHMARK_NAME = "torchrec_dlrm_v3"
 
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
@@ -1376,6 +1377,43 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     )
     self.run_performance_benchmark_test(
         config, _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_run_mode_configs([
+          benchmark_utils.RunMode.EAGER_DEFAULT,
+          benchmark_utils.RunMode.EAGER_OPTIMIZED,
+          benchmark_utils.RunMode.COMPILED,
+      ])
+  )
+  def test_dlrm_v3_forward(self, run_mode):
+    """Tests the forward pass of DLRMv3."""
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            benchmark_utils.Platform.GFC_1X1X1,
+            benchmark_utils.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.TORCHREC_DLRM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="torchrec_dlrm_v3",
+            sequence_length=1,
+            batch_size=256,
+            custom_kwargs=dict(
+                num_embeddings=1024,
+                embedding_dim=128,
+                dense_in_features=13,
+                dense_arch_layer_sizes=[512, 256, 128],
+                over_arch_layer_sizes=[1024, 1024, 512, 256, 1],
+                num_tables=26,
+            ),
+        ),
+        model_and_input_factory=model_utils.dlrm_model_builder,
+        eval_factory=benchmark_function_db.simple_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _TORCHREC_DLRM_V3_BENCHMARK_NAME
     )
 
 

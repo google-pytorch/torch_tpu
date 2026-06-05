@@ -544,6 +544,10 @@ torch_tpu_py_library(
         "@pypi//llama_models",
         "@pypi//numpy",
         "@pypi//timm",
+        "@pypi//torchrec/distributed/test_utils:model_input",
+        "@pypi//torchrec/models:dlrm",
+        "@pypi//torchrec/modules:embedding_configs",
+        "@pypi//torchrec/modules:embedding_modules",
         "@pypi//transformers",  # buildcleaner: keep
     ],
 )

@@ -249,6 +249,7 @@ class BenchmarkCategory(enum.Enum):
   GEMMA_RAGGED_MOE = "gemma_ragged_moe"
   TORCHAUDIO = "torchaudio"
   INTERNAL_MODEL = "internal_model"
+  TORCHREC_DLRM = "torchrec_dlrm"
 
 
 @dataclasses.dataclass

@@ -414,7 +414,6 @@ benchmarks {
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 
-
 benchmarks {
   name: "test_detr_resnet_50_forward_eager_default-detr_resnet_50"
   description: "Eager default forward pass benchmark for DETR ResNet-50 model."
@@ -483,6 +482,80 @@ benchmarks {
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
 
+  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "test_dlrm_v3_forward_eager_default-torchrec_dlrm_v3"
+  description: "Eager default forward pass benchmark for DLRMv3 model."
+  owner: "TorchTPU"
+
+  workload {
+    action: "./ml_actions/benchmarking/actions/workload_executors/bazel"
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_dlrm_v3_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+
+  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "test_dlrm_v3_forward_eager_optimized-torchrec_dlrm_v3"
+  description: "Eager optimized forward pass benchmark for DLRMv3 model."
+  owner: "TorchTPU"
+
+  workload {
+    action: "./ml_actions/benchmarking/actions/workload_executors/bazel"
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_dlrm_v3_forward_eager_optimized --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+
+  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "test_dlrm_v3_forward_compiled-torchrec_dlrm_v3"
+  description: "Compiled forward pass benchmark for DLRMv3 model."
+  owner: "TorchTPU"
+
+  workload {
+    action: "./ml_actions/benchmarking/actions/workload_executors/bazel"
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_dlrm_v3_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
