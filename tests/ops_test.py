@@ -248,10 +248,6 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float16: {"rtol": 4.4e-3, "atol": 4e-3},
         torch.float32: {"rtol": 1e-4, "atol": 5e-4},
     },
-    "_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 2.9, "atol": 4.7e-2},
-        torch.float16: {"rtol": 1.3, "atol": 4.3e-3},
-    },
     "abs": {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
     },
@@ -590,10 +586,6 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.int8: {"rtol": 3.3e-6, "atol": 1.1e-3},
         torch.uint8: {"rtol": 3.3e-6, "atol": 1.1e-3},
     },
-    "softmax": {
-        torch.bfloat16: {"rtol": 2e-2, "atol": 2.5e-4},
-        torch.float16: {"rtol": 2.2e-3, "atol": 9.8e-4},
-    },
     "sqrt": {
         torch.float64: {"rtol": 2e-6, "atol": 3e-6},
     },
@@ -793,8 +785,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"atol": 9.4e-5},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3.8e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"rtol": 1.4e-1, "atol": 4.9e-3},
+        torch.float16: {"rtol": 5.2e-3, "atol": 3.7e-4},
     },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
@@ -1087,10 +1079,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"atol": 1.2e-3},
         torch.uint8: {"atol": 1.2e-3},
     },
-    "softmax": {
-        torch.bfloat16: {"atol": 2.5e-4},
-        torch.float16: {"atol": 6.2e-5},
-    },
     "tan": {
         torch.complex64: {"atol": 4.8e-5},
     },
@@ -1173,8 +1161,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"atol": 9.4e-5},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3e-2},
-        torch.float16: {"atol": 3.7e-4},
+        torch.bfloat16: {"rtol": 1.4e-1, "atol": 4.9e-3},
+        torch.float16: {"rtol": 5.2e-3, "atol": 3.7e-4},
     },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
@@ -3361,9 +3349,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("slice")
 
   def test_softmax(self):
-    self.do_test_op(
-        "softmax",
-    )
+    self.do_test_op("softmax")
 
   def test_softmax_backward_data(self):
     self.do_test_op(
