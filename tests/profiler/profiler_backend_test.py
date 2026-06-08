@@ -50,6 +50,7 @@ class ProfilerBackendTest(absltest.TestCase):
   def test_double_start_server_fails(self):
     """Calling start_profiler_server() twice should fail."""
 
+    self.fail('Testing')
     port = portpicker.pick_unused_port()
     profiler_backend.start_profiler_server(port)
     try:
