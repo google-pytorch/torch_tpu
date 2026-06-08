@@ -17,6 +17,7 @@
 import contextlib
 import enum
 import functools
+import os
 import re
 
 from absl import flags
@@ -42,6 +43,13 @@ TEST_MODE = flags.DEFINE_string(
         " unexpected type. Therefore running the test in the 'tpu' mode  is"
         " still necessary."
     ),
+)
+
+
+EXPORT_TO_FILE = flags.DEFINE_string(
+    name="export_to_file",
+    default=None,
+    help="Explicitly export covered locations to this file.",
 )
 
 
@@ -82,6 +90,26 @@ _EXCEPTION_RAISED_RE = re.compile(
 _allow_cpu_parameter = True
 
 
+_COVERAGE_FILE = None
+
+
+def _get_output_file():
+  """Get the error coverage output file."""
+  global _COVERAGE_FILE
+  if _COVERAGE_FILE is None:
+    if EXPORT_TO_FILE.value:
+      _COVERAGE_FILE = EXPORT_TO_FILE.value
+    elif cov_file := os.environ.get("ERROR_COVERAGE_FILE"):
+      _COVERAGE_FILE = cov_file
+    elif cov_dir := os.environ.get("ERROR_COVERAGE_DIR"):
+      _COVERAGE_FILE = os.path.join(cov_dir, "coverage_results.txt")
+    elif outputs_dir := os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR"):
+      _COVERAGE_FILE = os.path.join(outputs_dir, "coverage_results.txt")
+    else:
+      _COVERAGE_FILE = False
+  return _COVERAGE_FILE
+
+
 def _parse_error(msg: str):
   """Parses the message and prints the error macro locations it covers."""
   # An error message looks like:
@@ -102,15 +130,20 @@ def _parse_error(msg: str):
   #
   # We need to extract the source locations from the C++ error trace and the
   # "Exception raised from ..." line.
+  covered_locs = []
+
   for line in msg.splitlines():
     m = _SOURCE_LOC_RE.match(line)
     if m:
-      print(f"\nCovered {m.group(1)}")
+      covered_locs.append(m.group(1))
     else:
       m = _EXCEPTION_RAISED_RE.match(line)
       if m:
-        print(f"\nCovered {m.group(1)}")
+        covered_locs.append(m.group(1))
         break
+
+  with open(_get_output_file(), "w") as f:
+    f.writelines(f"Covered {loc}" for loc in covered_locs)
 
 
 class _MatchType(enum.Enum):
