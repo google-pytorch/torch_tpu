@@ -16,65 +16,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
 import pathlib
-from typing import TypeAlias
 
 import torch
-
-_ExperimentalValue: TypeAlias = int | bool | str
-
-# LINT.IfChange(option_keys)
-# go/keep-sorted start
-_PK_CHECK_EXPERIMENTAL_OPTIONS = "check_experimental_options"
-_PK_DEVICE_TRACER_LEVEL = "device_tracer_level"
-_PK_HOST_TRACER_LEVEL = "host_tracer_level"
-_PK_PYTHON_TRACER_LEVEL = "python_tracer_level"
-_PK_RUN_DIR = "run_dir"
-# go/keep-sorted end
-# LINT.ThenChange(profiler_config.py:stable_keys_set)
-
-
-# LINT.IfChange(stable_keys_set)
-# Profiler config option keys that are stable (not experimental).
-_STABLE_KEYS = frozenset({
-    # go/keep-sorted start
-    _PK_CHECK_EXPERIMENTAL_OPTIONS,
-    _PK_DEVICE_TRACER_LEVEL,
-    _PK_HOST_TRACER_LEVEL,
-    _PK_PYTHON_TRACER_LEVEL,
-    _PK_RUN_DIR,
-    # go/keep-sorted end
-})
-# LINT.ThenChange(profiler_config.py:option_keys)
-
-
-def _format_experimental_value(value: _ExperimentalValue) -> str:
-  r"""Formats an experimental option value for the config string.
-
-  Rules:
-  - Strings: Wrapped in double quotes. Internal backslashes are escaped to
-    double backslashes, and internal double quotes are escaped to
-    backslash-quote.
-    E.g., `some\path` -> `"some\\path"`, `a "quote"` -> `"a \"quote\""`.
-  - Booleans: Formatted as "true" or "false".
-  - Integers: Formatted as their string representation.
-
-  Args:
-    value: The value to format (must be str, bool, or int).
-
-  Returns:
-    The formatted string representation.
-  """
-  if isinstance(value, str):
-    return f'"{value.replace("\\", r"\\").replace("\"", r"\"")}"'
-  elif isinstance(value, bool):
-    return "true" if value else "false"
-  else:
-    assert isinstance(value, int) and not isinstance(
-        value, bool
-    ), f"Expected int value, got {type(value)}"
-    return str(value)
 
 
 class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=protected-access
@@ -87,8 +31,6 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       device_tracer_level: int = 1,
       python_tracer_level: int = 0,
       run_dir: pathlib.Path | None = None,
-      experimental_options: Mapping[str, _ExperimentalValue] | None = None,
-      check_experimental_options: bool = True,
   ):
     """Initializes the TPU profiler configuration.
 
@@ -112,39 +54,15 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         (default), falls back to Kineto's `activitiesLogFile` directory (which
         defaults to "/tmp" if no handler is provided). This ensures TPU and CPU
         traces are co-located in the same directory.
-      experimental_options: Dictionary of experimental profiler options where
-        supported value types are int, bool, and str. Strings will be
-        automatically quoted and escaped, and keys must not contain colons or
-        commas.
-      check_experimental_options: If True (default), strictly validates that
-        experimental keys are recognized by the underlying profiling compiler
-        backend.
     """
     run_dir_posix = (
         pathlib.Path(run_dir).as_posix() if run_dir is not None else None
     )
-    for key in experimental_options or {}:
-      if key in _STABLE_KEYS:
-        raise ValueError(
-            f"Experimental option key cannot clash with stable option: {key!r}"
-        )
-      if ":" in key or "," in key:
-        raise ValueError(
-            f"Experimental option keys cannot contain ':' or ',': {key!r}"
-        )
-
-    def get_parts() -> Iterator[str]:
-      yield f"{_PK_HOST_TRACER_LEVEL}:{host_tracer_level}"
-      yield f"{_PK_DEVICE_TRACER_LEVEL}:{device_tracer_level}"
-      yield f"{_PK_PYTHON_TRACER_LEVEL}:{python_tracer_level}"
-      if run_dir_posix is not None:
-        yield f"{_PK_RUN_DIR}:{run_dir_posix}"
-      if experimental_options:
-        for key, value in experimental_options.items():
-          yield f"{key}:{_format_experimental_value(value)}"
-        yield f"{_PK_CHECK_EXPERIMENTAL_OPTIONS}:{str(check_experimental_options).lower()}"
-
-    config_parts = list(get_parts())
+    config_parts = [
+        f"host_tracer_level:{host_tracer_level}",
+        f"device_tracer_level:{device_tracer_level}",
+        f"python_tracer_level:{python_tracer_level}",
+    ] + ([f"run_dir:{run_dir_posix}"] if run_dir_posix is not None else [])
 
     # We suppress 'wrong-keyword-args' because 'custom_profiler_config' is
     # explicitly supported by the C++ implementation of _ExperimentalConfig

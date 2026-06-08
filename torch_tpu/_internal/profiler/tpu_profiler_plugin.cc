@@ -22,7 +22,6 @@
 #include <kineto/output_base.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -106,91 +105,6 @@ absl::Status ParseAndSetUint(
   return absl::OkStatus();
 }
 
-// Unescapes a string value by removing backslashes that escape other
-// characters.
-//
-// Scheme:
-// - Any character preceded by a backslash `\` is copied literally, and the
-//   backslash is discarded.
-// - This allows preserving literal double quotes `"` and backslashes `\`
-//   that were escaped in Python.
-//
-// Examples:
-// - `a \"nested\" quote` -> `a "nested" quote`
-// - `some\\path` -> `some\path`
-// - `a\,b` -> `a,b`
-// Unescapes a string option value by resolving escape sequences.
-//
-// Scheme:
-// - Only `\"` (escaped double quote) and `\\` (escaped backslash) are supported
-//   escape sequences. The backslash is discarded and the character is copied
-//   literally.
-// - Any other escape sequence is considered a bug and returns an error.
-//
-// Examples:
-// - `a \"nested\" quote` -> `a "nested" quote`
-// - `some\\path` -> `some\path`
-absl::StatusOr<std::string> UnescapeString(std::string_view s) {
-  std::string result;
-  result.reserve(s.size());
-  bool escaped = false;
-  for (char c : s) {
-    if (escaped) {
-      if (c != '\\' && c != '"') {
-        return TT_ERROR(error::kInvalidArgument)
-               << "Invalid escape sequence: \\" << std::string(1, c)
-               << " (only \\\\ and \\\" are supported)";
-      }
-      result.push_back(c);
-      escaped = false;
-    } else if (c == '\\') {
-      escaped = true;
-    } else {
-      result.push_back(c);
-    }
-  }
-  if (escaped) {
-    return TT_ERROR(error::kInvalidArgument) << "Trailing backslash in string";
-  }
-  return result;
-}
-
-// Parses the value and sets it in the advanced_configuration map.
-// Strings must be enclosed in double quotes. Unquoted values are parsed as
-// booleans or integers.
-absl::Status SetAdvancedConfigValue(tensorflow::ProfileOptions& opts,
-                                    std::string_view key,
-                                    std::string_view val) {
-  tensorflow::ProfileOptions::AdvancedConfigValue adv_val;
-
-  if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
-    // Strip outer quotes and unescape internal characters.
-    absl::StatusOr<std::string> unescaped_or =
-        UnescapeString(val.substr(1, val.size() - 2));
-    if (!unescaped_or.ok()) {
-      return unescaped_or.status();
-    }
-    adv_val.set_string_value(*unescaped_or);
-  } else if (val == "true") {
-    adv_val.set_bool_value(true);
-  } else if (val == "false") {
-    adv_val.set_bool_value(false);
-  } else {
-    int64_t int_val;
-    if (absl::SimpleAtoi(val, &int_val)) {
-      adv_val.set_int64_value(int_val);
-    } else {
-      return TT_ERROR(error::kInvalidArgument)
-             << "expected the advanced option '" << key
-             << "' to be a quoted string, boolean (true/false), or integer, "
-             << "got '" << val << "'";
-    }
-  }
-
-  (*opts.mutable_advanced_configuration())[std::string(key)] = adv_val;
-  return absl::OkStatus();
-}
-
 // Updates a single key-value option in the ProfileOptions.
 absl::Status UpdateProfileOption(tensorflow::ProfileOptions& opts,
                                  std::string_view key, std::string_view val) {
@@ -206,54 +120,17 @@ absl::Status UpdateProfileOption(tensorflow::ProfileOptions& opts,
     return ParseAndSetUint(
         opts, key, val, &tensorflow::ProfileOptions::set_python_tracer_level);
   }
-  return SetAdvancedConfigValue(opts, key, val);
-}
-
-// Helper to find the next comma or colon separator while ignoring delimiters
-// that reside inside quotes, and respecting backslash escaping.
-size_t FindNextSeparator(std::string_view custom_config, char sep,
-                         size_t start = 0) {
-  bool in_quotes = false;
-  bool escaped = false;
-  for (size_t i = start; i < custom_config.size(); ++i) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (custom_config[i] == '\\') {
-      escaped = true;
-    } else if (custom_config[i] == '"') {
-      in_quotes = !in_quotes;
-    } else if (custom_config[i] == sep && !in_quotes) {
-      return i;
-    }
-  }
-  return std::string_view::npos;
-}
-
-// Helper to split a string by an escape-aware separator, ignoring delimiters
-// that reside inside quotes, and returning a list of string slices.
-std::vector<std::string_view> SplitConfig(std::string_view custom_config,
-                                          char sep) {
-  std::vector<std::string_view> items;
-  size_t start = 0;
-  while (start < custom_config.size()) {
-    size_t next = FindNextSeparator(custom_config, sep, start);
-    std::string_view item = custom_config.substr(start, next - start);
-    if (!item.empty()) {
-      items.push_back(item);
-    }
-    if (next == std::string_view::npos) break;
-    start = next + 1;
-  }
-  return items;
+  return TT_ERROR(error::kInvalidArgument)
+         << "expected the profiler option to be one of " << kDeviceTracerLevel
+         << ", " << kHostTracerLevel << ", " << kPythonTracerLevel << ", or "
+         << kRunDir << ", got '" << key << "'";
 }
 
 // Splits a single custom config item (e.g., "key:value") by the first
 // occurrence of ':'. Leading and trailing whitespace is stripped from both the
 // key and value.
 absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
-  size_t colon_pos = FindNextSeparator(item, ':');
+  size_t colon_pos = item.find(':');
   if (colon_pos == std::string_view::npos) {
     return TT_ERROR(error::kInvalidArgument)
            << "expected the config item to be in the 'key:value' format, "
@@ -273,15 +150,8 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir) {
-  if (!std::all_of(custom_config.begin(), custom_config.end(), [](char c) {
-        return absl::ascii_isascii(static_cast<unsigned char>(c));
-      })) {
-    return TT_ERROR(error::kInvalidArgument)
-           << "custom_config contains non-ASCII characters (this is a known "
-              "limitation): "
-           << custom_config;
-  }
-  for (std::string_view item : SplitConfig(custom_config, ',')) {
+  for (std::string_view item :
+       absl::StrSplit(custom_config, ',', absl::SkipEmpty())) {
     absl::StatusOr<ProfilerOption> profiler_option = SplitConfigItem(item);
     if (!profiler_option.ok()) {
       return profiler_option.status();
@@ -384,7 +254,6 @@ void TpuKinetoProfilerSession::start() {
   }
   tensorflow::ProfileOptions opts = tsl::ProfilerSession::DefaultOptions();
   opts.set_device_type(tensorflow::ProfileOptions::TPU);
-  opts.set_raise_error_on_start_failure(true);
 
   TT_THROW_IF_ERROR(
       UpdateProfileOptions(config_.getCustomConfig(), opts, run_dir_));
@@ -394,14 +263,6 @@ void TpuKinetoProfilerSession::start() {
     ABSL_LOG(ERROR) << "Failed to create Tpu ProfilerSession!";
     errors_.push_back("Failed to create Tpu ProfilerSession");
     status_ = libkineto::TraceStatus::ERROR;
-  } else if (!session_->Status().ok()) {
-    absl::Status status = session_->Status();
-    std::string err = std::string(status.message());
-    ABSL_LOG(ERROR) << "Tpu ProfilerSession start failed: " << err;
-    errors_.push_back(err);
-    status_ = libkineto::TraceStatus::ERROR;
-    session_.reset();
-    TT_THROW_IF_ERROR(status);
   } else {
     ABSL_LOG(INFO) << "Successfully created Tpu ProfilerSession!";
     status_ = libkineto::TraceStatus::RECORDING;

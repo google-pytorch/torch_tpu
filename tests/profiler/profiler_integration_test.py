@@ -20,7 +20,6 @@ import time
 
 from absl import logging
 from absl.testing import absltest
-from absl.testing import parameterized
 import torch
 from torch.autograd import profiler
 from torch_tpu._internal import sync as tpu_sync
@@ -93,7 +92,7 @@ def _get_profiler_options_bytes(xspace: xplane_pb2.XSpace) -> bytes:
   return b""
 
 
-class ProfilerIntegrationTest(parameterized.TestCase):
+class ProfilerIntegrationTest(absltest.TestCase):
 
   def _get_and_copy_xplane(self, destination_path: pathlib.Path) -> None:
     profile_dir = _get_profile_dir()
@@ -395,138 +394,6 @@ class ProfilerIntegrationTest(parameterized.TestCase):
       ):
         c = torch.ones((16, 16)).to(device) @ torch.ones((16, 16)).to(device)
         tpu_sync.synchronize(c)
-
-  def test_tpu_profiler_config_experimental_options(self):
-    device = torch.device("tpu")
-    output_dir = pathlib.Path(
-        self.create_tempdir("experimental_options").full_path
-    )
-
-    config = TpuProfilerConfig(
-        host_tracer_level=2,
-        experimental_options=dict(
-            tpu_num_sparse_cores_to_trace=4,
-            tpu_trace_mode="TRACE_ONLY_HOST",
-            tpu_perf_counters=True,
-        ),
-        run_dir=output_dir,
-    )
-
-    with torch.profiler.profile(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.PrivateUse1,
-        ],
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            str(output_dir)
-        ),
-        experimental_config=config,
-    ):
-      a = torch.ones((16, 16)).to(device)
-      b = torch.ones((16, 16)).to(device)
-      c = a @ b
-      tpu_sync.synchronize(c)
-
-    xplane_files = list(output_dir.glob("**/plugins/profile/**/*.xplane.pb"))
-    self.assertLen(xplane_files, 1)
-    (tpu_xplane_path,) = xplane_files
-
-    xspace = xplane_pb2.XSpace.FromString(tpu_xplane_path.read_bytes())
-    options_bytes = _get_profiler_options_bytes(xspace)
-    options = profiler_options_pb2.ProfileOptions.FromString(options_bytes)
-
-    advanced_config = options.advanced_configuration
-    actual_subset = {
-        "tpu_num_sparse_cores_to_trace": (
-            advanced_config["tpu_num_sparse_cores_to_trace"].int64_value
-        ),
-        "tpu_trace_mode": advanced_config["tpu_trace_mode"].string_value,
-        "tpu_perf_counters": advanced_config["tpu_perf_counters"].bool_value,
-    }
-    expected = {
-        "tpu_num_sparse_cores_to_trace": 4,
-        "tpu_trace_mode": "TRACE_ONLY_HOST",
-        "tpu_perf_counters": True,
-    }
-    self.assertEqual(expected, actual_subset)
-
-  def test_tpu_profiler_config_invalid_experimental_option(self):
-    device = torch.device("tpu")
-    output_dir = pathlib.Path(
-        self.create_tempdir("invalid_experimental_option").full_path
-    )
-
-    config = TpuProfilerConfig(
-        host_tracer_level=2,
-        experimental_options={
-            "invalid_option_key": "some_value",
-        },
-        run_dir=output_dir,
-    )
-
-    with self.assertRaisesRegex(
-        RuntimeError,
-        r"Parsing advanced_configuration failed\. The following keys "
-        r"were not recognized: invalid_option_key",
-    ):
-      with torch.profiler.profile(
-          activities=[
-              torch.profiler.ProfilerActivity.CPU,
-              torch.profiler.ProfilerActivity.PrivateUse1,
-          ],
-          on_trace_ready=torch.profiler.tensorboard_trace_handler(
-              str(output_dir)
-          ),
-          experimental_config=config,
-      ):
-        a = torch.ones((16, 16)).to(device)
-        b = torch.ones((16, 16)).to(device)
-        c = a @ b
-        tpu_sync.synchronize(c)
-
-  def test_tpu_profiler_config_invalid_experimental_option_ignored(self):
-    device = torch.device("tpu")
-    output_dir = pathlib.Path(
-        self.create_tempdir("invalid_experimental_option_ignored").full_path
-    )
-
-    config = TpuProfilerConfig(
-        host_tracer_level=2,
-        experimental_options={
-            "invalid_option_key": "some_value",
-        },
-        check_experimental_options=False,
-        run_dir=output_dir,
-    )
-
-    # Should not raise any error.
-    with torch.profiler.profile(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.PrivateUse1,
-        ],
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            str(output_dir)
-        ),
-        experimental_config=config,
-    ):
-      a = torch.ones((16, 16)).to(device)
-      b = torch.ones((16, 16)).to(device)
-      c = a @ b
-      tpu_sync.synchronize(c)
-
-  @parameterized.named_parameters(
-      dict(testcase_name="colon", key="invalid:key", value="value"),
-      dict(testcase_name="comma", key="invalid,key", value="value"),
-  )
-  def test_tpu_profiler_config_invalid_characters_in_experimental_options(
-      self, key, value
-  ):
-    with self.assertRaisesRegex(
-        ValueError,
-        r"Experimental option keys cannot contain ':' or ','",
-    ):
-      TpuProfilerConfig(experimental_options={key: value})
 
   def test_concurrent_profiling_and_execution(self):
     stop_workers = False

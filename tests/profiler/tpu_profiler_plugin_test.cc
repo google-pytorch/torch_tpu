@@ -28,6 +28,7 @@
 #include "absl/strings/string_view.h"
 #include "gtest/gtest.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
 
 namespace torch_tpu {
@@ -130,111 +131,8 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnknownOption) {
   std::string run_dir;
 
   absl::Status status = UpdateProfileOptions("unknown_option:1", opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-  auto it = advanced_config.find("unknown_option");
-  ASSERT_TRUE(it != advanced_config.end());
-  EXPECT_EQ(it->second.int64_value(), 1);
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsAdvancedOptionBasicTypes) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions("bool_opt:true,int_opt:42", opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-
-  auto it_bool = advanced_config.find("bool_opt");
-  ASSERT_TRUE(it_bool != advanced_config.end());
-  EXPECT_TRUE(it_bool->second.bool_value());
-
-  auto it_int = advanced_config.find("int_opt");
-  ASSERT_TRUE(it_int != advanced_config.end());
-  EXPECT_EQ(it_int->second.int64_value(), 42);
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsEscapedQuotes) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  // Using R-strings to avoid backslash escape confusion in C++ source
-  absl::Status status =
-      UpdateProfileOptions(R"(str_single_quote_opt:"val \" ue",)"
-                           R"(str_escaped_opt:"a \"nested\" quote")",
-                           opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-
-  auto it_escaped = advanced_config.find("str_escaped_opt");
-  ASSERT_TRUE(it_escaped != advanced_config.end());
-  EXPECT_EQ(it_escaped->second.string_value(), R"(a "nested" quote)");
-
-  auto it_single = advanced_config.find("str_single_quote_opt");
-  ASSERT_TRUE(it_single != advanced_config.end());
-  EXPECT_EQ(it_single->second.string_value(), R"(val " ue)");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsCommasInValue) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status = UpdateProfileOptions(
-      R"(str_comma_opt:"a \"nested\", comma")", opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-
-  auto it_comma = advanced_config.find("str_comma_opt");
-  ASSERT_TRUE(it_comma != advanced_config.end());
-  EXPECT_EQ(it_comma->second.string_value(), R"(a "nested", comma)");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsColonsInValue) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions("str_colon_opt:\"a:b\"", opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-
-  auto it_colon = advanced_config.find("str_colon_opt");
-  ASSERT_TRUE(it_colon != advanced_config.end());
-  EXPECT_EQ(it_colon->second.string_value(), "a:b");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsBackslashesInValue) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions(R"(str_bs_opt:"some\\path")", opts, run_dir);
-  EXPECT_TRUE(status.ok());
-
-  const auto& advanced_config = opts.advanced_configuration();
-
-  auto it_bs = advanced_config.find("str_bs_opt");
-  ASSERT_TRUE(it_bs != advanced_config.end());
-  EXPECT_EQ(it_bs->second.string_value(), R"(some\path)");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsNonAsciiRejected) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  // Pass a UTF-8 character (e.g. micro sign 'µ' or similar non-ASCII)
-  absl::Status status =
-      UpdateProfileOptions("custom_opt:\"value_µ\"", opts, run_dir);
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_NE(status.message().find("contains non-ASCII characters"),
-            std::string::npos);
 }
 
 TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidValue) {
@@ -248,68 +146,6 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidValue) {
   EXPECT_EQ(status.message(),
             "expected the value of parameter device_tracer_level to be an "
             "integer, got 'abc'");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsMalformedAdvancedValue) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions("unknown_option:abc", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_EQ(status.message(),
-            "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got 'abc'");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedQuote) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions("unknown_option:\"abc", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_EQ(status.message(),
-            "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got '\"abc'");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsUnmatchedClosingQuote) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions("unknown_option:abc\"", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_EQ(status.message(),
-            "expected the advanced option 'unknown_option' to be a "
-            "quoted string, boolean (true/false), or integer, got 'abc\"'");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsInvalidEscapeSequence) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status = UpdateProfileOptions(
-      R"(unknown_option:"value with \x invalid escape")", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_EQ(status.message(),
-            "Invalid escape sequence: \\x (only \\\\ and \\\" are supported)");
-}
-
-TEST(TpuProfilerPluginTest, UpdateProfileOptionsTrailingBackslash) {
-  tensorflow::ProfileOptions opts;
-  std::string run_dir;
-
-  absl::Status status =
-      UpdateProfileOptions(R"(unknown_option:"value\")", opts, run_dir);
-  EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.code(), error::kInvalidArgument);
-  EXPECT_EQ(status.message(), "Trailing backslash in string");
 }
 
 }  // namespace

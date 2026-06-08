@@ -90,6 +90,7 @@ torch_tpu_cc_test(
         "//shims/torch:kineto",
         "//torch_tpu/_internal/profiler:tpu_profiler_plugin_cc",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
@@ -107,7 +108,6 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/profiler:profiler_config",
