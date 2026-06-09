@@ -134,6 +134,27 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   return res;
 }
 
+// Builds a StableHLO/CHLO acos op, promoting low precision floats to F32 for
+// computation.
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type) {
+  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(out_mlir_type);
+  at::ScalarType computation_scalar_type =
+      at::toOpMathType(default_scalar_type);
+
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
+                      ConvertTo<mlir::ElementType>(computation_scalar_type));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  computation_input_op = mlir::stablehlo::ConvertElementType(
+      computation_input_op, computation_type);
+
+  mlir::MlirOp result_op = mlir::chlo::Acos(computation_input_op);
+
+  return mlir::stablehlo::ConvertElementType(result_op, out_mlir_type);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildCeilShlo(mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   if (input_type.getElementType().isInteger()) {
