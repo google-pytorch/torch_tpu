@@ -255,6 +255,72 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         )
     )
 
+  def test_addmm_zero_alpha_ignores_nan_mat(self):
+    """Tests that alpha=0 ignores NaN in mat1 and mat2 on TPU."""
+    self_input = torch.randn(2, 4)
+    mat1 = torch.randn(2, 3)
+    mat1[0, 0] = float("nan")
+    mat2 = torch.randn(3, 4)
+    mat2[1, 1] = float("nan")
+
+    tpu_self = self_input.to("tpu")
+    tpu_mat1 = mat1.to("tpu")
+    tpu_mat2 = mat2.to("tpu")
+    tpu_result = torch.addmm(tpu_self, tpu_mat1, tpu_mat2, beta=1.0, alpha=0.0)
+
+    self.assert_close(
+        golden_result=self_input,
+        torch_tpu_result=tpu_result.to("cpu"),
+    )
+
+  def test_addmm_zero_alpha_ignores_inf_mat(self):
+    """Tests that alpha=0 ignores Inf in mat1 and mat2 on TPU."""
+    self_input = torch.randn(2, 4)
+    mat1 = torch.randn(2, 3)
+    mat1[0, 0] = float("inf")
+    mat2 = torch.randn(3, 4)
+    mat2[1, 1] = float("-inf")
+
+    tpu_self = self_input.to("tpu")
+    tpu_mat1 = mat1.to("tpu")
+    tpu_mat2 = mat2.to("tpu")
+    tpu_result = torch.addmm(tpu_self, tpu_mat1, tpu_mat2, beta=1.0, alpha=0.0)
+
+    self.assert_close(
+        golden_result=self_input,
+        torch_tpu_result=tpu_result.to("cpu"),
+    )
+
+  def test_addmm_alpha_beta_combinations(self):
+    """Tests various combinations of alpha and beta to cover optimized/fallback paths."""
+    # Use integer values stored as float32 to avoid matmul precision issues.
+    self_input = torch.randint(-5, 5, (2, 4), dtype=torch.float32)
+    mat1 = torch.randint(-5, 5, (2, 3), dtype=torch.float32)
+    mat2 = torch.randint(-5, 5, (3, 4), dtype=torch.float32)
+
+    combinations = [
+        (0.0, 0.0),  # alpha=0, beta=0
+        (0.0, 1.0),  # alpha=0, beta=1
+        (0.0, 2.5),  # alpha=0, beta=dynamic
+        (1.0, 0.0),  # alpha=1, beta=0
+        (1.0, 1.0),  # alpha=1, beta=1
+        (1.0, 2.5),  # alpha=1, beta=dynamic
+        (2.5, 0.0),  # alpha=dynamic, beta=0
+        (2.5, 1.0),  # alpha=dynamic, beta=1
+        (2.5, 3.5),  # alpha=dynamic, beta=dynamic
+    ]
+
+    for alpha, beta in combinations:
+      self.assert_close_tpu_vs_cpu(
+          lambda device, a=alpha, b=beta: torch.addmm(
+              self_input.to(device),
+              mat1.to(device),
+              mat2.to(device),
+              beta=b,
+              alpha=a,
+          )
+      )
+
   def test_assert_close_partial_override(self):
     """Tests that utils.assert_close works with partial numeric overrides.
 

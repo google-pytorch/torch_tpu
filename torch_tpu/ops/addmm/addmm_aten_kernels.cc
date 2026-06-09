@@ -16,12 +16,14 @@
 
 #include "torch_tpu/ops/addmm/addmm_aten_kernels.h"
 
+#include <cstdint>
 #include <optional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/native/Resize.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -57,7 +59,9 @@ namespace stablehlo = mlir::stablehlo;
 
 absl::StatusOr<mlir::MlirOp> BuildAddmmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat1_op, mlir::MlirOp mat2_op,
-    std::optional<mlir::MlirOp> beta_op, mlir::MlirOp alpha_op,
+    const std::optional<mlir::MlirOp>& beta_op,
+    const std::optional<mlir::MlirOp>& alpha_op,
+    const MaybePromotedScalar& beta, const MaybePromotedScalar& alpha,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType mat1_type = GetTensorTypeOrDie(mat1_op);
   const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
@@ -73,22 +77,38 @@ absl::StatusOr<mlir::MlirOp> BuildAddmmShlo(
   const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
       &self_op.getContext(), {precision, precision});
 
-  mlir::MlirOp dot_result = stablehlo::Dot(mat1_op, mat2_op, precision_config);
-  if (is_any_i64) {
-    dot_result = stablehlo::ConvertElementType(dot_result, out_dtype);
+  const int64_t out_dim0 = mat1_type.getShape()[0];
+  const int64_t out_dim1 = mat2_type.getShape()[1];
+
+  mlir::MlirOp dot_result;
+  if (alpha.IsZero()) {
+    TT_ASSIGN_OR_RETURN(dot_result,
+                        MakeConstant(self_op.getBuilder(), at::Scalar(0.0),
+                                     out_dtype, {out_dim0, out_dim1}));
+  } else {
+    dot_result = stablehlo::Dot(mat1_op, mat2_op, precision_config);
+    if (is_any_i64) {
+      dot_result = stablehlo::ConvertElementType(dot_result, out_dtype);
+    }
   }
 
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_tensor,
-                      BroadcastIfNeeded(alpha_op, dot_result));
-  mlir::MlirOp scaled_dot_result = stablehlo::Mul(dot_result, alpha_tensor);
+  mlir::MlirOp scaled_dot_result = dot_result;
+  if (alpha_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_tensor,
+                        BroadcastIfNeeded(*alpha_op, dot_result));
+    scaled_dot_result = stablehlo::Mul(scaled_dot_result, alpha_tensor);
+  }
 
-  if (!beta_op.has_value()) {
+  if (beta.IsZero()) {
     return scaled_dot_result;
   }
 
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp beta_tensor,
-                      BroadcastIfNeeded(*beta_op, self_op));
-  mlir::MlirOp scaled_input_result = stablehlo::Mul(self_op, beta_tensor);
+  mlir::MlirOp scaled_input_result = self_op;
+  if (beta_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp beta_tensor,
+                        BroadcastIfNeeded(*beta_op, self_op));
+    scaled_input_result = stablehlo::Mul(scaled_input_result, beta_tensor);
+  }
 
   TT_ASSIGN_OR_RETURN(
       (auto [bcast_scaled_input_result, bcast_scaled_dot_result]),
@@ -118,7 +138,7 @@ absl::Status CheckInputBroadcast(const at::Tensor& self,
 
 absl::StatusOr<DeviceBufferRef> AddMm(
     const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2,
-    MaybePromotedScalar beta, PromotedScalar alpha,
+    MaybePromotedScalar beta, MaybePromotedScalar alpha,
     at::ScalarType out_scalar_type, OpParamCacheKeys& param_keys) {
   TT_RET_CHECK(self.scalar_type() != at::kBool &&
                    mat1.scalar_type() != at::kBool &&
@@ -154,41 +174,88 @@ absl::StatusOr<DeviceBufferRef> AddMm(
                           << ToString(out_scalar_type));
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
 
-  if (beta.ValueMatchesExclude()) {
-    // If beta is zero, we can skip promoting it and dispatch the optimized
-    // 4-input op.
-    TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                        alpha.GetTensor(out_scalar_type));
-    auto op_builder = [output_dtype_mlir, output_dims_vec, current_precision](
-                          FixedSizeSpan<mlir::MlirOp, 4> inputs_op)
+  const bool beta_static = beta.ValueMatchesExclude();
+  const bool alpha_static = alpha.ValueMatchesExclude();
+
+  if (beta_static) {
+    ABSL_CHECK(beta.IsZero() || beta.IsOne())  // CRASH_OK
+        << "beta is static but not 0 or 1: " << beta.scalar().toDouble();
+  }
+  if (alpha_static) {
+    ABSL_CHECK(alpha.IsZero() || alpha.IsOne())  // CRASH_OK
+        << "alpha is static but not 0 or 1: " << alpha.scalar().toDouble();
+  }
+
+  if (beta_static && alpha_static) {
+    auto op_builder = [beta = std::move(beta), alpha = std::move(alpha),
+                       output_dtype_mlir, output_dims_vec, current_precision](
+                          FixedSizeSpan<mlir::MlirOp, 3> inputs_op)
         -> absl::StatusOr<mlir::MlirOp> {
-      auto& [self_op, mat1_op, mat2_op, alpha_op] = inputs_op;
-      return BuildAddmmShlo(self_op, mat1_op, mat2_op, std::nullopt, alpha_op,
-                            output_dtype_mlir, current_precision);
+      auto& [self_op, mat1_op, mat2_op] = inputs_op;
+      return BuildAddmmShlo(self_op, mat1_op, mat2_op, std::nullopt,
+                            std::nullopt, beta, alpha, output_dtype_mlir,
+                            current_precision);
     };
-    return DispatchOp<4>(std::move(op_builder),
-                         {self, mat1, mat2, alpha_tensor},
-                         {.out_dtype = output_dtype_mlir,
+    return DispatchOp<3>(std::move(op_builder), {self, mat1, mat2},
+                         {.op_name = OpName::kAddmm,
+                          .out_dtype = output_dtype_mlir,
                           .out_dims = output_dims_vec,
                           .op_param_cache_keys = std::move(param_keys)});
   }
 
-  // Complex path: beta is non-zero, so we promote it and dispatch the 5-input
-  // op.
+  if (beta_static && !alpha_static) {
+    TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
+                        alpha.GetTensor(out_scalar_type));
+    auto op_builder = [beta = std::move(beta), alpha = std::move(alpha),
+                       output_dtype_mlir, output_dims_vec, current_precision](
+                          FixedSizeSpan<mlir::MlirOp, 4> inputs_op)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [self_op, mat1_op, mat2_op, alpha_op] = inputs_op;
+      return BuildAddmmShlo(self_op, mat1_op, mat2_op, std::nullopt, alpha_op,
+                            beta, alpha, output_dtype_mlir, current_precision);
+    };
+    return DispatchOp<4>(std::move(op_builder),
+                         {self, mat1, mat2, alpha_tensor},
+                         {.op_name = OpName::kAddmm,
+                          .out_dtype = output_dtype_mlir,
+                          .out_dims = output_dims_vec,
+                          .op_param_cache_keys = std::move(param_keys)});
+  }
+
+  if (!beta_static && alpha_static) {
+    TT_ASSIGN_OR_RETURN(const at::Tensor beta_tensor,
+                        beta.GetTensor(out_scalar_type));
+    auto op_builder = [beta = std::move(beta), alpha = std::move(alpha),
+                       output_dtype_mlir, output_dims_vec, current_precision](
+                          FixedSizeSpan<mlir::MlirOp, 4> inputs_op)
+        -> absl::StatusOr<mlir::MlirOp> {
+      auto& [self_op, mat1_op, mat2_op, beta_op] = inputs_op;
+      return BuildAddmmShlo(self_op, mat1_op, mat2_op, beta_op, std::nullopt,
+                            beta, alpha, output_dtype_mlir, current_precision);
+    };
+    return DispatchOp<4>(std::move(op_builder), {self, mat1, mat2, beta_tensor},
+                         {.op_name = OpName::kAddmm,
+                          .out_dtype = output_dtype_mlir,
+                          .out_dims = output_dims_vec,
+                          .op_param_cache_keys = std::move(param_keys)});
+  }
+
   TT_ASSIGN_OR_RETURN(const at::Tensor beta_tensor,
                       beta.GetTensor(out_scalar_type));
   TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
                       alpha.GetTensor(out_scalar_type));
-  auto op_builder = [output_dtype_mlir, output_dims_vec, current_precision](
+  auto op_builder = [beta = std::move(beta), alpha = std::move(alpha),
+                     output_dtype_mlir, output_dims_vec, current_precision](
                         FixedSizeSpan<mlir::MlirOp, 5> inputs_op)
       -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, mat1_op, mat2_op, beta_op, alpha_op] = inputs_op;
-    return BuildAddmmShlo(self_op, mat1_op, mat2_op, beta_op, alpha_op,
-                          output_dtype_mlir, current_precision);
+    return BuildAddmmShlo(self_op, mat1_op, mat2_op, beta_op, alpha_op, beta,
+                          alpha, output_dtype_mlir, current_precision);
   };
   return DispatchOp<5>(std::move(op_builder),
                        {self, mat1, mat2, beta_tensor, alpha_tensor},
-                       {.out_dtype = output_dtype_mlir,
+                       {.op_name = OpName::kAddmm,
+                        .out_dtype = output_dtype_mlir,
                         .out_dims = output_dims_vec,
                         .op_param_cache_keys = std::move(param_keys)});
 }
@@ -199,8 +266,9 @@ at::Tensor& AtenAddmmOut(const at::Tensor& self, const at::Tensor& mat1,
                          const at::Tensor& mat2, const at::Scalar& beta,
                          const at::Scalar& alpha, at::Tensor& out) {
   MaybePromotedScalar promoted_beta =
-      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero);
-  PromotedScalar promoted_alpha = PromoteScalar(alpha);
+      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero, ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha = PromoteScalar(alpha).AvoidPromoting(
+      ScalarValue::kZero, ScalarValue::kOne);
   TT_KERNEL(
       OpName::kAddmmOut, param_keys,
       (self, mat1, mat2, promoted_beta, promoted_alpha, out), {
@@ -229,8 +297,9 @@ at::Tensor AtenAddmmDtype(const at::Tensor& self, const at::Tensor& mat1,
                           const at::Tensor& mat2, at::ScalarType out_dtype,
                           const at::Scalar& beta, const at::Scalar& alpha) {
   MaybePromotedScalar promoted_beta =
-      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero);
-  PromotedScalar promoted_alpha = PromoteScalar(alpha);
+      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero, ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha = PromoteScalar(alpha).AvoidPromoting(
+      ScalarValue::kZero, ScalarValue::kOne);
   TT_KERNEL(OpName::kAddmmDtype, param_keys,
             (self, mat1, mat2, out_dtype, promoted_beta, promoted_alpha), {
               TT_ASSIGN_OR_THROW(
@@ -246,8 +315,9 @@ at::Tensor& AtenAddmmDtypeOut(const at::Tensor& self, const at::Tensor& mat1,
                               const at::Scalar& beta, const at::Scalar& alpha,
                               at::Tensor& out) {
   MaybePromotedScalar promoted_beta =
-      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero);
-  PromotedScalar promoted_alpha = PromoteScalar(alpha);
+      PromoteScalar(beta).AvoidPromoting(ScalarValue::kZero, ScalarValue::kOne);
+  MaybePromotedScalar promoted_alpha = PromoteScalar(alpha).AvoidPromoting(
+      ScalarValue::kZero, ScalarValue::kOne);
   TT_KERNEL(
       OpName::kAddmmDtypeOut, param_keys,
       (self, mat1, mat2, out_dtype, promoted_beta, promoted_alpha, out), {
