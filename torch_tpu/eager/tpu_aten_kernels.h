@@ -17,19 +17,8 @@
 #ifndef TORCH_TPU_EAGER_TPU_ATEN_KERNELS_H_
 #define TORCH_TPU_EAGER_TPU_ATEN_KERNELS_H_
 
-namespace torch_tpu {
+#include "torch_tpu/pjrt/pjrt_state.h"
 
-// Enables CPU fallback globally. For internal use only.
-//
-// If enabled, TorchTPU will fall back to CPU for unsupported operators. It is
-// reserved for testing and debugging purposes to have models running, without
-// being blocked by certain operator implementations.
-void EnableCpuFallback(bool enabled);
-
-// Returns true if CPU fallback is enabled globally, otherwise false.
-// For internal use only.
-[[nodiscard]] bool IsCpuFallbackEnabled();
-
-}  // namespace torch_tpu
+namespace torch_tpu {}  // namespace torch_tpu
 
 #endif  // TORCH_TPU_EAGER_TPU_ATEN_KERNELS_H_

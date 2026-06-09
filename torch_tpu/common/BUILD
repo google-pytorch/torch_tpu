@@ -15,6 +15,11 @@
 """Common utilities for torch_tpu."""
 
 load(
+    "@rules_cc//cc:defs.bzl",
+    "cc_binary",
+    "cc_import",
+)
+load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "pywrap_binaries",
     "pywrap_library",
@@ -48,7 +53,6 @@ torch_tpu_cc_library(
     deps = [
         ":compilation_spec",
         "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base",
         "@com_google_absl//absl/base:nullability",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla:shape_util",
@@ -113,7 +117,6 @@ torch_tpu_cc_library(
     deps = [
         ":env_vars",
         ":utils",
-        "//shims/torch",
         "//shims/torch:torch_headers",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
@@ -133,7 +136,6 @@ torch_tpu_cc_library(
         ":status_builder",
         ":to_string",
         ":utils",
-        "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
@@ -744,8 +746,38 @@ torch_tpu_cc_library(
     name = "torch_rpath_flags",
     linkopts = [
         "-Wl,-rpath='$$ORIGIN/../../torch/lib'",
+        "-Wl,-rpath='$$ORIGIN'",
+        "-Wl,--no-as-needed",
+        "-lpywrap_torch_tpu_backend",
     ],
-    visibility = ["//visibility:private"],
+    visibility = ["//:__subpackages__"],
+)
+
+torch_tpu_cc_library(
+    name = "torch_tpu_backend_lib",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//torch_tpu/distributed:process_group_tpu",
+        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/eager:tpu_hooks",
+        "//torch_tpu/pjrt:pjrt_state",
+    ],
+    alwayslink = True,
+)
+
+# ALLOW_CC_TARGETS=Link heavy backend into a standalone shared library to
+# improve forward ABI compatibility.
+cc_binary(
+    name = "libpywrap_torch_tpu_backend.so",
+    linkshared = 1,
+    visibility = ["//:__subpackages__"],
+    deps = [":torch_tpu_backend_lib"],
+)
+
+cc_import(
+    name = "torch_tpu_backend",
+    shared_library = ":libpywrap_torch_tpu_backend.so",
+    visibility = ["//:__subpackages__"],
 )
 
 pywrap_library(
@@ -753,9 +785,11 @@ pywrap_library(
     extra_deps = [
         ":torch_rpath_flags",
         "//shims/torch:torch_python",
+        "//shims/torch/torch/headeronly:torch_headeronly",
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":torch_tpu_backend_lib",  # buildcleaner: keep
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/batch_transfer:batch_transfer_impl",
@@ -1262,7 +1296,7 @@ torch_tpu_cc_library(
     deps = [
         ":context_states",
         "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base",
+        "//shims/torch/c10/util:base_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
     ],

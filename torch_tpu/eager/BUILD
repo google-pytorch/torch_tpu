@@ -139,6 +139,36 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "device_buffer_headers",
+    hdrs = ["device_buffer.h"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:dtype",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/common:to_string",
+        "//torch_tpu/common:utils",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_vlog_is_on",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//:attr_type_builder_util",
+        "@xla//xla:future",
+        "@xla//xla:shape_util",
+        "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "device_buffer",
     srcs = [
         "device_buffer.cc",
@@ -508,10 +538,18 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "tpu_aten_kernels_headers",
+    hdrs = ["tpu_aten_kernels.h"],
+    visibility = ["//:__subpackages__"],
+    deps = ["//torch_tpu/pjrt:pjrt_state_headers"],
+)
+
+torch_tpu_cc_library(
     name = "tpu_aten_kernels",
     srcs = ["tpu_aten_kernels.cc"],
     hdrs = ["tpu_aten_kernels.h"],
     deps = [
+        "//torch_tpu/pjrt:pjrt_state_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
@@ -672,6 +710,16 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "tpu_hooks_headers",
+    hdrs = ["tpu_hooks.h"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//shims/torch:torch_headers",
+        "@com_google_absl//absl/status",
     ],
 )
 

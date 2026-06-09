@@ -149,6 +149,17 @@ absl::StatusOr<bool> QueryEventSnapshot(int64_t event_id);
 // Releases the event snapshot. Safe to call multiple times.
 void ReleaseEventSnapshot(int64_t event_id);
 
+// Enables CPU fallback globally. For internal use only.
+//
+// If enabled, TorchTPU will fall back to CPU for unsupported operators. It is
+// reserved for testing and debugging purposes to have models running, without
+// being blocked by certain operator implementations.
+void EnableCpuFallback(bool enabled);
+
+// Returns true if CPU fallback is enabled globally, otherwise false.
+// For internal use only.
+[[nodiscard]] bool IsCpuFallbackEnabled();
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_PJRT_PJRT_STATE_H_

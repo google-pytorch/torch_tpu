@@ -52,8 +52,6 @@ torch_tpu_cc_library(
     srcs = ["testing.cc"],
     deps = [
         "//shims/pybind11",
-        "//shims/torch",
-        "//shims/torch:aten",
         "//shims/torch:torch_headers",
         "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:op_dispatcher",
@@ -71,9 +69,8 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "//shims/torch",
-        "//shims/torch:aten",
         "//shims/torch:torch_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:op_dispatcher",
         "//torch_tpu/eager:repeated_ops_heuristic",

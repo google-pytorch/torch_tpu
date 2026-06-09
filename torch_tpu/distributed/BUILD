@@ -20,6 +20,26 @@ package(
 )
 
 torch_tpu_cc_library(
+    name = "process_group_tpu_headers",
+    hdrs = ["process_group_tpu.h"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":types",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//torch_tpu/common:to_string",
+        "//torch_tpu/eager:device_buffer_headers",  # buildcleaner: keep
+        "//torch_tpu/ops:op_names",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:shape_util",
+        "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "process_group_tpu",
     srcs = ["process_group_tpu.cc"],
     hdrs = ["process_group_tpu.h"],

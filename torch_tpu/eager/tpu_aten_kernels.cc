@@ -982,16 +982,7 @@ TORCH_LIBRARY_IMPL(torch_tpu, CPU, m) {
 
 // Returns a mutable reference to the global CPU fallback mode (defaulted to
 // false).
-static std::atomic<bool>& GetMutableGlobalCpuFallbackMode() {
-  static std::atomic<bool> cpu_fallback_enabled = false;
-  return cpu_fallback_enabled;
-}
-
-void EnableCpuFallback(const bool enabled) {
-  GetMutableGlobalCpuFallbackMode().store(enabled);
-}
-
-bool IsCpuFallbackEnabled() { return GetMutableGlobalCpuFallbackMode().load(); }
+// Moved to pjrt/pjrt_state.cc to be shared process-wide.
 
 }  // namespace torch_tpu
 

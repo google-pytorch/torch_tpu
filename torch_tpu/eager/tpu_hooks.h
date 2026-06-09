@@ -21,7 +21,7 @@
 
 namespace torch_tpu {
 
-absl::Status AddTpuHooks();
+__attribute__((visibility("default"))) absl::Status AddTpuHooks();
 
 }  // namespace torch_tpu
 
