@@ -18,7 +18,6 @@
 
 #include <utility>
 
-#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "gtest/gtest.h"
 #include "torch_tpu/common/dimension_types.h"
