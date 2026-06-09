@@ -42,6 +42,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
+#include "c10/util/Optional.h"
 #include "torch/csrc/autograd/custom_function.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #include "torch/headeronly/core/Layout.h"
@@ -555,6 +556,20 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
   }
 }
 
+template <typename T>
+inline void CheckOptionalTensorSanitized(const T& arg,
+                                         const std::string_view arg_name) {
+  if constexpr (std::is_same_v<T, std::optional<at::Tensor>> ||
+                std::is_same_v<T, c10::optional<at::Tensor>>) {
+    ABSL_CHECK(!arg.has_value() || arg->defined())  // CRASH_OK
+        << "\nArgument '" << arg_name
+        << "' passed to TT_KERNEL() is an undefined optional<Tensor>. "
+        << "Please wrap it with SanitizeOptionalTensor() so that nullopt "
+        << "and undefined tensors are treated equally - they both represent "
+           "None in Python.";
+  }
+}
+
 // Variadic function CheckKernelArgTypes() validates the arguments one by
 // one.
 //
@@ -570,6 +585,7 @@ inline void CheckKernelArgTypes(const KernelArgCheckerContext& context,
                                 const int arg_idx, const T& arg,
                                 const Args&... rest_args) {
   CheckKernelArgType<kOpName, T>(context, arg_idx);
+  CheckOptionalTensorSanitized(arg, context.tt_kernel_arg_names[arg_idx]);
   CheckKernelArgTypes<kOpName>(context, arg_idx + 1, rest_args...);
 }
 

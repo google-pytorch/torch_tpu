@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/ops/empty.h"
 #include "ATen/ops/ones.h"
 #include "absl/log/absl_log.h"
 #include "c10/core/Device.h"
@@ -211,6 +212,26 @@ TEST(ParseArgTypesOrEmpty, FuncWithComplexType) {
                                   std::nullopt),
               ElementsAre("c10::List<std::optional<at::Tensor>>",
                           "std::array<bool, 3>", "at::OptionalIntArrayRef"));
+}
+
+void KernelWithOptionalTensor(const std::optional<at::Tensor>& tensor) {
+  TT_CHECK_AND_LOG_KERNEL_ARGS_(OpName::kAdd, tensor);
+}
+
+TEST(CheckOptionalTensorSanitized, ValidOptionalTensorsDoNotCrash) {
+  EXPECT_NO_FATAL_FAILURE(KernelWithOptionalTensor(std::nullopt));
+  EXPECT_NO_FATAL_FAILURE(KernelWithOptionalTensor(c10::nullopt));
+  EXPECT_NO_FATAL_FAILURE(KernelWithOptionalTensor(at::empty({})));
+}
+
+TEST(CheckOptionalTensorSanitizedDeathTest, UndefinedOptionalTensorCrashes) {
+  std::optional<at::Tensor> undefined = at::Tensor();
+  EXPECT_DEATH(KernelWithOptionalTensor(undefined),
+               "passed to TT_KERNEL\\(\\) is an undefined optional<Tensor>");
+
+  c10::optional<at::Tensor> undefined_c10 = at::Tensor();
+  EXPECT_DEATH(KernelWithOptionalTensor(undefined_c10),
+               "passed to TT_KERNEL\\(\\) is an undefined optional<Tensor>");
 }
 
 }  // namespace

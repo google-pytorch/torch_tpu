@@ -309,8 +309,10 @@ template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
 
 [[nodiscard]] inline std::string FormatParamCacheKey(
     const c10::optional<at::Tensor>& value) {
-  // Encode both the presence and the definedness of the tensor.
-  return value.has_value() ? (value->defined() ? "t" : "u") : "";
+  // Encode both the presence and the definedness of the tensor uniformly.
+  // Both nullopt and an undefined tensor are formatted as empty string because
+  // they both represent None in Python.
+  return (value.has_value() && value->defined()) ? "t" : "";
 }
 
 [[nodiscard]] std::string FormatParamCacheKey(

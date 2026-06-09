@@ -330,12 +330,10 @@ TEST(OpParamCacheKeys, SetParamOptionalTensor) {
                         .SetParam("bar", undefined_tensor)
                         .SetParam("baz", defined_tensor);
   ASSERT_TRUE(params_or.ok());
-  // foo should be omitted from the cache keys.
-  // bar should be formatted as "u" to indicate the presence of an undefined
-  // tensor. baz should be formatted as "t" to indicate the presence of a
+  // Both foo and bar should be omitted from the cache keys.
+  // baz should be formatted as "t" to indicate the presence of a
   // defined tensor.
-  EXPECT_THAT(params_or.value(),
-              ElementsAre(Pair("bar", "u"), Pair("baz", "t")));
+  EXPECT_THAT(params_or.value(), ElementsAre(Pair("baz", "t")));
 }
 
 TEST(OpParamCacheKeys, SetParamMemoryFormat) {
