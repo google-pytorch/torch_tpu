@@ -921,6 +921,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
         "@tsl//tsl/platform:numbers",
+        "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/hlo/utils/concurrency:concurrency_utils",
         "@xla//xla/pjrt:pjrt_client",
