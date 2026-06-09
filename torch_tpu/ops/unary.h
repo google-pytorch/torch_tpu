@@ -57,7 +57,6 @@ TT_UNARY_BUILDER_(BuildCeilShlo, mlir::stablehlo::Ceil);
 TT_UNARY_BUILDER_(BuildFloorShlo, mlir::stablehlo::Floor);
 TT_UNARY_BUILDER_(BuildNegShlo, mlir::stablehlo::Neg);
 TT_UNARY_BUILDER_(BuildNotShlo, mlir::stablehlo::Not);
-TT_UNARY_BUILDER_FP_ONLY_(BuildAcosShlo, mlir::chlo::Acos);
 TT_UNARY_BUILDER_FP_ONLY_(BuildAcoshShlo, mlir::chlo::Acosh);
 TT_UNARY_BUILDER_FP_ONLY_(BuildAsinShlo, mlir::chlo::Asin);
 TT_UNARY_BUILDER_FP_ONLY_(BuildAsinhShlo, mlir::chlo::Asinh);
@@ -84,6 +83,8 @@ TT_UNARY_BUILDER_FP_ONLY_(BuildTanhShlo, mlir::stablehlo::Tanh);
 // For functions that require more than a single-line StableHlo builder
 // call sequence, their prototypes will reside here.
 absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input);
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildConjPhysicalShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type);

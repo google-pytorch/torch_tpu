@@ -126,6 +126,30 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   return res;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType out_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ::torch_tpu::ConvertIfInteger(input_op, out_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType op_type,
+                      ::torch_tpu::GetElementType(op));
+
+  bool promote =
+      (op_type == mlir::ElementType::F16 || op_type == mlir::ElementType::BF16);
+
+  mlir::MlirOp computation_op = op;
+  if (promote) {
+    computation_op =
+        mlir::stablehlo::ConvertElementType(op, mlir::ElementType::F32);
+  }
+
+  mlir::MlirOp result = mlir::chlo::Acos(computation_op);
+
+  if (promote) {
+    result = mlir::stablehlo::ConvertElementType(result, op_type);
+  }
+  return result;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildConjPhysicalShlo(mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   TT_ASSIGN_OR_RETURN(c10::ScalarType dtype,
