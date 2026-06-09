@@ -25,6 +25,8 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
+#include "torch_tpu/ops/scatter/scatter.h"
+#include "torch_tpu/ops/sort/sort.h"
 
 namespace torch_tpu {
 
@@ -39,6 +41,78 @@ absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
                << " inversion="
                << (inversion == IsInverted::kYes ? "true" : "false");
   auto& builder = elements.getBuilder();
+
+  if (uniqueness == IsUnique::kYes) {
+    const mlir::RankedTensorType elements_type = GetTensorTypeOrDie(elements);
+    const mlir::RankedTensorType test_elements_type =
+        GetTensorTypeOrDie(test_elements);
+
+    TT_ASSIGN_OR_RETURN(const int64_t num_elements,
+                        NumElements(elements_type.getShape()));
+    TT_ASSIGN_OR_RETURN(const int64_t num_test_elements,
+                        NumElements(test_elements_type.getShape()));
+
+    if (num_elements == 0) {
+      return mlir::stablehlo::Reshape(elements, elements_type.getShape());
+    }
+
+    if (num_test_elements == 0) {
+      auto fill_val = (inversion == IsInverted::kYes);
+      auto const_op =
+          MakeScalarConstant(builder, fill_val, mlir::ElementType::PRED);
+      return Broadcast(const_op, elements_type.getShape(), {});
+    }
+
+    auto elements_flat = mlir::stablehlo::Reshape(elements, {num_elements});
+    auto test_elements_flat =
+        mlir::stablehlo::Reshape(test_elements, {num_test_elements});
+
+    auto all_elements = mlir::stablehlo::Concatenate(
+        builder, {elements_flat, test_elements_flat}, /*dimension=*/0);
+
+    auto sort_outputs = BuildSortShlo(all_elements, /*stable=*/true, /*dim=*/0,
+                                      /*descending=*/false);
+    auto sorted_elements = sort_outputs.values;
+    auto sorted_order = sort_outputs.indices;
+
+    int64_t total_elements = num_elements + num_test_elements;
+
+    auto slice1 = mlir::stablehlo::Slice(sorted_elements, /*start_indices=*/{0},
+                                         /*limit_indices=*/{total_elements - 1},
+                                         /*strides=*/{1});
+    auto slice2 = mlir::stablehlo::Slice(sorted_elements, /*start_indices=*/{1},
+                                         /*limit_indices=*/{total_elements},
+                                         /*strides=*/{1});
+
+    auto comparison_direction = (inversion == IsInverted::kYes)
+                                    ? mlir::stablehlo::ComparisonDirection::NE
+                                    : mlir::stablehlo::ComparisonDirection::EQ;
+    auto cmp = mlir::stablehlo::Compare(slice1, slice2, comparison_direction);
+
+    auto pad_value = (inversion == IsInverted::kYes);
+    auto pad_value_op =
+        MakeScalarConstant(builder, pad_value, mlir::ElementType::PRED);
+
+    auto duplicate_mask =
+        mlir::stablehlo::Pad(cmp, pad_value_op, {0}, {1}, {0});
+
+    auto dest_scalar =
+        MakeScalarConstant(builder, pad_value, mlir::ElementType::PRED);
+    TT_ASSIGN_OR_RETURN(auto dest,
+                        Broadcast(dest_scalar, {total_elements}, {}));
+
+    TT_ASSIGN_OR_RETURN(
+        auto scattered_mask,
+        BuildScatterShlo(dest, /*dim=*/0, sorted_order, duplicate_mask,
+                         ScatterOp::kReplace, mlir::ElementType::PRED));
+
+    auto result_flat =
+        mlir::stablehlo::Slice(scattered_mask, /*start_indices=*/{0},
+                               /*limit_indices=*/{num_elements},
+                               /*strides=*/{1});
+
+    return mlir::stablehlo::Reshape(result_flat, elements_type.getShape());
+  }
 
   // TODO: for now we ignore assume_unique. In principle, taking that into
   // account can speed up the computation.
