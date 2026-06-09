@@ -58,6 +58,10 @@ _TORCH_TPU_COPTS = [
     "--no-system-header-prefix=third_party/py/torch_tpu/",
 ]
 
+# The default ranking of which hardware generations to prioritize when automatically
+# assigning an OSS presubmit runner to a test.
+TPU_GENERATION_PREFERENCES = ["v5", "v7", "v6"]
+
 _LSAN_SUPPRESSIONS = "//build_files:lsan_suppressions.txt"
 _TSAN_SUPPRESSIONS = "//build_files:tsan_suppressions.txt"
 
@@ -185,6 +189,7 @@ def _check_and_adjust_test_tags(
         nobuild_oss,
         nopresubmit_oss,
         nonightly_oss,
+        oss_presubmit_tpu_generation,
         tags):
     """Validates and adjusts the test tags and calculates build test requirements.
 
@@ -389,6 +394,22 @@ def _check_and_adjust_test_tags(
         fail("The 'oss_ready_cpu' and 'oss_ready_tpu' tags no longer have any " +
              "effect. Tests are enabled by default in OSS.")
 
+    if is_oss:
+        if oss_presubmit_tpu_generation != None:
+            if ("fails-on-tpu-" + oss_presubmit_tpu_generation) in tags:
+                fail("Test cannot specify oss_presubmit_tpu_generation=\"%s\" and fails-on-tpu-%s." % (oss_presubmit_tpu_generation, oss_presubmit_tpu_generation))
+            tags.append("oss-presubmit-" + oss_presubmit_tpu_generation)
+        else:
+            allocated = False
+            for gen in TPU_GENERATION_PREFERENCES:
+                if ("fails-on-tpu-" + gen) not in tags:
+                    tags.append("oss-presubmit-" + gen)
+                    allocated = True
+                    break
+
+            if not allocated:
+                fail("TPU tests failing on all generations in OSS should use notest_oss instead.")
+
     process_accelerator_tags(tags)
     _sort_inplace(tags)
 
@@ -410,6 +431,7 @@ def check_and_adjust_test_tags_for_testing(
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
+        oss_presubmit_tpu_generation = None,
         tags = None):
     """Public wrapper for testing."""
     if tags == None:
@@ -427,6 +449,7 @@ def check_and_adjust_test_tags_for_testing(
         nobuild_oss = nobuild_oss,
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
+        oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = tags,
     )
 
@@ -449,6 +472,7 @@ def torch_tpu_cc_test(
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
+        oss_presubmit_tpu_generation = None,
         tags = None,
         **kwargs):
     """Creates a cc_test for torch_tpu.
@@ -537,6 +561,7 @@ def torch_tpu_cc_test(
         nobuild_oss = nobuild_oss,
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
+        oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = tags,
     )
     if result.create_build_test:
@@ -638,6 +663,7 @@ def torch_tpu_py_test(
         nobuild_oss = None,
         nopresubmit_oss = None,
         nonightly_oss = None,
+        oss_presubmit_tpu_generation = None,
         tags = None,
         **kwargs):
     """Creates a py_test for torch_tpu.
@@ -718,6 +744,7 @@ def torch_tpu_py_test(
         nobuild_oss = nobuild_oss,
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
+        oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
         tags = tags,
     )
     if result.create_build_test:

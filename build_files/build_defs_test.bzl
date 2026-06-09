@@ -335,6 +335,37 @@ def _test_oss_manual_nonightly_oss_tag(ctx):
     asserts.true(env, result.create_build_test)
     return unittest.end(env)
 
+def _test_oss_presubmit_tpu_generation_explicit(ctx):
+    env = unittest.begin(ctx)
+    tags = []
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        oss_presubmit_tpu_generation = "v7",
+        tags = tags,
+    )
+    asserts.true(env, "oss-presubmit-v7" in tags, "tags: %s" % tags)
+    return unittest.end(env)
+
+def _test_oss_presubmit_tpu_generation_implicit(ctx):
+    env = unittest.begin(ctx)
+    tags = ["fails-on-tpu-v5"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags,
+    )
+    asserts.true(env, "oss-presubmit-v7" in tags, "tags: %s" % tags)
+    return unittest.end(env)
+
+def _test_oss_presubmit_tpu_generation_implicit_v6(ctx):
+    env = unittest.begin(ctx)
+    tags = ["fails-on-tpu-v5", "fails-on-tpu-v7"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags,
+    )
+    asserts.true(env, "oss-presubmit-v6" in tags, "tags: %s" % tags)
+    return unittest.end(env)
+
 # go/keep-sorted start
 cuda_build_test = unittest.make(_test_cuda_build_test)
 internal_manual_nonightly_oss_tag_test = unittest.make(_test_internal_manual_nonightly_oss_tag)
@@ -355,6 +386,9 @@ oss_nonightly_oss_test = unittest.make(_test_oss_nonightly_oss)
 oss_nopresubmit_oss_test = unittest.make(_test_oss_nopresubmit_oss)
 oss_notest_oss_nobuild_oss_test = unittest.make(_test_oss_notest_oss_nobuild_oss)
 oss_notest_oss_test = unittest.make(_test_oss_notest_oss)
+oss_presubmit_tpu_generation_explicit_test = unittest.make(_test_oss_presubmit_tpu_generation_explicit)
+oss_presubmit_tpu_generation_implicit_test = unittest.make(_test_oss_presubmit_tpu_generation_implicit)
+oss_presubmit_tpu_generation_implicit_v6_test = unittest.make(_test_oss_presubmit_tpu_generation_implicit_v6)
 # go/keep-sorted end
 
 def build_defs_test_suite(name):
@@ -390,6 +424,9 @@ def build_defs_test_suite(name):
     add_test(tests, oss_nopresubmit_oss_test, name + "_oss_nopresubmit_oss")
     add_test(tests, oss_notest_oss_nobuild_oss_test, name + "_oss_notest_oss_nobuild_oss")
     add_test(tests, oss_notest_oss_test, name + "_oss_notest_oss")
+    add_test(tests, oss_presubmit_tpu_generation_explicit_test, name + "_oss_presubmit_tpu_generation_explicit")
+    add_test(tests, oss_presubmit_tpu_generation_implicit_test, name + "_oss_presubmit_tpu_generation_implicit")
+    add_test(tests, oss_presubmit_tpu_generation_implicit_v6_test, name + "_oss_presubmit_tpu_generation_implicit_v6")
     # go/keep-sorted end
 
     native.test_suite(

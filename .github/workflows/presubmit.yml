@@ -65,9 +65,19 @@ jobs:
           },
           {
             runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_presubmit",
+            config: "ci_tpu_v5_presubmit",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           },
+          {
+            runner: "linux-x86-ct6e-180-8tpu",
+            config: "ci_tpu_v6_presubmit",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          },
+          {
+            runner: "linux-x86-tpu7x-224-4tpu",
+            config: "ci_tpu_v7_presubmit",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
@@ -95,7 +105,6 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-
       - name: Run Impacted Tests via bazel-diff
         uses: ./.github/actions/bazel-diff
         with:

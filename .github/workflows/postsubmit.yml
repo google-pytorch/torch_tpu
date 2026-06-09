@@ -65,17 +65,17 @@ jobs:
           },
           {
             runner: "linux-x86-ct5lp-224-8tpu",
-            bazel_config: "ci_tpu",
+            bazel_config: "ci_tpu_v5",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           },
           {
             runner: "linux-x86-ct6e-180-8tpu",
-            bazel_config: "ci_tpu_on_v6",
+            bazel_config: "ci_tpu_v6",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           },
           {
             runner: "linux-x86-tpu7x-224-4tpu",
-            bazel_config: "ci_tpu_on_v7",
+            bazel_config: "ci_postsubmit_v7",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           }
         ]

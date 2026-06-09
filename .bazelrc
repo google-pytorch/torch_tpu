@@ -299,12 +299,12 @@ common:ci_cpu_presubmit --config=remote_execution_readonly
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
-common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4
+common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,-oss-presubmit-v6,-oss-presubmit-v7
 common:ci_tpu_base --spawn_strategy=standalone,local
 
 # Settings for postsubmit on TPU v5.
 common:ci_tpu --config=ci_tpu_base
-common:ci_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit
+common:ci_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-oss-presubmit-v6,-oss-presubmit-v7
 
 # Settings for presubmit on TPU v5.
 common:ci_tpu_presubmit --config=ci_tpu
@@ -315,18 +315,39 @@ common:ci_tpu_presubmit --config=remote_execution_readonly
 common:ci_tpu_on_v6 --config=ci_tpu_base
 common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6
 
-# Settings for presubmit and postsubmit on TPU v7.
-common:ci_tpu_on_v7 --config=ci_tpu_base
-common:ci_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7
-common:ci_tpu_on_v7 --local_test_jobs=1
-# Bypass the libtpu multi-process lock. Otherwise, we have to explicitly delete
-# /tmp/libtpu_lockfile to clean up the dirty state of previous crashed jobs to
-# unblock the current job.
-common:ci_tpu_on_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
+# Settings for postsubmit on TPU v7.
+common:ci_postsubmit_v7 --config=ci_tpu_base
+common:ci_postsubmit_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7
+common:ci_postsubmit_v7 --local_test_jobs=1
+common:ci_postsubmit_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
+
+# Settings for nightly on TPU v7.
+common:ci_nightly_v7 --config=ci_postsubmit_v7
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
 common:ci_tpu_nightly --test_tag_filters=requires-tpu,-notest,-nobuild,-nonightly
+
+# Settings for split presubmit runs on TPU v5, v6, v7.
+common:ci_tpu_v5 --config=ci_tpu_base
+common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,-oss-presubmit-v6,-oss-presubmit-v7
+
+common:ci_tpu_v5_presubmit --config=ci_tpu_v5
+common:ci_tpu_v5_presubmit --config=remote_execution_readonly
+
+common:ci_tpu_v6 --config=ci_tpu_base
+common:ci_tpu_v6 --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v6,oss-presubmit-v6
+
+common:ci_tpu_v6_presubmit --config=ci_tpu_v6
+common:ci_tpu_v6_presubmit --config=remote_execution_readonly
+
+common:ci_tpu_v7 --config=ci_tpu_base
+common:ci_tpu_v7 --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7,oss-presubmit-v7
+common:ci_tpu_v7 --local_test_jobs=1
+common:ci_tpu_v7 --test_env=TORCH_TPU_ACCELERATOR_COUNT="4"
+
+common:ci_tpu_v7_presubmit --config=ci_tpu_v7
+common:ci_tpu_v7_presubmit --config=remote_execution_readonly
 
 # Setting TPU support true for profiler trace.
 build --define=with_tpu_support=true
@@ -380,13 +401,26 @@ test:wheel_test_tpu --config=ci_tpu
 test:wheel_test_tpu --config=wheel_common_test
 test:wheel_test_tpu --spawn_strategy=local
 
+# Split wheel test configurations for presubmits
+test:wheel_test_tpu_v5 --config=wheel_common_test
+test:wheel_test_tpu_v5 --config=ci_tpu_v5
+test:wheel_test_tpu_v5 --spawn_strategy=local
+
+test:wheel_test_tpu_v6 --config=wheel_common_test
+test:wheel_test_tpu_v6 --config=ci_tpu_v6
+test:wheel_test_tpu_v6 --spawn_strategy=local
+
+test:wheel_test_tpu_v7 --config=wheel_common_test
+test:wheel_test_tpu_v7 --config=ci_tpu_v7
+test:wheel_test_tpu_v7 --spawn_strategy=local
+
 # We need to re-specify all of these tag filters because when specified more
 # than once, they don't compose and we want to be able to also exclude
 # wheel_test_excluded
 common:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-wheel_test_excluded
 
 # Settings for wheel test on TPU v5.
-common:wheel_test_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded
+common:wheel_test_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,-oss-presubmit-v6,-oss-presubmit-v7
 
 # Settings for wheel test on TPU v6.
 common:wheel_test_tpu_on_v6 --config=wheel_test_tpu
@@ -395,5 +429,10 @@ common:wheel_test_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-no
 # Settings for wheel test on TPU v7.
 common:wheel_test_tpu_on_v7 --config=wheel_test_tpu
 common:wheel_test_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7
-common:wheel_test_tpu_on_v7 --local_test_jobs=4
+common:wheel_test_tpu_on_v7 --local_test_jobs=1
 common:wheel_test_tpu_on_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
+
+# Tag filters for split wheel test runs
+common:wheel_test_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,-oss-presubmit-v6,-oss-presubmit-v7
+common:wheel_test_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,oss-presubmit-v6
+common:wheel_test_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,oss-presubmit-v7

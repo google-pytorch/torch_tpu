@@ -47,6 +47,9 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "logging_test",
     srcs = ["logging_test.cc"],
+    tags = [
+        "oss-presubmit-v7",
+    ],
     deps = [
         ":logging",
         "//shims/torch:aten_headers",
@@ -83,6 +86,9 @@ torch_tpu_cc_test(
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     notest_oss = "Fails due to TPU_LIBRARY_PATH not set.",
+    tags = [
+        "oss-presubmit-v7",
+    ],
     deps = [
         ":kernel",
         "//shims/torch:aten_headers",

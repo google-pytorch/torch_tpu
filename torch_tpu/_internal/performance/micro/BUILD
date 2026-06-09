@@ -31,7 +31,10 @@ torch_tpu_py_test(
     name = "qwen3_explore",
     srcs = ["qwen3_explore.py"],
     shuffle_tests = False,
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":utils",
         "//shims/absl_py:app",

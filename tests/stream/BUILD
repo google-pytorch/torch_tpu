@@ -22,7 +22,10 @@ package(
 torch_tpu_py_test(
     name = "stream_test",
     srcs = ["stream_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -35,6 +38,7 @@ torch_tpu_py_test(
     name = "copy_test",
     srcs = ["copy_test.py"],
     tags = [
+        "oss-presubmit-v7",
         "requires-tpu-v5lite",
     ],
     deps = [

@@ -608,7 +608,10 @@ torch_tpu_py_test(
     name = "compiler_option_test",
     srcs = ["compiler_option_test.py"],
     main = "compiler_option_test.py",
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -624,7 +627,10 @@ torch_tpu_py_test(
     srcs = ["index_put_op_unit_test.py"],
     main = "index_put_op_unit_test.py",
     shard_count = 20,
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v6",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         ":op_testing",
         "//shims/absl_py/testing:absltest",
@@ -658,6 +664,7 @@ torch_tpu_py_test(
     srcs = ["tensor_test.py"],
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
+        "oss-presubmit-v6",
         "requires-tpu-v5lite",
     ],
     deps = [
@@ -691,6 +698,9 @@ torch_tpu_py_test(
     srcs = ["error_testing_test.py"],
     args = [
         "--test_mode=cpu",
+    ],
+    tags = [
+        "oss-presubmit-v7",
     ],
     deps = [
         ":error_testing",
@@ -871,7 +881,10 @@ torch_tpu_py_test(
     name = "booleans_test",
     srcs = ["booleans_test.py"],
     # args = [],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -902,7 +915,10 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "untyped_storage_test",
     srcs = ["untyped_storage_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
@@ -930,7 +946,10 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "zero_size_test",
     srcs = ["zero_size_test.py"],
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -985,7 +1004,10 @@ torch_tpu_py_test(
     name = "set_test",
     srcs = ["set_test.py"],
     main = "set_test.py",
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -1079,7 +1101,10 @@ torch_tpu_py_test(
     name = "precision_test",
     srcs = ["precision_test.py"],
     main = "precision_test.py",
-    tags = ["requires-tpu-v5lite"],
+    tags = [
+        "oss-presubmit-v7",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -1123,6 +1148,7 @@ torch_tpu_py_test(
     srcs = ["autoload_tpu_test.py"],
     main = "autoload_tpu_test.py",
     tags = [
+        "oss-presubmit-v6",
         "requires-tpu-v5lite",
     ],
     deps = [

@@ -57,14 +57,19 @@ jobs:
       matrix:
         job_info: [
           {
+            runner: "linux-x86-ct5lp-224-8tpu",
+            source_test_config: "ci_tpu_v5",
+            wheel_test_config: "wheel_test_tpu_v5",
+          },
+          {
             runner: "linux-x86-ct6e-180-8tpu",
-            source_test_config: "ci_tpu_on_v6",
-            wheel_test_config: "wheel_test_tpu_on_v6",
+            source_test_config: "ci_tpu_v6",
+            wheel_test_config: "wheel_test_tpu_v6",
           },
           {
             runner: "linux-x86-tpu7x-224-4tpu",
-            source_test_config: "ci_tpu_on_v7",
-            wheel_test_config: "wheel_test_tpu_on_v7",
+            source_test_config: "ci_tpu_v7",
+            wheel_test_config: "wheel_test_tpu_v7",
           }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
