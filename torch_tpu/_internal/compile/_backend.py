@@ -46,6 +46,7 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile.decompositions import TPU_DECOMPOSITIONS
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
 
@@ -328,11 +329,13 @@ class TpuBackend:
           fw_compiler=fw_compiler,
           bw_compiler=bw_compiler,
           keep_inference_input_mutations=False,
+          decompositions=TPU_DECOMPOSITIONS,
       )(graph_module, example_inputs)
 
-      if captured_entry is not None and captured_entry[0] is not None:
-        entry = captured_entry[0]
-        result.serialize = lambda: entry
+      if captured_entry is not None:
+        (entry,) = captured_entry
+        if entry is not None:
+          result.serialize = lambda: entry
 
       return result
 

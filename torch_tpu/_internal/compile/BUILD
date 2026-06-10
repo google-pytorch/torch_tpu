@@ -51,6 +51,16 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "decompositions",
+    srcs = [
+        "decompositions.py",
+    ],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "tpu_backend",
     srcs = [
         "_backend.py",
@@ -61,6 +71,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":decompositions",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
