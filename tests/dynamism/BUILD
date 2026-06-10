@@ -53,6 +53,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "sym_shape_manager_test",
     srcs = ["sym_shape_manager_test.py"],
+    tags = ["nohwasan"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
@@ -64,6 +65,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "graph_transformations_test",
     srcs = ["graph_transformations_test.py"],
+    tags = ["nohwasan"],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
