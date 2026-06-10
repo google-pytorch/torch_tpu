@@ -543,6 +543,7 @@ torch_tpu_py_library(
         "//tests:module_registry",
         "@pypi//fairscale",
         "@pypi//llama_models",
+        "@pypi//mamba_ssm",
         "@pypi//numpy",
         "@pypi//timm",
         "@pypi//transformers",  # buildcleaner: keep
