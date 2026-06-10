@@ -33,6 +33,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/flags/declare.h"
 #include "absl/log/absl_log.h"
@@ -43,6 +44,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "c10/util/ThreadLocalDebugInfo.h"
 #include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/context_states.h"
@@ -71,6 +73,9 @@ struct MaterializationTask {
   xla::Promise<void> completion_promise;
   MaterializationMode materialization_mode = MaterializationMode::kSplitGraph;
   MaterializationReason reason;
+  // Thread-local debug info (including compile options overrides) from the
+  // dispatch thread.
+  std::shared_ptr<c10::ThreadLocalDebugInfo> debug_info;
 };
 
 using MaterializationJob = std::variant<ExecutionTask, MaterializationTask>;
@@ -121,11 +126,12 @@ class MaterializationWorker {
                  << " nodes for materialization";
     auto [promise, future] = xla::MakePromise<void>();
     absl::MutexLock lock(materialize_mu_);
-    materialize_jobs_.push(
-        MaterializationTask{.nodes_to_materialize = std::move(nodes),
-                            .completion_promise = std::move(promise),
-                            .materialization_mode = materialization_mode,
-                            .reason = reason});
+    materialize_jobs_.push(MaterializationTask{
+        .nodes_to_materialize = std::move(nodes),
+        .completion_promise = std::move(promise),
+        .materialization_mode = materialization_mode,
+        .reason = reason,
+        .debug_info = c10::ThreadLocalDebugInfo::current()});
     return future;
   }
 
@@ -186,9 +192,17 @@ class MaterializationWorker {
 
   absl::StatusOr<std::vector<ExecutionTask>> ProcessMaterializationTask(
       MaterializationTask& task, mlir::MLIRContext& mlir_context) {
-    ABSL_VLOG(1)
-        << "[MaterializationWorker] Processing MaterializationTask with "
-        << task.nodes_to_materialize.size() << " nodes";
+    auto original_debug_info = c10::ThreadLocalDebugInfo::current();
+
+    // Compilation options and eager mode configuration should propagate to the
+    // materialize thread.
+    c10::ThreadLocalDebugInfo::_forceCurrentDebugInfo(task.debug_info);
+
+    // Restore the original debug info at the end.
+    auto cleanup = absl::MakeCleanup([original_debug_info]() {
+      c10::ThreadLocalDebugInfo::_forceCurrentDebugInfo(original_debug_info);
+    });
+
     LogDeferredNodes(task.nodes_to_materialize,
                      /* msg_prefix= */ "  Input node");
 

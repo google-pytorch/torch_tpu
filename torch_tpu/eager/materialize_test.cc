@@ -28,8 +28,10 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/compilation_spec.h"
+#include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
@@ -211,6 +213,48 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
   // e is not materialized because it was dispatched after the last required
   // node (d).
   EXPECT_TRUE(ref_e.is_deferred());
+}
+
+TEST_F(MaterializeTest, PropagatesCompilerOptionsToMaterializeThread) {
+  const ScopedPythonContextCapturer capturer(OpName::kEmpty);
+
+  const Shape shape(Dimensions{1}, mlir::ElementType::F32);
+  const auto builder = [shape](mlir::MlirBuilder& builder,
+                               absl::Span<mlir::MlirOp>) {
+    return DynamicMlirOpResults{
+        BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
+  };
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> refs,
+      DeviceBufferList::CreateDeferred(OpName::kEmpty, builder,
+                                       /*inputs=*/{}, OpParamCacheKeys::Empty(),
+                                       {shape}));
+  const DeviceBufferRef ref = refs[0];
+  const at::Tensor t = MakeTensor(ref);
+
+  // 2. Clear all cache entries to verify we trigger a fresh compilation.
+  CompilationCache::GetInstance().EvictAll();
+
+  // 3. Set compiler overrides on the main thread and calculate its expected
+  // cache fingerprint.
+  CompilerOptionOverrides overrides;
+  overrides["xla_tpu_autofdo"] = "false";
+  EXPECT_EQ(PushCompilerOptionOverrides(overrides), absl::OkStatus());
+  const CompileOptionsKey expected_key =
+      GetCompileOptionsKey(CompilationMode::kFastCompile);
+
+  // 4. Synchronously materialize/compile the buffer.
+  EXPECT_EQ(Materialize(ref, MaterializationReason::kExplicitSync),
+            absl::OkStatus());
+
+  PopCompilerOptionOverrides();
+
+  // 5. Verify the compiled executable fingerprint in cache matches our
+  // overridden key.
+  const PerfStats stats = CompilationCache::GetInstance().GetCacheStats();
+  ASSERT_EQ(stats.per_entry_stats.size(), 1);
+  EXPECT_EQ(stats.per_entry_stats[0].key.compile_options_key(), expected_key);
 }
 
 TEST(MaterializeCommonTest, GetCompilationMode) {
