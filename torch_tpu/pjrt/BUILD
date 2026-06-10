@@ -48,11 +48,32 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "pjrt_state_headers",
+    hdrs = ["pjrt_state.h"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:device_type",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@xla//xla:future",
+        "@xla//xla/pjrt:host_memory_allocator",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/tsl/framework:allocator",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "pjrt_state",
     srcs = ["pjrt_state.cc"],
     hdrs = ["pjrt_state.h"],
     deps = [
         ":pjrt",
+        ":pjrt_state_headers",
         "//shims/torch/c10/core:base_headers",
         "//torch_tpu/common:contain",
         "//torch_tpu/common:device_type",

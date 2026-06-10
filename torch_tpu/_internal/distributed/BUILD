@@ -54,9 +54,10 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/distributed:process_group_tpu",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
+        "//torch_tpu/distributed:process_group_tpu_headers",  # buildcleaner: keep
         "//torch_tpu/distributed:utils",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
     ],
@@ -73,9 +74,10 @@ pybind_extension(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/distributed:process_group_tpu",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
+        "//torch_tpu/distributed:process_group_tpu_headers",  # buildcleaner: keep
         "//torch_tpu/distributed:utils",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
     ],

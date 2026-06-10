@@ -15,6 +15,11 @@
 """Common utilities for torch_tpu."""
 
 load(
+    "@rules_cc//cc:defs.bzl",
+    "cc_binary",
+    "cc_import",
+)
+load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "pywrap_binaries",
     "pywrap_library",
@@ -744,8 +749,38 @@ torch_tpu_cc_library(
     name = "torch_rpath_flags",
     linkopts = [
         "-Wl,-rpath='$$ORIGIN/../../torch/lib'",
+        "-Wl,-rpath='$$ORIGIN'",
     ],
     visibility = ["//visibility:private"],
+)
+
+torch_tpu_cc_library(
+    name = "torch_tpu_backend_lib",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//torch_tpu/distributed:process_group_tpu",
+        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/eager:tpu_hooks",
+        "//torch_tpu/pjrt:pjrt_state",
+    ],
+    alwayslink = True,
+)
+
+cc_binary(
+    name = "libtorch_tpu_backend.so",
+    copts = ["-fvisibility=default"],  # FORCE global public visibility for all symbols
+    linkopts = ["-Wl,--export-dynamic"],  # Retain all backend symbols inside the dynamic table
+    linkshared = 1,
+    linkstatic = 1,
+    deps = [
+        ":torch_tpu_backend_lib",
+    ],
+)
+
+cc_import(
+    name = "torch_tpu_backend",
+    shared_library = ":libtorch_tpu_backend.so",
+    visibility = ["//:__subpackages__"],
 )
 
 pywrap_library(
@@ -756,6 +791,7 @@ pywrap_library(
     ],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/batch_transfer:batch_transfer_impl",

@@ -30,7 +30,7 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/stream:streams",
         "//torch_tpu/_internal/utils:hardware",
         "//torch_tpu/eager:amp_policies",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/eager:tpu_aten_kernels_headers",  # buildcleaner: keep
     ],
 )
 
@@ -45,11 +45,10 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
-        "//shims/torch",
-        "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/_internal/sync:sync_cc",
         "//torch_tpu/common:compilation",
         "//torch_tpu/common:compilation_cache",
@@ -57,13 +56,14 @@ pybind_extension(
         "//torch_tpu/common:discovery",
         "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/distributed/slicebuilder:discovery",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:tensor_to_buffer",
-        "//torch_tpu/eager:tpu_hooks",
+        "//torch_tpu/eager:tpu_hooks_headers",  # buildcleaner: keep
         "//torch_tpu/experimental/eager:materialize_new",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",

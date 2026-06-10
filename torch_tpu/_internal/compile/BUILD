@@ -89,6 +89,7 @@ torch_tpu_cc_library(
         "//torch_tpu/common:flags",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/common:utils",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:device_buffer_utils",
@@ -102,7 +103,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:python_context",
         "//torch_tpu/ops/view_decomposition:decomposition",
         "//torch_tpu/ops/view_decomposition:strided_layout",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log",
@@ -134,8 +135,6 @@ torch_tpu_cc_library(
     deps = [
         ":compiled_mode",
         "//shims/pybind11",
-        "//shims/torch",
-        "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
@@ -152,6 +151,7 @@ torch_tpu_cc_library(
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/common:utils",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:device_gen_impl",
@@ -162,7 +162,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/view_decomposition:contiguous_to_view",
         "//torch_tpu/ops/view_decomposition:decomposition",
         "//torch_tpu/ops/view_decomposition:strided_layout",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
@@ -191,8 +191,6 @@ pybind_extension(
     wrap_py_init = True,
     deps = [
         ":compiled_mode",
-        "//shims/torch",
-        "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
@@ -210,6 +208,7 @@ pybind_extension(
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/common:utils",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:device_gen_impl",
@@ -220,7 +219,7 @@ pybind_extension(
         "//torch_tpu/ops/view_decomposition:contiguous_to_view",
         "//torch_tpu/ops/view_decomposition:decomposition",
         "//torch_tpu/ops/view_decomposition:strided_layout",
-        "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/pjrt:pjrt_state_headers",  # buildcleaner: keep
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",

@@ -32,8 +32,9 @@ torch_tpu_cc_library(
         "//shims/pybind11",
         "//torch_tpu/common:context_manager",
         "//torch_tpu/common:context_states",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/eager:eager_mode",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/eager:tpu_aten_kernels_headers",  # buildcleaner: keep
     ],
 )
 
@@ -48,8 +49,9 @@ pybind_extension(
     deps = [
         "//torch_tpu/common:context_manager",
         "//torch_tpu/common:context_states",
+        "//torch_tpu/common:torch_tpu_backend",  # buildcleaner: keep
         "//torch_tpu/eager:eager_mode",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/eager:tpu_aten_kernels_headers",  # buildcleaner: keep
     ],
 )
 

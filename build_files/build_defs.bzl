@@ -41,6 +41,8 @@ visibility(
 # Default C/C++ build flags for torch_tpu.
 _TORCH_TPU_COPTS = [
     "-std=c++20",  # Align with pytorch.
+    # Force global public visibility for all symbols to ensure Forward ABI compatibility.
+    "-fvisibility=default",
     # Enable exceptions for reporting errors to pytorch. Without this, any
     # C++ exception thrown will immediately crash the process instead of being
     # converted to a Python exception.
