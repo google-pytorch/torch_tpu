@@ -75,7 +75,7 @@ def huggingface_llm_train_factory(
       output.loss.backward()
       accumulated_losses.append(output.loss.detach())
     optimizer.step()
-    step_loss = torch.sum(torch.stack(accumulated_losses)).item()
+    step_loss = torch.sum(torch.stack(accumulated_losses))
     return step_loss
 
   return train_step
@@ -144,7 +144,7 @@ def huggingface_diffuser_train_factory(
       loss.backward()
       accumulated_losses.append(loss.detach())
     optimizer.step()
-    step_loss = torch.sum(torch.stack(accumulated_losses)).item()
+    step_loss = torch.sum(torch.stack(accumulated_losses))
     return step_loss
 
   return train_step
@@ -277,7 +277,7 @@ def generic_train_factory(
       loss.backward()
       accumulated_losses.append(loss.detach())
     optimizer.step()
-    step_loss = torch.sum(torch.stack(accumulated_losses)).item()
+    step_loss = torch.sum(torch.stack(accumulated_losses))
     return step_loss
 
   return train_step

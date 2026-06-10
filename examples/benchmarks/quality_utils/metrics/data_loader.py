@@ -17,6 +17,7 @@
 import enum
 from typing import Any, Iterable
 
+from absl import flags
 from absl import logging
 import grain.python as grain
 import tensorflow_datasets as tfds
@@ -24,6 +25,12 @@ from torch_tpu._internal.utils import log_utils
 
 
 log_utils.log_to_stderr()
+
+VQAV2_DATASET_DIR = flags.DEFINE_string(
+    "vqav2_dataset_dir",
+    "",
+    "Path to the VQAv2 dataset directory.",
+)
 
 
 def _get_num_prompts(num_prompts: int, dataset_size: int) -> int:
@@ -120,12 +127,27 @@ def load_limited_wikitext(num_prompts: int):
     yield "\n\n".join(texts)
 
 
+def load_vqav2() -> Iterable[str]:
+  """Stub for loading VQAv2 dataset prompts and image paths."""
+  import json
+
+  data = [
+      json.dumps({
+          "image_path": "/path/to/dummy/image.jpg",
+          "question": "What is in the image?",
+      })
+  ]
+  for prompt in data:
+    yield prompt
+
+
 class DatasetType(enum.Enum):
   """The type of dataset to use for the quality benchmark."""
 
   WIKITEXT = "wikitext"
   STRING_TEST_DATA = "string_test_data"
   EDGE_CASES = "edge_cases"
+  VQAV2 = "vqav2"
 
 
 # LINT.IfChange
@@ -133,6 +155,7 @@ _DATASET_LOADER_MAP = {
     DatasetType.WIKITEXT: load_wikitext,
     DatasetType.STRING_TEST_DATA: load_string_test_data,
     DatasetType.EDGE_CASES: load_edge_cases,
+    DatasetType.VQAV2: load_vqav2,
 }
 
 

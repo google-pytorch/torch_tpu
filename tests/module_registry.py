@@ -72,7 +72,7 @@ try:
 except ImportError:
   _HAS_TRANSFORMERS = False
 
-_MULTIMODAL_MODEL_TYPES = ("clip", "llava", "paligemma")
+_MULTIMODAL_MODEL_TYPES = ("clip", "llava", "paligemma", "qwen3_vl")
 _AUDIO_MODEL_TYPES = ("whisper", "wav2vec2", "audio", "hubert")
 _VISION_MODEL_TYPES = (
     "vit",
@@ -477,21 +477,118 @@ def _generate_transformers_inputs(
   input_kwargs = {}
   model_type = getattr(config, "model_type", "unknown").lower()
 
+  model_dtype = getattr(config, "torch_dtype", None)
+  if model_dtype is None:
+    model_dtype = getattr(config, "dtype", None)
+    if isinstance(model_dtype, str):
+      model_dtype = getattr(torch, model_dtype, None)
+  if not isinstance(model_dtype, torch.dtype):
+    model_dtype = torch.float32
+
   if modality == Modality.MULTIMODAL:
     safe_seq_len = min(_get_max_seq_len(config), 512)
     actual_shape = shape if shape is not None else (1, safe_seq_len)
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
+    batch_size = actual_shape[0]
+    seq_len = actual_shape[1]
 
-    input_kwargs["input_ids"] = torch.randint(
-        0, vocab_size, actual_shape, device=device, dtype=torch.long
-    )
-    input_kwargs["attention_mask"] = torch.ones(
-        actual_shape, device=device, dtype=torch.long
-    )
+    if model_type == "qwen3_vl":
+      image_token_id = getattr(config, "image_token_id", 151851)
+      patch_size = 16
+      temporal_patch_size = 2
+      in_channels = 3
+      if hasattr(config, "vision_config") and config.vision_config is not None:
+        patch_size = getattr(config.vision_config, "patch_size", 16)
+        temporal_patch_size = getattr(
+            config.vision_config, "temporal_patch_size", 2
+        )
+        in_channels = getattr(config.vision_config, "in_channels", 3)
+
+      num_images_per_sample = 1
+      total_images = batch_size * num_images_per_sample
+      h_patches = 4
+      w_patches = 4
+      patches_per_image = h_patches * w_patches
+      total_patches = total_images * patches_per_image
+      patch_dim = in_channels * temporal_patch_size * patch_size * patch_size
+
+      pixel_values = torch.randn(
+          (total_patches, patch_dim), device=device, dtype=model_dtype
+      )
+      image_grid_thw = torch.tensor(
+          [[1, h_patches, w_patches]], dtype=torch.long, device=device
+      ).repeat(total_images, 1)
+
+      num_image_tokens = patches_per_image // 4
+      text_len_before = max(1, (seq_len - num_image_tokens) // 2)
+      text_len_after = max(1, seq_len - num_image_tokens - text_len_before)
+
+      input_ids_list = []
+      attention_mask_list = []
+      mm_token_type_ids_list = []
+      for _ in range(batch_size):
+        input_ids_single = torch.cat([
+            torch.randint(100, 1000, (text_len_before,), device=device),
+            torch.full((num_image_tokens,), image_token_id, device=device),
+            torch.randint(100, 1000, (text_len_after,), device=device),
+        ])
+        input_ids_list.append(input_ids_single)
+        attention_mask_list.append(torch.ones_like(input_ids_single))
+        mm_token_type_ids_single = torch.cat([
+            torch.zeros((text_len_before,), dtype=torch.long, device=device),
+            torch.ones((num_image_tokens,), dtype=torch.long, device=device),
+            torch.zeros((text_len_after,), dtype=torch.long, device=device),
+        ])
+        mm_token_type_ids_list.append(mm_token_type_ids_single)
+
+      input_kwargs["input_ids"] = torch.stack(input_ids_list)
+      input_kwargs["attention_mask"] = torch.stack(attention_mask_list)
+      input_kwargs["mm_token_type_ids"] = torch.stack(mm_token_type_ids_list)
+      input_kwargs["pixel_values"] = pixel_values
+      input_kwargs["image_grid_thw"] = image_grid_thw
+
+    else:
+      vocab_size = getattr(config, "vocab_size", None)
+      if vocab_size is None and hasattr(config, "text_config"):
+        vocab_size = getattr(config.text_config, "vocab_size", None)
+      if vocab_size is None:
+        vocab_size = 32000
+
+      input_kwargs["input_ids"] = torch.randint(
+          0, vocab_size, actual_shape, device=device, dtype=torch.long
+      )
+      input_kwargs["attention_mask"] = torch.ones(
+          actual_shape, device=device, dtype=torch.long
+      )
+
+      image_size = 224
+      if hasattr(config, "vision_config") and hasattr(
+          config.vision_config, "image_size"
+      ):
+        val = config.vision_config.image_size
+        if isinstance(val, int):
+          image_size = val
+        elif isinstance(val, (list, tuple)) and len(val) > 0:
+          image_size = val[0]
+      elif hasattr(config, "image_size"):
+        val = getattr(config, "image_size")
+        if isinstance(val, int):
+          image_size = val
+        elif isinstance(val, (list, tuple)) and len(val) > 0:
+          image_size = val[0]
+
+      num_channels = getattr(config, "num_channels", 3)
+      if num_channels is None and hasattr(config, "vision_config"):
+        num_channels = getattr(config.vision_config, "num_channels", 3)
+
+      dummy_img = torch.randn(
+          batch_size,
+          num_channels,
+          image_size,
+          image_size,
+          device=device,
+          dtype=model_dtype,
+      )
+      input_kwargs["pixel_values"] = dummy_img
 
   elif modality == Modality.VISION:
     image_size = 224
@@ -522,7 +619,12 @@ def _generate_transformers_inputs(
     batch_size = shape[0] if shape else 1
     num_channels = getattr(config, "num_channels", 3)
     dummy_img = torch.randn(
-        batch_size, num_channels, image_size, image_size, device=device
+        batch_size,
+        num_channels,
+        image_size,
+        image_size,
+        device=device,
+        dtype=model_dtype,
     )
     input_kwargs["pixel_values"] = dummy_img
 
@@ -531,12 +633,12 @@ def _generate_transformers_inputs(
     if "whisper" in model_type:
       num_mel = getattr(config, "num_mel_bins", 80)
       input_kwargs["input_features"] = torch.randn(
-          batch_size, num_mel, 3000, device=device
+          batch_size, num_mel, 3000, device=device, dtype=model_dtype
       )
     else:
       seq_len = shape[1] if shape and len(shape) > 1 else 16000
       input_kwargs["input_values"] = torch.randn(
-          batch_size, seq_len, device=device
+          batch_size, seq_len, device=device, dtype=model_dtype
       )
 
   else:  # text_default, causal_lm, seq2seq
@@ -587,6 +689,21 @@ def _generate_transformers_inputs(
     )
 
   return input_kwargs
+
+
+def _cast_model_to_config_dtype(
+    model: torch.nn.Module, config: Any
+) -> torch.nn.Module:
+  """Casts the model to the configured dtype if specified in config."""
+  model_dtype = getattr(config, "torch_dtype", None)
+  if model_dtype is None:
+    model_dtype = getattr(config, "dtype", None)
+    if isinstance(model_dtype, str):
+      model_dtype = getattr(torch, model_dtype, None)
+  if isinstance(model_dtype, torch.dtype):
+    logging.info("Casting model to configured dtype: %s", model_dtype)
+    model = model.to(model_dtype)
+  return model
 
 
 class TransformersProvider(BaseProvider):
@@ -715,8 +832,8 @@ class TransformersProvider(BaseProvider):
       else:
         model_cls = transformers.AutoModel
 
-      model_fn = lambda: model_cls.from_pretrained(
-          str(model_dir_or_repo_id), **kwargs
+      model_fn = lambda: _cast_model_to_config_dtype(
+          model_cls.from_pretrained(str(model_dir_or_repo_id), **kwargs), config
       )
 
       def _load_preprocessor():
@@ -746,10 +863,13 @@ class TransformersProvider(BaseProvider):
               architectures[0],
           )
 
-      model_fn = lambda: (
-          model_cls.from_config(config)
-          if hasattr(model_cls, "from_config")
-          else model_cls(config)
+      model_fn = lambda: _cast_model_to_config_dtype(
+          (
+              model_cls.from_config(config)
+              if hasattr(model_cls, "from_config")
+              else model_cls(config)
+          ),
+          config,
       )
       preprocessor_fn = None
 

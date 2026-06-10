@@ -89,3 +89,37 @@ class PerplexityMetric(quality_benchmark_model.MetricProducer):
       return torch.tensor(float("inf"))
 
     return torch.exp(total_loss / total_tokens)
+
+
+class VLPerplexityMetric(quality_benchmark_model.MetricProducer):
+  """Perplexity metric for Vision-Language quality benchmarks."""
+
+  def get_name(self) -> str:
+    return "vl_perplexity"
+
+  @torch.inference_mode()
+  def assess(
+      self,
+      model_input: str,
+      benchmark_model: quality_benchmark_model.QualityBenchmarkModel,
+  ) -> torch.Tensor:
+    """Runs perplexity score on a single VL sample."""
+    formatted_input = benchmark_model.format(model_input)
+    pred_logits, target = benchmark_model.get_logits_and_targets(
+        formatted_input
+    )
+
+    log_probs = torch.nn.functional.log_softmax(pred_logits.float(), dim=-1)
+    target_expanded = target.long().unsqueeze(-1)
+    target_log_probs = log_probs.gather(dim=-1, index=target_expanded).squeeze(
+        -1
+    )
+    ce = -target_log_probs
+
+    target_len = formatted_input.unpadded_length - 1
+    res = ce[:target_len].sum()
+
+    if target_len == 0:
+      return torch.tensor(float("inf"))
+
+    return torch.exp(res / target_len)

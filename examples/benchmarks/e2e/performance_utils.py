@@ -27,7 +27,9 @@ from absl import logging
 from tensorboardX import writer
 import torch
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal.distributed.launchers import multihost_wrapper
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import mlcompass_utils
@@ -37,6 +39,8 @@ from tests.distributed import distributed_utils
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
 
 EagerMode: TypeAlias = execution_mode.EagerMode
+
+log_utils.log_to_stderr()
 
 
 WEIGHTS_DTYPE = flags.DEFINE_string(
@@ -377,9 +381,6 @@ def run_single_process_benchmark(
     benchmark_succeeded = False
     benchmark_exception = e
 
-  if benchmark_utils.CAPTURE_OPS.value:
-    return
-
   # Only export results from the rank 0 process to avoid duplicate entries in
   # MLCompass.
   if benchmark_utils.MLCOMPASS_TRACKING_ID.value and rank == 0:
@@ -446,6 +447,54 @@ def _run_cuda_task(
   torch.distributed.destroy_process_group()
 
 
+def run_worker(
+    config: PerformanceBenchmarkConfig,
+    test_method_name: str,
+    benchmark_name: str,
+    microbenchmark_name: str | None = None,
+) -> None:
+  rank = os.environ.get("RANK", "0")
+  logging.info("Process %s initializing process group...", rank)
+  torch.distributed.init_process_group(backend="tpu_dist")
+  logging.info("Process %s process group initialized.", rank)
+  run_single_process_benchmark(
+      config,
+      test_method_name,
+      benchmark_name,
+      microbenchmark_name,
+  )
+  torch.distributed.destroy_process_group()
+
+
+def _run_multihost_benchmark(
+    config: PerformanceBenchmarkConfig,
+    *,
+    test_method_name: str,
+    benchmark_name: str,
+    microbenchmark_name: str | None = None,
+) -> None:
+  """Runs the benchmark on multihost platform."""
+  N_PROC_MAP = {
+      benchmark_utils.Platform.B200_4: 4,
+      benchmark_utils.Platform.B200_8: 8,
+      benchmark_utils.Platform.GFC_2X2X1: 8,
+      benchmark_utils.Platform.GFC_2X2X2: 8,
+      benchmark_utils.Platform.GFC_2X2X4: 8,
+  }
+  from torch.google import distributed as g3_distributed
+
+  multihost_wrapper.prepare_tpu_environment()
+  g3_distributed.torchrun(
+      run_worker,
+      nproc_per_node=N_PROC_MAP.get(benchmark_utils.PLATFORM.value, 8),
+  )(
+      config,
+      test_method_name,
+      benchmark_name,
+      microbenchmark_name,
+  )
+
+
 def _run_distributed_benchmark(
     config: PerformanceBenchmarkConfig,
     *,
@@ -472,8 +521,16 @@ def _run_distributed_benchmark(
             microbenchmark_name,
         ),
     )
-  elif platform == benchmark_utils.Platform.GFC_2X2X1:
-    singlehost_wrapper.prepare_tpu_environment(world_size=8)
+  elif platform in [
+      benchmark_utils.Platform.GFC_2X2X1,
+      benchmark_utils.Platform.GFC_2X2X2,
+      benchmark_utils.Platform.GFC_2X2X4,
+  ]:
+    if platform == benchmark_utils.Platform.GFC_2X2X4:
+      multihost_wrapper.prepare_tpu_environment()
+    else:
+      singlehost_wrapper.prepare_tpu_environment(world_size=8)
+
     distributed_utils.dist_run(
         8,
         run_torch_tpu_task,
@@ -486,7 +543,9 @@ def _run_distributed_benchmark(
         ),
     )
   else:
-    raise ValueError(f"No worker function for platform: {platform}")
+    raise ValueError(
+        f"No worker function for platform: {benchmark_utils.PLATFORM.value}"
+    )
 
 
 def run_benchmark(

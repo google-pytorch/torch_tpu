@@ -19,7 +19,7 @@ from typing import Sequence
 
 from absl import logging
 from torch import distributed as dist
-from torch.google import distributed as g3_distributed
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed import gpu_env
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import log_utils
@@ -36,6 +36,8 @@ N_PROC_MAP = {
     benchmark_utils.Platform.B200_4: 4,
     benchmark_utils.Platform.B200_8: 8,
     benchmark_utils.Platform.GFC_2X2X1: 8,
+    benchmark_utils.Platform.V6E_2X2: 4,
+    benchmark_utils.Platform.V6E_2X4: 8,
 }
 
 
@@ -81,51 +83,70 @@ def _run_single_process_benchmark(
   benchmark_utils.seed_rngs()
   data_iterator = data_loader.get_dataset_loader(config.dataset_type)
 
-  benchmark_succeeded = True
-  result = None
-  benchmark_exception = None
+  original_eager_mode = execution_mode.eager_mode
+  new_eager_mode = None
+  if config.run_mode == benchmark_utils.RunMode.EAGER_DEFAULT:
+    new_eager_mode = execution_mode.EagerMode.DEFER_NEVER
+  elif config.run_mode == benchmark_utils.RunMode.EAGER_OPTIMIZED:
+    new_eager_mode = execution_mode.EagerMode.DEFER_AND_FUSE
+  elif (
+      config.run_mode
+      == benchmark_utils.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING
+  ):
+    new_eager_mode = execution_mode.EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
+
+  if new_eager_mode is not None:
+    execution_mode.eager_mode = new_eager_mode
+
   try:
-    result = benchmark_utils.run_quality_benchmark(
-        config.benchmark_model,
-        benchmark_utils.is_torch_compile(config.run_mode),
-        data_iterator,
-        config.metrics,
-        device,
-    )
+    benchmark_succeeded = True
+    result = None
+    benchmark_exception = None
+    try:
+      result = benchmark_utils.run_quality_benchmark(
+          config.benchmark_model,
+          benchmark_utils.is_torch_compile(config.run_mode),
+          data_iterator,
+          config.metrics,
+          device,
+      )
 
-    logging.info(
-        "Test: %s, benchmark: %s, platform: %s, rank(0-indexed): %s,"
-        " world_size: %s, metrics: %s",
-        test_method_name,
-        benchmark_name,
-        platform,
-        rank,
-        world_size,
-        result.metrics,
-    )
-  except Exception as e:
-    logging.exception("Benchmark failed: %s", e)
-    benchmark_succeeded = False
-    benchmark_exception = e
+      logging.info(
+          "Test: %s, benchmark: %s, platform: %s, rank(0-indexed): %s,"
+          " world_size: %s, metrics: %s",
+          test_method_name,
+          benchmark_name,
+          platform,
+          rank,
+          world_size,
+          result.metrics,
+      )
+    except Exception as e:
+      logging.exception("Benchmark failed: %s", e)
+      benchmark_succeeded = False
+      benchmark_exception = e
 
-  # Only export results from the rank 0 process to avoid duplicate entries in
-  # MLCompass.
-  if benchmark_utils.MLCOMPASS_TRACKING_ID.value and rank == 0:
-    mlcompass_utils.export_to_mlcompass(
-        platform,
-        result,
-        benchmark_utils.BASE_CL.value,
-        benchmark_utils.MLCOMPASS_TRACKING_ID.value,
-        benchmark_utils.MLCOMPASS_EXECUTION_MODE.value,
-        test_method_name=test_method_name,
-        benchmark_name=benchmark_name,
-        succeeded=benchmark_succeeded,
-        pending_cl=benchmark_utils.PENDING_CL.value,
-        benchmark_group=benchmark_utils.BENCHMARK_GROUP.value,
-    )
+    # Only export results from the rank 0 process to avoid duplicate entries in
+    # MLCompass.
+    if benchmark_utils.MLCOMPASS_TRACKING_ID.value and rank == 0:
+      mlcompass_utils.export_to_mlcompass(
+          platform,
+          result,
+          benchmark_utils.BASE_CL.value,
+          benchmark_utils.MLCOMPASS_TRACKING_ID.value,
+          benchmark_utils.MLCOMPASS_EXECUTION_MODE.value,
+          test_method_name=test_method_name,
+          benchmark_name=benchmark_name,
+          succeeded=benchmark_succeeded,
+          pending_cl=benchmark_utils.PENDING_CL.value,
+          benchmark_group=benchmark_utils.BENCHMARK_GROUP.value,
+      )
 
-  if not benchmark_succeeded and benchmark_exception is not None:
-    raise benchmark_exception
+    if not benchmark_succeeded and benchmark_exception is not None:
+      raise benchmark_exception
+  finally:
+    if new_eager_mode is not None:
+      execution_mode.eager_mode = original_eager_mode
 
 
 def _run_torch_tpu_worker(
@@ -147,27 +168,31 @@ def _run_distributed_benchmark(
     benchmark_name: str,
 ) -> None:
   """Runs the benchmark for the given config."""
-  if benchmark_utils.PLATFORM.value == benchmark_utils.Platform.GFC_2X2X1:
-    singlehost_wrapper.prepare_tpu_environment()
+  from torch.google import distributed as g3_distributed
+
+  platform = benchmark_utils.PLATFORM.value
+  if platform in (
+      benchmark_utils.Platform.GFC_2X2X1,
+      benchmark_utils.Platform.V6E_2X2,
+      benchmark_utils.Platform.V6E_2X4,
+  ):
+    world_size = N_PROC_MAP[platform]
     run_worker = singlehost_wrapper.tpu_env_wrapper(
         _run_torch_tpu_worker,
-        world_size=8,
+        world_size=world_size,
     )
     g3_distributed.torchrun(
         run_worker,
-        nproc_per_node=N_PROC_MAP[benchmark_utils.PLATFORM.value],
+        nproc_per_node=world_size,
     )(
         config,
         test_method_name,
         benchmark_name,
     )
-  elif (
-      benchmark_utils.PLATFORM_DEVICE_MAP[benchmark_utils.PLATFORM.value]
-      == "cuda"
-  ):
+  elif benchmark_utils.PLATFORM_DEVICE_MAP[platform] == "cuda":
     g3_distributed.torchrun(
         gpu_env.run_in_workers,
-        nproc_per_node=N_PROC_MAP[benchmark_utils.PLATFORM.value],
+        nproc_per_node=N_PROC_MAP[platform],
     )(
         _run_single_process_benchmark,
         config,

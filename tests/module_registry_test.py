@@ -175,6 +175,52 @@ class ModuleRegistryTest(absltest.TestCase):
 
     self.assertEqual(out.logits.shape, expected_logits_shape)
 
+  def test_transformers_get_module_spec_qwen3_vl(self):
+    def scale_down_qwen3_vl_config(config):
+      if hasattr(config, "text_config"):
+        config.text_config.num_hidden_layers = 2
+        config.text_config.hidden_size = 128
+        config.text_config.intermediate_size = 256
+        config.text_config.num_attention_heads = 4
+        config.text_config.num_key_value_heads = 2
+      if hasattr(config, "vision_config"):
+        config.vision_config.depth = 2
+        config.vision_config.hidden_size = 64
+        config.vision_config.intermediate_size = 128
+        config.vision_config.num_heads = 2
+        config.vision_config.out_hidden_size = 128
+        config.vision_config.deepstack_visual_indexes = [1]
+      return config
+
+    for model_name in [
+        "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        "Qwen/Qwen3-VL-Embedding-8B",
+    ]:
+      with self.subTest(model_name=model_name):
+        module_spec = self.module_registry.get_module_spec(
+            "transformers",
+            model_name,
+            load_weights=False,
+            modify_config_hook=scale_down_qwen3_vl_config,
+        )
+        model = module_spec.module_factory()
+        _, kwargs = module_spec.sample_inputs_factory()
+        self.assertIn("input_ids", kwargs)
+        self.assertIn("attention_mask", kwargs)
+        model.eval()
+        out = model(**kwargs)
+        logits = out.logits if hasattr(out, "logits") else out[0]
+        vocab_size = (
+            module_spec.config.text_config.vocab_size
+            if hasattr(module_spec.config, "text_config")
+            else module_spec.config.vocab_size
+        )
+        expected_logits_shape = (
+            *kwargs["input_ids"].shape,
+            vocab_size,
+        )
+        self.assertEqual(logits.shape, expected_logits_shape)
+
   def test_transformers_with_modify_config_hook(self):
     def modify_config(config):
       config.vocab_size = 99999

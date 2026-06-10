@@ -1,0 +1,70 @@
+{
+  "architectures": [
+    "Qwen3VLForConditionalGeneration"
+  ],
+  "bos_token_id": 151643,
+  "eos_token_id": 151645,
+  "hidden_act": "silu",
+  "model_type": "qwen3_vl",
+  "rms_norm_eps": 1e-06,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "vocab_size": 152064,
+  "image_token_id": 151655,
+  "video_token_id": 151656,
+  "vision_end_token_id": 151653,
+  "vision_start_token_id": 151652,
+  "rope_scaling": {
+    "type": "default",
+    "rope_type": "default",
+    "mrope_section": [
+      24,
+      20,
+      20
+    ]
+  },
+  "text_config": {
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "head_dim": 128,
+    "hidden_act": "silu",
+    "hidden_size": 256,
+    "initializer_range": 0.02,
+    "intermediate_size": 512,
+    "max_position_embeddings": 32768,
+    "model_type": "qwen3_vl_text",
+    "num_attention_heads": 4,
+    "num_hidden_layers": 2,
+    "num_key_value_heads": 2,
+    "rms_norm_eps": 1e-06,
+    "use_cache": true,
+    "vocab_size": 151936,
+    "rope_scaling": {
+      "type": "default",
+      "rope_type": "default",
+      "mrope_section": [
+        24,
+        20,
+        20
+      ]
+    }
+  },
+  "vision_config": {
+    "deepstack_visual_indexes": [
+      1
+    ],
+    "depth": 2,
+    "hidden_act": "gelu_pytorch_tanh",
+    "hidden_size": 128,
+    "in_channels": 3,
+    "initializer_range": 0.02,
+    "intermediate_size": 256,
+    "model_type": "qwen3_vl",
+    "num_heads": 4,
+    "num_position_embeddings": 2304,
+    "out_hidden_size": 256,
+    "patch_size": 16,
+    "spatial_merge_size": 2,
+    "temporal_patch_size": 2
+  }
+}

@@ -60,6 +60,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":module_registry",
+        "//examples/benchmarks/quality_utils/models:qwen3_vl_quality_benchmark",  # buildcleaner: keep
         "//shims/absl_py/testing:absltest",
         "//shims/etils/epath",
         "//shims/torch:pytorch",
