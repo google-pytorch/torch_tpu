@@ -211,3 +211,86 @@ jobs:
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }}
           disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  test_wheels_pytest:
+    name: "Pytest wheel on ${{ matrix.custom_name || matrix.runner }}"
+    #if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: build_wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CPU
+            runner: linux-x86-n4-16
+            accelerator: cpu
+            custom_name: CPU
+          - name: TPU
+            runner: linux-x86-ct5lp-224-8tpu
+            accelerator: tpu
+            tpu_cores: "8"
+            custom_name: TPU
+          - name: "CPU (CUDA wheel)"
+            runner: linux-x86-n4-16
+            accelerator: cpu
+            wheel_override: "cuda"
+            custom_name: "CPU (CUDA wheel)"
+          - name: "CPU (PyTorch Nightly)"
+            runner: linux-x86-n4-16
+            accelerator: cpu
+            wheel_override: "nightly"
+            custom_name: "CPU (PyTorch Nightly)"
+          - name: "TPU (PyTorch Nightly)"
+            runner: linux-x86-tpu7x-224-4tpu
+            accelerator: tpu
+            tpu_cores: "4"
+            wheel_override: "nightly"
+            custom_name: "TPU (PyTorch Nightly)"
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      options: --privileged
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Setup Python & uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Download Wheel from GCS
+        run: |
+          mkdir -p dist
+          gcloud storage cp "${{ needs.build_wheels.outputs.gcs-wheel-path }}" dist/
+
+      - name: Download a specific CUDA-enabled torch wheel to verify the override mechanism
+        if: matrix.wheel_override == 'cuda'
+        run: pip download dist/*.whl -d dist/
+
+      - name: Download PyTorch Nightly Wheel to verify the override mechanism
+        #if: matrix.wheel_override == 'nightly'
+        run: pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist/
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Create Clean Virtual Environment & Execute Pytest Suite
+        shell: bash
+        env:
+          ACCELERATOR_TYPE: ${{ matrix.accelerator }}
+          TPU_CORES: ${{ matrix.tpu_cores }}
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --index-strategy unsafe-best-match \
+            -r requirements/requirements.txt
+          uv pip install dist/*.whl --reinstall --prerelease allow
+
+          bash ./ci/run_pytest.sh
