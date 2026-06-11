@@ -19,15 +19,12 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
-#include "absl/cleanup/cleanup.h"
 #include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "gtest/gtest.h"
-#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -38,13 +35,10 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_cache.h"
-#include "torch_tpu/common/context_manager.h"
-#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/tpu_aten_kernels.h"
 #include "torch_tpu/eager/tpu_hooks.h"
@@ -135,26 +129,6 @@ TEST_F(MaterializeNewTest, AsyncMaterializationSynchronization) {
                           GetBuffer(result_tensors[0]));
   auto status_or = result_ref.AwaitBuffer();
   EXPECT_TRUE(status_or.ok());
-}
-
-TEST_F(MaterializeNewTest, ThreadLocalStatePropagatesToWorkerThread) {
-  PushContextState(EagerMode::kDeferAndFuse);
-  absl::Cleanup cleanup = [] { PopContextState<EagerModeContextState>(); };
-  ABSL_CHECK_EQ(GetEagerMode(), EagerMode::kDeferAndFuse);
-
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  auto builder = [](mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs)
-      -> absl::StatusOr<DynamicMlirOpResults> {
-    EXPECT_EQ(GetEagerMode(), EagerMode::kDeferAndFuse);
-    return DynamicMlirOpResults{
-        BuildFillUninitialized(builder, mlir::ElementType::F32, {8})};
-  };
-
-  ABSL_CHECK_OK(DeviceBufferList::CreateDeferred(
-      OpName::kEmpty, builder,
-      /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape}));
 }
 
 }  // namespace

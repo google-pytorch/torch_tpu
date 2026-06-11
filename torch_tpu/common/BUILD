@@ -195,27 +195,6 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
-    name = "thread_local_context",
-    hdrs = ["thread_local_context.h"],
-    deps = [
-        "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
-    ],
-)
-
-torch_tpu_cc_test(
-    name = "thread_local_context_test",
-    srcs = ["thread_local_context_test.cc"],
-    deps = [
-        ":thread_local_context",
-        "//shims/torch",
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "compilation_spec",
     hdrs = ["compilation_spec.h"],
     deps = [

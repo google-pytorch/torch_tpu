@@ -20,8 +20,6 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
-#include "absl/cleanup/cleanup.h"
-#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -32,13 +30,11 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/compilation_spec.h"
-#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
-#include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/materialize_common.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -215,26 +211,6 @@ TEST_F(MaterializeTest, LeafNodeMaterializationPatternSuccess) {
   // e is not materialized because it was dispatched after the last required
   // node (d).
   EXPECT_TRUE(ref_e.is_deferred());
-}
-
-TEST_F(MaterializeTest, ThreadLocalStatePropagatesToWorkerThread) {
-  PushContextState(EagerMode::kDeferAndFuse);
-  absl::Cleanup cleanup = [] { PopContextState<EagerModeContextState>(); };
-  ABSL_CHECK_EQ(GetEagerMode(), EagerMode::kDeferAndFuse);
-
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  const Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  auto builder = [](mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs)
-      -> absl::StatusOr<DynamicMlirOpResults> {
-    EXPECT_EQ(GetEagerMode(), EagerMode::kDeferAndFuse);
-    return DynamicMlirOpResults{
-        BuildFillUninitialized(builder, mlir::ElementType::F32, {8})};
-  };
-
-  ABSL_CHECK_OK(DeviceBufferList::CreateDeferred(
-      OpName::kEmpty, builder,
-      /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape}));
 }
 
 TEST(MaterializeCommonTest, GetCompilationMode) {

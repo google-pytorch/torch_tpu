@@ -50,7 +50,6 @@
 #include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/status_builder.h"
-#include "torch_tpu/common/thread_local_context.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/materialize_common.h"
@@ -72,7 +71,6 @@ struct MaterializationTask {
   xla::Promise<void> completion_promise;
   MaterializationMode materialization_mode = MaterializationMode::kSplitGraph;
   MaterializationReason reason;
-  ThreadLocalContext thread_local_context;
 };
 
 using MaterializationJob = std::variant<ExecutionTask, MaterializationTask>;
@@ -123,13 +121,11 @@ class MaterializationWorker {
                  << " nodes for materialization";
     auto [promise, future] = xla::MakePromise<void>();
     absl::MutexLock lock(materialize_mu_);
-    materialize_jobs_.push(MaterializationTask{
-        .nodes_to_materialize = std::move(nodes),
-        .completion_promise = std::move(promise),
-        .materialization_mode = materialization_mode,
-        .reason = reason,
-        .thread_local_context = ThreadLocalContext::Capture(),
-    });
+    materialize_jobs_.push(
+        MaterializationTask{.nodes_to_materialize = std::move(nodes),
+                            .completion_promise = std::move(promise),
+                            .materialization_mode = materialization_mode,
+                            .reason = reason});
     return future;
   }
 
@@ -274,9 +270,7 @@ class MaterializationWorker {
                 ABSL_VLOG(1)
                     << "[MaterializationWorker] Processing MaterializationTask";
                 absl::StatusOr<std::vector<ExecutionTask>> tasks =
-                    job.thread_local_context.Apply([&] {
-                      return ProcessMaterializationTask(job, *mlir_context);
-                    });
+                    ProcessMaterializationTask(job, *mlir_context);
 
                 if (tasks.ok()) {
                   ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing "
