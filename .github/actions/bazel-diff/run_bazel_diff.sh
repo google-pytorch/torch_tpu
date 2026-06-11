@@ -96,6 +96,12 @@ java -jar /tmp/bazel-diff.jar get-impacted-targets \
   -fh "$WORKSPACE_DIR/pr_hashes.json" \
   -o "$WORKSPACE_DIR/impacted_targets.txt"
 
+echo "--- Filtering Impacted Targets by Tags ---"
+if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
+  bazel run //.github/actions/bazel-diff:filter_impacted_targets -- \
+    "$WORKSPACE_DIR/impacted_targets.txt" "$BAZEL_CONFIG" "$EXTRA_FLAGS"
+fi
+
 echo "--- Running Impacted Bazel Tests ---"
 if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   TARGET_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
