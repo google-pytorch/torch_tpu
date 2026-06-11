@@ -37,6 +37,8 @@ http_archive(
     urls = [
         "https://github.com/google-ml-infra/rules_ml_toolchain/archive/40efd07eb8e6565e506562f36d7dc43cd83e5b32.tar.gz",
     ],
+    patches = ["//bazel/patches/rules_ml_toolchain:dynamic_deps.patch"],
+    patch_args = ["-p1"],
 )
 
 load("//bazel:wheel_deps.bzl", "torch_tpu_deps_repo")

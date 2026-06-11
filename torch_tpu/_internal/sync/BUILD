@@ -1,4 +1,4 @@
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_pybind_extension")
 
 # Copyright 2025 Google LLC
 #
@@ -14,7 +14,6 @@ load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_
 # See the License for the specific language governing permissions and
 # limitations under the License.
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -106,16 +105,9 @@ torch_tpu_py_library(
     ],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     name = "_tpu_torch_sync",
     srcs = ["sync_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
-    wrap_py_init = True,
     deps = [
         ":sync_cc",
         "//shims/torch:aten_headers",

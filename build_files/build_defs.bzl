@@ -20,12 +20,14 @@ load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_test.bzl", "py_test")
 load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
+    "pywrap_library",
     "use_pywrap_rules",
 )
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
+load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -1084,3 +1086,70 @@ def if_cuda_dep(dep):
         "//shims/gpu_cuda:using_config_cuda": [dep],
         "//conditions:default": [],
     })
+
+def torch_tpu_pybind_extension(
+        name,
+        srcs = [],
+        deps = [],
+        dynamic_deps = None,
+        common_lib_packages = None,
+        wrap_py_init = True,
+        py_deps = None,
+        **kwargs):
+    """Creates a pybind_extension for torch_tpu.
+
+    Sets common defaults like dynamic_deps, common_lib_packages, and wrap_py_init.
+
+    Args:
+        name: A unique name for this target.
+        srcs: The list of C++ source files that are compiled into the extension.
+        deps: The list of other C++ libraries that the extension depends on.
+        dynamic_deps: A list of cc_shared_library targets that the extension links
+            dynamically against (e.g. //torch_tpu/common:libxla_mlir_base).
+        common_lib_packages: Under rules_pywrap, a list of sub-packages under the
+            common shared library that the extension links against.
+        wrap_py_init: Whether to generate python initialization boilerplate.
+        py_deps: A list of python dependencies (e.g. PyTorch) required.
+        **kwargs: Additional arguments passed to the underlying pybind_extension rule.
+    """
+    if dynamic_deps == None:
+        dynamic_deps = ["//torch_tpu/common:libxla_mlir_base"]
+
+    if common_lib_packages == None:
+        common_lib_packages = ["torch_tpu/common"]
+
+    if py_deps == None:
+        py_deps = ["//shims/torch:pytorch"]
+
+    pybind_extension(
+        # PYBIND_EXTENSION_OK=Wrapper
+        name = name,
+        srcs = srcs,
+        deps = deps,
+        dynamic_deps = dynamic_deps,
+        common_lib_packages = common_lib_packages,
+        wrap_py_init = wrap_py_init,
+        py_deps = py_deps,
+        **kwargs
+    )
+
+# Enable build_cleaner to clean up deps for torch_tpu_pybind_extension.
+register_extension_info(
+    extension = torch_tpu_pybind_extension,
+    label_regex_for_dep = "{extension_name}",
+)
+
+def torch_tpu_pywrap_library(name, **kwargs):
+    """Shim for pywrap_library.
+
+    Args:
+        name: Name of the target.
+        **kwargs: Other arguments for pywrap_library.
+    """
+    pywrap_library(name = name, **kwargs)
+
+# Enable build_cleaner to clean up deps for torch_tpu_pywrap_library.
+register_extension_info(
+    extension = torch_tpu_pywrap_library,
+    label_regex_for_dep = "{extension_name}",
+)

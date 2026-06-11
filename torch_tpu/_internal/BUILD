@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_pybind_extension")
 
 licenses(["notice"])
 
@@ -32,13 +31,9 @@ torch_tpu_cc_library(
     ],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     name = "env",
     srcs = ["env.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
     deps = [
         "//shims/torch:torch_headers",
         "//torch_tpu/common:utils",
@@ -62,14 +57,10 @@ torch_tpu_cc_library(
     ],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     # Internal testing utilities.
     name = "testing",
     srcs = ["testing.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
     deps = [
         "//shims/torch",
         "//shims/torch:aten",

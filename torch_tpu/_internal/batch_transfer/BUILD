@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_pybind_extension")
 
 licenses(["notice"])
 
@@ -22,16 +21,9 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     name = "batch_transfer_impl",
     srcs = ["batch_transfer_impl.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
-    wrap_py_init = True,
     deps = [
         "//shims/torch:aten",
         "//shims/torch:aten_headers",

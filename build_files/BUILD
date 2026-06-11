@@ -41,6 +41,7 @@ bzl_library(
         "//tools/build_defs/build_test",
         "//torch_tpu/google/build_files:build_defs_bzl",
         "//torch_tpu/google/build_rules:py_platform_test_bzl",
+        "//torch_tpu/google/shims:pybind_bzl",
         "@rules_cc//cc:core_rules",
         "@rules_python//python:py_test_bzl",
         "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",

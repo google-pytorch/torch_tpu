@@ -153,6 +153,7 @@ py_wheel(
     visibility = ["//visibility:public"],
     deps = [
         ":remapped_pywrap_binaries",
+        "//torch_tpu/common:libxla_mlir_base",
         ":torch_tpu_package_end",
     ],
 )

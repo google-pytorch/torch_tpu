@@ -1,0 +1,180 @@
+--- a/py/rules_pywrap/pywrap.impl.bzl	2026-06-12 15:17:21.218466344 -0400
++++ b/py/rules_pywrap/pywrap.impl.bzl	2026-06-12 15:47:22.271050286 -0400
+@@ -73,7 +73,8 @@
+         extra_deps = ["@pybind11//:pybind11"],
+         visibility = None,
+         testonly = None,
+-        compatible_with = None):
++        compatible_with = None,
++        dynamic_deps = []):
+     """A macro which does final linking of multiple C++ Python extensions tha share common parts.
+ 
+     A macro which builds a set of C++ Python extensions from all of the python_extension targets
+@@ -258,6 +259,7 @@
+             ver_script,
+             [":%s" % common_split_name],
+             common_lib_versions.get(common_lib_full_name, ""),
++            dynamic_deps,
+         )
+         actual_binaries_data = binaries_data
+         actual_common_deps = common_deps
+@@ -316,6 +318,7 @@
+             }),
+             testonly = testonly,
+             compatible_with = compatible_with,
++            dynamic_deps = dynamic_deps,
+         )
+         shared_objects.append(":%s" % shared_object_name)
+ 
+@@ -386,7 +389,8 @@
+         dependent_common_lib_package,
+         version_script,
+         data,
+-        version = ""):
++        version = "",
++        dynamic_deps = []):
+     version_str = ".{}".format(version) if version else version
+     linux_binary_name = "lib{}.so{}".format(name, version_str)
+     win_binary_name = "{}{}.dll".format(name, version_str)
+@@ -422,6 +426,7 @@
+         testonly = testonly,
+         compatible_with = compatible_with,
+         local_defines = local_defines,
++        dynamic_deps = dynamic_deps,
+     )
+     cc_binary(
+         name = win_binary_name,
+@@ -437,6 +442,7 @@
+         compatible_with = compatible_with,
+         win_def_file = win_def_file,
+         local_defines = local_defines,
++        dynamic_deps = dynamic_deps,
+     )
+ 
+     darwin_linkopts = _construct_linkopt_soname(
+@@ -460,6 +466,7 @@
+         testonly = testonly,
+         compatible_with = compatible_with,
+         local_defines = local_defines,
++        dynamic_deps = dynamic_deps,
+     )
+ 
+     if_lib_name = "{}{}_if_lib".format(name, version_str)
+@@ -575,7 +582,6 @@
+     else:
+         libs_to_include = filters.common_lib_filters[ctx.attr.common_lib_full_name]
+ 
+-    user_link_flags = []
+     dynamic_lib_filter = filters.dynamic_lib_filter
+     default_runfiles = ctx.runfiles()
+     for pw in pywrap_infos:
+@@ -586,7 +592,6 @@
+                 continue
+             if include_all_not_excluded or (li in libs_to_include) or li in dynamic_lib_filter:
+                 split_linker_inputs.append(li)
+-                user_link_flags.extend(li.user_link_flags)
+                 if not pw_runfiles_merged:
+                     default_runfiles = default_runfiles.merge(pw.default_runfiles)
+                     pw_runfiles_merged = True
+@@ -594,7 +599,7 @@
+     return _construct_split_library_cc_info(
+         ctx,
+         split_linker_inputs,
+-        user_link_flags,
++        [],
+         [],
+         default_runfiles,
+         ctx.attr.collect_objects,
+@@ -629,32 +634,6 @@
+         private_linker_inputs,
+         default_runfiles,
+         collect_objects):
+-    dependency_libraries, objects = _construct_dependency_libraries(
+-        ctx,
+-        split_linker_inputs,
+-        collect_objects,
+-    )
+-
+-    linker_input = cc_common.create_linker_input(
+-        owner = ctx.label,
+-        libraries = depset(direct = dependency_libraries),
+-        user_link_flags = user_link_flags,
+-    )
+-
+-    linking_context = cc_common.create_linking_context(
+-        linker_inputs = depset(
+-            direct = [linker_input],
+-            transitive = private_linker_inputs,
+-        ),
+-    )
+-
+-    return [
+-        CcInfo(linking_context = linking_context),
+-        ObjectFiles(objects = depset(direct = objects)),
+-        DefaultInfo(runfiles = default_runfiles),
+-    ]
+-
+-def _construct_dependency_libraries(ctx, split_linker_inputs, collect_objects):
+     cc_toolchain = find_cpp_toolchain(ctx)
+     feature_configuration = cc_common.configure_features(
+         ctx = ctx,
+@@ -662,14 +641,22 @@
+         requested_features = ctx.features,
+         unsupported_features = ctx.disabled_features,
+     )
+-    dependency_libraries = []
+-    objects = []
+-    for split_linker_input in split_linker_inputs:
+-        for lib in split_linker_input.libraries:
++    
++    new_linker_inputs = []
++    if user_link_flags:
++        new_linker_inputs.append(cc_common.create_linker_input(
++            owner = ctx.label,
++            user_link_flags = user_link_flags,
++        ))
++        
++    all_objects = []
++    for li in split_linker_inputs:
++        modified_libraries = []
++        for lib in li.libraries:
+             lib_copy = lib
+             if lib.static_library or lib.pic_static_library:
+                 if collect_objects:
+-                    objects.extend(lib.objects)
++                    all_objects.extend(lib.objects)
+                 if not lib.alwayslink:
+                     lib_copy = cc_common.create_library_to_link(
+                         actions = ctx.actions,
+@@ -680,9 +667,29 @@
+                         interface_library = lib.interface_library,
+                         alwayslink = True,
+                     )
+-            dependency_libraries.append(lib_copy)
++            modified_libraries.append(lib_copy)
++        clean_owner = li.owner
++        if hasattr(clean_owner, "workspace_name") and clean_owner.workspace_name:
++            clean_owner = Label("@@" + clean_owner.workspace_name + "//" + clean_owner.package + ":" + clean_owner.name)
++
++        new_linker_inputs.append(cc_common.create_linker_input(
++            owner = clean_owner,
++            libraries = depset(direct = modified_libraries),
++            user_link_flags = li.user_link_flags,
++        ))
++
++    linking_context = cc_common.create_linking_context(
++        linker_inputs = depset(
++            direct = new_linker_inputs,
++            transitive = private_linker_inputs,
++        ),
++    )
+ 
+-    return dependency_libraries, objects
++    return [
++        CcInfo(linking_context = linking_context),
++        ObjectFiles(objects = depset(direct = all_objects)),
++        DefaultInfo(runfiles = default_runfiles),
++    ]
+ 
+ def _linker_input_filters_impl(ctx):
+     pywrap_lib_exclusion_filter = {}

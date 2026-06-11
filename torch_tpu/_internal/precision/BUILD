@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_pybind_extension")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 licenses(["notice"])
 
@@ -23,13 +22,9 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     name = "precision_impl",
     srcs = ["precision_impl.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
     deps = [
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",

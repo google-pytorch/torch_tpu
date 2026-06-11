@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -38,14 +37,10 @@ torch_tpu_cc_library(
     ],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     # "private" python module for internal use.
     name = "compiler_options_impl",
     srcs = ["compiler_options_impl.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
     deps = [
         "//shims/torch",
         "//shims/torch:aten",

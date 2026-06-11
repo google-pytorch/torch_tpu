@@ -17,9 +17,9 @@ load(
     "torch_tpu_cc_library",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_pybind_extension",
 )
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -152,18 +152,11 @@ torch_tpu_cc_library(
     ],
 )
 
-pybind_extension(
+torch_tpu_pybind_extension(
     name = "_profiler_backend",
     srcs = [
         "profiler_api.cc",
     ],
-    # Torch_tpu uses rules_pywrap in XLA for OSS builds:
-    # https://github.com/openxla/xla/tree/main/third_party/py/rules_pywrap.
-    # These args are required to link extensions against common libs.
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
     deps = [
         ":tpu_profiler_plugin_cc",
         ":xprof_callback_handler",

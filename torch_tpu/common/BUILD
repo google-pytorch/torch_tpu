@@ -15,9 +15,12 @@
 """Common utilities for torch_tpu."""
 
 load(
+    "@rules_cc//cc:cc_shared_library.bzl",
+    "cc_shared_library",
+)
+load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "pywrap_binaries",
-    "pywrap_library",
 )
 load(
     "//build_files:build_defs.bzl",
@@ -25,6 +28,7 @@ load(
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",
+    "torch_tpu_pywrap_library",
 )
 load(
     "//shims/build_files:build_defs.bzl",
@@ -748,8 +752,9 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],
 )
 
-pywrap_library(
+torch_tpu_pywrap_library(
     name = "pywrap_torch_tpu",
+    dynamic_deps = [":libxla_mlir_base"],
     extra_deps = [
         ":torch_rpath_flags",
         "//shims/torch:torch_python",
@@ -773,6 +778,38 @@ pywrap_library(
         "//torch_tpu/_internal/tracing:_tpu_torch_tracing",
     ],
 )
+
+cc_shared_library(
+    name = "libxla_mlir_base",
+    exports_filter = [
+        "@llvm-project//:__subpackages__",
+        "@stablehlo//:__subpackages__",
+        "@xla//mlir:__subpackages__",
+        "@xla//xla:__pkg__",
+        "@xla//xla/backends/profiler:__subpackages__",
+        "@xla//xla/client:__subpackages__",
+        "@xla//xla/hlo:__subpackages__",
+        "@xla//xla/pjrt:__subpackages__",
+        "@xla//xla/runtime:__subpackages__",
+        "@xla//xla/tsl:__subpackages__",
+    ],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@eigen_archive//:eigen3",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+        "@xla//xla/hlo/builder:xla_computation",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+# Dummy variable to appease copy.bara.sky regex replacements which otherwise fail on NO-OP.
+_COPYBARA_DUMMY = [
+    "@eigen_archive//:__subpackages__",
+    "@org_tensorflow//tensorflow/core:__subpackages__",
+]
 
 pywrap_binaries(
     name = "pywrap_torch_tpu_binaries",
