@@ -838,6 +838,15 @@ class DeviceBufferList {
   int64_t num_child_ops() const { return num_child_ops_; }
   void IncrementNumChildOps() { num_child_ops_++; }
 
+  // Caller-asserted donation hint: the owner of the tensor bound to this
+  // buffer guarantees no other tensor reads it after an in-place op, so
+  // in-place aten kernels may donate it to XLA (write the result into the
+  // same device memory instead of a fresh buffer). Off by default; set via
+  // pallas.set_buffer_donor_ and propagated across in-place rebinding in
+  // AssignBufferToAtTensor.
+  [[nodiscard]] bool donor_hint() const { return donor_hint_; }
+  void set_donor_hint(bool donor_hint) { donor_hint_ = donor_hint; }
+
  private:
   // Private constructor for a DeviceBufferList wrapping a single materialized
   // PjRtBuffer.
@@ -920,6 +929,9 @@ class DeviceBufferList {
   // on this DeviceBufferList. This does *not* track the liveness of these ops;
   // if a DeferredOp is destroyed, the refcount will not be updated.
   mutable std::atomic_int64_t num_child_ops_ = 0;
+
+  // See donor_hint().
+  std::atomic<bool> donor_hint_ = false;
 
   // The number of live c10::DataPtrs to this DeviceBufferList.
   // This is incremented by MakeDataPtr and decremented by

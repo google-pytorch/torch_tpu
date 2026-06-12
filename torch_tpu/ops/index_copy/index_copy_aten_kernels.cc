@@ -81,6 +81,22 @@ absl::StatusOr<int64_t> ValidateIndexCopyInputsAndGetDim(
   return dim;
 }
 
+// True when this is a genuine in-place call (out is self) on a tensor whose
+// owner asserted donatability (pallas.set_buffer_donor_): the result is then
+// written into self's existing device buffer instead of materializing a
+// fresh array. Restricted to full-storage contiguous bases so the rebind in
+// AssignBufferToAtTensor is the cheap pointer swap.
+bool CanDonateSelfBuffer(const at::Tensor& self, const at::Tensor& out) {
+  if (!out.is_same(self)) return false;
+  if (!self.is_contiguous() || self.is_conj() || self.storage_offset() != 0) {
+    return false;
+  }
+  absl::StatusOr<DeviceBufferRef> base = GetBaseBufferFromAtTensor(self);
+  if (!base.ok()) return false;
+  if (base->size_bytes() != self.storage().nbytes()) return false;
+  return base->device_buffer_list()->donor_hint();
+}
+
 absl::StatusOr<DeviceBufferRef> IndexCopy(const at::Tensor& self, int64_t dim,
                                           const at::Tensor& index,
                                           const at::Tensor& source,
@@ -104,10 +120,16 @@ absl::StatusOr<DeviceBufferRef> IndexCopy(const at::Tensor& self, int64_t dim,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
   absl::Span<const int64_t> output_dims = out.sizes();
 
+  Indices donated_indices;
+  if (CanDonateSelfBuffer(self, out)) {
+    donated_indices.push_back(0);
+  }
+
   return DispatchOp<3>(std::move(index_copy_op_builder), {self, index, source},
                        {.out_dtype = output_dtype,
                         .out_dims = output_dims,
-                        .op_param_cache_keys = std::move(param_keys)});
+                        .op_param_cache_keys = std::move(param_keys),
+                        .donated_indices = std::move(donated_indices)});
 }
 
 }  // namespace

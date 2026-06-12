@@ -135,6 +135,17 @@ PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
         py::arg("donate_argnums") = std::vector<int64_t>{});  // INT_VEC_OK
+  m.def(
+      "set_buffer_donor_",
+      [](const at::Tensor& tensor, bool donor) {
+        TT_ASSIGN_OR_THROW(DeviceBufferRef base,
+                           GetBaseBufferFromAtTensor(tensor));
+        base.device_buffer_list()->set_donor_hint(donor);
+      },
+      py::arg("tensor"), py::arg("donor") = true,
+      "Caller-asserted donation hint: in-place aten ops on this tensor may "
+      "write their result into its existing device buffer. The caller "
+      "guarantees no other tensor reads the buffer afterwards.");
 }
 
 }  // namespace torch_tpu

@@ -172,6 +172,13 @@ MakeAsStridedInverseBuilder(InverseViewOperation inverse_view_operation,
 
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor) {
+  // Carry the caller-asserted donation hint across the rebind so the
+  // tensor stays donatable for subsequent in-place ops.
+  if (absl::StatusOr<DeviceBufferRef> current =
+          GetBaseBufferFromAtTensor(tensor);
+      current.ok() && current->device_buffer_list()->donor_hint()) {
+    result_buf.device_buffer_list()->set_donor_hint(true);
+  }
   ABSL_VLOG(1)
       << "[AssignBufferToAtTensor] Assigning DeviceBufferRef to existing "
          "tensor\n"

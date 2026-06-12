@@ -31,6 +31,17 @@ from torch._library.custom_ops import CustomOpDef
 import torch.library
 from torch_tpu._internal.pallas import tpu_torch_pallas
 
+
+def set_buffer_donor_(tensor: torch.Tensor, donor: bool = True) -> None:
+  """Caller-asserted donation hint for in-place aten ops on `tensor`.
+
+  The caller guarantees no other tensor reads the underlying device buffer
+  after an in-place op; in-place kernels (e.g. index_copy_) may then write
+  their result into the existing buffer instead of materializing a fresh
+  array. The hint survives in-place rebinding.
+  """
+  tpu_torch_pallas.set_buffer_donor_(tensor, donor)
+
 try:
   # TODO: TorchXLA hit issues when workin with both JAX and PT in the same
   # process, hitting deadlocks when each framework tried to access the PJRT

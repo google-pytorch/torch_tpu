@@ -290,7 +290,8 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
              .out_dims_list = {options.out_dims},
              .computation_dtype = options.computation_dtype,
              .op_param_cache_keys = std::move(options.op_param_cache_keys),
-             .split_mode = options.split_mode}));
+             .split_mode = options.split_mode,
+             .donated_indices = std::move(options.donated_indices)}));
   } else if constexpr (kNumOutputs == kDynamicSize) {
     TT_ASSIGN_OR_RETURN(
         results,
@@ -310,7 +311,8 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
              .out_dims_list = options.out_dims_list,
              .computation_dtype = options.computation_dtype,
              .op_param_cache_keys = std::move(options.op_param_cache_keys),
-             .split_mode = options.split_mode}));
+             .split_mode = options.split_mode,
+             .donated_indices = std::move(options.donated_indices)}));
   }
   if constexpr (kNumOutputs == kDynamicSize) {
     return std::move(results);
