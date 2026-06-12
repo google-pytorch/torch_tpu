@@ -256,6 +256,45 @@ class GraphTransformationsTest(absltest.TestCase):
     self.assertEqual(size_input_0.op, "placeholder")
     self.assertTrue(size_input_0.name.endswith("_size"))
 
+  def test_duplicate_symint_placeholder(self):
+    captured_gm = None
+    captured_sm = None
+
+    def fw_compiler(graph_module, example_inputs):
+      nonlocal captured_gm, captured_sm
+      captured_gm = graph_module
+      captured_sm = sym_shape_manager.SymShapeManager(
+          graph_module, example_inputs
+      )
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
+    def f(x, s0, s1):
+      return x + s0 + s1
+
+    x = torch.ones(4)
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=8)
+    s = x.shape[0]
+
+    f(x, s, s)
+
+    self.assertIsNotNone(captured_gm)
+    self.assertIsNotNone(captured_sm)
+
+    placeholders = list(
+        captured_gm.graph.find_nodes(op="placeholder", sort=True)
+    )
+
+    # Apply ScanInputsCreatePlaceholdersPass.
+    # If it doesn't handle duplicates, it might insert duplicate placeholders,
+    # causing recompile() or lint() to crash with SyntaxError.
+    graph_transformations.ScanInputsCreatePlaceholdersPass(
+        captured_sm, placeholders
+    )(captured_gm)
+
+    captured_gm.recompile()
+    captured_gm.graph.lint()
+
 
 if __name__ == "__main__":
   absltest.main()

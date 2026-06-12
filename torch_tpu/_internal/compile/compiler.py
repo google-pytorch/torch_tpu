@@ -25,6 +25,7 @@ from collections.abc import Sequence
 import dataclasses
 from typing import Any
 
+from absl import logging
 import torch
 from torch._dynamo.utils import dynamo_timed
 from torch._functorch._aot_autograd.schemas import AOTDispatchCompiler
@@ -241,6 +242,11 @@ class StaticCompiler(Compiler):
     # compatible with FakeTensorMode. This applies to placeholder tensors as
     # well, fake-tensor will attempt to convert our placeholder tensors into
     # FakeTensors before continuing eager tracing.
+    logging.info(
+        "[StaticCompiler] example_inputs len: %d, shapes: %s",
+        len(example_inputs),
+        [t.shape if isinstance(t, torch.Tensor) else t for t in example_inputs],
+    )
     with unset_fake_temporarily():
       # Convert example_inputs to placeholders. This is done to:
       # (1) Prevent the unintentional compilation of deferred operations.

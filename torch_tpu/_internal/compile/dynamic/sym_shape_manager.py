@@ -110,6 +110,50 @@ class _OutputSymShape:
     return new_shape
 
   @classmethod
+  def _compile_dim(cls, dim, symint_to_tensor_dim):
+    """Pre-compiles a dynamic dimension if it is a SymInt."""
+    if isinstance(dim, torch.SymInt) and hasattr(dim, "node"):
+      expr = dim.node.expr
+      symbols = expr.free_symbols
+      deps = {}
+      can_evaluate = True
+      for s in symbols:
+        s_str = str(s)
+        tensor_dim = symint_to_tensor_dim.get(s_str)
+        if tensor_dim is not None:
+          deps[s_str] = tensor_dim
+        else:
+          can_evaluate = False
+          break
+      if can_evaluate:
+        # Pre-compile the sympy expression using sympy.lambdify.
+        # Sort symbols to ensure consistent argument order.
+        symbols = sorted(list(expr.free_symbols), key=str)
+        param_names = [str(s) for s in symbols]
+        base_fn = sympy.lambdify(
+            symbols, expr, modules=[sym_utils.CUSTOM_SYMPY_FUNCS, "math"]
+        )
+
+        # Use a helper to avoid closure variables being overwritten in the
+        # loop.
+        def make_compiled_fn(b_fn, p_names):
+          return lambda **kwargs: int(b_fn(*[kwargs[name] for name in p_names]))
+
+        return {
+            "deps": deps,
+            "compiled_fn": make_compiled_fn(base_fn, param_names),
+        }
+      else:
+        raise RuntimeError(
+            f"Dimension '{dim}' depends on symbols not derived"
+            " from input tensor dimensions."
+        )
+    elif isinstance(dim, int):
+      return dim
+    else:
+      return -1
+
+  @classmethod
   def from_output_node_meta_value(
       cls,
       output_node_meta_value: Any,
@@ -136,46 +180,11 @@ class _OutputSymShape:
         and getattr(output_node_meta_value, "shape", None) is not None
     ):
       for dim in output_node_meta_value.shape:
-        if isinstance(dim, torch.SymInt) and hasattr(dim, "node"):
-          expr = dim.node.expr
-          symbols = expr.free_symbols
-          deps = {}
-          can_evaluate = True
-          for s in symbols:
-            s_str = str(s)
-            tensor_dim = symint_to_tensor_dim.get(s_str)
-            if tensor_dim is not None:
-              deps[s_str] = tensor_dim
-            else:
-              can_evaluate = False
-              break
-          if can_evaluate:
-            # Pre-compile the sympy expression using sympy.lambdify.
-            # Sort symbols to ensure consistent argument order.
-            symbols = sorted(list(expr.free_symbols), key=str)
-            param_names = [str(s) for s in symbols]
-            base_fn = sympy.lambdify(
-                symbols, expr, modules=[sym_utils.CUSTOM_SYMPY_FUNCS, "math"]
-            )
-
-            # Use a helper to avoid closure variables being overwritten in the
-            # loop.
-            def make_compiled_fn(b_fn, p_names):
-              return lambda **kwargs: int(
-                  b_fn(*[kwargs[name] for name in p_names])
-              )
-
-            compiled_fn = make_compiled_fn(base_fn, param_names)
-            output_sym_shape.append({"deps": deps, "compiled_fn": compiled_fn})
-          else:
-            raise RuntimeError(
-                f"Output shape dimension '{dim}' depends on symbols not derived"
-                " from input tensor dimensions."
-            )
-        elif isinstance(dim, int):
-          output_sym_shape.append(dim)
-        else:
-          output_sym_shape.append(-1)
+        output_sym_shape.append(cls._compile_dim(dim, symint_to_tensor_dim))
+    elif isinstance(output_node_meta_value, (torch.SymInt, torch.SymFloat)):
+      output_sym_shape.append(
+          cls._compile_dim(output_node_meta_value, symint_to_tensor_dim)
+      )
     return cls(output_sym_shape)
 
 
@@ -220,6 +229,8 @@ class SymShapeManager:
       tensor nodes.
     dynamic_scalar_indices: Set of indices of dynamic scalars in the example
       inputs.
+    unique_dynamic_scalar_indices: Set of indices of unique dynamic scalars in
+      the example inputs.
     symint_to_arg_idx: Maps symint string to its input argument index.
     symint_to_tensor_and_dim_idx: Maps symint string to its input tensor and
       dimension index.
@@ -246,6 +257,9 @@ class SymShapeManager:
 
   # Set of indices of dynamic scalars in the example inputs.
   dynamic_scalar_indices: set[int]
+
+  # Set of indices of unique dynamic scalars in the example inputs.
+  unique_dynamic_scalar_indices: set[int]
 
   # Mapping of symint string to its input argument index.
   symint_to_arg_idx: dict[str, int]
@@ -304,6 +318,15 @@ class SymShapeManager:
     for idx, arg in enumerate(self._example_inputs):
       if isinstance(arg, torch.SymInt):
         self.dynamic_scalar_indices.add(idx)
+
+    self.unique_dynamic_scalar_indices = set()
+    seen_symints = set()
+    for idx in sorted(self.dynamic_scalar_indices):
+      arg = self._example_inputs[idx]
+      sym_str = str(arg)
+      if sym_str not in seen_symints:
+        self.unique_dynamic_scalar_indices.add(idx)
+        seen_symints.add(sym_str)
 
   def _populate_input_tensors_metadata(self) -> None:
     """Populates metadata for input tensors."""

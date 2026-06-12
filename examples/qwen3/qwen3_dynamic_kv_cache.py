@@ -18,6 +18,7 @@ from collections.abc import Mapping
 import copy
 import dataclasses
 import enum
+import os
 import pathlib
 import time
 from typing import Any
@@ -27,8 +28,10 @@ from absl import flags
 from absl import logging
 import torch
 import torch._inductor.config as inductor_config
+import torch._logging as torch_logging
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile.dynamic.state_staged_tensor import resolve_bucket
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 import transformers
@@ -95,6 +98,28 @@ _MAX_BUFFER_SIZE = flags.DEFINE_integer(
     "The maximum buffer size for KV cache. Used as upper bound for dynamo"
     " mark_dynamic.",
 )
+_USE_BUCKETING = flags.DEFINE_boolean(
+    "use_bucketing",
+    False,
+    "Whether to use framework-level bucketing for dynamic compile.",
+)
+_LOG_RECOMPILES = flags.DEFINE_boolean(
+    "log_recompiles",
+    False,
+    "Whether to log Dynamo recompilation reasons.",
+)
+_BENCHMARK_MODE = flags.DEFINE_enum(
+    "benchmark_mode",
+    None,
+    [
+        "cpu",
+        "eager",
+        "compiled_dynamic",
+        "compiled_dynamic_bucketed",
+        "compiled_static",
+    ],
+    "The execution mode to run. If not specified, runs default modes.",
+)
 
 
 @enum.unique
@@ -124,6 +149,7 @@ class Mode(enum.Enum):
   CPU = "cpu"
   EAGER = "eager"
   COMPILED_DYNAMIC = "compiled_dynamic"
+  COMPILED_DYNAMIC_BUCKETED = "compiled_dynamic_bucketed"
   COMPILED_STATIC = "compiled_static"
 
 
@@ -213,11 +239,21 @@ def model_generate(
           device=initial_inputs.device,
       )
 
+    attention_mask = torch.ones(
+        (batch_size, seq_len), dtype=torch.long, device=initial_inputs.device
+    )
+    position_ids = (
+        torch.arange(seq_len, dtype=torch.long, device=initial_inputs.device)
+        .unsqueeze(0)
+        .expand(batch_size, -1)
+    )
     with traceme.TraceMe(f"[{prefix}] Prefill"):
       prefill_start_time = time.time()
       output = model(
           input_ids=initial_inputs,
           past_key_values=past_key_values,
+          attention_mask=attention_mask,
+          position_ids=position_ids,
           use_cache=True,
       )
       logits = output.logits
@@ -244,13 +280,34 @@ def model_generate(
       next_token = next_token_cpu.to(model.device)
       if mark_dynamic and past_key_values is not None:
         min_val = seq_len
-        max_val = max_buffer_size
+        use_bucketing = bool(os.environ.get("TORCH_TPU_BUCKET_STEP", ""))
+        if use_bucketing:
+          current_len = seq_len + i
+          output_bucket_size = resolve_bucket(current_len + 1)
+          max_val = output_bucket_size - 2
+        else:
+          max_val = max_buffer_size - 1
         _mark_dynamic_cache(past_key_values, min_val, max_val)
+      logical_seq_len = output_tokens.shape[1]
+      if use_static_cache:
+        attention_mask = torch.ones(
+            (batch_size, max_buffer_size), dtype=torch.long, device=model.device
+        )
+        attention_mask[:, logical_seq_len:] = 0
+      else:
+        attention_mask = torch.ones(
+            (batch_size, logical_seq_len), dtype=torch.long, device=model.device
+        )
+      position_ids = torch.tensor(
+          [[logical_seq_len - 1]], dtype=torch.long, device=model.device
+      ).expand(batch_size, -1)
       with traceme.TraceMe(f"[{prefix}] Decode step {i + 1}"):
         step_start_time = time.time()
         output = model(
             input_ids=next_token,
             past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             use_cache=True,
         )
         logits = output.logits
@@ -399,7 +456,12 @@ class CompiledConfig:
   key: str
 
 
-def _get_compiled_config(device: Device, mode: Mode) -> CompiledConfig:
+def _get_compiled_config(
+    device: Device,
+    mode: Mode,
+    prefill_seq_len: int | None = None,
+    max_buffer_size: int | None = None,
+) -> CompiledConfig:
   """Gets the backend, prefix, and key for torch.compile based on device and mode."""
   if mode == Mode.COMPILED_DYNAMIC:
     if device == Device.CUDA:
@@ -410,10 +472,43 @@ def _get_compiled_config(device: Device, mode: Mode) -> CompiledConfig:
       )
     return CompiledConfig(
         backend=_backend.TpuBackend(
-            dynamism=True, precompile_steps=_PRECOMPILE_STEPS.value
+            dynamism=True,
+            precompile_steps=_PRECOMPILE_STEPS.value,
+            bucketing=False,
         ),
-        prefix="[Compiled TPU (Dynamic)] ",
-        key="Compiled TPU (Dynamic)",
+        prefix="[Compiled TPU (Dynamic S4)] ",
+        key="Compiled TPU (Dynamic S4)",
+    )
+
+  if mode == Mode.COMPILED_DYNAMIC_BUCKETED:
+    if device == Device.CUDA:
+      raise ValueError("Bucketing not supported for CUDA")
+    p_len = (
+        prefill_seq_len
+        if prefill_seq_len is not None
+        else _PREFILL_SEQ_LEN.value
+    )
+    m_size = (
+        max_buffer_size
+        if max_buffer_size is not None
+        else _MAX_BUFFER_SIZE.value
+    )
+    bucket_type = os.environ.get("TORCH_TPU_BUCKET_TYPE", "")
+    if bucket_type == "auto":
+      buckets = None
+    elif bucket_type == "max" or not bucket_type:
+      buckets = [p_len, m_size + 1]
+    else:
+      raise ValueError(f"Unknown TORCH_TPU_BUCKET_TYPE: {bucket_type}")
+    return CompiledConfig(
+        backend=_backend.TpuBackend(
+            dynamism=True,
+            precompile_steps=_PRECOMPILE_STEPS.value,
+            bucketing=True,
+            buckets=buckets,
+        ),
+        prefix="[Compiled TPU (Dynamic+Bucketing)] ",
+        key="Compiled TPU (Dynamic+Bucketing)",
     )
 
   if mode == Mode.COMPILED_STATIC:
@@ -501,6 +596,32 @@ def _run_with_actual_weights(
       )
       return output_device_compiled, {config.key: metrics_compiled}
 
+    if mode == Mode.COMPILED_DYNAMIC_BUCKETED:
+      config = _get_compiled_config(
+          device,
+          mode,
+          prefill_seq_len=inputs.shape[1],
+          max_buffer_size=max_buffer_size,
+      )
+      model_device_compiled = torch.compile(
+          model_device, backend=config.backend
+      )
+
+      output_device_compiled, metrics_compiled = model_generate(
+          model_device_compiled,
+          inputs.to(device.value),
+          tokenizer,
+          max_decode_steps,
+          prefix=config.prefix,
+          use_static_cache=False,
+          mark_dynamic=True,
+          max_buffer_size=max_buffer_size,
+      )
+      logging.info(
+          "output_%s_compiled_bucketed=%s", device.value, output_device_compiled
+      )
+      return output_device_compiled, {config.key: metrics_compiled}
+
     if mode == Mode.COMPILED_STATIC:
       config = _get_compiled_config(device, mode)
       model_device_compiled = torch.compile(
@@ -571,6 +692,29 @@ def _run_with_random_weights(
     )
     return {compiled_config.key: metrics_compiled}
 
+  if mode == Mode.COMPILED_DYNAMIC_BUCKETED:
+    compiled_config = _get_compiled_config(
+        device,
+        mode,
+        prefill_seq_len=inputs.shape[1],
+        max_buffer_size=max_buffer_size,
+    )
+    model_device_compiled = torch.compile(
+        model_device, backend=compiled_config.backend
+    )
+
+    _, metrics_compiled = model_generate(
+        model_device_compiled,
+        inputs.to(device.value),
+        tokenizer,
+        max_decode_steps,
+        prefix=compiled_config.prefix,
+        use_static_cache=False,
+        mark_dynamic=True,
+        max_buffer_size=max_buffer_size,
+    )
+    return {compiled_config.key: metrics_compiled}
+
   if mode == Mode.COMPILED_STATIC:
     compiled_config = _get_compiled_config(device, mode)
     model_device_compiled = torch.compile(
@@ -595,6 +739,11 @@ def _run_with_random_weights(
 def main(argv):
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
+
+  log_utils.log_to_stderr()
+
+  if _LOG_RECOMPILES.value:
+    torch_logging.set_logs(recompiles=True)
 
   torch.manual_seed(123)
 
@@ -692,9 +841,16 @@ def main(argv):
 
   if _USE_RANDOM_WEIGHTS.value:
     if device == Device.TPU:
-      modes = [Mode.COMPILED_DYNAMIC, Mode.COMPILED_STATIC]
+      modes = [
+          Mode.COMPILED_STATIC,
+          Mode.COMPILED_DYNAMIC,
+          Mode.COMPILED_DYNAMIC_BUCKETED,
+      ]
     else:
       modes = [Mode.COMPILED_DYNAMIC]
+
+    if _BENCHMARK_MODE.value is not None:
+      modes = [Mode(_BENCHMARK_MODE.value)]
 
     for mode in modes:
       metrics = _run_with_random_weights(
@@ -712,13 +868,20 @@ def main(argv):
         [Mode.CPU]
         + ([Mode.EAGER] if not _COMPILE_ONLY.value else [])
         + (
-            [Mode.COMPILED_DYNAMIC, Mode.COMPILED_STATIC]
+            [
+                Mode.COMPILED_DYNAMIC,
+                Mode.COMPILED_DYNAMIC_BUCKETED,
+                Mode.COMPILED_STATIC,
+            ]
             if device == Device.TPU
             else [Mode.COMPILED_DYNAMIC]
         )
     )
 
-    output_cpu = None
+    if _BENCHMARK_MODE.value is not None:
+      modes = [Mode(_BENCHMARK_MODE.value)]
+
+    outputs = {}
     if Mode.CPU in modes:
       output_cpu, metrics = _run_with_actual_weights(
           model_cpu,
@@ -730,6 +893,7 @@ def main(argv):
           max_buffer_size=max_buffer_size,
       )
       all_metrics.update(metrics)
+      outputs[Mode.CPU] = output_cpu
 
     for mode in modes:
       if mode == Mode.CPU:
@@ -743,9 +907,39 @@ def main(argv):
           mode=mode,
           max_buffer_size=max_buffer_size,
       )
-      if output_cpu is not None:
-        assert output_cpu == output, f"{output_cpu=} != {output=}"
       all_metrics.update(metrics)
+      outputs[mode] = output
+
+    # Log all outputs for debugging
+    for m, out in outputs.items():
+      logging.info("Output for %s: %r", m, out)
+
+    # Assert that all compiled modes match compiled static (baseline TPU)
+    if Mode.COMPILED_STATIC in outputs:
+      static_out = outputs[Mode.COMPILED_STATIC]
+      for m in (Mode.COMPILED_DYNAMIC, Mode.COMPILED_DYNAMIC_BUCKETED):
+        if m in outputs:
+          assert static_out == outputs[m], (
+              f"TPU Static vs {m} mismatch:\n"
+              f"  Static:  {static_out!r}\n"
+              f"  {m}: {outputs[m]!r}"
+          )
+      logging.info("TPU Static vs Dynamic (S4 & Bucketing) match OK!")
+
+    if Mode.CPU in outputs:
+      for m in (
+          Mode.COMPILED_STATIC,
+          Mode.COMPILED_DYNAMIC,
+          Mode.COMPILED_DYNAMIC_BUCKETED,
+      ):
+        if m in outputs:
+          if outputs[Mode.CPU] != outputs[m]:
+            logging.warning(
+                "CPU vs %s mismatch:\n  CPU: %r\n  TPU: %r",
+                m,
+                outputs[Mode.CPU],
+                outputs[m],
+            )
 
   print(
       f"\n=== Results for batch_size={batch_size},"

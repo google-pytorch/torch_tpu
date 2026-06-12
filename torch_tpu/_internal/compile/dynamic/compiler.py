@@ -75,8 +75,9 @@ def _get_example_inputs(
     elif isinstance(arg, torch.SymInt):
       _, upper = get_symint_bounds(arg)
       updated_example_inputs.append(upper)
-      # Add an input for the runtime size placeholder for the symint.
-      updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
+      if index in sym_shape_manager.unique_dynamic_scalar_indices:
+        # Add an input for the runtime size placeholder for the symint.
+        updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
     else:
       updated_example_inputs.append(arg)
 
@@ -284,7 +285,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         continue
 
       if isinstance(arg, torch.SymInt):
-        if idx in self.sym_shape_manager.dynamic_scalar_indices:
+        if idx in self.sym_shape_manager.unique_dynamic_scalar_indices:
           self._dynamic_scalar_map.append((idx, target_idx))
           target_idx += 1
         continue
@@ -556,6 +557,24 @@ class DynamicCompiler(compiler.Compiler):
         "[DynamicTpuBackend] Transformed FX Graph: %s",
         LazyString(graph_module.print_readable),
     )
+
+    print("[DEBUG] Index nodes in transformed graph:", flush=True)
+    for node in graph_module.graph.nodes:
+      if node.op == "call_function" and "index" in str(node.target):
+        print(
+            f"  [DEBUG INDEX] node: {node}, args: {node.args}, kwargs:"
+            f" {node.kwargs}",
+            flush=True,
+        )
+        for arg in node.args:
+          if isinstance(arg, torch.fx.Node):
+            val = arg.meta.get("val")
+            if val is not None:
+              print(
+                  f"    [DEBUG INDEX] arg {arg.name} val type: {type(val)},"
+                  f" val: {val}",
+                  flush=True,
+              )
 
     # Create example inputs for the model executable.
     model_example_inputs = _get_example_inputs(
