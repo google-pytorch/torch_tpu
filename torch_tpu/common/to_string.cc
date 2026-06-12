@@ -251,7 +251,7 @@ std::string_view ToString(const at::ScalarType scalar_type) {
     case at::ScalarType::ComplexDouble:
       return "complex128";
     case at::ScalarType::ComplexHalf:
-      return "complex32";  // Boolean.
+      return "complex32";
     case at::ScalarType::Bool:
       return "bool";
     // FP8 types: https://docs.pytorch.org/docs/stable/tensor_attributes.html

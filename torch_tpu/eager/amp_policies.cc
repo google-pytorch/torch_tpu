@@ -38,7 +38,6 @@
 #include "ATen/ops/cdist_ops.h"
 #include "ATen/ops/chain_matmul_ops.h"
 #include "ATen/ops/cholesky_inverse_ops.h"
-#include "ATen/ops/cholesky_ops.h"
 #include "ATen/ops/cholesky_solve_ops.h"
 #include "ATen/ops/conv1d_ops.h"
 #include "ATen/ops/conv2d_ops.h"
@@ -238,7 +237,6 @@ TORCH_LIBRARY_IMPL(aten, AutocastPrivateUse1, m) {
   TT_AMP_POLICY(binary_cross_entropy, fp32);
   TT_AMP_POLICY(binary_cross_entropy_with_logits, fp32);
   TT_AMP_POLICY(cdist, fp32);
-  TT_AMP_POLICY(cholesky, fp32);
   TT_AMP_POLICY(cholesky_inverse, fp32);
   TT_AMP_POLICY(cholesky_solve, fp32);
   TT_AMP_POLICY(cosine_embedding_loss, fp32);
