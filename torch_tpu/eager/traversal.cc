@@ -511,6 +511,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     }
   }
   if (!donated_values.empty()) {
+    ABSL_LOG(INFO) << "TRAVERSAL-DONATE values=" << donated_values.size()
+                   << " arguments=" << donated_arguments.size();
     AnnotateBufferDonations(module.get(), donated_arguments);
   }
   return module;

@@ -16,6 +16,7 @@
 
 #include "torch_tpu/pjrt/pjrt_utils.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -31,6 +32,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/STLExtras.h"
@@ -283,11 +285,87 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
   }
 }
 
+namespace {
+
+// Debug aid (TORCH_TPU_LOG_EXEC_ALIASING=1): log device pointers of large
+// arguments and results for the first few executions, to observe whether
+// the executable's input_output_alias entries are realized in place
+// (result ptr == argument ptr) or materialize fresh buffers.
+bool ExecAliasLoggingEnabled() {
+  static const bool enabled = []() {
+    const char* v = std::getenv("TORCH_TPU_LOG_EXEC_ALIASING");
+    return v != nullptr && v[0] == '1';
+  }();
+  return enabled;
+}
+
+constexpr int64_t kExecAliasMinBytes = 64LL * 1024 * 1024;
+
+// Two execution families matter, each with its own budget:
+//  * fused model forwards: >=200 args with at least one large buffer;
+//  * deferred batch state-copies (mamba APC copier): <200 args but MANY
+//    large buffers (every per-layer state array is an argument). Weight
+//    loaders carry only 1-3 large buffers and stay excluded.
+bool ShouldLogExecAliasing(
+    const std::vector<xla::PjRtBuffer*>& argument_buffers,
+    absl::string_view executable_name) {
+  if (!ExecAliasLoggingEnabled()) return false;
+  int num_big = 0;
+  for (xla::PjRtBuffer* buffer : argument_buffers) {
+    if (buffer == nullptr) continue;
+    auto size = buffer->GetOnDeviceSizeInBytes();
+    if (size.ok() && *size >= kExecAliasMinBytes) ++num_big;
+  }
+  if (num_big == 0) return false;
+  if (argument_buffers.size() >= 200) {
+    static std::atomic<int> forward_remaining{4};
+    return forward_remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
+  }
+  if (num_big >= 10) {
+    static std::atomic<int> copier_remaining{12};
+    return copier_remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
+  }
+  if (absl::StrContains(executable_name, "index_copy")) {
+    static std::atomic<int> index_copy_remaining{16};
+    return index_copy_remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
+  }
+  return false;
+}
+
+void LogBufferPtr(const char* kind, size_t index, xla::PjRtBuffer* buffer) {
+  if (buffer == nullptr) return;
+  auto size = buffer->GetOnDeviceSizeInBytes();
+  if (!size.ok() || *size < kExecAliasMinBytes) return;
+  auto ref = buffer->AcquireExternalReference();
+  if (!ref.ok()) {
+    ABSL_LOG(INFO) << "EXEC-ALIAS " << kind << " " << index
+                   << " shape=" << buffer->on_device_shape().ToString()
+                   << " ref-error=" << ref.status().message();
+    return;
+  }
+  ABSL_LOG(INFO) << "EXEC-ALIAS " << kind << " " << index
+                 << " shape=" << buffer->on_device_shape().ToString()
+                 << " ptr=" << (*ref)->OpaqueDeviceMemoryDataPointer();
+}
+
+}  // namespace
+
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers) {
   tsl::profiler::TraceMe trace("Execute");
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
+
+  const bool log_aliasing = ShouldLogExecAliasing(
+      argument_buffers, executable->GetLoadedExecutable()->name());
+  if (log_aliasing) {
+    ABSL_LOG(INFO) << "EXEC-ALIAS begin executable="
+                   << executable->GetLoadedExecutable()->name()
+                   << " num_args=" << argument_buffers.size();
+    for (size_t i = 0; i < argument_buffers.size(); ++i) {
+      LogBufferPtr("arg", i, argument_buffers[i]);
+    }
+  }
 
   std::vector<std::vector<xla::PjRtBuffer*>> execution_arguments;
   execution_arguments.reserve(1);
@@ -304,6 +382,9 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   PjRtBufferPointers result_pointers;
   result_pointers.reserve(results_per_device[0].size());
   for (auto&& [i, result] : llvm::enumerate(results_per_device[0])) {
+    if (log_aliasing) {
+      LogBufferPtr("out", i, result.get());
+    }
     result_pointers.push_back(std::move(result));
   }
 
