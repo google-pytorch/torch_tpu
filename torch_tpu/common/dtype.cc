@@ -168,6 +168,7 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       return mlir::ElementType::PRED;
     // These cases should never happen.
     // go/keep-sorted start
+    case at::kBComplex32:
     case at::kBits16:
     case at::kBits1x8:
     case at::kBits2x4:
