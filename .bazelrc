@@ -377,17 +377,17 @@ test:wheel_test_tpu --spawn_strategy=local
 # We need to re-specify all of these tag filters because when specified more
 # than once, they don't compose and we want to be able to also exclude
 # wheel_test_excluded
-common:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-wheel_test_excluded
+test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-wheel_test_excluded
 
 # Settings for wheel test on TPU v5.
-common:wheel_test_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded
+test:wheel_test_tpu --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded
 
 # Settings for wheel test on TPU v6.
-common:wheel_test_tpu_on_v6 --config=wheel_test_tpu
-common:wheel_test_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6
+test:wheel_test_tpu_on_v6 --config=wheel_test_tpu
+test:wheel_test_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6
 
 # Settings for wheel test on TPU v7.
-common:wheel_test_tpu_on_v7 --config=wheel_test_tpu
-common:wheel_test_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7
-common:wheel_test_tpu_on_v7 --local_test_jobs=4
-common:wheel_test_tpu_on_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
+test:wheel_test_tpu_on_v7 --config=wheel_test_tpu
+test:wheel_test_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7
+test:wheel_test_tpu_on_v7 --local_test_jobs=4
+test:wheel_test_tpu_on_v7 --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
