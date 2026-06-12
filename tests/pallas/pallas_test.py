@@ -937,6 +937,118 @@ class TestPallasKernels(absltest.TestCase):
       # grad_y = grad_mul * x + grad_add (passes straight through)
       self.assertEqual(grad_y.item(), 2.0 * -4.0 - 3.0)
 
+  # --------------------------------------------------------------------------
+  # inplace_donate=True — contract tests.
+  #
+  # See _internal/pallas/pallas.py JaxCallable.__init__ for the design
+  # discussion. Behavior: each donated input tensor's storage is rebound
+  # IN PLACE to the corresponding output buffer at the C++ binding layer
+  # (pallas_py.cc::PyCallCustomKernel). The output returned by the op is
+  # a fresh at::Tensor that wraps the same DeviceBufferRef as the rebound
+  # input — different `c10::StorageImpl`s (so torch.library's
+  # output-may-not-alias-input check passes), backed by the same buffer
+  # (so reads of either tensor observe the kernel's writes). Callers can
+  # then drop the canonical `input.copy_(output)` republish step.
+  #
+  # Tests below pin down the contract:
+  #   * the kwarg is accepted (plumbing can't silently regress)
+  #   * the math is still correct
+  #   * out and x are distinct tensors that share underlying data
+  #   * subsequent reads of x see the kernel's writes without a republish
+  #   * a single tensor can be threaded through N sequential donating
+  #     calls with no user-side republish in between
+  # --------------------------------------------------------------------------
+
+  def test_inplace_donate_kwarg_accepted(self):
+    """All three plumbing layers (jax_op, custom_jax_kernel, JaxCallable)
+    accept `inplace_donate=True` without raising. Guards against a
+    silent regression where one of the overloads drops the kwarg.
+    """
+    op = pallas.jax_op(
+        "pallas::inplace_donate_kwarg_accepted",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    self.assertIsNotNone(op)
+
+  def test_inplace_donate_math_correct(self):
+    """With `inplace_donate=True`, the kernel still produces the correct
+    numerical result. The rebind is a host-side identity optimization,
+    not a math change."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_math_correct",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    x = torch.tensor([-2.0, 0.0, 5.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor([3.0, 7.0, -1.0], dtype=torch.float32, device=self.device)
+    expected = torch.tensor([1.0, 7.0, 4.0], dtype=torch.float32)
+    out = op(x, y)
+    utils.assert_close(out.to("cpu"), expected)
+
+  def test_inplace_donate_output_and_input_share_data(self):
+    """With `inplace_donate=True`, the donated input and the donated
+    output back the same underlying buffer (mutating one is observable
+    through the other), but they are distinct `at::Tensor` objects with
+    distinct `c10::StorageImpl`s — otherwise torch.library's
+    `_c_check_aliasing_constraint` would reject the call."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_share_data",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    out = op(x, y)
+    # `out is x` would alias an input — rejected. They must be distinct.
+    self.assertIsNot(out, x)
+    # But the data must match — both read from the kernel's output buffer.
+    utils.assert_close(out.to("cpu"), x.to("cpu"))
+
+  def test_inplace_donate_reads_observe_writes_without_republish(self):
+    """The motivating contract: after a donating kernel call with
+    `inplace_donate=True`, subsequent reads of the donated input tensor
+    observe the kernel's writes WITHOUT the caller having to
+    `input.copy_(output)`. This is the per-layer republish step that the
+    block-major KV-cache wrapper drops once this flag is on."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_reads_observe_writes",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    # Discard the return value — we read through `x` instead, which is
+    # only safe when the rebind actually happened.
+    _ = op(x, y)
+    expected = torch.tensor([1.1, 2.2, 3.3], dtype=torch.float32)
+    utils.assert_close(x.to("cpu"), expected)
+
+  def test_inplace_donate_chained_calls_thread_same_tensor(self):
+    """Threads a single tensor through several sequential donating calls
+    without any republish step in user code. Models the per-layer
+    attention loop where one KV-cache bundle is donated to N layers in
+    sequence and each layer's read of the bundle must see the prior
+    layer's writes."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_chained",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    x = torch.zeros(4, dtype=torch.float32, device=self.device)
+    y = torch.ones(4, dtype=torch.float32, device=self.device)
+    for _ in range(5):
+      _ = op(x, y)
+      # No `x.copy_(out)` — x's storage was rebound to the kernel's
+      # output buffer in C++, so the next iteration reads the update.
+    expected = torch.full((4,), 5.0, dtype=torch.float32)
+    utils.assert_close(x.to("cpu"), expected)
+
 
 class TestPallasCompat(absltest.TestCase):
 

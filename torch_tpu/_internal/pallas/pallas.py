@@ -411,6 +411,7 @@ class JaxCallable:
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
+      inplace_donate: bool = False,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -437,6 +438,18 @@ class JaxCallable:
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
+      inplace_donate: If True, after the kernel call each donated input
+        tensor's storage is rebound to its corresponding output buffer
+        (assumes a 1:1 input-index → output-index mapping), so
+        subsequent reads of the input observe the kernel's writes
+        WITHOUT requiring an explicit ``input.copy_(output)`` afterwards.
+        The returned output is still a fresh ``at::Tensor`` wrapping the
+        same buffer (returning the input itself would trip
+        torch.library's aliasing check). Use this when the same input
+        tensor is passed to many sequential donating kernel calls (e.g.
+        a shared KV cache bundle threaded through every attention layer)
+        — the explicit copy_ in that pattern degrades to a full-tensor
+        memcpy per call, which can dominate runtime.
     """
 
     self.name = name
@@ -445,6 +458,7 @@ class JaxCallable:
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
     self.static_argnums = static_argnums
+    self.inplace_donate = bool(inplace_donate)
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
     with jax._src.config.export_ignore_forward_compatibility(True):
@@ -536,10 +550,15 @@ class JaxCallable:
         inputs=tensor_args,
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
+        inplace_donate=self.inplace_donate,
     )
 
-    for in_idx, out_idx in self.input_output_aliases.items():
-      tensor_args[in_idx].copy_(results[out_idx])
+    # `inplace_donate=True` already rebound each donated input's storage to
+    # the corresponding output buffer in C++ (see pallas_py.cc), so the
+    # `input.copy_(output)` republish below is redundant — skip it.
+    if not self.inplace_donate:
+      for in_idx, out_idx in self.input_output_aliases.items():
+        tensor_args[in_idx].copy_(results[out_idx])
 
     return out_tree.unflatten(results)
 
@@ -555,6 +574,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...
 
@@ -570,6 +590,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ) -> JaxCallable:
   ...
 
@@ -584,6 +605,7 @@ def custom_jax_kernel(
     input_partition_specs=None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ):
   """Deprecated: Please use `jax_op` instead.
 
@@ -663,6 +685,7 @@ def custom_jax_kernel(
         input_partition_specs=input_partition_specs,
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
+        inplace_donate=inplace_donate,
         input_output_aliases=input_output_aliases,
     )
 
@@ -680,6 +703,7 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    inplace_donate: bool = False,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
   ...
 
@@ -693,6 +717,7 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    inplace_donate: bool = False,
 ) -> CustomOpDef:
   ...
 
@@ -705,6 +730,7 @@ def jax_op(
     donate_argnums=None,
     mesh=None,
     input_partition_specs=None,
+    inplace_donate=False,
 ):
   """Registers a JAX function as a custom PyTorch operation.
 
@@ -723,6 +749,37 @@ def jax_op(
     donate_argnums: A sequence of argument indices to donate.
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None
+    inplace_donate: If True, each donated input tensor's storage is
+      rebound IN PLACE to the corresponding output buffer (1:1 by
+      index), so subsequent reads of the input observe the kernel's
+      writes WITHOUT the caller having to ``input.copy_(output)``. The
+      returned output is still a fresh ``at::Tensor`` (different
+      ``c10::StorageImpl``) wrapping the same buffer — returning the
+      input itself would alias an input and be rejected by
+      torch.library's aliasing check.
+
+      Useful when the donated input is a large tensor threaded through
+      many sequential donating calls (e.g. a shared KV cache bundle
+      across attention layers), where the explicit republish copy
+      degrades to a full-tensor memcpy per call.
+
+      Example:
+
+        ```python
+        # Without inplace_donate, callers must republish after the op:
+        op = pallas.jax_op("ns::add", add_vectors_jax, donate_argnums=(0,))
+        out = op(x, y)
+        x.copy_(out)   # ← memcpy x.numel() bytes, every call
+        # Subsequent reads of `x` see the kernel's writes.
+
+        # With inplace_donate=True, x's storage is rebound in place; no
+        # republish is needed:
+        op = pallas.jax_op(
+            "ns::add_inplace", add_vectors_jax,
+            donate_argnums=(0,), inplace_donate=True,
+        )
+        _ = op(x, y)   # ← x now reads the kernel's output buffer
+        ```
 
   Returns:
     A `CustomOpDef` instance if `fn` is provided, or a decorator that returns
@@ -749,6 +806,7 @@ def jax_op(
         input_partition_specs=input_partition_specs,
         static_argnums=static_argnums,
         warn_deprecated=False,
+        inplace_donate=inplace_donate,
     )
 
     # Jax functions are inherently immutable, even donated args are immutable in

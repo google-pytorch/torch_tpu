@@ -23,6 +23,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -32,6 +33,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
+#include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -67,11 +69,15 @@ std::vector<at::Tensor> PyCallCustomKernel(
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
-    const std::vector<int64_t>& donate_argnums  // INT_VEC_OK
-) {
+    const std::vector<int64_t>& donate_argnums,  // INT_VEC_OK
+    bool inplace_donate) {
   TT_KERNEL(
       OpName::kCustomKernel, op_param_cache_keys,
-      (name, kernel_key, inputs, output_shapes, donate_argnums), {
+      (name, kernel_key, inputs, output_shapes, donate_argnums,
+       IgnoreInCacheKey(
+           inplace_donate,
+           "Only affects host-side output wrapping, not op compilation.")),
+      {
         if (output_shapes.empty()) {
           return {};
         }
@@ -111,9 +117,38 @@ std::vector<at::Tensor> PyCallCustomKernel(
         TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> results,
                            results_status);
 
+        // When inplace_donate is set, each donated input tensor's storage is
+        // rebound to the corresponding output buffer (1:1 by index) below.
+        // The returned output is still a fresh at::Tensor wrapping the same
+        // buffer — both reads and writes to the input go to the kernel's
+        // output buffer. See `_internal/pallas/pallas.py` JaxCallable
+        // for the motivating workload (block-major KV cache threaded
+        // through every attention layer).
+        absl::flat_hash_set<int64_t> donate_indices;
+        if (inplace_donate) {
+          donate_indices.insert(donate_argnums.begin(), donate_argnums.end());
+        }
+
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
         for (auto i = 0; i < results.size(); ++i) {
+          const int64_t out_idx = static_cast<int64_t>(i);
+          if (donate_indices.contains(out_idx)) {
+            TT_CHECK_THROW(out_idx < static_cast<int64_t>(inputs.size()),
+                           error::kInvalidArgument)
+                << "inplace_donate=True requires the donated index " << out_idx
+                << " to be a valid input index (size " << inputs.size() << ")";
+            // Two strong refs to the same buffer: one stays with the freshly
+            // returned at::Tensor; the other rebinds the donated input's
+            // storage. We MUST NOT also return `inputs[out_idx]` — that
+            // would alias an input and trip torch.library's
+            // `_c_check_aliasing_constraint`. The point of the rebind is
+            // that subsequent reads of the input observe the kernel's
+            // writes without the caller having to `input.copy_(output)`.
+            DeviceBufferRef rebind_buf = results[i];
+            TT_THROW_IF_ERROR(
+                AssignBufferToAtTensor(std::move(rebind_buf), inputs[out_idx]));
+          }
           result_tensors.push_back(MakeTensor(std::move(results[i])));
         }
         return result_tensors;
@@ -133,7 +168,8 @@ PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::arg("name"), py::arg("kernel_key"),
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
-        py::arg("donate_argnums") = std::vector<int64_t>{});  // INT_VEC_OK
+        py::arg("donate_argnums") = std::vector<int64_t>{},  // INT_VEC_OK
+        py::arg("inplace_donate") = false);
 }
 
 }  // namespace torch_tpu
