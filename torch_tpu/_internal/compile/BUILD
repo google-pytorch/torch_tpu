@@ -79,6 +79,7 @@ torch_tpu_py_library(
         ":compiler",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile/dynamic:bucket_compiler",
         "//torch_tpu/_internal/compile/dynamic:compiler",
         "//torch_tpu/_internal/utils",
     ],

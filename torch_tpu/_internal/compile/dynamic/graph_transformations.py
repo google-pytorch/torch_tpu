@@ -23,10 +23,13 @@ This file contains the following passes:
 from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
+from absl import logging
 import torch
 from torch.fx.passes import graph_transform_observer
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.compile.dynamic.sym_shape_manager import (
+    SymShapeManager,
+)
 from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
 
 
@@ -107,7 +110,7 @@ class HandleDynamicInputTensorPass:
       node: torch.fx.Node,
       dynamic_dims: Sequence[int],
   ) -> None:
-    """Processes a single placeholder node and inserts set_dimension_size chains."""
+    """Processes a placeholder node and inserts set_dimension_size chains."""
     original_users = set(node.users.keys())
     current_tensor_node = node
 
@@ -136,7 +139,7 @@ class HandleDynamicInputTensorPass:
       dim: int,
       meta: dict[str, Any],
   ) -> torch.fx.Node:
-    """Inserts a set_dimension_logical_size node after the current tensor node."""
+    """Inserts set_dimension_logical_size node after current tensor node."""
     with graph_module.graph.inserting_after(current_tensor_node):
       set_dim_size_node = graph_module.graph.call_function(
           torch.ops.tpu.set_dimension_logical_size,
@@ -583,6 +586,146 @@ class HandleSymIntUsagesPass:
 
         if changed:
           node.args = tuple(new_args)
+
+
+class LowerCatToIndexCopyPass:
+  """Replaces torch.cat with index_copy for KV cache updates."""
+
+  def __init__(
+      self,
+      index_placeholder: torch.fx.Node,
+      parameter_phs: set[torch.fx.Node] | None = None,
+  ):
+    self._index_placeholder = index_placeholder
+    self._parameter_phs = parameter_phs if parameter_phs is not None else set()
+    self.replaced_nodes = set()
+    self.cache_phs = set()
+    self.x_phs = set()
+    self.dim = None
+
+  def _find_placeholder(self, n: torch.fx.Node) -> torch.fx.Node | None:
+    """Finds the placeholder node associated with a tensor node."""
+    if n.op == "placeholder":
+      if n in self._parameter_phs:
+        return None
+      return n
+    if n.op == "call_function":
+      if n.target == torch.ops.tpu.set_dimension_logical_size:
+        return self._find_placeholder(n.args[0])
+      # Try all input arguments to find a non-parameter placeholder
+      for arg in n.args:
+        if isinstance(arg, torch.fx.Node):
+          res = self._find_placeholder(arg)
+          if res:
+            return res
+    return None
+
+  def _find_len_placeholder(self, n: torch.fx.Node) -> torch.fx.Node | None:
+    """Finds the placeholder representing the logical length of the cache."""
+    if n.op == "call_function":
+      if n.target == torch.ops.aten.slice.Tensor:
+        end_arg = n.args[3]
+        if isinstance(end_arg, torch.fx.Node) and end_arg.op == "placeholder":
+          return end_arg
+      if n.target in (
+          torch.ops.aten.squeeze.dim,
+          torch.ops.tpu.set_dimension_logical_size,
+      ):
+        return self._find_len_placeholder(n.args[0])
+    return None
+
+  def __call__(self, graph_module: torch.fx.GraphModule) -> None:
+    logging.info("[LowerCat] Running pass on graph")
+    cat_count = 0
+    for node in list(graph_module.graph.nodes):
+      if (
+          node.op == "call_function"
+          and node.target == torch.ops.aten.cat.default
+      ):
+        cat_count += 1
+        logging.info("[LowerCat] cat node %d: %s", cat_count, node)
+        tensors = node.args[0]
+        dim = node.args[1] if len(node.args) > 1 else 0
+        if "dim" in node.kwargs:
+          dim = node.kwargs["dim"]
+        logging.info("[LowerCat]   dim: %s", dim)
+        if "val" in node.meta:
+          logging.info(
+              "[LowerCat]   output shape: %s", list(node.meta["val"].shape)
+          )
+        if isinstance(tensors, (list, tuple)):
+          for idx, arg in enumerate(tensors):
+            if isinstance(arg, torch.fx.Node) and "val" in arg.meta:
+              logging.info(
+                  "[LowerCat]   input %d (%s) shape: %s",
+                  idx,
+                  arg,
+                  list(arg.meta["val"].shape),
+              )
+        self._process_node(graph_module, node)
+    logging.info("[LowerCat] Processed %d cat nodes", cat_count)
+
+  def _process_node(
+      self, graph_module: torch.fx.GraphModule, node: torch.fx.Node
+  ) -> None:
+    """Processes a cat node and rewrites it to index_copy if applicable."""
+    tensors = node.args[0]
+    dim = node.args[1] if len(node.args) > 1 else 0
+    if "dim" in node.kwargs:
+      dim = node.kwargs["dim"]
+    self.dim = dim
+
+    if not isinstance(tensors, (list, tuple)) or len(tensors) != 2:
+      return
+
+    # Check if the concatenation dimension is dynamic in the output
+    if "val" in node.meta and hasattr(node.meta["val"], "shape"):
+      out_shape = node.meta["val"].shape
+      norm_dim = dim if dim >= 0 else len(out_shape) + dim
+      if norm_dim < len(out_shape):
+        if not isinstance(out_shape[norm_dim], torch.SymInt):
+          logging.info(
+              "[LowerCat] Skipping cat node %s because concat dim %d is"
+              " static: %s",
+              node,
+              dim,
+              out_shape[norm_dim],
+          )
+          return
+      else:
+        return
+    else:
+      return
+
+    cache_node, x_node = tensors
+
+    if "val" in cache_node.meta and "val" in node.meta:
+      if cache_node.meta["val"].ndim < node.meta["val"].ndim:
+        logging.info(
+            "[LowerCat] Skipping cat node %s because cache input %s is"
+            " empty/lower rank",
+            node,
+            cache_node,
+        )
+        return
+
+    cache_ph = self._find_placeholder(cache_node)
+    x_ph = self._find_placeholder(x_node)
+    if cache_ph:
+      self.cache_phs.add(cache_ph)
+    if x_ph:
+      self.x_phs.add(x_ph)
+
+    with graph_module.graph.inserting_before(node):
+      index_copy_node = graph_module.graph.call_function(
+          torch.ops.aten.index_copy.default,
+          args=(cache_node, dim, self._index_placeholder, x_node),
+      )
+      index_copy_node.meta = node.meta.copy()
+      self.replaced_nodes.add(index_copy_node)
+
+    node.replace_all_uses_with(index_copy_node)
+    graph_module.graph.erase_node(node)
 
 
 def apply_dynamism_transformations(
