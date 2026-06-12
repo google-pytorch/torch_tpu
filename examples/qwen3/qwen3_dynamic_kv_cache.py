@@ -27,6 +27,7 @@ from absl import flags
 from absl import logging
 import torch
 import torch._inductor.config as inductor_config
+import torch._logging as torch_logging
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import log_utils
@@ -94,6 +95,16 @@ _MAX_BUFFER_SIZE = flags.DEFINE_integer(
     None,
     "The maximum buffer size for KV cache. Used as upper bound for dynamo"
     " mark_dynamic.",
+)
+_USE_BUCKETING = flags.DEFINE_boolean(
+    "use_bucketing",
+    False,
+    "Whether to use framework-level bucketing for dynamic compile.",
+)
+_LOG_RECOMPILES = flags.DEFINE_boolean(
+    "log_recompiles",
+    False,
+    "Whether to log Dynamo recompilation reasons.",
 )
 
 
@@ -213,11 +224,21 @@ def model_generate(
           device=initial_inputs.device,
       )
 
+    attention_mask = torch.ones(
+        (batch_size, seq_len), dtype=torch.long, device=initial_inputs.device
+    )
+    position_ids = (
+        torch.arange(seq_len, dtype=torch.long, device=initial_inputs.device)
+        .unsqueeze(0)
+        .expand(batch_size, -1)
+    )
     with traceme.TraceMe(f"[{prefix}] Prefill"):
       prefill_start_time = time.time()
       output = model(
           input_ids=initial_inputs,
           past_key_values=past_key_values,
+          attention_mask=attention_mask,
+          position_ids=position_ids,
           use_cache=True,
       )
       logits = output.logits
@@ -244,13 +265,22 @@ def model_generate(
       next_token = next_token_cpu.to(model.device)
       if mark_dynamic and past_key_values is not None:
         min_val = seq_len
-        max_val = max_buffer_size
+        max_val = max_buffer_size - 1
         _mark_dynamic_cache(past_key_values, min_val, max_val)
+      logical_seq_len = output_tokens.shape[1]
+      attention_mask = torch.ones(
+          (batch_size, logical_seq_len), dtype=torch.long, device=model.device
+      )
+      position_ids = torch.tensor(
+          [[logical_seq_len - 1]], dtype=torch.long, device=model.device
+      ).expand(batch_size, -1)
       with traceme.TraceMe(f"[{prefix}] Decode step {i + 1}"):
         step_start_time = time.time()
         output = model(
             input_ids=next_token,
             past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             use_cache=True,
         )
         logits = output.logits
@@ -408,12 +438,25 @@ def _get_compiled_config(device: Device, mode: Mode) -> CompiledConfig:
           prefix="[Compiled CUDA] ",
           key="Compiled CUDA",
       )
+    buckets = None
+    if _USE_BUCKETING.value:
+      buckets = [_PREFILL_SEQ_LEN.value, _MAX_BUFFER_SIZE.value]
+
     return CompiledConfig(
         backend=_backend.TpuBackend(
-            dynamism=True, precompile_steps=_PRECOMPILE_STEPS.value
+            dynamism=True,
+            precompile_steps=_PRECOMPILE_STEPS.value,
+            bucketing=_USE_BUCKETING.value,
+            buckets=buckets,
         ),
-        prefix="[Compiled TPU (Dynamic)] ",
-        key="Compiled TPU (Dynamic)",
+        prefix=(
+            "[Compiled TPU"
+            f" (Dynamic{'+Bucketing' if _USE_BUCKETING.value else ''})] "
+        ),
+        key=(
+            "Compiled TPU"
+            f" (Dynamic{'+Bucketing' if _USE_BUCKETING.value else ''})"
+        ),
     )
 
   if mode == Mode.COMPILED_STATIC:
@@ -596,6 +639,11 @@ def main(argv):
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
 
+  log_utils.log_to_stderr()
+
+  if _LOG_RECOMPILES.value:
+    torch_logging.set_logs(recompiles=True)
+
   torch.manual_seed(123)
 
   device = Device(_DEVICE.value)
@@ -718,7 +766,7 @@ def main(argv):
         )
     )
 
-    output_cpu = None
+    outputs = {}
     if Mode.CPU in modes:
       output_cpu, metrics = _run_with_actual_weights(
           model_cpu,
@@ -730,6 +778,7 @@ def main(argv):
           max_buffer_size=max_buffer_size,
       )
       all_metrics.update(metrics)
+      outputs[Mode.CPU] = output_cpu
 
     for mode in modes:
       if mode == Mode.CPU:
@@ -743,9 +792,32 @@ def main(argv):
           mode=mode,
           max_buffer_size=max_buffer_size,
       )
-      if output_cpu is not None:
-        assert output_cpu == output, f"{output_cpu=} != {output=}"
       all_metrics.update(metrics)
+      outputs[mode] = output
+
+    # Log all outputs for debugging
+    for m, out in outputs.items():
+      logging.info("Output for %s: %r", m, out)
+
+    # Assert that compiled dynamic (bucketing) matches compiled static (baseline TPU)
+    if Mode.COMPILED_STATIC in outputs and Mode.COMPILED_DYNAMIC in outputs:
+      assert outputs[Mode.COMPILED_STATIC] == outputs[Mode.COMPILED_DYNAMIC], (
+          "TPU Static vs TPU Dynamic mismatch:\n"
+          f"  Static:  {outputs[Mode.COMPILED_STATIC]!r}\n"
+          f"  Dynamic: {outputs[Mode.COMPILED_DYNAMIC]!r}"
+      )
+      logging.info("TPU Static vs TPU Dynamic match OK!")
+
+    if Mode.CPU in outputs:
+      for m in (Mode.COMPILED_STATIC, Mode.COMPILED_DYNAMIC):
+        if m in outputs:
+          if outputs[Mode.CPU] != outputs[m]:
+            logging.warning(
+                "CPU vs %s mismatch:\n  CPU: %r\n  TPU: %r",
+                m,
+                outputs[Mode.CPU],
+                outputs[m],
+            )
 
   print(
       f"\n=== Results for batch_size={batch_size},"

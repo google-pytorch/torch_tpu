@@ -146,6 +146,19 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
     super().__init__(module)
     self.state_dict = module.state_dict()
 
+  def placeholder(self, target, args, kwargs):
+    logging.info("[Interpreter] placeholder target: %s", target)
+    try:
+      val = super().placeholder(target, args, kwargs)
+      logging.info(
+          "[Interpreter]   val shape/type: %s",
+          val.shape if isinstance(val, torch.Tensor) else type(val),
+      )
+      return val
+    except Exception as e:
+      logging.info("[Interpreter]   failed: %s", e)
+      raise e
+
   def _set_func_code_to_node_source_locations(self, func, node):
     """Update the function's code locations to the node's source locations.
 
@@ -231,6 +244,11 @@ class _NonTensorPassthrough:
 
 
 @dataclasses.dataclass(frozen=True)
+class _ConstantPassthrough:
+  value: Any
+
+
+@dataclasses.dataclass(frozen=True)
 class _TensorLayout:
   dtype: torch.dtype
   shape: torch.Size
@@ -250,7 +268,12 @@ def _reconstruct_fx_outputs(
     inputs: Sequence[Any],
     deduped_outputs: Sequence[torch.Tensor],
     expected_layouts: Sequence[_TensorLayout],
-    output_map: Sequence[_DedupedTensorOutput | _NonTensorPassthrough | None],
+    output_map: Sequence[
+        _DedupedTensorOutput
+        | _NonTensorPassthrough
+        | _ConstantPassthrough
+        | None
+    ],
     spec: pytree.TreeSpec,
 ) -> Any:
   """Restores the original FX output structure from flattened MLIR outputs."""
@@ -285,6 +308,8 @@ def _reconstruct_fx_outputs(
         )
     elif isinstance(item, _NonTensorPassthrough):
       reconstructed_flat.append(inputs[item.input_idx])
+    elif isinstance(item, _ConstantPassthrough):
+      reconstructed_flat.append(item.value)
     elif item is None:
       reconstructed_flat.append(None)
 
@@ -393,7 +418,9 @@ def _process_fx_outputs(
   flat_outputs, spec = pytree.tree_flatten(outputs)
   deduped_outputs: list[torch.Tensor] = []
   expected_layouts: list[_TensorLayout] = []
-  output_map: list[_DedupedTensorOutput | _NonTensorPassthrough | None] = []
+  output_map: list[
+      _DedupedTensorOutput | _NonTensorPassthrough | _ConstantPassthrough | None
+  ] = []
   index_by_dedupe_key: dict[_TensorDedupeKey, int] = {}
 
   for idx, item in enumerate(flat_outputs):
@@ -408,6 +435,8 @@ def _process_fx_outputs(
       output_map.append(_DedupedTensorOutput(index_by_dedupe_key[key]))
     elif idx in output_to_input_map:
       output_map.append(_NonTensorPassthrough(output_to_input_map[idx]))
+    elif isinstance(item, (int, float, bool, str)):
+      output_map.append(_ConstantPassthrough(item))
     else:
       raise TypeError(
           "Expected FX graph output to be a Tensor, None, or FakeScriptObject"
@@ -495,9 +524,19 @@ def fx_to_mlir(
       # placeholder args. These copies will be removed in the compiled code so
       # there is no performance impact.
       # Remove once b/491716758 is implemented.
-      cloned_args = (
+      cloned_args = [
           x.clone() if isinstance(x, torch.Tensor) else x for x in args
+      ]
+      logging.info(
+          "[fx_to_mlir] args len: %d, cloned_args len: %d",
+          len(args),
+          len(cloned_args),
       )
+      logging.info(
+          "[fx_to_mlir] Graph placeholders: %s",
+          [n.name for n in module.graph.nodes if n.op == "placeholder"],
+      )
+      logging.info("[fx_to_mlir] Graph code:\n%s", module.code)
       fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
 
     result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(

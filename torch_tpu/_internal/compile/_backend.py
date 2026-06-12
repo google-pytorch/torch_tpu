@@ -46,8 +46,10 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile.dynamic import bucket_compiler
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
+
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
 
@@ -262,6 +264,8 @@ class TpuBackend:
       dynamism: bool = False,
       enable_serialization: bool = True,
       precompile_steps: int = 0,
+      bucketing: bool = False,
+      buckets: list[int] | None = None,
   ):
     """Initializes the TPU backend.
 
@@ -275,12 +279,22 @@ class TpuBackend:
         Debug mode disables serialization so debug callers inspect freshly
         compiled artifacts instead of cache hits.
       precompile_steps: The number of steps to precompile dynamic adapters for.
+      bucketing: If True, enable framework-level bucketing.
+      buckets: List of static bucket sizes for dynamic shapes.
     """
     self._debug = debug
-    self._dynamism = dynamism
-    self._enable_serialization = False if debug else enable_serialization
+    self._bucketing = bucketing
+    # If buckets is None, automatic bucketization (powers of 2) will be used
+    # at runtime.
+    # If a list is provided, only those manual buckets will be used.
+    self._buckets = buckets
+    self._dynamism = dynamism or self._bucketing
+    self._enable_serialization = (
+        False if (debug or self._bucketing) else enable_serialization
+    )
     self._precompile_steps = precompile_steps
     # Stores information about each compiled executable.
+
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[compiler.CompiledArtifact] = []
 
@@ -299,37 +313,46 @@ class TpuBackend:
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
 
     has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
-    if has_dynamic_symints:
-      compiler_instance = dynamic_compiler.DynamicCompiler(
-          debug=self._debug,
-          precompile_steps=self._precompile_steps,
-      )
-    else:
-      compiler_instance = compiler.StaticCompiler(debug=self._debug)
-
-    compiler_instance.execute_pre_grad_passes(graph_module)
-
-    # DynamicCompiler artifacts are not pickleable yet, so only static
-    # compilations can participate in AOTAutogradCache.
     enable_serialization = (
         self._enable_serialization and not has_dynamic_symints
     )
 
-    if enable_serialization:
-      fw_compiler = SerializableAOTDispatchCompiler(
-          output_code_ty=compiler.CompiledArtifact,
-          compiler_fn=functools.partial(
-              self._compile_graph_module, compiler_instance, True
-          ),
+    if self._bucketing and has_dynamic_symints:
+      # Bucketing runs the StaticCompiler on padded subgraphs at runtime.
+      # We still need to run any pre-grad passes on the graph before
+      # returning the wrapper.
+      static_compiler = compiler.StaticCompiler(debug=self._debug)
+      static_compiler.execute_pre_grad_passes(graph_module)
+      fw_compiler = functools.partial(self._compile_bucketed_graph_module, True)
+      bw_compiler = functools.partial(
+          self._compile_bucketed_graph_module, False
       )
     else:
-      fw_compiler = functools.partial(
-          self._compile_graph_module, compiler_instance, True
-      )
+      if has_dynamic_symints:
+        compiler_instance = dynamic_compiler.DynamicCompiler(
+            debug=self._debug,
+            precompile_steps=self._precompile_steps,
+        )
+      else:
+        compiler_instance = compiler.StaticCompiler(debug=self._debug)
 
-    bw_compiler = functools.partial(
-        self._compile_graph_module, compiler_instance, False
-    )
+      compiler_instance.execute_pre_grad_passes(graph_module)
+
+      if enable_serialization:
+        fw_compiler = SerializableAOTDispatchCompiler(
+            output_code_ty=compiler.CompiledArtifact,
+            compiler_fn=functools.partial(
+                self._compile_graph_module, compiler_instance, True
+            ),
+        )
+      else:
+        fw_compiler = functools.partial(
+            self._compile_graph_module, compiler_instance, True
+        )
+
+      bw_compiler = functools.partial(
+          self._compile_graph_module, compiler_instance, False
+      )
 
     with _serialization_context(enable_serialization) as captured_entry:
       result = aot_autograd(
@@ -343,6 +366,32 @@ class TpuBackend:
         result.serialize = lambda: entry
 
       return result
+
+  def _compile_bucketed_graph_module(
+      self,
+      is_fwd: bool,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[torch.Tensor],
+  ) -> Callable[..., Any]:
+    """Wraps the graph module in a LazyBucketedCompiledExecutable."""
+    fwd_or_bwd_str = "FORWARD" if is_fwd else "BACKWARD"
+    _log_gm_and_inputs(
+        "_compile_bucketed_graph_module",
+        f"***{fwd_or_bwd_str}*** Post",
+        graph_module,
+        example_inputs,
+    )
+
+    static_compiler = compiler.StaticCompiler(debug=self._debug)
+    executable = bucket_compiler.LazyBucketedCompiledExecutable(
+        graph_module=graph_module,
+        is_fwd=is_fwd,
+        static_compiler=static_compiler,
+        buckets=self._buckets,
+        example_inputs=example_inputs,
+    )
+    self._compiled_executables.append(executable)
+    return executable
 
   def _compile_graph_module(
       self,

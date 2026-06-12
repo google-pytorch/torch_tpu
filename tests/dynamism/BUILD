@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_test")
+load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -81,6 +82,32 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//torch_tpu",
         "//torch_tpu/_internal/compile/dynamic:dynamic_adapters",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "bucket_compile_test",
+    srcs = ["bucket_compile_test.py"],
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
+pytype_strict_binary(
+    name = "reproduce_subclass_bug_cpu",
+    srcs = ["reproduce_subclass_bug_cpu.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile/dynamic:state_staged_tensor",
+        "@pypi//transformers",
     ],
 )
 
