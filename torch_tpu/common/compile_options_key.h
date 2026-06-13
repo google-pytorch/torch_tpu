@@ -29,7 +29,7 @@ class CompileOptionsKey {
   explicit CompileOptionsKey(FingerprintType key) : key_(key) {}
 
   struct Hash {
-    [[nodiscard]] inline size_t operator()(const CompileOptionsKey key) const {
+    [[nodiscard]] size_t operator()(const CompileOptionsKey key) const {
       return key.key_;
     }
   };
