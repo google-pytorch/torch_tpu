@@ -1,0 +1,98 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI - Upstream PyTorch Tests
+
+on:
+  # Enable remote connections. Add a workflow dispatch to enable halting.
+  # See go/ml-github-actions:connect#enable-workflow-dispatch.
+  workflow_dispatch:
+    inputs:
+      halt-for-connection:
+        description: 'Should this workflow run wait for a remote connection?'
+        type: choice
+        default: 'no'
+        options:
+          - 'yes'
+          - 'no'
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '0 7 * * *'  # Run automatically every day at 0:00 AM PDT
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+# Cancel old jobs when they are replaced by new runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Don't cancel in-progress jobs for main branch
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+jobs:
+  run_tests:
+    name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:upstream-tests')
+    strategy:
+      fail-fast: false
+      matrix:
+        job_info: [
+          {
+            name: "CPU",
+            runner: "linux-x86-n4-16",
+            config: "ci_cpu",
+            extra_flags: "--test_env=PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test",
+            target: "//tests:run_upstream_test_cpu",
+          },
+          {
+            name: "TPU v7",
+            runner: "linux-x86-tpu7x-224-4tpu",
+            config: "ci_tpu_on_v7",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test',
+            target: "//tests:run_upstream_test_tpu",
+          },
+        ]
+    # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
+    # workflow is required.
+    # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
+    runs-on: ${{ matrix.job_info.runner }}
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+
+    steps:
+      - name: Checkout TorchTPU
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+
+      # Enable remote connections. Add a waiting step.
+      # See go/ml-github-actions:connect#add-waiting-step.
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Checkout PyTorch
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        with:
+          repository: pytorch/pytorch
+          path: pytorch
+          ref: v2.10.0
+
+      - name: Run Bazel Test
+        run: bazel test --config=${{ matrix.job_info.config }} ${{ matrix.job_info.extra_flags }} ${{ matrix.job_info.target }}

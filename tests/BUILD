@@ -15,6 +15,7 @@
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
+    "oss_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
     "torch_tpu_py_test",
@@ -1310,6 +1311,57 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/eager:tpu_aten_kernels",
         "@rules_python//python/runfiles",  # build_cleaner: keep
+    ],
+)
+
+oss_target(
+    torch_tpu_py_test,
+    name = "run_upstream_test_tpu",
+    srcs = ["run_upstream_test.py"],
+    args = ["--test_device=tpu"],
+    main = "run_upstream_test.py",
+    nopresubmit_oss = "This test is enabled in a nightly workflow.",
+    shuffle_tests = False,
+    tags = [
+        "requires-tpu-v5lite",
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
+        "//torch_tpu",
+        "@pypi//pytest",
+    ],
+)
+
+# TODO: b/523312531 - Evaluate enabling these upstream tests in Google3 for internal developer
+# parity. Currently, this is restricted to OSS CI via `oss_target` because the test runner relies on
+# the raw PyTorch source tree checked out manually by the GitHub Actions workflow.
+oss_target(
+    torch_tpu_py_test,
+    name = "run_upstream_test_cpu",
+    srcs = ["run_upstream_test.py"],
+    args = ["--test_device=cpu"],
+    main = "run_upstream_test.py",
+    nopresubmit_oss = "This test is enabled in a nightly workflow.",
+    shuffle_tests = False,
+    tags = [
+        # TODO: b/523384731 - Remove the "local" tag once upstream PyTorch is migrated natively into
+        # Bazel's dependency graph via Bzlmod.
+        # Ignores remote executors and forces local execution to avoid FileNotFound error as Bazel
+        # refuses to upload the downloaded PyTorch source code to the RBE Cloud workers.
+        "local",
+        "wheel_test_excluded",
+    ],
+    deps = [
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//shims/torch:pytorch",
+        "//shims/torch:testing_internal",  # build_cleaner: keep
+        "//torch_tpu",
+        "@pypi//pytest",
     ],
 )
 

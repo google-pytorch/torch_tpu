@@ -46,6 +46,7 @@ test = [
     "timm>=1.0.26",
     "torchvision>=0.25",
     "transformers>=5.8.0",
+    "pytest>=9"
 ]
 
 benchmark = [

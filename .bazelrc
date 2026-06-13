@@ -312,7 +312,7 @@ common:ci_tpu_on_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmi
 
 # Settings for presubmit and postsubmit on TPU v7.
 common:ci_tpu_on_v7 --config=ci_tpu_base
-common:ci_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-fails-on-tpu-v7
+common:ci_tpu_on_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v7
 common:ci_tpu_on_v7 --local_test_jobs=1
 # Bypass the libtpu multi-process lock. Otherwise, we have to explicitly delete
 # /tmp/libtpu_lockfile to clean up the dirty state of previous crashed jobs to
