@@ -31,6 +31,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.pallas import scalar_promotion
 from torch_tpu._internal.utils import utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -57,6 +58,66 @@ def add_vectors_jax(x: jax.Array, y: jax.Array) -> jax.Array:
 @pallas.jax_op("pallas::add_vectors")
 def add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
   return add_vectors_jax(x, y)
+
+
+# --- DEMO OPS FOR DUMMY CL ---
+
+
+# 1. The Problem: Natural 0D VMEM, but using unpatched pallas_call
+# (fails lowering)
+def add_scalar_problem_kernel(x_ref, y_ref, o_ref):
+  o_ref[...] = x_ref[...].sum() + y_ref[...]
+
+
+def add_scalar_problem_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct((), x.dtype)  # 0D Output
+  return scalar_promotion.orig_pallas_call(
+      add_scalar_problem_kernel,
+      out_shape=dt,
+  )(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar_problem")
+def add_scalar_problem(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_problem_jax(x, y)
+
+
+# 2. The Workaround: Manual 1D padding and slicing, using unpatched
+# pallas_call (succeeds)
+def add_scalar_workaround_kernel(x_ref, y_ref, o_ref):
+  o_ref[0:1] = x_ref[...].sum()[None] + y_ref[0:1]  # manual slicing
+
+
+def add_scalar_workaround_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct((1,), x.dtype)  # 1D Output
+  return scalar_promotion.orig_pallas_call(
+      add_scalar_workaround_kernel,
+      out_shape=dt,
+  )(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar_workaround")
+def add_scalar_workaround(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_workaround_jax(x, y)
+
+
+# 3. The Solution: Natural 0D VMEM using patched pallas_call (succeeds)
+def add_scalar_solution_kernel(x_ref, y_ref, o_ref):
+  o_ref[...] = x_ref[...].sum() + y_ref[...]  # natural 0D
+
+
+def add_scalar_solution_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  # Uses monkeypatched pl.pallas_call by default
+  dt = jax.ShapeDtypeStruct((), x.dtype)  # 0D Output
+  return pl.pallas_call(
+      add_scalar_solution_kernel,
+      out_shape=dt,
+  )(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar_solution")
+def add_scalar_solution(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_solution_jax(x, y)
 
 
 def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
@@ -958,6 +1019,41 @@ class TestPallasKernels(absltest.TestCase):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)
       y.cpu()
+
+  def test_demo_1_problem_fails(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+
+    # Verify that calling the unpatched op with 0D VMEM fails lowering
+    with self.assertRaises(Exception) as ctx:
+      add_scalar_problem(x, y)
+
+    # The error should contain the lowering blocker message
+    self.assertIn("supports only blocks of rank >= 1", str(ctx.exception))
+
+  def test_demo_2_manual_workaround(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    # Manually padded to 1D
+    y = torch.tensor([4.0], dtype=torch.float32, device=self.device)
+
+    # Executes successfully
+    actual_1d = add_scalar_workaround(x, y)
+
+    # Manually sliced to 0D
+    actual = actual_1d[0]
+    self.assertEqual(actual.item(), 10.0)
+
+  def test_demo_3_proposed_solution(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    # Direct 0D scalar
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+
+    # Executes successfully with automatic promotion
+    actual = add_scalar_solution(x, y)
+
+    # Direct 0D scalar output
+    self.assertEqual(actual.ndim, 0)
+    self.assertEqual(actual.item(), 10.0)
 
 
 class TestPallasCompat(absltest.TestCase):

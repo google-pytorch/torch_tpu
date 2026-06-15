@@ -37,6 +37,7 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/pallas:pallas_compat",
+        "//torch_tpu/_internal/pallas:scalar_promotion",
         "//torch_tpu/_internal/utils",
         "@pypi//jax",
         "@pypi//packaging",
