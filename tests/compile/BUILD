@@ -376,4 +376,16 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "split_compiler_test",
+    srcs = ["split_compiler_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:split_compiler",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
 torch_tpu_package_end()
