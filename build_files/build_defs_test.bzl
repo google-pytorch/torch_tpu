@@ -348,26 +348,93 @@ def _test_oss_presubmit_tpu_generation_explicit(ctx):
 
 def _test_oss_presubmit_tpu_generation_implicit(ctx):
     env = unittest.begin(ctx)
-    tags = ["requires-tpu", "fails-on-tpu-v5"]
+    tags = ["requires-tpu"]
     check_and_adjust_test_tags_for_testing(
         is_oss = True,
+        incompatible_tpu_generations = {"v5": "reason"},
         tags = tags,
     )
+    asserts.false(env, "presubmit-v5" in tags, "tags: %s" % tags)
     asserts.true(env, "presubmit-v7" in tags, "tags: %s" % tags)
     return unittest.end(env)
 
 def _test_oss_presubmit_tpu_generation_implicit_v6(ctx):
     env = unittest.begin(ctx)
-    tags = ["requires-tpu", "fails-on-tpu-v5", "fails-on-tpu-v7"]
+    tags = ["requires-tpu"]
     check_and_adjust_test_tags_for_testing(
         is_oss = True,
+        incompatible_tpu_generations = {"v5": "reason", "v7": "reason"},
         tags = tags,
     )
     asserts.true(env, "presubmit-v6" in tags, "tags: %s" % tags)
     return unittest.end(env)
 
+def _test_oss_presubmit_tpu_generation_default(ctx):
+    env = unittest.begin(ctx)
+    tags = ["requires-tpu"]
+    check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags,
+    )
+
+    # It should select one of the valid generations: v5, v6, or v7.
+    asserts.true(
+        env,
+        "presubmit-v5" in tags or "presubmit-v6" in tags or "presubmit-v7" in tags,
+        "tags: %s" % tags,
+    )
+    return unittest.end(env)
+
+def _test_oss_presubmit_tpu_generation_incompatible_all(ctx):
+    env = unittest.begin(ctx)
+    tags = ["requires-tpu"]
+    errors = []
+
+    def mock_fail(msg):
+        errors.append(msg)
+
+    check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        incompatible_tpu_generations = {"v5": "r", "v6": "r", "v7": "r"},
+        fail_func = mock_fail,
+        tags = tags,
+    )
+    asserts.true(env, len(errors) == 1, "Expected 1 error, got %s" % errors)
+    asserts.true(env, "TPU tests failing on all generations" in errors[0], "Unexpected error: %s" % errors[0])
+    return unittest.end(env)
+
+def _test_incompatible_tpu_generations_validation_fails(ctx):
+    env = unittest.begin(ctx)
+
+    # Test cases for validation failures: (incompatible_tpu_generations, expected_error_substring)
+    test_cases = [
+        ("not a dict", "must be a dict"),
+        ({1: "reason"}, "keys must be strings"),
+        ({"v5": 123}, "values must be non-empty strings"),
+        ({"v5": ""}, "values must be non-empty strings"),
+        ({"unknown": "reason"}, "Unknown TPU generation"),
+    ]
+
+    for incompat, expected_err in test_cases:
+        errors = []
+
+        def mock_fail(msg):
+            errors.append(msg)
+
+        check_and_adjust_test_tags_for_testing(
+            is_oss = True,
+            incompatible_tpu_generations = incompat,
+            fail_func = mock_fail,
+            tags = ["requires-tpu"],
+        )
+        asserts.true(env, len(errors) == 1, "Expected 1 error for %s, got %s" % (incompat, errors))
+        asserts.true(env, expected_err in errors[0], "Expected error containing '%s' for %s, got '%s'" % (expected_err, incompat, errors[0]))
+
+    return unittest.end(env)
+
 # go/keep-sorted start
 cuda_build_test = unittest.make(_test_cuda_build_test)
+incompatible_tpu_generations_validation_fails_test = unittest.make(_test_incompatible_tpu_generations_validation_fails)
 internal_manual_nonightly_oss_tag_test = unittest.make(_test_internal_manual_nonightly_oss_tag)
 internal_manual_nopresubmit_oss_tag_test = unittest.make(_test_internal_manual_nopresubmit_oss_tag)
 internal_nobuild_oss_test = unittest.make(_test_internal_nobuild_oss)
@@ -386,9 +453,11 @@ oss_nonightly_oss_test = unittest.make(_test_oss_nonightly_oss)
 oss_nopresubmit_oss_test = unittest.make(_test_oss_nopresubmit_oss)
 oss_notest_oss_nobuild_oss_test = unittest.make(_test_oss_notest_oss_nobuild_oss)
 oss_notest_oss_test = unittest.make(_test_oss_notest_oss)
+oss_presubmit_tpu_generation_default_test = unittest.make(_test_oss_presubmit_tpu_generation_default)
 oss_presubmit_tpu_generation_explicit_test = unittest.make(_test_oss_presubmit_tpu_generation_explicit)
 oss_presubmit_tpu_generation_implicit_test = unittest.make(_test_oss_presubmit_tpu_generation_implicit)
 oss_presubmit_tpu_generation_implicit_v6_test = unittest.make(_test_oss_presubmit_tpu_generation_implicit_v6)
+oss_presubmit_tpu_generation_incompatible_all_test = unittest.make(_test_oss_presubmit_tpu_generation_incompatible_all)
 # go/keep-sorted end
 
 def build_defs_test_suite(name):
@@ -406,6 +475,7 @@ def build_defs_test_suite(name):
 
     # go/keep-sorted start
     add_test(tests, cuda_build_test, name + "_cuda_build_test")
+    add_test(tests, incompatible_tpu_generations_validation_fails_test, name + "_incompatible_tpu_generations_validation_fails")
     add_test(tests, internal_manual_nonightly_oss_tag_test, name + "_internal_manual_nonightly_oss_tag")
     add_test(tests, internal_manual_nopresubmit_oss_tag_test, name + "_internal_manual_nopresubmit_oss_tag")
     add_test(tests, internal_nobuild_oss_test, name + "_internal_nobuild_oss")
@@ -424,9 +494,11 @@ def build_defs_test_suite(name):
     add_test(tests, oss_nopresubmit_oss_test, name + "_oss_nopresubmit_oss")
     add_test(tests, oss_notest_oss_nobuild_oss_test, name + "_oss_notest_oss_nobuild_oss")
     add_test(tests, oss_notest_oss_test, name + "_oss_notest_oss")
+    add_test(tests, oss_presubmit_tpu_generation_default_test, name + "_oss_presubmit_tpu_generation_default")
     add_test(tests, oss_presubmit_tpu_generation_explicit_test, name + "_oss_presubmit_tpu_generation_explicit")
     add_test(tests, oss_presubmit_tpu_generation_implicit_test, name + "_oss_presubmit_tpu_generation_implicit")
     add_test(tests, oss_presubmit_tpu_generation_implicit_v6_test, name + "_oss_presubmit_tpu_generation_implicit_v6")
+    add_test(tests, oss_presubmit_tpu_generation_incompatible_all_test, name + "_oss_presubmit_tpu_generation_incompatible_all")
     # go/keep-sorted end
 
     native.test_suite(
