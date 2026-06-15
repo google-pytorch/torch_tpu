@@ -202,7 +202,9 @@ def _check_and_adjust_test_tags(
         nopresubmit_oss,
         nonightly_oss,
         oss_presubmit_tpu_generation,
-        tags):
+        incompatible_tpu_generations = None,
+        fail_func = fail,
+        tags = None):
     """Validates and adjusts the test tags and calculates build test requirements.
 
     Args:
@@ -236,6 +238,12 @@ def _check_and_adjust_test_tags(
             non-nightly OSS, and it will be built and run in the nightly OSS.
         nonightly_oss: If a string is provided, the test will be built but not run in the nightly
             OSS.
+        oss_presubmit_tpu_generation: A dictionary containing the generation and reason
+            (from `tpu_gen()`) to explicitly require a specific TPU generation for OSS presubmits.
+        incompatible_tpu_generations: A dictionary of {generation: reason}
+            specifying which TPU generations this test is incompatible with.
+            The reason must be a non-empty string explaining why.
+        fail_func: The function to call when validation fails (defaults to `fail`).
         tags: The tags to add to the test.
 
     Returns:
@@ -247,6 +255,21 @@ def _check_and_adjust_test_tags(
         Updates the `tags` list with desired tags and sorts it. The sorting is just to
         normalize the list for easy testing.
     """
+
+    if tags == None:
+        fail_func("tags must be provided")
+
+    if incompatible_tpu_generations != None:
+        if type(incompatible_tpu_generations) != "dict":
+            fail_func("incompatible_tpu_generations must be a dict of {generation: reason}")
+        else:
+            for gen, reason in incompatible_tpu_generations.items():
+                if type(gen) != "string":
+                    fail_func("incompatible_tpu_generations keys must be strings (TPU generations)")
+                elif type(reason) != "string" or not reason:
+                    fail_func("incompatible_tpu_generations values must be non-empty strings explaining the reason for incompatibility")
+                elif gen not in TPU_GENERATION_PREFERENCES:
+                    fail_func("Unknown TPU generation: %s" % gen)
 
     # Use the nopresubmit parameter instead of tags.
     if "nopresubmit" in tags:
@@ -420,14 +443,15 @@ def _check_and_adjust_test_tags(
             has_tpu = any([t.startswith("requires-tpu") for t in tags])
             if has_tpu:
                 allocated = False
+                incompat = incompatible_tpu_generations if type(incompatible_tpu_generations) == "dict" else {}
                 for gen in TPU_GENERATION_PREFERENCES:
-                    if ("fails-on-tpu-" + gen) not in tags:
+                    if gen not in incompat:
                         tags.append("presubmit-" + gen)
                         allocated = True
                         break
 
                 if not allocated:
-                    fail("TPU tests failing on all generations in OSS should use notest_oss instead.")
+                    fail_func("TPU tests failing on all generations in OSS should use notest_oss instead.")
 
     process_accelerator_tags(tags)
     _sort_inplace(tags)
@@ -451,6 +475,8 @@ def check_and_adjust_test_tags_for_testing(
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
+        incompatible_tpu_generations = None,
+        fail_func = fail,
         tags = None):
     """Public wrapper for testing."""
     if tags == None:
@@ -469,6 +495,8 @@ def check_and_adjust_test_tags_for_testing(
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+        incompatible_tpu_generations = incompatible_tpu_generations,
+        fail_func = fail_func,
         tags = tags,
     )
 
@@ -492,6 +520,7 @@ def torch_tpu_cc_test(
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
+        incompatible_tpu_generations = None,
         tags = None,
         **kwargs):
     """Creates a cc_test for torch_tpu.
@@ -533,6 +562,11 @@ def torch_tpu_cc_test(
             non-nightly OSS, and it will be built and run in the nightly OSS.
         nonightly_oss: If a string is provided, the test will be built but not run in the nightly
             OSS.
+        oss_presubmit_tpu_generation: A dictionary containing the generation and reason
+            (from `tpu_gen()`) to explicitly require a specific TPU generation for OSS presubmits.
+        incompatible_tpu_generations: A dictionary of {generation: reason}
+            specifying which TPU generations this test is incompatible with.
+            The reason must be a non-empty string explaining why.
         tags: The tags to add to the test.
         **kwargs: Any additional arguments.
     """
@@ -581,8 +615,18 @@ def torch_tpu_cc_test(
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+        incompatible_tpu_generations = incompatible_tpu_generations,
         tags = tags,
     )
+    target_compatible_with = kwargs.pop("target_compatible_with", [])
+    if incompatible_tpu_generations:
+        select_dict = {}
+        for gen in incompatible_tpu_generations:
+            select_dict["//torch_tpu/oss/platforms:is_tpu_" + gen] = ["@platforms//:incompatible"]
+        select_dict["//conditions:default"] = target_compatible_with
+        kwargs["target_compatible_with"] = select(select_dict)
+    elif target_compatible_with:
+        kwargs["target_compatible_with"] = target_compatible_with
     if result.create_build_test:
         build_test(
             name = name + "_build_test",
@@ -683,6 +727,7 @@ def torch_tpu_py_test(
         nopresubmit_oss = None,
         nonightly_oss = None,
         oss_presubmit_tpu_generation = None,
+        incompatible_tpu_generations = None,
         tags = None,
         **kwargs):
     """Creates a py_test for torch_tpu.
@@ -725,6 +770,11 @@ def torch_tpu_py_test(
             non-nightly OSS, and it will be built and run in the nightly OSS.
         nonightly_oss: If a string is provided, the test will be built but not run in the nightly
             OSS.
+        oss_presubmit_tpu_generation: A dictionary containing the generation and reason
+            (from `tpu_gen()`) to explicitly require a specific TPU generation for OSS presubmits.
+        incompatible_tpu_generations: A dictionary of {generation: reason}
+            specifying which TPU generations this test is incompatible with.
+            The reason must be a non-empty string explaining why.
         tags: The tags to add to the test.
         autoload: Enable autoload during the tests.
         **kwargs: Any additional arguments.
@@ -764,8 +814,18 @@ def torch_tpu_py_test(
         nopresubmit_oss = nopresubmit_oss,
         nonightly_oss = nonightly_oss,
         oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+        incompatible_tpu_generations = incompatible_tpu_generations,
         tags = tags,
     )
+    target_compatible_with = kwargs.pop("target_compatible_with", [])
+    if incompatible_tpu_generations:
+        select_dict = {}
+        for gen in incompatible_tpu_generations:
+            select_dict["//torch_tpu/oss/platforms:is_tpu_" + gen] = ["@platforms//:incompatible"]
+        select_dict["//conditions:default"] = target_compatible_with
+        kwargs["target_compatible_with"] = select(select_dict)
+    elif target_compatible_with:
+        kwargs["target_compatible_with"] = target_compatible_with
     if result.create_build_test:
         build_test(
             name = name + "_build_test",
