@@ -1090,6 +1090,108 @@ class TestPallasKernels(absltest.TestCase):
     expected = torch.tensor([4.0, 8.0, 12.0, 16.0, 20.0], dtype=torch.float32)
     utils.assert_close(sums.to("cpu"), expected)
 
+  def test_declare_jax_op_raises_before_bind(self):
+    """Eager invocation of a declared-but-unbound op must raise a clear
+    error so that callers that fire too early are caught immediately
+    rather than silently producing wrong results."""
+
+    def fake_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.empty_like(x)
+
+    op = pallas.declare_jax_op(
+        "pallas::declared_unbound",
+        fake_fn,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    with self.assertRaisesRegex(RuntimeError, "has not yet been bound"):
+      op(x, y)
+
+  def test_declare_then_bind_then_call_matches_jax_op(self):
+    """Eager call through a declared-then-bound op must match the result
+    of the same op registered via the one-shot `jax_op` helper."""
+
+    def fake_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.empty_like(x)
+
+    declared = pallas.declare_jax_op(
+        "pallas::declared_then_bound",
+        fake_fn,
+    )
+    pallas.bind_jax_kernel(declared, add_vectors_jax)
+
+    one_shot = pallas.jax_op("pallas::one_shot_for_compare", add_vectors_jax)
+
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
+    utils.assert_close(declared(x, y).to("cpu"), one_shot(x, y).to("cpu"))
+
+  def test_bind_jax_kernel_rejects_double_bind(self):
+    """A declared op can only be bound once — re-binding would silently
+    change the kernel out from under any FX graph that was traced
+    against the first binding."""
+
+    def fake_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.empty_like(x)
+
+    declared = pallas.declare_jax_op(
+        "pallas::declared_double_bind",
+        fake_fn,
+    )
+    pallas.bind_jax_kernel(declared, add_vectors_jax)
+    with self.assertRaisesRegex(ValueError, "already has a bound kernel"):
+      pallas.bind_jax_kernel(declared, add_vectors_jax)
+
+  def test_bind_jax_kernel_rejects_non_declared_op(self):
+    """`bind_jax_kernel` only works on ops produced by `declare_jax_op`;
+    a one-shot `jax_op` registration already has its kernel and there is
+    no lazy slot to fill."""
+    one_shot = pallas.jax_op("pallas::one_shot_not_bindable", add_vectors_jax)
+    with self.assertRaisesRegex(ValueError, "not produced by"):
+      pallas.bind_jax_kernel(one_shot, add_vectors_jax)
+
+  def test_declare_jax_op_inplace_donate_chained_calls_compiled_mode(self):
+    """End-to-end vLLM-shaped flow: declare the inplace-donate op at
+    "init" time (before any compile), bind the JAX kernel later (the
+    sequence vLLM's setup_bundled mimics), then chain donating calls
+    inside `@torch.compile(backend=TpuBackend())`. The
+    `inplace_donate_ssa_rename` FX pass must pick up the declared op via
+    the `_pallas_inplace_donate_argnums` annotation set at declare time
+    and thread the donation chain so XLA accepts the program."""
+
+    def fake_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.empty_like(x)
+
+    op = pallas.declare_jax_op(
+        "pallas::declared_chained_compiled",
+        fake_fn,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    # Bind the actual JAX kernel here (vLLM's setup_bundled equivalent).
+    pallas.bind_jax_kernel(op, add_vectors_jax)
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def chained_sums(bundle, y0, y1, y2, y3, y4):
+      s0 = op(bundle, y0).sum()
+      s1 = op(bundle, y1).sum()
+      s2 = op(bundle, y2).sum()
+      s3 = op(bundle, y3).sum()
+      s4 = op(bundle, y4).sum()
+      return torch.stack([s0, s1, s2, s3, s4])
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    y0 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y1 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y2 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y3 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y4 = torch.ones(4, dtype=torch.float32, device=self.device)
+    sums = chained_sums(bundle, y0, y1, y2, y3, y4)
+    expected = torch.tensor([4.0, 8.0, 12.0, 16.0, 20.0], dtype=torch.float32)
+    utils.assert_close(sums.to("cpu"), expected)
+
 
 class TestPallasCompat(absltest.TestCase):
 

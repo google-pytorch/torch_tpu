@@ -37,13 +37,27 @@ rewrites every later use of the donated input to read the corresponding
 output instead. After the pass each donation references a distinct SSA
 value and the chain runs cleanly through XLA, with the final value of the
 chain naturally flowing into whatever consumes the bundle next.
+
+Op identification is attribute-based, not registry-based: pallas stamps
+``_pallas_inplace_donate_argnums`` onto the ``OpOverload`` at registration
+time (see ``pallas._annotate_inplace_donate``). The pass reads that
+attribute directly off ``node.target``. This makes the pass agnostic to
+when the op was registered relative to the FX trace, and lets it pick up
+ops produced by both ``pallas.jax_op(..., inplace_donate=True)`` and
+``pallas.declare_jax_op(..., inplace_donate=True)`` (the deferred-binding
+flavor) without coupling the pass module to the pallas package.
 """
 
 import operator
 
 import torch
 
-from torch_tpu._internal.pallas import pallas as _pallas
+# Name of the attribute set on a pallas `OpOverload` when it was registered
+# with ``inplace_donate=True``. Value is a tuple of donated input indices.
+# This is the cross-module contract between pallas registration
+# (``_annotate_inplace_donate`` in ``torch_tpu/_internal/pallas/pallas.py``)
+# and this pass. Keep these strings in sync.
+_INPLACE_DONATE_ARGNUMS_ATTR = "_pallas_inplace_donate_argnums"
 
 
 def _node_position_map(graph: torch.fx.Graph) -> dict[torch.fx.Node, int]:
@@ -55,15 +69,18 @@ def _node_position_map(graph: torch.fx.Graph) -> dict[torch.fx.Node, int]:
   return {node: idx for idx, node in enumerate(graph.nodes)}
 
 
-def _op_qualname(node: torch.fx.Node) -> str | None:
-  """Returns ``namespace::opname`` for an FX op node, or ``None`` if N/A."""
+def _inplace_donate_argnums(
+    node: torch.fx.Node,
+) -> tuple[int, ...] | None:
+  """Returns donated input indices for a pallas-inplace-donate node.
+
+  Reads the ``_pallas_inplace_donate_argnums`` attribute that pallas
+  stamps onto an ``OpOverload`` at registration time. Returns ``None``
+  for any node that is not a call to such an op.
+  """
   if node.op != "call_function":
     return None
-  target = node.target
-  schema = getattr(target, "_schema", None)
-  if schema is None:
-    return None
-  return schema.name
+  return getattr(node.target, _INPLACE_DONATE_ARGNUMS_ATTR, None)
 
 
 def _select_output_node(
@@ -81,9 +98,11 @@ def _select_output_node(
   if not isinstance(val, (tuple, list)):
     # Single-output kernel — the call node IS the donated output.
     if donate_idx != 0:
+      schema = getattr(call_node.target, "_schema", None)
+      qualname = schema.name if schema is not None else str(call_node.target)
       raise RuntimeError(
           f"inplace_donate FX pass: single-output kernel "
-          f"{_op_qualname(call_node)!r} cannot donate index {donate_idx}; "
+          f"{qualname!r} cannot donate index {donate_idx}; "
           "donate_argnums for single-output kernels must be (0,)."
       )
     return call_node
@@ -121,10 +140,7 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
 
   changed = False
   for call_node in list(graph.nodes):
-    op_name = _op_qualname(call_node)
-    if op_name is None:
-      continue
-    donate_argnums = _pallas.get_inplace_donate_op_donate_argnums(op_name)
+    donate_argnums = _inplace_donate_argnums(call_node)
     if donate_argnums is None:
       continue
 

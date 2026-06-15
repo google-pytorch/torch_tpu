@@ -44,30 +44,35 @@ except ImportError as ex:
   ) from ex
 
 
-# Registry of pallas ops registered with `inplace_donate=True`.
+# Name of the attribute set on a `CustomOpDef` (and its `OpOverload`) when
+# the op is registered with `inplace_donate=True`. Its value is a tuple of
+# donated input indices (the resolved ``donate_argnums``).
 #
-# Keyed by qualified op name (e.g. ``"pallas::add_vectors_donated"``), with
-# value being the tuple of input indices that the op donates. Populated by
-# :func:`jax_op` at registration time and consumed by the compile-backend
-# FX pass `inplace_donate_ssa_rename` which threads each donated input's
-# corresponding output through to subsequent uses so that fused, sequential
-# donating calls inside a ``torch.compile`` graph each donate a distinct SSA
-# value (required by XLA).
-_INPLACE_DONATE_OPS: dict[str, tuple[int, ...]] = {}
+# The compile-backend FX pass `inplace_donate_ssa_rename` reads this
+# attribute directly off `node.target` to identify which call_function
+# nodes are inplace-donate pallas ops. Keeping the flag on the op object
+# itself (instead of in a side-channel registry) means the pass doesn't
+# depend on registration order — any FX node that references the op
+# already references the annotated `OpOverload`.
+INPLACE_DONATE_ARGNUMS_ATTR = "_pallas_inplace_donate_argnums"
 
 
-def get_inplace_donate_op_donate_argnums(op_name: str) -> tuple[int, ...] | None:
-  """Returns the donated input indices for a registered inplace-donate op.
+def _annotate_inplace_donate(
+    custom_op_def: CustomOpDef,
+    donate_argnums: tuple[int, ...],
+) -> None:
+  """Stamps the inplace-donate marker onto the `CustomOpDef` and its
+  `OpOverload` so the compile-backend FX pass can recognize the op.
 
-  Args:
-    op_name: Qualified op name as produced by ``OpOverload._schema.name``
-      (e.g. ``"pallas::add_vectors_donated"``).
-
-  Returns:
-    The tuple of donated input indices, or ``None`` if ``op_name`` is not
-    an inplace-donate pallas op.
+  The attribute is set on BOTH objects: the `CustomOpDef` for any code
+  that holds the user-facing op handle, and the `OpOverload` because
+  that is what appears as `node.target` in FX graphs.
   """
-  return _INPLACE_DONATE_OPS.get(op_name)
+  value = tuple(donate_argnums)
+  setattr(custom_op_def, INPLACE_DONATE_ARGNUMS_ATTR, value)
+  opoverload = getattr(custom_op_def, "_opoverload", None)
+  if opoverload is not None:
+    setattr(opoverload, INPLACE_DONATE_ARGNUMS_ATTR, value)
 
 
 # Based on torch/_C/__init__.pyi
@@ -879,10 +884,11 @@ def jax_op(
       # single executable. The host-side rebind in `PyCallCustomKernel` fires
       # at most once during tracing, so the chained-donation semantics that
       # work in eager mode do not survive into the compiled graph. The
-      # compile backend's `inplace_donate_ssa_rename` FX pass consumes this
-      # registry to thread each donated input's matching output forward to
-      # subsequent uses, giving every donating call a distinct SSA value.
-      _INPLACE_DONATE_OPS[name] = tuple(wrapped_fn.donate_argnums)
+      # compile backend's `inplace_donate_ssa_rename` FX pass reads this
+      # annotation off the `OpOverload` to thread each donated input's
+      # matching output forward to subsequent uses, giving every donating
+      # call a distinct SSA value.
+      _annotate_inplace_donate(result, tuple(wrapped_fn.donate_argnums))
 
     return result
 
@@ -890,3 +896,175 @@ def jax_op(
     return dec
   else:
     return dec(fn)
+
+
+class _LazyJaxCallable:
+  """Backs a `declare_jax_op`-registered op until a real kernel is bound.
+
+  The instance is registered with `torch.library.custom_op` as the op's
+  implementation. Until `bind_jax_kernel` swaps in a real
+  :class:`JaxCallable`, eager invocation (and the placeholder trace inside
+  `EagerLikeFxInterpreter`) raises a clear error so that any forward that
+  fires before binding is caught loudly instead of silently producing
+  wrong results.
+
+  Looks like a function to `torch.library`'s schema inference: we forward
+  ``inspect.signature`` to the user-provided ``fake_fn`` and stub out
+  ``__globals__`` the same way :class:`JaxCallable` does.
+  """
+
+  def __init__(
+      self,
+      name: str,
+      fake_fn: Callable[..., Any],
+      donate_argnums: list[int],
+      inplace_donate: bool,
+      static_argnums: tuple[int, ...],
+  ):
+    self.name = name
+    self.fake_fn = fake_fn
+    self.donate_argnums = list(donate_argnums)
+    self.inplace_donate = bool(inplace_donate)
+    self.static_argnums = tuple(static_argnums)
+    self._bound: "JaxCallable | None" = None  # filled by bind_jax_kernel.
+    # Make this instance look like a function to `torch.library.infer_schema`.
+    self.__signature__ = inspect.signature(fake_fn)
+    self.__globals__ = None
+
+  def __repr__(self):
+    state = "bound" if self._bound is not None else "unbound"
+    return f"_LazyJaxCallable(name={self.name!r}, state={state})"
+
+  def __call__(self, *args, **kwargs):
+    if self._bound is None:
+      raise RuntimeError(
+          f"pallas op {self.name!r} was declared via "
+          "pallas.declare_jax_op but its JAX kernel has not yet been "
+          "bound via pallas.bind_jax_kernel. Bind the kernel before "
+          "invoking the op (eagerly or under torch.compile)."
+      )
+    return self._bound(*args, **kwargs)
+
+
+def declare_jax_op(
+    name: str,
+    fake_fn: Callable[..., Any],
+    *,
+    donate_argnums: Sequence[int] | None = None,
+    inplace_donate: bool = False,
+    static_argnums: tuple[int, ...] = (),
+) -> CustomOpDef:
+  """Pre-declares a pallas op whose JAX kernel implementation is bound later.
+
+  Use this when the op's name and input/output shape contract are known at
+  module construction time but the JAX kernel itself depends on runtime
+  context that is not yet available (e.g. a `jax.sharding.Mesh`, weight
+  scales, or any partial-applied parameter assembled after model load).
+
+  The returned `CustomOpDef` is usable immediately by code that builds an
+  FX graph: `torch.compile` traces it, the FX node carries the
+  ``inplace_donate`` annotation, and the compile-backend
+  `inplace_donate_ssa_rename` FX pass picks it up. Eager invocation before
+  :func:`bind_jax_kernel` is called raises a clear error.
+
+  Args:
+    name: Qualified op name (must contain ``"::"``). Same constraints as
+      :func:`jax_op`.
+    fake_fn: Shape-inference function used by `torch.library.register_fake`.
+      Must accept the same positional/keyword arguments as the eventual
+      JAX kernel and return placeholder tensors (e.g. via
+      ``torch.empty_like`` for each output). Its parameter annotations
+      determine the op's torch schema.
+    donate_argnums: Indices of arguments that will be donated by the
+      bound kernel. Must match the donation contract of the JAX function
+      bound later.
+    inplace_donate: If True, marks the op so the
+      `inplace_donate_ssa_rename` FX pass threads each donated input's
+      matching output forward to subsequent uses under `torch.compile`.
+      See :func:`jax_op` for the semantics under eager execution.
+    static_argnums: Tuple of argument positions that are compile-time
+      constants.
+
+  Returns:
+    A `CustomOpDef` whose `__call__` raises until :func:`bind_jax_kernel`
+    is invoked with the actual JAX function.
+  """
+  if "::" not in name:
+    raise ValueError(f"Op name {name} does not contain a namespace.")
+  if len(name.split("::")) != 2:
+    raise ValueError(f"Op name {name} must have exactly one '::' separator.")
+
+  lazy = _LazyJaxCallable(
+      name=name,
+      fake_fn=fake_fn,
+      donate_argnums=list(donate_argnums or []),
+      inplace_donate=inplace_donate,
+      static_argnums=static_argnums,
+  )
+
+  result = torch.library.custom_op(
+      name,
+      lazy,
+      mutates_args=(),
+  )
+  result.register_fake(fake_fn)
+
+  # Stash the lazy callable on the CustomOpDef so `bind_jax_kernel` can
+  # find it without a side-channel registry.
+  result._pallas_lazy_callable = lazy  # pylint: disable=protected-access
+
+  if inplace_donate:
+    _annotate_inplace_donate(result, tuple(lazy.donate_argnums))
+
+  return result
+
+
+def bind_jax_kernel(
+    custom_op_def: CustomOpDef,
+    jax_fn: Callable[..., Any],
+    *,
+    mesh: jax.sharding.Mesh | None = None,
+    input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+) -> None:
+  """Binds the JAX kernel implementation for an op produced by
+  :func:`declare_jax_op`.
+
+  After this call eager invocation works normally, and the compile-backend
+  trace can lower the kernel to MLIR. `donate_argnums`, `inplace_donate`,
+  and `static_argnums` were fixed at declaration time and are not
+  re-specified here — they are read from the declared op's lazy callable.
+
+  Args:
+    custom_op_def: The `CustomOpDef` returned by :func:`declare_jax_op`.
+    jax_fn: The JAX function (typically a `functools.partial` over a
+      pallas kernel with `mesh`/scales/etc. baked in) to bind.
+    mesh: Optional sharding mesh.
+    input_partition_specs: Optional input partition specs.
+
+  Raises:
+    ValueError: If `custom_op_def` was not produced by
+      :func:`declare_jax_op`, or if its kernel has already been bound.
+  """
+  lazy = getattr(custom_op_def, "_pallas_lazy_callable", None)
+  if lazy is None:
+    raise ValueError(
+        "bind_jax_kernel: the given CustomOpDef was not produced by "
+        "pallas.declare_jax_op."
+    )
+  if lazy._bound is not None:
+    raise ValueError(
+        f"bind_jax_kernel: pallas op {lazy.name!r} already has a bound "
+        "kernel. Pre-declared ops can only be bound once."
+    )
+
+  wrapped_fn = custom_jax_kernel(
+      jax_fn,
+      lazy.name,
+      donate_argnums=lazy.donate_argnums,
+      mesh=mesh,
+      input_partition_specs=input_partition_specs,
+      static_argnums=lazy.static_argnums,
+      warn_deprecated=False,
+      inplace_donate=lazy.inplace_donate,
+  )
+  lazy._bound = wrapped_fn  # pylint: disable=protected-access
