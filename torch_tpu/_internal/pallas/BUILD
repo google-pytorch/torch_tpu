@@ -55,10 +55,21 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "scalar_promotion",
+    srcs = ["scalar_promotion.py"],
+    deps = [
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
     deps = [
         ":pallas_compat",
+        ":scalar_promotion",
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",

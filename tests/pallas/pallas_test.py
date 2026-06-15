@@ -23,6 +23,7 @@ import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
+import jax.experimental.pallas.tpu as pltpu
 import jax.export
 from packaging import version
 import torch
@@ -57,6 +58,44 @@ def add_vectors_jax(x: jax.Array, y: jax.Array) -> jax.Array:
 @pallas.jax_op("pallas::add_vectors")
 def add_vectors(x: jax.Array, y: jax.Array) -> jax.Array:
   return add_vectors_jax(x, y)
+
+
+def add_scalar_smem_kernel(x_ref, y_ref, o_ref):
+  # x_ref: 1D VMEM vector [3]
+  # y_ref: 0D SMEM scalar []  <- Must remain 0D
+  # o_ref: 1D VMEM vector [3]
+  o_ref[...] = x_ref[...] + y_ref[...]
+
+
+@pallas.jax_op("pallas::add_scalar_smem")
+def add_scalar_smem(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pl.pallas_call(
+      add_scalar_smem_kernel,
+      out_shape=dt,
+      in_specs=[
+          pl.BlockSpec(block_shape=x.shape),  # VMEM Input
+          pl.BlockSpec(memory_space=pltpu.SMEM),  # SMEM Input (0D)
+      ],
+  )(x, y)
+
+
+def sem_kernel_1d(x_ref, sem_ref, o_ref):
+  pl.semaphore_wait(sem_ref, 1)
+  o_ref[...] = x_ref[...]
+
+
+@pallas.jax_op("pallas::call_sem_1d")
+def call_sem_1d(x: jax.Array, sem_1d: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pl.pallas_call(
+      sem_kernel_1d,
+      out_shape=dt,
+      in_specs=[
+          pl.BlockSpec(block_shape=x.shape),
+          pl.BlockSpec(block_shape=(1,), memory_space=pltpu.SEMAPHORE),
+      ],
+  )(x, sem_1d)
 
 
 def add_subtract_vectors_kernel(x_ref, y_ref, oadd_ref, osub_ref):
@@ -958,6 +997,51 @@ class TestPallasKernels(absltest.TestCase):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)
       y.cpu()
+
+  def test_smem_scalar(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    actual = add_scalar_smem(x, y)
+    expected = torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_smem_scalar_bypass_jaxpr(self):
+    def run_smem_jax(x, y):
+      return pl.pallas_call(
+          add_scalar_smem_kernel,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          in_specs=[
+              pl.BlockSpec(block_shape=x.shape),
+              pl.BlockSpec(memory_space=pltpu.SMEM),
+          ],
+      )(x, y)
+
+    x_plat = jax.ShapeDtypeStruct((3,), jax.numpy.float32)
+    y_plat = jax.ShapeDtypeStruct((), jax.numpy.float32)
+    closed_jaxpr = jax.make_jaxpr(run_smem_jax)(x_plat, y_plat)
+
+    pallas_eq = None
+    for eq in closed_jaxpr.eqns:
+      if eq.primitive.name == "pallas_call":
+        pallas_eq = eq
+        break
+
+    self.assertIsNotNone(
+        pallas_eq, "Could not find pallas_call equation in JAXPR"
+    )
+
+    in_avals = [v.aval for v in pallas_eq.invars]
+    self.assertEqual(in_avals[0].shape, (3,))
+    self.assertEqual(in_avals[1].shape, ())
+
+  def test_semaphore_scalar_bypass_fails_if_1d(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    sem = torch.tensor([0], dtype=torch.int16, device=self.device)
+    with self.assertRaises(Exception) as ctx:
+      call_sem_1d(x, sem)
+    self.assertIn(
+        "Cannot wait on a non-()-shaped semaphore", str(ctx.exception)
+    )
 
 
 class TestPallasCompat(absltest.TestCase):
