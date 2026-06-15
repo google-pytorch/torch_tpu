@@ -31,17 +31,48 @@ fresh-buffer-per-call cost dominates wall-clock (~25× regression in the
 vLLM block-major flow).
 
 This module solves that by post-processing the JAX-exported kernel MLIR
-to add an ``output_operand_aliases`` attribute to the kernel's
-``stablehlo.custom_call``, matching ``donate_argnums`` 1:1 against the
-kernel's outputs. After this attribute is set, XLA's buffer assignment
-honors the per-call alias and reuses the input buffer for the output —
-so the 28 chained calls share a single buffer instead of allocating 28
-new buffers and copying through them.
+to add ``output_operand_aliases`` attributes along the donation chain:
 
-The rewrite only fires when the user has not already set
-``input_output_aliases`` on ``pl.pallas_call`` (the attribute is
-present on the custom_call); if they have, we treat that as the source
-of truth and leave it alone.
+* For a kernel whose donated input flows DIRECTLY into the pallas
+  ``stablehlo.custom_call`` (the simple full-bundle pattern, e.g.
+  ``out = pl.pallas_call(...)(bundle, x)``), the attribute lands on the
+  custom_call itself, mapping the donated operand position to the
+  matching output position.
+
+* For a kernel whose donated input is sliced before being passed to
+  pallas and the per-layer result is then scattered back via a
+  ``stablehlo.dynamic_update_slice`` (the slice→pallas→DUS pattern
+  produced by ``jax.lax.dynamic_update_slice_in_dim`` wrappers around a
+  per-layer kernel), the attribute lands on the DUS instead — DUS is
+  the op that owns the bundle-shape output, so aliasing it is what
+  conveys the in-place contract for the bundle.
+
+The walk follows the chain forward from each donated ``@main`` arg.
+The FIRST step may match the arg at any operand position (a multi-arg
+full-bundle pallas kernel donates `arg i → operand i → result i`).
+SUBSEQUENT steps require the carried value to feed operand 0 of the
+next op (the standard "buffer being updated" slot for both pallas
+custom_calls and DUSes). Other ops along the chain — reshape,
+broadcast_in_dim, dynamic_slice that READS the donated value — are
+inert for the analysis: they neither carry the donation value forward
+nor invalidate it.
+
+The rewrite is idempotent and respectful: it skips any op that already
+carries ``output_operand_aliases`` (e.g. the user set
+``input_output_aliases`` on ``pl.pallas_call``, or an earlier
+injection already ran).
+
+Caveat on DUS-side aliasing: at the time of writing, the StableHLO→HLO
+converter only recognizes ``output_operand_aliases`` on
+``stablehlo.custom_call`` (its TableGen-declared owner); other ops
+carry it as a discardable attribute. We still annotate the DUS because
+the attribute is structurally accurate, survives MLIR-level passes,
+documents the donation contract precisely where it applies, and tracks
+the right shape so that any future converter improvement picks it up
+without us needing to change this module. In the meantime, XLA's
+executable-level donation (the JAX ``input_output_alias`` config) and
+BufferAssignment's data-flow analysis together still thread the DUS
+chain through a single buffer at the allocation level.
 """
 
 from collections.abc import Sequence
@@ -64,6 +95,13 @@ _PALLAS_CUSTOM_CALL_TARGET = "tpu_custom_call"
 # Attribute name carrying per-operand→result aliasing on the
 # ``stablehlo.custom_call`` op (consumed by XLA's buffer assignment).
 _OUTPUT_OPERAND_ALIASES_ATTR = "output_operand_aliases"
+
+# Op names we recognize as carriers of a donation-chain step. For DUSes
+# the donated value must be at operand 0 (the "buffer being updated"
+# slot); for pallas custom_calls it can be at any operand position
+# (multi-arg donation maps operand i → result i).
+_CUSTOM_CALL_OP = "stablehlo.custom_call"
+_DUS_OP = "stablehlo.dynamic_update_slice"
 
 
 def _find_main_function(module: ir.Module) -> ir.Operation:
@@ -107,41 +145,14 @@ def _read_jit_alias_pairs(
   return pairs
 
 
-def _find_pallas_custom_calls(
-    main_func: ir.Operation,
-) -> list[ir.Operation]:
-  """Returns every pallas custom_call op directly in ``@main``'s body."""
-  found: list[ir.Operation] = []
-  body = main_func.regions[0].blocks[0]
-  for op in body.operations:
-    if op.operation.name != "stablehlo.custom_call":
-      continue
-    target = op.attributes.get("call_target_name", None)
-    if target is None:
-      continue
-    if target.value == _PALLAS_CUSTOM_CALL_TARGET:
-      found.append(op)
-  return found
-
-
-def _operand_index_for_main_arg(
-    custom_call: ir.Operation,
-    main_func: ir.Operation,
-    main_arg_idx: int,
-) -> int | None:
-  """Maps a ``@main`` arg index to a custom_call operand index.
-
-  Returns the position in ``custom_call.operands`` whose underlying
-  Value is the block argument ``main_arg_idx``, or ``None`` if no
-  direct mapping exists (e.g. there's an intervening reshape/cast).
-  For ``inplace_donate=True`` kernels we require this direct mapping
-  to honor the buffer-sharing contract.
-  """
-  main_arg_value = main_func.regions[0].blocks[0].arguments[main_arg_idx]
-  for operand_idx, operand in enumerate(custom_call.operands):
-    if operand == main_arg_value:
-      return operand_idx
-  return None
+def _is_pallas_custom_call(op: ir.OpView) -> bool:
+  """Returns True if ``op`` is a pallas ``stablehlo.custom_call``."""
+  if op.operation.name != _CUSTOM_CALL_OP:
+    return False
+  target = op.attributes.get("call_target_name", None)
+  if target is None:
+    return False
+  return target.value == _PALLAS_CUSTOM_CALL_TARGET
 
 
 def _build_output_operand_aliases(
@@ -152,9 +163,9 @@ def _build_output_operand_aliases(
   """Builds the ``output_operand_aliases`` attribute.
 
   Each ``(operand_idx, output_idx)`` pair becomes a single
-  ``OutputOperandAlias`` entry. For a single-result custom_call,
-  ``output_tuple_indices`` is empty; for a multi-result custom_call,
-  it carries the result position.
+  ``OutputOperandAlias`` entry. For a single-result op,
+  ``output_tuple_indices`` is empty; for a multi-result op, it carries
+  the result position.
   """
   is_multi_result = num_results > 1
   with ir.Location.unknown(context):
@@ -170,41 +181,138 @@ def _build_output_operand_aliases(
     return ir.ArrayAttr.get(entries)
 
 
+def _first_chain_step(
+    arg_value: ir.Value,
+) -> tuple[ir.OpView, int, int] | None:
+  """Returns the first step of the donation chain rooted at ``arg_value``.
+
+  The first step may match the donated arg at any operand position. We
+  prefer a pallas custom_call (the most direct in-place semantics) and
+  fall back to a DUS at operand 0. Returns
+  ``(op, operand_idx_in_op, output_idx_in_op)`` or ``None`` if no
+  matching consumer exists.
+  """
+  # First pass: prefer a pallas custom_call. For pallas, the kernel
+  # contract maps operand i → result i, so the output index follows
+  # the operand position.
+  for use in arg_value.uses:
+    op = use.owner
+    if _is_pallas_custom_call(op):
+      return op, use.operand_number, use.operand_number
+  # Second pass: a DUS at operand 0 — the "buffer being updated" slot.
+  # DUSes always have a single result, so the output index is 0.
+  for use in arg_value.uses:
+    op = use.owner
+    if op.operation.name == _DUS_OP and use.operand_number == 0:
+      return op, 0, 0
+  return None
+
+
+def _continuation_chain_step(
+    value: ir.Value,
+) -> tuple[ir.OpView, int, int] | None:
+  """Returns the next chain step from a carried value.
+
+  After the first step, the donation value flows into operand 0 of the
+  next op (the "buffer being updated" slot for both DUSes and pallas
+  custom_calls in a continuation). Returns the matched op or ``None``.
+  """
+  for use in value.uses:
+    if use.operand_number != 0:
+      continue
+    op = use.owner
+    if op.operation.name == _DUS_OP:
+      return op, 0, 0
+    if _is_pallas_custom_call(op):
+      return op, 0, 0
+  return None
+
+
+def _walk_donation_chain(
+    main_func: ir.Operation,
+    arg_idx: int,
+    output_idx: int,
+) -> list[tuple[ir.OpView, int, int]]:
+  """Walks the donation chain from ``@main`` arg ``arg_idx``.
+
+  Returns ``[(op, operand_idx, output_idx_in_op), ...]`` for each op
+  along the chain. The last entry's ``output_idx_in_op`` is overridden
+  with the JIT-recorded ``output_idx`` (the final @main output
+  position), since for multi-result kernels the matched per-step
+  index may not coincide with the @main output index of the donated
+  value.
+
+  Returns an empty list when the donated arg has no consumer matching
+  the chain pattern.
+  """
+  current = main_func.regions[0].blocks[0].arguments[arg_idx]
+  steps: list[tuple[ir.OpView, int, int]] = []
+  visited: set[int] = set()
+  is_first = True
+  while True:
+    next_step = (
+        _first_chain_step(current) if is_first
+        else _continuation_chain_step(current)
+    )
+    if next_step is None:
+      break
+    op, operand_idx_in_op, output_idx_in_op = next_step
+    next_value = op.results[output_idx_in_op]
+    next_id = id(next_value)
+    if next_id in visited:
+      break
+    visited.add(next_id)
+    steps.append((op, operand_idx_in_op, output_idx_in_op))
+    current = next_value
+    is_first = False
+  if steps:
+    final_op, op_operand_idx, _ = steps[-1]
+    steps[-1] = (final_op, op_operand_idx, output_idx)
+  return steps
+
+
+def _operation_key(op: ir.OpView) -> ir.Operation:
+  """Returns a stable dict key for an MLIR op.
+
+  Distinct ``OpView`` wrappers for the same underlying MLIR operation
+  compare equal and hash to the same value via the C++ binding's
+  ``__eq__``/``__hash__``, so we can use the unwrapped ``Operation``
+  directly as a dict key.
+  """
+  return op.operation
+
+
 def inject_inplace_donate_aliases(
     serialized_mlir: bytes,
     donate_argnums: Sequence[int],
 ) -> bytes:
   """Returns ``serialized_mlir`` with per-call buffer-aliasing applied.
 
-  Walks the exported pallas kernel module, finds the inner
-  ``stablehlo.custom_call`` for the pallas op, and adds
-  ``output_operand_aliases`` matching the donation contract — donated
-  input index ``i`` aliases output index ``i``. The returned bytes are
-  in StableHLO portable-artifact format, ready to be passed to
-  ``tpu_torch_pallas.register_custom_kernel``.
+  Walks the exported pallas kernel module and, for each ``@main``
+  argument that JAX recorded as donated, traces the in-place chain
+  forward — adding ``output_operand_aliases`` to every pallas
+  ``stablehlo.custom_call`` and every ``stablehlo.dynamic_update_slice``
+  along the way. The returned bytes are in StableHLO portable-artifact
+  format, ready to be passed to ``tpu_torch_pallas.register_custom_kernel``.
 
   No-ops in the following safe cases:
+
   * ``donate_argnums`` is empty.
-  * The exported module has no pallas custom_call (e.g. a pure-JAX
-    kernel with no ``pl.pallas_call``).
-  * The custom_call already carries ``output_operand_aliases`` (user
-    set ``input_output_aliases`` directly on ``pl.pallas_call`` — we
-    treat that as the source of truth and leave it alone).
+  * JAX did not record any donation on ``@main`` arg attrs (no
+    ``tf.aliasing_output``).
+  * Every op along every donation chain already carries
+    ``output_operand_aliases`` (the user has set ``input_output_aliases``
+    on ``pl.pallas_call`` or a previous injection already ran).
 
   Raises ``RuntimeError`` when:
-  * The module contains more than one pallas custom_call. The
-    donation contract for ``inplace_donate=True`` requires an
-    unambiguous mapping from a single donated input to a single
-    output buffer, and multiple custom_calls leave that ambiguous.
-  * A donated ``@main`` argument does not directly feed the
-    custom_call (e.g. there's an intervening reshape). That would
-    break the buffer-sharing assumption: the reshape's output is a
-    distinct buffer from the function argument, so aliasing the
-    custom_call's output to its operand would not reuse the donated
-    input's buffer.
+
   * The ``tf.aliasing_output`` mapping read from ``@main`` arg attrs
     disagrees with the caller-supplied ``donate_argnums`` (defensive:
     catches a stale ``donate_argnums`` from the caller).
+  * A donated ``@main`` arg has no consumer that can honor the
+    contract — i.e. there is no pallas custom_call that takes it as
+    an operand AND no DUS that takes it as operand 0. The buffer-
+    sharing assumption would be silently violated, so we refuse.
   """
   if not donate_argnums:
     return serialized_mlir
@@ -231,47 +339,45 @@ def inject_inplace_donate_aliases(
         "must match the inplace_donate contract."
     )
 
-  custom_calls = _find_pallas_custom_calls(main_func)
-  if not custom_calls:
-    # No pallas custom_call to annotate. This is the case for pure-JAX
-    # kernels that don't use pl.pallas_call. Leave the module alone.
-    return serialized_mlir
-  if len(custom_calls) > 1:
-    raise RuntimeError(
-        f"pallas inplace_donate alias injection: @main contains "
-        f"{len(custom_calls)} pallas custom_call ops, but "
-        "inplace_donate=True requires exactly one so the donation "
-        "contract maps unambiguously. Split the kernel or stop using "
-        "inplace_donate=True for this op."
-    )
-  custom_call = custom_calls[0]
-
-  if _OUTPUT_OPERAND_ALIASES_ATTR in custom_call.attributes:
-    # User already set input_output_aliases on pl.pallas_call; respect
-    # their choice rather than overwriting with potentially-different
-    # semantics.
-    return serialized_mlir
-
-  operand_to_output: list[tuple[int, int]] = []
+  # Per-op accumulator: when multiple donated args feed the same op
+  # (e.g. a multi-output pallas kernel donating arg 0 → out 0 AND
+  # arg 1 → out 1), they share one ``output_operand_aliases`` attribute
+  # with one entry per donation. We key the dict on the op itself —
+  # MLIR Python op wrappers hash on the underlying operation, so
+  # distinct wrappers for the same op collide correctly.
+  op_entries: dict[ir.Operation, tuple[ir.OpView, list[tuple[int, int]]]] = {}
   for arg_idx, output_idx in jit_pairs:
-    operand_idx = _operand_index_for_main_arg(
-        custom_call, main_func, arg_idx
-    )
-    if operand_idx is None:
+    chain = _walk_donation_chain(main_func, arg_idx, output_idx)
+    if not chain:
       raise RuntimeError(
           f"pallas inplace_donate alias injection: @main arg {arg_idx} "
-          "is donated but does not directly feed the pallas "
-          "custom_call (likely an intervening reshape/cast). "
-          "inplace_donate=True requires the donated input to flow "
-          "directly into the kernel so its buffer can be reused."
+          "is recorded as donated but has no consumer that can honor "
+          "the contract — neither a pallas custom_call nor a "
+          "dynamic_update_slice takes it as operand 0. Drop "
+          "inplace_donate=True or rewrite the kernel so the donated "
+          "input flows into an in-place op."
       )
-    operand_to_output.append((operand_idx, output_idx))
+    for op, operand_idx_in_op, output_idx_in_op in chain:
+      key = _operation_key(op)
+      if key not in op_entries:
+        op_entries[key] = (op, [])
+      op_entries[key][1].append((operand_idx_in_op, output_idx_in_op))
 
-  num_results = len(custom_call.results)
-  aliases_attr = _build_output_operand_aliases(
-      context, operand_to_output, num_results
-  )
-  custom_call.attributes[_OUTPUT_OPERAND_ALIASES_ATTR] = aliases_attr
+  changed = False
+  for op, entries in op_entries.values():
+    if _OUTPUT_OPERAND_ALIASES_ATTR in op.attributes:
+      # Respect any pre-existing aliasing (user-set, or a previous
+      # injection).
+      continue
+    num_results = len(op.results)
+    aliases_attr = _build_output_operand_aliases(
+        context, entries, num_results
+    )
+    op.attributes[_OUTPUT_OPERAND_ALIASES_ATTR] = aliases_attr
+    changed = True
+
+  if not changed:
+    return serialized_mlir
 
   target_version = stablehlo.get_current_version()
   serialized = stablehlo.serialize_portable_artifact_str(

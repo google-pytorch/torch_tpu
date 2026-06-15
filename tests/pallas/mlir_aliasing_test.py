@@ -213,5 +213,123 @@ class InjectInplaceDonateAliasesTest(absltest.TestCase):
     self.assertIn("operand_index = 0", text)
 
 
+def _slice_pallas_dus_kernel():
+  """Returns a JAX fn that slices the bundle, runs a per-layer pallas kernel,
+  then dynamic_update_slice's the result back into the bundle.
+
+  This is the kernel shape produced by jax.lax.dynamic_update_slice_in_dim
+  wrappers around a per-layer pallas kernel — the kernel pattern that
+  vLLM's block-major KV cache uses in production. The pallas custom_call
+  itself operates on a per-layer slice, but the donation contract is at
+  the BUNDLE level (the @main arg whose tf.aliasing_output maps it to
+  the full-bundle output).
+  """
+
+  def kern(b, o):
+    o[...] = b[...] + 1.0
+
+  def f(bundle, layer_idx):
+    per_layer = jax.lax.dynamic_slice_in_dim(bundle, layer_idx, 1, axis=1)
+    per_layer = per_layer.squeeze(axis=1)
+    new_per_layer = pl.pallas_call(
+        kern, out_shape=jax.ShapeDtypeStruct(per_layer.shape, per_layer.dtype)
+    )(per_layer)
+    new_per_layer_expanded = jnp.expand_dims(new_per_layer, axis=1)
+    return jax.lax.dynamic_update_slice_in_dim(
+        bundle, new_per_layer_expanded, layer_idx, axis=1
+    )
+
+  return f
+
+
+def _arg_passthrough_kernel():
+  """Returns a kernel where the donated arg is never consumed in-place.
+
+  The @main of this kernel just returns the donated arg unchanged.
+  inject_inplace_donate_aliases should refuse to annotate this since
+  there is no pallas custom_call OR DUS to honor the donation contract.
+  """
+
+  def f(bundle):
+    return bundle
+
+  return f
+
+
+class InjectInplaceDonateAliasesDusChainTest(absltest.TestCase):
+  """Tests for the slice→pallas→DUS pattern.
+
+  These exercise the chain-walking logic that lands
+  ``output_operand_aliases`` on the DUS when the donated bundle is
+  consumed by a parent dynamic_update_slice instead of being passed
+  directly into the pallas custom_call.
+  """
+
+  def test_slice_pallas_dus_annotates_dus(self):
+    """The DUS that writes back to the donated bundle gets aliased."""
+    f = _slice_pallas_dus_kernel()
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((8, 4, 8), jnp.float32)
+    layer_idx = jax.ShapeDtypeStruct((), jnp.int32)
+    serialized = _export_kernel(jit_fn, bundle, layer_idx)
+
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized, "Expected the module to be rewritten.")
+    text = _to_text(out)
+    # The DUS — not the (per-layer) pallas custom_call — owns the alias
+    # since the bundle flows through it as operand 0.
+    dus_pos = text.find("stablehlo.dynamic_update_slice")
+    self.assertGreaterEqual(dus_pos, 0)
+    # Find the aliasing tag, anchor it to the same line/op as the DUS.
+    alias_tag = "#stablehlo.output_operand_alias"
+    self.assertIn(alias_tag, text)
+    self.assertIn("output_tuple_indices = []", text)
+    self.assertIn("operand_index = 0", text)
+    # And the per-layer custom_call is left alone (the per-layer slice
+    # is a transient temporary, not the donated bundle).
+    cc_pos = text.find("stablehlo.custom_call @tpu_custom_call")
+    self.assertGreaterEqual(cc_pos, 0)
+    # The alias tag must appear AFTER the custom_call (on the DUS), not
+    # inside the custom_call's attribute dict.
+    last_cc_attr = text.find("}", cc_pos)
+    self.assertGreater(
+        text.find(alias_tag, last_cc_attr),
+        last_cc_attr,
+        "Alias annotation must be on the DUS, not the per-layer custom_call.",
+    )
+
+  def test_pure_passthrough_arg_raises(self):
+    """A donated arg with no in-place consumer raises (contract violated)."""
+    f = _arg_passthrough_kernel()
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    serialized = _export_kernel(jit_fn, _placeholder())
+    with self.assertRaisesRegex(
+        RuntimeError, "no consumer that can honor the contract"
+    ):
+      _mlir_aliasing.inject_inplace_donate_aliases(
+          serialized, donate_argnums=(0,)
+      )
+
+  def test_slice_pallas_dus_idempotent(self):
+    """Running the inject twice is a no-op the second time."""
+    f = _slice_pallas_dus_kernel()
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((8, 4, 8), jnp.float32)
+    layer_idx = jax.ShapeDtypeStruct((), jnp.int32)
+    serialized = _export_kernel(jit_fn, bundle, layer_idx)
+
+    # First inject: lands the alias on the DUS.
+    once = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    # Second inject is a no-op (idempotent).
+    twice = _mlir_aliasing.inject_inplace_donate_aliases(
+        once, donate_argnums=(0,)
+    )
+    self.assertEqual(once, twice)
+
+
 if __name__ == "__main__":
   absltest.main()
