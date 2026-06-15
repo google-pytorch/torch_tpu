@@ -331,5 +331,121 @@ class InjectInplaceDonateAliasesDusChainTest(absltest.TestCase):
     self.assertEqual(once, twice)
 
 
+class InjectInplaceDonateAliasesNestedCallTest(absltest.TestCase):
+  """Tests for the JAX-export-with-nested-func.call pattern.
+
+  When a jit'd inner function is invoked from an outer jit's body,
+  ``jax.export.export`` lifts the inner function into a private callee
+  and the outer @main just forwards arguments via ``func.call``. The
+  donated arg's only direct consumer is then the ``func.call`` op —
+  not a pallas custom_call and not a DUS. The chain walker must follow
+  the call into the callee and annotate the in-place op that lives
+  there. (Without this, the vLLM block-major KV kernel's exported
+  shape fails the contract check at register time and the wheel
+  refuses to install the kernel.)
+  """
+
+  @staticmethod
+  def _bundled_jit_inside_jit():
+    """Returns a wrapped(bundle, layer_idx, x) → bundle whose exported
+    module has @main → func.call @inner → DUS."""
+
+    def kern(b, x, o):
+      o[...] = b[...] + x[...]
+
+    @jax.jit
+    def inner(bundle, layer_idx, x):
+      per_layer = jax.lax.dynamic_slice_in_dim(bundle, layer_idx, 1, axis=1)
+      per_layer = per_layer.squeeze(axis=1)
+      new_per_layer = pl.pallas_call(
+          kern, out_shape=jax.ShapeDtypeStruct(per_layer.shape, per_layer.dtype)
+      )(per_layer, x)
+      new_per_layer_expanded = jnp.expand_dims(new_per_layer, axis=1)
+      return jax.lax.dynamic_update_slice_in_dim(
+          bundle, new_per_layer_expanded, layer_idx, axis=1
+      )
+
+    def wrapped(bundle, layer_idx, x):
+      return inner(bundle, layer_idx, x)
+
+    return wrapped
+
+  def _export_nested(self):
+    wrapped = self._bundled_jit_inside_jit()
+    jit_fn = jax.jit(wrapped, donate_argnums=(0,))
+    return _export_kernel(
+        jit_fn,
+        jax.ShapeDtypeStruct((4, 3, 8), jnp.float32),
+        jax.ShapeDtypeStruct((), jnp.int32),
+        jax.ShapeDtypeStruct((4, 8), jnp.float32),
+    )
+
+  def test_nested_call_module_has_two_functions(self):
+    """Sanity: the export really does produce @main + a callee.
+
+    If JAX ever changes its export shape to inline the inner jit, the
+    other tests in this class would become accidentally trivial — this
+    one fails loudly so the regression is visible.
+    """
+    serialized = self._export_nested()
+    text = _to_text(serialized)
+    self.assertIn("func.func public @main", text)
+    self.assertIn("func.func private @", text)
+    self.assertIn("call @", text)
+
+  def test_nested_call_aliases_dus_in_callee(self):
+    """The DUS inside the callee gets aliased; the outer @main is
+    structurally unchanged.
+    """
+    serialized = self._export_nested()
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized)
+    text = _to_text(out)
+    # The alias appears exactly once — on the DUS inside the callee.
+    self.assertEqual(text.count("#stablehlo.output_operand_alias"), 1)
+    # Anchor the alias to the DUS line, not to the func.call or @main.
+    dus_line_start = text.find("stablehlo.dynamic_update_slice")
+    self.assertGreaterEqual(dus_line_start, 0)
+    dus_line_end = text.find("\n", dus_line_start)
+    self.assertGreater(dus_line_end, dus_line_start)
+    self.assertIn(
+        "output_operand_aliases", text[dus_line_start:dus_line_end]
+    )
+
+  def test_nested_call_pallas_only_kernel_aliases_custom_call(self):
+    """Variant: the callee body is a direct pallas custom_call with no
+    DUS. The alias still lands on the custom_call across the call
+    boundary.
+    """
+
+    def kern(x, y, o):
+      o[...] = x[...] + y[...]
+
+    @jax.jit
+    def inner(x, y):
+      return pl.pallas_call(
+          kern, out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype)
+      )(x, y)
+
+    def wrapped(x, y):
+      return inner(x, y)
+
+    jit_fn = jax.jit(wrapped, donate_argnums=(0,))
+    serialized = _export_kernel(jit_fn, _placeholder(), _placeholder())
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized)
+    text = _to_text(out)
+    cc_line_start = text.find("stablehlo.custom_call @tpu_custom_call")
+    self.assertGreaterEqual(cc_line_start, 0)
+    cc_line_end = text.find("\n", cc_line_start)
+    self.assertIn(
+        "output_operand_aliases", text[cc_line_start:cc_line_end]
+    )
+
+
 if __name__ == "__main__":
   absltest.main()

@@ -103,6 +103,15 @@ _OUTPUT_OPERAND_ALIASES_ATTR = "output_operand_aliases"
 _CUSTOM_CALL_OP = "stablehlo.custom_call"
 _DUS_OP = "stablehlo.dynamic_update_slice"
 
+# A ``func.call`` use of a donated value is a transparent step: the
+# chain continues from the matching block argument of the callee
+# function. JAX export of a jit-inside-jit kernel wraps the body in a
+# private callee whose @main bridges arg → call(callee, ..., arg, ...).
+# Annotating ops inside the callee is correct because XLA's CallInliner
+# preserves op attributes when it folds the callee body back into
+# @main.
+_FUNC_CALL_OP = "func.call"
+
 
 def _find_main_function(module: ir.Module) -> ir.Operation:
   """Returns the @main ``func.func`` op of `module`.
@@ -120,6 +129,24 @@ def _find_main_function(module: ir.Module) -> ir.Operation:
       "function. JAX export must produce a module with a single public "
       "@main; this module is malformed."
   )
+
+
+def _find_function_by_name(
+    module: ir.Module, name: str,
+) -> ir.Operation | None:
+  """Returns the ``func.func`` op with ``sym_name == name``, or None.
+
+  Used to resolve a ``func.call``'s callee symbol within the same
+  exported module. Returns ``None`` (rather than raising) so the chain
+  walker can degrade gracefully when a call target lives outside the
+  module — that case is structurally identical to a dead end for our
+  purposes.
+  """
+  for op in module.operation.regions[0].blocks[0].operations:
+    sym_name = op.attributes.get("sym_name", None)
+    if sym_name is not None and sym_name.value == name:
+      return op
+  return None
 
 
 def _read_jit_alias_pairs(
@@ -181,17 +208,53 @@ def _build_output_operand_aliases(
     return ir.ArrayAttr.get(entries)
 
 
+def _resolve_func_call_into_callee(
+    use: "ir.OpOperand",
+    module: ir.Module,
+) -> ir.Value | None:
+  """Follows a ``func.call`` use into the callee's matching block arg.
+
+  When the donated value enters a ``func.call`` at some operand
+  position, the chain continues from the callee function's block
+  argument at the same position. Returns that block argument, or
+  ``None`` if the use is not a ``func.call`` we can resolve.
+  """
+  op = use.owner
+  if op.operation.name != _FUNC_CALL_OP:
+    return None
+  callee_attr = op.attributes.get("callee", None)
+  if callee_attr is None:
+    return None
+  callee_name = callee_attr.value
+  callee = _find_function_by_name(module, callee_name)
+  if callee is None:
+    return None
+  callee_block = callee.regions[0].blocks[0]
+  if use.operand_number >= len(callee_block.arguments):
+    return None
+  return callee_block.arguments[use.operand_number]
+
+
 def _first_chain_step(
     arg_value: ir.Value,
+    module: ir.Module,
+    visited_block_args: set[int] | None = None,
 ) -> tuple[ir.OpView, int, int] | None:
   """Returns the first step of the donation chain rooted at ``arg_value``.
 
   The first step may match the donated arg at any operand position. We
-  prefer a pallas custom_call (the most direct in-place semantics) and
-  fall back to a DUS at operand 0. Returns
+  prefer a pallas custom_call (the most direct in-place semantics),
+  fall back to a DUS at operand 0, and finally follow a ``func.call``
+  into its callee's matching block argument. Returns
   ``(op, operand_idx_in_op, output_idx_in_op)`` or ``None`` if no
   matching consumer exists.
+
+  ``visited_block_args`` carries the set of block-argument ids we have
+  already entered, to defend against ill-formed modules with cyclic
+  call graphs.
   """
+  if visited_block_args is None:
+    visited_block_args = set()
   # First pass: prefer a pallas custom_call. For pallas, the kernel
   # contract maps operand i → result i, so the output index follows
   # the operand position.
@@ -205,18 +268,38 @@ def _first_chain_step(
     op = use.owner
     if op.operation.name == _DUS_OP and use.operand_number == 0:
       return op, 0, 0
+  # Third pass: follow a func.call into the callee. JAX export wraps a
+  # jit-inside-jit kernel in @main → call @callee(..., donated_arg, ...);
+  # the actual chain lives in the callee.
+  for use in arg_value.uses:
+    callee_arg = _resolve_func_call_into_callee(use, module)
+    if callee_arg is None:
+      continue
+    callee_arg_id = id(callee_arg)
+    if callee_arg_id in visited_block_args:
+      continue
+    visited_block_args.add(callee_arg_id)
+    inner = _first_chain_step(callee_arg, module, visited_block_args)
+    if inner is not None:
+      return inner
   return None
 
 
 def _continuation_chain_step(
     value: ir.Value,
+    module: ir.Module,
+    visited_block_args: set[int] | None = None,
 ) -> tuple[ir.OpView, int, int] | None:
   """Returns the next chain step from a carried value.
 
   After the first step, the donation value flows into operand 0 of the
   next op (the "buffer being updated" slot for both DUSes and pallas
-  custom_calls in a continuation). Returns the matched op or ``None``.
+  custom_calls in a continuation). A ``func.call`` use is followed
+  transparently into the callee, same as for the first step. Returns
+  the matched op or ``None``.
   """
+  if visited_block_args is None:
+    visited_block_args = set()
   for use in value.uses:
     if use.operand_number != 0:
       continue
@@ -225,6 +308,19 @@ def _continuation_chain_step(
       return op, 0, 0
     if _is_pallas_custom_call(op):
       return op, 0, 0
+  # No direct in-place op consumed `value` at operand 0 — try
+  # threading through a func.call at any operand position.
+  for use in value.uses:
+    callee_arg = _resolve_func_call_into_callee(use, module)
+    if callee_arg is None:
+      continue
+    callee_arg_id = id(callee_arg)
+    if callee_arg_id in visited_block_args:
+      continue
+    visited_block_args.add(callee_arg_id)
+    inner = _first_chain_step(callee_arg, module, visited_block_args)
+    if inner is not None:
+      return inner
   return None
 
 
@@ -232,6 +328,7 @@ def _walk_donation_chain(
     main_func: ir.Operation,
     arg_idx: int,
     output_idx: int,
+    module: ir.Module,
 ) -> list[tuple[ir.OpView, int, int]]:
   """Walks the donation chain from ``@main`` arg ``arg_idx``.
 
@@ -248,11 +345,13 @@ def _walk_donation_chain(
   current = main_func.regions[0].blocks[0].arguments[arg_idx]
   steps: list[tuple[ir.OpView, int, int]] = []
   visited: set[int] = set()
+  visited_block_args: set[int] = set()
   is_first = True
   while True:
     next_step = (
-        _first_chain_step(current) if is_first
-        else _continuation_chain_step(current)
+        _first_chain_step(current, module, visited_block_args)
+        if is_first
+        else _continuation_chain_step(current, module, visited_block_args)
     )
     if next_step is None:
       break
@@ -347,7 +446,7 @@ def inject_inplace_donate_aliases(
   # distinct wrappers for the same op collide correctly.
   op_entries: dict[ir.Operation, tuple[ir.OpView, list[tuple[int, int]]]] = {}
   for arg_idx, output_idx in jit_pairs:
-    chain = _walk_donation_chain(main_func, arg_idx, output_idx)
+    chain = _walk_donation_chain(main_func, arg_idx, output_idx, module)
     if not chain:
       raise RuntimeError(
           f"pallas inplace_donate alias injection: @main arg {arg_idx} "
