@@ -36,4 +36,13 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "inplace_donate_ssa_rename",
+    srcs = ["inplace_donate_ssa_rename.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/pallas:pallas_lib",
+    ],
+)
+
 torch_tpu_package_end()

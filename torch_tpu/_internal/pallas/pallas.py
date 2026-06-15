@@ -44,6 +44,32 @@ except ImportError as ex:
   ) from ex
 
 
+# Registry of pallas ops registered with `inplace_donate=True`.
+#
+# Keyed by qualified op name (e.g. ``"pallas::add_vectors_donated"``), with
+# value being the tuple of input indices that the op donates. Populated by
+# :func:`jax_op` at registration time and consumed by the compile-backend
+# FX pass `inplace_donate_ssa_rename` which threads each donated input's
+# corresponding output through to subsequent uses so that fused, sequential
+# donating calls inside a ``torch.compile`` graph each donate a distinct SSA
+# value (required by XLA).
+_INPLACE_DONATE_OPS: dict[str, tuple[int, ...]] = {}
+
+
+def get_inplace_donate_op_donate_argnums(op_name: str) -> tuple[int, ...] | None:
+  """Returns the donated input indices for a registered inplace-donate op.
+
+  Args:
+    op_name: Qualified op name as produced by ``OpOverload._schema.name``
+      (e.g. ``"pallas::add_vectors_donated"``).
+
+  Returns:
+    The tuple of donated input indices, or ``None`` if ``op_name`` is not
+    an inplace-donate pallas op.
+  """
+  return _INPLACE_DONATE_OPS.get(op_name)
+
+
 # Based on torch/_C/__init__.pyi
 # Skip alias types since they are covered by other entries in the table. JAX
 # also has similar alias types, but it relies on JAX config.py, which may not
@@ -847,6 +873,16 @@ def jax_op(
     )
 
     result.register_fake(fake_fn)
+
+    if inplace_donate:
+      # Under torch.compile, sequential calls to this op are fused into a
+      # single executable. The host-side rebind in `PyCallCustomKernel` fires
+      # at most once during tracing, so the chained-donation semantics that
+      # work in eager mode do not survive into the compiled graph. The
+      # compile backend's `inplace_donate_ssa_rename` FX pass consumes this
+      # registry to thread each donated input's matching output forward to
+      # subsequent uses, giving every donating call a distinct SSA value.
+      _INPLACE_DONATE_OPS[name] = tuple(wrapped_fn.donate_argnums)
 
     return result
 

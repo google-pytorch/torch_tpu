@@ -1049,6 +1049,47 @@ class TestPallasKernels(absltest.TestCase):
     expected = torch.full((4,), 5.0, dtype=torch.float32)
     utils.assert_close(x.to("cpu"), expected)
 
+  def test_inplace_donate_chained_calls_thread_same_tensor_compiled_mode(self):
+    """Compile-mode counterpart of the chained donation test.
+
+    Under ``torch.compile`` the sequential donating calls collapse into a
+    single PJRT executable. The eager-mode host-side rebind in
+    ``PyCallCustomKernel`` runs at most once during tracing, so without
+    the ``inplace_donate_ssa_rename`` FX pass every call would donate the
+    same SSA value and XLA would reject the program with
+    ``"Donation requested for invalid buffer"``. The pass threads each
+    call's output forward, giving every donation a distinct SSA value
+    and producing the same chained-sum result as eager mode."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_chained_compiled",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def chained_sums(bundle, y0, y1, y2, y3, y4):
+      # Each call donates `bundle` — without the SSA rewrite this is the
+      # bug pattern that breaks vLLM's block-major KV cache under
+      # torch.compile.
+      s0 = op(bundle, y0).sum()
+      s1 = op(bundle, y1).sum()
+      s2 = op(bundle, y2).sum()
+      s3 = op(bundle, y3).sum()
+      s4 = op(bundle, y4).sum()
+      return torch.stack([s0, s1, s2, s3, s4])
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    y0 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y1 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y2 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y3 = torch.ones(4, dtype=torch.float32, device=self.device)
+    y4 = torch.ones(4, dtype=torch.float32, device=self.device)
+    sums = chained_sums(bundle, y0, y1, y2, y3, y4)
+    # Iteration i produces bundle_i = bundle + i * 1 = i+1, sum = 4*(i+1).
+    expected = torch.tensor([4.0, 8.0, 12.0, 16.0, 20.0], dtype=torch.float32)
+    utils.assert_close(sums.to("cpu"), expected)
+
 
 class TestPallasCompat(absltest.TestCase):
 

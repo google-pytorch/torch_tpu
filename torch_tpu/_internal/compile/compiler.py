@@ -40,6 +40,7 @@ from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.fx_passes import inplace_donate_ssa_rename
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 
@@ -558,6 +559,9 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "inplace_donate_ssa_rename"
+    ).apply_graph_pass(inplace_donate_ssa_rename.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)

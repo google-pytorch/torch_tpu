@@ -27,6 +27,7 @@ torch_tpu_py_library(
         ":tpu_torch_compile",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile/fx_passes:inplace_donate_ssa_rename",
         "//torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//torch_tpu/_internal/export",
