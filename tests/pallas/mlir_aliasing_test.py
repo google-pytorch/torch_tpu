@@ -447,5 +447,220 @@ class InjectInplaceDonateAliasesNestedCallTest(absltest.TestCase):
     )
 
 
+class InjectInplaceDonateAliasesViewOpChainTest(absltest.TestCase):
+  """Tests for view-op traversal in the donation chain walker.
+
+  ``stablehlo.reshape``, ``stablehlo.transpose``,
+  ``stablehlo.broadcast_in_dim``, and
+  ``stablehlo.bitcast_convert_type`` represent no-copy buffer-view
+  transforms — the carried buffer-view is the same underlying
+  allocation. The walker must thread the donation chain through them
+  transparently without recording a chain step for the view itself.
+  """
+
+  def test_reshape_pallas_reshape_aliases_custom_call(self):
+    """arg → reshape → pallas → reshape → return: alias lands on pallas."""
+
+    def kern(b, o):
+      o[...] = b[...] + 1.0
+
+    def f(bundle):
+      flat = bundle.reshape(
+          bundle.shape[0] * bundle.shape[1], *bundle.shape[2:]
+      )
+      new_flat = pl.pallas_call(
+          kern, out_shape=jax.ShapeDtypeStruct(flat.shape, flat.dtype)
+      )(flat)
+      return new_flat.reshape(bundle.shape)
+
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((4, 3, 8), jnp.float32)
+    serialized = _export_kernel(jit_fn, bundle)
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized)
+    text = _to_text(out)
+    # Anchor the alias to the custom_call line itself, not to a reshape
+    # or to @main's signature.
+    cc_line_start = text.find("stablehlo.custom_call @tpu_custom_call")
+    self.assertGreaterEqual(cc_line_start, 0)
+    cc_line_end = text.find("\n", cc_line_start)
+    self.assertIn(
+        "output_operand_aliases", text[cc_line_start:cc_line_end]
+    )
+
+  def test_pallas_with_existing_alias_no_overwrite(self):
+    """Reshape→pallas where the pallas already has output_operand_aliases.
+
+    Mirrors the bundled-RPA shape: 10 inputs, 2 outputs, with operand 9
+    aliased to result 1 via ``input_output_aliases``. The walker must
+    NOT crash on ``op.results[9]`` and must NOT overwrite the existing
+    alias.
+    """
+
+    def kern(*refs):
+      out_refs = refs[-2:]
+      in_refs = refs[:-2]
+      out_refs[0][...] = in_refs[0][...] + 1.0
+      out_refs[1][...] = in_refs[-1][...] * 2.0
+
+    num_in = 10
+
+    def f(bundle, *others):
+      flat = bundle.reshape(
+          bundle.shape[0] * bundle.shape[1], *bundle.shape[2:]
+      )
+      inputs = list(others) + [flat]
+      out, new_flat = pl.pallas_call(
+          kern,
+          out_shape=[
+              jax.ShapeDtypeStruct((8, 8), jnp.float32),
+              jax.ShapeDtypeStruct(flat.shape, flat.dtype),
+          ],
+          input_output_aliases={num_in - 1: 1},
+      )(*inputs)
+      return out, new_flat.reshape(bundle.shape)
+
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((4, 3, 8), jnp.float32)
+    others = [
+        jax.ShapeDtypeStruct((8, 8), jnp.float32) for _ in range(num_in - 1)
+    ]
+    serialized = _export_kernel(jit_fn, bundle, *others)
+    # The pre-existing alias must be present in the exported module.
+    self.assertIn("output_operand_aliases", _to_text(serialized))
+    # The injection must succeed (no IndexError) and leave the bytes
+    # unchanged since the kernel's own alias is already correct.
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertEqual(out, serialized)
+    # Verify the alias entry survived and still maps operand 9 → output 1.
+    text = _to_text(out)
+    self.assertIn("operand_index = 9", text)
+    self.assertIn("output_tuple_indices = [1]", text)
+
+  def test_transpose_pallas_aliases_custom_call(self):
+    """A transpose between arg and pallas is traversed."""
+
+    def kern(b, o):
+      o[...] = b[...] + 1.0
+
+    def f(bundle):
+      transposed = jnp.transpose(bundle, (1, 0))
+      new = pl.pallas_call(
+          kern,
+          out_shape=jax.ShapeDtypeStruct(transposed.shape, transposed.dtype),
+      )(transposed)
+      return jnp.transpose(new, (1, 0))
+
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((8, 16), jnp.float32)
+    serialized = _export_kernel(jit_fn, bundle)
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized)
+    text = _to_text(out)
+    cc_line_start = text.find("stablehlo.custom_call @tpu_custom_call")
+    self.assertGreaterEqual(cc_line_start, 0)
+    cc_line_end = text.find("\n", cc_line_start)
+    self.assertIn(
+        "output_operand_aliases", text[cc_line_start:cc_line_end]
+    )
+
+  def test_pallas_operand_index_out_of_range_raises(self):
+    """N-in/M-out kernel with M<N and no alias: walker returns no step.
+
+    The donated arg flows into a high operand position whose default
+    ``operand i → result i`` mapping would index past the end of the
+    custom_call's result list. Without the
+    ``_resolve_pallas_output_index`` bounds check this would
+    ``IndexError`` deep inside ``_walk_donation_chain``; instead the
+    walker treats the call as a non-step and the chain is empty, which
+    surfaces as the contract-violation error.
+    """
+
+    def kern(*refs):
+      out_refs = refs[-2:]
+      in_refs = refs[:-2]
+      out_refs[0][...] = in_refs[0][...] + 1.0
+      out_refs[1][...] = in_refs[1][...] * 2.0
+
+    num_in = 10
+
+    def f(*inputs):
+      return pl.pallas_call(
+          kern,
+          out_shape=[
+              jax.ShapeDtypeStruct((8, 8), jnp.float32),
+              jax.ShapeDtypeStruct((8, 8), jnp.float32),
+          ],
+      )(*inputs)
+
+    # Donate the LAST input — at operand 9, with only 2 results, the
+    # default 9 → result 9 mapping is out of range AND no
+    # ``input_output_aliases`` is declared so the read-from-attribute
+    # path returns nothing either.
+    jit_fn = jax.jit(f, donate_argnums=(num_in - 1,))
+    placeholders = [
+        jax.ShapeDtypeStruct((8, 8), jnp.float32) for _ in range(num_in)
+    ]
+    serialized = _export_kernel(jit_fn, *placeholders)
+    with self.assertRaisesRegex(
+        RuntimeError, "no consumer that can honor the contract"
+    ):
+      _mlir_aliasing.inject_inplace_donate_aliases(
+          serialized, donate_argnums=(num_in - 1,)
+      )
+
+  def test_reshape_only_passthrough_raises(self):
+    """arg → reshape → return (no in-place op) raises the contract error."""
+
+    def f(bundle):
+      flat = bundle.reshape(bundle.shape[0] * bundle.shape[1], *bundle.shape[2:])
+      return flat.reshape(bundle.shape)
+
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((4, 3, 8), jnp.float32)
+    serialized = _export_kernel(jit_fn, bundle)
+    with self.assertRaisesRegex(
+        RuntimeError, "no consumer that can honor the contract"
+    ):
+      _mlir_aliasing.inject_inplace_donate_aliases(
+          serialized, donate_argnums=(0,)
+      )
+
+  def test_reshape_dus_chain_aliases_dus(self):
+    """arg → reshape → DUS-back chain: alias lands on the DUS."""
+
+    def f(bundle, layer_idx):
+      flat = bundle.reshape(
+          bundle.shape[0] * bundle.shape[1], *bundle.shape[2:]
+      )
+      replacement = jnp.zeros((1, *flat.shape[1:]), flat.dtype)
+      new_flat = jax.lax.dynamic_update_slice_in_dim(
+          flat, replacement, layer_idx, axis=0
+      )
+      return new_flat.reshape(bundle.shape)
+
+    jit_fn = jax.jit(f, donate_argnums=(0,))
+    bundle = jax.ShapeDtypeStruct((4, 3, 8), jnp.float32)
+    layer_idx = jax.ShapeDtypeStruct((), jnp.int32)
+    serialized = _export_kernel(jit_fn, bundle, layer_idx)
+    out = _mlir_aliasing.inject_inplace_donate_aliases(
+        serialized, donate_argnums=(0,)
+    )
+    self.assertNotEqual(out, serialized)
+    text = _to_text(out)
+    dus_line_start = text.find("stablehlo.dynamic_update_slice")
+    self.assertGreaterEqual(dus_line_start, 0)
+    dus_line_end = text.find("\n", dus_line_start)
+    self.assertIn(
+        "output_operand_aliases", text[dus_line_start:dus_line_end]
+    )
+
+
 if __name__ == "__main__":
   absltest.main()

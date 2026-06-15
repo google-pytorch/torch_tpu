@@ -52,10 +52,25 @@ The FIRST step may match the arg at any operand position (a multi-arg
 full-bundle pallas kernel donates `arg i → operand i → result i`).
 SUBSEQUENT steps require the carried value to feed operand 0 of the
 next op (the standard "buffer being updated" slot for both pallas
-custom_calls and DUSes). Other ops along the chain — reshape,
-broadcast_in_dim, dynamic_slice that READS the donated value — are
-inert for the analysis: they neither carry the donation value forward
-nor invalidate it.
+custom_calls and DUSes). A small set of no-copy SHAPE-VIEW ops
+(``stablehlo.reshape``, ``stablehlo.transpose``,
+``stablehlo.broadcast_in_dim``, ``stablehlo.bitcast_convert_type``)
+are TRANSPARENT to the walk: the carried buffer-view is the same
+underlying buffer, so we recurse on the view's result without adding
+a chain step for the view itself. A ``func.call`` use is likewise
+transparent: the chain continues from the callee block argument at
+the matching operand position (XLA's CallInliner preserves op
+attributes when it folds the callee body back into @main).
+
+For a pallas ``stablehlo.custom_call``, the within-op output index
+that aliases a given operand position is read from the call's own
+pre-existing ``output_operand_aliases`` attribute when present (this
+is JAX's translation of ``input_output_aliases`` on ``pl.pallas_call``,
+preserved across ``jax.export.export``). The default "operand i →
+result i" mapping is used as a fallback only when that index is
+in range; a chain step that would otherwise reference a non-existent
+result is dropped so the walker can fall through to a different
+consumer of the donated value rather than crashing.
 
 The rewrite is idempotent and respectful: it skips any op that already
 carries ``output_operand_aliases`` (e.g. the user set
@@ -111,6 +126,23 @@ _DUS_OP = "stablehlo.dynamic_update_slice"
 # preserves op attributes when it folds the callee body back into
 # @main.
 _FUNC_CALL_OP = "func.call"
+
+# No-copy shape-view ops that the walker treats as transparent. The
+# carried buffer survives through each of these as the same physical
+# allocation under XLA's BufferAssignment, so the donation contract
+# continues from ``op.results[0]``. ``broadcast_in_dim`` is included
+# because it appears in chains where the broadcast is degenerate
+# (matches input shape and dimensions) and acts as a typecast — when
+# this is not the case the downstream in-place op simply does not
+# fire and the walker terminates without an alias.
+_VIEW_OPS = frozenset(
+    [
+        "stablehlo.reshape",
+        "stablehlo.transpose",
+        "stablehlo.broadcast_in_dim",
+        "stablehlo.bitcast_convert_type",
+    ]
+)
 
 
 def _find_main_function(module: ir.Module) -> ir.Operation:
@@ -208,6 +240,46 @@ def _build_output_operand_aliases(
     return ir.ArrayAttr.get(entries)
 
 
+def _resolve_pallas_output_index(
+    op: ir.OpView, operand_idx: int,
+) -> int | None:
+  """Returns the within-op result index aliased to ``operand_idx``.
+
+  Two paths, in priority order:
+
+  1. If ``op`` already carries an ``output_operand_aliases`` attribute
+     (e.g. JAX export translated ``input_output_aliases`` declared on
+     ``pl.pallas_call``), look up the entry whose ``operand_index``
+     matches ``operand_idx`` and return its
+     ``output_tuple_indices[0]`` (or 0 for a single-result op where
+     the indices list is empty).
+  2. Otherwise, default to ``operand_idx`` itself — the standard
+     "operand i → result i" assumption for full-bundle pallas kernels
+     where the donated input flows directly into a same-shape result.
+
+  Returns ``None`` if neither path produces an index that is in range
+  for ``op.results``. This lets the chain walker treat a pallas
+  custom_call whose declared aliasing does not match the current
+  operand as a non-step (so it can fall through to another consumer
+  of the donated value) rather than indexing past the end of
+  ``op.results``.
+  """
+  aliases_attr = op.attributes.get(_OUTPUT_OPERAND_ALIASES_ATTR, None)
+  if aliases_attr is not None:
+    for entry in aliases_attr:
+      typed = stablehlo.OutputOperandAlias(entry)
+      if int(typed.operand_index) != operand_idx:
+        continue
+      indices = list(typed.output_tuple_indices)
+      candidate = int(indices[0]) if indices else 0
+      if candidate < len(op.results):
+        return candidate
+      return None
+  if operand_idx < len(op.results):
+    return operand_idx
+  return None
+
+
 def _resolve_func_call_into_callee(
     use: "ir.OpOperand",
     module: ir.Module,
@@ -244,8 +316,10 @@ def _first_chain_step(
 
   The first step may match the donated arg at any operand position. We
   prefer a pallas custom_call (the most direct in-place semantics),
-  fall back to a DUS at operand 0, and finally follow a ``func.call``
-  into its callee's matching block argument. Returns
+  fall back to a DUS at operand 0, then recurse through a no-copy
+  view op (``stablehlo.reshape``, ``transpose``, ``broadcast_in_dim``,
+  ``bitcast_convert_type``), and finally follow a ``func.call`` into
+  its callee's matching block argument. Returns
   ``(op, operand_idx_in_op, output_idx_in_op)`` or ``None`` if no
   matching consumer exists.
 
@@ -255,20 +329,37 @@ def _first_chain_step(
   """
   if visited_block_args is None:
     visited_block_args = set()
-  # First pass: prefer a pallas custom_call. For pallas, the kernel
-  # contract maps operand i → result i, so the output index follows
-  # the operand position.
+  # Pass 1: prefer a pallas custom_call. For pallas, the within-op
+  # result index aliased to ``use.operand_number`` is resolved from
+  # the op's existing ``output_operand_aliases`` attribute (if set by
+  # the kernel via ``input_output_aliases``), falling back to
+  # ``operand_idx`` when in range — see ``_resolve_pallas_output_index``.
   for use in arg_value.uses:
     op = use.owner
-    if _is_pallas_custom_call(op):
-      return op, use.operand_number, use.operand_number
-  # Second pass: a DUS at operand 0 — the "buffer being updated" slot.
+    if not _is_pallas_custom_call(op):
+      continue
+    output_idx = _resolve_pallas_output_index(op, use.operand_number)
+    if output_idx is None:
+      continue
+    return op, use.operand_number, output_idx
+  # Pass 2: a DUS at operand 0 — the "buffer being updated" slot.
   # DUSes always have a single result, so the output index is 0.
   for use in arg_value.uses:
     op = use.owner
     if op.operation.name == _DUS_OP and use.operand_number == 0:
       return op, 0, 0
-  # Third pass: follow a func.call into the callee. JAX export wraps a
+  # Pass 3: recurse through a no-copy view op. View ops are
+  # transparent — the carried buffer-view is the same allocation, so
+  # the donation chain continues from ``op.results[0]`` with
+  # first-step semantics (any operand position).
+  for use in arg_value.uses:
+    op = use.owner
+    if op.operation.name not in _VIEW_OPS:
+      continue
+    inner = _first_chain_step(op.results[0], module, visited_block_args)
+    if inner is not None:
+      return inner
+  # Pass 4: follow a func.call into the callee. JAX export wraps a
   # jit-inside-jit kernel in @main → call @callee(..., donated_arg, ...);
   # the actual chain lives in the callee.
   for use in arg_value.uses:
@@ -294,12 +385,13 @@ def _continuation_chain_step(
 
   After the first step, the donation value flows into operand 0 of the
   next op (the "buffer being updated" slot for both DUSes and pallas
-  custom_calls in a continuation). A ``func.call`` use is followed
-  transparently into the callee, same as for the first step. Returns
-  the matched op or ``None``.
+  custom_calls in a continuation). View ops and ``func.call`` are
+  followed transparently, same as for the first step. Returns the
+  matched op or ``None``.
   """
   if visited_block_args is None:
     visited_block_args = set()
+  # Direct in-place op at operand 0.
   for use in value.uses:
     if use.operand_number != 0:
       continue
@@ -307,7 +399,21 @@ def _continuation_chain_step(
     if op.operation.name == _DUS_OP:
       return op, 0, 0
     if _is_pallas_custom_call(op):
-      return op, 0, 0
+      output_idx = _resolve_pallas_output_index(op, 0)
+      if output_idx is None:
+        continue
+      return op, 0, output_idx
+  # Recurse through a no-copy view op. The carried value's only use
+  # of a unary view op is at operand 0, so no filter needed.
+  for use in value.uses:
+    op = use.owner
+    if op.operation.name not in _VIEW_OPS:
+      continue
+    inner = _continuation_chain_step(
+        op.results[0], module, visited_block_args
+    )
+    if inner is not None:
+      return inner
   # No direct in-place op consumed `value` at operand 0 — try
   # threading through a func.call at any operand position.
   for use in value.uses:
@@ -327,17 +433,18 @@ def _continuation_chain_step(
 def _walk_donation_chain(
     main_func: ir.Operation,
     arg_idx: int,
-    output_idx: int,
     module: ir.Module,
 ) -> list[tuple[ir.OpView, int, int]]:
   """Walks the donation chain from ``@main`` arg ``arg_idx``.
 
   Returns ``[(op, operand_idx, output_idx_in_op), ...]`` for each op
-  along the chain. The last entry's ``output_idx_in_op`` is overridden
-  with the JIT-recorded ``output_idx`` (the final @main output
-  position), since for multi-result kernels the matched per-step
-  index may not coincide with the @main output index of the donated
-  value.
+  along the chain. Each ``output_idx_in_op`` is the WITHIN-OP result
+  index that aliases with the matched operand — the value
+  ``_build_output_operand_aliases`` consumes for
+  ``output_tuple_indices``. It is intentionally independent of the
+  @main output index; XLA's BufferAssignment plumbs each instruction-
+  level alias to @main's outputs via dataflow regardless of how the
+  return tuple is ordered.
 
   Returns an empty list when the donated arg has no consumer matching
   the chain pattern.
@@ -364,9 +471,6 @@ def _walk_donation_chain(
     steps.append((op, operand_idx_in_op, output_idx_in_op))
     current = next_value
     is_first = False
-  if steps:
-    final_op, op_operand_idx, _ = steps[-1]
-    steps[-1] = (final_op, op_operand_idx, output_idx)
   return steps
 
 
@@ -445,8 +549,8 @@ def inject_inplace_donate_aliases(
   # MLIR Python op wrappers hash on the underlying operation, so
   # distinct wrappers for the same op collide correctly.
   op_entries: dict[ir.Operation, tuple[ir.OpView, list[tuple[int, int]]]] = {}
-  for arg_idx, output_idx in jit_pairs:
-    chain = _walk_donation_chain(main_func, arg_idx, output_idx, module)
+  for arg_idx, _ in jit_pairs:
+    chain = _walk_donation_chain(main_func, arg_idx, module)
     if not chain:
       raise RuntimeError(
           f"pallas inplace_donate alias injection: @main arg {arg_idx} "
