@@ -19,7 +19,7 @@ import contextlib
 import copy
 import dataclasses
 import functools
-from typing import Any, TypeAlias
+from typing import Any, Optional, TypeAlias
 
 from absl import logging
 import torch
@@ -106,6 +106,16 @@ class ExportedMlir:
       generator state. If so, one additional input tensor as the last argument
       is expected for the generator state tensor, and the one additional tensor
       as the last output is expected for the updated generator state tensor.
+    donate_input_output_aliases: A list of ``(arg_index, output_index)`` pairs
+      that describe inputs whose storage should be rebound to a specific
+      executable output buffer once execution completes. ``arg_index`` is the
+      position of the donated tensor in the runtime args list (matching the
+      FX graph's placeholder order, excluding non-tensor entries). ``output_index``
+      is the position of the corresponding extra output in the executable's
+      output list — placed *between* the user-visible outputs and any device
+      state tensors so that existing device-state slicing logic in
+      ``_TorchTpuCompiledExecutable`` continues to operate from the tail.
+      An empty list means no aliasing is required.
   """
 
   module: tpu_torch_compile.ContextedModule | None
@@ -115,6 +125,7 @@ class ExportedMlir:
       [Sequence[Any], Sequence[torch.Tensor]], Any
   ]
   updates_default_generator_state: bool
+  donate_input_output_aliases: tuple[tuple[int, int], ...] = ()
 
   def serialize_text(self, enable_debug_info: bool = False) -> str:
     """Returns the MLIR representation of the graph as text."""
@@ -142,9 +153,26 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
   def __init__(
       self,
       module: torch.fx.GraphModule,
+      *,
+      capture_nodes: Optional[Sequence[torch.fx.Node]] = None,
   ):
     super().__init__(module)
     self.state_dict = module.state_dict()
+    # `torch.fx.Interpreter.run` (with the default
+    # ``garbage_collect_values=True``) evicts each node's value from
+    # ``self.env`` as soon as its last user has been processed. That
+    # behavior is correct for ordinary FX execution but loses values
+    # that we want to keep around AFTER the run completes — for example
+    # the terminus of a ``inplace_donate`` chain that the compile
+    # backend plumbs as an extra executable output. Callers pass any
+    # such nodes via ``capture_nodes``; this interpreter stores their
+    # values in ``self.captured_values`` (an unmanaged side channel)
+    # at the moment they are produced so that subsequent eviction
+    # cannot drop them.
+    self._capture_nodes: frozenset[torch.fx.Node] = frozenset(
+        capture_nodes or ()
+    )
+    self.captured_values: dict[torch.fx.Node, Any] = {}
 
   def _set_func_code_to_node_source_locations(self, func, node):
     """Update the function's code locations to the node's source locations.
@@ -183,7 +211,10 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
       return super(EagerLikeFxInterpreter, self).run_node(node)
 
     self._set_func_code_to_node_source_locations(dispatch_fx_node, node)
-    return dispatch_fx_node(node)
+    result = dispatch_fx_node(node)
+    if node in self._capture_nodes:
+      self.captured_values[node] = result
+    return result
 
 
 def exported_to_mlir(
@@ -441,6 +472,7 @@ def fx_to_mlir(
     module: torch.fx.GraphModule,
     args: list[torch.Tensor | Any],
     build_mlir_module: bool = True,
+    donate_alias_termini: Sequence[tuple[int, torch.fx.Node]] = (),
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's defer mode.
 
@@ -456,6 +488,16 @@ def fx_to_mlir(
       through an FX graph interpreter to identify the graph's output tensors.
     build_mlir_module: Whether to build and return the MLIR module in the
       result.
+    donate_alias_termini: A sequence of ``(arg_index, terminus_node)`` pairs
+      identifying inplace-donate chains whose final SSA value (``terminus_node``)
+      should be plumbed as an extra executable output. ``arg_index`` is the
+      position of the donated tensor in ``args`` (a tensor-only index, matching
+      the FX graph's placeholder order with non-tensors excluded). After
+      tracing, the runtime tensor bound to ``terminus_node`` in the interpreter
+      is added to the executable's output list, and the resulting
+      ``(arg_index, executable_output_index)`` pair is recorded in the returned
+      ``ExportedMlir.donate_input_output_aliases`` so the compile-mode runtime
+      can rebind the input tensor's storage after each execution.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -463,6 +505,25 @@ def fx_to_mlir(
   """
   # Filter out non-tensor arguments.
   argument_tensors = [a for a in args if isinstance(a, torch.Tensor)]
+
+  # Build a map from each arg_index (position in `args`) to the position of
+  # that argument inside `argument_tensors`. This lets us translate
+  # `donate_alias_termini`'s arg_index — which refers to the FX placeholder
+  # order — into the runtime args list seen by the executable wrapper. Any
+  # arg_index that refers to a non-tensor placeholder is rejected; donation
+  # is only meaningful for tensors.
+  arg_index_to_tensor_index: dict[int, int] = {}
+  for arg_idx, arg in enumerate(args):
+    if isinstance(arg, torch.Tensor):
+      arg_index_to_tensor_index[arg_idx] = len(arg_index_to_tensor_index)
+
+  donate_alias_termini = tuple(donate_alias_termini)
+  for arg_idx, _ in donate_alias_termini:
+    if arg_idx not in arg_index_to_tensor_index:
+      raise ValueError(
+          "donate_alias_termini arg_index "
+          f"{arg_idx} does not refer to a tensor argument of the FX graph."
+      )
 
   # Run the module through the EagerLikeFxInterpreter with MLIR location
   # tracebacks enabled by default so that the MLIR we generate has file
@@ -495,14 +556,54 @@ def fx_to_mlir(
       # placeholder args. These copies will be removed in the compiled code so
       # there is no performance impact.
       # Remove once b/491716758 is implemented.
-      cloned_args = (
+      cloned_args = [
           x.clone() if isinstance(x, torch.Tensor) else x for x in args
+      ]
+      interpreter = EagerLikeFxInterpreter(
+          module,
+          capture_nodes=[terminus for _, terminus in donate_alias_termini],
       )
-      fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
+      fx_outputs = interpreter.run(*cloned_args)
 
     result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(
         module, fx_outputs
     )
+
+    # Append donation chain termini as extra executable outputs, BEFORE the
+    # generator state tensors so the existing tail-based device-state slicing
+    # in `_TorchTpuCompiledExecutable` does not need to know about donations.
+    # The executable output layout is therefore:
+    #   [user_outputs..., donate_extras..., device_state_extras...]
+    #
+    # Terminus values are pulled from ``interpreter.captured_values`` rather
+    # than ``interpreter.env``: the base ``torch.fx.Interpreter.run`` evicts
+    # each node's value from ``env`` as soon as its last user has been
+    # processed, and a donation chain terminus has no user inside the FX
+    # graph by construction (callers stripped the explicit ``copy_``). The
+    # ``capture_nodes`` plumbing keeps a separate reference that survives
+    # garbage collection.
+    donate_input_output_aliases: list[tuple[int, int]] = []
+    for arg_idx, terminus in donate_alias_termini:
+      if terminus not in interpreter.captured_values:
+        raise RuntimeError(
+            "inplace-donate terminus node "
+            f"{terminus.name!r} was not produced by the FX graph trace; "
+            "the SSA-rename pass and find_donate_aliases must be run on "
+            "the same graph that is then handed to fx_to_mlir."
+        )
+      terminus_tensor = interpreter.captured_values[terminus]
+      if not isinstance(terminus_tensor, torch.Tensor):
+        raise TypeError(
+            "inplace-donate terminus node "
+            f"{terminus.name!r} resolved to a non-Tensor value "
+            f"({type(terminus_tensor).__name__}); only tensor donations "
+            "are supported."
+        )
+      executable_output_index = len(result_tensors)
+      result_tensors.append(terminus_tensor)
+      donate_input_output_aliases.append(
+          (arg_index_to_tensor_index[arg_idx], executable_output_index)
+      )
 
     # Plumb the final state tensor as the last output of the graph so that
     # the updated RNG state can be returned from the executable and persisted.
@@ -539,4 +640,5 @@ def fx_to_mlir(
       mlir_result_tensors=result_tensors,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
       updates_default_generator_state=updates_default_generator_state,
+      donate_input_output_aliases=tuple(donate_input_output_aliases),
   )

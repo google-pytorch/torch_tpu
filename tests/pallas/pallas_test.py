@@ -15,6 +15,7 @@
 """Tests for Pallas custom kernels."""
 
 import functools
+import operator
 import pathlib
 import sys
 from typing import Optional, Tuple, TypeAlias
@@ -29,6 +30,7 @@ from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile.fx_passes import inplace_donate_ssa_rename
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.utils import utils
 
@@ -1191,6 +1193,494 @@ class TestPallasKernels(absltest.TestCase):
     sums = chained_sums(bundle, y0, y1, y2, y3, y4)
     expected = torch.tensor([4.0, 8.0, 12.0, 16.0, 20.0], dtype=torch.float32)
     utils.assert_close(sums.to("cpu"), expected)
+
+  # ----------------------------------------------------------------------
+  # Executable-level inplace_donate rebind tests.
+  #
+  # When `inplace_donate=True` chains run inside `torch.compile`, the
+  # `inplace_donate_ssa_rename` FX pass threads the donation chain in SSA
+  # form. The compile backend then identifies each chain's terminus (final
+  # SSA value) via `find_donate_aliases`, plumbs it as an extra executable
+  # output, and after each execution rebinds the donated input tensor's
+  # storage to that output's device buffer. The net effect for users is
+  # that they can drop the explicit `bundle.copy_(new_bundle)` republish
+  # from per-layer wrappers (the pattern that otherwise drives a full
+  # bundle memcpy per layer and dominates runtime for large KV caches)
+  # while still observing the chain's writes on the next call.
+  # ----------------------------------------------------------------------
+
+  def test_inplace_donate_compiled_mode_no_copy_single_call_persists(self):
+    """Single donating call inside a compiled function. Without any user
+    side `bundle.copy_(new_bundle)`, the bundle tensor must still observe
+    the kernel's write on a subsequent compiled-mode call — the
+    executable-level rebind points the bundle's storage at the kernel's
+    output buffer after each execution."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_no_copy_single",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle, delta):
+      return op(bundle, delta).sum()
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    delta = torch.ones(4, dtype=torch.float32, device=self.device)
+
+    s0 = step(bundle, delta)
+    utils.assert_close(
+        bundle.to("cpu"), torch.ones(4, dtype=torch.float32)
+    )
+    utils.assert_close(s0.to("cpu"), torch.tensor(4.0, dtype=torch.float32))
+
+    s1 = step(bundle, delta)
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 2.0, dtype=torch.float32)
+    )
+    utils.assert_close(s1.to("cpu"), torch.tensor(8.0, dtype=torch.float32))
+
+    s2 = step(bundle, delta)
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 3.0, dtype=torch.float32)
+    )
+    utils.assert_close(s2.to("cpu"), torch.tensor(12.0, dtype=torch.float32))
+
+  def test_inplace_donate_compiled_mode_no_copy_chained_persists(self):
+    """Several sequential donating calls inside a single compiled function
+    — the realistic vLLM-shaped chain. The SSA rename threads layer i's
+    output into layer i+1's input; the executable-level rebind then
+    threads the *chain's* terminus into the bundle tensor between
+    compiled-mode invocations. No `bundle.copy_(...)` anywhere."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_no_copy_chained",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle, ya, yb, yc):
+      s0 = op(bundle, ya).sum()
+      s1 = op(bundle, yb).sum()
+      s2 = op(bundle, yc).sum()
+      return torch.stack([s0, s1, s2])
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    ya = torch.ones(4, dtype=torch.float32, device=self.device)
+    yb = torch.ones(4, dtype=torch.float32, device=self.device)
+    yc = torch.ones(4, dtype=torch.float32, device=self.device)
+
+    sums_run0 = step(bundle, ya, yb, yc)
+    utils.assert_close(
+        sums_run0.to("cpu"),
+        torch.tensor([4.0, 8.0, 12.0], dtype=torch.float32),
+    )
+    # After one compiled-mode call: bundle += 3 → all 3s.
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 3.0, dtype=torch.float32)
+    )
+
+    sums_run1 = step(bundle, ya, yb, yc)
+    # Layer sums for run 1: prev_bundle was [3,3,3,3], ya=yb=yc=ones.
+    # s0 = (3+1)*4 = 16, s1 = (4+1)*4 = 20, s2 = (5+1)*4 = 24.
+    utils.assert_close(
+        sums_run1.to("cpu"),
+        torch.tensor([16.0, 20.0, 24.0], dtype=torch.float32),
+    )
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 6.0, dtype=torch.float32)
+    )
+
+  def test_inplace_donate_compiled_mode_no_copy_multi_output_op(self):
+    """Multi-output donating kernel — the vLLM bundled-attention shape.
+    The kernel returns ``(new_bundle, other_output)``; the FX pass
+    threads ``getitem(call, 0)`` through the chain, and the executable
+    rebinds the bundle tensor's storage to the kernel's bundle output."""
+
+    def bundle_update_kernel(x_ref, y_ref, o_new_x_ref, o_combined_ref):
+      x, y = x_ref[...], y_ref[...]
+      o_new_x_ref[...] = x + y
+      o_combined_ref[...] = x * 2 + y
+
+    def bundle_update_jax(
+        x: jax.Array, y: jax.Array
+    ) -> Tuple[jax.Array, jax.Array]:
+      dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+      return pl.pallas_call(bundle_update_kernel, out_shape=(dt, dt))(x, y)
+
+    op = pallas.jax_op(
+        "pallas::inplace_donate_no_copy_multi",
+        bundle_update_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle, ya, yb):
+      _, oa = op(bundle, ya)
+      _, ob = op(bundle, yb)
+      return oa.sum() + ob.sum()
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    ya = torch.ones(4, dtype=torch.float32, device=self.device)
+    yb = torch.full((4,), 2.0, dtype=torch.float32, device=self.device)
+
+    result0 = step(bundle, ya, yb)
+    # Call 0: bundle=0, ya=1. new_bundle=1, combined=0+1=1 → oa.sum()=4.
+    # Call 1: bundle=1, yb=2. new_bundle=3, combined=2+2=4 → ob.sum()=16.
+    utils.assert_close(
+        result0.to("cpu"), torch.tensor(20.0, dtype=torch.float32)
+    )
+    # Bundle ends at new_bundle from call 1 = 1 + 2 = 3.
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 3.0, dtype=torch.float32)
+    )
+
+    result1 = step(bundle, ya, yb)
+    # Call 0: bundle=3, ya=1. new_bundle=4, combined=6+1=7 → oa.sum()=28.
+    # Call 1: bundle=4, yb=2. new_bundle=6, combined=8+2=10 → ob.sum()=40.
+    utils.assert_close(
+        result1.to("cpu"), torch.tensor(68.0, dtype=torch.float32)
+    )
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 6.0, dtype=torch.float32)
+    )
+
+  def test_inplace_donate_compiled_mode_no_copy_declare_bind_variant(self):
+    """End-to-end vLLM-shaped sequence: declare the donating op at init
+    time, bind the kernel later (the `setup_bundled` analog), then chain
+    donating calls under torch.compile without a user-side
+    ``bundle.copy_``. Executable-level rebind keeps the bundle live and
+    threads its content across compiled-mode invocations. Each call's
+    output is consumed downstream (mirroring how every attention layer
+    feeds the next layer in real workloads) so aot_autograd does not
+    DCE the chain before the SSA-rename pass runs."""
+
+    def fake_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+      return torch.empty_like(x)
+
+    op = pallas.declare_jax_op(
+        "pallas::inplace_donate_no_copy_declared",
+        fake_fn,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    pallas.bind_jax_kernel(op, add_vectors_jax)
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle, ya, yb):
+      # Sum is computed before the next donating call so each ``op(...).sum()``
+      # observes the kernel's output at that point — matching the realistic
+      # "per-layer attention output is consumed before the next layer runs"
+      # shape. Holding the kernel's output in a Python local that is summed
+      # only after the chain has run would expose the eager-style storage
+      # rebind that ``inplace_donate=True`` faithfully preserves under
+      # ``torch.compile`` (subsequent reads of the held tensor observe the
+      # latest call's writes); that aliasing is correct but not what vLLM's
+      # per-layer wrapper exhibits.
+      s_a = op(bundle, ya).sum()
+      s_b = op(bundle, yb).sum()
+      return s_a + s_b
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    ya = torch.ones(4, dtype=torch.float32, device=self.device)
+    yb = torch.ones(4, dtype=torch.float32, device=self.device)
+
+    s_run0 = step(bundle, ya, yb)
+    # Run 0: call 0 produces [1,1,1,1] (sum=4); call 1 reads call 0's output
+    # via the SSA chain → [2,2,2,2] (sum=8). Total: 12.
+    utils.assert_close(
+        s_run0.to("cpu"), torch.tensor(12.0, dtype=torch.float32)
+    )
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 2.0, dtype=torch.float32)
+    )
+
+    s_run1 = step(bundle, ya, yb)
+    # Run 1: bundle starts at [2,2,2,2].
+    # call 0: +[1,1,1,1] → [3,3,3,3] sum=12.
+    # call 1: chained input [3,3,3,3]+[1,1,1,1] → [4,4,4,4] sum=16. Total=28.
+    utils.assert_close(
+        s_run1.to("cpu"), torch.tensor(28.0, dtype=torch.float32)
+    )
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 4.0, dtype=torch.float32)
+    )
+
+  def test_inplace_donate_compiled_mode_no_copy_two_independent_chains(self):
+    """Two distinct donated inputs in the same compiled function. Each
+    chain is rebound to its own input tensor; their values must update
+    independently across compiled-mode calls."""
+    op_a = pallas.jax_op(
+        "pallas::inplace_donate_no_copy_chain_a",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+    op_b = pallas.jax_op(
+        "pallas::inplace_donate_no_copy_chain_b",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle_a, bundle_b, ya, yb):
+      return op_a(bundle_a, ya).sum() + op_b(bundle_b, yb).sum()
+
+    bundle_a = torch.zeros(4, dtype=torch.float32, device=self.device)
+    bundle_b = torch.zeros(4, dtype=torch.float32, device=self.device)
+    ya = torch.ones(4, dtype=torch.float32, device=self.device)
+    yb = torch.full((4,), 2.0, dtype=torch.float32, device=self.device)
+
+    out0 = step(bundle_a, bundle_b, ya, yb)
+    # bundle_a → ones, bundle_b → twos.
+    utils.assert_close(out0.to("cpu"), torch.tensor(12.0, dtype=torch.float32))
+    utils.assert_close(
+        bundle_a.to("cpu"), torch.ones(4, dtype=torch.float32)
+    )
+    utils.assert_close(
+        bundle_b.to("cpu"), torch.full((4,), 2.0, dtype=torch.float32)
+    )
+
+    out1 = step(bundle_a, bundle_b, ya, yb)
+    # bundle_a now reads ones; +ones → twos; sum=8.
+    # bundle_b now reads twos; +twos → fours; sum=16.
+    utils.assert_close(out1.to("cpu"), torch.tensor(24.0, dtype=torch.float32))
+    utils.assert_close(
+        bundle_a.to("cpu"), torch.full((4,), 2.0, dtype=torch.float32)
+    )
+    utils.assert_close(
+        bundle_b.to("cpu"), torch.full((4,), 4.0, dtype=torch.float32)
+    )
+
+
+class TestInplaceDonateFxPass(absltest.TestCase):
+  """Pure-Python unit tests for the inplace_donate_ssa_rename FX pass and
+  its companion ``find_donate_aliases`` helper.
+
+  These tests build FX graphs by hand against synthetic call_function
+  targets carrying the ``_pallas_inplace_donate_argnums`` attribute that
+  pallas stamps in production. They do not touch the TPU runtime — only
+  the FX-level graph manipulation. That keeps the chain-detection logic
+  exercised independently of JAX/MLIR availability, which is the layer
+  most likely to silently break as the graph shape evolves.
+  """
+
+  def _make_mock_op(
+      self,
+      name: str,
+      donate_argnums: Tuple[int, ...] | None = None,
+      *,
+      num_outputs: int = 1,
+  ):
+    """Returns a callable that mimics a pallas op for FX graph testing.
+
+    The callable carries the ``_pallas_inplace_donate_argnums`` attribute
+    that the FX pass keys on, and has a stable ``__name__`` so error
+    messages and ``node.name`` are readable. When ``num_outputs > 1`` the
+    callable returns a tuple; otherwise a single tensor.
+    """
+
+    def _op(*args, **kwargs):
+      if num_outputs == 1:
+        return args[0].clone()
+      return tuple(args[0].clone() for _ in range(num_outputs))
+
+    _op.__name__ = name
+    if donate_argnums is not None:
+      setattr(
+          _op,
+          inplace_donate_ssa_rename._INPLACE_DONATE_ARGNUMS_ATTR,
+          tuple(donate_argnums),
+      )
+    return _op
+
+  def _build_single_output_chain_graph(self, num_calls: int) -> torch.fx.Graph:
+    """Builds an FX graph: bundle → op → op → ... → op (single-output)."""
+    op = self._make_mock_op(
+        "chained_single", donate_argnums=(0,), num_outputs=1
+    )
+    graph = torch.fx.Graph()
+    bundle = graph.placeholder("bundle")
+    delta = graph.placeholder("delta")
+    current = bundle
+    for _ in range(num_calls):
+      current = graph.call_function(op, (current, delta))
+    graph.output((current,))
+    return graph
+
+  def _build_multi_output_chain_graph(
+      self, num_calls: int
+  ) -> torch.fx.Graph:
+    """Builds an FX graph: bundle → op → op → ... → op (multi-output).
+
+    The FX pass requires ``meta['val']`` to be a tuple/list for it to
+    treat a call as multi-output; the helper attaches a sentinel pair to
+    each call's ``meta['val']`` so the multi-output code path is
+    exercised faithfully.
+    """
+    op = self._make_mock_op(
+        "chained_multi", donate_argnums=(0,), num_outputs=2
+    )
+    graph = torch.fx.Graph()
+    bundle = graph.placeholder("bundle")
+    delta = graph.placeholder("delta")
+    current = bundle
+    output_collector = []
+    for _ in range(num_calls):
+      call = graph.call_function(op, (current, delta))
+      # Mark as multi-output so the pass routes through `getitem` insert.
+      call.meta["val"] = (object(), object())
+      other = graph.call_function(operator.getitem, (call, 1))
+      output_collector.append(other)
+      current = call  # bundle slot is updated via the rewrite below
+    # Pre-existing user: feed the last call's bundle into output so the
+    # chain isn't dead at the FX level. find_donate_aliases doesn't
+    # require this, but it matches the realistic shape where attn output
+    # consumers keep the call alive.
+    graph.output(tuple(output_collector))
+    return graph
+
+  def test_find_donate_aliases_no_donation_returns_empty(self):
+    """Graphs with no donation attribute on any call node produce no
+    aliases."""
+    op = self._make_mock_op("plain", donate_argnums=None)
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    y = graph.placeholder("y")
+    graph.output((graph.call_function(op, (x, y)),))
+    self.assertEqual(inplace_donate_ssa_rename.find_donate_aliases(graph), [])
+
+  def test_find_donate_aliases_placeholder_with_no_users_returns_empty(self):
+    """A placeholder that never feeds any call cannot produce a donation
+    alias even if other donations exist in the graph."""
+    op = self._make_mock_op("donating", donate_argnums=(0,), num_outputs=1)
+    graph = torch.fx.Graph()
+    bundle_unused = graph.placeholder("bundle_unused")
+    del bundle_unused  # intentionally unused
+    other = graph.placeholder("other")
+    delta = graph.placeholder("delta")
+    graph.output((graph.call_function(op, (other, delta)),))
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    # `other` is donated and used; `bundle_unused` is not.
+    self.assertEqual(len(aliases), 1)
+    arg_idx, terminus = aliases[0]
+    # `bundle_unused` is placeholder 0 → `other` is placeholder 1.
+    self.assertEqual(arg_idx, 1)
+    self.assertEqual(terminus.op, "call_function")
+    self.assertIs(terminus.target, op)
+
+  def test_find_donate_aliases_single_output_call_terminus_is_call_node(
+      self,
+  ):
+    """For a single-output donating op, the call node itself is the
+    chain terminus."""
+    graph = self._build_single_output_chain_graph(num_calls=1)
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    self.assertEqual(len(aliases), 1)
+    arg_idx, terminus = aliases[0]
+    self.assertEqual(arg_idx, 0)
+    self.assertEqual(terminus.op, "call_function")
+
+  def test_find_donate_aliases_single_output_chain_terminus_is_last_call(
+      self,
+  ):
+    """Chained single-output donations produce the last call as the
+    terminus, after :func:`apply` has rewritten the chain."""
+    graph = self._build_single_output_chain_graph(num_calls=5)
+    inplace_donate_ssa_rename.apply(graph)
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    self.assertEqual(len(aliases), 1)
+    arg_idx, terminus = aliases[0]
+    self.assertEqual(arg_idx, 0)
+    call_nodes = [n for n in graph.nodes if n.op == "call_function"]
+    # The last call should be the terminus.
+    self.assertIs(terminus, call_nodes[-1])
+
+  def test_find_donate_aliases_multi_output_terminus_is_getitem_zero(self):
+    """For a multi-output donating op, the chain terminus is the
+    ``getitem(call, 0)`` node that ``apply`` inserts."""
+    graph = self._build_multi_output_chain_graph(num_calls=3)
+    inplace_donate_ssa_rename.apply(graph)
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    self.assertEqual(len(aliases), 1)
+    arg_idx, terminus = aliases[0]
+    self.assertEqual(arg_idx, 0)
+    self.assertEqual(terminus.op, "call_function")
+    self.assertIs(terminus.target, operator.getitem)
+    self.assertEqual(terminus.args[1], 0)
+
+  def test_find_donate_aliases_dedup_skips_converging_placeholders(self):
+    """Two placeholders converging on the same terminus produce only one
+    alias — the helper defensively skips later duplicates to avoid
+    rebinding the same buffer twice."""
+    op = self._make_mock_op("donating", donate_argnums=(0,), num_outputs=1)
+    graph = torch.fx.Graph()
+    a = graph.placeholder("a")
+    _b = graph.placeholder("b")  # placeholder that feeds nothing donating
+    call = graph.call_function(op, (a, _b))
+    graph.output((call,))
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    # Only `a` triggers a donation; `_b` is just a regular tensor input.
+    self.assertEqual(len(aliases), 1)
+    self.assertEqual(aliases[0][0], 0)
+
+  def test_find_donate_aliases_independent_chains_both_detected(self):
+    """Two distinct donated placeholders that drive disjoint donation
+    chains each contribute one alias."""
+    op_a = self._make_mock_op("op_a", donate_argnums=(0,), num_outputs=1)
+    op_b = self._make_mock_op("op_b", donate_argnums=(0,), num_outputs=1)
+    graph = torch.fx.Graph()
+    bundle_a = graph.placeholder("bundle_a")
+    bundle_b = graph.placeholder("bundle_b")
+    delta = graph.placeholder("delta")
+    a1 = graph.call_function(op_a, (bundle_a, delta))
+    a2 = graph.call_function(op_a, (a1, delta))
+    b1 = graph.call_function(op_b, (bundle_b, delta))
+    graph.output((a2, b1))
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    arg_indices = sorted(arg for arg, _ in aliases)
+    self.assertEqual(arg_indices, [0, 1])
+
+  def test_find_donate_aliases_op_without_attribute_breaks_chain(self):
+    """A call to an op that does *not* carry the donate-argnums attribute
+    is not part of the chain, so a chain that crosses it terminates at
+    the predecessor's output."""
+    donating_op = self._make_mock_op(
+        "donating", donate_argnums=(0,), num_outputs=1
+    )
+    plain_op = self._make_mock_op("plain", donate_argnums=None)
+    graph = torch.fx.Graph()
+    bundle = graph.placeholder("bundle")
+    delta = graph.placeholder("delta")
+    call0 = graph.call_function(donating_op, (bundle, delta))
+    # `plain_op` does not carry the donate-argnums attribute — chain ends
+    # at call0 even though plain_op uses call0's value.
+    consumer = graph.call_function(plain_op, (call0, delta))
+    graph.output((consumer,))
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    self.assertEqual(len(aliases), 1)
+    self.assertIs(aliases[0][1], call0)
+
+  def test_find_donate_aliases_returns_in_placeholder_order(self):
+    """When multiple placeholders both produce aliases, the helper
+    returns them in the order their placeholders appear in the graph."""
+    op_a = self._make_mock_op("a", donate_argnums=(0,), num_outputs=1)
+    op_b = self._make_mock_op("b", donate_argnums=(0,), num_outputs=1)
+    graph = torch.fx.Graph()
+    b0 = graph.placeholder("b0")  # idx 0
+    b1 = graph.placeholder("b1")  # idx 1
+    b2 = graph.placeholder("b2")  # idx 2
+    delta = graph.placeholder("delta")  # idx 3
+    # b0 and b2 are donated, b1 is plain.
+    c0 = graph.call_function(op_a, (b0, delta))
+    c2 = graph.call_function(op_b, (b2, b1))
+    graph.output((c0, c2))
+    aliases = inplace_donate_ssa_rename.find_donate_aliases(graph)
+    self.assertEqual([a for a, _ in aliases], [0, 2])
 
 
 class TestPallasCompat(absltest.TestCase):

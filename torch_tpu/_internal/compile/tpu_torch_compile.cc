@@ -284,6 +284,30 @@ std::vector<at::Tensor> PyExecuteCompiledModel(
   return ExecuteCompiledModel(executable, argument_tensors, output_shapes);
 }
 
+// Rebinds the storage of ``dst`` to the device buffer that backs ``src``.
+//
+// After this call, reads of ``dst`` observe the data of ``src`` (they share
+// the same underlying ``DeviceBuffer``), and the original storage of
+// ``dst`` is dropped. Both tensors must share shape and dtype; the rebind
+// reuses ``AssignBufferToAtTensor`` (the same primitive used by pallas's
+// eager-mode ``inplace_donate=True`` host-side rebind), so layout
+// compatibility is enforced there.
+//
+// This is the executable-boundary analog of pallas's per-call rebind: the
+// compile-mode runtime calls it after a PJRT executable completes, to point
+// a donated input tensor's storage at the executable output buffer that
+// holds the input's "donated through" final value. That lets callers drop
+// the explicit ``input.copy_(output)`` republish without losing the
+// updated content across subsequent compiled-mode calls.
+void PyRebindTensorStorage(const at::Tensor& src, const at::Tensor& dst) {
+  TT_ASSIGN_OR_THROW(DeviceBufferRef src_buf, GetBuffer(src),
+                     _.SetPrepend()
+                         << "failed to get device buffer from src tensor: ");
+  TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(src_buf), dst))
+          .SetPrepend()
+      << "failed to rebind tensor storage: ";
+}
+
 void PyPushEnableTracebacks(std::optional<bool> enabled) {
   const EnableTracebacksContextState state =
       enabled.has_value()
@@ -892,6 +916,14 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         "    from the executable.\n"
         "    This is useful for bounded dynamic programs where the actual\n"
         "    output shape might differ from the static upper bound.");
+  m.def("rebind_tensor_storage", PyRebindTensorStorage, py::arg("src"),
+        py::arg("dst"),
+        "Rebinds ``dst``'s storage to the device buffer backing ``src``.\n\n"
+        "After this call ``src`` and ``dst`` share the same underlying\n"
+        "``DeviceBuffer``; the original storage of ``dst`` is dropped.\n"
+        "Used by the compile-mode runtime to make a donated input tensor\n"
+        "observe the executable's final post-donation buffer, so callers\n"
+        "do not need an explicit ``input.copy_(output)`` republish.");
   m.def("placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
         py::arg("requires_grad"));
   m.def("placeholder_like", PyMakePlaceholderLike, py::arg("arg_tensor"));

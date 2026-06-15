@@ -188,6 +188,7 @@ def _unpickle_compiled_executable(
     serialized_bytes: bytes,
     reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
     updates_default_generator_state: bool,
+    donate_input_output_aliases: tuple[tuple[int, int], ...] = (),
 ) -> "_TorchTpuCompiledExecutable":
   """Reconstructs a _TorchTpuCompiledExecutable from serialized bytes.
 
@@ -205,6 +206,9 @@ def _unpickle_compiled_executable(
       _TorchTpuCompiledExecutable constructor.
     updates_default_generator_state: Whether the executable updates the default
       generator state.
+    donate_input_output_aliases: ``(arg_index, executable_output_index)`` pairs
+      describing executable-level inplace-donate aliases (see the
+      ``_TorchTpuCompiledExecutable`` constructor).
 
   Returns:
     A deserialized _TorchTpuCompiledExecutable instance.
@@ -213,6 +217,7 @@ def _unpickle_compiled_executable(
       executable=tpu_torch_compile.load_serialized_executable(serialized_bytes),
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
       updates_default_generator_state=updates_default_generator_state,
+      donate_input_output_aliases=donate_input_output_aliases,
   )
 
 
@@ -229,6 +234,7 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
       executable: tpu_torch_compile.PjRtLoadedExecutable,
       reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
       updates_default_generator_state: bool,
+      donate_input_output_aliases: tuple[tuple[int, int], ...] = (),
   ):
     """Initializes the compiled executable wrapper.
 
@@ -249,6 +255,18 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
         the final outputs as expected by the FX graph's consumer.
       updates_default_generator_state: Whether the executable updates the
         default generator state.
+      donate_input_output_aliases: A sequence of
+        ``(arg_index, executable_output_index)`` pairs describing
+        executable-level inplace-donate aliases produced by the
+        compile-time FX SSA-rename pass. ``arg_index`` is the position of
+        a donated tensor within ``self._take_tensor_args(args)`` (i.e. the
+        tensor-only filtered runtime args list); ``executable_output_index``
+        is the position of the matching extra output produced by the
+        executable. After each execution, this wrapper rebinds the donated
+        input tensor's storage to that output's device buffer, then drops
+        those extras from what is returned to the caller. Aliases must be
+        sorted by ``executable_output_index`` in ascending order; this is
+        the order in which ``fx_to_mlir`` appends them.
     """  # fmt: skip
     self._executable = executable
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
@@ -258,6 +276,28 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
     self._updates_default_generator_state: bool = (
         updates_default_generator_state
     )
+    # Defensive copy + validation: stored as a tuple of tuples so the field is
+    # cheap to pickle and equality-compare, and so it can't be mutated after
+    # construction.
+    self._donate_input_output_aliases: tuple[tuple[int, int], ...] = tuple(
+        (int(arg_idx), int(out_idx))
+        for arg_idx, out_idx in donate_input_output_aliases
+    )
+    if self._donate_input_output_aliases:
+      last_idx = -1
+      for arg_idx, out_idx in self._donate_input_output_aliases:
+        if arg_idx < 0:
+          raise ValueError(
+              "donate_input_output_aliases arg_index must be non-negative;"
+              f" got {arg_idx}."
+          )
+        if out_idx <= last_idx:
+          raise ValueError(
+              "donate_input_output_aliases must be sorted by"
+              " executable_output_index in ascending order; got"
+              f" {self._donate_input_output_aliases}."
+          )
+        last_idx = out_idx
 
   @property
   def graph_module_debug_str(self) -> str | None:
@@ -391,22 +431,29 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
     # Lock all generators to prevent race conditions when updating their states.
     # TODO: b/501205098 - Generators are not locked during export.py. Address
     # this in a follow-up.
+    tensor_args = self._take_tensor_args(args)
     with tpu_torch_compile.MultiGeneratorLocker(generators):
       device_state_tensors = [
           tpu_torch_compile.get_device_state_tensor(gen) for gen in generators
       ]
       executable_args = (
-          *self._take_tensor_args(args),
+          *tensor_args,
           *device_state_tensors,
       )
 
       # When output_shapes for user-defined outputs are provided, we need to
-      # append the shapes of the device state tensors to match the number of
-      # outputs from the executable.
+      # append the shapes of the donation-alias outputs and the device state
+      # tensors to match the number of outputs from the executable.
       if output_shapes:
-        executable_output_shapes = list(output_shapes) + [
-            list(t.shape) for t in device_state_tensors
+        donate_output_shapes = [
+            list(tensor_args[arg_idx].shape)
+            for arg_idx, _ in self._donate_input_output_aliases
         ]
+        executable_output_shapes = (
+            list(output_shapes)
+            + donate_output_shapes
+            + [list(t.shape) for t in device_state_tensors]
+        )
       else:
         executable_output_shapes = []
 
@@ -415,12 +462,27 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
       )
 
       if not device_state_tensors:
-        outputs = outputs_with_device_state_tensors
+        outputs = list(outputs_with_device_state_tensors)
         updated_device_state_tensors = []
       else:
-        outputs, updated_device_state_tensors = (
-            outputs_with_device_state_tensors[: -len(device_state_tensors)],
-            outputs_with_device_state_tensors[-len(device_state_tensors) :],
+        outputs = list(
+            outputs_with_device_state_tensors[: -len(device_state_tensors)]
+        )
+        updated_device_state_tensors = list(
+            outputs_with_device_state_tensors[-len(device_state_tensors) :]
+        )
+
+      # Strip the donation-alias outputs from the tail of the user-visible
+      # outputs and use them to rebind the corresponding donated input
+      # tensor's storage. Iterating in reverse keeps the slice indices stable
+      # even though we're popping from the list. The aliases are guaranteed
+      # sorted by ascending executable_output_index (validated in __init__),
+      # which after stripping device-state means they sit on the tail of
+      # `outputs` in the same order; reverse iteration covers that tail.
+      for arg_idx, _ in reversed(self._donate_input_output_aliases):
+        donation_tensor = outputs.pop()
+        tpu_torch_compile.rebind_tensor_storage(
+            donation_tensor, tensor_args[arg_idx]
         )
 
       # Once the executable has completed, restore the newly updated RNG state
@@ -460,6 +522,7 @@ class _TorchTpuCompiledExecutable(CompiledArtifact):
             serialized,
             self._reconstruct_fx_outputs_fn,
             self._updates_default_generator_state,
+            self._donate_input_output_aliases,
         ),
     )
 
@@ -562,6 +625,15 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "inplace_donate_ssa_rename"
     ).apply_graph_pass(inplace_donate_ssa_rename.apply)
+    # Detect executable-level inplace-donate aliases AFTER the SSA rename has
+    # rewritten the chain (so the per-call ``getitem(call, 0)`` nodes for
+    # multi-output donations exist) but BEFORE any further pass might fold or
+    # erase the chain. Each entry is a ``(placeholder_index, terminus_node)``
+    # pair; the terminus is the final SSA value of the donation chain that
+    # the executable runtime should rebind onto the donated input tensor.
+    donate_alias_termini = inplace_donate_ssa_rename.find_donate_aliases(
+        graph_module
+    )
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
@@ -612,6 +684,7 @@ class StaticCompiler(Compiler):
             graph_module,
             placeholder_args,
             build_mlir_module=(tracing_enabled or self._debug),
+            donate_alias_termini=donate_alias_termini,
         )
 
     mlir_module = exported_mlir.module
@@ -635,6 +708,7 @@ class StaticCompiler(Compiler):
         executable=exported_mlir.executable,
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
         updates_default_generator_state=exported_mlir.updates_default_generator_state,
+        donate_input_output_aliases=exported_mlir.donate_input_output_aliases,
     )
 
     if self._debug and mlir_module is not None:
