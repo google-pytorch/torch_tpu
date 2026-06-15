@@ -29,6 +29,7 @@ import torch
 from torch._library.custom_ops import CustomOpDef
 import torch.library
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.pallas import _mlir_aliasing
 from torch_tpu._internal.pallas import tpu_torch_pallas
 
 try:
@@ -556,10 +557,23 @@ class JaxCallable:
       )
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = self.exported(*jax_args, **kwargs)
+      serialized_mlir = lowered.mlir_module_serialized
+      if self.inplace_donate and self.donate_argnums:
+        # Annotate the kernel's inner stablehlo.custom_call with
+        # output_operand_aliases so XLA buffer-assignment reuses the
+        # donated input's buffer for the matching output buffer
+        # per-call. Without this, chains of N donating calls allocate N
+        # fresh output buffers and the runtime spends most of its time
+        # copying the donated input forward across them. See
+        # `_mlir_aliasing.inject_inplace_donate_aliases` for the
+        # rewrite semantics.
+        serialized_mlir = _mlir_aliasing.inject_inplace_donate_aliases(
+            serialized_mlir, self.donate_argnums,
+        )
       tpu_torch_pallas.register_custom_kernel(
           self.name,
           kernel_key,
-          serialized_mlir_module=lowered.mlir_module_serialized,
+          serialized_mlir_module=serialized_mlir,
       )
       # Use out_tree to format the outputs shapes - i.e. pack in tuple, nested
       # tuple, etc.

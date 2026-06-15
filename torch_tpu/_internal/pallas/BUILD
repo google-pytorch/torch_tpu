@@ -55,9 +55,18 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "mlir_aliasing",
+    srcs = ["_mlir_aliasing.py"],
+    deps = [
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
     deps = [
+        ":mlir_aliasing",
         ":pallas_compat",
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",

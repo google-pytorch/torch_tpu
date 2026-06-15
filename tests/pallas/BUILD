@@ -40,6 +40,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "mlir_aliasing_test",
+    srcs = ["mlir_aliasing_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/jax:pallas",
+        "//torch_tpu/_internal/pallas:mlir_aliasing",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
     name = "pallas_communication_test",
     srcs = ["pallas_communication_test.py"],
     env = {"TPU_PREMAPPED_BUFFER_SIZE": "0"},

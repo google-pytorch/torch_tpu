@@ -1456,6 +1456,59 @@ class TestPallasKernels(absltest.TestCase):
         bundle_b.to("cpu"), torch.full((4,), 4.0, dtype=torch.float32)
     )
 
+  def test_inplace_donate_registers_kernel_with_per_call_aliasing(self):
+    """End-to-end check that the kernel registered with the runtime
+    carries the per-call buffer-aliasing attribute.
+
+    Without this, XLA's buffer-assignment treats each chained pallas
+    call as a black box that needs a fresh output buffer; with it, the
+    custom_call's operand and output share a buffer, and a chain of N
+    donating calls reuses one buffer end-to-end instead of allocating
+    N. We verify the rewrite by intercepting the bytes handed to
+    ``tpu_torch_pallas.register_custom_kernel`` and inspecting the
+    StableHLO they contain.
+    """
+    from jaxlib.mlir import ir as mlir_ir
+    from jaxlib.mlir.dialects import stablehlo as mlir_stablehlo
+    from torch_tpu._internal.pallas import tpu_torch_pallas
+
+    op = pallas.jax_op(
+        "pallas::inplace_donate_registers_aliasing",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    captured: list[bytes] = []
+    original = tpu_torch_pallas.register_custom_kernel
+
+    def capturing(*args, **kwargs):
+      serialized = kwargs.get("serialized_mlir_module", None)
+      if serialized is not None:
+        captured.append(bytes(serialized))
+      return original(*args, **kwargs)
+
+    tpu_torch_pallas.register_custom_kernel = capturing
+    try:
+      x = torch.zeros(4, dtype=torch.float32, device=self.device)
+      y = torch.full((4,), 3.0, dtype=torch.float32, device=self.device)
+      _ = op(x, y)
+    finally:
+      tpu_torch_pallas.register_custom_kernel = original
+
+    self.assertTrue(
+        captured, "register_custom_kernel was not called during op invocation"
+    )
+
+    ctx = mlir_ir.Context()
+    ctx.allow_unregistered_dialects = True
+    mlir_stablehlo.register_dialect(ctx)
+    module = mlir_stablehlo.deserialize_portable_artifact(ctx, captured[-1])
+    text = str(module)
+
+    self.assertIn("output_operand_aliases", text)
+    self.assertIn("operand_index = 0", text)
+
 
 class TestInplaceDonateFxPass(absltest.TestCase):
   """Pure-Python unit tests for the inplace_donate_ssa_rename FX pass and
