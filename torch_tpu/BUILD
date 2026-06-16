@@ -51,12 +51,21 @@ py_dist_info(
 )
 
 torch_tpu_py_library(
+    name = "profiler_config",
+    srcs = ["profiler_config.py"],
+    deps = [
+        "//torch_tpu/_internal/profiler:profiler_config",
+    ],
+)
+
+torch_tpu_py_library(
     name = "_loader",
     srcs = ["_loader.py"],
     data = [
         ":torch_tpu_dist_info",
     ],
     deps = [
+        ":profiler_config",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
         "//torch_tpu/_internal/compile",

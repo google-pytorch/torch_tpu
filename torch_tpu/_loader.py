@@ -165,6 +165,12 @@ def _init_device_impl(device: str) -> torch.device:
 
   profiler.register_kineto_backend()
 
+  if device == "tpu":
+    import torch_tpu.profiler_config as profiler_module  # pylint: disable=g-import-not-at-top
+
+    sys.modules["torch.tpu.profiler"] = profiler_module
+    device_module.profiler = profiler_module
+
   # Monkey patch torch.set_float32_matmul_precision and
   # torch.get_float32_matmul_precision to maintain global precision state.
   from torch_tpu._internal.precision import precision_impl  # pylint: disable=g-import-not-at-top

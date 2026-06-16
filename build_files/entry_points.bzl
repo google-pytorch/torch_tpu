@@ -15,5 +15,8 @@
 """Shared entry points configuration for wheel and bazel builds."""
 
 ENTRY_POINTS = {
-    "torch.backends": ["torch_tpu = torch_tpu._loader:load"],
+    "torch.backends": [
+        "torch_tpu = torch_tpu._loader:load",
+        "tpu = torch_tpu._loader:load",
+    ],
 }

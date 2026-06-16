@@ -31,6 +31,23 @@ class AutoloadTpuTest(absltest.TestCase):
 
     self.assertTrue(module.is_available())
 
+  def test_torch_tpu_profiler(self):
+    import warnings  # pylint: disable=g-import-not-at-top
+    from torch.tpu import profiler  # pylint: disable=g-import-not-at-top,reimported
+
+    # Remove the cached attribute to trigger __getattr__ and the warning.
+    if "TpuProfilerConfig" in profiler.__dict__:
+      del profiler.__dict__["TpuProfilerConfig"]
+
+    with self.assertWarnsRegex(
+        UserWarning, "TpuProfilerConfig is experimental"
+    ):
+      from torch.tpu.profiler import TpuProfilerConfig  # pylint: disable=g-import-not-at-top
+
+    with warnings.catch_warnings():
+      warnings.simplefilter("error")
+      self.assertIs(profiler.TpuProfilerConfig, TpuProfilerConfig)
+
   def test_torch_tpu_device(self):
     device = torch.device("tpu")
     self.assertEqual(device.type, "tpu")

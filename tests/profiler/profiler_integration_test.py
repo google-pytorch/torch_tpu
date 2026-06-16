@@ -24,19 +24,21 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch.autograd import profiler
+import torch_tpu  # pylint: disable=unused-import
 from torch_tpu._internal import sync as tpu_sync
-from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
+from torch_tpu._internal.profiler import profiler_config
 
 # pylint: disable=g-direct-tensorflow-import
 from tsl.profiler.protobuf import profiler_options_pb2
 from tsl.profiler.protobuf import xplane_pb2
-
 # pylint: enable=g-direct-tensorflow-import
 
 
 def _get_profile_dir() -> pathlib.Path:
   tmpdir = os.environ.get("TEST_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
   return pathlib.Path(tmpdir) / "plugins" / "profile"
+
+TpuProfilerConfig = profiler_config.TpuProfilerConfig
 
 
 class ComplexLoopedModel(torch.nn.Module):
