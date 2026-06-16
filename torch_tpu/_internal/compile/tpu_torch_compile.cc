@@ -86,6 +86,9 @@ namespace {
 
 at::Tensor PyMakePlaceholder(const std::vector<int64_t>& sizes,  // INT_VEC_OK
                              at::ScalarType dtype, bool requires_grad) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides.
+  AllowThisThreadToAccessContextState();
   TT_ASSIGN_OR_THROW(at::Tensor prepared_tensor,
                      MakePlaceholder(sizes, dtype, requires_grad),
                      _.SetPrepend() << "failed to create placeholder tensor: ");
@@ -93,6 +96,9 @@ at::Tensor PyMakePlaceholder(const std::vector<int64_t>& sizes,  // INT_VEC_OK
 }
 
 at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides.
+  AllowThisThreadToAccessContextState();
   // arg_tensor may be a view, but placeholder DeviceBufferRefs are always
   // interpreted as contiguous.
   // If we want to make an equivalent view, we need to create a contiguous base
@@ -165,6 +171,10 @@ py::object PyGetDeviceLayoutIfMaterialized(const at::Tensor& tensor) {
 std::shared_ptr<ContextedModule> PyBuildMlir(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors) {  // INT_VEC_OK
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   TT_ASSIGN_OR_THROW(ContextedModule module,
                      ContextedModule::Make([&](mlir::MLIRContext& context) {
                        return ExtractMlirFromGraph(context, argument_tensors,
@@ -238,6 +248,10 @@ py::bytes PySerializePortableArtifact(std::shared_ptr<ContextedModule> module) {
 //   The compiled executable.
 SharedLoadedExecutableWithMetadata PyCompileMlir(
     std::shared_ptr<ContextedModule> module, const bool fast_compile) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
   // Provide the current python context to the compilation function so that
   // it can generate readable Mlir module names.
@@ -259,6 +273,10 @@ CompileResult PyTraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
     bool build_mlir_module) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   TT_ASSIGN_OR_THROW(
       CompileResult result,
       TraverseAndCompile(
@@ -291,12 +309,22 @@ std::vector<at::Tensor> PyExecuteCompiledModel(
 }
 
 void PyPushEnableTracebacks(std::optional<bool> enabled) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides.
+  AllowThisThreadToAccessContextState();
   const EnableTracebacksContextState state =
       enabled.has_value()
           ? std::make_optional(enabled.value() ? TracebackMode::kEnabled
                                                : TracebackMode::kDisabled)
           : std::nullopt;
   PushContextState(state);
+}
+
+void PyPopEnableTracebacks() {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides.
+  AllowThisThreadToAccessContextState();
+  PopContextState<EnableTracebacksContextState>();
 }
 
 }  // namespace
@@ -515,6 +543,10 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
 void PyPrecompilePadModule(const std::vector<TensorInfo>& tensor_info,
                            const std::vector<TensorBounds>& bounds_list,
                            const bool fast_compile) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   std::vector<Shape> dynamic_shapes =
       MakePadDynamicShapes(tensor_info, bounds_list);
 
@@ -572,6 +604,10 @@ CompileResult PyGetOrCompilePadModule(
     const std::vector<TensorInfo>& tensor_info,
     const std::vector<TensorBounds>& bounds_list, const bool fast_compile,
     const bool build_mlir_module, const bool is_caching_disabled) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   std::vector<Shape> dynamic_shapes =
       MakePadDynamicShapes(tensor_info, bounds_list);
 
@@ -614,6 +650,10 @@ void PyPrecompileSliceModule(
     const std::vector<std::vector<int64_t>>& padded_shapes,  // INT_VEC_OK
     const std::vector<at::ScalarType>& input_scalar_types,
     const bool fast_compile) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   SliceSubgraphInputs inputs =
       UnpackSliceInputs(target_shapes, padded_shapes, input_scalar_types);
 
@@ -676,6 +716,10 @@ CompileResult PyGetOrCompileSliceModule(
     const std::vector<at::ScalarType>& input_scalar_types,
     const bool fast_compile, const bool build_mlir_module,
     const bool is_caching_disabled) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply context manager overrides, e.g. custom compiler
+  // options.
+  AllowThisThreadToAccessContextState();
   SliceSubgraphInputs inputs =
       UnpackSliceInputs(target_shapes, padded_shapes, input_scalar_types);
 
@@ -969,7 +1013,7 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         "  padded_shapes: A list of padded shapes.\n"
         "  input_scalar_types: A list of scalar types for each tensor.\n"
         "  fast_compile: Whether to use the fast compile mode.");
-  m.def("pop_enable_tracebacks", &PopContextState<EnableTracebacksContextState>,
+  m.def("pop_enable_tracebacks", &PyPopEnableTracebacks,
         "Pops the current state of the enable_tracebacks context manager.");
   m.def("push_enable_tracebacks", &PyPushEnableTracebacks, py::arg("enabled"),
         "Pushes a new state onto the enable_tracebacks context manager.");

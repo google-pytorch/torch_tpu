@@ -27,6 +27,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -38,6 +39,17 @@
 
 namespace torch_tpu {
 namespace {
+
+// A test environment that allows access to context state, which is required for
+// the dispatch thread to resolve thread-local contexts.
+class DispatchThreadTestEnv : public testing::Environment {
+ public:
+  void SetUp() override { AllowThisThreadToAccessContextState(); }
+};
+
+// Installs the test environment.
+auto* const test_env =
+    testing::AddGlobalTestEnvironment(new DispatchThreadTestEnv);
 
 // A dummy MLIR op builder for testing purposes.
 absl::StatusOr<DynamicMlirOpResults> DummyBuilder(

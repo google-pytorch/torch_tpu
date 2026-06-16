@@ -49,6 +49,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
@@ -180,6 +181,7 @@ static constexpr std::string_view kAddStep2DMlir = R"mlir(
 class DispatchScanTest : public testing::Test {
  protected:
   DispatchScanTest() {
+    AllowThisThreadToAccessContextState();
     prev_mode_ = GetEagerMode();
     // Use `kInternalDeferAll` to allow us to lower to MLIR and verify the
     // correctness of the lowering phase.

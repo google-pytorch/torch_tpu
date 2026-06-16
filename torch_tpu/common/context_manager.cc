@@ -24,6 +24,10 @@
 
 namespace torch_tpu {
 
+void AllowThisThreadToAccessContextState() {
+  allow_context_state_access = true;
+}
+
 void PushContextStateUntyped(ContextManagerState state) {
   // Get the current top node of the shared slot to use as parent.
   const auto* const top = dynamic_cast<ContextManagerNode*>(

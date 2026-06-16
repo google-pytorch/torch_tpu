@@ -23,6 +23,7 @@ from absl.testing import absltest
 # pylint: disable-next=unused-import - avoid libtorch.so link error in OSS build.
 import torch
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import testing as tt_testing
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 
@@ -35,6 +36,10 @@ _EAGER_MODES = [
 
 class ExecutionModeTest(absltest.TestCase):
   """Unit tests for setting compiler options."""
+
+  def setUp(self):
+    super().setUp()
+    tt_testing.allow_this_thread_to_access_context_state()
 
   def test_eager_mode_nested_context(self):
     """Tests that nested context managers override each other correctly."""
@@ -101,6 +106,7 @@ class ExecutionModeTest(absltest.TestCase):
     """Tests setting eager mode in nested contexts concurrently."""
 
     def _random_nested_context():
+      tt_testing.allow_this_thread_to_access_context_state()
       mode1 = random.choice(_EAGER_MODES)
       mode2 = random.choice(_EAGER_MODES)
       # Nested context managers with random modes.
@@ -121,6 +127,7 @@ class ExecutionModeTest(absltest.TestCase):
     event = threading.Event()
 
     def _wait_and_check():
+      tt_testing.allow_this_thread_to_access_context_state()
       event.wait()
       return execution_mode.enable_cpu_fallback
 

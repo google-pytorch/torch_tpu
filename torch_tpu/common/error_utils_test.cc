@@ -36,6 +36,8 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
+#include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/eager_mode.h"
@@ -980,6 +982,7 @@ TEST(ReturnIfError, EvaluatesMessageOnceOnError) {
 TEST(ErrorDeathTest, GetEnableDebugChecksEnabledByDefaultInDebugMode) {
   EXPECT_EXIT(
       {
+        AllowThisThreadToAccessContextState();
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
         exit(GetEnableDebugChecks());
       },
@@ -987,6 +990,7 @@ TEST(ErrorDeathTest, GetEnableDebugChecksEnabledByDefaultInDebugMode) {
 }
 
 TEST(GetEnableDebugChecks, IsDisabledInDefaultEagerMode) {
+  AllowThisThreadToAccessContextState();
   SetEagerMode(EagerMode::kDeferNever);
   EXPECT_FALSE(GetEnableDebugChecks());
 }
@@ -994,6 +998,7 @@ TEST(GetEnableDebugChecks, IsDisabledInDefaultEagerMode) {
 TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
   EXPECT_EXIT(
       {
+        AllowThisThreadToAccessContextState();
         SetEnv(kTorchTpuInternalEnableDebugChecksEnvVar, "1");
         exit(GetEnableDebugChecks());
       },
@@ -1003,6 +1008,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVar) {
 TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVar) {
   EXPECT_EXIT(
       {
+        AllowThisThreadToAccessContextState();
         SetEnv(kTorchTpuInternalEnableDebugChecksEnvVar, "0");
         exit(GetEnableDebugChecks());
       },
@@ -1012,6 +1018,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVar) {
 TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
+        AllowThisThreadToAccessContextState();
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
         SetEnv(kTorchTpuInternalEnableDebugChecksEnvVar, "1");
         exit(GetEnableDebugChecks());
@@ -1022,6 +1029,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeEnabledByEnvVarInDebugMode) {
 TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVarInDebugMode) {
   EXPECT_EXIT(
       {
+        AllowThisThreadToAccessContextState();
         SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);
         SetEnv(kTorchTpuInternalEnableDebugChecksEnvVar, "0");
         exit(GetEnableDebugChecks());
@@ -1030,6 +1038,7 @@ TEST(GetEnableDebugChecksDeathTest, CanBeDisabledByEnvVarInDebugMode) {
 }
 
 TEST(GetEnableDebugChecks, DependsOnCurrentEagerMode) {
+  AllowThisThreadToAccessContextState();
   SetEagerMode(EagerMode::kDeferNever);
   EXPECT_FALSE(GetEnableDebugChecks());
   SetEagerMode(EagerMode::kDeferNeverAndLaunchBlocking);

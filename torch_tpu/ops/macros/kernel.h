@@ -26,6 +26,7 @@
 
 #include "absl/status/status.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"  // IWYU pragma: keep for AllowThisThreadToAccessContextState
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/macro_utils.h"
 #include "torch_tpu/common/op_name_stack.h"  // IWYU pragma: keep for ScopedOpName
@@ -75,6 +76,10 @@
 
 #define TT_KERNEL(op_name, param_keys, args, ...)                              \
   do {                                                                         \
+    /* Enable the dispatch thread to access thread-local context states, so    \
+     * that it could resolve and apply context manager overrides.              \
+     */                                                                        \
+    ::torch_tpu::AllowThisThreadToAccessContextState();                        \
     ::torch_tpu::internal::ScopedOpName _scoped_op_name(op_name);              \
     TT_CHECK_AND_LOG_KERNEL_ARGS_(op_name, TT_REMOVE_PARENS_(args));           \
     TT_IF_DEBUG(::torch_tpu::internal::PromotedTensorStates _promoted_scalars; \

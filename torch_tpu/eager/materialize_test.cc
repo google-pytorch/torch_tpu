@@ -32,6 +32,7 @@
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compile_options_key.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
@@ -53,6 +54,8 @@ namespace {
 
 class MaterializeTest : public testing::Test {
  protected:
+  MaterializeTest() { AllowThisThreadToAccessContextState(); }
+
   static void SetUpTestSuite() {
     const std::string device_type = "xla_cpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(

@@ -30,6 +30,7 @@ class ProfilerApiTest(absltest.TestCase):
   def setUp(self):
     super().setUp()
     tt_testing.reset_eager_state()
+    tt_testing.allow_this_thread_to_access_context_state()
     profiler_impl._profile_state.reset()
     # Clean up any previous server potentially left running from a crashed test
     if profiler_impl._profiler_server is not None:

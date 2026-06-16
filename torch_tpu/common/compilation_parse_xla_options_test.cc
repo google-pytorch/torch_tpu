@@ -24,6 +24,7 @@
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compilation_test_helper.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/xla.pb.h"
@@ -38,6 +39,17 @@ namespace {
 using testing::Contains;
 using testing::ElementsAre;
 using testing::Pair;
+
+// A test environment that allows access to context state, which is required for
+// the dispatch thread to resolve thread-local custom compiler option overrides.
+class DispatchThreadTestEnv : public testing::Environment {
+ public:
+  void SetUp() override { AllowThisThreadToAccessContextState(); }
+};
+
+// Installs the test environment.
+auto* const test_env =
+    testing::AddGlobalTestEnvironment(new DispatchThreadTestEnv);
 
 class MakeCompilerOptionsTest : public testing::Test {
  protected:

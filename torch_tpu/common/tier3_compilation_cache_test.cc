@@ -29,6 +29,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
@@ -69,7 +70,10 @@ CompilationCacheKey MakeCacheKey(uint64_t shapeless_key, int num_dims) {
       GetCompilationSpec(CompilationMode::kFastCompile).compile_options_key);
 }
 
-class Tier3CompilationCacheTest : public testing::Test {};
+class Tier3CompilationCacheTest : public testing::Test {
+ protected:
+  Tier3CompilationCacheTest() { AllowThisThreadToAccessContextState(); }
+};
 
 TEST_F(Tier3CompilationCacheTest,
        UsesTier3CompilationCacheIsTrueWhenEnvVarIsSet) {

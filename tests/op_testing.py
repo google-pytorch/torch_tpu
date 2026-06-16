@@ -1330,6 +1330,7 @@ class TorchTpuTestBase(TestCase):
   def setUp(self) -> None:
     super().setUp()
     tt_testing.reset_eager_state()
+    tt_testing.allow_this_thread_to_access_context_state()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
 

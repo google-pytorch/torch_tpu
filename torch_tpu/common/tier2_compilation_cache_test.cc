@@ -41,6 +41,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
@@ -133,6 +134,8 @@ auto* const test_env =
 class Tier2CacheTest : public testing::Test {
  protected:
   Tier2CacheTest() {
+    AllowThisThreadToAccessContextState();
+
     SetEnv(kTorchTpuInternalTier2CompilationCacheEnvVar,
            absl::StrCat("my_cache_", getpid()));
     cache_path_ = GetTier2CompilationCachePath();

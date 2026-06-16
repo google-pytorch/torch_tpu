@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compilation_test_helper.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/xla.pb.h"
 
@@ -36,6 +37,9 @@ class MakeCompilerOptionsTest : public testing::Test {
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
         {.device_type = "tpu"});
     ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
+    // Enable thread-local context state access to resolve custom compiler
+    // option overrides.
+    AllowThisThreadToAccessContextState();
   }
 };
 

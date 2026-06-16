@@ -18,11 +18,16 @@ from absl.testing import absltest
 import torch
 import torch.testing
 from torch_tpu._internal import sync
+from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations
 
 
 class AnnotationsTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    tt_testing.allow_this_thread_to_access_context_state()
 
   def test_layout_context_to_device(self):
     device = torch.device("tpu")

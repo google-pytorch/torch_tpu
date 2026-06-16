@@ -27,6 +27,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -46,6 +47,8 @@ namespace {
 
 class EventsQueueTest : public testing::Test {
  protected:
+  EventsQueueTest() { AllowThisThreadToAccessContextState(); }
+
   static void SetUpTestSuite() {
     const std::string device_type = "xla_cpu";
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(

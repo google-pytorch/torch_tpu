@@ -16,6 +16,7 @@
 
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/op_dispatcher.h"
@@ -51,6 +52,10 @@ PYBIND11_MODULE(testing, m) {
   m.def("reset_default_device_generators",
         PyResetDefaultDeviceGeneratorsForTesting,
         "Resets the default device generators singleton state.");
+  m.def("allow_this_thread_to_access_context_state",
+        &AllowThisThreadToAccessContextState,
+        "Enables the calling thread to access thread-local context states. "
+        "Useful for testing context manager implementations.");
 }
 
 }  // namespace torch_tpu

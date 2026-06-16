@@ -45,6 +45,7 @@
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/contain.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
@@ -120,6 +121,7 @@ TEST(CacheEntryStatsPrinterTest, Works) {
 class CompilationCacheTest : public testing::Test {
  protected:
   CompilationCacheTest() {
+    AllowThisThreadToAccessContextState();
     CompilationCacheTestHelper::RestartCompilationCache();
   }
 };

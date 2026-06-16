@@ -50,6 +50,7 @@
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
@@ -124,6 +125,10 @@ absl::StatusOr<DeviceBufferRef> UpdateDeviceRngOffset(at::Tensor rng_state,
 absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
                                                       uint64_t seed,
                                                       uint64_t offset) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply tensor layout overrides for TPU memory
+  // allocation.
+  AllowThisThreadToAccessContextState();
   const uint64_t host_data[2] = {seed, offset};
   TT_ASSIGN_OR_RETURN(
       auto rng_state_buffer,
@@ -445,6 +450,9 @@ DeviceGeneratorImpl* DeviceGeneratorImpl::clone_impl() const {
 }
 
 at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply tensor layout overrides.
+  AllowThisThreadToAccessContextState();
   return DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
 }
 
@@ -507,11 +515,19 @@ at::Generator MakeDeviceGenerator(c10::DeviceIndex idx) {
 }
 
 void SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply tensor layout overrides for the generator's
+  // state buffer on the device.
+  AllowThisThreadToAccessContextState();
   auto gen = DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
   gen.set_current_seed(seed);
 }
 
 void SetManualSeedAll(uint64_t seed) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply tensor layout overrides for the generator's
+  // state buffer on the device.
+  AllowThisThreadToAccessContextState();
   const int num_devices = DeviceGenerators::GetDefaultInstance().num_devices();
   for (int i = 0; i < num_devices; ++i) {
     SetManualSeed(seed, i);

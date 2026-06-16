@@ -19,6 +19,7 @@ import warnings
 
 from absl.testing import absltest
 import torch
+from torch_tpu._internal import testing as tt_testing
 import torch_tpu._internal.precision as p
 from torch_tpu._internal.utils import utils
 
@@ -31,6 +32,7 @@ class PrecisionTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
+    tt_testing.allow_this_thread_to_access_context_state()
     self._original_warn_always = torch._C._get_warnAlways()
     torch._C._set_warnAlways(True)
 
@@ -189,10 +191,12 @@ class PrecisionTest(absltest.TestCase):
     self.assertEqual(p_impl._get_precision(), Precision.DEFAULT)
 
     def worker_high():
+      tt_testing.allow_this_thread_to_access_context_state()
       with precision(Precision.HIGH):
         self.assertEqual(p_impl._get_precision(), Precision.HIGH)
 
     def worker_highest():
+      tt_testing.allow_this_thread_to_access_context_state()
       # Start without any context, should default to default
       self.assertEqual(p_impl._get_precision(), Precision.DEFAULT)
       with precision(Precision.HIGHEST):
@@ -214,6 +218,7 @@ class PrecisionTest(absltest.TestCase):
   def test_thread_local_stress(self):
 
     def worker(target_precision):
+      tt_testing.allow_this_thread_to_access_context_state()
       for _ in range(100):
         with precision(target_precision):
           self.assertEqual(p_impl._get_precision(), target_precision)
@@ -236,6 +241,7 @@ class PrecisionTest(absltest.TestCase):
 
   def test_thread_local_inheritance(self):
     def child_worker():
+      tt_testing.allow_this_thread_to_access_context_state()
       # Child thread should NOT inherit the parent's precision context.
       self.assertEqual(p_impl._get_precision(), Precision.DEFAULT)
 
@@ -248,6 +254,7 @@ class PrecisionTest(absltest.TestCase):
 
   def test_thread_pool_executor(self):
     def worker(target_precision, target_impl_precision):
+      tt_testing.allow_this_thread_to_access_context_state()
       with precision(target_precision):
         self.assertEqual(p_impl._get_precision(), target_impl_precision)
       return p_impl._get_precision()
@@ -264,6 +271,7 @@ class PrecisionTest(absltest.TestCase):
 
   def test_nested_thread_local(self):
     def worker():
+      tt_testing.allow_this_thread_to_access_context_state()
       with precision(Precision.HIGH):
         self.assertEqual(p_impl._get_precision(), Precision.HIGH)
         with precision(Precision.HIGHEST):
@@ -365,6 +373,7 @@ class PrecisionTest(absltest.TestCase):
       self.assertEqual(p_impl._get_precision(), Precision.HIGH)
 
       def worker():
+        tt_testing.allow_this_thread_to_access_context_state()
         # Precision is process-wide.
         self.assertEqual(p_impl._get_precision(), Precision.HIGH)
 
@@ -380,6 +389,7 @@ class PrecisionTest(absltest.TestCase):
       self.assertEqual(p_impl._get_global_precision(), Precision.HIGH)
 
       def worker():
+        tt_testing.allow_this_thread_to_access_context_state()
         # Global precision is process-wide std::atomic.
         self.assertEqual(p_impl._get_global_precision(), Precision.HIGH)
 

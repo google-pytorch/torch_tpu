@@ -22,6 +22,7 @@ import itertools
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch_tpu._internal import testing as tt_testing
 
 RNG_OPS = (
     (
@@ -128,6 +129,7 @@ class RngStressTest(parameterized.TestCase):
     num_iterations = 50
 
     def run_op():
+      tt_testing.allow_this_thread_to_access_context_state()
       return op_fn().cpu()
 
     for iteration_id in range(num_iterations):
@@ -158,6 +160,7 @@ class RngStressTest(parameterized.TestCase):
     compiled_op_fn()
 
     def run_op():
+      tt_testing.allow_this_thread_to_access_context_state()
       return compiled_op_fn().cpu()
 
     for iteration_id in range(num_iterations):
@@ -191,9 +194,11 @@ class RngStressTest(parameterized.TestCase):
     compiled_op_fn()
 
     def run_compiled():
+      tt_testing.allow_this_thread_to_access_context_state()
       return compiled_op_fn().cpu()
 
     def run_eager():
+      tt_testing.allow_this_thread_to_access_context_state()
       return op_fn().cpu()
 
     for iteration_id in range(num_iterations):

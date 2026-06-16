@@ -19,6 +19,7 @@ import concurrent
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compiler_options as compiler
+from torch_tpu._internal import testing as tt_testing
 from tests import op_testing
 
 
@@ -28,6 +29,7 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
   def setUp(self):
     super().setUp()
     self.tpu = torch.device("tpu")
+    tt_testing.allow_this_thread_to_access_context_state()
 
   def test_push_compiler_options_does_not_affect_result(self):
     """Tests setting compiler options.
@@ -84,6 +86,7 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
     ]
 
     def run_op(op, index):
+      tt_testing.allow_this_thread_to_access_context_state()
       with compiler.custom_compiler_options(
           compiler_option_dicts[index % len(compiler_option_dicts)]
       ):
@@ -121,6 +124,7 @@ class CompilerOptionTest(op_testing.TorchTpuTestBase):
     ]
 
     def run_op(op, index):
+      tt_testing.allow_this_thread_to_access_context_state()
       with compiler.custom_compiler_options(
           compiler_option_dicts1[index % len(compiler_option_dicts1)]
       ):

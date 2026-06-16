@@ -21,6 +21,7 @@ from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import testing as tt_testing
 
 EagerMode = execution_mode.EagerMode
 
@@ -30,6 +31,7 @@ class XlaCompileOptionsTest(absltest.TestCase):
 
   def setUp(self):
     super().setUp()
+    tt_testing.allow_this_thread_to_access_context_state()
     # Pop any env vars that affect global eager mode default.
     # See go/tt-knobs#eager-mode.
     os.environ.pop("TPU_LAUNCH_BLOCKING", None)

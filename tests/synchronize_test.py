@@ -31,6 +31,7 @@ class SynchronizeTest(absltest.TestCase):
   def setUp(self):
     super().setUp()
     tt_testing.reset_eager_state()
+    tt_testing.allow_this_thread_to_access_context_state()
     self.old_eager_mode = execution_mode.eager_mode
     execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
 

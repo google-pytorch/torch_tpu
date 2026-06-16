@@ -30,6 +30,13 @@
 
 namespace torch_tpu {
 
+inline thread_local  // CPP_THREAD_LOCAL_OK=per dispatch-worker thread boundary
+    bool allow_context_state_access = false;
+
+// One-way flip to allow the current thread to access thread-local context
+// states. Intended to be used in the dispatch thread only.
+void AllowThisThreadToAccessContextState();
+
 namespace internal {
 
 // The ThreadLocalDebugInfo slot to use for TorchTPU context states. For now, we
@@ -90,6 +97,11 @@ class ContextManagerNode : public c10::DebugInfoBase {
 // is found.
 template <typename T>
 std::optional<T> GetContextState() {
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "GetContextState must only be called from a dispatch thread. "
+      << "For worker threads, please have the dispatch thread resolve "
+      << "thread-local context states and explicitly pass down parameters.";
+
   // Statically check that T is one of the options for ContextManagerState.
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
@@ -132,6 +144,10 @@ void PushContextState(T state) {
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
       "T must be one of the alternative types of ContextManagerState.");
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "PushContextState must only be called from a dispatch thread. "
+      << "Worker threads should not mutate any thread-local context states.";
+
   PushContextStateUntyped(ContextManagerState(std::move(state)));
 }
 
@@ -142,6 +158,10 @@ void PopContextState() {
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
       "T must be one of the alternative types of ContextManagerState.");
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "PopContextState must only be called from a dispatch thread. "
+      << "Worker threads should not mutate any thread-local context states.";
+
   auto node = PopContextStateUntyped();
   const T* state = std::get_if<T>(&node->state());
   ABSL_CHECK(state != nullptr)  // CRASH_OK

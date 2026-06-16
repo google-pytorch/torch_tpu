@@ -78,6 +78,9 @@ class XProfObserverContext : public at::ObserverContext {
 // bypass state tracking and avoid unnecessary heap allocations.
 absl_nullable std::unique_ptr<at::ObserverContext> OnFunctionEnter(
     const at::RecordFunction& fn) {
+  // Enable the dispatch thread to access thread-local context states, so that
+  // it could resolve and apply `profile` context manager overrides.
+  AllowThisThreadToAccessContextState();
   // Fast-path check: if
   //   1. no XProf session (local or remote) is active, or
   //   2. profiling is not enabled

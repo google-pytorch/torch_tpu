@@ -177,6 +177,8 @@ torch_tpu_cc_test(
     srcs = ["error_utils_test.cc"],
     deps = [
         ":cache_key",
+        ":context_manager",
+        ":context_states",
         ":env_vars",
         ":error_utils",
         ":utils",
@@ -278,6 +280,7 @@ torch_tpu_cc_test(
         ":cache_key",
         ":compilation",
         ":compilation_spec",
+        ":context_manager",
         ":dimension_types",
         ":env_vars",
         ":error_utils",
@@ -964,6 +967,7 @@ torch_tpu_cc_test(
         ":compilation",
         ":compilation_spec",
         ":compilation_test_helper",
+        ":context_manager",
         "//shims/torch:torch_headers",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
@@ -985,6 +989,7 @@ torch_tpu_cc_test(
         ":compilation_cache",
         ":compilation_spec",
         ":compile_options_key",
+        ":context_manager",
         ":error_utils",
         ":flags",
         ":shape",
@@ -1071,6 +1076,7 @@ torch_tpu_cc_test(
         ":compilation",
         ":compilation_spec",
         ":compilation_test_helper",
+        ":context_manager",
         "//shims/torch:torch_headers",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
@@ -1096,6 +1102,7 @@ torch_tpu_cc_test(
         ":compilation_spec",
         ":compilation_test_helper",
         ":compile_options_key",
+        ":context_manager",
         ":fingerprint_utils",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
@@ -1120,6 +1127,7 @@ torch_tpu_cc_test(
         ":cache_key",
         ":compilation",
         ":compilation_spec",
+        ":context_manager",
         ":dimension_types",
         ":env_vars",
         ":error_utils",
@@ -1155,6 +1163,7 @@ torch_tpu_cc_test(
         ":cache_key",
         ":compilation",
         ":compilation_spec",
+        ":context_manager",
         ":dimension_types",
         ":env_vars",
         ":error_utils",
@@ -1189,6 +1198,7 @@ torch_tpu_cc_test(
         ":cache_key",
         ":compilation",
         ":compilation_spec",
+        ":context_manager",
         ":env_vars",
         ":tier2_compilation_cache",  # buildcleaner: keep
         ":tier3_compilation_cache",
@@ -1232,6 +1242,7 @@ torch_tpu_cc_test(
     notest_oss = "Environment variable TPU_LIBRARY_PATH is not set. Can't load PJRT plugin TPU.",
     deps = [
         ":cache_key",
+        ":context_manager",
         ":dimension_types",
         ":dynamism_utils",
         ":error_utils",
@@ -1264,6 +1275,18 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "context_state_access_test",
+    srcs = ["context_state_access_test.cc"],
+    deps = [
+        ":context_manager",
+        ":context_states",
+        "//shims/torch",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

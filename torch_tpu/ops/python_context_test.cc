@@ -33,6 +33,17 @@ using testing::ElementsAre;
 using testing::HasSubstr;
 using testing::Not;
 
+// A test environment that allows access to context state, which is required for
+// the dispatch thread to resolve thread-local Python context overrides.
+class DispatchThreadTestEnv : public testing::Environment {
+ public:
+  void SetUp() override { AllowThisThreadToAccessContextState(); }
+};
+
+// Installs the test environment.
+auto* const test_env =
+    testing::AddGlobalTestEnvironment(new DispatchThreadTestEnv);
+
 TEST(CaptureCurrentPythonTrackback, CapturesPythonStack) {
   mlir::MLIRContext ctx;
   PythonContext python_context(

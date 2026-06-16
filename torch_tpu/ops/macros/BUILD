@@ -79,6 +79,7 @@ torch_tpu_cc_library(
         ":logging",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:context_manager",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:macro_utils",
         "//torch_tpu/common:op_name_stack",

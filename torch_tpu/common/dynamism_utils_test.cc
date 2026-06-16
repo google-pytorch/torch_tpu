@@ -29,6 +29,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
@@ -62,6 +63,7 @@ class DynamismOpsBuilder {
 };
 
 TEST(DynamismOpsTest, GetTraversalOutputDimensionsNoBoundedInput) {
+  AllowThisThreadToAccessContextState();
   ScopedPythonContextCapturer capturer(OpName::kAdd);
   DynamismOpsBuilder ops_builder;
 
@@ -112,6 +114,7 @@ TEST(DynamismOpsTest, GetTraversalOutputDimensionsNoBoundedInput) {
 }
 
 TEST(DynamismOpsTest, GetTraversalOutputDimensionsWithBoundedInput) {
+  AllowThisThreadToAccessContextState();
   ScopedPythonContextCapturer capturer(OpName::kAdd);
   DynamismOpsBuilder ops_builder;
 
