@@ -199,7 +199,7 @@ def main() -> None:
 
   python_version = args.python_version or DEFAULT_PYTHON_VERSION
 
-  timeout_minutes = 30
+  timeout_minutes = 60
   sleep_seconds = 60
   start_time = time.monotonic()
 
