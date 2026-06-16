@@ -18,13 +18,11 @@
 
 #include <cstdint>
 #include <deque>
-#include <optional>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/Generator.h"
-#include "ATen/ops/full.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -56,6 +54,7 @@
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/ops/fill/fill_aten_kernels.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -115,9 +114,11 @@ at::Tensor CreateDeviceRngStateTensor(c10::Device device) {
   // Python-level dispatch modes from intercepting internal eager tensor
   // allocations and operations in this scope.
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
-  return at::full(/*size=*/{2}, /*fill_value=*/0, /*dtype_opt=*/at::kUInt64,
-                  /*layout_opt=*/std::nullopt, /*device_opt=*/device,
-                  /*pin_memory_opt=*/std::nullopt);
+  TT_ASSIGN_OR_THROW(
+      at::Tensor state_tensor,
+      MakeFullTensor(/*size=*/{2}, /*fill_value=*/0, /*dtype_opt=*/at::kUInt64,
+                     /*device_opt=*/device));
+  return state_tensor;
 }
 
 // A singleton that holds one generator per device. The generators are lazily

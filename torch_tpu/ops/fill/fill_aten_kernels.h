@@ -19,6 +19,10 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "c10/core/Device.h"
+#include "c10/core/ScalarType.h"
+#include "c10/util/Optional.h"
 
 namespace torch_tpu {
 at::Tensor& AtenZero_(at::Tensor& self);
@@ -26,6 +30,11 @@ at::Tensor& AtenZero_(at::Tensor& self);
 at::Tensor& AtenFillScalar_(at::Tensor& self, const at::Scalar& value);
 
 at::Tensor& AtenFillTensor_(at::Tensor& self, const at::Tensor& fill_value);
+
+absl::StatusOr<at::Tensor> MakeFullTensor(
+    at::IntArrayRef size, at::Scalar fill_value,
+    c10::optional<at::ScalarType> dtype_opt = c10::nullopt,
+    c10::optional<at::Device> device_opt = c10::nullopt);
 
 }  // namespace torch_tpu
 

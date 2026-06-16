@@ -26,7 +26,6 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -103,6 +102,23 @@ at::Tensor& AtenFillScalar_(at::Tensor& self, const at::Scalar& fill_value) {
         FillTensorHelper(self, fill_value_tensor, std::move(param_keys)));
     return self;
   });
+}
+
+absl::StatusOr<at::Tensor> MakeFullTensor(
+    at::IntArrayRef size, at::Scalar fill_value,
+    c10::optional<at::ScalarType> dtype_opt,
+    c10::optional<at::Device> device_opt) {
+  at::ScalarType dtype = dtype_opt.value_or(fill_value.type());
+  TT_ASSIGN_OR_RETURN(at::Tensor self,
+                      MakeEmptyTensor(size, dtype, device_opt));
+
+  auto promoted_fill_value = PromoteScalar(fill_value);
+  TT_ASSIGN_OR_RETURN(at::Tensor fill_value_tensor,
+                      promoted_fill_value.GetTensor(dtype));
+
+  TT_RETURN_IF_ERROR(
+      FillTensorHelper(self, fill_value_tensor, OpParamCacheKeys::Empty()));
+  return self;
 }
 
 }  // namespace torch_tpu
