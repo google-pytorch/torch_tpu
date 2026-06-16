@@ -104,6 +104,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:compiler",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/_internal/compile/fx_passes:inplace_donate_ssa_rename",
     ],
 )
 

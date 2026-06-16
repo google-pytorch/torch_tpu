@@ -253,6 +253,16 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "inplace_donate_ssa_rename_test",
+    srcs = ["inplace_donate_ssa_rename_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile/fx_passes:inplace_donate_ssa_rename",
+    ],
+)
+
+torch_tpu_py_test(
     name = "model_coverage_hf_test",
     timeout = "long",
     srcs = ["model_coverage_hf_test.py"],

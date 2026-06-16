@@ -1509,6 +1509,75 @@ class TestPallasKernels(absltest.TestCase):
     self.assertIn("output_operand_aliases", text)
     self.assertIn("operand_index = 0", text)
 
+  def test_inplace_donate_compiled_mode_kwarg_call_works(self):
+    """Same chain-rename contract as
+    ``test_inplace_donate_chained_calls_thread_same_tensor_compiled_mode``,
+    but the donated arg is passed by KEYWORD at every call site. The FX
+    pass must find the donated value through ``call_node.kwargs`` (using
+    the op's schema to map donate_argnums → parameter name); without
+    that lookup the chain would not be SSA-renamed and XLA would reject
+    the program with ``"Donation requested for invalid buffer"``."""
+    op = pallas.jax_op(
+        "pallas::inplace_donate_compiled_mode_kwarg",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def step(bundle, ya, yb, yc):
+      # Force kwarg passing at each call site so the FX graph captures
+      # ``bundle`` under ``kwargs['x']`` for the donating call. Even if
+      # Dynamo normalizes some of these back to positional, exercising
+      # the kwarg call site is the regression target — we just need the
+      # compile and the numeric result to be correct.
+      s0 = op(x=bundle, y=ya).sum()
+      s1 = op(x=bundle, y=yb).sum()
+      s2 = op(x=bundle, y=yc).sum()
+      return torch.stack([s0, s1, s2])
+
+    bundle = torch.zeros(4, dtype=torch.float32, device=self.device)
+    ya = torch.ones(4, dtype=torch.float32, device=self.device)
+    yb = torch.ones(4, dtype=torch.float32, device=self.device)
+    yc = torch.ones(4, dtype=torch.float32, device=self.device)
+
+    sums = step(bundle, ya, yb, yc)
+    utils.assert_close(
+        sums.to("cpu"), torch.tensor([4.0, 8.0, 12.0], dtype=torch.float32)
+    )
+    # After one compiled-mode call: bundle += 3 → all 3s.
+    utils.assert_close(
+        bundle.to("cpu"), torch.full((4,), 3.0, dtype=torch.float32)
+    )
+
+  def test_inplace_donate_dynamic_compiler_raises_clear_error(self):
+    """``inplace_donate=True`` is not supported on the dynamic-shapes
+    compile path. We raise ``NotImplementedError`` with a clear message
+    at the entry of ``DynamicCompiler.__call__`` rather than letting the
+    chain reach XLA and fail with the much less actionable
+    ``"Donation requested for invalid buffer"``.
+    """
+    op = pallas.jax_op(
+        "pallas::inplace_donate_dynamic_compiler_raises",
+        add_vectors_jax,
+        donate_argnums=(0,),
+        inplace_donate=True,
+    )
+
+    @torch.compile(fullgraph=True, dynamic=True, backend=compile.TpuBackend())
+    def step(bundle, delta):
+      return op(bundle, delta).sum()
+
+    bundle = torch.zeros(8, dtype=torch.float32, device=self.device)
+    delta = torch.ones(8, dtype=torch.float32, device=self.device)
+    # The error may be wrapped by Dynamo / AOT-Autograd, so we look for
+    # the message substring our raise_if_present emits rather than
+    # asserting the exception type at the outer boundary.
+    with self.assertRaisesRegex(
+        Exception, "inplace_donate=True"
+    ):
+      step(bundle, delta)
+
 
 class TestInplaceDonateFxPass(absltest.TestCase):
   """Pure-Python unit tests for the inplace_donate_ssa_rename FX pass and

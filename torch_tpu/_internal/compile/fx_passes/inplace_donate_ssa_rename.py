@@ -96,6 +96,33 @@ def _inplace_donate_argnums(
   return getattr(node.target, _INPLACE_DONATE_ARGNUMS_ATTR, None)
 
 
+def _get_arg_value(
+    call_node: torch.fx.Node, idx: int,
+) -> torch.fx.Node | None:
+  """Returns the FX value bound to parameter index ``idx`` on ``call_node``.
+
+  Pallas custom ops are registered with `torch.library.custom_op`, which
+  produces a named schema for the wrapped JAX function. FX represents
+  positional arguments under ``call_node.args`` and keyword arguments
+  under ``call_node.kwargs`` (keyed by the schema's parameter name).
+
+  This helper checks the positional path first; if ``idx`` is past the
+  positional tail it falls back to the schema's ``arguments[idx].name``
+  and reads ``call_node.kwargs``. Returns ``None`` if no value is bound
+  at that parameter position (caller treats that as a non-applicable
+  donation step rather than crashing).
+  """
+  if idx < len(call_node.args):
+    return call_node.args[idx]
+  schema = getattr(call_node.target, "_schema", None)
+  if schema is None:
+    return None
+  schema_args = schema.arguments
+  if idx >= len(schema_args):
+    return None
+  return call_node.kwargs.get(schema_args[idx].name, None)
+
+
 def _select_output_node(
     graph: torch.fx.Graph,
     call_node: torch.fx.Node,
@@ -159,12 +186,12 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
 
     call_pos = position[call_node]
     for donate_idx in donate_argnums:
-      if donate_idx >= len(call_node.args):
-        # Mismatched op — skip rather than crash; the eager-mode C++ check
-        # will produce a clearer error if this op is actually invoked.
-        continue
-      donated_input = call_node.args[donate_idx]
+      donated_input = _get_arg_value(call_node, donate_idx)
       if not isinstance(donated_input, torch.fx.Node):
+        # The donated parameter wasn't passed at this call site (e.g. it
+        # has a default and the user omitted it), or the binding resolves
+        # to a non-Node literal. Either way there's no SSA value to
+        # rewrite; skip rather than crash.
         continue
 
       output_node = _select_output_node(graph, call_node, donate_idx)
@@ -212,10 +239,12 @@ def _follow_donate_chain_to_terminus(
       donate_argnums = _inplace_donate_argnums(user)
       if donate_argnums is None:
         continue
-      # Find which donated index of `user` points at `current`.
+      # Find which donated index of `user` points at `current`. Checks
+      # positional args first and falls back to kwargs via the op's
+      # schema — mirrors ``_get_arg_value`` in ``apply``.
       donate_idx: int | None = None
       for didx in donate_argnums:
-        if didx < len(user.args) and user.args[didx] is current:
+        if _get_arg_value(user, didx) is current:
           donate_idx = didx
           break
       if donate_idx is None:
@@ -303,3 +332,36 @@ def find_donate_aliases(
     seen_termini.add(terminus)
     aliases.append((ph_idx, terminus))
   return aliases
+
+
+def raise_if_present(
+    gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
+) -> None:
+  """Raises ``NotImplementedError`` if any inplace-donate op call appears in
+  ``gm_or_graph``.
+
+  Compile paths that do not run :func:`apply` (e.g. the dynamic-shapes
+  ``DynamicCompiler``) call this to surface a clear "not supported" error
+  at the entry of compilation. Without it, the same FX graph would reach
+  XLA with the donated arg referenced by every chained call as the same
+  SSA value, and XLA would reject the program with the much less actionable
+  ``"Donation requested for invalid buffer"``.
+  """
+  if isinstance(gm_or_graph, torch.fx.GraphModule):
+    graph = gm_or_graph.graph
+  else:
+    graph = gm_or_graph
+  for node in graph.nodes:
+    if _inplace_donate_argnums(node) is None:
+      continue
+    schema = getattr(node.target, "_schema", None)
+    qualname = schema.name if schema is not None else str(node.target)
+    raise NotImplementedError(
+        f"Pallas op {qualname!r} is registered with inplace_donate=True but"
+        " the current compile path does not run the inplace-donate FX"
+        " transform (currently only StaticCompiler does). The chain would"
+        " reach XLA with the same SSA value referenced by every donating"
+        " call and XLA would reject it. Either compile with static shapes"
+        " (e.g. ``torch.compile(dynamic=False)``) or drop"
+        " inplace_donate=True from this op."
+    )
