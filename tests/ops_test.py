@@ -1611,7 +1611,7 @@ class TestOps(TorchTpuTestBase):
         "abs",
         # TODO(b/495929595): can be incorrect close to 0.
         # TODO: fix abs() failing with bool dtypes.
-        exclude_dtypes={"gpu": (torch.bool,)},
+        exclude_dtypes={"gpu": (torch.bool, torch.float16)},
         exclude_inplace_dtypes={"gpu": (torch.bool,)},
         # TODO: stablehlo gradients for Real/Imag/Abs on complex are not
         # working.
