@@ -438,6 +438,14 @@ torch_tpu_py_test(
     args = [
         "--test_mode=gen_gpu_golden",
     ],
+    data = [
+        "ops_test_gpu_golden0.gz",
+        "ops_test_gpu_golden1.gz",
+        "ops_test_gpu_golden2.gz",
+        "ops_test_gpu_golden_compiled0.gz",
+        "ops_test_gpu_golden_compiled1.gz",
+        "ops_test_gpu_golden_compiled2.gz",
+    ],
     main = "ops_test.py",
     nolocal = "slow test",
     notest_oss = "Disabled during switch from opt-in to opt-out",
