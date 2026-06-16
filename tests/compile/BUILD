@@ -156,6 +156,8 @@ torch_tpu_py_test(
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/compile:split_compiler",
+        "//torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
@@ -373,6 +375,18 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "split_compiler_test",
+    srcs = ["split_compiler_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:split_compiler",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
     ],
 )
 
