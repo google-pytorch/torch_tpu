@@ -16,7 +16,7 @@ load("//build_files:build_defs.bzl", "oss_target", "torch_tpu_cc_library", "torc
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = ["//visibility:public"],
 )
 
 torch_tpu_cc_test(
