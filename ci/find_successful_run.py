@@ -33,7 +33,7 @@ GITHUB_REPOSITORY: Final[str] = os.environ.get(
 )
 
 
-DEFAULT_PYTHON_VERSION: Final[str] = "cp312"
+DEFAULT_PYTHON_VERSION: Final[str] = "cp314"
 _DEFAULT_HTTP_REQUEST_TIMEOUT: Final[float] = 60.0  # seconds
 
 

@@ -31,4 +31,4 @@ SUPPORTED_PYTHON_VERSIONS = [
 # only for this version (see //shims/torch:torch_wheel_select.bzl).
 # MODULE.bazel cannot load() this file, so its copy of this constant is kept
 # in sync by hand, checked by ci/tools/sync_module_bazel_versions.py.
-DEFAULT_PYTHON_VERSION = "3.12"
+DEFAULT_PYTHON_VERSION = "3.14"

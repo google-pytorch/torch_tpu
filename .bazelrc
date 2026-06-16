@@ -7,8 +7,8 @@ common --announce_rc
 common --check_visibility=false
 
 # The default comes form XLA's setup, which is 3.13,
-# while we have 3.12 configured.
-common --repo_env=HERMETIC_PYTHON_VERSION=3.12
+# while we have 3.14 configured.
+common --repo_env=HERMETIC_PYTHON_VERSION=3.14
 
 common --enable_bzlmod=true --enable_workspace=false
 

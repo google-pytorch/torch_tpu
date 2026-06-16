@@ -57,12 +57,9 @@ jobs:
     name: "Set up Matrix"
     runs-on: ubuntu-latest
     outputs:
-      # Keep cpu_versions and latest_python_version in sync with
-      # bazel/supported_python_versions.bzl.
-      cpu_versions: '["3.11", "3.12", "3.13", "3.14"]'
+      cpu_versions: ${{ steps.set.outputs.cpu_versions }}
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
-      default_python_version: "3.12"
-      latest_python_version: "3.14"
+      default_python_version: "3.14"
       should_build: ${{ steps.check_diff.outputs.should_build }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
@@ -85,15 +82,18 @@ jobs:
           HAS_RUN_ALL_VERSIONS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:run_all_versions') }}
           HAS_POSTSUBMIT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:postsubmit') }}
         run: |
-          DEFAULT_VER="3.12"
+          DEFAULT_VER="3.14"
+          CPU_VERS='["3.11", "3.14"]'
           TPU_VERS="[\"${DEFAULT_VER}\"]"
           if [[ "${EVENT_NAME}" == "schedule" ]] || \
              [[ "${EVENT_NAME}" == "push" ]] || \
              [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
              [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
+            CPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
             TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
           fi
+          echo "cpu_versions=${CPU_VERS}" >> $GITHUB_OUTPUT
           echo "tpu_versions=${TPU_VERS}" >> $GITHUB_OUTPUT
 
   # TODO(pganssle): Migrate to cibuildwheel
@@ -259,7 +259,7 @@ jobs:
         run: uvx nox --force-python "${PYTHON_VERSION}" -s intermediate_patch_abi
 
   test_wheel_dep_upper_bounds:
-    name: "Test wheel on dep upper bounds (Python ${{ needs.setup.outputs.latest_python_version }})"
+    name: "Test wheel on dep upper bounds (Python ${{ needs.setup.outputs.default_python_version }})"
     needs: [build_wheels, setup]
     if: needs.setup.outputs.should_build == 'true'
     runs-on: linux-x86-n4-16
@@ -277,7 +277,7 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Download Wheel from GCS
         env:
-          PYTHON_VERSION: ${{ needs.setup.outputs.latest_python_version }}
+          PYTHON_VERSION: ${{ needs.setup.outputs.default_python_version }}
           GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
         run: |
           mkdir dist
@@ -289,7 +289,7 @@ jobs:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run smoke tests against upper bounds via nox
         env:
-          PYTHON_VERSION: ${{ needs.setup.outputs.latest_python_version }}
+          PYTHON_VERSION: ${{ needs.setup.outputs.default_python_version }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s dep_upper_bounds
 
   test_wheels_tpu:

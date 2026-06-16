@@ -14,7 +14,7 @@ SUPPORTED_PYTHON_VERSIONS = [
 # single source of truth is //bazel:supported_python_versions.bzl -- this copy
 # exists because MODULE.bazel cannot load() Starlark, and is kept in sync by
 # hand.
-DEFAULT_PYTHON_VERSION = "3.12"
+DEFAULT_PYTHON_VERSION = "3.14"
 
 # BCR dependencies
 bazel_dep(name = "abseil-cpp", version = "20260526.0", repo_name = "com_google_absl")
