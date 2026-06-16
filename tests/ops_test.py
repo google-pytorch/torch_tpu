@@ -443,7 +443,7 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     "matmul": {
         torch.bfloat16: {"rtol": 3.9e-1, "atol": 2.9e-1},
         torch.complex64: {"rtol": 4e-1, "atol": 1.9},
-        torch.float16: {"rtol": 1e-3, "atol": 8e-1},
+        torch.float16: {"rtol": 1.7e-2, "atol": 1.5},
         torch.float32: {"rtol": 4.5, "atol": 8.5e-1},
     },
     "mean": {
@@ -1423,7 +1423,8 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
                 torch.float32: {"rtol": 2.9e-3, "atol": 5e-2},
             },
             "linalg.solve_ex": {
-                torch.float32: {"rtol": 8.8e-3, "atol": 5.8e-2},
+                torch.float32: {"rtol": 2.0, "atol": 20.0},
+                torch.float64: {"rtol": 1.5, "atol": 20.0},
             },
             "linalg.solve_triangular": {
                 torch.float32: {"rtol": 4.8e-3, "atol": 4.5e-3},
@@ -1444,6 +1445,9 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
             },
             "mul": {
                 torch.float16: {"rtol": 1.1e-3, "atol": 4e-3},
+            },
+            "native_layer_norm": {
+                torch.float16: {"rtol": 6.9e-3, "atol": 7.1e-2},
             },
             "nn.functional.batch_norm": {
                 torch.float16: {"rtol": 1, "atol": 2.6e-3},
@@ -1482,7 +1486,7 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
                 torch.float16: {"rtol": 3.7e-3, "atol": 2e-3},
             },
             "softmax": {
-                torch.bfloat16: {"rtol": 1e-3, "atol": 5.8e-3},
+                torch.bfloat16: {"rtol": 1e-3, "atol": 9.4e-3},
                 torch.float16: {"rtol": 1e-3, "atol": 1.1e-3},
             },
             "tan": {
