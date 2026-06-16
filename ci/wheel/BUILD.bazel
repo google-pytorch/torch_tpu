@@ -175,3 +175,17 @@ py_test(
         "//shims/absl_py/testing:absltest",
     ],
 )
+
+py_test(
+    name = "wheel_structure_test",
+    srcs = ["wheel_structure_test.py"],
+    data = [
+        ":torch_tpu_wheel",
+    ],
+    env = _COMMON_ENV,
+    python_version = "PY3",
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+    ],
+)

@@ -31,6 +31,11 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+py_binary(
+    name = "update_common_deps",
+    srcs = ["update_common_deps.py"],
+)
+
 exports_files([
     "link_libraries.sh",
     "torch_local_defs.bzl",

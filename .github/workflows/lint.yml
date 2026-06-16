@@ -71,3 +71,18 @@ jobs:
             exit 1
           fi
           echo "Commit messages look good."
+
+      - name: "Validate common_deps.bzl"
+        if: success() || failure()
+        shell: "bash"
+        run: |
+          bazel run //bazel:update_common_deps
+          if ! git diff --exit-code bazel/common_deps.bzl; then
+            echo "::error::bazel/common_deps.bzl is out of date. Please run 'bazel run //bazel:update_common_deps' or copy the diff below."
+            echo "Diff:"
+            git diff bazel/common_deps.bzl
+            echo "New contents:"
+            cat bazel/common_deps.bzl
+            exit 1
+          fi
+          echo "common_deps.bzl is up to date."

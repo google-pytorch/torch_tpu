@@ -19,8 +19,10 @@ load(
     "pywrap_binaries",
     "pywrap_library",
 )
+load("//bazel:common_deps.bzl", "COMMON_DEPS")
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "oss_target",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
@@ -750,19 +752,33 @@ torch_tpu_cc_library(
     name = "torch_rpath_flags",
     linkopts = [
         "-Wl,-rpath='$$ORIGIN/../../torch/lib'",
-    ],
+    ] + if_oss(
+        [
+            "-Wl,--allow-shlib-undefined",
+        ],
+        [],
+    ),
     visibility = ["//visibility:private"],
 )
 
-# NOTE: Central aggregator for all C++ Python extensions in torch_tpu.
-# Any new pybind_extension target created in the codebase MUST be added to the
-# deps list below to ensure it is packaged into the standalone pip wheel.
 pywrap_library(
     name = "pywrap_torch_tpu",
+    # This filter ensures that the object files from pywrap_torch_tpu_deps are stripped out
+    # from pywrap_torch_tpu_xla (and any other pybind extensions) to prevent duplicate
+    # symbol registrations when both extensions are loaded into the same Python process.
+    common_lib_filters = if_oss(
+        {
+            package_name() + "/pywrap_torch_tpu_xla": [":pywrap_torch_tpu_deps"],
+        },
+        {},
+    ),
     extra_deps = [
         ":torch_rpath_flags",
-        "//shims/torch:torch_python",
-    ],
+    ] + if_oss(
+        [":pywrap_torch_tpu_deps"],
+        [],
+    ),
+    pywrap_count = 15,
     visibility = ["//:__subpackages__"],
     deps = [
         "//torch_tpu/_internal:env",
@@ -787,6 +803,30 @@ pywrap_binaries(
     name = "pywrap_torch_tpu_binaries",
     dep = ":pywrap_torch_tpu",
     visibility = ["//:__subpackages__"],
+)
+
+oss_target(
+    name = "pywrap_torch_tpu_deps",
+    rule_func = torch_tpu_cc_library,
+    deps = COMMON_DEPS,
+    alwayslink = True,
+)
+
+oss_target(
+    name = "pywrap_torch_tpu_pytorch_deps",
+    expression = 'filter("^//shims/torch/", deps(//torch_tpu/common:pywrap_torch_tpu_deps))',
+    rule_func = genquery,
+    scope = [
+        "//torch_tpu/common:pywrap_torch_tpu_deps",
+    ] + COMMON_DEPS,
+)
+
+oss_target(
+    name = "test_pywrap_torch_tpu_deps",
+    srcs = ["test_pywrap_torch_tpu_deps.sh"],
+    args = ["$(location :pywrap_torch_tpu_pytorch_deps)"],
+    data = [":pywrap_torch_tpu_pytorch_deps"],
+    rule_func = sh_test,
 )
 
 torch_tpu_cc_library(

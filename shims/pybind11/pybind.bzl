@@ -17,7 +17,23 @@
 load("@xla//third_party/py/rules_pywrap:pywrap.default.bzl", _pybind_extension = "pybind_extension")
 
 def pybind_extension(name, **kwargs):
+    """Generates a suite of PyTorch C++ bindings.
+
+    Args:
+        name: Name of the target.
+        **kwargs: Additional keyword arguments to pass to the underlying pybind_extension rule.
+    """
+
     # On OSS we have not needed any python dependencies for these. If that
     # changes we will need to incorporate these dependencies.
     kwargs.pop("py_deps", None)
+
+    # Set wrap_py_init = False by default to ensure C++ extension code (which depends on PyTorch)
+    # is kept in the versioned .so files instead of being merged into the common library.
+    kwargs.setdefault("wrap_py_init", False)
+
+    linkopts = kwargs.pop("linkopts", [])
+    linkopts.append("-Wl,--allow-shlib-undefined")
+    kwargs["linkopts"] = linkopts
+
     _pybind_extension(name = name, **kwargs)

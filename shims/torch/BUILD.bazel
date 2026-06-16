@@ -98,38 +98,16 @@ alias(
 cc_library(
     name = "torch",
     deps = [
-        ":aten",
+        ":aten_headers",
         ":torch_headers",
-    ] + select({
-        # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
-        # Any target-specific dependencies should be declared with the specific target/binary
-        ":use_local_torch": [
-            "@local_torch//:libc10",
-            "@local_torch//:libtorch_cpu",
-        ],
-        # NOTE: All dependencies below will be added to the torch_tpu wheel.
-        # If you are adding a new dependency that is not for the wheel, please make a new shim.
-        "//conditions:default": [
-            ":libc10",
-            ":libtorch_cpu",
-        ],
-    }),
+    ],
 )
 
 cc_library(
     name = "aten",
-    deps = select({
-        # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
-        # Any target-specific dependencies should be declared with the specific target/binary
-        ":use_local_torch": [
-            "@local_torch//:libc10",
-            "@local_torch//:libtorch_cpu",
-        ],
-        "//conditions:default": [
-            ":libc10",
-            ":libtorch_cpu",
-        ],
-    }),
+    deps = [
+        ":aten_headers",
+    ],
 )
 
 cc_library(
@@ -156,18 +134,9 @@ cc_library(
 
 cc_library(
     name = "torch_python",
-    deps = select({
-        # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
-        # Any target-specific dependencies should be declared with the specific target/binary
-        ":use_local_torch": [
-            "@local_torch//:libtorch_python",
-            "@local_torch//:torch_headers",
-        ],
-        "//conditions:default": [
-            ":libtorch_python",
-            "@pypi//torch:torch_headers",
-        ],
-    }),
+    deps = [
+        ":torch_headers",
+    ],
 )
 
 cc_library(
