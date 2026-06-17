@@ -106,6 +106,9 @@ jobs:
           bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           mkdir $WHEEL_DIR
           cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
+      - name: Show wheel sha256sum before upload
+        run: |
+          sha256sum dist/*.whl
       - name: Check wheel metadata
         run: uv run --isolated --with twine twine check $WHEEL_DIR/*.whl
       - name: Upload wheel to GCS for wheel testing
@@ -183,6 +186,12 @@ jobs:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
+      - name: Show wheel sha256sum after download
+        run: |
+          sha256sum dist/*.whl
+      - name: Print PyTorch version used in wheel tests
+        run: |
+          bazel run --config=wheel_common //ci/wheel:print_torch_version
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:

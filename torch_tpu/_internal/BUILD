@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 licenses(["notice"])
@@ -22,12 +22,19 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+torch_tpu_cc_library(
+    name = "env_stamp_lib",
+    linkstamp = "env_stamp.cc",
+)
+
 # This library is not used directly, but is needed to satisfy go/cclean
 torch_tpu_cc_library(
     name = "env_build",
     srcs = ["env.cc"],
     deps = [
+        ":env_stamp_lib",
         "//shims/pybind11",
+        "//shims/torch:torch_headers",
         "//torch_tpu/common:utils",
     ],
 )
@@ -40,6 +47,7 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        ":env_stamp_lib",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:utils",
     ],
@@ -80,6 +88,11 @@ pybind_extension(
         "//torch_tpu/experimental/eager:materialize_new",
         "@com_google_absl//absl/flags:flag",
     ],
+)
+
+torch_tpu_py_library(
+    name = "init",
+    srcs = ["__init__.py"],
 )
 
 torch_tpu_package_end()

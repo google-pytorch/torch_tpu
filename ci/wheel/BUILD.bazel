@@ -178,3 +178,14 @@ py_test(
         "//shims/absl_py/testing:absltest",
     ],
 )
+
+pytype_strict_binary(
+    name = "print_torch_version",
+    srcs = ["print_torch_version.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal:env",
+        "//torch_tpu/common:pywrap_torch_tpu",
+    ],
+)
