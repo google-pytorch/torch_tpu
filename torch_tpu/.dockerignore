@@ -1,0 +1,16 @@
+# Ignore bazel symlinks and outputs
+bazel-*
+
+# Ignore VCS directories
+.git
+.hg
+.citc
+.jj
+.agents
+.config
+
+# Ignore docs/tests/examples to speed up context upload
+docs/
+g3doc/
+examples/
+tests/

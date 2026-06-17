@@ -71,6 +71,11 @@ Follow
 to initialize your artifact registry to store this new container image for use
 in GKE (skip if one already exists).
 
+For a detailed, step-by-step guide on running the **Multi-Host Tensor Parallel**
+example using both `xpk` and `kubectl` (including Docker registry setup, dynamic
+hostname configuration, and custom lightweight Dockerfiles), see
+[README_multihost.md](README_multihost.md).
+
 ### Build TorchTPU docker with Tensor Parallel Example
 
 ```bash

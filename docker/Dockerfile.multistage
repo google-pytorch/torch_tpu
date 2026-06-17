@@ -1,3 +1,4 @@
+# syntax=docker.io/docker/dockerfile:1.7-labs
 # Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,8 +60,8 @@ RUN curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/baz
 # Set working directory
 WORKDIR /workspace
 
-# Copy the local repository source from the build context
-COPY . /workspace/torch_tpu_src
+# Copy the repository source, excluding directories that don't affect the build
+COPY --exclude=examples --exclude=docs . /workspace/torch_tpu_src
 
 
 
@@ -70,6 +71,7 @@ COPY . /workspace/torch_tpu_src
 # TODO(jparkerh): Remove this once the underlying ABI issue is resolved.
 RUN --mount=type=cache,id=torch-tpu-bazelisk,target=/root/.cache/bazelisk \
     --mount=type=cache,id=torch-tpu-bazel-repo,target=/root/.cache/bazel,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/uv \
     TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)") && \
     echo "Installed torch version: $TORCH_VERSION" && \
@@ -99,10 +101,13 @@ WORKDIR /opt/wheels
 COPY --from=builder /workspace/torch_tpu_src/dist/*.whl .
 
 # Install the wheel forcing reinstall to overwrite metadata-only install from base stage
-RUN pip install --force-reinstall --no-deps *.whl
+RUN pip install --force-reinstall --no-deps *.whl && \
+    rm -rf /opt/wheels /root/.cache
 
-# Maintain hierarchy: Copy examples to /workspace/examples
-COPY --from=builder /workspace/torch_tpu_src/examples /workspace/examples
+# Maintain hierarchy: Copy examples, docs, and tests to /workspace
+COPY examples /workspace/examples
+COPY docs /workspace/docs
+COPY tests /workspace/tests
 
 # Ensure /workspace is in the Python path and output is unbuffered
 ENV PYTHONPATH="/workspace"
