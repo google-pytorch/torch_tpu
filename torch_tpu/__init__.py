@@ -14,6 +14,23 @@
 
 """TorchTPU library."""
 
+import importlib.metadata
+import re
+
+try:
+  _torch_version = importlib.metadata.version("torch")
+  _match = re.match(r"^(\d+)\.(\d+)\.(\d+)", _torch_version)
+  if _match:
+    _version_suffix = f"{_match.group(1)}_{_match.group(2)}_{_match.group(3)}"
+  else:
+    _version_suffix = _torch_version.replace(".", "_")
+except Exception:  # pylint: disable=broad-exception-caught
+  _version_suffix = ""
+
+from torch_tpu import _versioned_so_loader  # pylint: disable=g-import-not-at-top
+
+_versioned_so_loader.install_hook(_version_suffix)
+
 try:
   import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
 

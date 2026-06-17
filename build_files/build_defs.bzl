@@ -1085,3 +1085,11 @@ def if_cuda_dep(dep):
         "//shims/gpu_cuda:using_config_cuda": [dep],
         "//conditions:default": [],
     })
+
+def _torch_version_flag_impl(ctx):
+    return []
+
+torch_version_flag = rule(
+    implementation = _torch_version_flag_impl,
+    build_setting = config.string(flag = True),
+)

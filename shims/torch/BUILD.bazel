@@ -18,38 +18,47 @@ load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
-alias(
-    name = "libc10",
-    actual = select({
-        "//:wheel_test_3_11": "@pypi_torch_311//:libc10",
-        "//:wheel_test_3_12": "@pypi_torch_312//:libc10",
-        "//:wheel_test_3_13": "@pypi_torch_313//:libc10",
-        "//:wheel_test_3_14": "@pypi_torch_314//:libc10",
-        "//conditions:default": "@pypi_torch_312//:libc10",
-    }),
-)
-
-alias(
-    name = "libtorch_cpu",
-    actual = select({
-        "//:wheel_test_3_11": "@pypi_torch_311//:libtorch_cpu",
-        "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_cpu",
-        "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_cpu",
-        "//:wheel_test_3_14": "@pypi_torch_314//:libtorch_cpu",
-        "//conditions:default": "@pypi_torch_312//:libtorch_cpu",
-    }),
-)
-
-alias(
-    name = "libtorch_python",
-    actual = select({
-        "//:wheel_test_3_11": "@pypi_torch_311//:libtorch_python",
-        "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_python",
-        "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_python",
-        "//:wheel_test_3_14": "@pypi_torch_314//:libtorch_python",
-        "//conditions:default": "@pypi_torch_312//:libtorch_python",
-    }),
-)
+[alias(
+    name = lib_name,
+    actual = select(dict(
+        [
+            (
+                "//:torch_{}_{}".format(
+                    torch_v.replace(".", "_"),
+                    py_v.replace(".", "_"),
+                ),
+                "@pypi_torch_{}_{}//:{}".format(
+                    torch_v.replace(".", "_"),
+                    py_v.replace(".", ""),
+                    lib_name,
+                ) if torch_v != "2.12.0" else "@pypi_torch_{}//:{}".format(
+                    py_v.replace(".", ""),
+                    lib_name,
+                ),
+            )
+            for torch_v in [
+                "2.10.0",
+                "2.11.0",
+                "2.12.0",
+            ]
+            for py_v in [
+                "3.11",
+                "3.12",
+                "3.13",
+                "3.14",
+            ]
+        ] + [
+            (
+                "//conditions:default",
+                "@pypi_torch_312//:{}".format(lib_name),
+            ),
+        ],
+    )),
+) for lib_name in [
+    "libc10",
+    "libtorch_cpu",
+    "libtorch_python",
+]]
 
 # Config setting to toggle local torch mode.
 # Use by running: bazel build ... --define TORCH_SOURCE=local

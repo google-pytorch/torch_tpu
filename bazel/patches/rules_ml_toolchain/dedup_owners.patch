@@ -1,0 +1,27 @@
+diff --git a/py/rules_pywrap/pywrap.impl.bzl b/py/rules_pywrap/pywrap.impl.bzl
+--- a/py/rules_pywrap/pywrap.impl.bzl
++++ b/py/rules_pywrap/pywrap.impl.bzl
+@@ -578,17 +578,23 @@
+     user_link_flags = []
+     dynamic_lib_filter = filters.dynamic_lib_filter
+     default_runfiles = ctx.runfiles()
++    seen_owners = {}
+     for pw in pywrap_infos:
+         pw_lis = pw.cc_info.linking_context.linker_inputs.to_list()[1:]
+         pw_runfiles_merged = False
+         for li in pw_lis:
+             if li in libs_to_exclude:
+                 continue
+             if include_all_not_excluded or (li in libs_to_include) or li in dynamic_lib_filter:
++                owner = li.owner
++                if owner:
++                    if owner in seen_owners:
++                        continue
++                    seen_owners[owner] = True
+                 split_linker_inputs.append(li)
+                 user_link_flags.extend(li.user_link_flags)
+                 if not pw_runfiles_merged:
+                     default_runfiles = default_runfiles.merge(pw.default_runfiles)
+                     pw_runfiles_merged = True
+ 
+     return _construct_split_library_cc_info(

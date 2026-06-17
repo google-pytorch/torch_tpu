@@ -18,6 +18,7 @@ load(
     "//build_files:build_defs.bzl",
     "internal_target",
     "torch_tpu_package_end",
+    "torch_version_flag",
 )
 load("//build_files:build_defs_test.bzl", "build_defs_test_suite")
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
@@ -30,6 +31,11 @@ exports_files([
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
+)
+
+torch_version_flag(
+    name = "torch_version",
+    build_setting_default = "2.10.0",
 )
 
 bzl_library(

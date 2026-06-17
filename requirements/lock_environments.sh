@@ -31,22 +31,36 @@ script_dir=$(dirname "$(readlink -f "$0")")
 working_dir="$script_dir/.."
 cd "$working_dir"
 
-# Loop over supported Python versions and generate lock files
-for version in "3.11" "3.12" "3.13" "3.14"; do
-  version_und=$(echo "$version" | tr '.' '_')
-  REQUIREMENTS_FILE="requirements/requirements_${version_und}.txt"
+# Ensure versions match those in MODULE.bazel
+PYTORCH_VERSIONS=("2.10.0" "2.11.0" "2.12.0")
 
-  echo "Generating lock file for Python $version -> $REQUIREMENTS_FILE"
-  if [ -f "$REQUIREMENTS_FILE" ]; then
-    rm "$REQUIREMENTS_FILE"
-  fi
+# Loop over supported Python versions and PyTorch versions to generate lock files
+for py_version in "3.11" "3.12" "3.13" "3.14"; do
+  py_version_und=$(echo "$py_version" | tr '.' '_')
 
-  # See https://docs.astral.sh/uv/reference/cli/#uv-pip-compile for more details.
-  uv pip compile pyproject.toml \
-    --all-extras \
-    --python-version "$version" \
-    --python-platform x86_64-manylinux_2_31 \
-    --resolution lowest-direct \
-    --generate-hashes \
-    --output-file "$REQUIREMENTS_FILE"
+  for torch_version in "${PYTORCH_VERSIONS[@]}"; do
+    torch_version_und=$(echo "$torch_version" | tr '.' '_')
+    REQUIREMENTS_FILE="requirements/requirements_${py_version_und}_torch_${torch_version_und}.txt"
+
+    echo "Generating lock file for Python $py_version and PyTorch $torch_version -> $REQUIREMENTS_FILE"
+    if [ -f "$REQUIREMENTS_FILE" ]; then
+      rm "$REQUIREMENTS_FILE"
+    fi
+
+    # Create a temporary constraints file for the specific PyTorch version
+    CONSTRAINT_FILE=$(mktemp)
+    echo "torch==${torch_version}" >"$CONSTRAINT_FILE"
+
+    # See https://docs.astral.sh/uv/reference/cli/#uv-pip-compile for more details.
+    uv pip compile pyproject.toml \
+      --all-extras \
+      --python-version "$py_version" \
+      --python-platform x86_64-manylinux_2_31 \
+      --resolution lowest-direct \
+      --generate-hashes \
+      --constraint "$CONSTRAINT_FILE" \
+      --output-file "$REQUIREMENTS_FILE"
+
+    rm "$CONSTRAINT_FILE"
+  done
 done

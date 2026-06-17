@@ -25,6 +25,7 @@ load(
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",
+    "torch_tpu_py_test",
 )
 load(
     "//shims/build_files:build_defs.bzl",
@@ -748,13 +749,8 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],
 )
 
-pywrap_library(
-    name = "pywrap_torch_tpu",
-    extra_deps = [
-        ":torch_rpath_flags",
-        "//shims/torch:torch_python",
-    ],
-    visibility = ["//:__subpackages__"],
+torch_tpu_cc_library(
+    name = "pywrap_torch_tpu_deps",
     deps = [
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:testing",
@@ -771,6 +767,36 @@ pywrap_library(
         "//torch_tpu/_internal/profiler:_profiler_backend",
         "//torch_tpu/_internal/sync:_tpu_torch_sync",
         "//torch_tpu/_internal/tracing:_tpu_torch_tracing",
+    ],
+)
+
+pywrap_library(
+    name = "pywrap_torch_tpu",
+    # This filter ensures that the object files from pywrap_torch_tpu_deps are stripped out
+    # from pywrap_torch_tpu_xla (and any other pybind extensions) to prevent duplicate
+    # symbol registrations when both extensions are loaded into the same Python process.
+    common_lib_filters = {
+        package_name() + "/pywrap_torch_tpu_xla": [":pywrap_torch_tpu_deps"],
+    },
+    extra_deps = [
+        ":torch_rpath_flags",
+        "//shims/torch:torch_python",
+    ],
+    pywrap_count = 15,
+    visibility = ["//:__subpackages__"],
+    deps = [":pywrap_torch_tpu_deps"],
+)
+
+torch_tpu_py_test(
+    name = "test_pywrap_split",
+    srcs = ["test_pywrap_split.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu:_loader",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/sync",
     ],
 )
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
@@ -46,6 +46,41 @@ config_setting(
     flag_values = {":test_wheel": "True"},
     visibility = ["//visibility:public"],
 )
+
+string_flag(
+    name = "torch_version",
+    build_setting_default = "2.12.0",
+    visibility = ["//visibility:public"],
+)
+
+[config_setting(
+    name = "torch_" + v.replace(".", "_"),
+    flag_values = {":torch_version": v},
+    visibility = ["//visibility:public"],
+) for v in [
+    "2.10.0",
+    "2.11.0",
+    "2.12.0",
+]]
+
+[config_setting(
+    name = "torch_{}_{}".format(
+        torch_v.replace(".", "_"),
+        py_v.replace(".", "_"),
+    ),
+    define_values = {"PYTHON_VERSION": py_v},
+    flag_values = {":torch_version": torch_v},
+    visibility = ["//visibility:public"],
+) for torch_v in [
+    "2.10.0",
+    "2.11.0",
+    "2.12.0",
+] for py_v in [
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14",
+]]
 
 [config_setting(
     name = "wheel_test_" + v.replace(".", "_"),

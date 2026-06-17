@@ -71,6 +71,11 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "_versioned_so_loader",
+    srcs = ["_versioned_so_loader.py"],
+)
+
 py_library_providing_imports_info(
     name = "torch_tpu",
     srcs = [
@@ -94,6 +99,7 @@ py_library_providing_imports_info(
         [],
     ) + [
         ":_loader",
+        ":_versioned_so_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
     ],
 )
