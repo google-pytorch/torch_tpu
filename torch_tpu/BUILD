@@ -56,6 +56,7 @@ torch_tpu_py_library(
     data = [
         ":torch_tpu_dist_info",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/batch_transfer",  # buildcleaner: keep

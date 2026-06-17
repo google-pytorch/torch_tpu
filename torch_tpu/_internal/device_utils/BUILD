@@ -30,6 +30,7 @@ package(
 torch_tpu_py_library(
     name = "annotations",
     srcs = ["annotations.py"],
+    visibility = ["//visibility:public"],
     deps = [
         ":annotations_py",
     ],

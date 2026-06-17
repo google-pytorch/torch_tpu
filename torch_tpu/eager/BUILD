@@ -124,6 +124,7 @@ torch_tpu_cc_library(
     hdrs = [
         "device_buffer.h",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         "//shims/torch/c10/util:base_headers",
         "//torch_tpu/common:cache_key",
@@ -157,6 +158,7 @@ torch_tpu_cc_library(
     name = "tensor_to_buffer",
     srcs = ["tensor_to_buffer.cc"],
     hdrs = ["tensor_to_buffer.h"],
+    visibility = ["//visibility:public"],
     deps = [
         ":device_buffer",
         ":device_buffer_utils",
@@ -341,6 +343,7 @@ torch_tpu_cc_library(
     hdrs = [
         "materialize.h",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":device_buffer",
         ":eager_mode",

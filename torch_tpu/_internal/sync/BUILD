@@ -89,6 +89,7 @@ py_library_providing_imports_info(
     module_specs = [
         "sync.modspec.json",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":sync_lib",
         "//shims/torch:pytorch",

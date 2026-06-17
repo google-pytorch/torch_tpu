@@ -22,6 +22,7 @@ package(
 torch_tpu_py_library(
     name = "singlehost_wrapper",
     srcs = ["singlehost_wrapper.py"],
+    visibility = ["//visibility:public"],
     deps = [
         "//shims/absl_py/logging",
         "//torch_tpu/_internal/utils:hardware",

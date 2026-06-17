@@ -204,6 +204,7 @@ pybind_extension(
     py_deps = [
         "//shims/torch:pytorch",
     ],
+    visibility = ["//visibility:public"],
     wrap_py_init = True,
     deps = [
         ":compiled_mode",
