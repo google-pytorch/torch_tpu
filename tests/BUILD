@@ -70,6 +70,17 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "env_test",
+    srcs = ["env_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal:env",
+    ],
+)
+
 torch_tpu_py_library(
     name = "op_testing",
     testonly = True,

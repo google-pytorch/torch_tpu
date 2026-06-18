@@ -28,6 +28,7 @@ torch_tpu_cc_library(
     srcs = ["env.cc"],
     deps = [
         "//shims/pybind11",
+        "//shims/torch:torch_headers",
         "//torch_tpu/common:utils",
     ],
 )
