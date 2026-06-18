@@ -83,12 +83,7 @@ py_library_providing_imports_info(
     # to ensure `torch_tpu` is linked in even if no symbols are explicitly
     # used by the user. This tag prevents build_cleaner from removing the dependency.
     tags = ["keep_dep"],
-    visibility = [
-        "//:__subpackages__",
-        "//shims/torchtitan:__subpackages__",
-        "@pypi//helion:__subpackages__",
-        "@pypi//tokamax:__subpackages__",
-    ] + TT_FRIENDS,
+    visibility = ["//visibility:public"],
     deps = if_oss(
         ["//shims/libtpu"],
         [],
