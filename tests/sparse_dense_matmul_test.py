@@ -520,6 +520,150 @@ class SparseDenseMatmulTest(
           ),
       )
 
+  @parameterized.parameters(False, True)
+  def test_sparse_dense_matmul_grad_with_rowwise_adagrad_on_tpu(
+      self, compile_op
+  ):
+    device = torch.device("tpu")
+    row_pointers, embedding_ids, sample_ids, gains, embedding_table = (
+        self._get_inputs(device)
+    )
+    num_sc_per_device = _get_num_sc_per_device()
+    vocab_size = embedding_table.shape[0]
+    embedding_dim = embedding_table.shape[1]
+    sharded_tables = []
+    for core_id in range(num_sc_per_device):
+      indices = [
+          i for i in range(vocab_size) if i % num_sc_per_device == core_id
+      ]
+      sharded_tables.append(embedding_table[indices])
+    embedding_table_sharded = torch.cat(sharded_tables, dim=0)
+    # Row-wise accumulator: one scalar per row, so a 1-D [vocab] slot variable
+    # (1/embedding_dim of the per-element Adagrad state).
+    accumulator = torch.ones(vocab_size, dtype=torch.float32, device=device) * 0.1
+    sharded_accumulators = []
+    for core_id in range(num_sc_per_device):
+      indices = [
+          i for i in range(vocab_size) if i % num_sc_per_device == core_id
+      ]
+      sharded_accumulators.append(accumulator[indices])
+    accumulator_sharded = torch.cat(sharded_accumulators, dim=0)
+    batch_size = 16
+    activations_grad = (
+        torch.ones(
+            batch_size, embedding_dim, dtype=torch.float32, device=device
+        )
+        * 0.01
+    )
+    learning_rate = torch.tensor(0.01, dtype=torch.float32, device=device)
+    epsilon = torch.tensor(1e-10, dtype=torch.float32, device=device)
+
+    def grad_fn(rp, e_ids, s_ids, g, et, acc, ag, lr, eps):
+      return torch.ops.tpu.sparse_dense_matmul_grad_with_rowwise_adagrad(
+          rp,
+          e_ids,
+          s_ids,
+          g,
+          et,
+          acc,
+          ag,
+          lr,
+          eps,
+          device_batch_size=batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=64,
+      )
+
+    if compile_op:
+      grad_fn = torch.compile(grad_fn, fullgraph=True)
+    updated_table_tpu, updated_acc_tpu = grad_fn(
+        row_pointers,
+        embedding_ids,
+        sample_ids,
+        gains,
+        embedding_table_sharded,
+        accumulator_sharded,
+        activations_grad,
+        learning_rate,
+        epsilon,
+    )
+    updated_table_tpu_np = updated_table_tpu.cpu().numpy()
+    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
+    updated_acc_tpu_np = updated_acc_tpu.cpu().numpy()
+    initial_acc_sharded_np = accumulator_sharded.cpu().numpy()
+    updated_rows = [0, 1, 2, 3, 16, 17]
+    for i in range(vocab_size):
+      if i not in updated_rows:
+        self.assertTrue(
+            np.allclose(
+                updated_table_tpu_np[i], initial_table_sharded_np[i], atol=1e-5
+            ),
+            msg=f"Row {i} expected to be unchanged",
+        )
+        self.assertTrue(
+            np.allclose(
+                updated_acc_tpu_np[i], initial_acc_sharded_np[i], atol=1e-5
+            ),
+            msg=f"Accumulator row {i} expected to be unchanged",
+        )
+
+    def matmul_fn(rp, e_ids, s_ids, g, et):
+      return torch.ops.tpu.sparse_dense_matmul(
+          rp,
+          e_ids,
+          s_ids,
+          g,
+          et,
+          device_batch_size=batch_size,
+          max_ids_per_partition=16,
+          max_unique_ids_per_partition=16,
+      )
+
+    if compile_op:
+      matmul_fn = torch.compile(matmul_fn, fullgraph=True)
+    eps = 1e-3
+    grad_approx = torch.zeros_like(embedding_table_sharded)
+    for r in updated_rows:
+      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus[r] += eps
+      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus[r] -= eps
+      out_plus = matmul_fn(
+          row_pointers, embedding_ids, sample_ids, gains, table_sharded_plus
+      )
+      out_minus = matmul_fn(
+          row_pointers, embedding_ids, sample_ids, gains, table_sharded_minus
+      )
+      dout = (out_plus - out_minus) / (2 * eps)
+      grad_approx[r] = torch.sum(activations_grad * dout, dim=0)
+    grad_approx_np = grad_approx.cpu().numpy()
+    # Row-wise: the 1-D accumulator gets the per-row MEAN of squared gradient,
+    # matching TorchRec/FBGEMM RowWiseAdagrad.
+    grad_sq_row_mean = np.mean(grad_approx_np * grad_approx_np, axis=1)  # [vocab]
+    expected_acc_np = initial_acc_sharded_np + grad_sq_row_mean  # 1-D [vocab]
+    # The per-row scalar denominator broadcasts across the feature dimension.
+    expected_update = (
+        learning_rate.cpu().numpy()
+        * grad_approx_np
+        / (np.sqrt(expected_acc_np)[:, None] + epsilon.cpu().numpy())
+    )
+    actual_update = initial_table_sharded_np - updated_table_tpu_np
+    for r in updated_rows:
+      self.assertTrue(
+          np.allclose(actual_update[r], expected_update[r], atol=1e-4),
+          msg=(
+              f"Row {r} update mismatch. Actual: {actual_update[r]}, Expected:"
+              f" {expected_update[r]}"
+          ),
+      )
+      self.assertTrue(
+          np.allclose(updated_acc_tpu_np[r], expected_acc_np[r], atol=1e-4),
+          msg=(
+              f"Accumulator row {r} mismatch. Actual: {updated_acc_tpu_np[r]},"
+              f" Expected: {expected_acc_np[r]}"
+          ),
+      )
+
 
 if __name__ == "__main__":
   absltest.main()

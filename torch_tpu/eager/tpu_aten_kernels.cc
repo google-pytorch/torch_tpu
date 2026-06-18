@@ -78,6 +78,7 @@
 #include "torch_tpu/ops/experimental/send_recv/send_recv_kernels.h"
 #include "torch_tpu/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_aten_kernels.h"
 #include "torch_tpu/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_grad_with_adagrad_aten_kernels.h"
+#include "torch_tpu/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_grad_with_rowwise_adagrad_aten_kernels.h"
 #include "torch_tpu/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_grad_with_sgd_aten_kernels.h"
 #include "torch_tpu/ops/exponential/exponential_aten_kernels.h"
 #include "torch_tpu/ops/eye/eye_aten_kernels.h"
@@ -1056,6 +1057,13 @@ TORCH_LIBRARY(tpu, m) {
       "device_batch_size, int max_ids_per_partition, int "
       "max_unique_ids_per_partition) -> (Tensor, Tensor)");
   m.def(
+      "sparse_dense_matmul_grad_with_rowwise_adagrad(Tensor row_pointers, "
+      "Tensor embedding_ids, Tensor sample_ids, Tensor gains, Tensor "
+      "embedding_table, Tensor accumulator, Tensor activations_grad, Tensor "
+      "learning_rate, Tensor epsilon, int device_batch_size, int "
+      "max_ids_per_partition, int max_unique_ids_per_partition) -> (Tensor, "
+      "Tensor)");
+  m.def(
       "sparse_dense_matmul_grad_with_sgd(Tensor row_pointers, Tensor "
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor activations_grad, Tensor learning_rate, int device_batch_size, "
@@ -1109,6 +1117,17 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return std::make_tuple(at::empty_like(embedding_table),
                                at::empty_like(accumulator));
       });
+  ImplExperimental<OpName::kSparseDenseMatmulGradWithRowwiseAdagrad>(
+      m,
+      [](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
+         const at::Tensor& sample_ids, const at::Tensor& gains,
+         const at::Tensor& embedding_table, const at::Tensor& accumulator,
+         const at::Tensor& activations_grad, const at::Tensor& learning_rate,
+         const at::Tensor& epsilon, int64_t device_batch_size,
+         int64_t max_ids_per_partition, int64_t max_unique_ids_per_partition) {
+        return std::make_tuple(at::empty_like(embedding_table),
+                               at::empty_like(accumulator));
+      });
 }
 
 TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
@@ -1132,6 +1151,8 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
       m, AtenSparseDenseMatmulGradWithSgd);
   ImplExperimental<OpName::kSparseDenseMatmulGradWithAdagrad>(
       m, AtenSparseDenseMatmulGradWithAdagrad);
+  ImplExperimental<OpName::kSparseDenseMatmulGradWithRowwiseAdagrad>(
+      m, AtenSparseDenseMatmulGradWithRowwiseAdagrad);
 }
 
 TORCH_LIBRARY_IMPL(tpu, CPU, m) {

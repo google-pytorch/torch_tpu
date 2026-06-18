@@ -627,6 +627,7 @@ enum class OpName {
   kSortValuesStable,
   kSparseDenseMatmul,
   kSparseDenseMatmulGradWithAdagrad,
+  kSparseDenseMatmulGradWithRowwiseAdagrad,
   kSparseDenseMatmulGradWithSgd,
   kSplitWithSizesCopyOut,
   kSqrtOut,
