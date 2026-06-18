@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 // We disable clang-format here to force the StableHLO Reference headers to
 // be included before the TorchTPU StablehloBuilder headers. This prevents
@@ -33,6 +34,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "llvm/ADT/SmallVector.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -45,13 +47,16 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/Passes.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/scan_builder.h"
@@ -74,7 +79,10 @@ mlir::MlirOp MakeDenseConstant(mlir::MlirBuilder& builder,
 }
 using testing::HasSubstr;
 
-class ScanBuilderTest : public testing::Test {
+// Parameterized over the scan lowering: false = StableHLO while loop, true =
+// chlo.ScanOp (native scan emitter). Every (associative) scenario must produce
+// identical results on both paths.
+class ScanBuilderTest : public testing::TestWithParam<bool> {
  protected:
   ScanBuilderTest()
       : context_(), module_builder_(context_, mlir::unknownLoc(context_)) {
@@ -166,8 +174,54 @@ class ScanBuilderTest : public testing::Test {
     };
   }
 
+  bool IsEmitter() const { return GetParam(); }
+
+  // The scan lowering op: chlo.ScanOp on the emitter path, stablehlo.while
+  // otherwise.
+  void ExpectScanLoweringOp(mlir::Operation* op) {
+    if (IsEmitter()) {
+      EXPECT_TRUE(mlir::isa<mlir::chlo::ScanOp>(op));
+    } else {
+      EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(op));
+    }
+  }
+
+  // Route BuildScanShlo to the while loop or the chlo.ScanOp emitter based on
+  // the test parameter, so each scenario is exercised on both paths.
+  absl::StatusOr<DynamicMlirOpResults> Scan(
+      mlir::MlirBuilder& scan_builder, mlir::MlirOp input, int64_t dim,
+      llvm::ArrayRef<mlir::MlirOp> carry_inits,
+      llvm::ArrayRef<mlir::MlirOp> output_inits, ScanBodyBuilder body,
+      ScanOptions options = {}) {
+    options.is_associative = IsEmitter();
+    return BuildScanShlo(scan_builder, input, dim, carry_inits, output_inits,
+                         std::move(body), options);
+  }
+
+  absl::StatusOr<DynamicMlirOpResults> Scan(
+      mlir::MlirBuilder& scan_builder, llvm::ArrayRef<mlir::MlirOp> scan_inputs,
+      int64_t dim, int64_t num_scan_inputs,
+      llvm::ArrayRef<mlir::MlirOp> carry_inits,
+      llvm::ArrayRef<mlir::MlirOp> output_inits, MultiInputScanBodyBuilder body,
+      ScanOptions options = {}) {
+    options.is_associative = IsEmitter();
+    return BuildScanShlo(scan_builder, scan_inputs, dim, num_scan_inputs,
+                         carry_inits, output_inits, std::move(body), options);
+  }
+
+  // chlo.ScanOp must be decomposed to StableHLO before the reference
+  // interpreter can evaluate it. A no-op for the pure-StableHLO while loop.
+  void LegalizeChlo(mlir::ModuleOp module) {
+    // ChloLegalizeToStablehloPass is anchored on func::FuncOp.
+    mlir::PassManager pm(context());
+    pm.nest<mlir::func::FuncOp>().addPass(
+        mlir::stablehlo::createChloLegalizeToStablehloPass());
+    ASSERT_TRUE(mlir::succeeded(pm.run(module)));
+  }
+
   void EvaluateAndVerifyOutputs(mlir::ModuleOp module,
                                 llvm::ArrayRef<int32_t> expected_values) {
+    LegalizeChlo(module);
     const mlir::stablehlo::InterpreterConfiguration config;
     const llvm::SmallVector<mlir::DenseElementsAttr> empty_inputs;
     const mlir::FailureOr<llvm::SmallVector<mlir::DenseElementsAttr>>
@@ -183,6 +237,7 @@ class ScanBuilderTest : public testing::Test {
   void EvaluateAndVerifyMultiOutputs(
       mlir::ModuleOp module,
       llvm::ArrayRef<llvm::ArrayRef<int32_t>> expected_outputs) {
+    LegalizeChlo(module);
     const mlir::stablehlo::InterpreterConfiguration config;
     const llvm::SmallVector<mlir::DenseElementsAttr> empty_inputs;
     const mlir::FailureOr<llvm::SmallVector<mlir::DenseElementsAttr>>
@@ -204,7 +259,16 @@ class ScanBuilderTest : public testing::Test {
 
 using MultiScanBuilderTest = ScanBuilderTest;
 
-TEST_F(ScanBuilderTest, InvalidDimension) {
+INSTANTIATE_TEST_SUITE_P(ScanLowering, ScanBuilderTest, testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Emitter" : "WhileLoop";
+                         });
+INSTANTIATE_TEST_SUITE_P(ScanLowering, MultiScanBuilderTest, testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Emitter" : "WhileLoop";
+                         });
+
+TEST_P(ScanBuilderTest, InvalidDimension) {
   // Input tensor of shape [4, 5]. Scan along an invalid dimension 2.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -217,13 +281,13 @@ TEST_F(ScanBuilderTest, InvalidDimension) {
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), input, /*dim=*/2, {carry_init}, {output_init},
-                    CreateAddBodyBuilder());
+      Scan(builder(), input, /*dim=*/2, {carry_init}, {output_init},
+           CreateAddBodyBuilder());
   EXPECT_THAT(result, StatusIs(error::kOutOfRange,
                                HasSubstr("dimension out of range")));
 }
 
-TEST_F(ScanBuilderTest, EmptyTensor) {
+TEST_P(ScanBuilderTest, EmptyTensor) {
   // Input tensor of shape [0, 5], empty along the scan dimension.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {0, 5});
@@ -236,17 +300,16 @@ TEST_F(ScanBuilderTest, EmptyTensor) {
   const mlir::MlirOp carry_init =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(builder(), input, /*dim=*/0, {carry_init}, {output_init},
-                    CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(builder(), input, /*dim=*/0, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
   // For an empty scan dimension, the loop is skipped, so the returned
   // value matches the initial output accumulator.
   EXPECT_EQ(result[0].getValue(), output_init.getValue());
 }
 
-TEST_F(ScanBuilderTest, StaticShape1D) {
+TEST_P(ScanBuilderTest, StaticShape1D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -259,10 +322,9 @@ TEST_F(ScanBuilderTest, StaticShape1D) {
   // Carry initialized with shape [1] (slice along dim 0).
   const mlir::MlirOp carry_init = MakeConstant(function_builder, 0, i32, {1});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/0, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/0, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
 
   const mlir::MlirOp out(builder(), result[0].getValue());
@@ -271,7 +333,7 @@ TEST_F(ScanBuilderTest, StaticShape1D) {
   EvaluateAndVerifyOutputs(*module, {1, 3, 6, 10});
 }
 
-TEST_F(ScanBuilderTest, StaticShape2D) {
+TEST_P(ScanBuilderTest, StaticShape2D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -289,10 +351,9 @@ TEST_F(ScanBuilderTest, StaticShape2D) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/0, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/0, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
 
   const mlir::MlirOp out(builder(), result[0].getValue());
@@ -301,7 +362,7 @@ TEST_F(ScanBuilderTest, StaticShape2D) {
   EvaluateAndVerifyOutputs(*module, {1, 2, 4, 6});
 }
 
-TEST_F(ScanBuilderTest, StaticShape2D_ScanDim1) {
+TEST_P(ScanBuilderTest, StaticShape2D_ScanDim1) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -319,10 +380,9 @@ TEST_F(ScanBuilderTest, StaticShape2D_ScanDim1) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {2, 1});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/1, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/1, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
 
   const mlir::MlirOp out(builder(), result[0].getValue());
@@ -331,7 +391,7 @@ TEST_F(ScanBuilderTest, StaticShape2D_ScanDim1) {
   EvaluateAndVerifyOutputs(*module, {1, 3, 3, 7});
 }
 
-TEST_F(ScanBuilderTest, StaticShape3D) {
+TEST_P(ScanBuilderTest, StaticShape3D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -351,10 +411,9 @@ TEST_F(ScanBuilderTest, StaticShape3D) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {2, 2, 1});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/2, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/2, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
 
   const mlir::MlirOp out(builder(), result[0].getValue());
@@ -363,7 +422,7 @@ TEST_F(ScanBuilderTest, StaticShape3D) {
   EvaluateAndVerifyOutputs(*module, {1, 3, 3, 7, 5, 11, 7, 15});
 }
 
-TEST_F(ScanBuilderTest, BodyBuilderError) {
+TEST_P(ScanBuilderTest, BodyBuilderError) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -386,13 +445,13 @@ TEST_F(ScanBuilderTest, BodyBuilderError) {
   // Verify that the error from the body builder is correctly propagated
   // up by BuildScanShlo.
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), input, /*dim=*/0, {carry_init}, {output_init},
-                    error_body_builder);
+      Scan(builder(), input, /*dim=*/0, {carry_init}, {output_init},
+           error_body_builder);
   EXPECT_THAT(result, StatusIs(error::kInternal,
                                HasSubstr("Simulated body builder error")));
 }
 
-TEST_F(ScanBuilderTest, MismatchedInits) {
+TEST_P(ScanBuilderTest, MismatchedInits) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -405,8 +464,8 @@ TEST_F(ScanBuilderTest, MismatchedInits) {
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), input, /*dim=*/0, {carry_init, carry_init},
-                    {output_init}, CreateAddBodyBuilder());
+      Scan(builder(), input, /*dim=*/0, {carry_init, carry_init}, {output_init},
+           CreateAddBodyBuilder());
   EXPECT_THAT(
       result,
       StatusIs(
@@ -415,7 +474,7 @@ TEST_F(ScanBuilderTest, MismatchedInits) {
                     "output inits (1) to match")));
 }
 
-TEST_F(ScanBuilderTest, MismatchedCarries) {
+TEST_P(ScanBuilderTest, MismatchedCarries) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -435,13 +494,13 @@ TEST_F(ScanBuilderTest, MismatchedCarries) {
   };
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), input, /*dim=*/0, {carry_init}, {output_init},
-                    wrong_carries_builder);
+      Scan(builder(), input, /*dim=*/0, {carry_init}, {output_init},
+           wrong_carries_builder);
   EXPECT_THAT(result, StatusIs(error::kInvalidArgument,
                                HasSubstr("expected 1 new carries, got 2")));
 }
 
-TEST_F(ScanBuilderTest, DynamicShapeScanDim) {
+TEST_P(ScanBuilderTest, DynamicShapeScanDim) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -461,16 +520,14 @@ TEST_F(ScanBuilderTest, DynamicShapeScanDim) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/0, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/0, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
-  EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(
-      result[0].getValue().getDefiningOp()));
+  ExpectScanLoweringOp(result[0].getValue().getDefiningOp());
 }
 
-TEST_F(ScanBuilderTest, DynamicShapeNonScanDim) {
+TEST_P(ScanBuilderTest, DynamicShapeNonScanDim) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -490,16 +547,14 @@ TEST_F(ScanBuilderTest, DynamicShapeNonScanDim) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults result,
-      BuildScanShlo(function_builder, input, /*dim=*/0, {carry_init},
-                    {output_init}, CreateAddBodyBuilder()));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+                          Scan(function_builder, input, /*dim=*/0, {carry_init},
+                               {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
-  EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(
-      result[0].getValue().getDefiningOp()));
+  ExpectScanLoweringOp(result[0].getValue().getDefiningOp());
 }
 
-TEST_F(MultiScanBuilderTest, InvalidDimension) {
+TEST_P(MultiScanBuilderTest, InvalidDimension) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -511,13 +566,13 @@ TEST_F(MultiScanBuilderTest, InvalidDimension) {
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {input}, /*dim=*/2, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, CreateIdentityBodyBuilder());
+      Scan(builder(), {input}, /*dim=*/2, /*num_scan_inputs=*/1, {carry_init},
+           {output_init}, CreateIdentityBodyBuilder());
   EXPECT_THAT(result, StatusIs(error::kOutOfRange,
                                HasSubstr("dimension out of range")));
 }
 
-TEST_F(MultiScanBuilderTest, EmptyInputsListError) {
+TEST_P(MultiScanBuilderTest, EmptyInputsListError) {
   // Output accumulator of shape [4, 5], initialized to zeros.
   const mlir::MlirOp output_init =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -527,14 +582,14 @@ TEST_F(MultiScanBuilderTest, EmptyInputsListError) {
 
   // Pass an empty inputs list, which is invalid.
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {}, /*dim=*/0, /*num_scan_inputs=*/0,
-                    {carry_init}, {output_init}, CreateIdentityBodyBuilder());
+      Scan(builder(), {}, /*dim=*/0, /*num_scan_inputs=*/0, {carry_init},
+           {output_init}, CreateIdentityBodyBuilder());
   EXPECT_THAT(result,
               StatusIs(error::kInvalidArgument,
                        HasSubstr("expected at least 1 scan input, got none")));
 }
 
-TEST_F(MultiScanBuilderTest, TooManyScanInputsError) {
+TEST_P(MultiScanBuilderTest, TooManyScanInputsError) {
   // Input tensors of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input1 =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -549,16 +604,16 @@ TEST_F(MultiScanBuilderTest, TooManyScanInputsError) {
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
   // We provide 2 inputs, but specify num_scan_inputs = 3, which is invalid.
-  const absl::StatusOr<DynamicMlirOpResults> result = BuildScanShlo(
-      builder(), {input1, input2}, /*dim=*/0, /*num_scan_inputs=*/3,
-      {carry_init}, {output_init}, CreateIdentityBodyBuilder());
+  const absl::StatusOr<DynamicMlirOpResults> result =
+      Scan(builder(), {input1, input2}, /*dim=*/0, /*num_scan_inputs=*/3,
+           {carry_init}, {output_init}, CreateIdentityBodyBuilder());
   EXPECT_THAT(result,
               StatusIs(error::kInvalidArgument,
                        HasSubstr("expected num_scan_inputs (3) to be less "
                                  "than or equal to the number of inputs (2)")));
 }
 
-TEST_F(MultiScanBuilderTest, MismatchedCarriesError) {
+TEST_P(MultiScanBuilderTest, MismatchedCarriesError) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -579,13 +634,13 @@ TEST_F(MultiScanBuilderTest, MismatchedCarriesError) {
   };
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, wrong_carries_builder);
+      Scan(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1, {carry_init},
+           {output_init}, wrong_carries_builder);
   EXPECT_THAT(result, StatusIs(error::kInvalidArgument,
                                HasSubstr("expected 1 new carries, got 2")));
 }
 
-TEST_F(MultiScanBuilderTest, MismatchedOutputsError) {
+TEST_P(MultiScanBuilderTest, MismatchedOutputsError) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -606,13 +661,13 @@ TEST_F(MultiScanBuilderTest, MismatchedOutputsError) {
   };
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, wrong_outputs_builder);
+      Scan(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1, {carry_init},
+           {output_init}, wrong_outputs_builder);
   EXPECT_THAT(result, StatusIs(error::kInvalidArgument,
                                HasSubstr("expected 1 new outputs, got 2")));
 }
 
-TEST_F(MultiScanBuilderTest, BodyBuilderError) {
+TEST_P(MultiScanBuilderTest, BodyBuilderError) {
   // Input tensor of shape [4, 5]. We scan along dim 0.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -632,14 +687,14 @@ TEST_F(MultiScanBuilderTest, BodyBuilderError) {
   };
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, error_body_builder);
+      Scan(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1, {carry_init},
+           {output_init}, error_body_builder);
   EXPECT_THAT(result,
               StatusIs(error::kInternal,
                        HasSubstr("Simulated multi body builder error")));
 }
 
-TEST_F(MultiScanBuilderTest, EmptyTensor) {
+TEST_P(MultiScanBuilderTest, EmptyTensor) {
   // Input tensor of shape [0, 5], empty along the scan dimension.
   const mlir::MlirOp input =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {0, 5});
@@ -652,14 +707,14 @@ TEST_F(MultiScanBuilderTest, EmptyTensor) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults result,
-      BuildScanShlo(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, CreateIdentityBodyBuilder()));
+      Scan(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1, {carry_init},
+           {output_init}, CreateIdentityBodyBuilder()));
   ASSERT_EQ(result.size(), 2);
   EXPECT_EQ(result[0].getValue(), carry_init.getValue());
   EXPECT_EQ(result[1].getValue(), output_init.getValue());
 }
 
-TEST_F(MultiScanBuilderTest, StaticShape1D) {
+TEST_P(MultiScanBuilderTest, StaticShape1D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -678,9 +733,9 @@ TEST_F(MultiScanBuilderTest, StaticShape1D) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/0,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/0,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
 
   mlir::func::Return(function_builder,
@@ -691,7 +746,7 @@ TEST_F(MultiScanBuilderTest, StaticShape1D) {
   EvaluateAndVerifyMultiOutputs(*module, {{1, 3, 6, 10}, {20, 40, 70, 110}});
 }
 
-TEST_F(MultiScanBuilderTest, StaticShape2D) {
+TEST_P(MultiScanBuilderTest, StaticShape2D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -715,9 +770,9 @@ TEST_F(MultiScanBuilderTest, StaticShape2D) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/0,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/0,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
 
   mlir::func::Return(function_builder,
@@ -728,7 +783,7 @@ TEST_F(MultiScanBuilderTest, StaticShape2D) {
   EvaluateAndVerifyMultiOutputs(*module, {{1, 2, 4, 6}, {20, 30, 50, 70}});
 }
 
-TEST_F(MultiScanBuilderTest, StaticShape2D_ScanDim1) {
+TEST_P(MultiScanBuilderTest, StaticShape2D_ScanDim1) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -752,9 +807,9 @@ TEST_F(MultiScanBuilderTest, StaticShape2D_ScanDim1) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/1,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/1,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
 
   mlir::func::Return(function_builder,
@@ -765,7 +820,7 @@ TEST_F(MultiScanBuilderTest, StaticShape2D_ScanDim1) {
   EvaluateAndVerifyMultiOutputs(*module, {{1, 3, 3, 7}, {20, 40, 40, 80}});
 }
 
-TEST_F(MultiScanBuilderTest, StaticShape3D) {
+TEST_P(MultiScanBuilderTest, StaticShape3D) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -788,9 +843,9 @@ TEST_F(MultiScanBuilderTest, StaticShape3D) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/2,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/2,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateMultiAddBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
 
   mlir::func::Return(function_builder,
@@ -802,7 +857,7 @@ TEST_F(MultiScanBuilderTest, StaticShape3D) {
                                           {20, 40, 40, 80, 60, 120, 80, 160}});
 }
 
-TEST_F(MultiScanBuilderTest, ReverseScan) {
+TEST_P(MultiScanBuilderTest, ReverseScan) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -817,9 +872,9 @@ TEST_F(MultiScanBuilderTest, ReverseScan) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
-                    ScanOptions{.direction = ScanDirection::kReverse}));
+      Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
+           {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
+           ScanOptions{.direction = ScanDirection::kReverse}));
   ASSERT_EQ(results.size(), 2);
 
   const mlir::MlirOp out(builder(), results[1].getValue());
@@ -828,7 +883,7 @@ TEST_F(MultiScanBuilderTest, ReverseScan) {
   EvaluateAndVerifyOutputs(*module, {10, 9, 7, 4});
 }
 
-TEST_F(MultiScanBuilderTest, SqueezeScan) {
+TEST_P(MultiScanBuilderTest, SqueezeScan) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -844,9 +899,9 @@ TEST_F(MultiScanBuilderTest, SqueezeScan) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
-                    ScanOptions{.should_squeeze = true}));
+      Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
+           {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
+           ScanOptions{.should_squeeze = true}));
   ASSERT_EQ(results.size(), 2);
 
   const mlir::MlirOp out(builder(), results[1].getValue());
@@ -855,7 +910,7 @@ TEST_F(MultiScanBuilderTest, SqueezeScan) {
   EvaluateAndVerifyOutputs(*module, {1, 2, 4, 6});
 }
 
-TEST_F(MultiScanBuilderTest, WithStaticInput) {
+TEST_P(MultiScanBuilderTest, WithStaticInput) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -895,9 +950,8 @@ TEST_F(MultiScanBuilderTest, WithStaticInput) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input, static_val}, /*dim=*/0,
-                    /*num_scan_inputs=*/1, {carry_init}, {output_init},
-                    body_builder));
+      Scan(function_builder, {input, static_val}, /*dim=*/0,
+           /*num_scan_inputs=*/1, {carry_init}, {output_init}, body_builder));
   ASSERT_EQ(results.size(), 2);
 
   const mlir::MlirOp out(builder(), results[1].getValue());
@@ -907,7 +961,7 @@ TEST_F(MultiScanBuilderTest, WithStaticInput) {
   EvaluateAndVerifyOutputs(*module, {11, 23, 36, 50});
 }
 
-TEST_F(MultiScanBuilderTest, MismatchedInitsAllowed) {
+TEST_P(MultiScanBuilderTest, MismatchedInitsAllowed) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -947,11 +1001,10 @@ TEST_F(MultiScanBuilderTest, MismatchedInitsAllowed) {
     return ScanBodyResults{{new_c1, new_c2}, {new_c1}};
   };
 
-  TF_ASSERT_OK_AND_ASSIGN(
-      const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init, carry_init}, {output_init},
-                    mismatched_inits_body_builder));
+  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults results,
+                          Scan(function_builder, {input}, /*dim=*/0,
+                               /*num_scan_inputs=*/1, {carry_init, carry_init},
+                               {output_init}, mismatched_inits_body_builder));
   ASSERT_EQ(results.size(), 3);
 
   mlir::func::Return(function_builder,
@@ -964,7 +1017,7 @@ TEST_F(MultiScanBuilderTest, MismatchedInitsAllowed) {
                                 {{14, 26}, {14, 26}, {11, 22, 14, 26}});
 }
 
-TEST_F(MultiScanBuilderTest, DynamicShapeScanDim) {
+TEST_P(MultiScanBuilderTest, DynamicShapeScanDim) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -994,15 +1047,14 @@ TEST_F(MultiScanBuilderTest, DynamicShapeScanDim) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/0,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateIdentityBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/0,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateIdentityBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
-  EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(
-      results[2].getValue().getDefiningOp()));
+  ExpectScanLoweringOp(results[2].getValue().getDefiningOp());
 }
 
-TEST_F(MultiScanBuilderTest, DynamicShapeNonScanDim) {
+TEST_P(MultiScanBuilderTest, DynamicShapeNonScanDim) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -1032,15 +1084,14 @@ TEST_F(MultiScanBuilderTest, DynamicShapeNonScanDim) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input1, input2}, /*dim=*/0,
-                    /*num_scan_inputs=*/2, {carry1_init, carry2_init},
-                    {output1_init, output2_init}, CreateIdentityBodyBuilder()));
+      Scan(function_builder, {input1, input2}, /*dim=*/0,
+           /*num_scan_inputs=*/2, {carry1_init, carry2_init},
+           {output1_init, output2_init}, CreateIdentityBodyBuilder()));
   ASSERT_EQ(results.size(), 4);
-  EXPECT_TRUE(mlir::isa<mlir::stablehlo::WhileOp>(
-      results[2].getValue().getDefiningOp()));
+  ExpectScanLoweringOp(results[2].getValue().getDefiningOp());
 }
 
-TEST_F(MultiScanBuilderTest, MismatchedInputScanDimSizeError) {
+TEST_P(MultiScanBuilderTest, MismatchedInputScanDimSizeError) {
   // Input 1 of shape [4, 5].
   const mlir::MlirOp input1 =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {4, 5});
@@ -1056,9 +1107,9 @@ TEST_F(MultiScanBuilderTest, MismatchedInputScanDimSizeError) {
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
   const absl::StatusOr<DynamicMlirOpResults> result =
-      BuildScanShlo(builder(), {input1, input2}, /*dim=*/0,
-                    /*num_scan_inputs=*/2, {carry_init, carry_init},
-                    {output_init, output_init}, CreateIdentityBodyBuilder());
+      Scan(builder(), {input1, input2}, /*dim=*/0,
+           /*num_scan_inputs=*/2, {carry_init, carry_init},
+           {output_init, output_init}, CreateIdentityBodyBuilder());
   EXPECT_THAT(
       result,
       StatusIs(error::kInvalidArgument,
@@ -1067,7 +1118,7 @@ TEST_F(MultiScanBuilderTest, MismatchedInputScanDimSizeError) {
                          "input 1 has size 3")));
 }
 
-TEST_F(MultiScanBuilderTest, Squeeze1DTo0DTensor) {
+TEST_P(MultiScanBuilderTest, Squeeze1DTo0DTensor) {
   mlir::func::FunctionBuilder function_builder(module_builder(), "main");
   const mlir::Type i32 = op_builder().getI32Type();
 
@@ -1088,9 +1139,9 @@ TEST_F(MultiScanBuilderTest, Squeeze1DTo0DTensor) {
 
   TF_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
-                    {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
-                    ScanOptions{.should_squeeze = true}));
+      Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
+           {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
+           ScanOptions{.should_squeeze = true}));
   ASSERT_EQ(results.size(), 2);
 
   const mlir::MlirOp out(builder(), results[1].getValue());

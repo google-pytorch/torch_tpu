@@ -17,6 +17,7 @@
 #include "torch_tpu/ops/scan_builder.h"
 
 #include <cstdint>
+#include <iterator>
 #include <utility>
 
 #include "absl/status/status.h"
@@ -30,6 +31,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -281,13 +283,199 @@ absl::Status VerifyScanDimSizes(llvm::ArrayRef<mlir::MlirOp> scan_inputs,
   return absl::OkStatus();
 }
 
+// The type of one position's slice along the scan dimension: the input type
+// with the scan dimension erased (chlo.ScanOp passes rank-reduced slices to the
+// body).
+mlir::RankedTensorType RankReduceType(const mlir::RankedTensorType type,
+                                      const int64_t scan_dim) {
+  llvm::SmallVector<int64_t> shape(type.getShape().begin(),
+                                   type.getShape().end());
+  shape.erase(std::next(shape.begin(), scan_dim));
+  return mlir::RankedTensorType::get(shape, type.getElementType());
+}
+
+// Assembles the body's inputs: the scanned slices (unsqueezed back to size-1
+// when !should_squeeze, since chlo.ScanOp hands rank-reduced slices) followed
+// by the static inputs passed through as-is.
+absl::StatusOr<llvm::SmallVector<mlir::Value>> BuildScanBodyInputs(
+    mlir::MlirBuilder& builder, mlir::Block* body,
+    const llvm::ArrayRef<mlir::MlirOp> scan_inputs,
+    const int64_t num_scan_inputs, const int64_t scan_dim,
+    const bool should_squeeze) {
+  llvm::SmallVector<mlir::Value> body_inputs;
+  body_inputs.reserve(scan_inputs.size());
+  for (const mlir::Value slice :
+       body->getArguments().take_front(num_scan_inputs)) {
+    if (should_squeeze) {
+      body_inputs.push_back(slice);
+      continue;
+    }
+    TT_ASSIGN_OR_RETURN(const mlir::MlirOp unsqueezed,
+                        Unsqueeze(mlir::MlirOp(builder, slice), scan_dim));
+    body_inputs.push_back(unsqueezed.getValue());
+  }
+  for (const mlir::MlirOp static_input :
+       scan_inputs.drop_front(num_scan_inputs)) {
+    body_inputs.push_back(static_input.getValue());
+  }
+  return body_inputs;
+}
+
+// Squeezes the body's per-position outputs back to rank-reduced form (when the
+// body produced size-1 outputs) so chlo.ScanOp can stack them along the scan
+// dimension.
+absl::StatusOr<llvm::SmallVector<mlir::Value>> SqueezeScanOutputs(
+    mlir::MlirBuilder& builder, const llvm::ArrayRef<mlir::Value> new_outputs,
+    const int64_t scan_dim, const bool should_squeeze) {
+  llvm::SmallVector<mlir::Value> outputs;
+  outputs.reserve(new_outputs.size());
+  for (const mlir::Value out : new_outputs) {
+    if (should_squeeze) {
+      outputs.push_back(out);
+      continue;
+    }
+    TT_ASSIGN_OR_RETURN(const mlir::MlirOp squeezed,
+                        Squeeze(mlir::MlirOp(builder, out), {scan_dim}));
+    outputs.push_back(squeezed.getValue());
+  }
+  return outputs;
+}
+
+// Lowers an associative prefix scan to chlo.ScanOp, which the TPU compiler's
+// native scan emitter compiles directly. Matches the contract of the
+// generalized while-loop BuildScanShlo: returns [carries..., outputs...].
+//
+// chlo.ScanOp passes rank-reduced (scan dim erased) slices to its body and
+// stacks rank-reduced body outputs back along the scan dimension. We bridge the
+// while-loop body convention here: when !should_squeeze the body
+// expects/returns size-1 (non-reduced) slices, so we unsqueeze the inputs
+// before the body and squeeze the outputs after. There is no loop counter in an
+// associative scan, so the body's index argument is null (associative ops
+// needing a position pass an iota as an extra scan input).
+absl::StatusOr<DynamicMlirOpResults> BuildAssociativeScanChlo(
+    mlir::MlirBuilder& builder, const llvm::ArrayRef<mlir::MlirOp> scan_inputs,
+    const int64_t scan_dim, const int64_t num_scan_inputs,
+    const llvm::ArrayRef<mlir::MlirOp> carry_inits,
+    const llvm::ArrayRef<mlir::MlirOp> output_inits,
+    const MultiInputScanBodyBuilder& body_builder, const ScanOptions& options) {
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  const mlir::Location loc = scan_inputs.front().getValue().getLoc();
+  const mlir::RankedTensorType first_type =
+      GetTensorTypeOrDie(scan_inputs.front());
+  const int64_t scan_dim_size = first_type.getShape()[scan_dim];
+
+  // chlo.ScanOp inputs are only the scanned tensors; static inputs (beyond
+  // num_scan_inputs) are captured and handed to the body as-is. A reverse scan
+  // is expressed as a forward scan over reversed inputs with reversed outputs,
+  // since the decomposition and emitter handle forward scans.
+  const bool reverse = options.direction == ScanDirection::kReverse;
+  const llvm::SmallVector<int64_t, 1> reverse_dims = {scan_dim};
+  llvm::SmallVector<mlir::Value> scanned_inputs;
+  llvm::SmallVector<mlir::Type> body_arg_types;
+  llvm::SmallVector<mlir::Location> body_arg_locs;
+  scanned_inputs.reserve(num_scan_inputs);
+  for (int64_t i = 0; i < num_scan_inputs; ++i) {
+    mlir::MlirOp scanned = scan_inputs[i];
+    if (reverse) {
+      scanned = mlir::stablehlo::Reverse(scanned, reverse_dims);
+    }
+    scanned_inputs.push_back(scanned.getValue());
+    body_arg_types.push_back(
+        RankReduceType(GetTensorTypeOrDie(scan_inputs[i]), scan_dim));
+    body_arg_locs.push_back(loc);
+  }
+
+  llvm::SmallVector<mlir::Value> init_values;
+  llvm::SmallVector<mlir::Type> carry_types;
+  init_values.reserve(carry_inits.size());
+  carry_types.reserve(carry_inits.size());
+  for (const mlir::MlirOp c : carry_inits) {
+    init_values.push_back(c.getValue());
+    carry_types.push_back(c.getType());
+    body_arg_types.push_back(c.getType());
+    body_arg_locs.push_back(loc);
+  }
+
+  llvm::SmallVector<mlir::Type> output_types;
+  output_types.reserve(output_inits.size());
+  for (const mlir::MlirOp o : output_inits) {
+    output_types.push_back(o.getType());
+  }
+
+  const mlir::IntegerType i64 = op_builder.getI64Type();
+  const mlir::IntegerAttr scan_dim_size_attr =
+      mlir::ShapedType::isDynamic(scan_dim_size)
+          ? nullptr
+          : op_builder.getIntegerAttr(i64, scan_dim_size);
+
+  auto scan_op = mlir::chlo::ScanOp::create(
+      op_builder, loc, /*outputs=*/output_types, /*carries=*/carry_types,
+      /*inputs=*/scanned_inputs, /*inits=*/init_values,
+      /*dimension=*/op_builder.getIntegerAttr(i64, scan_dim),
+      /*scan_dim_size=*/scan_dim_size_attr,
+      // Reverse is handled by reversing inputs/outputs above and below, so the
+      // chlo.ScanOp itself is always forward.
+      /*is_reverse=*/op_builder.getBoolAttr(false),
+      /*is_associative=*/op_builder.getBoolAttr(true));
+
+  mlir::Block* const body = op_builder.createBlock(
+      &scan_op.getBody(), {}, body_arg_types, body_arg_locs);
+  op_builder.setInsertionPointToStart(body);
+
+  TT_ASSIGN_OR_RETURN(
+      const llvm::SmallVector<mlir::Value> body_inputs,
+      BuildScanBodyInputs(builder, body, scan_inputs, num_scan_inputs, scan_dim,
+                          options.should_squeeze));
+  const mlir::ValueRange carry_args =
+      body->getArguments().drop_front(num_scan_inputs);
+
+  TT_ASSIGN_OR_RETURN(ScanBodyResults results,
+                      body_builder(op_builder, loc, body_inputs,
+                                   /*index=*/mlir::Value(), carry_args));
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
+      results.new_carries.size() == carry_inits.size(), error::kInvalidArgument)
+      << "expected " << carry_inits.size() << " new carries, got "
+      << results.new_carries.size();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
+      results.new_outputs.size() == output_inits.size(),
+      error::kInvalidArgument)
+      << "expected " << output_inits.size() << " new outputs, got "
+      << results.new_outputs.size();
+
+  // chlo.ScanOp stacks rank-reduced body outputs along the scan dim; the body
+  // return order is [outputs..., carries...].
+  TT_ASSIGN_OR_RETURN(llvm::SmallVector<mlir::Value> returned,
+                      SqueezeScanOutputs(builder, results.new_outputs, scan_dim,
+                                         options.should_squeeze));
+  returned.append(results.new_carries.begin(), results.new_carries.end());
+  mlir::stablehlo::ReturnOp::create(op_builder, loc, returned);
+
+  op_builder.setInsertionPointAfter(scan_op);
+  // Match the while-loop contract: [carries..., outputs...]. For a reverse scan
+  // the per-position outputs are produced in reversed order, so flip them back
+  // along the scan dim. The carries are the full reduction and are unaffected.
+  DynamicMlirOpResults op_results;
+  op_results.reserve(carry_inits.size() + output_inits.size());
+  for (const mlir::Value carry : scan_op.getCarries()) {
+    op_results.push_back(mlir::MlirOp(builder, carry));
+  }
+  for (const mlir::Value out : scan_op.getOutputs()) {
+    mlir::MlirOp out_op(builder, out);
+    if (reverse) {
+      out_op = mlir::stablehlo::Reverse(out_op, reverse_dims);
+    }
+    op_results.push_back(out_op);
+  }
+  return op_results;
+}
+
 }  // namespace
 
 absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     mlir::MlirBuilder& builder, mlir::MlirOp input, const int64_t dim,
     const llvm::ArrayRef<mlir::MlirOp> carry_inits,
     const llvm::ArrayRef<mlir::MlirOp> output_inits,
-    const ScanBodyBuilder body_builder) {
+    const ScanBodyBuilder body_builder, const ScanOptions& options) {
   const mlir::RankedTensorType type = GetTensorTypeOrDie(input);
   TT_ASSIGN_OR_RETURN(const int64_t scan_dim, SafeWrapDim(dim, type.getRank()));
 
@@ -301,18 +489,9 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
       << ") and the number of output inits (" << output_inits.size()
       << ") to match";
 
-  TT_ASSIGN_OR_RETURN(
-      ScanLoopState state,
-      PrepareScanLoop(builder, input, dim, carry_inits, output_inits));
-
-  mlir::OpBuilder& op_builder = builder.getOpBuilder();
-  auto while_op = mlir::stablehlo::WhileOp::create(
-      op_builder, state.loc, state.loop_types, state.loop_inits);
-
-  PopulateScanCondition(while_op, builder, input, state.scan_dim,
-                        state.loop_types, state.loc);
-
-  auto multi_body_builder =
+  // Wraps the single-slice body: for this overload the per-position output is
+  // the running carry.
+  MultiInputScanBodyBuilder multi_body_builder =
       [&body_builder](
           mlir::OpBuilder& op_builder, mlir::Location loc,
           mlir::ValueRange slices, mlir::Value index,
@@ -324,9 +503,35 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     return ScanBodyResults{std::move(new_carries), std::move(new_outputs)};
   };
 
+  // Associative scan -> chlo.ScanOp (native scan emitter). This overload's body
+  // takes size-1 (non-squeezed) slices and returns the outputs only.
+  if (options.is_associative) {
+    const ScanOptions emit_options = {.direction = options.direction,
+                                      .should_squeeze = false,
+                                      .is_associative = true};
+    TT_ASSIGN_OR_RETURN(DynamicMlirOpResults results,
+                        BuildAssociativeScanChlo(
+                            builder, {input}, scan_dim,
+                            /*num_scan_inputs=*/1, carry_inits, output_inits,
+                            multi_body_builder, emit_options));
+    return DynamicMlirOpResults(results.begin() + carry_inits.size(),
+                                results.end());
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      ScanLoopState state,
+      PrepareScanLoop(builder, input, dim, carry_inits, output_inits));
+
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  auto while_op = mlir::stablehlo::WhileOp::create(
+      op_builder, state.loc, state.loop_types, state.loop_inits);
+
+  PopulateScanCondition(while_op, builder, input, state.scan_dim,
+                        state.loop_types, state.loc);
+
   TT_RETURN_IF_ERROR(PopulateScanBody(
       while_op, builder, {input}, state.scan_dim, state.loop_types, state.loc,
-      /*num_scan_inputs=*/1, carry_inits.size(), std::move(multi_body_builder),
+      /*num_scan_inputs=*/1, carry_inits.size(), multi_body_builder,
       ScanDirection::kForward, /*should_squeeze=*/false));
 
   op_builder.setInsertionPointAfter(while_op);
@@ -362,6 +567,14 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     DynamicMlirOpResults results(carry_inits.begin(), carry_inits.end());
     results.append(output_inits.begin(), output_inits.end());
     return results;
+  }
+
+  // Associative scans go to the native scan emitter via chlo.ScanOp;
+  // non-associative scans use the StableHLO while loop below.
+  if (options.is_associative) {
+    return BuildAssociativeScanChlo(builder, scan_inputs, scan_dim,
+                                    num_scan_inputs, carry_inits, output_inits,
+                                    body_builder, options);
   }
 
   TT_ASSIGN_OR_RETURN(ScanLoopState state,

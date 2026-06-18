@@ -40,17 +40,33 @@ enum class ScanDirection { kForward, kReverse };
   return value == ScanDirection::kForward ? "forward" : "reverse";
 }
 
+struct ScanOptions {
+  ScanDirection direction = ScanDirection::kForward;
+  bool should_squeeze = false;
+
+  // When true, the scan body is asserted to be associative and the scan is
+  // lowered to chlo.ScanOp(is_associative=true), which the TPU compiler's
+  // native scan emitter compiles directly. When false (the default), the scan
+  // is lowered to a StableHLO while loop. Only set this for genuinely
+  // associative reductions (e.g. cumsum/cumprod/cummax/cummin); a
+  // non-associative body under is_associative=true would be miscompiled by the
+  // associative emitter.
+  bool is_associative = false;
+};
 // (op_builder, loc, input_slice, index_0d, carries) -> new_carries.
 using ScanBodyBuilder =
     absl::AnyInvocable<absl::StatusOr<llvm::SmallVector<mlir::Value>>(
         mlir::OpBuilder&, mlir::Location, mlir::Value, mlir::Value,
         mlir::ValueRange) const>;
 
-// Lowers a prefix scan along 'dim' using a StableHLO while loop.
+// Lowers a prefix scan along 'dim'. By default uses a StableHLO while loop; if
+// 'options.is_associative' is true the scan is lowered to chlo.ScanOp for the
+// native scan emitter instead (see ScanOptions).
 absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     mlir::MlirBuilder& builder, mlir::MlirOp input, int64_t dim,
     llvm::ArrayRef<mlir::MlirOp> carry_inits,
-    llvm::ArrayRef<mlir::MlirOp> output_inits, ScanBodyBuilder body_builder);
+    llvm::ArrayRef<mlir::MlirOp> output_inits, ScanBodyBuilder body_builder,
+    const ScanOptions& options = {});
 
 struct ScanBodyResults {
   llvm::SmallVector<mlir::Value> new_carries;
@@ -64,11 +80,6 @@ using MultiInputScanBodyBuilder =
         mlir::OpBuilder&, mlir::Location, mlir::ValueRange, mlir::Value,
         mlir::ValueRange) const>;
 
-struct ScanOptions {
-  ScanDirection direction = ScanDirection::kForward;
-  bool should_squeeze = false;
-};
-
 // Generalized version of BuildScanShlo supporting multiple inputs, separate
 // carries and outputs, and reverse scanning.
 //
@@ -79,6 +90,9 @@ struct ScanOptions {
 // order. If 'options.should_squeeze' is true, slices along the sequence
 // dimension are rank-reduced by squeezing the sequence dimension before passing
 // to the body builder.
+//
+// If 'options.is_associative' is true, the scan is lowered to chlo.ScanOp for
+// the native scan emitter instead of a while loop (see ScanOptions).
 absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     mlir::MlirBuilder& builder, llvm::ArrayRef<mlir::MlirOp> scan_inputs,
     int64_t dim, int64_t num_scan_inputs,

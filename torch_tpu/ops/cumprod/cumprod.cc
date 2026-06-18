@@ -66,30 +66,37 @@ absl::StatusOr<mlir::MlirOp> BuildCumprodShlo(
   }
 
   const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
-  const llvm::ArrayRef<int64_t> shape = promoted_type.getShape();
-  llvm::SmallVector<int64_t> carry_shape(shape.begin(), shape.end());
-  carry_shape[normalized_dim] = 1;
+  // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
+  llvm::SmallVector<int64_t> carry_shape(promoted_type.getShape().begin(),
+                                         promoted_type.getShape().end());
+  carry_shape.erase(carry_shape.begin() + normalized_dim);
 
   const mlir::MlirOp init_value = MakeScalarConstant(builder, 1, element_type);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
                       BroadcastIfNeeded(init_value, carry_shape));
-  TT_ASSIGN_OR_RETURN(const mlir::MlirOp output_init,
-                      BroadcastIfNeeded(init_value, shape));
 
-  const auto body_builder = [](mlir::OpBuilder& op_builder, mlir::Location loc,
-                               mlir::Value slice, mlir::Value index,
-                               mlir::ValueRange carries)
-      -> absl::StatusOr<llvm::SmallVector<mlir::Value>> {
-    return llvm::SmallVector<mlir::Value>{
-        mlir::stablehlo::MulOp::create(op_builder, loc, slice, carries[0])
+  MultiInputScanBodyBuilder body_builder =
+      [](mlir::OpBuilder& op_builder, mlir::Location loc,
+         mlir::ValueRange input_slices, mlir::Value /*index*/,
+         mlir::ValueRange carries) -> absl::StatusOr<ScanBodyResults> {
+    llvm::SmallVector<mlir::Value> prod = {
+        mlir::stablehlo::MulOp::create(op_builder, loc, input_slices[0],
+                                       carries[0])
             .getResult()};
+    // For a cumulative product the per-position output is the running carry.
+    return ScanBodyResults{prod, prod};
   };
 
+  // Associative scan -> chlo.ScanOp (native scan emitter). Results are
+  // [carries..., outputs...]; the prefix-scan output is the single output.
   TT_ASSIGN_OR_RETURN(
       const DynamicMlirOpResults results,
-      BuildScanShlo(builder, input, normalized_dim, {carry_init}, {output_init},
-                    std::move(body_builder)));
-  return results[0];
+      BuildScanShlo(
+          builder, {input}, normalized_dim, /*num_scan_inputs=*/1,
+          /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
+          std::move(body_builder),
+          ScanOptions{.should_squeeze = true, .is_associative = true}));
+  return results[/*num_carries=*/1];
 }
 
 }  // namespace torch_tpu
