@@ -126,7 +126,6 @@ torch_tpu_py_test(
     tags = ["requires-tpu-v5lite"],
     deps = [
         "//shims/absl_py:app",
-        "//shims/jax:pallas",
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/pallas",

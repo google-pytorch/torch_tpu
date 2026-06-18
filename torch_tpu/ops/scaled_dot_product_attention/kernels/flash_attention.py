@@ -27,6 +27,7 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
+from torch_tpu._internal import pallas
 
 DEFAULT_MASK_VALUE = -0.7 * float(jnp.finfo(jnp.dtype("float32")).max)
 NUM_LANES = 128
@@ -769,7 +770,7 @@ def _flash_attention_impl(
     )
   else:
     cost_estimate = None  # TODO(chenjincheng): Add support for dynamic shapes.
-  o, *aux = pl.pallas_call(
+  o, *aux = pallas.pallas_call(
       kernel,
       grid_spec=pltpu.PrefetchScalarGridSpec(
           num_scalar_prefetch=0,
@@ -1123,7 +1124,7 @@ def _flash_attention_bwd_dkv(
   )
   name_scope = f"flash_mha_bwd_dkv_{block_q_major=}_{block_q=}_{block_k_major=}_{block_k=}"
   with jax.named_scope(name_scope):
-    dk, dv = pl.pallas_call(
+    dk, dv = pallas.pallas_call(
         kernel,
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
@@ -1467,7 +1468,7 @@ def _flash_attention_bwd_dq(
   )
   name_scope = f"flash_mha_bwd_dq_{block_q_major=}_{block_k_major=}_{block_k=}"
   with jax.named_scope(name_scope):
-    dq, ds = pl.pallas_call(
+    dq, ds = pallas.pallas_call(
         kernel,
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,

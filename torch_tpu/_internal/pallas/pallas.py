@@ -29,7 +29,9 @@ import torch
 from torch._library.custom_ops import CustomOpDef
 import torch.library
 from torch_tpu._internal.pallas import _compat
-from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu._internal.pallas import smem_routing
+
+pallas_call = smem_routing.pallas_call
 
 try:
   # TODO: TorchXLA hit issues when workin with both JAX and PT in the same
@@ -503,6 +505,9 @@ class JaxCallable:
 
   def __call__(self, *args, **kwargs) -> _KernelResultT:
     self._validate_args(*args)
+    # Inline import to avoid initializing C++ / PJRT runtime during tracing
+    # or module import.
+    from torch_tpu._internal.pallas import tpu_torch_pallas  # pylint: disable=g-import-not-at-top
 
     kernel_key = _get_kernel_invocation_key(
         self.trace_key, args, kwargs, self.static_argnums

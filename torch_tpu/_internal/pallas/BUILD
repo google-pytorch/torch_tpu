@@ -55,12 +55,27 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "smem_routing",
+    srcs = ["smem_routing.py"],
+    deps = [
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
+    tags = [
+        "ignore_for_dep=third_party.py.jax._src.pallas.mosaic.tpu_info",
+    ],
     deps = [
         ":pallas_compat",
+        ":smem_routing",
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
+        "//shims/jax:pallas_tpu",  # build_cleaner: keep
         "//shims/torch:pytorch",
         "@pypi//frozendict",
         "@pypi//jax",

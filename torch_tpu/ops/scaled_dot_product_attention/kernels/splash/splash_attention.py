@@ -31,6 +31,7 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
 import numpy as np
+from torch_tpu._internal import pallas
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import base
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask as mask_lib
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask_info as mask_info_lib
@@ -846,7 +847,7 @@ def _splash_attention_forward(
     is_empty_attention_block = False
 
   with jax.named_scope(kernel_name):
-    all_out = pl.pallas_call(
+    all_out = pallas.pallas_call(
         partial(
             flash_attention_kernel,
             mask_value=mask_value,
@@ -1791,7 +1792,7 @@ def _splash_attention_bwd_dkv(
   )
 
   with jax.named_scope(kernel_name):
-    dq_unreduced, dk, dv = pl.pallas_call(
+    dq_unreduced, dk, dv = pallas.pallas_call(
         kernel,
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=6,

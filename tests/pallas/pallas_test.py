@@ -19,11 +19,14 @@ import os
 import pathlib
 import sys
 from typing import Optional, Tuple, TypeAlias
+from unittest import mock
 import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu as pltpu
 import jax.export
+import jax.numpy as jnp
 from packaging import version
 import torch
 from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
@@ -31,6 +34,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.utils import utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -124,6 +128,330 @@ def jax_add_or_subtract_vectors_wrapper(
   return pl.pallas_call(wrapped, out_shape=out_shape)(x, y)
 
 
+def add_scalar_kernel_body(x_ref, y_ref, o_ref):
+  x, y = x_ref[...], y_ref[...]
+  o_ref[...] = x + y
+
+
+def add_scalar_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(add_scalar_kernel_body, out_shape=dt)(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar")
+def add_scalar(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_jax(x, y)
+
+
+def add_scalar_spy_kernel(x_ref, y_ref, o_ref):
+  o_ref[...] = x_ref[...] + y_ref[...]
+
+
+def add_scalar_spy_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(add_scalar_spy_kernel, out_shape=dt)(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar_spy")
+def add_scalar_spy(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_spy_jax(x, y)
+
+
+def quant_and_pack_spy_kernel(x_ref, packed_ref, scale_ref):
+  x = x_ref[...]
+  scale = jnp.mean(jnp.abs(x))
+  scale_ref[...] = scale
+
+  bits = (x >= 0.0).astype(jnp.int32)
+  bit_patterns = jnp.left_shift(jnp.int32(1), jnp.arange(32, dtype=jnp.int32))
+  packed = jnp.sum(bits * bit_patterns, axis=1, dtype=jnp.int32)
+  packed_ref[...] = packed.astype(jnp.uint32)
+
+
+def quant_and_pack_spy_jax(x: jax.Array) -> Tuple[jax.Array, jax.Array]:
+  packed_shape = jax.ShapeDtypeStruct((x.shape[0],), jnp.uint32)
+  scale_shape = jax.ShapeDtypeStruct((), jnp.float32)
+  quant_and_pack_entry_func = pallas.pallas_call(
+      quant_and_pack_spy_kernel, out_shape=(packed_shape, scale_shape)
+  )
+  return quant_and_pack_entry_func(x)
+
+
+@pallas.jax_op("pallas::quant_and_pack_spy")
+def quant_and_pack_spy(x: jax.Array) -> Tuple[jax.Array, jax.Array]:
+  return quant_and_pack_spy_jax(x)
+
+
+def add_nested_spy_kernel(xy_ref, z_ref, o_ref):
+  x_ref, y_ref = xy_ref
+  o_ref[...] = x_ref[...] + y_ref[...] + z_ref[...]
+
+
+def add_nested_spy_jax(x: jax.Array, y: jax.Array, z: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(y.shape, y.dtype)
+  in_specs = ((pl.BlockSpec(()), pl.BlockSpec(y.shape)), pl.BlockSpec(z.shape))
+  out_spec = pl.BlockSpec(y.shape)
+  return pallas.pallas_call(
+      add_nested_spy_kernel,
+      out_shape=dt,
+      in_specs=in_specs,
+      out_specs=out_spec,
+  )((x, y), z)
+
+
+@pallas.jax_op("pallas::add_nested_spy")
+def add_nested_spy(x: jax.Array, y: jax.Array, z: jax.Array) -> jax.Array:
+  return add_nested_spy_jax(x, y, z)
+
+
+def add_multiple_scalars_kernel(x_ref, y_ref, z_ref, o_ref):
+  x, y, z = x_ref[...], y_ref[...], z_ref[...]
+  o_ref[...] = x + y + z
+
+
+def add_multiple_scalars_jax(
+    x: jax.Array, y: jax.Array, z: jax.Array
+) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(add_multiple_scalars_kernel, out_shape=dt)(x, y, z)
+
+
+@pallas.jax_op("pallas::add_multiple_scalars")
+def add_multiple_scalars(x: jax.Array, y: jax.Array, z: jax.Array) -> jax.Array:
+  return add_multiple_scalars_jax(x, y, z)
+
+
+def add_scalar_smem_kernel(x_ref, y_ref, o_ref):
+  x, y = x_ref[...], y_ref[...]
+  o_ref[...] = x + y
+
+
+def add_scalar_smem_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(
+      add_scalar_smem_kernel,
+      out_shape=dt,
+      in_specs=[pl.BlockSpec(), pl.BlockSpec(memory_space=pltpu.SMEM)],
+  )(x, y)
+
+
+@pallas.jax_op("pallas::add_scalar_smem")
+def add_scalar_smem(x: jax.Array, y: jax.Array) -> jax.Array:
+  return add_scalar_smem_jax(x, y)
+
+
+def none_indexing_kernel(x_ref, y_ref, o_ref):
+  o_ref[0:1] = x_ref[0:1] + y_ref[None]
+  o_ref[1:2] = x_ref[1:2] + y_ref[None]
+  o_ref[2:3] = x_ref[2:3] + y_ref[None]
+
+
+def none_indexing_jax(x: jax.Array, y: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(none_indexing_kernel, out_shape=dt)(x, y)
+
+
+@pallas.jax_op("pallas::none_indexing_op")
+def none_indexing_op(x: jax.Array, y: jax.Array) -> jax.Array:
+  return none_indexing_jax(x, y)
+
+
+def smem_routing_pytree_kernel(xy_ref, z_ref, o_ref):
+  x_ref, y_ref = xy_ref
+  o_ref[...] = x_ref[...] + y_ref[...] + z_ref[...]
+
+
+def smem_routing_pytree_jax(
+    x: jax.Array, y: jax.Array, z: jax.Array
+) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(smem_routing_pytree_kernel, out_shape=dt)((x, y), z)
+
+
+@pallas.jax_op("pallas::smem_routing_pytree")
+def smem_routing_pytree(x: jax.Array, y: jax.Array, z: jax.Array) -> jax.Array:
+  return smem_routing_pytree_jax(x, y, z)
+
+
+def mixed_scalars_kernel(scalar_vmem_ref, scalar_smem_ref, vec_vmem_ref, o_ref):
+  o_ref[...] = vec_vmem_ref[...] + scalar_vmem_ref[...] + scalar_smem_ref[...]
+
+
+def mixed_scalars_jax(
+    scalar_vmem: jax.Array, scalar_smem: jax.Array, vec_vmem: jax.Array
+) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(vec_vmem.shape, vec_vmem.dtype)
+  return pallas.pallas_call(
+      mixed_scalars_kernel,
+      out_shape=dt,
+      in_specs=[
+          pl.BlockSpec(),  # scalar_vmem (VMEM)
+          pl.BlockSpec(memory_space=pltpu.SMEM),  # scalar_smem (SMEM)
+          pl.BlockSpec(block_shape=vec_vmem.shape),  # vec_vmem (1D VMEM)
+      ],
+  )(scalar_vmem, scalar_smem, vec_vmem)
+
+
+@pallas.jax_op("pallas::mixed_scalars")
+def mixed_scalars(
+    scalar_vmem: jax.Array, scalar_smem: jax.Array, vec_vmem: jax.Array
+) -> jax.Array:
+  return mixed_scalars_jax(scalar_vmem, scalar_smem, vec_vmem)
+
+
+def prefetch_with_smem_scalar_kernel(pref_scalar, x_ref, o_ref):
+  o_ref[...] = x_ref[...] + pref_scalar[...]
+
+
+def prefetch_with_smem_scalar_jax(
+    pref_val: jax.Array, x_val: jax.Array
+) -> jax.Array:
+  return pallas.pallas_call(
+      prefetch_with_smem_scalar_kernel,
+      out_shape=jax.ShapeDtypeStruct((), jax.numpy.float32),
+      grid_spec=pl.tpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=1,
+          grid=(1,),
+          in_specs=[pl.BlockSpec()],
+      ),
+  )(pref_val, x_val)
+
+
+@pallas.jax_op("pallas::prefetch_with_smem_scalar")
+def prefetch_with_smem_scalar(
+    pref_val: jax.Array, x_val: jax.Array
+) -> jax.Array:
+  return prefetch_with_smem_scalar_jax(pref_val, x_val)
+
+
+def prefetch_with_none_kernel(pref_scalar, none_scalar, x_ref, o_ref):
+  del none_scalar
+  o_ref[...] = x_ref[...] + pref_scalar[...]
+
+
+def prefetch_with_none_jax(pref_val: jax.Array, x_val: jax.Array) -> jax.Array:
+  return pallas.pallas_call(
+      prefetch_with_none_kernel,
+      out_shape=jax.ShapeDtypeStruct((), jax.numpy.float32),
+      grid_spec=pl.tpu.PrefetchScalarGridSpec(
+          num_scalar_prefetch=2,
+          grid=(1,),
+          in_specs=[pl.BlockSpec()],
+      ),
+  )(pref_val, None, x_val)
+
+
+@pallas.jax_op("pallas::prefetch_with_none_scalar")
+def prefetch_with_none_scalar(
+    pref_val: jax.Array, x_val: jax.Array
+) -> jax.Array:
+  return prefetch_with_none_jax(pref_val, x_val)
+
+
+def sem_1d_kernel(x_ref, sem_ref, o_ref):
+  pl.semaphore_wait(sem_ref, 1)
+  o_ref[...] = x_ref[...]
+
+
+def sem_1d_jax(x: jax.Array, sem_1d: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(
+      sem_1d_kernel,
+      out_shape=dt,
+      in_specs=[
+          pl.BlockSpec(block_shape=x.shape),
+          pl.BlockSpec(block_shape=(1,), memory_space=pltpu.SEMAPHORE),
+      ],
+  )(x, sem_1d)
+
+
+@pallas.jax_op("pallas::sem_1d_op")
+def sem_1d_op(x: jax.Array, sem_1d: jax.Array) -> jax.Array:
+  return sem_1d_jax(x, sem_1d)
+
+
+def closure_static_kernel(y_ref, x_ref, o_ref, static_val):
+  o_ref[...] = x_ref[...] + y_ref[...] + static_val
+
+
+def closure_static_jax(
+    y_val: jax.Array, x_val: jax.Array, static_val: int
+) -> jax.Array:
+  kernel_fn = functools.partial(closure_static_kernel, static_val=static_val)
+  return pallas.pallas_call(
+      kernel_fn,
+      out_shape=jax.ShapeDtypeStruct(x_val.shape, x_val.dtype),
+      in_specs=[
+          pl.BlockSpec(),
+          pl.BlockSpec(block_shape=x_val.shape),
+      ],
+  )(y_val, x_val)
+
+
+@pallas.jax_op("pallas::closure_static_op")
+def closure_static_op(
+    y_val: jax.Array, x_val: jax.Array, static_val: int
+) -> jax.Array:
+  return closure_static_jax(y_val, x_val, static_val)
+
+
+def semaphore_kernel(x_ref, sem_ref, o_ref):
+  _ = sem_ref
+  o_ref[...] = x_ref[...]
+
+
+def semaphore_jax(x: jax.Array, sem: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pallas.pallas_call(
+      semaphore_kernel,
+      out_shape=dt,
+      in_specs=[
+          pl.BlockSpec(block_shape=x.shape),
+          pl.BlockSpec(memory_space=pltpu.SEMAPHORE),
+      ],
+  )(x, sem)
+
+
+@pallas.jax_op("pallas::semaphore_op")
+def semaphore_op(x: jax.Array, sem: jax.Array) -> jax.Array:
+  return semaphore_jax(x, sem)
+
+
+def scalar_output_kernel(x_ref, o_ref):
+  o_ref[...] = jax.numpy.sum(x_ref[...])
+
+
+def scalar_output_jax(x: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct((), x.dtype)
+  return pallas.pallas_call(
+      scalar_output_kernel,
+      out_shape=dt,
+  )(x)
+
+
+@pallas.jax_op("pallas::scalar_output")
+def scalar_output(x: jax.Array) -> jax.Array:
+  return scalar_output_jax(x)
+
+
+def scalar_output_smem_kernel(x_ref, o_ref):
+  o_ref[...] = jax.numpy.sum(x_ref[...])
+
+
+def scalar_output_smem_jax(x: jax.Array) -> jax.Array:
+  dt = jax.ShapeDtypeStruct((), x.dtype)
+  return pallas.pallas_call(
+      scalar_output_smem_kernel,
+      out_shape=dt,
+      out_specs=pl.BlockSpec(memory_space=pltpu.SMEM),
+  )(x)
+
+
+@pallas.jax_op("pallas::scalar_output_smem")
+def scalar_output_smem(x: jax.Array) -> jax.Array:
+  return scalar_output_smem_jax(x)
+
+
 class TestPallasKernels(absltest.TestCase):
 
   def setUp(self):
@@ -136,6 +464,340 @@ class TestPallasKernels(absltest.TestCase):
         RuntimeError, "INVALID_ARGUMENT: Buffer has been deleted or donated"
     ):
       x.cpu()
+
+  def test_scalar_add(self):
+    x_plat = jax.ShapeDtypeStruct((3,), jax.numpy.float32)
+    y_plat = jax.ShapeDtypeStruct((), jax.numpy.float32)
+    jaxpr = jax.make_jaxpr(add_scalar_jax)(x_plat, y_plat)
+    print("=== JAXPR ===")
+    print(jaxpr)
+    print("=============")
+
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    actual = add_scalar(x, y)
+    expected = torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_multiple_scalars(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    z = torch.tensor(5.0, dtype=torch.float32, device=self.device)
+    actual = add_multiple_scalars(x, y, z)
+    expected = torch.tensor([10.0, 11.0, 12.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_none_indexing(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    actual = none_indexing_op(x, y)
+    expected = torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_smem_scalar(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    actual = add_scalar_smem(x, y)
+    expected = torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_smem_routing_avoids_recompilation_spy(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y1 = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+    y2 = torch.tensor(10.0, dtype=torch.float32, device=self.device)
+
+    spy_register = mock.Mock(wraps=tpu_torch_pallas.register_custom_kernel)
+
+    with mock.patch(
+        "torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel",
+        spy_register,
+    ):
+      # First call: compiles and registers
+      out1 = add_scalar_spy(x, y1)
+      utils.assert_close(
+          out1.to("cpu"),
+          torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32),
+      )
+      self.assertEqual(spy_register.call_count, 1)
+
+      # Second call with same value: cache hit, no compile
+      out2 = add_scalar_spy(x, y1)
+      utils.assert_close(
+          out2.to("cpu"),
+          torch.tensor([5.0, 6.0, 7.0], dtype=torch.float32),
+      )
+      self.assertEqual(spy_register.call_count, 1)
+
+      # Third call with DIFFERENT value: cache hit (due to SMEM scalar routing),
+      # no compile!
+      out3 = add_scalar_spy(x, y2)
+      utils.assert_close(
+          out3.to("cpu"),
+          torch.tensor([11.0, 12.0, 13.0], dtype=torch.float32),
+      )
+      self.assertEqual(spy_register.call_count, 1)
+
+  def test_smem_routing_pytree(self):
+    x = torch.tensor(1.0, dtype=torch.float32, device=self.device)
+    y = torch.tensor(2.0, dtype=torch.float32, device=self.device)
+    z = torch.tensor(3.0, dtype=torch.float32, device=self.device)
+    actual = smem_routing_pytree(x, y, z)
+    expected = torch.tensor(6.0, dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_quant_pallas_no_recompilation(self):
+    x1 = torch.randn(1, 32, dtype=torch.float32, device=self.device)
+    x2 = torch.randn(1, 32, dtype=torch.float32, device=self.device)
+
+    spy_register = mock.Mock(wraps=tpu_torch_pallas.register_custom_kernel)
+
+    with mock.patch(
+        "torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel",
+        spy_register,
+    ):
+      # First call: compiles and registers
+      quant_and_pack_spy(x1)
+      self.assertEqual(spy_register.call_count, 1)
+
+      # Second call with DIFFERENT value (same shape): cache hit, no compile!
+      quant_and_pack_spy(x2)
+      self.assertEqual(spy_register.call_count, 1)
+
+  def test_nested_scalars_no_recompilation(self):
+    x1 = torch.tensor(1.0, dtype=torch.float32, device=self.device)
+    x2 = torch.tensor(10.0, dtype=torch.float32, device=self.device)
+    y = torch.tensor([4.0, 5.0, 6.0], dtype=torch.float32, device=self.device)
+    z = torch.tensor([7.0, 8.0, 9.0], dtype=torch.float32, device=self.device)
+
+    spy_register = mock.Mock(wraps=tpu_torch_pallas.register_custom_kernel)
+
+    with mock.patch(
+        "torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel",
+        spy_register,
+    ):
+      # First call: compiles and registers
+      out1 = add_nested_spy(x1, y, z)
+      utils.assert_close(
+          out1.to("cpu"),
+          torch.tensor([12.0, 14.0, 16.0], dtype=torch.float32),
+      )
+      self.assertEqual(spy_register.call_count, 1)
+
+      # Second call with DIFFERENT x (same shape): cache hit, no compile!
+      out2 = add_nested_spy(x2, y, z)
+      utils.assert_close(
+          out2.to("cpu"),
+          torch.tensor([21.0, 23.0, 25.0], dtype=torch.float32),
+      )
+      self.assertEqual(spy_register.call_count, 1)
+
+  def test_multiple_scalars_mixed(self):
+    scalar_vmem = torch.tensor(5.0, dtype=torch.float32, device=self.device)
+    scalar_smem = torch.tensor(10.0, dtype=torch.float32, device=self.device)
+    vec_vmem = torch.tensor(
+        [20.0, 30.0, 40.0], dtype=torch.float32, device=self.device
+    )
+
+    actual = mixed_scalars(scalar_vmem, scalar_smem, vec_vmem)
+    expected = torch.tensor([35.0, 45.0, 55.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+
+  def test_prefetch_with_smem_scalar(self):
+    x = torch.tensor(2.0, dtype=torch.float32, device=self.device)
+    pref = torch.tensor(3.0, dtype=torch.float32, device=self.device)
+
+    actual = prefetch_with_smem_scalar(pref, x)
+    self.assertEqual(actual.item(), 5.0)
+    self.assertEqual(actual.ndim, 0)
+
+  def test_prefetch_with_none_scalar(self):
+    x = torch.tensor(2.0, dtype=torch.float32, device=self.device)
+    pref = torch.tensor(3.0, dtype=torch.float32, device=self.device)
+
+    actual = prefetch_with_none_scalar(pref, x)
+    self.assertEqual(actual.item(), 5.0)
+    self.assertEqual(actual.ndim, 0)
+
+  def test_semaphore_scalar_bypass(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    sem = torch.tensor(0, dtype=torch.int32, device=self.device)
+
+    actual = semaphore_op(x, sem)
+    utils.assert_close(actual.to("cpu"), x.to("cpu"))
+
+  def test_workaround_manual_padding_still_works(self):
+    def body(x_ref, o_ref):
+      o_ref[0:1] = x_ref[0:1] + 1
+
+    x = jax.numpy.array([5])
+    out = pl.pallas_call(
+        body,
+        out_shape=jax.ShapeDtypeStruct((1,), jax.numpy.int32),
+    )(x)
+    self.assertEqual(out[0], 6)
+
+  def test_dynamic_grid_is_supported(self):
+    def body(o_ref):
+      o_ref[...] = 1
+
+    @jax.jit
+    def run(grid_size):
+      return pallas.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((), jax.numpy.int32),
+          grid=(grid_size,),
+      )()
+
+    out = run(3)
+    self.assertEqual(out, 1)
+
+  def test_static_context_fails(self):
+    def body(x, o_ref):
+      val = 0
+      for i in range(x):
+        val = val + i
+      o_ref[...] = val
+
+    with self.assertRaises(TypeError):
+      pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((), jax.numpy.int32),
+      )(jax.numpy.array(3))
+
+  def test_dynamic_program_id_axis_fails_trace(self):
+    def body(axis_val, o_ref):
+      o_ref[...] = pl.program_id(axis_val)
+
+    with self.assertRaises(TypeError):
+      pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((), jax.numpy.int32),
+      )(jax.numpy.array(0))
+
+  def test_scalar_output_vmem(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    actual = scalar_output(x)
+    self.assertEqual(actual.item(), 6.0)
+    self.assertEqual(actual.ndim, 0)
+
+  def test_scalar_output_smem(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    actual = scalar_output_smem(x)
+    self.assertEqual(actual.item(), 6.0)
+    self.assertEqual(actual.ndim, 0)
+
+  def test_static_argument_compiles_but_recompiles_on_change(self):
+    # Verify Claim 2.5: static arguments require compilation per value
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    spy_register = mock.Mock(wraps=tpu_torch_pallas.register_custom_kernel)
+
+    def run_static_3():
+      def body(x_ref, o_ref):
+        o_ref[...] = x_ref[...] + 3
+
+      @pallas.jax_op("pallas::static_add_3")
+      def op(x: jax.Array) -> jax.Array:
+        return pl.pallas_call(
+            body,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+        )(x)
+
+      return op(x)
+
+    def run_static_4():
+      def body(x_ref, o_ref):
+        o_ref[...] = x_ref[...] + 4
+
+      @pallas.jax_op("pallas::static_add_4")
+      def op(x: jax.Array) -> jax.Array:
+        return pl.pallas_call(
+            body,
+            out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+        )(x)
+
+      return op(x)
+
+    with mock.patch(
+        "torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel",
+        spy_register,
+    ):
+      run_static_3()
+      self.assertEqual(spy_register.call_count, 1)
+      run_static_4()
+      self.assertEqual(spy_register.call_count, 2)
+
+  def test_dynamic_0d_vmem_fails_without_promotion(self):
+    # Verify Claims 3.1-3.4: 0D VMEM fails lowering without patch
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+
+    def add_scalar_problem_kernel(x_ref, y_ref, o_ref):
+      o_ref[...] = x_ref[...].sum() + y_ref[...]
+
+    @pallas.jax_op("pallas::add_scalar_problem_unpatched")
+    def add_scalar_problem_unpatched(x: jax.Array, y: jax.Array) -> jax.Array:
+      dt = jax.ShapeDtypeStruct((), x.dtype)
+      return pl.pallas_call(
+          add_scalar_problem_kernel,
+          out_shape=dt,
+      )(x, y)
+
+    with self.assertRaises(Exception) as ctx:
+      add_scalar_problem_unpatched(x, y)
+    self.assertIn("supports only blocks of rank >= 1", str(ctx.exception))
+
+  def test_dynamic_block_shape_fails_trace(self):
+    # Verify Claim 2.2: dynamic block shapes are rejected during tracing
+    @jax.jit
+    def run_failing_trace(block_size_tracer):
+      def body(x_ref, o_ref):
+        o_ref[...] = x_ref[...]
+
+      return pl.pallas_call(
+          body,
+          out_shape=jax.ShapeDtypeStruct((3,), jax.numpy.float32),
+          in_specs=[pl.BlockSpec(block_shape=(block_size_tracer,))],
+      )(jax.numpy.array([1.0, 2.0, 3.0]))
+
+    with self.assertRaises(ValueError):
+      run_failing_trace(3)
+
+  def test_jaxpr_verification(self):
+    # Verify Claims 6.4-6.10: VMEM promoted, SMEM bypassed in JAXPR
+    def mixed_kernel(x_ref, y_ref, o_ref):
+      o_ref[...] = x_ref[...] + y_ref[...]
+
+    def run_mixed_jax(x, y):
+      return pallas.pallas_call(
+          mixed_kernel,
+          out_shape=jax.ShapeDtypeStruct((), x.dtype),
+          in_specs=[
+              pl.BlockSpec(),
+              pl.BlockSpec(memory_space=pltpu.SMEM),
+          ],
+      )(x, y)
+
+    x_plat = jax.ShapeDtypeStruct((), jax.numpy.float32)
+    y_plat = jax.ShapeDtypeStruct((), jax.numpy.float32)
+    closed_jaxpr = jax.make_jaxpr(run_mixed_jax)(x_plat, y_plat)
+
+    pallas_eq = None
+    for eq in closed_jaxpr.eqns:
+      if eq.primitive.name == "pallas_call":
+        pallas_eq = eq
+        break
+
+    self.assertIsNotNone(
+        pallas_eq, "Could not find pallas_call equation in JAXPR"
+    )
+
+    in_avals = [v.aval for v in pallas_eq.invars]
+
+    self.assertEqual(in_avals[0].shape, ())
+    self.assertEqual(in_avals[1].shape, ())
+
+    out_avals = [v.aval for v in pallas_eq.outvars]
+    self.assertEqual(out_avals[0].shape, ())
 
   def test_kernel_single_output_decorator(self):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
@@ -958,6 +1620,23 @@ class TestPallasKernels(absltest.TestCase):
       x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
       y = custom_call_op(x)
       y.cpu()
+
+  def test_semaphore_1d_fails_mosaic(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    sem_1d = torch.tensor([0], dtype=torch.int32, device=self.device)
+
+    with self.assertRaises(Exception) as ctx:
+      sem_1d_op(x, sem_1d)
+    self.assertIn("semaphore", str(ctx.exception).lower())
+
+  def test_closure_static_arguments(self):
+    x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
+    y = torch.tensor(4.0, dtype=torch.float32, device=self.device)
+
+    actual = closure_static_op(y, x, 3)
+    expected = torch.tensor([8.0, 9.0, 10.0], dtype=torch.float32)
+    utils.assert_close(actual.to("cpu"), expected)
+    self.assertEqual(actual.ndim, 1)
 
 
 class TestPallasCompat(absltest.TestCase):

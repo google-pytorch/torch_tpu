@@ -57,7 +57,7 @@ def jax_kernel(global_input: jax.Array, mesh: jax.sharding.Mesh) -> jax.Array:
   def shard_kernel(x_local):
     bs = pl.BlockSpec(x_local.shape)
     dt = jax.ShapeDtypeStruct(x_local.shape, x_local.dtype)
-    pallas_fn = pl.pallas_call(
+    pallas_fn = pallas.pallas_call(
         pallas_kernel,
         out_shape=dt,
         grid_spec=pltpu.PrefetchScalarGridSpec(

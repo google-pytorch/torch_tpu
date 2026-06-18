@@ -32,7 +32,7 @@ os.environ["XLA_FLAGS"] = f"--xla_dump_to={XLA_DUMP_TO} --xla_dump_hlo_as_text"
 
 from absl import app  # pylint: disable=g-import-not-at-top
 import torch
-import torch_tpu._internal.pallas
+from torch_tpu._internal import pallas
 
 torch._logging.set_logs(aot_graphs=True)  # pylint: disable=protected-access
 
@@ -41,14 +41,13 @@ torch._logging.set_logs(aot_graphs=True)  # pylint: disable=protected-access
 # This section requires touching the JAX library.
 
 import jax
-from jax.experimental import pallas as pl
 import jax.numpy as jnp
 
 
 def quant_and_pack_pallas_kernel(x_ref, packed_ref, scale_ref):
   x = x_ref[...]
   scale = jnp.mean(jnp.abs(x))
-  scale_ref[...] = jnp.expand_dims(scale, 0)
+  scale_ref[...] = scale
 
   bits = (x >= 0.0).astype(jnp.int32)
   bit_patterns = jnp.left_shift(jnp.int32(1), jnp.arange(32, dtype=jnp.int32))
@@ -58,8 +57,8 @@ def quant_and_pack_pallas_kernel(x_ref, packed_ref, scale_ref):
 
 def quant_and_pack_jax(x: jax.Array) -> Tuple[jax.Array, jax.Array]:
   packed_shape = jax.ShapeDtypeStruct((x.shape[0],), jnp.uint32)
-  scale_shape = jax.ShapeDtypeStruct((1,), jnp.float32)
-  quant_and_pack_entry_func = pl.pallas_call(
+  scale_shape = jax.ShapeDtypeStruct((), jnp.float32)
+  quant_and_pack_entry_func = pallas.pallas_call(
       quant_and_pack_pallas_kernel, out_shape=(packed_shape, scale_shape)
   )
   return quant_and_pack_entry_func(x)
@@ -68,7 +67,7 @@ def quant_and_pack_jax(x: jax.Array) -> Tuple[jax.Array, jax.Array]:
 # --- The rest of this code is pure PyTorch, with no reference to JAX modules.
 
 # pylint: disable=protected-access
-quant_and_pack = torch_tpu._internal.pallas.jax_op(
+quant_and_pack = pallas.jax_op(
     "testing_op::quant_and_pack",
     quant_and_pack_jax,
 )

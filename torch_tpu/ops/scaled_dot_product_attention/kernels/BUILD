@@ -59,6 +59,7 @@ torch_tpu_py_library(
         ":splash_base",
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
+        "//torch_tpu/_internal/pallas",
         "@pypi//jax",
         "@pypi//numpy",
     ],
@@ -70,6 +71,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
+        "//torch_tpu/_internal/pallas",
         "@pypi//jax",
     ],
 )
