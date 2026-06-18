@@ -179,43 +179,37 @@ std::vector<at::Tensor> PyCreateScanOp(
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
     int64_t num_scan_inputs) {
-  ScopedPythonContextCapturer capturer(OpName::kCustomKernel);
+  ScopedPythonContextCapturer capturer(OpName::kScan);
 
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      !inputs.empty(), error::kInvalidArgument)
+  TT_CHECK_THROW(!inputs.empty(), error::kInvalidArgument)
       << "expected at least 1 input tensor";
 
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      num_scan_inputs > 0, error::kInvalidArgument)
+  TT_CHECK_THROW(num_scan_inputs > 0, error::kInvalidArgument)
       << "expected num_scan_inputs to be greater than 0, got "
       << num_scan_inputs;
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      num_scan_inputs <= inputs.size(), error::kInvalidArgument)
+  TT_CHECK_THROW(num_scan_inputs <= inputs.size(), error::kInvalidArgument)
       << "expected num_scan_inputs (" << num_scan_inputs
       << ") to be less than or equal to the number of inputs (" << inputs.size()
       << ")";
 
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      body_module != nullptr && body_module->get(), error::kInvalidArgument)
+  TT_CHECK_THROW(body_module != nullptr && body_module->get(),
+                 error::kInvalidArgument)
       << "invalid body module";
 
   auto body_main_func =
       body_module->get().lookupSymbol<mlir::func::FuncOp>("main");
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      body_main_func != nullptr, error::kInternal)
+  TT_CHECK_THROW(body_main_func != nullptr, error::kInternal)
       << "expected 'main' function in body MLIR module";
 
   const int64_t num_carries = inits.size();
   const int64_t num_results = body_main_func.getResultTypes().size();
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      num_results >= num_carries, error::kInvalidArgument)
+  TT_CHECK_THROW(num_results >= num_carries, error::kInvalidArgument)
       << "expected step function to have at least " << num_carries
       << " result types (corresponding to carries), but it only has "
       << num_results;
 
   const int64_t num_outputs = num_results - num_carries;
-  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
-      num_outputs == dummy_outputs.size(), error::kInvalidArgument)
+  TT_CHECK_THROW(num_outputs == dummy_outputs.size(), error::kInvalidArgument)
       << "expected " << num_outputs << " dummy outputs, got "
       << dummy_outputs.size();
 

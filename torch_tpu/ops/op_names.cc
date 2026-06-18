@@ -1177,6 +1177,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_scaled_mm";
     case OpName::kScaledMmOut:
       return "_scaled_mm.out";
+    case OpName::kScan:
+      return "scan";
     case OpName::kScatterAddOut:
       return "scatter_add.out";
     case OpName::kScatterReduceOut:

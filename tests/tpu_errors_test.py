@@ -1730,6 +1730,107 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       tt_testing.set_init_default_generator_failure("")
       tt_testing.reset_default_device_generators()
 
+  def _make_scan_module(self):
+    # Returns a minimal MLIR module representing a scan step (cumulative sum).
+    return tpu_torch_compile.parse_mlir_text(
+        "module {\n"
+        "  func.func @main(%carry: i32, %x: i32) -> (i32, i32) {\n"
+        "    %new_carry = arith.addi %carry, %x : i32\n"
+        "    return %new_carry, %new_carry : i32, i32\n"
+        "  }\n"
+        "}"
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="empty_inputs",
+          inits=lambda device: [torch.tensor([0.0], device=device)],
+          inputs=lambda device: [],
+          body_module=lambda self: self._make_scan_module(),
+          dummy_ys=lambda device: [],
+          num_scan_inputs=0,
+          expected_error="scan(): expected at least 1 input tensor",
+      ),
+      dict(
+          testcase_name="invalid_num_scan_inputs",
+          inits=lambda device: [torch.tensor([0.0], device=device)],
+          inputs=lambda device: [torch.tensor([1.0], device=device)],
+          body_module=lambda self: self._make_scan_module(),
+          dummy_ys=lambda device: [],
+          num_scan_inputs=0,
+          expected_error=(
+              "scan(): expected num_scan_inputs to be greater than 0, got 0"
+          ),
+      ),
+      dict(
+          testcase_name="num_scan_inputs_exceeds_inputs",
+          inits=lambda device: [torch.tensor([0.0], device=device)],
+          inputs=lambda device: [torch.tensor([1.0], device=device)],
+          body_module=lambda self: self._make_scan_module(),
+          dummy_ys=lambda device: [],
+          num_scan_inputs=2,
+          expected_error=(
+              "scan(): expected num_scan_inputs (2) to be less than or equal to"
+              " the number of inputs (1)"
+          ),
+      ),
+      dict(
+          testcase_name="too_few_results",
+          inits=lambda device: [torch.tensor([0.0], device=device)] * 3,
+          inputs=lambda device: [torch.tensor([1.0], device=device)],
+          body_module=lambda self: self._make_scan_module(),
+          dummy_ys=lambda device: [],
+          num_scan_inputs=1,
+          expected_error=(
+              "scan(): expected step function to have at least 3 result types"
+              " (corresponding to carries), but it only has 2"
+          ),
+      ),
+      dict(
+          testcase_name="mismatched_dummy_outputs",
+          inits=lambda device: [torch.tensor([0.0], device=device)],
+          inputs=lambda device: [torch.tensor([1.0], device=device)],
+          body_module=lambda self: self._make_scan_module(),
+          dummy_ys=lambda device: [torch.tensor([1.0], device=device)] * 2,
+          num_scan_inputs=1,
+          expected_error="scan(): expected 1 dummy outputs, got 2",
+      ),
+      dict(
+          testcase_name="missing_main",
+          inits=lambda device: [torch.tensor([0.0], device=device)],
+          inputs=lambda device: [torch.tensor([1.0], device=device)],
+          body_module=lambda self: tpu_torch_compile.parse_mlir_text(
+              "module { func.func @not_main() -> () { return } }"
+          ),
+          dummy_ys=lambda device: [torch.tensor([1.0], device=device)],
+          num_scan_inputs=1,
+          expected_error="scan(): expected 'main' function in body MLIR module",
+      ),
+  )
+  @et.why_tpu_only("Testing TPU-specific scan errors.")
+  def test_scan_creation_errors(
+      self,
+      inits,
+      inputs,
+      body_module,
+      dummy_ys,
+      num_scan_inputs,
+      expected_error,
+  ):
+    device = et.device()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_error,
+    ):
+      tpu_torch_compile.create_scan_op(
+          inits=inits(device),
+          inputs=inputs(device),
+          body_module=body_module(self),
+          scan_direction=tpu_torch_compile.ScanDirection.kForward,
+          dummy_ys=dummy_ys(device),
+          num_scan_inputs=num_scan_inputs,
+      )
+
 
 if __name__ == "__main__":
   absltest.main()
