@@ -103,6 +103,14 @@ def _register_scan_operator() -> None:
 
 _register_scan_operator()
 
+
+def _register_associative_scan_operator() -> None:
+  """Registers the custom associative_scan operator implementation for TPU."""
+  from torch_tpu._internal.compile import associative_scan as _  # pylint: disable=g-import-not-at-top
+
+
+_register_associative_scan_operator()
+
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start

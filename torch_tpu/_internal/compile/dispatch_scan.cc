@@ -178,7 +178,7 @@ std::vector<at::Tensor> PyCreateScanOp(
     const std::vector<at::Tensor>& inits, const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
-    int64_t num_scan_inputs) {
+    int64_t num_scan_inputs, bool is_associative) {
   ScopedPythonContextCapturer capturer(OpName::kCustomKernel);
 
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Internal TorchTPU error.
@@ -231,7 +231,7 @@ std::vector<at::Tensor> PyCreateScanOp(
   const int64_t total_inputs = inputs.size();
 
   MlirOpBuilder op_builder = [serialized_mlir, num_carries, total_inputs,
-                              scan_direction, num_scan_inputs](
+                              scan_direction, num_scan_inputs, is_associative](
                                  mlir::MlirBuilder& builder,
                                  absl::Span<mlir::MlirOp> op_inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
@@ -277,10 +277,11 @@ std::vector<at::Tensor> PyCreateScanOp(
     // Further, should_squeeze=true because the slice returned from scanning
     // along the sequence dimension has shape [1, features...] but the step
     // function expects [features...]).
-    return BuildScanShlo(
-        builder, scanned_inputs, /*dim=*/0, num_scan_inputs, carry_inits,
-        output_inits, std::move(body_builder),
-        ScanOptions{.direction = scan_direction, .should_squeeze = true});
+    return BuildScanShlo(builder, scanned_inputs, /*dim=*/0, num_scan_inputs,
+                         carry_inits, output_inits, std::move(body_builder),
+                         ScanOptions{.direction = scan_direction,
+                                     .should_squeeze = true,
+                                     .is_associative = is_associative});
   };
 
   TT_ASSIGN_OR_THROW(auto cache_keys,
@@ -288,7 +289,8 @@ std::vector<at::Tensor> PyCreateScanOp(
                            .SetParam("body_mlir", serialized_mlir)
                            .SetParam("scan_direction", scan_direction)
                            .SetParam("num_scan_inputs", num_scan_inputs)
-                           .SetParam("num_carries", num_carries)));
+                           .SetParam("num_carries", num_carries)
+                           .SetParam("is_associative", is_associative)));
 
   std::vector<DeviceBufferRef> input_buffers = GetInputBuffers(inits, inputs);
   std::vector<Shape> output_shapes = GetOutputShapes(inits, dummy_outputs);

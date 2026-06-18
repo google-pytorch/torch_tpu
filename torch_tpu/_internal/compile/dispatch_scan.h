@@ -27,7 +27,12 @@
 
 namespace torch_tpu {
 
-// Creates a loop-based scan operation on TPU.
+// Creates a scan operation on TPU.
+//
+// By default (is_associative=false) the body is treated as non-associative and
+// lowered to a StableHLO while loop. When is_associative=true the body is
+// assumed associative and lowered to chlo.ScanOp for the native scan emitter
+// (see is_associative below).
 //
 // Args:
 //   inits: A list of carry tensors representing the starting state of the loop.
@@ -44,6 +49,14 @@ namespace torch_tpu {
 //   num_scan_inputs: The number of active scanned inputs in the `inputs`
 //       list. Any elements in `inputs` beyond this count are treated as
 //       static inputs, not to be scanned over.
+//   is_associative: When true, the scan is lowered to chlo.ScanOp
+//       (is_associative=true) so the TPU compiler's native scan emitter
+//       compiles it directly, instead of a StableHLO while loop. Only set this
+//       when the step function is genuinely associative (e.g. a
+//       torch.associative_scan combiner): a non-associative body would be
+//       miscompiled by the associative emitter. The native emitter computes a
+//       pure inclusive scan (out[0] = xs[0]); the carry inits are used for the
+//       carry types but their values do not affect the per-position outputs.
 //
 // Returns:
 //   A list of tensors containing the final carries followed by the stacked loop
@@ -52,7 +65,7 @@ std::vector<at::Tensor> PyCreateScanOp(
     const std::vector<at::Tensor>& inits, const std::vector<at::Tensor>& inputs,
     const std::shared_ptr<ContextedModule>& body_module,
     ScanDirection scan_direction, const std::vector<at::Tensor>& dummy_outputs,
-    int64_t num_scan_inputs);
+    int64_t num_scan_inputs, bool is_associative = false);
 
 }  // namespace torch_tpu
 

@@ -59,6 +59,7 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":associative_scan",
         ":scan",
         ":tpu_backend",
         ":tpu_torch_compile",
@@ -88,6 +89,16 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "scan",
     srcs = ["scan.py"],
+    deps = [
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/export",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "associative_scan",
+    srcs = ["associative_scan.py"],
     deps = [
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
@@ -340,6 +351,7 @@ torch_tpu_cc_test(
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
         "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:chlo_ops",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla/mlir/utils:error_util",

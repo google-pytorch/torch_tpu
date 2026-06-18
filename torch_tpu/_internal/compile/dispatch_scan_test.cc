@@ -44,6 +44,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -243,6 +244,8 @@ class DispatchScanTest : public testing::Test {
     auto context = std::make_unique<mlir::MLIRContext>();
     context->loadDialect<mlir::stablehlo::StablehloDialect>();
     context->loadDialect<mlir::func::FuncDialect>();
+    // The associative path lowers to chlo.scan, so load the chlo dialect too.
+    context->loadDialect<mlir::chlo::ChloDialect>();
     mlir::ModuleBuilder builder(*context);
 
     llvm::SmallVector<mlir::MlirOp> mlir_inputs;
@@ -314,6 +317,32 @@ TEST_F(DispatchScanTest, With1D) {
 
   SCOPED_TRACE("With1D");
   LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2);
+}
+
+TEST_F(DispatchScanTest, AssociativeScan1D) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs();
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1, /*is_associative=*/true);
+  ASSERT_EQ(results.size(), 2);
+
+  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef carry_buf,
+                          GetBuffer(results[0]));
+  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+                          GetBuffer(results[1]));
+  EXPECT_THAT(carry_buf.shape().dimensions(), ElementsAre(1));
+  EXPECT_THAT(outputs_buf.shape().dimensions(), ElementsAre(4, 1));
+
+  SCOPED_TRACE("AssociativeScan1D");
+  std::string lowered_mlir;
+  LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/1, &lowered_mlir);
+  // is_associative routes to the native chlo.scan emitter op, not a
+  // stablehlo.while loop.
+  EXPECT_THAT(lowered_mlir, HasSubstr("chlo.scan"));
+  EXPECT_THAT(lowered_mlir, testing::Not(HasSubstr("stablehlo.while")));
 }
 
 TEST_F(DispatchScanTest, With2D) {
@@ -427,6 +456,7 @@ TEST_F(DispatchScanTest, VerifyCacheKeys) {
                               testing::Pair("scan_direction", "forward"),
                               testing::Pair("num_scan_inputs", "1"),
                               testing::Pair("num_carries", "1"),
+                              testing::Pair("is_associative", "f"),
                               testing::Pair("body_mlir", testing::_)));
 }
 

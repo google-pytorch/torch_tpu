@@ -998,15 +998,17 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("get_materialize_collective_tensors_env_value",
         PyGetMaterializeCollectiveTensorsEnvValue,
         "Returns whether to materialize collective tensors.");
-
   py::enum_<torch_tpu::ScanDirection>(m, "ScanDirection")
       .value("kForward", torch_tpu::ScanDirection::kForward)
       .value("kReverse", torch_tpu::ScanDirection::kReverse)
       .export_values();
-  m.def("create_scan_op", &PyCreateScanOp, py::arg("inits"), py::arg("inputs"),
-        py::arg("body_module"), py::arg("scan_direction"), py::arg("dummy_ys"),
-        py::arg("num_scan_inputs"),
-        "Creates a deferred scan operation and returns the output tensors.");
+  m.def(
+      "create_scan_op", &PyCreateScanOp, py::arg("inits"), py::arg("inputs"),
+      py::arg("body_module"), py::arg("scan_direction"), py::arg("dummy_ys"),
+      py::arg("num_scan_inputs"), py::arg("is_associative") = false,
+      "Creates a deferred scan operation and returns the output tensors. When "
+      "is_associative is true, lowers to the native associative scan emitter "
+      "(chlo.ScanOp).");
 }
 
 }  // namespace torch_tpu
