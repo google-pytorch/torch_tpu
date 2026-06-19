@@ -2047,6 +2047,7 @@ torch_tpu_py_test(
         [],
         ["//shims/torch:aten/src/ATen/RegistrationDeclarations.h"],
     ),
+    notest_oss = "Fails against mutable upstream PyTorch headers in OSS",
     deps = [
         ":native_functions_data",
         ":seed_test_utils",

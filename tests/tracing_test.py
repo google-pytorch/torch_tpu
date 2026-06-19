@@ -114,7 +114,10 @@ class TracingTest(seed_test_utils.RepeatableTest):
     self._old_mode = execution_mode.eager_mode
     self.addCleanup(setattr, execution_mode, "eager_mode", self._old_mode)
     execution_mode.eager_mode = execution_mode.EagerMode.DEFER_AND_FUSE
-    self._dev = torch.accelerator.current_accelerator()
+    try:
+      self._dev = torch.accelerator.current_accelerator()
+    except Exception:
+      self.skipTest("No accelerator (TPU/GPU) available in this environment.")
 
   def test_daemon_started(self):
     self.assertIsNotNone(tracing._daemon)

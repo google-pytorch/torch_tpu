@@ -22,9 +22,26 @@ set -e
 WORKSPACE_DIR="${1:-$GITHUB_WORKSPACE}"
 BASE_SHA="${2}"
 CURRENT_SHA="${3}"
-BAZEL_CONFIG="${4}"
-EXTRA_FLAGS="${5}"
+BAZEL_CONFIG="${4:-}"
+EXTRA_FLAGS="${5:-}"
 DISABLE_BAZEL_DIFF="${6:-false}"
+
+# Fallback for local debugging where GITHUB_OUTPUT is not set.
+GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
+
+ORIGINAL_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+cleanup() {
+  if [ -n "$ORIGINAL_BRANCH" ]; then
+    git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# Resolve CURRENT_SHA before any git checkout moves HEAD
+if [ "$CURRENT_SHA" == "HEAD" ] || [ -z "$CURRENT_SHA" ]; then
+  CURRENT_SHA=$(git rev-parse HEAD)
+fi
+
 
 # Check if global Bazel configuration were modified. If so, bypass bazel-diff
 # to guarantee a full build validation.
@@ -60,23 +77,16 @@ if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
   fi
 fi
 
+
+
 # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main) or
 # label "ci:disable-bazel-diff" is applied, diff-based testing is invalid. Fall
 # back to running all tests.
 if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
   echo "No BASE_SHA provided (not a PR), bazel-diff disabled via PR label or global configuration files modified. Skipping bazel-diff and running all tests."
 
-  set +e
-  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS //...
-  BAZEL_EXIT_CODE=$?
-  set -e
-
-  if [ $BAZEL_EXIT_CODE -eq 4 ]; then
-    echo "Bazel returned Exit Code 4 (No tests found). Treating as success!"
-    exit 0
-  fi
-
-  exit $BAZEL_EXIT_CODE
+  echo "run_mode=full" >> "$GITHUB_OUTPUT"
+  exit 0
 fi
 
 echo "Downloading bazel-diff..."
@@ -105,37 +115,14 @@ java -jar /tmp/bazel-diff.jar get-impacted-targets \
   -fh "$WORKSPACE_DIR/pr_hashes.json" \
   -o "$WORKSPACE_DIR/impacted_targets.txt"
 
-echo "--- Running Impacted Bazel Tests ---"
+echo "--- Running Impacted Tests ---"
 if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   TARGET_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
   echo "Found $TARGET_COUNT impacted target(s)."
-  echo "--- Impacted Targets List ---"
-  cat "$WORKSPACE_DIR/impacted_targets.txt"
-  echo "-----------------------------"
-
-  # Disable Bash's "exit on error" to manually evaluate Bazel's exit code
-  set +e
-
-  # Use eval to properly expand any nested quotes in EXTRA_FLAGS (like --run_under="$(pwd)/...")
-  # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
-  # an explicitly requested target whose target_compatible_with is unsatisfied
-  # as a hard error -- unlike the wildcard //... runs everywhere else, which
-  # skip it. --skip_incompatible_explicit_targets restores the wildcard
-  # behavior, so config-gated tests are skipped rather than failing presubmit.
-  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS --skip_incompatible_explicit_targets --target_pattern_file="$WORKSPACE_DIR/impacted_targets.txt"
-  BAZEL_EXIT_CODE=$?
-
-  # Re-enable "exit on error"
-  set -e
-
-  # Evaluate the Bazel Exit Code
-  if [ $BAZEL_EXIT_CODE -eq 4 ]; then
-    echo "Bazel returned Exit Code 4 (No tests found). Treating as success!"
-    exit 0
-  elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
-    echo "Bazel test failed with exit code $BAZEL_EXIT_CODE."
-    exit $BAZEL_EXIT_CODE
-  fi
+  
+  echo "run_mode=diff" >> "$GITHUB_OUTPUT"
+  echo "targets_file=$WORKSPACE_DIR/impacted_targets.txt" >> "$GITHUB_OUTPUT"
 else
-  echo "No tests impacted by these changes. Skipping Bazel entirely!"
+  echo "No tests impacted by these changes. Skipping test execution entirely!"
+  echo "run_mode=skip" >> "$GITHUB_OUTPUT"
 fi

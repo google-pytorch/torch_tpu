@@ -188,3 +188,6 @@ max-returns = 6
 "**/tests/**" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/*_test.py" = ["D", "PLR0913", "PLR2004", "PLR6301"]
 "**/examples/**" = ["D", "PLR2004"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

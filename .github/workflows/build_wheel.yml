@@ -347,3 +347,123 @@ jobs:
           PYTHON_VERSION: ${{ needs.setup.outputs.default_python_version }}
           NOX_SMOKE_TEST: ${{ github.event_name == 'pull_request' && 'tpu-nightly-pinned' || 'tpu-nightly' }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
+
+  test_wheels_cpu_pytest:
+    name: "Test wheel (Pytest) on ${{ matrix.custom_name || 'CPU' }} (Python ${{ matrix.python_version }})"
+    needs: [build_wheels, setup]
+    strategy:
+      matrix:
+        python_version: ${{ fromJSON(needs.setup.outputs.cpu_versions) }}
+        wheel_version: ["standard"]
+        include:
+          - wheel_version: "standard"
+            runner: linux-x86-n4-16
+            allowed_to_fail: false
+            extra_flags: ""
+
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.allowed_to_fail }}
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      options: --privileged
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Create Virtualenv & Install Dependencies
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          uv venv .venv --python "${PYTHON_VERSION}"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+          PYTHON_VER_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          uv pip install --python .venv/bin/python --prerelease=allow --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -r "requirements/requirements_${PYTHON_VER_UND}.txt" dist/*.whl --reinstall
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        continue-on-error: ${{ matrix.expected_failure == true }}
+        with:
+          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "wheel_test_cpu"
+          extra_bazel_flags: ${{ matrix.extra_flags }}
+          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_runner: "pytest"
+
+  test_wheels_tpu_pytest:
+    name: Test wheel (Pytest) on ${{ matrix.custom_name || 'TPU' }} (Python ${{ matrix.python_version }})
+    needs: [build_wheels, setup]
+    strategy:
+      matrix:
+        python_version: ${{ fromJSON(needs.setup.outputs.tpu_versions) }}
+        wheel_version: ["standard", "v7"]
+        include:
+          - wheel_version: "standard"
+            runner: linux-x86-ct5lp-224-8tpu
+            custom_name: "TPU v5"
+            extra_flags: ""
+            allowed_to_fail: false
+          - wheel_version: "v7"
+            runner: linux-x86-tpu7x-224-4tpu
+            custom_name: "TPU v7"
+            extra_flags: ""
+            allowed_to_fail: false
+
+    runs-on: ${{ matrix.runner || 'linux-x86-ct5lp-224-8tpu' }}
+    continue-on-error: ${{ matrix.allowed_to_fail }}
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      options: --privileged
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Create Virtualenv & Install Dependencies
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          uv venv .venv --python "${PYTHON_VERSION}"
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+          PYTHON_VER_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          uv pip install --python .venv/bin/python --prerelease=allow --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -r "requirements/requirements_${PYTHON_VER_UND}.txt" dist/*.whl --reinstall
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        continue-on-error: ${{ matrix.expected_failure == true }}
+        with:
+          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "wheel_test_tpu"
+          extra_bazel_flags: ${{ matrix.extra_flags }}
+          disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_runner: "pytest"

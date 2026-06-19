@@ -33,10 +33,63 @@ inputs:
     description: 'Set to true to completely bypass bazel-diff'
     required: false
     default: 'false'
+  test_runner:
+    description: 'Test runner to execute (bazel or pytest)'
+    required: false
+    default: 'bazel'
 
 runs:
   using: 'composite'
   steps:
-    - name: Execute bazel-diff script
+    - name: Calculate Impacted Targets
+      id: calc
       run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}"
+      shell: bash
+
+    - name: Run Pytest (Impacted)
+      if: inputs.test_runner == 'pytest' && steps.calc.outputs.run_mode == 'diff'
+      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_pytest.sh "$GITHUB_WORKSPACE" --diff "${{ steps.calc.outputs.targets_file }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}"
+      shell: bash
+
+    - name: Run Pytest (Full)
+      if: inputs.test_runner == 'pytest' && steps.calc.outputs.run_mode == 'full'
+      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_pytest.sh "$GITHUB_WORKSPACE" --full "" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}"
+      shell: bash
+
+    - name: Run Bazel (Impacted)
+      if: inputs.test_runner == 'bazel' && steps.calc.outputs.run_mode == 'diff'
+      run: |
+        # Disable Bash's "exit on error" to manually evaluate Bazel's exit code
+        set +e
+
+        # Use eval to properly expand any nested quotes in EXTRA_FLAGS (like --run_under="$(pwd)/...")
+        # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
+        # an explicitly requested target whose target_compatible_with is unsatisfied
+        # as a hard error -- unlike the wildcard //... runs everywhere else, which
+        # skip it. --skip_incompatible_explicit_targets restores the wildcard
+        # behavior, so config-gated tests are skipped rather than failing presubmit.
+        eval bazel test --config="${{ inputs.bazel_config }}" ${{ inputs.extra_bazel_flags }} --skip_incompatible_explicit_targets --target_pattern_file="${{ steps.calc.outputs.targets_file }}"
+        BAZEL_EXIT_CODE=$?
+        set -e
+        if [ $BAZEL_EXIT_CODE -eq 4 ]; then
+          echo "Bazel returned Exit Code 4 (No tests found). Treating as success!"
+          exit 0
+        elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
+          exit $BAZEL_EXIT_CODE
+        fi
+      shell: bash
+
+    - name: Run Bazel (Full)
+      if: inputs.test_runner == 'bazel' && steps.calc.outputs.run_mode == 'full'
+      run: |
+        set +e
+        eval bazel test --config="${{ inputs.bazel_config }}" ${{ inputs.extra_bazel_flags }} //...
+        BAZEL_EXIT_CODE=$?
+        set -e
+        if [ $BAZEL_EXIT_CODE -eq 4 ]; then
+          echo "Bazel returned Exit Code 4 (No tests found). Treating as success!"
+          exit 0
+        elif [ $BAZEL_EXIT_CODE -ne 0 ]; then
+          exit $BAZEL_EXIT_CODE
+        fi
       shell: bash

@@ -25,6 +25,9 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
     },
+    tags = [
+        "wheel_test_excluded",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

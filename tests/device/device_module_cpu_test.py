@@ -14,10 +14,12 @@
 
 """Tests for the device module with XLA CPU backend."""
 
-from absl.testing import absltest
-import torch
-from tests.device import device_module_testing
+import os
 
+os.environ.setdefault("TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND", "1")
+from absl.testing import absltest  # pylint: disable=g-import-not-at-top
+import torch  # pylint: disable=g-import-not-at-top
+from tests.device import device_module_testing  # pylint: disable=g-import-not-at-top
 
 # Test cases are defined in device_module_testing.DeviceModuleBase
 class XlaCpuDeviceModuleTest(

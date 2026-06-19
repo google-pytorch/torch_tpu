@@ -14,9 +14,11 @@
 
 """Tests that autoload is working on the xla_cpu."""
 
-from absl.testing import absltest
-import torch
+import os
 
+os.environ.setdefault("TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND", "1")
+from absl.testing import absltest  # pylint: disable=g-import-not-at-top
+import torch  # pylint: disable=g-import-not-at-top
 
 class AutoloadCPUTest(absltest.TestCase):
 

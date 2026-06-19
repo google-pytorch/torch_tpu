@@ -14,9 +14,9 @@
 
 """This tests that the XLA backends are NOT loaded unless explicitly enabled."""
 
-from absl.testing import absltest
-from absl.testing import parameterized
-import torch
+from absl.testing import absltest  # pylint: disable=g-import-not-at-top
+from absl.testing import parameterized  # pylint: disable=g-import-not-at-top
+import torch  # pylint: disable=g-import-not-at-top
 
 
 class AutoloadDisabledBackendTest(parameterized.TestCase):
