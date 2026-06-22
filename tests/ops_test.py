@@ -3441,11 +3441,7 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("t")
 
   def test_take(self):
-    self.do_test_op(
-        "take",
-        # TODO: fix the error put_ is unimplemented.
-        check_grad=False,
-    )
+    self.do_test_op("take")
 
   def test_tan(self):
     self.do_test_op(
