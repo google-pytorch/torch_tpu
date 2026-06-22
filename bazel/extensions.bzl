@@ -17,14 +17,14 @@ load("//bazel:wheel_deps.bzl", "torch_tpu_deps_repo")
 
 def _torch_tpu_deps_ext_impl(_ctx):
     # This is a repository rule and evaluated in the loading phase, so it cannot
-    # use dynamic select() blocks. We use the Python 3.12 lock file as a static
+    # use dynamic select() blocks. We use the Python 3.14 lock file as a static
     # baseline to parse wheel metadata requirements, which are identical across
     # Python versions. Actual compiler and test runtimes leverage version-specific
     # parse rules in MODULE.bazel.
     torch_tpu_deps_repo(
         name = "torch_tpu_deps",
         pyproject_toml = "//:pyproject.toml",
-        requirements_txt = "//requirements:requirements_3_12.txt",
+        requirements_txt = "//requirements:requirements_3_14.txt",
     )
 
 torch_tpu_deps_ext = module_extension(

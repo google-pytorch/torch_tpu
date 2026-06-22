@@ -114,7 +114,7 @@ use_repo(
 # Python extension
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.defaults(
-    python_version = "3.12",
+    python_version = "3.14",
     python_version_env = "HERMETIC_PYTHON_VERSION",
 )
 

@@ -871,8 +871,8 @@ def torch_tpu_py_test(
         select_dict["//:wheel_test_with_local_torch_" + v.replace(".", "_")] = env_local
         select_dict["//:wheel_test_" + v.replace(".", "_")] = env_wheel_versions[v.replace(".", "")]
 
-    # Fallback for 3.12 if --test_wheel=True is passed without --define PYTHON_VERSION
-    select_dict["//:wheel_test_enabled"] = env_wheel_versions["312"]
+    # Fallback for 3.14 if --test_wheel=True is passed without --define PYTHON_VERSION
+    select_dict["//:wheel_test_enabled"] = env_wheel_versions["314"]
     select_dict["//conditions:default"] = base_env
 
     test_env = if_oss(select(select_dict), base_env)

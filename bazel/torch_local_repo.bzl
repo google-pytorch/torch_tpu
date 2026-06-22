@@ -90,6 +90,17 @@ cc_library(name = "torch")
         rctx.symlink(torch_path, "_torch_internal_archive.zip")
         rctx.execute(["mkdir", "-p", "site-packages"])
         rctx.extract("_torch_internal_archive.zip", output = "site-packages")
+
+        # Workaround for upstream PyTorch nightly wheels missing
+        # TypedMetadata.h (PR #187440 / libkineto PR #1439)
+        kineto_inc = "site-packages/torch/include/kineto"
+        if (rctx.path(kineto_inc).exists and
+            not rctx.path(kineto_inc + "/TypedMetadata.h").exists):
+            rctx.download(
+                "https://raw.githubusercontent.com/pytorch/kineto/" +
+                "main/libkineto/include/TypedMetadata.h",
+                output = kineto_inc + "/TypedMetadata.h",
+            )
     else:
         _create_shadow_tree(rctx, torch_path)
 

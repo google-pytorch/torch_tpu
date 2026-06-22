@@ -28,7 +28,7 @@ alias(
         "//:wheel_test_3_12": "@pypi_libtpu_312//:whl",
         "//:wheel_test_3_13": "@pypi_libtpu_313//:whl",
         "//:wheel_test_3_14": "@pypi_libtpu_314//:whl",
-        "//conditions:default": "@pypi_libtpu_312//:whl",
+        "//conditions:default": "@pypi_libtpu_314//:whl",
     }),
     visibility = ["//visibility:public"],
 )

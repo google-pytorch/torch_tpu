@@ -36,6 +36,7 @@
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/macro_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
@@ -167,7 +168,10 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       // Boolean.
     case at::kBool:
       return mlir::ElementType::PRED;
-    // These cases should never happen.
+      // These cases should never happen.
+#if TT_TORCH_VERSION_GE(2, 13) && !TT_IS_INTERNAL_TORCH_TPU
+    case at::ScalarType::BComplex32:
+#endif
     // go/keep-sorted start
     case at::kBits16:
     case at::kBits1x8:

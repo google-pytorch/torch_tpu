@@ -63,6 +63,7 @@ torch_tpu_cc_library(
         ":dimension_types",
         ":error_utils",
         ":fingerprint_utils",
+        ":macro_utils",
         ":to_string",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
@@ -565,6 +566,7 @@ torch_tpu_cc_library(
     srcs = ["macro_utils.cc"],
     hdrs = ["macro_utils.h"],
     deps = [
+        "//shims/torch:torch_headers",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
     ],
@@ -584,6 +586,7 @@ torch_tpu_cc_library(
     srcs = ["to_string.cc"],
     hdrs = ["to_string.h"],
     deps = [
+        ":macro_utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",

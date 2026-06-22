@@ -36,7 +36,9 @@
 #include "torch_tpu/common/dimension_types.h"
 
 // 1 if this is a Google-internal version of torch_tpu. Otherwise 0.
+#ifndef TT_IS_INTERNAL_TORCH_TPU
 #define TT_IS_INTERNAL_TORCH_TPU 0
+#endif
 
 namespace torch_tpu {
 

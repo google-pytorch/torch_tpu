@@ -40,7 +40,7 @@ TORCH_FROM_PYPROJECT = [req for req in WHEEL_REQUIRES if req.startswith("torch")
 [config_setting(
     name = "python_" + v.replace(".", "_"),
     define_values = {"PYTHON_VERSION": v},
-) for v in SUPPORTED_PYTHON_VERSIONS if v != "3.12"]
+) for v in SUPPORTED_PYTHON_VERSIONS if v != "3.14"]
 
 # Define requirements list that conditionally includes torch
 # If TORCH_SOURCE=local, we do not require any torch version, allowing
@@ -112,15 +112,15 @@ py_wheel(
     name = "torch_tpu_wheel",
     abi = select({
         ":python_3_11": "cp311",
+        ":python_3_12": "cp312",
         ":python_3_13": "cp313",
-        ":python_3_14": "cp314",
-        "//conditions:default": "cp312",
+        "//conditions:default": "cp314",
     }),
     author = "torch team",
     classifiers = [
         "Development Status :: 4 - Beta",
         "License :: OSI Approved :: Apache Software License",
-        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.14",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
     description_file = "//:README.md",
@@ -131,15 +131,15 @@ py_wheel(
     platform = "manylinux_2_31_x86_64",
     python_requires = select({
         ":python_3_11": ">=3.11",
+        ":python_3_12": ">=3.12",
         ":python_3_13": ">=3.13",
-        ":python_3_14": ">=3.14",
-        "//conditions:default": ">=3.12",
+        "//conditions:default": ">=3.14",
     }),
     python_tag = select({
         ":python_3_11": "cp311",
+        ":python_3_12": "cp312",
         ":python_3_13": "cp313",
-        ":python_3_14": "cp314",
-        "//conditions:default": "cp312",
+        "//conditions:default": "cp314",
     }),
     requires = FILTERED_REQUIRES + TORCH_REQ,
     strip_path_prefixes = ["ci/wheel/remapped_pywrap_binaries_pkg"],

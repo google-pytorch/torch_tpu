@@ -22,6 +22,7 @@
 
 #include "absl/strings/str_split.h"    // IWYU pragma: keep for macro
 #include "absl/strings/string_view.h"  // IWYU pragma: keep for macro
+#include "torch/csrc/api/include/torch/version.h"  // IWYU pragma: keep for macro
 
 // Preprocessor utilities for making macro implementations more readable.
 
@@ -83,6 +84,16 @@
 #else
 #define TT_IF_DEBUG(...) __VA_ARGS__
 #endif  // NDEBUG
+
+// 1 if this is a Google-internal version of torch_tpu. Otherwise 0.
+#ifndef TT_IS_INTERNAL_TORCH_TPU
+#define TT_IS_INTERNAL_TORCH_TPU 0
+#endif
+
+// True in an #if when built against PyTorch >= major.minor.
+#define TT_TORCH_VERSION_GE(major, minor) \
+  (TORCH_VERSION_MAJOR > (major) ||       \
+   (TORCH_VERSION_MAJOR == (major) && TORCH_VERSION_MINOR >= (minor)))
 
 namespace torch_tpu {
 namespace internal {

@@ -53,21 +53,24 @@ jobs:
     name: "Set up Matrix"
     runs-on: ubuntu-latest
     outputs:
-      cpu_versions: '["3.11", "3.12", "3.13", "3.14"]'
+      cpu_versions: ${{ steps.set.outputs.cpu_versions }}
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
-      default_python_version: "3.12"
+      default_python_version: "3.14"
     steps:
       - id: set
         run: |
-          DEFAULT_VER="3.12"
+          DEFAULT_VER="3.14"
+          CPU_VERS='["3.11", "3.14"]'
           TPU_VERS="[\"${DEFAULT_VER}\"]"
           if [[ "${{ github.event_name }}" == "schedule" ]] || \
              [[ "${{ github.event_name }}" == "push" ]] || \
              [[ "${{ contains(github.event.pull_request.labels.*.name, 'tpu-nightly') }}" == "true" ]] || \
              [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:run_all_versions') }}" == "true" ]] || \
              [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:postsubmit') }}" == "true" ]]; then
+            CPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
             TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
           fi
+          echo "cpu_versions=${CPU_VERS}" >> $GITHUB_OUTPUT
           echo "tpu_versions=${TPU_VERS}" >> $GITHUB_OUTPUT
 
   # TODO(pganssle): Migrate to cibuildwheel
@@ -172,14 +175,14 @@ jobs:
       - name: Download a specific CUDA-enabled torch wheel to verify the override mechanism
         if: matrix.wheel_version == 'cuda'
         run: |
-          pip download dist/*.whl -d dist/
+          pip download dist/*.whl -d dist/ --python-version ${{ matrix.python_version }} --only-binary=:all:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Download PyTorch Nightly Wheel to verify the override mechanism
         if: matrix.wheel_version == 'nightly'
         run: |
-          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
+          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist --python-version ${{ matrix.python_version }} --only-binary=:all:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
@@ -250,7 +253,7 @@ jobs:
       - name: Download PyTorch Nightly Wheel to verify the override mechanism
         if: matrix.wheel_version == 'nightly'
         run: |
-          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
+          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist --python-version ${{ matrix.python_version }} --only-binary=:all:
           WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
           echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
