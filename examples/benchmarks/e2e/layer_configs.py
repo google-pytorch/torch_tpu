@@ -1194,7 +1194,7 @@ MAMBA2_BLOCK_CONFIGS = (
     ),
     Mamba2BlockConfig(
         batch_size=8,
-        seq_len=2048,
+        seq_len=1024,
         hidden_size=2048,
         num_heads=64,
         n_groups=8,
@@ -1227,7 +1227,7 @@ NEMOTRON_H_MAMBA2_BLOCK_CONFIGS = (
     ),
     NemotronHMamba2BlockConfig(
         batch_size=8,
-        seq_len=2048,
+        seq_len=1024,
         hidden_size=2688,
         num_heads=64,
         head_dim=64,
