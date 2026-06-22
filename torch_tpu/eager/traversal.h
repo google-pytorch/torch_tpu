@@ -215,7 +215,7 @@ class Traversal {
   const PythonContext* absl_nullable GetPythonContext() const;
 
   // Sorts the Traversal's execution_order by op creation index.
-  inline void SortByCreationOrder() {
+  void SortByCreationOrder() {
     std::sort(
         execution_order_.begin(), execution_order_.end(),
         [](const SharedDeviceBufferList& a, const SharedDeviceBufferList& b) {
