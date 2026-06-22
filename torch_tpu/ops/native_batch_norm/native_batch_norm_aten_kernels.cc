@@ -145,8 +145,9 @@ absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNorm(
   } else if (!weight && !bias && !running_mean && !running_variance) {
     auto op_builder = [training, momentum, eps, acc_dtype](mlir::MlirOp input) {
       return BuildBatchNorm(input, /*weight=*/{}, /*bias=*/{},
-                            /*running_mean=*/{}, /*running_variance=*/{},
-                            training, momentum, eps, acc_dtype);
+                            /*running_mean_opt=*/{},
+                            /*running_variance_opt=*/{}, training, momentum,
+                            eps, acc_dtype);
     };
     TT_ASSIGN_OR_RETURN(
         results,
@@ -159,8 +160,9 @@ absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNorm(
                        acc_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
       auto& [input, weight, bias] = inputs;
       return BuildBatchNorm(input, weight, bias,
-                            /*running_mean=*/{}, /*running_variance=*/{},
-                            training, momentum, eps, acc_dtype);
+                            /*running_mean_opt=*/{},
+                            /*running_variance_opt=*/{}, training, momentum,
+                            eps, acc_dtype);
     };
     TT_ASSIGN_OR_RETURN(
         results,
