@@ -534,6 +534,7 @@ torch_tpu_py_library(
         ":benchmark_utils",
         ":ragged_moe",
         "//examples/deepseek",
+        "//examples/gemma4:model",
         "//shims/torch:pytorch",
         "//tests:module_registry",
         "@pypi//fairscale",
@@ -613,6 +614,33 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "compare_numerics_test",
+    timeout = "long",
+    srcs = ["compare_numerics_test.py"],
+    tags = [
+        "cpu:4",
+        "requires-accel-hbm",
+        "requires-tpu-v5p",
+    ],
+    deps = [
+        "//examples/gemma4:splash_attention",
+        "//examples/gemma4:tpu_attention",
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//shims/torchax:ops",
+        "//tests:module_registry",
+        "//torch_tpu",
+        "//torch_tpu:_loader",
+        "@pypi//jax",
+        "@pypi//numpy",
+        "@pypi//torchax",
+        "@pypi//transformers",
     ],
 )
 

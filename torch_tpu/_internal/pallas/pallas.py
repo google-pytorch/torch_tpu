@@ -400,6 +400,17 @@ class JaxCallable:
 
   Supports static_argnums to allow passing non-tensor arguments directly.
   """
+  name: str
+  trace_key: str
+  jit_fn: Any
+  mesh: Any
+  input_partition_specs: Any
+  static_argnums: tuple[int, ...]
+  donate_argnums: list[int]
+  input_output_aliases: dict[int, int]
+  exported: Any
+  __signature__: Any
+  __globals__: Any
 
   def __init__(
       self,
@@ -441,6 +452,7 @@ class JaxCallable:
 
     self.name = name
     self.trace_key = trace_key
+    self.jit_fn = jit_fn
     self.output_shapes = {}  # cache output shapes per kernel specialization
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
@@ -503,6 +515,46 @@ class JaxCallable:
 
   def __call__(self, *args, **kwargs) -> _KernelResultT:
     self._validate_args(*args)
+
+    # Check if we are running under TorchAX
+    is_torchax = False
+    env = None
+    for arg in args:
+      if hasattr(arg, "_elem") and hasattr(arg, "_env"):
+        is_torchax = True
+        env = arg._env
+        break
+
+    if is_torchax:
+      try:
+        from torchax import tensor as torch_xla2_tensor  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
+      except (ImportError, RuntimeError) as e:
+        raise ImportError(
+            "TorchAX environment detected but torch_xla2 could not be imported."
+        ) from e
+
+      jax_args = []
+      for i, arg in enumerate(args):
+        if i in self.static_argnums:
+          jax_args.append(arg)
+        elif arg is None:
+          jax_args.append(None)
+        elif hasattr(arg, "_elem"):
+          jax_args.append(arg._elem)
+        else:
+          jax_args.append(arg)
+
+      jax_results = self.jit_fn(*jax_args, **kwargs)
+
+      def wrap(x):
+        if isinstance(x, jax.Array):
+          return torch_xla2_tensor.Tensor(x, env)
+        return x
+
+      if isinstance(jax_results, tuple):
+        return tuple(wrap(r) for r in jax_results)
+      else:
+        return wrap(jax_results)
 
     kernel_key = _get_kernel_invocation_key(
         self.trace_key, args, kwargs, self.static_argnums

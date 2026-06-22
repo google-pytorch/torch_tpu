@@ -26,3 +26,8 @@ py_library(
     name = "pallas_tpu",
     deps = ["@pypi//jax"],
 )
+
+py_library(
+    name = "pallas_tpu_ops",
+    deps = ["@pypi//jax"],
+)
