@@ -64,6 +64,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "@pypi//frozendict",
         "@pypi//jax",
+        "@pypi//torchax",  # build_cleaner: keep
     ],
 )
 
