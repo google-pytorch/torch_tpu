@@ -28,7 +28,7 @@ namespace torch_tpu {
 
 absl::StatusOr<LayerNormShloResults> BuildRmsNormShlo(
     mlir::MlirOp input_op, std::optional<mlir::MlirOp> weight_op,
-    const int normalized_num_dims, const double eps);
+    int normalized_num_dims, double eps);
 
 struct RmsNormBackwardShloResults {
   mlir::MlirOp grad_input;
