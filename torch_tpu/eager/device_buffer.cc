@@ -34,6 +34,8 @@
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "c10/util/accumulate.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
@@ -631,6 +633,14 @@ absl::Span<const BoundedDynamicDimension> DeviceBufferRef::dynamic_dimensions()
 
 void DeviceBufferRef::RecordChildOp(uint64_t child_index) const {
   device_buffer_list_->RecordChildOp(child_index);
+}
+
+c10::DeviceIndex DeviceBufferRef::device_index() const {
+  return device_buffer_list_->device_index();
+}
+
+c10::StreamId DeviceBufferRef::stream_id() const {
+  return device_buffer_list_->stream_id();
 }
 
 template <>

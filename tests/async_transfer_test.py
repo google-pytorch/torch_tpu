@@ -226,7 +226,7 @@ class AsyncTransferTest(absltest.TestCase):
     tpu_tensor = cpu_tensor.to('tpu', non_blocking=True)
 
     # 3. Synchronize
-    # (Should wait for the H2D future registered via MarkStreamActive)
+    # (Should wait for the H2D future registered via RecordAsyncHostToDevice)
     torch.tpu.synchronize()
 
     # 4. Modify the host tensor immediately after synchronize

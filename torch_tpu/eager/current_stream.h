@@ -56,6 +56,9 @@ struct DeviceStreamId {
 // Returns the current device and stream IDs for the calling thread.
 DeviceStreamId GetCurrentDeviceStreamId();
 
+// Returns the next available stream ID for the given device index.
+StreamId NextStreamId(DeviceIndex device_index);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_EAGER_CURRENT_STREAM_H_

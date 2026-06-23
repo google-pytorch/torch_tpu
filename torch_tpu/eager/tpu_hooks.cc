@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -48,6 +49,9 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/device_gen_impl.h"
+#include "torch_tpu/eager/events_queue.h"
+#include "torch_tpu/eager/materialize.h"
+#include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
@@ -69,8 +73,11 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void setDevice(c10::Device d) const override;
   void uncheckedSetDevice(c10::Device d) const noexcept override;
   c10::Stream getStream(c10::Device d) const override;
+  c10::Stream getNewStream(c10::Device d, int priority) const override;
   c10::Stream getDefaultStream(c10::Device d) const override;
   c10::Stream exchangeStream(c10::Stream s) const override;
+  // All `void* event` values are actually `std::shared_ptr<EventSnapshot>*`;
+  // this is a pointer to a shared pointer to an EventSnapshot.
   void destroyEvent(void* event,
                     c10::DeviceIndex device_index) const noexcept override;
   void record(void** event, const c10::Stream& stream,
@@ -83,6 +90,12 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void synchronizeStream(const c10::Stream& stream) const override;
   void synchronizeDevice(c10::DeviceIndex device_index) const override;
   void synchronizeEvent(void* event) const override;
+  // Not implemented: getStreamFromGlobalPool
+  // Not implemented: getDeviceCapability
+  // Not implemented: getStreamNativeHandle
+  // Not implemented: isStreamCapturing
+  // Not implemented: recordDataPtrOnStream
+  // Not implemented: elapsedTime
 };
 
 }  // namespace
@@ -150,6 +163,18 @@ c10::Stream TpuDeviceGuardImpl::getStream(c10::Device d) const {
   return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
 }
 
+c10::Stream TpuDeviceGuardImpl::getNewStream(c10::Device d,
+                                             int priority) const {
+  TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
+      << "TpuDeviceGuardImpl: invalid device type for getNewStream "
+      << d.type();
+  const c10::DeviceIndex index = d.index();
+  TT_CHECK_THROW(index >= 0 && index < kMaxDevices, error::kInvalidArgument)
+      << "device index out of bounds: " << index;
+  const c10::StreamId stream_id = NextStreamId(index);
+  return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
+}
+
 c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
   TT_CHECK_THROW(s.device_type() == type(), error::kInvalidArgument)
       << "TpuDeviceGuardImpl: invalid stream device type for exchangeStream "
@@ -181,34 +206,45 @@ c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {
 void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
                                 const c10::DeviceIndex device_index,
                                 const c10::EventFlag flag) const {
-  TORCH_WARN_ONCE("events (record) not yet implemented.");
+  auto snapshot_future = MaterializeStream(
+      device_index, stream.id(), MaterializationReason::kExplicitSync);
+  TT_ASSIGN_OR_THROW(auto snapshot, snapshot_future.Await());
+  *event = new std::shared_ptr<EventSnapshot>(std::move(snapshot));
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
-  TORCH_WARN_ONCE("events (block) not yet implemented.");
+  TORCH_WARN_ONCE("Asynchronous stream waiting is not yet implemented.");
 }
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
-  TORCH_WARN_ONCE("events (queryEvent) not yet implemented.");
-  return true;
+  std::shared_ptr<EventSnapshot>* snapshot =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
+  TT_ASSIGN_OR_THROW(bool ready, (*snapshot)->Query());
+  return ready;
 }
 bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
   TORCH_WARN_ONCE("queryStream not yet implemented.");
   return true;
 }
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
-  SynchronizeStream(stream.device_index(), stream.id());
+  TT_THROW_IF_ERROR(SynchronizeStream(stream.device_index(), stream.id(),
+                                      WaitOnExecution::kYes));
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
-  TT_THROW_IF_ERROR(SynchronizeAll(WaitOnExecution::kYes));
-  SynchronizeDevice(device_index);
+  TT_THROW_IF_ERROR(SynchronizeDevice(device_index, WaitOnExecution::kYes));
 }
 void TpuDeviceGuardImpl::destroyEvent(
     void* event, const c10::DeviceIndex device_index) const noexcept {
-  TORCH_WARN_ONCE("destroyEvent not yet implemented.");
+  std::shared_ptr<EventSnapshot>* snapshot =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
+  snapshot->reset();
 }
 
 void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
-  TORCH_WARN_ONCE("TpuDeviceGuardImpl::synchronizeEvent not implemented.");
+  // TODO(bawilson): also materialize deferred ops before this event on the
+  // event's stream.
+  std::shared_ptr<EventSnapshot>* snapshot =
+      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
+  TT_THROW_IF_ERROR((*snapshot)->Wait());
 }
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);

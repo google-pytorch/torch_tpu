@@ -23,6 +23,8 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "torch_tpu/eager/device_buffer.h"
 
 namespace torch_tpu {
@@ -57,6 +59,13 @@ enum class WaitOnExecution {
   // execution on the device.
   kYes,
 };
+
+absl::Status SynchronizeStream(c10::DeviceIndex device_index,
+                               c10::StreamId stream_id,
+                               WaitOnExecution wait = WaitOnExecution::kNo);
+
+absl::Status SynchronizeDevice(c10::DeviceIndex device_index,
+                               WaitOnExecution wait = WaitOnExecution::kNo);
 
 // Materializes all deferred operations across all subgraphs and optionally
 // waits for their execution to complete on the device.

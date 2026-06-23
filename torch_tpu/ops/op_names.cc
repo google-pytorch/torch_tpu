@@ -1269,6 +1269,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "topk.values";
     case OpName::kTorchTpuInternalConstant:
       return "_torchtpu_internal_constant";
+    case OpName::kTorchTpuInternalDataDependency:
+      return "_torchtpu_internal_data_dependency";
     case OpName::kTorchTpuInternalGatherAllSubgroups:
       return "_torchtpu_internal_gather_all_subgroups";
     case OpName::kTorchTpuInternalZeroSize:

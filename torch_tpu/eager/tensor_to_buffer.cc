@@ -65,6 +65,7 @@
 #include "torch_tpu/common/status_builder.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
+#include "torch_tpu/eager/current_stream.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/eager_mode.h"
@@ -573,9 +574,13 @@ absl::StatusOr<std::vector<DeviceBufferRef>> MaterializeAndReturn(
     return std::vector<DeviceBufferRef>();
   }
   // We need to materialize both the base and view for each tensor.
-  // Materialization is by node, not by buffer.
-  std::vector<SharedDeviceBufferList> nodes_to_materialize;
-  nodes_to_materialize.reserve(tensors.size() * 2);
+  const auto [curr_device, curr_stream] = GetCurrentDeviceStreamId();
+  // clang-format off
+  // NOLINTNEXTLINE(whitespace/line_length)
+  using DeviceStreamPair = std::pair<c10::DeviceIndex, c10::StreamId>;  // STD_PAIR_OK=for auto absl hash impl
+  // clang-format on
+  absl::flat_hash_map<DeviceStreamPair, std::vector<SharedDeviceBufferList>>
+      nodes_by_device_and_stream;
 
   // We always return one buffer per input tensor.
   std::vector<DeviceBufferRef> buffers_to_return;
@@ -590,16 +595,43 @@ absl::StatusOr<std::vector<DeviceBufferRef>> MaterializeAndReturn(
     // tensors are different views of the same base buffer.
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef base_buffer_ref,
                         GetBaseBuffer(tensor));
+    nodes_by_device_and_stream[{base_buffer_ref.device_index(),
+                                base_buffer_ref.stream_id()}]
+        .push_back(base_buffer_ref.device_buffer_list());
+
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef view_buffer_ref,
                         GetBuffer(tensor));
+    nodes_by_device_and_stream[{view_buffer_ref.device_index(),
+                                view_buffer_ref.stream_id()}]
+        .push_back(view_buffer_ref.device_buffer_list());
 
-    nodes_to_materialize.push_back(base_buffer_ref.device_buffer_list());
-    nodes_to_materialize.push_back(view_buffer_ref.device_buffer_list());
     buffers_to_return.push_back(std::move(view_buffer_ref));
   }
-  TT_RETURN_IF_ERROR(Materialize(nodes_to_materialize, reason,
+  // If we created any new view device buffers on the current stream, then the
+  // current stream needs to be materialized last.
+  std::vector<SharedDeviceBufferList> current_stream_nodes;
+  if (auto it = nodes_by_device_and_stream.find(
+          std::make_pair(curr_device, curr_stream));
+      it != nodes_by_device_and_stream.end()) {
+    current_stream_nodes = std::move(it->second);
+    nodes_by_device_and_stream.erase(it);
+  }
+
+  if (nodes_by_device_and_stream.size() > 1) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "multi-tensor materializations must be on a single device and "
+              "stream";
+  } else if (!nodes_by_device_and_stream.empty()) {
+    auto it = nodes_by_device_and_stream.begin();
+    TT_RETURN_IF_ERROR(
+        Materialize(it->second, reason, MaterializationMode::kSplitGraph));
+    nodes_by_device_and_stream.erase(it);
+  }
+
+  TT_RETURN_IF_ERROR(Materialize(current_stream_nodes, reason,
                                  MaterializationMode::kSplitGraph));
-  nodes_to_materialize.clear();
+  current_stream_nodes.clear();
+
   return buffers_to_return;
 }
 

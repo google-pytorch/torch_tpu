@@ -31,9 +31,9 @@ torch_tpu_cc_library(
     ],
     deps = [
         "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/eager:device_buffer",
-        "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:materialize",
         "//torch_tpu/eager:structured_log_buffer",
         "//torch_tpu/eager:tensor_to_buffer",

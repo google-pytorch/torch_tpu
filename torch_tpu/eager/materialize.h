@@ -17,16 +17,22 @@
 #ifndef TORCH_TPU_EAGER_MATERIALIZE_H_
 #define TORCH_TPU_EAGER_MATERIALIZE_H_
 
+#include <memory>
 #include <string_view>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
+#include "xla/future.h"
 
 // When an aten op is dispatched, we always create a DeviceBufferList to contain
 // the result. This DeviceBufferList will contain a DeferredOp, which describes
@@ -92,6 +98,28 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     absl::Span<const Shape> output_shapes, std::string_view task_name = "");
+
+// Materializes all deferred operations on the given stream.
+// Returns a future that will resolve to an awaitable EventSnapshot when the
+// stream is caught up.
+xla::Future<absl_nonnull std::shared_ptr<EventSnapshot>> MaterializeStream(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    MaterializationReason reason,
+    MaterializationMode mode = MaterializationMode::kSplitGraph);
+
+// Materializes all deferred operations on the given device.
+// Returns a future that will resolve to a list of awaitable EventSnapshots
+// (one per active stream on the device).
+xla::Future<std::vector<absl_nonnull std::shared_ptr<EventSnapshot>>>
+MaterializeDevice(c10::DeviceIndex device_index, MaterializationReason reason,
+                  MaterializationMode mode = MaterializationMode::kSplitGraph);
+
+// Materializes all deferred operations on all devices.
+// Returns a future that will resolve to a list of awaitable EventSnapshots
+// (one per active stream on each device).
+xla::Future<std::vector<absl_nonnull std::shared_ptr<EventSnapshot>>>
+MaterializeGlobal(MaterializationReason reason,
+                  MaterializationMode mode = MaterializationMode::kSplitGraph);
 
 }  // namespace torch_tpu
 

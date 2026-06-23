@@ -17,6 +17,7 @@
 #include "torch_tpu/eager/current_stream.h"
 
 #include <array>
+#include <atomic>
 
 #include "absl/log/absl_check.h"
 
@@ -33,6 +34,12 @@ thread_local DeviceIndex current_device_index_ = 0;  // CPP_THREAD_LOCAL_OK=Stat
 // NOLINTNEXTLINE(whitespace/line_length)
 thread_local std::array<StreamId, kMaxDevices> current_stream_ids_ = {0};  // CPP_THREAD_LOCAL_OK=State is per-C++-thread for device guard
 // clang-format on
+
+// This is not a thread_local because all threads share the same next stream ID
+// counter.
+// Counter starts at 1 because 0 is reserved for the default stream.
+static std::array<std::atomic<StreamId>, kMaxDevices> next_stream_ids_ = {
+    1, 1, 1, 1, 1, 1, 1, 1};
 
 }  // namespace
 
@@ -60,6 +67,11 @@ StreamId ExchangeCurrentStreamId(DeviceIndex device_index,
 DeviceStreamId GetCurrentDeviceStreamId() {
   return DeviceStreamId{current_device_index_,
                         current_stream_ids_[current_device_index_]};
+}
+
+StreamId NextStreamId(DeviceIndex device_index) {
+  ABSL_CHECK_LT(device_index, kMaxDevices);  // CRASH_OK
+  return next_stream_ids_[device_index].fetch_add(1, std::memory_order_relaxed);
 }
 
 }  // namespace torch_tpu

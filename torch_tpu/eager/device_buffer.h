@@ -37,6 +37,8 @@
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -44,6 +46,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
+#include "torch_tpu/eager/current_stream.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -302,6 +305,12 @@ class DeviceBufferRef {
   // Records that a child op has been created which depends on this
   // DeviceBufferList. This updates num_child_ops_ and last_child_index_.
   void RecordChildOp(uint64_t child_index) const;
+
+  // Returns the device index of the referenced buffer.
+  [[nodiscard]] c10::DeviceIndex device_index() const;
+
+  // Returns the stream ID of the referenced buffer.
+  [[nodiscard]] torch_tpu::StreamId stream_id() const;
 
  private:
   // DeviceBufferRefs can only be constructed by DeviceBufferList::Create*
@@ -711,6 +720,15 @@ class DeviceBufferList {
   void IncrementLiveDataPtrs() { live_data_ptrs_++; }
   void DecrementLiveDataPtrs() { live_data_ptrs_--; }
 
+  // The index of the device that this DeviceBufferList was created on.
+  [[nodiscard]] c10::DeviceIndex device_index() const { return device_index_; }
+
+  // The stream ID that this DeviceBufferList was created on.
+  // Note: two streams on different devices can have the same ID, so this must
+  // be combined with device_index() to get a unique identifier.
+  // 0 indicates the default stream for the device.
+  [[nodiscard]] c10::StreamId stream_id() const { return stream_id_; }
+
  private:
   // Private constructor for a DeviceBufferList wrapping a single materialized
   // PjRtBuffer.
@@ -721,6 +739,9 @@ class DeviceBufferList {
   DeviceBufferList(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
                    const mlir::ElementType element_type)
       : data_(std::move(buffer)) {
+    const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+    device_index_ = device_index;
+    stream_id_ = stream_id;
     creation_index_ = g_creation_index_.fetch_add(1);
 
     auto buffer_or = data_[0];
@@ -747,7 +768,11 @@ class DeviceBufferList {
   DeviceBufferList(std::unique_ptr<DeferredOp> absl_nonnull deferred_op,
                    std::vector<Shape> shapes)
       : shapes_(std::move(shapes)), data_(std::move(deferred_op)) {
+    const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+    device_index_ = device_index;
+    stream_id_ = stream_id;
     creation_index_ = g_creation_index_.fetch_add(1);
+
     {
       const auto shared_deferred_op = data_.deferred_op();
       ABSL_CHECK(shared_deferred_op);  // CRASH_OK=we just created it
@@ -779,7 +804,11 @@ class DeviceBufferList {
   DeviceBufferList(Dimensions dimensions, const mlir::ElementType element_type,
                    bool placeholder)
       : data_(placeholder) {
+    const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+    device_index_ = device_index;
+    stream_id_ = stream_id;
     creation_index_ = g_creation_index_.fetch_add(1);
+
     shapes_.emplace_back(std::move(dimensions), element_type);
     ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (bufferless)] Created. Dims: "
                  << ToString(shapes_[0].dimensions())
@@ -1011,6 +1040,14 @@ class DeviceBufferList {
   // from DeferredOp to a materialized  set of PjRtBuffers (or an error if
   // materialization fails).
   Data data_;
+
+  // In PyTorch, every piece of data is associated with a device and stream.
+  // This includes both data loaded from host-to-device, and data produced on
+  // device by a computation.
+  // In TorchTPU, our "data" object is a DeviceBufferList, and so every
+  // DeviceBufferList is associated with a device and stream by their IDs.
+  c10::DeviceIndex device_index_;
+  c10::StreamId stream_id_;
 };
 
 }  // namespace torch_tpu

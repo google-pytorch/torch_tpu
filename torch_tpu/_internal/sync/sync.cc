@@ -28,12 +28,13 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -59,22 +60,43 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
   return absl::OkStatus();
 }
 
-absl::Status SynchronizeAll(const WaitOnExecution wait) {
-  const std::vector<SharedDeviceBufferList> needs_sync =
-      GetAllLiveUnsyncedDataPtrs();
-  if (needs_sync.empty()) {
+absl::Status SynchronizeStream(c10::DeviceIndex device_index,
+                               c10::StreamId stream_id, WaitOnExecution wait) {
+  auto snapshot_future = MaterializeStream(
+      device_index, stream_id, MaterializationReason::kExplicitSync);
+  TT_ASSIGN_OR_RETURN(auto snapshot, snapshot_future.Await());
+  if (wait == WaitOnExecution::kNo) {
     return absl::OkStatus();
   }
+  return snapshot->Wait();
+}
 
-  TT_RETURN_IF_ERROR(
-      Materialize(needs_sync, MaterializationReason::kExplicitSync));
+absl::Status SynchronizeDevice(c10::DeviceIndex device_index,
+                               WaitOnExecution wait) {
+  auto snapshots_future =
+      MaterializeDevice(device_index, MaterializationReason::kExplicitSync);
+  TT_ASSIGN_OR_RETURN(auto snapshots, snapshots_future.Await());
 
-  if (wait == WaitOnExecution::kYes) {
-    for (const auto& node : needs_sync) {
-      TT_RETURN_IF_ERROR(node->Synchronize());
-    }
+  if (wait == WaitOnExecution::kNo) {
+    return absl::OkStatus();
   }
+  for (const auto& snapshot : snapshots) {
+    TT_RETURN_IF_ERROR(snapshot->Wait());
+  }
+  return absl::OkStatus();
+}
 
+absl::Status SynchronizeAll(const WaitOnExecution wait) {
+  auto snapshot_futures =
+      MaterializeGlobal(MaterializationReason::kExplicitSync);
+  TT_ASSIGN_OR_RETURN(auto snapshots, snapshot_futures.Await());
+
+  if (wait == WaitOnExecution::kNo) {
+    return absl::OkStatus();
+  }
+  for (const auto& snapshot : snapshots) {
+    TT_RETURN_IF_ERROR(snapshot->Wait());
+  }
   return absl::OkStatus();
 }
 
