@@ -30,6 +30,16 @@
 
 namespace torch_tpu {
 
+inline thread_local  // CPP_THREAD_LOCAL_OK=per dispatch-worker thread boundary
+    bool allow_context_state_access = true;
+
+// One-way flip to disallow the current thread to access thread-local context
+// states. After the flip, any attempt to access or mutate context states leads
+// to crash.
+//
+// Intended to be used in the background worker threads only.
+void DisallowThisThreadToAccessContextState();
+
 namespace internal {
 
 // The ThreadLocalDebugInfo slot to use for TorchTPU context states. For now, we
@@ -90,6 +100,11 @@ class ContextManagerNode : public c10::DebugInfoBase {
 // is found.
 template <typename T>
 std::optional<T> GetContextState() {
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "GetContextState must only be called from a dispatch thread. "
+      << "For worker threads, please have the dispatch thread resolve "
+      << "thread-local context states and explicitly pass down parameters.";
+
   // Statically check that T is one of the options for ContextManagerState.
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
@@ -125,24 +140,44 @@ T GetContextState(GetDefaultStateT get_default_state) {
                                  : get_default_state();
 }
 
-// Pushes the given context state onto the current python thread's state stack.
+namespace internal {
+
+// Type-erased implementation that pushes a context state variant onto the
+// underlying TorchTPU-specific `c10::ThreadLocalDebugInfo` stack.
 void PushContextStateUntyped(ContextManagerState state);
+
+// Type-erased implementation that pops and returns a node from the underlying
+// TorchTPU-specific `c10::ThreadLocalDebugInfo` stack.
+absl_nonnull std::shared_ptr<const ContextManagerNode> PopContextStateUntyped();
+
+}  // namespace internal
+
+// Pushes the given context state of the specified type T onto the current
+// python thread's state stack.
 template <typename T>
 void PushContextState(T state) {
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "PushContextState must only be called from a dispatch thread. "
+      << "Worker threads should not mutate any thread-local context states.";
+
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
       "T must be one of the alternative types of ContextManagerState.");
-  PushContextStateUntyped(ContextManagerState(std::move(state)));
+  internal::PushContextStateUntyped(ContextManagerState(std::move(state)));
 }
 
-// Pops the current python thread's context state stack.
-absl_nonnull std::shared_ptr<const ContextManagerNode> PopContextStateUntyped();
+// Pops the current python thread's context state stack, and returns the
+// context state of the specified type T.
 template <typename T>
 void PopContextState() {
+  ABSL_CHECK(allow_context_state_access)  // CRASH_OK
+      << "PopContextState must only be called from a dispatch thread. "
+      << "Worker threads should not mutate any thread-local context states.";
+
   static_assert(
       internal::is_alternative_v<T, ContextManagerState>,
       "T must be one of the alternative types of ContextManagerState.");
-  auto node = PopContextStateUntyped();
+  auto node = internal::PopContextStateUntyped();
   const T* state = std::get_if<T>(&node->state());
   ABSL_CHECK(state != nullptr)  // CRASH_OK
       << "The popped context state is not of the expected type "

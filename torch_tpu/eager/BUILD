@@ -307,7 +307,7 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//torch_tpu/common:compilation",
         "//torch_tpu/common:compilation_spec",
-        "//torch_tpu/common:context_states",
+        "//torch_tpu/common:context_manager",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:status_builder",

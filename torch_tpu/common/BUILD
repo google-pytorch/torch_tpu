@@ -1267,6 +1267,18 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "context_state_access_test",
+    srcs = ["context_state_access_test.cc"],
+    deps = [
+        ":context_manager",
+        ":context_states",
+        "//shims/torch",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 torch_tpu_cc_library(
     name = "device_type",
     hdrs = ["device_type.h"],

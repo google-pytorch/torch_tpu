@@ -45,7 +45,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_spec.h"
-#include "torch_tpu/common/context_states.h"
+#include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/status_builder.h"
@@ -269,6 +269,11 @@ class MaterializationWorker {
     materialize_thread_ =
         std::thread(
             [this]() {
+              // Prevent materialization worker threads from accessing
+              // thread-local context states to enforce they always rely on
+              // resolved configurations passed down from the dispatch thread.
+              DisallowThisThreadToAccessContextState();
+
               // Create the MLIR context outside the loop once and reuse for
               // materialization tasks.
               absl_nonnull std::unique_ptr<mlir::MLIRContext> mlir_context =
@@ -306,6 +311,11 @@ class MaterializationWorker {
 
     execute_thread_ = std::thread([this]() {
       while (true) {
+        // Prevent materialization worker threads from accessing thread-local
+        // context states to enforce they always rely on resolved configurations
+        // passed down from the dispatch thread.
+        DisallowThisThreadToAccessContextState();
+
         ExecutionTask job = DequeueExecutionJob();
         ABSL_VLOG(1) << "[MaterializationWorker] Processing ExecutionTask";
         auto status = job.Run();
