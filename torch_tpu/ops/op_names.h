@@ -481,6 +481,7 @@ enum class OpName {
   kMaximum,
   kMaximumOut,
   kMeanOut,
+  kMedian,
   kMin,
   kMinDimMin,
   kMinUnaryOut,

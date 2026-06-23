@@ -6467,6 +6467,16 @@ Supported combinations for non-constant padding:
     ):
       self_t.put_(index, source)
 
+  def test_median_complex(self):
+    t = torch.tensor([1.0 + 1.0j], device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""median(): expected the input dtype not to be complex, got complex64""",
+        cpu=""""median_cpu" not implemented for 'ComplexFloat'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.median(t)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -303,7 +303,6 @@ UNREGISTERED_OPS = frozenset([
     'max_unpool2d.out',
     'max_unpool3d',
     'max_unpool3d.out',
-    'median',
     'median.dim_values',
     'miopen_batch_norm',
     'miopen_batch_norm_backward',

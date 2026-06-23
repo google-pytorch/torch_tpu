@@ -4615,6 +4615,45 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     self.assert_close(golden_result=v_cpu, torch_tpu_result=v_tpu.cpu())
     self.assert_close(golden_result=i_cpu, torch_tpu_result=i_tpu.cpu())
 
+  def test_median(self):
+    # Empty tensor reduction (without dim) should return NaN
+    cpu_result = torch.median(torch.tensor([], device="cpu"))
+    tpu_result = torch.median(torch.tensor([], device=torch.device("tpu")))
+    self.assert_close(
+        golden_result=cpu_result, torch_tpu_result=tpu_result.cpu()
+    )
+
+    # 1D tensor
+    cpu_result = torch.median(torch.tensor([1.0, 3.0, 2.0], device="cpu"))
+    tpu_result = torch.median(
+        torch.tensor([1.0, 3.0, 2.0], device=torch.device("tpu"))
+    )
+    self.assert_close(
+        golden_result=cpu_result, torch_tpu_result=tpu_result.cpu()
+    )
+
+    # Even number of elements (lower median)
+    cpu_result = torch.median(torch.tensor([4.0, 1.0, 3.0, 2.0], device="cpu"))
+    tpu_result = torch.median(
+        torch.tensor([4.0, 1.0, 3.0, 2.0], device=torch.device("tpu"))
+    )
+    self.assert_close(
+        golden_result=cpu_result, torch_tpu_result=tpu_result.cpu()
+    )
+
+    # 2D tensor
+    cpu_result = torch.median(
+        torch.tensor([[1.0, 3.0, 2.0], [4.0, 6.0, 5.0]], device="cpu")
+    )
+    tpu_result = torch.median(
+        torch.tensor(
+            [[1.0, 3.0, 2.0], [4.0, 6.0, 5.0]], device=torch.device("tpu")
+        )
+    )
+    self.assert_close(
+        golden_result=cpu_result, torch_tpu_result=tpu_result.cpu()
+    )
+
   def test_all(self):
     def compute(dim, keep_dim, device):
       x = torch.tensor(

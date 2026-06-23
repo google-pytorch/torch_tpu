@@ -542,6 +542,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/masked_fill:masked_fill_aten_kernels",
         "//torch_tpu/ops/masked_scatter:masked_scatter_aten_kernels",
         "//torch_tpu/ops/masked_select:masked_select_aten_kernels",
+        "//torch_tpu/ops/median:median_aten_kernels",
         "//torch_tpu/ops/min_max:min_max_aten_kernels",
         "//torch_tpu/ops/mm:mm_aten_kernels",
         "//torch_tpu/ops/mse_loss:mse_loss_aten_kernels",

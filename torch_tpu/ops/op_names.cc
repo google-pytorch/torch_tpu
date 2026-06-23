@@ -935,6 +935,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "maximum.out";
     case OpName::kMeanOut:
       return "mean.out";
+    case OpName::kMedian:
+      return "median";
     case OpName::kMin:
       return "min";
     case OpName::kMinDimMin:

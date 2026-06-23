@@ -122,6 +122,7 @@
 #include "torch_tpu/ops/masked_fill/masked_fill_aten_kernels.h"  // IWYU pragma: keep for AtenMaskedFill
 #include "torch_tpu/ops/masked_scatter/masked_scatter_aten_kernels.h"
 #include "torch_tpu/ops/masked_select/masked_select_aten_kernels.h"
+#include "torch_tpu/ops/median/median_aten_kernels.h"
 #include "torch_tpu/ops/min_max/min_max_aten_kernels.h"
 #include "torch_tpu/ops/mm/mm_aten_kernels.h"
 #include "torch_tpu/ops/mse_loss/mse_loss_aten_kernels.h"
@@ -720,6 +721,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kMaxUnaryOut>(m, AtenMaxUnaryOut);
   ImplStable<OpName::kMaximumOut>(m, AtenMaximumOut);
   ImplStable<OpName::kMeanOut>(m, AtenMeanOut);
+  ImplStable<OpName::kMedian>(m, AtenMedian);
   ImplStable<OpName::kMin>(m, AtenMin);
   ImplStable<OpName::kMinDimMin>(m, AtenMinDimMin);
   ImplStable<OpName::kMinUnaryOut>(m, AtenMinUnaryOut);
