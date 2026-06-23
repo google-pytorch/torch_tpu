@@ -34,18 +34,6 @@ namespace torch_tpu {
 at::Tensor AtenCopyFrom(const at::Tensor& src, const at::Tensor& self_dest,
                         bool non_blocking);
 
-// Copies `src` tensor contents to `self_dest` tensor.
-// Handles CPU<->TPU transfers, shape broadcasting, and dtype casting.
-//
-// Constraints & Assumptions:
-// - At least one tensor must be on a TPU device. CPU-to-CPU is unsupported.
-// - Resizing is NOT supported; `self_dest` must be pre-allocated.
-// - Supports broadcast-compatible shapes and dtype casting.
-// - Automatically copies gradients recursively if defined on `src`.
-// - Multi-device TPU copies (different indices) are unsupported.
-at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
-                      bool non_blocking = false);
-
 // By going through its usage in ATen/native/CPUFallback.cpp. This function is
 // basically just _copy_from, either h2d or d2h
 // Per https://github.com/pytorch/xla/issues/2881 it is introduced in 2021 to

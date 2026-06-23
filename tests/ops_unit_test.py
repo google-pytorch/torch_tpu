@@ -1573,18 +1573,21 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
   def test_copy(self):
     """Tests tensor.copy_() and torch.ops.aten.copy()."""
-    tpu_device = torch.device("tpu")
-
-    # =========================================================================
-    # 1. Direct Copies (No Broadcasting)
-    # =========================================================================
-
-    # Test copy within the same device (TPU -> TPU and CPU -> CPU)
+    # Test copy within the same device
     self.assert_close_tpu_vs_cpu(
         lambda device: torch.empty(3, device=device).copy_(
             torch.tensor([1, 2, 3], dtype=torch.float32, device=device)
         )
     )
+
+    # Test copy with broadcasting
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.empty(3, device=device).copy_(
+            torch.tensor(3.14, dtype=torch.float32, device=device)
+        )
+    )
+
+    tpu_device = torch.device("tpu")
 
     # Test CPU -> TPU copy
     src_cpu = torch.tensor([1, 2, 3], dtype=torch.int32)
@@ -1597,57 +1600,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     dst_cpu = torch.empty(3, dtype=torch.int32)
     dst_cpu.copy_(src_tpu)
     self.assertEqual(dst_cpu, src_tpu.cpu())
-
-    # =========================================================================
-    # 2. Broadcasting Copies
-    # =========================================================================
-
-    # --- TPU -> TPU Broadcasting ---
-    # Case A: Scalar -> 1D
-    src_tpu = torch.tensor(3.14, dtype=torch.float32, device=tpu_device)
-    dst_tpu = torch.empty(3, dtype=torch.float32, device=tpu_device)
-    dst_tpu.copy_(src_tpu)
-    self.assertEqual(dst_tpu.cpu(), torch.tensor([3.14, 3.14, 3.14]))
-
-    # Case B: 1D -> 2D
-    src_tpu = torch.tensor(
-        [1.0, 2.0, 3.0], dtype=torch.float32, device=tpu_device
-    )
-    dst_tpu = torch.empty(2, 3, dtype=torch.float32, device=tpu_device)
-    dst_tpu.copy_(src_tpu)
-    self.assertEqual(dst_tpu.cpu(), src_tpu.cpu().expand(2, 3))
-
-    # --- CPU -> TPU Broadcasting ---
-    # Case A: Scalar -> 1D
-    src_cpu = torch.tensor(3.14, dtype=torch.float32)
-    dst_tpu = torch.empty(3, dtype=torch.float32, device=tpu_device)
-    dst_tpu.copy_(src_cpu)
-    self.assertEqual(dst_tpu.cpu(), torch.tensor([3.14, 3.14, 3.14]))
-
-    # Case B: 1D -> 2D
-    src_cpu = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
-    dst_tpu = torch.empty(2, 3, dtype=torch.float32, device=tpu_device)
-    dst_tpu.copy_(src_cpu)
-    self.assertEqual(dst_tpu.cpu(), src_cpu.expand(2, 3))
-
-    # --- TPU -> CPU Broadcasting ---
-    # Case A: Scalar -> 1D
-    src_tpu = torch.tensor(3.14, dtype=torch.float32, device=tpu_device)
-    dst_cpu = torch.empty(3, dtype=torch.float32)
-    dst_cpu.copy_(src_tpu)
-    self.assertEqual(dst_cpu, torch.tensor([3.14, 3.14, 3.14]))
-
-    # Case B: 1D -> 2D
-    src_tpu = torch.tensor(
-        [1.0, 2.0, 3.0], dtype=torch.float32, device=tpu_device
-    )
-    dst_cpu = torch.empty(2, 3, dtype=torch.float32)
-    dst_cpu.copy_(src_tpu)
-    self.assertEqual(dst_cpu, src_tpu.cpu().expand(2, 3))
-
-    # =========================================================================
-    # 3. Casting and Miscellaneous
-    # =========================================================================
 
     # Test casting
     src_cpu = torch.tensor([1.5, 2.5], dtype=torch.float32)

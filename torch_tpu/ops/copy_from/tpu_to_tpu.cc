@@ -27,11 +27,9 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
-#include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -47,35 +45,35 @@ absl::Status CopyTpuToTpu(const at::Tensor& src, const at::Tensor& dest) {
       << "expected source and destination device indices to match, got source "
          "device '"
       << src.device() << "' vs destination device '" << dest.device() << "'";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=AtenCopyFrom (sole caller) catches this
+                 // error when trying to broadcast the inputs.
+      src.sizes() == dest.sizes(), error::kInvalidArgument)
+      << "_copy_from does not support resizing. Please use "
+         "_copy_from_and_resize instead.";
 
-  if (src.sizes() == dest.sizes() && src.dtype() == dest.dtype()) {
+  if (src.dtype() == dest.dtype()) {
     // Shape and type match, can simply reuse the existing DeviceBufferRef
     // from src for dest.
     TT_ASSIGN_OR_RETURN(const DeviceBufferRef src_buf, GetBuffer(src));
     return AssignBufferToAtTensor(src_buf, dest);
   }
 
-  // If the dtype is different or shape is different, then we need to dispatch
-  // a StableHLO op.
+  // If the dtype is different, then we need to dispatch a StableHLO
+  // ConvertElementType op to do the type conversion.
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(dest.scalar_type()));
-  Dimensions dest_sizes = CopyIntVector(dest.sizes());
-  auto copy_op_builder =
-      [dest_sizes,
-       out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
-    TT_ASSIGN_OR_RETURN(auto formatted, BroadcastIfNeeded(input, dest_sizes));
-    if (GetElementTypeOrDie(formatted) != out_dtype) {
-      formatted = mlir::stablehlo::ConvertElementType(formatted, out_dtype);
-    }
-    return formatted;
+  auto unary_op_builder =
+      [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+    return mlir::stablehlo::ConvertElementType(input, out_dtype);
   };
   TT_ASSIGN_OR_RETURN(
       auto new_buf,
-      DispatchOp<1>(std::move(copy_op_builder), src,
+      DispatchOp<1>(std::move(unary_op_builder), src,
                     {.out_dtype = out_dtype,
                      .out_dims = dest.sizes(),
                      .op_param_cache_keys = OpParamCacheKeys::Empty()}),
-      _.SetPrepend() << "copy from 'tpu' to 'tpu' device failed with: ");
+      _.SetPrepend()
+          << "copy from 'tpu' to 'tpu' device (dtype change) failed with: ");
   return AssignBufferToAtTensor(new_buf, dest);
 }
 
