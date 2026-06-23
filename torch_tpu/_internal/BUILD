@@ -27,8 +27,10 @@ torch_tpu_cc_library(
     name = "env_build",
     srcs = ["env.cc"],
     deps = [
-        "//shims/pybind11",
+        "//shims/torch:torch_headers",
+        # "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/common:utils",
+        "//shims/pybind11",
     ],
 )
 
@@ -41,6 +43,7 @@ pybind_extension(
     wrap_py_init = True,
     deps = [
         "//shims/torch:torch_headers",
+        # "//shims/torch/torch/headeronly:torch_headeronly",
         "//torch_tpu/common:utils",
     ],
 )
