@@ -397,5 +397,5 @@ test:wheel_test_tpu_v7 --spawn_strategy=local
 
 # Tag filters for split wheel test runs
 test:wheel_test_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,-presubmit-v6,-presubmit-v7
-test:wheel_test_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6
-test:wheel_test_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7
+test:wheel_test_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6,-presubmit-v5,-presubmit-v7
+test:wheel_test_tpu_v7 --test_tag_filters=requires-tpu,-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7,-presubmit-v5,-presubmit-v6

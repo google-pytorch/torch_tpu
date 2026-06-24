@@ -44,7 +44,7 @@ if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
     'REPO\.bazel'
     'WORKSPACE'
     'WORKSPACE\.bzlmod'
-    '\.bazelrc'
+    # '\.bazelrc'
     '\.bazelversion'
     # go/keep-sorted end
   )
