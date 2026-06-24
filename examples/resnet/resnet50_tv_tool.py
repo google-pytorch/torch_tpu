@@ -62,7 +62,7 @@ class Resnet50TVToolTest(absltest.TestCase):
     Run the op tracer on CUDA:
 
     ```
-    blaze test -c opt --config=cuda --test_output=all \
+    third_party/py/torch_tpu/google/tools/blaze_gpu test -c opt --test_output=all \
       //examples/resnet:resnet50_tv_tool_cuda \
       --test_filter=Resnet50TVToolTest.test_run_forward_with_op_tracer
     ```
