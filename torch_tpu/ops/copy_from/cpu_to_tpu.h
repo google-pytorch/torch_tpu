@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef TORCH_TPU_OPS_COPY_CPU_TO_TPU_H_
-#define TORCH_TPU_OPS_COPY_CPU_TO_TPU_H_
+#ifndef THIRD_PARTY_PY_TORCH_TPU_OPS_COPY_FROM_CPU_TO_TPU_H_
+#define THIRD_PARTY_PY_TORCH_TPU_OPS_COPY_FROM_CPU_TO_TPU_H_
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
@@ -36,4 +36,4 @@ absl::Status CopyCpuToTpu(const at::Tensor& src, const at::Tensor& dest,
 
 }  // namespace torch_tpu
 
-#endif  // TORCH_TPU_OPS_COPY_CPU_TO_TPU_H_
+#endif  // THIRD_PARTY_PY_TORCH_TPU_OPS_COPY_FROM_CPU_TO_TPU_H_
