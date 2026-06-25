@@ -47,12 +47,12 @@ if [[ "$OS" == "Darwin" ]]; then
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
-    BAZEL_VERSION="7.0.0"
+    BAZEL_VERSION="8.6.0"
     BAZEL_INSTALLER="bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
     BAZEL_URL="https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/${BAZEL_INSTALLER}"
 elif [[ "$OS" == "Linux" ]]; then
     print_success "Running on Linux - correct platform for TPU"
-    BAZEL_VERSION="7.0.0"
+    BAZEL_VERSION="8.6.0"
     BAZEL_INSTALLER="bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh"
     BAZEL_URL="https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/${BAZEL_INSTALLER}"
 else
