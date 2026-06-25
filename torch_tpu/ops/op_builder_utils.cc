@@ -138,8 +138,9 @@ std::string DebugString(mlir::Operation* absl_nonnull op,
 absl::StatusOr<std::string> SerializeBytecode(mlir::ModuleOp module) {
   std::string bytecode_str;
   llvm::raw_string_ostream os(bytecode_str);
-  TT_RET_CHECK(mlir::succeeded(mlir::writeBytecodeToFile(module, os)),
-               error::kInternal)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Bytecode serialization to string stream
+                 // cannot fail.
+      mlir::succeeded(mlir::writeBytecodeToFile(module, os)), error::kInternal)
       << "Failed to serialize MLIR module to bytecode.";
   return bytecode_str;
 }
@@ -211,7 +212,9 @@ absl::StatusOr<mlir::DenseElementsAttr> GetVerifiedMinFiniteValue(
     mlir::MlirBuilder& builder, mlir::RankedTensorType constant_tensor_type) {
   mlir::FloatType dtype_float =
       mlir::dyn_cast<mlir::FloatType>(constant_tensor_type.getElementType());
-  TT_RET_CHECK(dtype_float, error::kInvalidArgument)
+  TT_RET_CHECK(dtype_float,  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend
+                             // (softmax only supports float).
+               error::kInvalidArgument)
       << "Input type is not float type.";
 
   mlir::APFloat min_finite_value = mlir::APFloat::getLargest(
@@ -287,7 +290,8 @@ double GetMinFiniteDouble(mlir::Type element_type) {
 absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
     mlir::MlirBuilder& builder, mlir::Type element_type,
     mlir::ArrayRef<int64_t> shape) {
-  TT_RET_CHECK(absl::c_linear_search(shape, 0), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by callers (always has 0).
+      absl::c_linear_search(shape, 0), error::kInvalidArgument)
       << "Shape must contain at least one dimension of size 0 to be "
          "zero-sized.";
   auto& ctx = builder.getContext();
@@ -299,7 +303,8 @@ absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
 absl::StatusOr<mlir::MlirOp> MakeZeroSizedTensor(
     mlir::MlirBuilder& builder, mlir::ElementType element_type,
     mlir::ArrayRef<int64_t> shape) {
-  TT_RET_CHECK(absl::c_linear_search(shape, 0), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by callers (always has 0).
+      absl::c_linear_search(shape, 0), error::kInvalidArgument)
       << "Shape must contain at least one dimension of size 0 to be "
          "zero-sized.";
   auto& ctx = builder.getContext();
@@ -397,7 +402,9 @@ absl::StatusOr<mlir::DenseElementsAttr> MakeConstantAttr(
       // go/keep-sorted end
       break;
   }
-  return TT_ERROR(error::kInvalidArgument)
+  return TT_ERROR(error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=Guarded by
+                                            // PyTorch frontend (only standard
+                                            // scalar types allowed).
          << "unsupported at::Scalar type "
          << static_cast<int>(scalar_value_type);
 }
@@ -447,14 +454,16 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   if (input_shape == AsArrayRef(shape)) {
     return input;
   }
-  TT_RET_CHECK(input_shape.size() <= shape.size(), error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
+      input_shape.size() <= shape.size(), error::kInvalidArgument)
       << "Input shape cannot be larger than output shape.";
   size_t rank_diff = shape.size() - input_shape.size();
   Dimensions bcast_dims;
   bcast_dims.reserve(input_shape.size());
   for (size_t i = 0; i < input_shape.size(); ++i) {
-    TT_RET_CHECK(input_shape[i] == 1 || input_shape[i] == shape[i + rank_diff],
-                 error::kInvalidArgument)
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
+        input_shape[i] == 1 || input_shape[i] == shape[i + rank_diff],
+        error::kInvalidArgument)
         << "Cannot broadcast input shape: "
         << ToString(absl::MakeSpan(input_shape))
         << " to target shape: " << ToString(shape);
@@ -471,8 +480,8 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
       input.getBuilder().getOpBuilder(), input.getValue(), shape);
   // TODO(mkkhanna): Add a python level test for error when this API is used
   // by some op.
-  TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
+      mlir::succeeded(broadcasted_value_or_fail), error::kInvalidArgument)
       << "failed to broadcast tensor: "
       << diag_handler.ConsumeStatus().message();
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
@@ -486,7 +495,7 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
   mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   mlir::RankedTensorType input_bcast_type = GetTensorTypeOrDie(input_bcast);
   mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
-  TT_RET_CHECK(
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
       (input_bcast_type.getShape() == target_type.getShape()) &&
           (input_bcast_type.getEncoding() == target_type.getEncoding()),
       error::kInvalidArgument)
@@ -498,7 +507,9 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
 
 absl::StatusOr<Dimensions> GetBroadcastShape(
     absl::Span<const mlir::MlirOp> ops) {
-  TT_RET_CHECK(!ops.empty(), error::kInvalidArgument)
+  TT_RET_CHECK(!ops.empty(),  // ERROR_COV_INFEASIBLE=Guarded by callers (always
+                              // called with non-empty ops).
+               error::kInvalidArgument)
       << "no tensor to broadcast";
   Dimensions bcast_shape;  // An empty shape can be broadcasted to any shape.
   for (int i = 0; i < ops.size(); ++i) {
@@ -526,7 +537,8 @@ absl::StatusOr<mlir::MlirOp> Broadcast(mlir::MlirOp input,
   const int64_t input_rank = input_type.getRank();
   const int64_t output_rank = output_dims.size();
 
-  TT_RET_CHECK(input_rank <= output_rank, error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
+      input_rank <= output_rank, error::kInvalidArgument)
       << "input rank " << input_rank << " must not be more than output rank "
       << output_rank << " for broadcast of input "
       << mlir::debugString(input_type) << " to output shape "
@@ -716,8 +728,9 @@ absl::StatusOr<mlir::MlirOp> CastIfNeeded(
       ConvertTo<at::ScalarType>(expected_output_type);
   const auto actual_scalar_type =
       ConvertTo<at::ScalarType>(actual_element_type);
-  TT_RET_CHECK(at::canCast(actual_scalar_type, expected_scalar_type),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guarded by PyTorch frontend.
+      at::canCast(actual_scalar_type, expected_scalar_type),
+      error::kInvalidArgument)
       << "result type " << ToString(actual_scalar_type)
       << " can't be cast to the desired output type "
       << ToString(expected_scalar_type);

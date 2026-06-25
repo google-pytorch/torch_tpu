@@ -465,8 +465,9 @@ absl::StatusOr<std::array<mlir::MlirOp, kNumInputs>> ApplyBroadcastIfNeeded(
   mlir::BaseScopedDiagnosticHandler diag_handler(values[0].getContext());
   auto broadcasted_values_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
       ops[0].getBuilder().getOpBuilder(), values);
-  TT_RET_CHECK(mlir::succeeded(broadcasted_values_or_fail),
-               error::kInvalidArgument)
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Guaranteed by PyTorch frontend and MLIR
+                 // JIT shape tolerance.
+      mlir::succeeded(broadcasted_values_or_fail), error::kInvalidArgument)
       << "failed to broadcast tensors: "
       << diag_handler.ConsumeStatus().message();
   mlir::SmallVector<mlir::Value, kNumInputs> broadcasted_values =

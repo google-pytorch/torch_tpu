@@ -1767,6 +1767,33 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.prod(t, dim=0, out=out)
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_reshape_dynamic_same_rank_non_transpose(self):
+    inp = torch.ones(2, 3, device=et.device())
+    dynamism.mark_dynamic(inp, 0, 2, 4)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*reshape reassociation not supported for same sized reshapes.*",
+            re.DOTALL,
+        ),
+    ):
+      out = inp.reshape(3, 2)
+      out.cpu()
+
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_reshape_dynamic_invalid_reassociation(self):
+    inp = torch.ones(2, 3, 5, 6, device=et.device())
+    dynamism.mark_dynamic(inp, 3, 2, 10)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*unable to determine reassociation indices.*", re.DOTALL
+        ),
+    ):
+      out = inp.reshape(3, 10, 6)
+      out.cpu()
+
 
 if __name__ == "__main__":
   absltest.main()
