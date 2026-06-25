@@ -248,8 +248,9 @@ class AllTest(absltest.TestCase):
     """Tests replay_log on a complex module with no change."""
     # Arrange.
     model = test_fixtures.ContainerModule()
-    model.initialize_weights_to_ints()
-    arg = torch.randint(-5, 5, (1, 10), dtype=torch.float32)
+    for param in model.parameters():
+      param.data.fill_(1.0)
+    arg = torch.ones((1, 10), dtype=torch.float32)
 
     # Act.
     with utils.ActivationTracer(model) as tracer:
@@ -265,7 +266,8 @@ class AllTest(absltest.TestCase):
     """Tests replay_log on a complex module with one spot change."""
     # Arrange.
     model = test_fixtures.ContainerModule()
-    model.initialize_weights_to_ints()
+    for param in model.parameters():
+      param.data.fill_(1.0)
 
     arg = torch.ones((1, 10), dtype=model.linear3.weight.dtype)
 
@@ -275,9 +277,8 @@ class AllTest(absltest.TestCase):
     log, _ = tracer.forward_log, tracer.forward_pre_log
 
     # Act.
-    # Mock a change to the way a new "device" does multiplication.
-    weight = model.linear3.weight
-    weight.data = torch.randn_like(weight.data)
+    # Mock a deterministic change to the weights.
+    model.linear3.weight.data.add_(1.0)
 
     replayed_log = tracer_utils.replay_log(log, "cpu")
 
