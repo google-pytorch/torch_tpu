@@ -25,9 +25,9 @@ load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 # limitations under the License.
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
-WHEEL_VERSION = "0.0.0"
+WHEEL_VERSION = "0.0.0"  # buildifier: disable=redefined-variable
 
-WHEEL_VERSION = OSS_WHEEL_VERSION  # copybara:comment(oss-only)
+WHEEL_VERSION = OSS_WHEEL_VERSION  # buildifier: disable=redefined-variable  # copybara:comment(oss-only)
 
 licenses(["notice"])
 

@@ -22,15 +22,15 @@ load(
 load("//build_files:build_defs_test.bzl", "build_defs_test_suite")
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 
-exports_files([
-    "lsan_suppressions.txt",
-    "tsan_suppressions.txt",
-])
-
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
+
+exports_files([
+    "lsan_suppressions.txt",
+    "tsan_suppressions.txt",
+])
 
 bzl_library(
     name = "build_defs_bzl",

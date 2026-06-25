@@ -36,6 +36,9 @@ jobs:
   run_tests:
     name: "Lint check"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: "Check out code"
         uses: "actions/checkout@v5"
@@ -45,12 +48,13 @@ jobs:
           go-version: "1.24"
           cache: false
       - name: "Validate License Headers"
-        shell: "bash"
         run: |
           go run github.com/google/addlicense@v1.1.1 -check -s=only .
+      - name: "Validate Bazel BUILD and Starlark Files"
+        run: |
+          go run github.com/bazelbuild/buildtools/buildifier@latest -mode=check -lint=warn -r .
       - name: "Validate Commit Messages"
         if: (success() || failure()) && github.event_name == 'pull_request'
-        shell: "bash"
         run: |
           # Fix dubious ownership issue in Actions
           git config --global --add safe.directory '*'
