@@ -14,8 +14,12 @@
  * limitations under the License.
  */
 
-#ifndef TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_
-#define TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_
+#ifndef THIRD_PARTY_PY_TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_
+#define THIRD_PARTY_PY_TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_ /* NON_TT_MACRO_OK=google3 \
+                                                                            style                   \
+                                                                            header                  \
+                                                                            guard                   \
+                                                                          */
 
 #include <cstdint>
 #include <optional>
@@ -59,4 +63,4 @@ at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
 
 }  // namespace torch_tpu
 
-#endif  // TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_
+#endif  // THIRD_PARTY_PY_TORCH_TPU_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_
