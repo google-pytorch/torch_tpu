@@ -96,6 +96,19 @@ java -jar /tmp/bazel-diff.jar get-impacted-targets \
   -fh "$WORKSPACE_DIR/pr_hashes.json" \
   -o "$WORKSPACE_DIR/impacted_targets.txt"
 
+echo "--- Filtering Targets via Bazel Query ---"
+if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
+  IMPACTED_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
+  echo "Initial impacted target count: $IMPACTED_COUNT"
+
+  export TORCH_TPU_WORKSPACE_DIR="$WORKSPACE_DIR"
+  export TORCH_TPU_BAZEL_CONFIG="$BAZEL_CONFIG"
+  bazel run //.github/actions/bazel-diff:filter_targets
+
+  FILTERED_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
+  echo "Filtered target count: $FILTERED_COUNT"
+fi
+
 echo "--- Running Impacted Bazel Tests ---"
 if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   TARGET_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")

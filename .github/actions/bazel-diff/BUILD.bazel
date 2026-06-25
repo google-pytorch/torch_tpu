@@ -1,0 +1,48 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load("@rules_python//python:py_test.bzl", "py_test")
+load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_library")
+
+package(
+    default_visibility = PACKAGE_DEFAULT_VISIBILITY,
+)
+
+pytype_strict_library(
+    name = "filter_targets_lib",
+    srcs = ["filter_targets.py"],
+    imports = ["."],
+)
+
+pytype_strict_binary(
+    name = "filter_targets",
+    srcs = ["filter_targets.py"],
+    main = "filter_targets.py",
+    deps = [
+        ":filter_targets_lib",
+        "//shims/absl_py:app",
+        "//shims/absl_py/logging",
+    ],
+)
+
+py_test(
+    name = "filter_targets_test",
+    srcs = ["filter_targets_test.py"],
+    python_version = "PY3",
+    deps = [
+        ":filter_targets_lib",
+        "//shims/absl_py/testing:absltest",
+    ],
+)

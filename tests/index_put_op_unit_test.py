@@ -16,7 +16,7 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.utils.utils import OpTracer
+from torch_tpu._internal.utils import utils
 from tests import op_testing
 
 
@@ -719,7 +719,7 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
       data = torch.arange(60, dtype=torch.int32, device=device).reshape(2, 5, 6)
       indices = torch.tensor([1, 3], dtype=torch.int64, device=device)
       values = torch.ones(2, 2, 6, dtype=torch.int32, device=device)
-      with OpTracer():
+      with utils.OpTracer():
         data[:, indices] = values
       return data
 
@@ -732,7 +732,7 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
           [False, True, False, True, False], dtype=torch.bool, device=device
       )
       values = 100
-      with OpTracer():
+      with utils.OpTracer():
         data[:, indices] = values
       return data
 
