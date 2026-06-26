@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef TORCH_TPU_INTERNAL_PROFILER_TPU_PROFILER_H_
-#define TORCH_TPU_INTERNAL_PROFILER_TPU_PROFILER_H_
+#ifndef THIRD_PARTY_PY_TORCH_TPU__INTERNAL_PROFILER_TPU_PROFILER_PLUGIN_H_
+#define THIRD_PARTY_PY_TORCH_TPU__INTERNAL_PROFILER_TPU_PROFILER_PLUGIN_H_  // NON_TT_MACRO_OK=header guard
 
 #include <kineto/ActivityType.h>
 #include <kineto/IActivityProfiler.h>
@@ -106,4 +106,4 @@ class TpuProfiler : public libkineto::IActivityProfiler {
 
 }  // namespace torch_tpu
 
-#endif  // TORCH_TPU_INTERNAL_PROFILER_TPU_PROFILER_H_
+#endif  // THIRD_PARTY_PY_TORCH_TPU__INTERNAL_PROFILER_TPU_PROFILER_PLUGIN_H_
