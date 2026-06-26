@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
-#define TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
+#ifndef THIRD_PARTY_PY_TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
+#define THIRD_PARTY_PY_TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
 
 #include <array>
 #include <cstddef>
@@ -794,4 +794,4 @@ absl::StatusOr<mlir::MlirOp> ReshapeFromStaticDimensions(
 
 }  // namespace torch_tpu
 
-#endif  // TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
+#endif  // THIRD_PARTY_PY_TORCH_TPU_OPS_OP_BUILDER_UTILS_H_
