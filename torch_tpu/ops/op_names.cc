@@ -1231,10 +1231,16 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sparse_dense_matmul";
     case OpName::kSparseDenseMatmulGradWithAdagrad:
       return "sparse_dense_matmul_grad_with_adagrad";
+    case OpName::kSparseDenseMatmulGradWithAdagradWithMinibatching:
+      return "sparse_dense_matmul_grad_with_adagrad_with_minibatching";
     case OpName::kSparseDenseMatmulGradWithRowwiseAdagrad:
       return "sparse_dense_matmul_grad_with_rowwise_adagrad";
+    case OpName::kSparseDenseMatmulGradWithRowwiseAdagradWithMinibatching:
+      return "sparse_dense_matmul_grad_with_rowwise_adagrad_with_minibatching";
     case OpName::kSparseDenseMatmulGradWithSgd:
       return "sparse_dense_matmul_grad_with_sgd";
+    case OpName::kSparseDenseMatmulWithMinibatching:
+      return "sparse_dense_matmul_with_minibatching";
     case OpName::kSplitWithSizesCopyOut:
       return "split_with_sizes_copy.out";
     case OpName::kSqrtOut:
