@@ -1053,8 +1053,7 @@ TORCH_LIBRARY(tpu, m) {
       "sparse_dense_matmul_grad_with_adagrad(Tensor row_pointers, Tensor "
       "embedding_ids, Tensor sample_ids, Tensor gains, Tensor embedding_table, "
       "Tensor accumulator, Tensor activations_grad, Tensor learning_rate, "
-      "Tensor epsilon, int "
-      "device_batch_size, int max_ids_per_partition, int "
+      "int device_batch_size, int max_ids_per_partition, int "
       "max_unique_ids_per_partition) -> (Tensor, Tensor)");
   m.def(
       "sparse_dense_matmul_grad_with_rowwise_adagrad(Tensor row_pointers, "
@@ -1107,13 +1106,12 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
         return at::empty_like(embedding_table);
       });
   ImplExperimental<OpName::kSparseDenseMatmulGradWithAdagrad>(
-      m,
-      [](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
-         const at::Tensor& sample_ids, const at::Tensor& gains,
-         const at::Tensor& embedding_table, const at::Tensor& accumulator,
-         const at::Tensor& activations_grad, const at::Tensor& learning_rate,
-         const at::Tensor& epsilon, int64_t device_batch_size,
-         int64_t max_ids_per_partition, int64_t max_unique_ids_per_partition) {
+      m, [](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,
+            const at::Tensor& sample_ids, const at::Tensor& gains,
+            const at::Tensor& embedding_table, const at::Tensor& accumulator,
+            const at::Tensor& activations_grad, const at::Tensor& learning_rate,
+            int64_t device_batch_size, int64_t max_ids_per_partition,
+            int64_t max_unique_ids_per_partition) {
         return std::make_tuple(at::empty_like(embedding_table),
                                at::empty_like(accumulator));
       });

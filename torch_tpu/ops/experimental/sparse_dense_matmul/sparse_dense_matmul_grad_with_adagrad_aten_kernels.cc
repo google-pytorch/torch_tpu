@@ -57,7 +57,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     int64_t device_batch_size, int64_t max_ids_per_partition,
     int64_t max_unique_ids_per_partition) {
   return [max_ids_per_partition, max_unique_ids_per_partition](
-             torch_tpu::FixedSizeSpan<mlir::MlirOp, 9> inputs)
+             torch_tpu::FixedSizeSpan<mlir::MlirOp, 8> inputs)
              -> absl::StatusOr<torch_tpu::MlirOpResults<2>> {
     mlir::MlirOp row_pointers = inputs[0];
     mlir::MlirOp embedding_ids = inputs[1];
@@ -67,7 +67,6 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     mlir::MlirOp accumulator = inputs[5];
     mlir::MlirOp activations_grad = inputs[6];
     mlir::MlirOp learning_rate = inputs[7];
-    mlir::MlirOp epsilon = inputs[8];
 
     mlir::MlirBuilder& builder = row_pointers.getBuilder();
     mlir::OpBuilder& op_builder = builder.getOpBuilder();
@@ -82,7 +81,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     auto tensor_type = mlir::RankedTensorType::get({1, embedding_dim},
                                                    op_builder.getF32Type());
     auto func_type = op_builder.getFunctionType(
-        {tensor_type, tensor_type, tensor_type, tensor_type, tensor_type},
+        {tensor_type, tensor_type, tensor_type, tensor_type},
         {mlir::TupleType::get(op_builder.getContext(),
                               {tensor_type, tensor_type})});
 
@@ -102,14 +101,12 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     mlir::MlirOp param(builder, entry_block->getArgument(1));
     mlir::MlirOp acc_arg(builder, entry_block->getArgument(2));
     mlir::MlirOp lr(builder, entry_block->getArgument(3));
-    mlir::MlirOp epsilon_arg(builder, entry_block->getArgument(4));
 
     auto grad_sq = mlir::stablehlo::Mul(grad, grad);
     auto new_acc = mlir::stablehlo::Add(acc_arg, grad_sq);
     auto lr_grad = mlir::stablehlo::Mul(lr, grad);
     auto sqrt_acc = mlir::stablehlo::Sqrt(new_acc);
-    auto sqrt_acc_plus_epsilon = mlir::stablehlo::Add(sqrt_acc, epsilon_arg);
-    auto update = mlir::stablehlo::Div(lr_grad, sqrt_acc_plus_epsilon);
+    auto update = mlir::stablehlo::Div(lr_grad, sqrt_acc);
     auto updated_param = mlir::stablehlo::Subtract(param, update);
 
     auto tuple_op = mlir::stablehlo::TupleOp::create(
@@ -121,28 +118,21 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     // Restore insertion point
     op_builder.restoreInsertionPoint(prev_insertion_point);
 
-    // Construct DictionaryAttr for frontend_attributes
+    // Construct DictionaryAttr for frontend_attributes. The non-minibatching
+    // grad optimizer-update custom call is consumed by the SparseCore compiler,
+    // but libtpu's frontend-attribute conversion whitelist does not include it.
+    // Put the sparse-dense-matmul limits in backend_config directly.
     std::vector<mlir::NamedAttribute> frontend_attrs;
-    frontend_attrs.reserve(7);
+    frontend_attrs.reserve(1);
     frontend_attrs.push_back(op_builder.getNamedAttr(
         xla::kXlaComputeTypeAttr,
         op_builder.getStringAttr(xla::kXlaComputeTypeSparse)));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaShardingStrategyAttr,
-        op_builder.getStringAttr(xla::kXlaShardingStrategyMod)));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaPadValueAttr, op_builder.getStringAttr("2147483647")));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaMaxIdsPerPartitionAttr,
-        op_builder.getStringAttr(std::to_string(max_ids_per_partition))));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kXlaMaxUniqueIdsPerPartitionAttr,
-        op_builder.getStringAttr(
-            std::to_string(max_unique_ids_per_partition))));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kNumSlotVariables, op_builder.getStringAttr("1")));
-    frontend_attrs.push_back(op_builder.getNamedAttr(
-        xla::kNumHyperparameters, op_builder.getStringAttr("2")));
+    std::string backend_config =
+        R"({"sparse_dense_matmul_config":{"max_ids_per_partition":)" +
+        std::to_string(max_ids_per_partition) +
+        R"(,"max_unique_ids_per_partition":)" +
+        std::to_string(max_unique_ids_per_partition) +
+        R"(,"sharding_strategy":"SHARDING_STRATEGY_MOD","pad_value":2147483647,"num_slot_variables":1,"num_hyperparameters":1}})";
 
     std::string call_target = "SparseDenseMatmulGradOpWithOptimizerUpdate";
 
@@ -159,6 +149,8 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
     auto frontend_attributes_attr =
         op_builder.getNamedAttr("mhlo.frontend_attributes",
                                 op_builder.getDictionaryAttr(frontend_attrs));
+    auto backend_config_attr = op_builder.getNamedAttr(
+        "backend_config", op_builder.getStringAttr(backend_config));
 
     auto called_computations_attr = op_builder.getNamedAttr(
         "called_computations",
@@ -169,8 +161,7 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
         row_pointers.getValue(),     embedding_ids.getValue(),
         sample_ids.getValue(),       gains.getValue(),
         activations_grad.getValue(), embedding_table.getValue(),
-        accumulator.getValue(),      learning_rate.getValue(),
-        epsilon.getValue()};
+        accumulator.getValue(),      learning_rate.getValue()};
 
     auto out_type = mlir::TupleType::get(
         op_builder.getContext(), {embedding_table_type, accumulator_type});
@@ -180,7 +171,8 @@ auto SparseDenseMatmulGradWithAdagradBuilder(
         /*resultTypes=*/{out_type},
         /*operands=*/operands,
         {call_target_attr, has_side_effect_attr, api_version_attr,
-         frontend_attributes_attr, called_computations_attr});
+         frontend_attributes_attr, backend_config_attr,
+         called_computations_attr});
 
     auto gte_table = mlir::stablehlo::GetTupleElementOp::create(
         op_builder, builder.getLoc(), op.getResult(0), 0);
@@ -200,18 +192,17 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
     const at::Tensor& sample_ids, const at::Tensor& gains,
     const at::Tensor& embedding_table, const at::Tensor& accumulator,
     const at::Tensor& activations_grad, const at::Tensor& learning_rate,
-    const at::Tensor& epsilon, int64_t device_batch_size,
-    int64_t max_ids_per_partition, int64_t max_unique_ids_per_partition) {
+    int64_t device_batch_size, int64_t max_ids_per_partition,
+    int64_t max_unique_ids_per_partition) {
   TT_KERNEL(
       torch_tpu::OpName::kSparseDenseMatmulGradWithAdagrad, param_keys,
       (row_pointers, embedding_ids, sample_ids, gains, embedding_table,
-       accumulator, activations_grad, learning_rate, epsilon, device_batch_size,
+       accumulator, activations_grad, learning_rate, device_batch_size,
        max_ids_per_partition, max_unique_ids_per_partition),
       {
-        std::array<torch_tpu::TensorHolder, 9> inputs = {
+        std::array<torch_tpu::TensorHolder, 8> inputs = {
             row_pointers,    embedding_ids, sample_ids,       gains,
-            embedding_table, accumulator,   activations_grad, learning_rate,
-            epsilon};
+            embedding_table, accumulator,   activations_grad, learning_rate};
 
         torch_tpu::Dimensions out_dims(embedding_table.sizes().begin(),
                                        embedding_table.sizes().end());
@@ -225,7 +216,7 @@ std::tuple<at::Tensor, at::Tensor> AtenSparseDenseMatmulGradWithAdagrad(
                                embedding_table.scalar_type()));
 
         TT_ASSIGN_OR_THROW(
-            auto results, (torch_tpu::DispatchOp<9, 2>(
+            auto results, (torch_tpu::DispatchOp<8, 2>(
                               builder_fn, inputs,
                               {.out_dtypes = {out_dtype, out_dtype},
                                .out_dims_list = {out_dims, out_dims},
