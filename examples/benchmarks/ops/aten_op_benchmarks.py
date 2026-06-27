@@ -289,7 +289,8 @@ class AtenOpBenchmarkBase(parameterized.TestCase):
         return res
 
       # Warmup
-      for _ in range(20):
+      warmup_runs = 2 if MIN_RUN_TIME.value < 0.2 else 20
+      for _ in range(warmup_runs):
         timed_op(*args, **kwargs)
 
       # Timing

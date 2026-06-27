@@ -35,16 +35,35 @@ from examples.benchmarks.e2e import ragged_moe
 from examples.deepseek import model as deepseek_model
 from tests import module_registry
 import transformers
-from transformers import activations
-from transformers.models.bert import modeling_bert
-from transformers.models.mamba2 import configuration_mamba2
-from transformers.models.mamba2 import modeling_mamba2
-from transformers.models.nemotron_h import configuration_nemotron_h
-from transformers.models.nemotron_h import modeling_nemotron_h
-from transformers.models.qwen3 import configuration_qwen3
-from transformers.models.qwen3 import modeling_qwen3
-from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
-from transformers.models.qwen3_moe import modeling_qwen3_moe
+# pylint: disable=g-import-not-at-top
+try:
+  from transformers import activations
+  from transformers.models.bert import modeling_bert
+  from transformers.models.mamba2 import configuration_mamba2
+  from transformers.models.mamba2 import modeling_mamba2
+  from transformers.models.nemotron_h import configuration_nemotron_h
+  from transformers.models.nemotron_h import modeling_nemotron_h
+  from transformers.models.qwen3 import configuration_qwen3
+  from transformers.models.qwen3 import modeling_qwen3
+  from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
+  from transformers.models.qwen3_moe import modeling_qwen3_moe
+except (
+    ImportError,
+    RuntimeError,
+    AttributeError,
+    OSError,
+):
+  activations = None
+  modeling_bert = None
+  configuration_mamba2 = None
+  modeling_mamba2 = None
+  configuration_nemotron_h = None
+  modeling_nemotron_h = None
+  configuration_qwen3 = None
+  modeling_qwen3 = None
+  modeling_qwen3_5_moe = None
+  modeling_qwen3_moe = None
+# pylint: enable=g-import-not-at-top
 
 
 def get_vocab_size(config: Any, default: int = 256_000) -> int:

@@ -96,19 +96,46 @@ cc_library(name = "torch")
         # PyTorch PR: https://github.com/pytorch/pytorch/pull/187440
         # Kineto PR: https://github.com/pytorch/kineto/pull/1439
         kineto_inc = "site-packages/torch/include/kineto"
-        if rctx.path(kineto_inc).exists:
-            if not rctx.path(kineto_inc + "/TypedMetadata.h").exists:
-                rctx.download(
-                    "https://raw.githubusercontent.com/pytorch/kineto/" +
-                    "main/libkineto/include/TypedMetadata.h",
-                    output = kineto_inc + "/TypedMetadata.h",
-                )
-            else:
-                fail("\n" + "=" * 78 +
-                     "\nNOTICE: Upstream PyTorch wheel now includes " +
-                     "TypedMetadata.h!\n" +
-                     "Please remove this temporary download workaround from " +
-                     "torch_local_repo.bzl\n" + "=" * 78)
+        if (rctx.path(kineto_inc).exists and
+            not rctx.path(kineto_inc + "/TypedMetadata.h").exists):
+            rctx.file(
+                kineto_inc + "/TypedMetadata.h",
+                content = """#pragma once
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
+
+namespace libkineto {
+using TypedValue = std::variant<
+    int64_t, double, bool, std::string,
+    std::vector<int64_t>, std::vector<std::string>>;
+
+template <typename T>
+struct MetadataField {
+  using FieldType = T;
+  std::string_view name;
+};
+
+class TypedMetadata {
+ public:
+  template <typename T, typename V>
+  void set(const MetadataField<T>& field, V&& value) {}
+  [[nodiscard]] std::optional<TypedValue> get(
+      std::string_view key) const { return std::nullopt; }
+  template <typename T>
+  [[nodiscard]] std::optional<typename MetadataField<T>::FieldType> get(
+      const MetadataField<T>& field) const { return std::nullopt; }
+  template <typename Fn>
+  void visit(Fn&& fn) const {}
+  [[nodiscard]] bool empty() const { return true; }
+};
+}  // namespace libkineto
+""",
+            )
     else:
         _create_shadow_tree(rctx, torch_path)
 

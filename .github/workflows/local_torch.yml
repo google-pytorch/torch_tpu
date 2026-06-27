@@ -149,6 +149,12 @@ jobs:
             --define TORCH_SOURCE=local \
             --repo_env=TORCH_SOURCE=$TORCH_SOURCE
 
+      - name: Wait for Connection at End
+        if: always()
+        uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
+        with:
+          halt-dispatch-input: 'yes'
+
   notify_failure:
     name: Notify Failed Runs
     needs: [build_and_test_wheel]

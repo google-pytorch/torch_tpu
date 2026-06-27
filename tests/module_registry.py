@@ -48,28 +48,28 @@ try:
   from diffusers.models import auto_model
 
   _HAS_DIFFUSERS = True
-except ImportError:
+except (ImportError, RuntimeError, AttributeError, OSError):
   _HAS_DIFFUSERS = False
 
 try:
   import timm
 
   _HAS_TIMM = True
-except ImportError:
+except (ImportError, RuntimeError, AttributeError, OSError):
   _HAS_TIMM = False
 
 try:
   import torchvision
 
   _HAS_TORCHVISION = True
-except ImportError:
+except (ImportError, RuntimeError, AttributeError, OSError):
   _HAS_TORCHVISION = False
 
 try:
   import transformers
 
   _HAS_TRANSFORMERS = True
-except ImportError:
+except (ImportError, RuntimeError, AttributeError, OSError):
   _HAS_TRANSFORMERS = False
 
 _AUDIO_MODEL_TYPES = ("whisper", "wav2vec2", "audio", "hubert")
