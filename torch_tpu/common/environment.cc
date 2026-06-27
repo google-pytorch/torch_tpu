@@ -17,6 +17,7 @@
 #include "torch_tpu/common/environment.h"
 
 #include <string>
+#include <vector>
 
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
