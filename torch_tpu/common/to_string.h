@@ -110,7 +110,7 @@ template <typename Iterator>
 [[nodiscard]] std::string ToString(const c10d::AllToAllOptions& options);
 [[nodiscard]] std::string ToString(const c10d::BarrierOptions& options);
 
-[[nodiscard]] inline constexpr std::string_view ToString(const at::Generator&) {
+[[nodiscard]] constexpr std::string_view ToString(const at::Generator&) {
   return "at::Generator";
 }
 
