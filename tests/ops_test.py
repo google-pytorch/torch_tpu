@@ -2797,6 +2797,14 @@ class TestOps(TorchTpuTestBase):
         ),
     )
 
+  def test_logit(self):
+    self.do_test_op(
+        "logit",
+        exclude_dtypes=(  # EXCLUDE_DTYPES_OK=float-only op
+            COMPLEX_DTYPES + INTEGRAL_DTYPES
+        ),
+    )
+
   def test_logical_and(self):
     self.do_test_op("logical_and")
 

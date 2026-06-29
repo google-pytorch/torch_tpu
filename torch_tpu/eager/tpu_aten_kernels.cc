@@ -122,6 +122,7 @@
 #include "torch_tpu/ops/linspace/linspace_aten_kernels.h"
 #include "torch_tpu/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 #include "torch_tpu/ops/logical/logical_aten_kernels.h"
+#include "torch_tpu/ops/logit/logit_aten_kernels.h"
 #include "torch_tpu/ops/masked_fill/masked_fill_aten_kernels.h"  // IWYU pragma: keep for AtenMaskedFill
 #include "torch_tpu/ops/masked_scatter/masked_scatter_aten_kernels.h"
 #include "torch_tpu/ops/masked_select/masked_select_aten_kernels.h"
@@ -702,6 +703,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLogicalNotOut>(m, AtenLogicalNotOut);
   ImplStable<OpName::kLogicalOrOut>(m, AtenLogicalOrOut);
   ImplStable<OpName::kLogicalXorOut>(m, AtenLogicalXorOut);
+  ImplStable<OpName::kLogit>(m, AtenLogit);
+  ImplStable<OpName::kLogitOut>(m, AtenLogitOut);
+  ImplStable<OpName::kLogit_>(m, AtenLogit_);
   ImplStable<OpName::kLshiftScalar>(m, AtenLshiftScalar);
   ImplStable<OpName::kLshiftTensor>(m, AtenLshiftTensor);
   ImplStable<OpName::kLtScalarOut>(m, AtenLtScalarOut);

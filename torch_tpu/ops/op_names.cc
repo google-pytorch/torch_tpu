@@ -881,6 +881,12 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_logcumsumexp";
     case OpName::kLogcumsumexpOut:
       return "_logcumsumexp.out";
+    case OpName::kLogit:
+      return "logit";
+    case OpName::kLogitOut:
+      return "logit.out";
+    case OpName::kLogit_:
+      return "logit_";
     case OpName::kLogicalAndOut:
       return "logical_and.out";
     case OpName::kLogicalNotOut:

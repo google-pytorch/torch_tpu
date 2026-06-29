@@ -6444,6 +6444,16 @@ Supported combinations for non-constant padding:
     ):
       torch.ops.aten.log_sigmoid(t)
 
+  def test_logit_invalid_complex_dtype(self):
+    t = torch.ones(4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""logit(): expected floating point tensor, got complex tensor with dtype complex64""",
+        gpu=""""logit_cuda" not implemented for 'ComplexFloat'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.logit(t)
+
   def test_scaled_mm_non_2d_self(self):
     """Tests that scaled_mm fails if self is not 2D."""
     device = et.device()
