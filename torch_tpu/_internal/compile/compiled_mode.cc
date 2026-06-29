@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "absl/flags/declare.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/check.h"
