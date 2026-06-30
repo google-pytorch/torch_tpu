@@ -20,7 +20,10 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -33,11 +36,15 @@
 #include "ATen/ops/empty.h"
 #include "ATen/ops/empty_like.h"
 #include "ATen/ops/result_type.h"
+#include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/log.h"
+#include "absl/types/span.h"
 #include "c10/util/Exception.h"
+#include "torch/headeronly/util/Metaprogramming.h"
 #include "torch/library.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/a_min_max/a_min_max_aten_kernels.h"
 #include "torch_tpu/ops/addcdiv/addcdiv_aten_kernels.h"
 #include "torch_tpu/ops/addcmul/addcmul_aten_kernels.h"
@@ -188,15 +195,21 @@
 namespace torch_tpu {
 namespace {
 
-// Registers the kernel function for the given op name in the given library.
-// Use this on the following cases:
-// 1. an aten op,
-// 2. an op for the Meta backend, and
-// 3. a TPU-specific op that has graduated from "experimental" to "stable".
-template <OpName op_name, typename KernelFn>
-void ImplStable(torch::Library& m, KernelFn kernel_fn) {
-  m.impl(  // M_IMPL_OK=implementing ImplStable().
-      std::string(ToString(op_name)).c_str(), std::move(kernel_fn));
+void MaterializeOutputsOrThrow(const at::Tensor& output) {
+  TT_THROW_IF_ERROR(MaybeMaterializeTensor({output}));
+}
+
+void MaterializeOutputsOrThrow(const std::vector<at::Tensor>& outputs) {
+  TT_THROW_IF_ERROR(MaybeMaterializeTensor(outputs));
+}
+
+template <class T>
+void MaterializeOutputsOrThrow(T) {}
+
+template <class... Outputs>
+void MaterializeOutputsOrThrow(const std::tuple<Outputs...>& outputs) {
+  std::apply([](auto&&... args) { (MaterializeOutputsOrThrow(args), ...); },
+             outputs);
 }
 
 // Helper to extract the concrete signature of the kernel function.
@@ -236,10 +249,31 @@ struct ImplWrapperHelper<Ret (*)(Args...)> {
         [func = std::move(func),
          on_entry_fn = std::move(on_entry_fn)](Args... args) -> Ret {
           on_entry_fn();
-          return func(std::forward<Args>(args)...);
+          if constexpr (std::is_void_v<Ret>) {
+            func(std::forward<Args>(args)...);
+          } else {
+            Ret output = func(std::forward<Args>(args)...);
+            MaterializeOutputsOrThrow(output);
+            return output;
+          }
         });
   }
 };
+
+void NoOp() {}
+
+// Registers the kernel function for the given op name in the given library.
+// Use this on the following cases:
+// 1. an aten op,
+// 2. an op for the Meta backend, and
+// 3. a TPU-specific op that has graduated from "experimental" to "stable".
+template <OpName op_name, typename KernelFn>
+void ImplStable(torch::Library& m, KernelFn kernel_fn) {
+  using FuncType = c10::guts::infer_function_traits_t<KernelFn>::func_type;
+  using FuncPtrType = std::add_pointer_t<FuncType>;
+  ImplWrapperHelper<FuncPtrType>::template RegisterOp<op_name>(
+      m, std::move(kernel_fn), /* on_entry_fn= */ NoOp);
+}
 
 // Registers the kernel function for the given op name in the given library,
 // and injects a user-visible warning that the operator is experimental.

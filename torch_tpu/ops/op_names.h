@@ -763,6 +763,11 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
   }
 }
 
+// Returns true if the op is an internal RNG state update op.
+[[nodiscard]] inline bool IsRngStateUpdateOp(OpName op_name) {
+  return op_name == OpName::kRngStateUpdate;
+}
+
 // Returns true if the op would would be metadata-only on CUDA.
 // When creating these ops, we should usually not need to materialize them,
 // even in kDeferNever mode.

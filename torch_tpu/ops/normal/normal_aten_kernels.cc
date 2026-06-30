@@ -47,6 +47,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -270,6 +271,7 @@ absl::Status CheckNormalStdPreconditions(const at::Tensor& std,
   // Run min natively on TPU.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef min_buf,
                       DispatchUnaryMinMax(std, MinMaxOp::kMin, OpName::kMin));
+  TT_RETURN_IF_ERROR(MaybeMaterialize({min_buf}));
   TT_ASSIGN_OR_RETURN(at::Tensor cpu_min, TpuMemcpyDtoH(min_buf));
   TT_RET_CHECK(cpu_min.item<double>() >= 0.0, error::kInvalidArgument)
       << "expected all elements of std >= 0.0, got min element: "

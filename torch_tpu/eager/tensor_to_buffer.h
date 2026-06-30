@@ -120,6 +120,10 @@ absl::StatusOr<DeviceBufferRef> GetBuffer(const c10::TensorImpl& tensor);
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
     absl::Span<const at::Tensor> tensors);
 
+// Materializes the underlying TPU buffer of the tensors if they are deferred.
+// Does nothing if the tensors are not on TPU or are metadata ops.
+absl::Status MaybeMaterializeTensor(absl::Span<const at::Tensor> tensors);
+
 // Creates a c10::Storage pointer to a new c10::StorageImpl, which holds a
 // c10::DataPtr to the given DeviceBufferRef.
 // The nbytes of the c10::StorageImpl will be set to the size

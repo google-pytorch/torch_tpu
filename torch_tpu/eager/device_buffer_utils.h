@@ -21,6 +21,7 @@
 #include <optional>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -105,6 +106,10 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     absl::Span<const int64_t> view_dimensions,
     absl::Span<const int64_t> view_strides, int64_t view_storage_offset,
     mlir::ElementType view_element_type, bool view_is_conj);
+
+// Materializes the given DeviceBufferRefs if they are deferred, according to
+// the current EagerMode. Does nothing on metadata ops.
+absl::Status MaybeMaterialize(absl::Span<const DeviceBufferRef> refs);
 
 }  // namespace torch_tpu
 

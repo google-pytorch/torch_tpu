@@ -372,6 +372,13 @@ void ProcessDeferredOpEvent(
     ABSL_VLOG(3) << "[ProcessDeferredOpEvent] Adding live buffer "
                  << device_buffer_list.get() << " as output";
     defined_node_map[device_buffer_list.get()] = OpUsage::kOutput;
+  } else if (device_buffer_list->is_rng_state_update()) {
+    // Always mark RNG state updates as output.
+    // This is necessary so that future RNG state updates find the previous'
+    // state update buffers materialized.
+    ABSL_VLOG(3) << "[ProcessDeferredOpEvent] Adding RNG state update buffer "
+                 << device_buffer_list.get() << " as output";
+    defined_node_map[device_buffer_list.get()] = OpUsage::kOutput;
   } else if (nodes_to_materialize_set.contains(device_buffer_list.get())) {
     ABSL_VLOG(3)
         << "[ProcessDeferredOpEvent] Adding explicitly materialized buffer "

@@ -20,11 +20,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
@@ -127,35 +129,37 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
 
 // Handles post-op creation events for the kDeferNever and
 // kDeferNeverAndLaunchBlocking eager modes.
-absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
-                                const OpName op_name, const bool block) {
-  const auto& device_buffer_list = results[0].device_buffer_list();
-  if (IsMetadataOnly(op_name)) {
-    // Don't eagerly materialize metadata-only ops.
-    return absl::OkStatus();
-  }
+absl::Status DeferNeverDispatch(
+    absl::Span<const SharedDeviceBufferList> device_buffer_lists,
+    const bool block) {
   // materialize.cc and events_queue.h will respect OpSplitMode, even with
   // MaterializationMode::kFullGraph.
-  TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
+  TT_RETURN_IF_ERROR(Materialize(device_buffer_lists,
                                  MaterializationReason::kDebugMode,
                                  MaterializationMode::kFullGraph));
-  for (const auto& result : results) {
-    MarkStreamActive(result.GetReadyFuture());
+
+  for (const auto& device_buffer_list : device_buffer_lists) {
+    for (int64_t i = 0; i < device_buffer_list->size(); ++i) {
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef ref,
+                          DeviceBufferRef::Create(device_buffer_list, i));
+      MarkStreamActive(ref.GetReadyFuture());
+    }
+
+    if (block) {
+      TT_RETURN_IF_ERROR(device_buffer_list->Synchronize());
+    }
   }
-  if (block) {
-    return device_buffer_list->Synchronize();
-  }
+
   return absl::OkStatus();
 }
 
 // Handles post-op creation events for the kDeferAndFuse eager mode.
-absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
-                                  const OpName op_name) {
-  const auto& device_buffer_list = results[0].device_buffer_list();
-
-  // Don't consider metadata-only ops for the repeated ops heuristic.
-  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
-    return ApplyRepeatedOpsHeuristic(device_buffer_list);
+absl::Status DeferAndFuseDispatch(
+    absl::Span<const SharedDeviceBufferList> device_buffer_lists) {
+  if (MustApplyRepeatedOpsHeuristic()) {
+    for (const auto& device_buffer_list : device_buffer_lists) {
+      TT_RETURN_IF_ERROR(ApplyRepeatedOpsHeuristic(device_buffer_list));
+    }
   }
   return absl::OkStatus();
 }
@@ -177,22 +181,6 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           std::move(params.donated_indices)));
 
   RecordDeferredOpCreated(results[0].device_buffer_list());
-
-  switch (GetEagerMode()) {
-    case EagerMode::kDeferNever:
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/false));
-      break;
-    case EagerMode::kDeferNeverAndLaunchBlocking:
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/true));
-      break;
-    case EagerMode::kDeferAndFuse:
-      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results, params.op_name));
-      break;
-    case EagerMode::kInternalDeferAll:
-      break;
-  }
   return results;
 }
 
@@ -587,6 +575,43 @@ absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
                                         std::move(params)));
   ABSL_CHECK_EQ(results.size(), 1);  // CRASH_OK
   return std::move(results[0]);
+}
+
+absl::Status MaybeMaterialize(absl::Span<const DeviceBufferRef> refs) {
+  std::vector<SharedDeviceBufferList> unique;
+  absl::flat_hash_set<DeviceBufferList*> seen;
+
+  for (const auto& ref : refs) {
+    if (const std::shared_ptr<DeferredOp> deferred_op = ref.deferred_op();
+        !deferred_op || IsMetadataOnly(deferred_op->op_name())) {
+      continue;
+    }
+
+    SharedDeviceBufferList device_buffer_list = ref.device_buffer_list();
+    if (seen.insert(device_buffer_list.get()).second) {
+      unique.push_back(device_buffer_list);
+    }
+  }
+
+  if (unique.empty()) {
+    return absl::OkStatus();
+  }
+
+  switch (GetEagerMode()) {
+    case EagerMode::kDeferNever:
+      TT_RETURN_IF_ERROR(DeferNeverDispatch(unique, /*block=*/false));
+      break;
+    case EagerMode::kDeferNeverAndLaunchBlocking:
+      TT_RETURN_IF_ERROR(DeferNeverDispatch(unique, /*block=*/true));
+      break;
+    case EagerMode::kDeferAndFuse:
+      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(unique));
+      break;
+    case EagerMode::kInternalDeferAll:
+      break;
+  }
+
+  return absl::OkStatus();
 }
 
 }  // namespace torch_tpu

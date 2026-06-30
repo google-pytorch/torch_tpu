@@ -55,7 +55,6 @@
 #include "torch_tpu/ops/linalg/vector_norm/aten_vector_norm_kernels.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/min_max/min_max_aten_kernels.h"
-#include "torch_tpu/ops/nullary_aten_kernels.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/round/round.h"

@@ -67,6 +67,7 @@ DeviceBufferList::Data::Data(bool placeholder)
 DeviceBufferList::Data::Data(
     absl_nonnull std::shared_ptr<DeferredOp> deferred_op)
     : empty_(IsEmptyOp(deferred_op->op_name())),
+      rng_state_update_(IsRngStateUpdateOp(deferred_op->op_name())),
       deferred_op_(std::move(deferred_op)) {
   auto [promise, future] = xla::MakePromise<void>();
   materialization_promise_ = std::move(promise);
@@ -187,6 +188,17 @@ DeviceBufferList::Data::operator[](int64_t index) const {
   TT_RET_CHECK(!depends_on_placeholder(), error::kFailedPrecondition)
       << "compiled mode tensors which depend on a placeholder cannot be "
          "materialized and will never have PjRtBuffers";
+
+  if (auto op = deferred_op(); op != nullptr) {
+    ABSL_LOG(WARNING)
+        << "Accessing the PjRtBuffer of a deferred DeviceBufferList (op: "
+        << op->op_name()
+        << "), i.e. a buffer whose materialization has not yet started. This "
+           "thread will wait until the materialization process (which should "
+           "be triggered by another thread) finishes. If this is unexpected, "
+           "you should call MaybeMaterialize() on the corresponding "
+           "buffer/tensor.";
+  }
 
   if (!materialization_future_.IsKnownReady()) {
     TT_RETURN_IF_ERROR(materialization_future_.Await());

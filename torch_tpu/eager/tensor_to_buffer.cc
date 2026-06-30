@@ -58,6 +58,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dtype.h"
@@ -267,6 +268,31 @@ absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
     buffers.push_back(std::move(buffer));
   }
   return buffers;
+}
+
+absl::Status MaybeMaterializeTensor(absl::Span<const at::Tensor> tensors) {
+  std::vector<DeviceBufferRef> base_buffers;
+
+  for (const at::Tensor& tensor : tensors) {
+    if (tensor.defined() &&
+        IsPrivateUse1Device(tensor)
+        // Has valid storage.
+        //
+        // FakeTensors (used during torch.compile tracing) do not have storage
+        // data_ptr and do not need to be materialized.
+        && (tensor.has_storage() && tensor.storage().data_ptr())
+        // Has, at least, one element.
+        && tensor.sym_numel() > 0) {
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buf, GetBaseBuffer(tensor));
+      base_buffers.push_back(std::move(base_buf));
+    }
+  }
+
+  if (!base_buffers.empty()) {
+    TT_RETURN_IF_ERROR(MaybeMaterialize(base_buffers));
+  }
+
+  return absl::OkStatus();
 }
 
 c10::Storage MakeStorage(DeviceBufferRef buffer_ref, int device_idx) {

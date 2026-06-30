@@ -643,6 +643,14 @@ class DeviceBufferList {
   // Once materialized, "empty" buffers are no longer treated as a special case.
   [[nodiscard]] bool is_empty() const { return data_.is_empty(); }
 
+  // Returns true if this DeviceBufferList was created by the internal
+  // `rng_state_update` deferred op.
+  // This buffer represents the updated RNG generator state, which is triggered
+  // by the ops that use the RNG generator.
+  [[nodiscard]] bool is_rng_state_update() const {
+    return data_.is_rng_state_update();
+  }
+
   // Returns true if this DeviceBufferList is executing.
   // The execution may or may not have completed.
   [[nodiscard]] bool is_executing() const { return data_.is_executing(); }
@@ -851,8 +859,6 @@ class DeviceBufferList {
     // materialization DeviceBufferList::Data.
     explicit Data(bool placeholder = true);
 
-    // Creates a DeviceBufferList::Data with a DeferredOp, which can later be
-    // materialized.
     explicit Data(absl_nonnull std::shared_ptr<DeferredOp> deferred_op);
 
     // Creates a DeviceBufferList::Data with a materialized PjRtBuffer.
@@ -937,6 +943,12 @@ class DeviceBufferList {
     // "torch.empty()" op.
     [[nodiscard]] bool is_empty() const { return empty_; }
 
+    // Returns true if the DeviceBufferList::Data was created by the internal
+    // `rng_state_update` deferred op.
+    // This buffer represents the updated RNG generator state, which is
+    // triggered by the ops that use the RNG generator.
+    [[nodiscard]] bool is_rng_state_update() const { return rng_state_update_; }
+
     // Prints a debug string for the DeviceBufferList::Data into the ostream.
     std::ostream& PrintDebug(std::ostream& os) const;
 
@@ -947,6 +959,14 @@ class DeviceBufferList {
     // we will try to avoid materializing it, as it is expected to never be
     // read.
     const bool empty_ = false;
+
+    // If the DeviceBufferList::Data was created by the internal
+    // `rng_state_update` deferred op, then we will always mark it as an output
+    // when materializing.
+    //
+    // This is necessary so that the pre-condition that traversals' arguments
+    // always have to return true for `is_materializing()` holds.
+    const bool rng_state_update_ = false;
 
     // If the DeviceBufferList::Data has a DeferredOp, it is stored here,
     // protected by a mutex. This ensures that if one thread is trying to access

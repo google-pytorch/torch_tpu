@@ -476,7 +476,6 @@ torch_tpu_cc_library(
     deps = [
         ":binary",
         ":binary_aten_kernels",
-        ":nullary_aten_kernels",
         ":op_builder_utils",
         ":op_names",
         ":unary",
