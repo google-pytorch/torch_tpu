@@ -61,6 +61,7 @@ _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
 
+
 class BenchmarkTest(test_utils.BenchmarkTest):
   """Tests for end-to-end model performance benchmarks."""
 
@@ -99,20 +100,29 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   def test_llama_3_2_1b_train_1_step(self, run_mode):
     """Tests the training of Llama-3.2-1B."""
 
-    batch_size = 8
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (8, 1024)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
 
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
+            common.Platform.V5E_1X1,
         ],
         benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
         run_mode=run_mode,
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="meta-llama/Llama-3.2-1B",
-            sequence_length=1024,
+            sequence_length=sequence_length,
             batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -275,8 +285,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_llama_3_2_3b_forward(self, run_mode):
     """Tests the forward pass of Llama-3.2-3B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -285,8 +305,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="meta-llama/Llama-3.2-3B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -296,8 +317,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_llama_3_2_3b_train_1_step(self, run_mode):
     """Tests training Llama-3.2-3B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -306,8 +337,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="meta-llama/Llama-3.2-3B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -320,8 +352,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_llama_3_2_tiny_forward(self, run_mode):
     """Tests the forward pass of Llama-3.2-tiny."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -330,8 +366,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="meta-llama/Llama-3.2-tiny",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -343,8 +379,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_llama_3_2_tiny_train_1_step(self, run_mode):
     """Tests training Llama-3.2-tiny."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -353,8 +393,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="meta-llama/Llama-3.2-tiny",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -499,8 +539,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_gemma_2_2b_forward(self, run_mode):
     """Tests the forward pass of Gemma-2-2B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -509,8 +553,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="google/gemma-2-2b",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -713,9 +757,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_1_7b_forward(self, run_mode):
     """Tests the forward pass of Qwen3 1.7B."""
-
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 4096)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -724,8 +771,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-1.7B",
-            sequence_length=4096,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -735,9 +782,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_1_7b_train(self, run_mode):
     """Tests the train pass of Qwen3 1.7B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 4096)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
 
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -746,8 +802,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-1.7B",
-            sequence_length=4096,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -757,13 +814,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     )
     self.run_performance_benchmark_test(config, _HF_QWEN3_1_7B_BENCHMARK_NAME)
 
-  @parameterized.named_parameters(
-      test_utils.generate_run_mode_configs([
-          common.RunMode.EAGER_DEFAULT,
-          common.RunMode.EAGER_OPTIMIZED,
-          common.RunMode.COMPILED,
-      ])
-  )
+  @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_coder_30b_a3b_ragged_moe_forward(self, run_mode):
     """Tests the forward pass of Qwen3-Coder-30B-A3B."""
     if self._is_torchax_backend():
@@ -788,13 +839,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         config, _HF_QWEN3_CODER_30B_RAGGED_MOE_BENCHMARK_NAME
     )
 
-  @parameterized.named_parameters(
-      test_utils.generate_run_mode_configs([
-          common.RunMode.EAGER_DEFAULT,
-          common.RunMode.EAGER_OPTIMIZED,
-          common.RunMode.COMPILED,
-      ])
-  )
+  @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_5_397b_a17b_4layer_moe_forward(self, run_mode):
     """Tests the forward pass of Qwen3-5-397B-A17B."""
     if self._is_torchax_backend():
@@ -840,8 +885,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_0_6b_forward(self, run_mode):
     """Tests the forward pass of Qwen3-0.6B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -850,8 +899,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-0.6B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -861,8 +910,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_0_6b_train_1_step(self, run_mode):
     """Tests the training of Qwen3-0.6B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -871,8 +924,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-0.6B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -885,8 +938,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_4b_forward(self, run_mode):
     """Tests the forward pass of Qwen3-4B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -895,8 +958,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-4B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -906,8 +970,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_4b_train_1_step(self, run_mode):
     """Tests the training of Qwen3-4B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -916,8 +990,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-4B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -930,8 +1005,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_qwen3_8b_forward(self, run_mode):
     """Tests the forward pass of Qwen3-8B."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -940,8 +1025,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="Qwen/Qwen3-8B",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -958,8 +1044,20 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     if self._is_torchax_backend():
       self.skipTest("Not supported on TorchAX")
 
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 4096)
+    )
+
+    # Using 2 layer model for smoke test ensures that we still cover the pattern
+    # of sliding window + full attention.
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -968,8 +1066,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="openai/gpt-oss-20b",
-            sequence_length=4096,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1071,8 +1170,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_gpt2_forward(self, run_mode):
     """Tests the forward pass of GPT2."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1081,8 +1184,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="openai-community/gpt2",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1092,8 +1195,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_gpt2_train_1_step(self, run_mode):
     """Tests training GPT2."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1102,8 +1209,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="openai-community/gpt2",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -1120,8 +1227,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_phi_3_mini_4k_instruct_forward(self, run_mode):
     """Tests the forward pass of Phi-3-mini-4k-instruct."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1130,8 +1247,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="microsoft/Phi-3-mini-4k-instruct",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1143,8 +1261,18 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_phi_3_mini_4k_instruct_train_1_step(self, run_mode):
     """Tests training Phi-3-mini-4k-instruct."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+
+    def modify_config_hook(config):
+      if benchmark_utils.SMOKE_TEST.value:
+        config.num_hidden_layers = 2
+      return config
+
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1153,8 +1281,9 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="microsoft/Phi-3-mini-4k-instruct",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
+            custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
         train_factory=functools.partial(
@@ -1172,8 +1301,14 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_timm_resnet_50_forward(self, run_mode):
     """Tests the forward pass of resnet-50."""
+    input_shape = (
+        (1, 3, 224, 224)
+        if benchmark_utils.SMOKE_TEST.value
+        else (16, 3, 224, 224)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
             common.Platform.XLA_CPU,
@@ -1184,7 +1319,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="timm/resnet50d",
-            custom_kwargs={"input_shape": (16, 3, 224, 224)},
+            custom_kwargs={"input_shape": input_shape},
         ),
         model_and_input_factory=model_utils.timm_model_builder,
         eval_factory=benchmark_function_db.timm_eval_factory,
@@ -1194,9 +1329,14 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_timm_resnet_50_backward(self, run_mode):
     """Tests the backward pass of resnet-50."""
-
+    input_shape = (
+        (1, 3, 224, 224)
+        if benchmark_utils.SMOKE_TEST.value
+        else (16, 3, 224, 224)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1205,7 +1345,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="timm/resnet50d",
-            custom_kwargs={"input_shape": (16, 3, 224, 224)},
+            custom_kwargs={"input_shape": input_shape},
         ),
         model_and_input_factory=model_utils.timm_model_builder,
         train_factory=benchmark_function_db.simple_train_factory,
@@ -1215,8 +1355,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_hf_resnet_50_forward(self, run_mode):
     """Tests the forward pass of HuggingFace ResNet-50."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1225,8 +1369,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="microsoft/resnet-50",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_resnet_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1236,8 +1380,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_hf_resnet_50_train_1_step(self, run_mode):
     """Tests training HuggingFace ResNet-50."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1249,8 +1397,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         use_fused_optim=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="microsoft/resnet-50",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.huggingface_resnet_model_builder,
         train_factory=functools.partial(
@@ -1265,6 +1413,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     """Tests the forward pass of TIMM ViT Small DINO."""
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1287,6 +1436,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     """Tests training TIMM ViT Small DINO."""
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1388,8 +1538,12 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_whisper_large_v3_forward(self, run_mode):
     """Tests the forward pass of Whisper-Large-v3."""
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (16, 448)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1398,8 +1552,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="openai/whisper-large-v3",
-            sequence_length=448,
-            batch_size=16,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
         ),
         model_and_input_factory=model_utils.whisper_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1417,8 +1571,14 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     """Tests the forward pass of DETR ResNet-50."""
     if self._is_torchax_backend():
       self.skipTest("Not supported on TorchAX")
+    input_shape = (
+        (1, 3, 224, 224)
+        if benchmark_utils.SMOKE_TEST.value
+        else (8, 3, 800, 800)
+    )
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1427,7 +1587,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="facebook/detr-resnet-50",
-            custom_kwargs={"input_shape": (8, 3, 800, 800)},
+            custom_kwargs={"input_shape": input_shape},
         ),
         model_and_input_factory=model_utils.huggingface_detr_resnet_model_builder,
         eval_factory=benchmark_function_db.huggingface_eval_factory,
@@ -1490,12 +1650,19 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     """Tests the forward pass of NVIDIA-Nemotron-3-Nano-30B-A3B-BF16."""
     if self._is_torchax_backend():
       self.skipTest("Not supported on TorchAX")
+
+    batch_size, sequence_length = (
+        (1, 128) if benchmark_utils.SMOKE_TEST.value else (1, 512)
+    )
+    num_layers = 6
+
     def modify_config_hook(config):
-      config.layers_block_type = config.layers_block_type[:6]
+      config.layers_block_type = config.layers_block_type[:num_layers]
       return config
 
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
+            common.Platform.V5E_1X1,
             common.Platform.GFC_1X1X1,
             common.Platform.B200_1,
         ],
@@ -1504,8 +1671,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-            sequence_length=512,
-            batch_size=1,
+            sequence_length=sequence_length,
+            batch_size=batch_size,
             custom_kwargs={"modify_config_hook": modify_config_hook},
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
