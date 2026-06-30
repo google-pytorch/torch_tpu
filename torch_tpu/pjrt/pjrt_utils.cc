@@ -37,6 +37,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
+#include "c10/util/Exception.h"
 #include "llvm/ADT/STLExtras.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
@@ -273,14 +274,25 @@ absl::StatusOr<PjRtBufferPointers> Execute(
   tsl::profiler::TraceMe trace("Execute");
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
-  std::vector<std::vector<xla::PjRtBuffer*>> execution_arguments;
-  execution_arguments.reserve(1);
-  execution_arguments.push_back(std::move(argument_buffers));
-
-  TT_ASSIGN_OR_RETURN(std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>
-                          results_per_device,
-                      AdaptXlaError(executable->GetLoadedExecutable()->Execute(
-                          execution_arguments, execute_options)));
+  std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_per_device;
+  if (executable->GetLoadedExecutable()->addressable_devices().empty()) {
+    xla::PjRtDevice* const device = PjrtBackend::GetInstance().GetDevice();
+    ABSL_CHECK_NE(device, nullptr)  // CRASH_OK
+        << "PjRt device not initialized in Execute";
+    TT_ASSIGN_OR_RETURN(
+        std::vector<std::unique_ptr<xla::PjRtBuffer>> single_device_results,
+        AdaptXlaError(executable->GetLoadedExecutable()->ExecutePortable(
+            argument_buffers, device, execute_options)));
+    results_per_device.push_back(std::move(single_device_results));
+  } else {
+    std::vector<std::vector<xla::PjRtBuffer*>> execution_arguments;
+    execution_arguments.reserve(1);
+    execution_arguments.push_back(std::move(argument_buffers));
+    TT_ASSIGN_OR_RETURN(
+        results_per_device,
+        AdaptXlaError(executable->GetLoadedExecutable()->Execute(
+            execution_arguments, execute_options)));
+  }
 
   ABSL_CHECK(!results_per_device.empty())  // CRASH_OK
       << "XLA execution did not return any results";

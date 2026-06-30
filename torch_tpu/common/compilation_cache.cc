@@ -50,7 +50,12 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "llvm/ADT/StringRef.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/Visitors.h"
+#include "mlir/Support/WalkResult.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/_internal/dynamism/dynamism_ops.h"
 #include "torch_tpu/common/cache_key.h"
@@ -852,6 +857,29 @@ void CompilationCache::EnqueueCompilation(
     CompilationCacheKey key, ContextedModule contexted_module,
     UniqueCompileOptions compile_options) {
   EnsureInitialized();
+
+  bool has_collectives = false;
+  contexted_module.get().walk([&](mlir::Operation* op) {
+    llvm::StringRef op_name = op->getName().getStringRef();
+    if (op_name == "stablehlo.all_gather" ||
+        op_name == "stablehlo.all_reduce" ||
+        op_name == "stablehlo.all_to_all" ||
+        op_name == "stablehlo.collective_permute" ||
+        op_name == "stablehlo.reduce_scatter") {
+      has_collectives = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+
+  if (!has_collectives) {
+    ABSL_VLOG(2) << "Overriding compile options for single-device compilation "
+                    "(clearing device assignment and making portable)";
+    compile_options->compile_portable_executable = true;
+    compile_options->executable_build_options.set_num_partitions(1);
+    compile_options->executable_build_options.clear_device_assignment();
+  }
+
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
                                 UniqueCompileOptions options) mutable {

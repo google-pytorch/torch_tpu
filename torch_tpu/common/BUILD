@@ -928,7 +928,9 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
         "@stablehlo//:attr_type_builder_util",
         "@tsl//tsl/platform:numbers",
         "@xla//xla:xla_proto_cc",
@@ -1019,6 +1021,7 @@ torch_tpu_cc_test(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
+        "@xla//xla/service:computation_placer_hdr",
     ],
 )
 

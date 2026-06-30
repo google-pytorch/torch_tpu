@@ -52,6 +52,7 @@
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/service/computation_placer.h"
 #include "xla/xla.pb.h"
 
 ABSL_DECLARE_FLAG(bool, torch_tpu_internal_enable_compilation_container);
@@ -367,6 +368,60 @@ TEST_F(CompilationCacheTest, PeakMemoryReported) {
   EXPECT_GT(*stats.peak_compilation_memory_bytes, 0);
   ABSL_LOG(INFO) << "Peak compilation memory: "
                  << *stats.peak_compilation_memory_bytes;
+
+  CompilationCache::ShutDown();
+}
+
+TEST_F(CompilationCacheTest, PortableSingleDeviceCompilation) {
+  // Use xla_cpu for unit testing.
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "xla_cpu"});
+  ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
+
+  CompilationCache& cache = CompilationCache::GetInstance();
+
+  // Create options with 8 partitions and invalid device assignment.
+  UniqueCompileOptions compile_options =
+      std::make_unique<xla::CompileOptions>();
+  compile_options->executable_build_options.set_num_partitions(8);
+  xla::DeviceAssignment da(1, 8);
+  for (int i = 0; i < 8; ++i) {
+    da(0, i) = i;
+  }
+  compile_options->executable_build_options.set_device_assignment(da);
+
+  auto key = DummyKey(54321);
+  MlirComputationBuilder builder = [](mlir::MLIRContext& context)
+      -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
+    auto module = mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+    mlir::OpBuilder builder(&context);
+    builder.setInsertionPointToEnd(module.getBody());
+
+    auto tensor_type = mlir::RankedTensorType::get({4}, builder.getF32Type());
+    auto func_type = builder.getFunctionType({tensor_type}, {tensor_type});
+    auto func = builder.create<mlir::func::FuncOp>(
+        mlir::UnknownLoc::get(&context), "main", func_type);
+
+    auto* entry_block = func.addEntryBlock();
+    builder.setInsertionPointToStart(entry_block);
+
+    builder.create<mlir::func::ReturnOp>(mlir::UnknownLoc::get(&context),
+                                         entry_block->getArgument(0));
+
+    return module;
+  };
+
+  auto result = cache.GetOrCompile(key, {}, {}, std::move(builder),
+                                   std::move(compile_options));
+  ASSERT_TRUE(result.ok()) << "GetOrCompile failed: " << result.status();
+  auto exec_or = result->fixed_shape_kernel.get();
+  ASSERT_TRUE(exec_or.ok()) << "Compilation failed: " << exec_or.status();
+  auto exec = *exec_or;
+
+  // Verify that the executable is portable (cleared device assignment and 1
+  // partition).
+  const xla::PjRtLoadedExecutable* loaded_exec = exec->GetLoadedExecutable();
+  EXPECT_EQ(loaded_exec->num_partitions(), 1);
 
   CompilationCache::ShutDown();
 }
