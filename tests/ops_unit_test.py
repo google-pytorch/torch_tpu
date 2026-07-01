@@ -25703,6 +25703,105 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
               self.assertEqual(out_tpu.dtype, torch.float32)
               utils.assert_close(out_tpu.cpu(), expected)
 
+  def test_add_opmath_precision(self):
+    test_configs = (
+        (
+            torch.bfloat16,
+            [
+                ([-128.0, -256.0], 128.5, 1, True),
+                ([-256.0], 128.25, 2.0, True),
+                ([-128.0], [128.0], 1.00390625, False),
+                ([1.0078125, -1024.0], [0.00390625, 4.0], 1, False),
+            ],
+        ),
+        (
+            torch.float16,
+            [
+                ([-2048.0, -4096.0], 2048.5, 1, True),
+                ([-65504.0], 70000.0, 1, True),
+                ([-4096.0], 2048.25, 2.0, True),
+                ([-2048.0], [2048.0], 1.00048828125, False),
+                ([1.0009765625, -2048.0], [0.00048828125, 2.0], 1, False),
+            ],
+        ),
+    )
+    for dtype, cases in test_configs:
+      for a_val, other_val, alpha, is_scalar in cases:
+        with self.subTest(dtype=dtype, other=other_val, alpha=alpha):
+          a_cpu = torch.tensor(a_val, dtype=dtype)
+          a_tpu = a_cpu.to("tpu")
+          if is_scalar:
+            other_tpu = other_val
+            expected = (a_cpu.float() + alpha * other_val).to(dtype)
+          else:
+            other_cpu = torch.tensor(other_val, dtype=dtype)
+            other_tpu = other_cpu.to("tpu")
+            expected = (a_cpu.float() + alpha * other_cpu.float()).to(dtype)
+
+          # 1. Functional torch.add
+          res = torch.add(a_tpu, other_tpu, alpha=alpha)
+          self.assertEqual(res.dtype, dtype)
+          utils.assert_close(actual=res.cpu(), expected=expected)
+
+          # 2. Out-variant torch.add
+          out = torch.empty_like(a_tpu)
+          torch.add(a_tpu, other_tpu, alpha=alpha, out=out)
+          self.assertEqual(out.dtype, dtype)
+          utils.assert_close(actual=out.cpu(), expected=expected)
+
+          # 3. In-place add_
+          a_inplace = a_tpu.clone()
+          a_inplace.add_(other_tpu, alpha=alpha)
+          self.assertEqual(a_inplace.dtype, dtype)
+          utils.assert_close(actual=a_inplace.cpu(), expected=expected)
+
+          # 4. Operator + (when alpha == 1)
+          if alpha == 1:
+            res_op = a_tpu + other_tpu
+            self.assertEqual(res_op.dtype, dtype)
+            utils.assert_close(actual=res_op.cpu(), expected=expected)
+
+    t_f16 = torch.tensor(33000.0, dtype=torch.float16, device="tpu")
+    for alpha in (1.0, 2.0):
+      with self.subTest(alpha=alpha, test="overflow_out_f64"):
+        out_f64 = torch.empty((), dtype=torch.float64, device="tpu")
+        torch.add(t_f16, t_f16, alpha=alpha, out=out_f64)
+        expected = torch.add(t_f16.cpu(), t_f16.cpu(), alpha=alpha).double()
+        self.assertEqual(out_f64.dtype, torch.float64)
+        self.assertTrue(torch.isinf(out_f64.cpu()))
+        utils.assert_close(actual=out_f64.cpu(), expected=expected)
+
+        t_0d_f32 = torch.tensor(33000.0, dtype=torch.float32, device="tpu")
+        torch.add(t_f16, 33000.0, alpha=alpha, out=out_f64)
+        expected_scalar = torch.add(t_f16.cpu(), 33000.0, alpha=alpha).double()
+        self.assertEqual(out_f64.dtype, torch.float64)
+        self.assertTrue(torch.isinf(out_f64.cpu()))
+        utils.assert_close(actual=out_f64.cpu(), expected=expected_scalar)
+
+        torch.add(t_f16, t_0d_f32, alpha=alpha, out=out_f64)
+        expected_tensor = torch.add(
+            t_f16.cpu(), t_0d_f32.cpu(), alpha=alpha
+        ).double()
+        self.assertEqual(out_f64.dtype, torch.float64)
+        self.assertFalse(torch.isinf(out_f64.cpu()))
+        utils.assert_close(actual=out_f64.cpu(), expected=expected_tensor)
+
+        torch.add(t_0d_f32, t_f16, alpha=alpha, out=out_f64)
+        expected_rev_tensor = torch.add(
+            t_0d_f32.cpu(), t_f16.cpu(), alpha=alpha
+        ).double()
+        self.assertEqual(out_f64.dtype, torch.float64)
+        self.assertFalse(torch.isinf(out_f64.cpu()))
+        utils.assert_close(actual=out_f64.cpu(), expected=expected_rev_tensor)
+
+        torch.add(33000.0, t_f16, alpha=alpha, out=out_f64)
+        expected_rev_scalar = torch.add(
+            33000.0, t_f16.cpu(), alpha=alpha
+        ).double()
+        self.assertEqual(out_f64.dtype, torch.float64)
+        self.assertTrue(torch.isinf(out_f64.cpu()))
+        utils.assert_close(actual=out_f64.cpu(), expected=expected_rev_scalar)
+
 
 if __name__ == "__main__":
   absltest.main()

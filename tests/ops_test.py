@@ -296,10 +296,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 2.8e-5},
         torch.uint8: {"rtol": 2.8e-5},
     },
-    "add": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 1.5e-2},
-        torch.float16: {"rtol": 4.5e-3, "atol": 1.2e-3},
-    },
     "addmm": {
         torch.float16: {"rtol": 1.5e-2},
         torch.float32: {"rtol": 7.7e-3},
