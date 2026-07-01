@@ -122,52 +122,6 @@ mlir::MlirOp GetCausalMask(mlir::MlirBuilder& builder,
                                   mlir::stablehlo::ComparisonDirection::LT);
 }
 
-enum class SdpaPromotionType {
-  kNone,
-  kSoftmaxOnly,
-  kWholeModule,
-};
-
-// Determine exactly where type promotion should happen inside the attn module.
-// The softmax mode will emit a pattern that will ultimately be replace by XLA
-// with an optimized kernel. We have a simple huerstic informed by empirical
-// evidence to determine if this will be beneficial for performance.
-// The fallback is to run all the attn math in full precision for accuracy.
-SdpaPromotionType GetSdpaPromotionType(
-    mlir::MlirOp query, mlir::MlirOp key,
-    bool allow_half_precision_reduction_math) {
-  if (allow_half_precision_reduction_math) {
-    return SdpaPromotionType::kNone;
-  }
-
-  auto query_shape = GetTensorTypeOrDie(query).getShape();
-  auto key_shape = GetTensorTypeOrDie(key).getShape();
-
-  int64_t total_elements = 1;
-  for (auto dim : query_shape) {
-    total_elements *= dim;
-  }
-
-  int query_rank = query_shape.size();
-  int key_rank = key_shape.size();
-  bool sequence_length_supported = true;
-  bool sequence_length_too_large = false;
-  if (query_rank >= 2 && key_rank >= 2) {
-    int64_t seq_len_q = query_shape[query_rank - 2];
-    int64_t seq_len_kv = key_shape[key_rank - 2];
-    sequence_length_supported =
-        (seq_len_q % 128 == 0) && (seq_len_kv % 128 == 0);
-    sequence_length_too_large = (seq_len_q > 8192) || (seq_len_kv > 8192);
-  }
-
-  bool should_fallback = (total_elements < 500000) ||
-                         !sequence_length_supported ||
-                         sequence_length_too_large;
-
-  return should_fallback ? SdpaPromotionType::kWholeModule
-                         : SdpaPromotionType::kSoftmaxOnly;
-}
-
 absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     mlir::MlirBuilder& builder, mlir::MLIRContext* context, mlir::MlirOp query,
     mlir::MlirOp key, mlir::MlirOp value, std::optional<mlir::MlirOp> mask,
@@ -335,25 +289,23 @@ ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
       return GetTensorTypeOrDie(op).getElementType();
     };
 
-    SdpaPromotionType promotion_type = GetSdpaPromotionType(
-        query_mlir, key_mlir, allow_half_precision_reduction_math);
-
-    auto should_promote_input = [&](mlir::MlirOp op) {
+    auto should_promote = [&](mlir::MlirOp op) {
       auto type = get_element_type(op);
-      return (promotion_type == SdpaPromotionType::kWholeModule) &&
+      return !allow_half_precision_reduction_math &&
              (type.isF16() || type.isBF16());
     };
 
-    auto promote_input_if_required = [&](mlir::MlirOp op) {
-      return should_promote_input(op)
-                 ? mlir::stablehlo::ConvertElementType(
-                       op, builder.getOpBuilder().getF32Type())
-                 : op;
+    auto promote_if_required = [&](mlir::MlirOp op) {
+      return should_promote(op) ? mlir::stablehlo::ConvertElementType(
+                                      op, builder.getOpBuilder().getF32Type())
+                                : op;
     };
 
-    mlir::MlirOp query = promote_input_if_required(query_mlir);
-    mlir::MlirOp key = promote_input_if_required(key_mlir);
-    mlir::MlirOp value = promote_input_if_required(value_mlir);
+    mlir::MlirOp query = promote_if_required(query_mlir);
+
+    mlir::MlirOp key = promote_if_required(key_mlir);
+
+    mlir::MlirOp value = promote_if_required(value_mlir);
 
     std::optional<mlir::MlirOp> mask;
     if (mask_mlir) {
@@ -370,29 +322,12 @@ ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
     auto [query_4d, key_4d, value_4d, shifted_attn_logits, scale_value,
           head_count_ratio] = prep_results;
 
-    auto original_element_type = get_element_type(query_mlir);
-    bool is_half_precision =
-        original_element_type.isF16() || original_element_type.isBF16();
-
-    mlir::MlirOp logits = shifted_attn_logits;
-    if (promotion_type == SdpaPromotionType::kSoftmaxOnly &&
-        is_half_precision) {
-      logits = mlir::stablehlo::ConvertElementType(
-          shifted_attn_logits, builder.getOpBuilder().getF32Type());
-    }
-
     // Softmax along the last dimension (Lk)
-    mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
+    mlir::MlirOp exp_val = mlir::stablehlo::Exp(shifted_attn_logits);
     mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
     mlir::MlirOp sum_exp_broadcasted =
         mlir::stablehlo::BroadcastInDim(exp_val.getType(), sum_exp, {0, 1, 2});
     mlir::MlirOp softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
-
-    if (promotion_type == SdpaPromotionType::kSoftmaxOnly &&
-        is_half_precision) {
-      softmax =
-          mlir::stablehlo::ConvertElementType(softmax, original_element_type);
-    }
 
     // Compute Attention Output: softmax @ value
     // softmax: [B, H, Lq, Lk]
@@ -408,6 +343,9 @@ ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
     // Unflatten batch dimensions of output.
     mlir::MlirOp out_unflattened = unflatten_batch_dims(out_4d, out_dims);
 
+    // Convert back to original dtype
+    auto original_element_type =
+        GetTensorTypeOrDie(query_mlir).getElementType();
     mlir::MlirOp out = out_unflattened;
     if (GetTensorTypeOrDie(out_unflattened).getElementType() !=
         original_element_type) {
