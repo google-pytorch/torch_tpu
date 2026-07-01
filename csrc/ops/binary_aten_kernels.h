@@ -64,6 +64,9 @@ struct BinaryOpOptions {
   // Whether this binary operation is allowed on low-precision float dtypes
   // (`float8_*` or `float4_e2m1fn_x2`), e.g. `eq` and `ne`.
   bool allow_low_precision_float = false;
+  // When true, computation runs in InferComputationDtype while preserving the
+  // natural/output dtype.
+  bool use_accumulate_type = false;
 };
 
 namespace internal {

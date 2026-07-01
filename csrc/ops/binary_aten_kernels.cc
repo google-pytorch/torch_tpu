@@ -105,9 +105,18 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(const at::Tensor& self,
                                                  MlirBinaryOpBuilder op_builder,
                                                  BinaryOpOptions opts) {
   // Lift the "other" scalar to a tensor, in either constant or variable mode.
-
   at::ScalarType result_type = at::result_type(self, other);
-  TT_ASSIGN_OR_RETURN(at::Tensor other_tensor, MakeTensor(other, result_type));
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(result_type, /*includeBool=*/true)) {
+    result_type = c10::get_default_dtype_as_scalartype();
+  }
+  const at::ScalarType scalar_type = opts.use_accumulate_type
+                                         ? InferComputationDtype(result_type)
+                                         : result_type;
+  if (scalar_type != result_type && !opts.result_dtype.has_value()) {
+    TT_ASSIGN_OR_RETURN(opts.result_dtype, ToElementType(result_type));
+  }
+  TT_ASSIGN_OR_RETURN(at::Tensor other_tensor, MakeTensor(other, scalar_type));
   return DispatchBinaryOp(self, other_tensor, std::move(op_builder),
                           std::move(opts));
 }
@@ -129,17 +138,25 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
     }
   }
 
+  const at::ScalarType compute_scalar_type =
+      opts.use_accumulate_type ? InferComputationDtype(promoted_scalar_type)
+                               : promoted_scalar_type;
+
   TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      MoveCpuScalarsToTpu({self, other}, promoted_scalar_type));
+                      MoveCpuScalarsToTpu({self, other}, compute_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
 
   TT_ASSIGN_OR_RETURN(const Dimensions output_dims,
                       InferSize(self_tpu.sizes(), other_tpu.sizes()));
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      ToElementType(promoted_scalar_type));
-  mlir::ElementType output_dtype =
-      opts.result_dtype.value_or(computation_dtype);
+                      ToElementType(compute_scalar_type));
+  mlir::ElementType output_dtype;
+  if (opts.result_dtype.has_value()) {
+    output_dtype = *opts.result_dtype;
+  } else {
+    TT_ASSIGN_OR_RETURN(output_dtype, ToElementType(promoted_scalar_type));
+  }
   if (!opts.allow_low_precision_float) {
     TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
     TT_RETURN_IF_ERROR(
@@ -171,7 +188,17 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
                                  MlirBinaryOpBuilder bin_op_builder,
                                  BinaryOpOptions opts) {
   at::ScalarType result_type = at::result_type(self, other);
-  TT_ASSIGN_OR_RETURN(at::Tensor other_tensor, MakeTensor(other, result_type));
+  if (opts.force_float_inputs &&
+      c10::isIntegralType(result_type, /*includeBool=*/true)) {
+    result_type = c10::get_default_dtype_as_scalartype();
+  }
+  const at::ScalarType scalar_type = opts.use_accumulate_type
+                                         ? InferComputationDtype(result_type)
+                                         : result_type;
+  if (scalar_type != result_type && !opts.result_dtype.has_value()) {
+    TT_ASSIGN_OR_RETURN(opts.result_dtype, ToElementType(result_type));
+  }
+  TT_ASSIGN_OR_RETURN(at::Tensor other_tensor, MakeTensor(other, scalar_type));
   return DispatchBinaryOpOut(self, other_tensor, out, std::move(bin_op_builder),
                              std::move(opts));
 }
@@ -222,8 +249,12 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
+  const at::ScalarType compute_scalar_type =
+      opts.use_accumulate_type ? InferComputationDtype(promoted_scalar_type)
+                               : promoted_scalar_type;
+
   TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      MoveCpuScalarsToTpu({self, other}, promoted_scalar_type));
+                      MoveCpuScalarsToTpu({self, other}, compute_scalar_type));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
 
@@ -237,20 +268,35 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
     TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(promoted_scalar_type));
   }
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType expected_element_type,
+                      ToElementType(expected_result_type));
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      ToElementType(promoted_scalar_type));
+                      ToElementType(compute_scalar_type));
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
+  const bool cast_to_expected_result_type =
+      expected_element_type != computation_dtype &&
+      out_element_type != expected_element_type;
+  if (cast_to_expected_result_type) {
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+        "expected_result_type", expected_element_type));
+  }
+
   auto op_builder =
       [bin_op_builder = std::move(bin_op_builder),
-       reverse = opts.reverse_operands](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
-        auto& [self_op, other_op] = inputs;
-        if (reverse) {
-          return bin_op_builder(other_op, self_op);
-        }
-        return bin_op_builder(self_op, other_op);
-      };
+       reverse = opts.reverse_operands, expected_element_type,
+       cast_to_expected_result_type](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
+    auto& [self_op, other_op] = inputs;
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp result,
+                        reverse ? bin_op_builder(other_op, self_op)
+                                : bin_op_builder(self_op, other_op));
+    if (cast_to_expected_result_type) {
+      return CastIfNeeded(result, expected_element_type);
+    }
+    return result;
+  };
   return DispatchOpOut<2>(
       std::move(op_builder), {self_tpu, other_tpu}, out,
       {.op_name = opts.op_name,
@@ -310,9 +356,10 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_RETURN_IF_ERROR(
       ValidateOutDtype(out, expected_result_type, opts.allow_out_dtype_cast));
 
-  TT_ASSIGN_OR_RETURN(auto tpu_tensors,
-                      internal::MoveCpuScalarsToTpu({self, other, third},
-                                                    promoted_scalar_type));
+  TT_ASSIGN_OR_RETURN(
+      auto tpu_tensors,
+      internal::MoveCpuScalarsToTpu(
+          {self, other, third}, InferComputationDtype(promoted_scalar_type)));
   const at::Tensor& self_tpu = tpu_tensors[0];
   const at::Tensor& other_tpu = tpu_tensors[1];
   const at::Tensor& third_tpu = tpu_tensors[2];
@@ -327,6 +374,8 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(expected_result_type));
   TT_RETURN_IF_ERROR(ValidateNotLowPrecisionFloat(out));
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType expected_element_type,
+                      internal::ToElementType(expected_result_type));
   TT_ASSIGN_OR_RETURN(mlir::ElementType promoted_dtype,
                       internal::ToElementType(promoted_scalar_type));
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
@@ -334,10 +383,25 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-  auto ternary_builder = [op_builder = std::move(op_builder)](
-                             FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  const bool cast_to_expected_result_type =
+      expected_element_type != computation_dtype &&
+      out_element_type != expected_element_type;
+  if (cast_to_expected_result_type) {
+    TT_RETURN_IF_ERROR(opts.op_param_cache_keys.SetParam(
+        "expected_result_type", expected_element_type));
+  }
+
+  auto ternary_builder =
+      [op_builder = std::move(op_builder), expected_element_type,
+       cast_to_expected_result_type](FixedSizeSpan<mlir::MlirOp, 3> inputs)
+      -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, other_op, third_op] = inputs;
-    return op_builder(self_op, other_op, third_op);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp result,
+                        op_builder(self_op, other_op, third_op));
+    if (cast_to_expected_result_type) {
+      return CastIfNeeded(result, expected_element_type);
+    }
+    return result;
   };
   return DispatchOpOut<3>(
       std::move(ternary_builder), {self_tpu, other_tpu, third_tpu}, out,
@@ -1167,7 +1231,8 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
     if (promoted_alpha.IsOne()) {
       TT_THROW_IF_ERROR(
           BinaryOpOut(self, other, out, BuildAddShlo,
-                      {.op_param_cache_keys = std::move(param_keys)}));
+                      {.op_param_cache_keys = std::move(param_keys),
+                       .use_accumulate_type = true}));
       return out;
     }
 
