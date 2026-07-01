@@ -16,7 +16,6 @@
 
 #include "torch_tpu/ops/elu/elu_aten_kernels.h"
 
-#include <functional>
 #include <string_view>
 #include <utility>
 
