@@ -691,6 +691,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_foreach_trunc_";
     case OpName::kForeachZero_:
       return "_foreach_zero_";
+    case OpName::kFusedAdam:
+      return "_fused_adam_";
+    case OpName::kFusedAdamTensorLr:
+      return "_fused_adam_.tensor_lr";
     case OpName::kFusedAdamw:
       return "_fused_adamw_";
     case OpName::kFusedAdamwTensorLr:

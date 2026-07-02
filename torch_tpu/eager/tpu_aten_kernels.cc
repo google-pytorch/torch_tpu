@@ -92,6 +92,7 @@
 #include "torch_tpu/ops/fmax/fmax_aten_kernels.h"
 #include "torch_tpu/ops/fmin/fmin_aten_kernels.h"
 #include "torch_tpu/ops/foreach_aten_kernels.h"
+#include "torch_tpu/ops/fused_adam/fused_adam_aten_kernels.h"
 #include "torch_tpu/ops/fused_adamw/fused_adamw_aten_kernels.h"
 #include "torch_tpu/ops/gather/gather_aten_kernels.h"
 #include "torch_tpu/ops/gelu/gelu_aten_kernels.h"
@@ -610,6 +611,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kForeachTrunc>(m, AtenForeachTrunc);
   ImplStable<OpName::kForeachTrunc_>(m, AtenForeachTrunc_);
   ImplStable<OpName::kForeachZero_>(m, AtenForeachZero_);
+  ImplStable<OpName::kFusedAdam>(m, AtenFusedAdam);
+  ImplStable<OpName::kFusedAdamTensorLr>(m, AtenFusedAdamTensorLr);
   ImplStable<OpName::kFusedAdamw>(m, AtenFusedAdamw);
   ImplStable<OpName::kFusedAdamwTensorLr>(m, AtenFusedAdamwTensorLr);
   ImplStable<OpName::kFusedRmsNorm>(m, AtenFusedRmsNorm);

@@ -359,6 +359,8 @@ enum class OpName {
   kForeachTrunc,
   kForeachTrunc_,
   kForeachZero_,
+  kFusedAdam,
+  kFusedAdamTensorLr,
   kFusedAdamw,
   kFusedAdamwTensorLr,
   kFusedRmsNorm,
