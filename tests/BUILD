@@ -1079,7 +1079,7 @@ torch_tpu_py_test(
     srcs = ["index_put_op_unit_test.py"],
     main = "index_put_op_unit_test.py",
     oss_presubmit_tpu_generation = tpu_gen(
-        "v6",
+        "v7",
         reason = "Load balancing",
     ),
     shard_count = 20,
@@ -1132,7 +1132,7 @@ torch_tpu_py_test(
     name = "tensor_test",
     srcs = ["tensor_test.py"],
     oss_presubmit_tpu_generation = tpu_gen(
-        "v6",
+        "v7",
         reason = "Load balancing",
     ),
     tags = [
@@ -1648,10 +1648,6 @@ torch_tpu_py_test(
     name = "autoload_test_tpu",
     srcs = ["autoload_tpu_test.py"],
     main = "autoload_tpu_test.py",
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v6",
-        reason = "Load balancing",
-    ),
     tags = [
         "requires-tpu-v5lite",
     ],

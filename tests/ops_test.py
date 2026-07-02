@@ -681,12 +681,6 @@ def update_dict(d, u):
 # Like ACCURACY_OVERRIDES_VS_CPU, but for TPU vs GPU instead.
 ACCURACY_OVERRIDES_VS_GPU = {
     # go/keep-sorted start
-    "_fft_c2c": {
-        torch.complex64: {"rtol": 2e-4, "atol": 2e-4},
-    },
-    "_fft_c2r": {
-        torch.float32: {"rtol": 2e-4, "atol": 2e-4},
-    },
     "_foreach_acos": {
         torch.complex64: {"rtol": 4.2e-5, "atol": 7.1e-5},
     },

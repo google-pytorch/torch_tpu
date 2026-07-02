@@ -430,16 +430,22 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(out_scalar_type));
 
+    const auto comp_type = ToAccumulateType(self.scalar_type());
+    TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                       ConvertTo<mlir::ElementType>(comp_type));
+
     auto op_builder = [normalized_dims, norm_enum, onesided](
                           mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftR2cShlo(input, normalized_dims, norm_enum, onesided);
     };
 
-    TT_ASSIGN_OR_THROW(auto result, DispatchOp<1>(std::move(op_builder), self,
-                                                  {.out_dtype = output_dtype,
-                                                   .out_dims = out_sizes,
-                                                   .op_param_cache_keys =
-                                                       std::move(param_keys)}));
+    TT_ASSIGN_OR_THROW(
+        auto result,
+        DispatchOp<1>(std::move(op_builder), self,
+                      {.out_dtype = output_dtype,
+                       .out_dims = out_sizes,
+                       .computation_dtype = computation_dtype,
+                       .op_param_cache_keys = std::move(param_keys)}));
 
     TT_ASSIGN_OR_THROW(
         auto out, MakeEmptyTensor(out_sizes, out_scalar_type, self.device()));
@@ -469,6 +475,10 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
+        const auto comp_type = ToAccumulateType(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                           ConvertTo<mlir::ElementType>(comp_type));
+
         auto op_builder =
             [normalized_dims, norm_enum,
              onesided](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -480,6 +490,7 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
                            .out_dims = CopyIntVector(out.sizes()),
+                           .computation_dtype = computation_dtype,
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
@@ -504,6 +515,10 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
 
+    const auto comp_type = ToAccumulateType(self.scalar_type());
+    TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                       ConvertTo<mlir::ElementType>(comp_type));
+
     auto op_builder = [normalized_dims, norm_enum, forward](
                           mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
@@ -514,6 +529,7 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
         DispatchOp<1>(std::move(op_builder), self,
                       {.out_dtype = output_dtype,
                        .out_dims = CopyIntVector(self.sizes()),
+                       .computation_dtype = computation_dtype,
                        .op_param_cache_keys = std::move(param_keys)}));
 
     TT_ASSIGN_OR_THROW(
@@ -547,6 +563,10 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
+        const auto comp_type = ToAccumulateType(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                           ConvertTo<mlir::ElementType>(comp_type));
+
         auto op_builder =
             [normalized_dims, norm_enum,
              forward](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -558,6 +578,7 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
                            .out_dims = CopyIntVector(out.sizes()),
+                           .computation_dtype = computation_dtype,
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
@@ -588,6 +609,10 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
                            ConvertTo<mlir::ElementType>(
                                c10::toRealValueType(self.scalar_type())));
 
+        const auto comp_type = ToAccumulateType(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                           ConvertTo<mlir::ElementType>(comp_type));
+
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -600,6 +625,7 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
                            .out_dims = out_sizes,
+                           .computation_dtype = computation_dtype,
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_ASSIGN_OR_THROW(
@@ -637,6 +663,10 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
+        const auto comp_type = ToAccumulateType(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                           ConvertTo<mlir::ElementType>(comp_type));
+
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -649,6 +679,7 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
                            .out_dims = out_sizes,
+                           .computation_dtype = computation_dtype,
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
