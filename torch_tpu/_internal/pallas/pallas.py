@@ -29,6 +29,7 @@ import torch
 from torch._library.custom_ops import CustomOpDef
 import torch.library
 from torch_tpu._internal.pallas import _compat
+from torch_tpu._internal.pallas import _mlir_aliasing
 from torch_tpu._internal.pallas import tpu_torch_pallas
 
 try:
@@ -42,6 +43,37 @@ except ImportError as ex:
   raise ImportError(
       "JAX/Pallas is not available. Please install JAX to use this API."
   ) from ex
+
+
+# Name of the attribute set on a `CustomOpDef` (and its `OpOverload`) when
+# the op is registered with `inplace_donate=True`. Its value is a tuple of
+# donated input indices (the resolved ``donate_argnums``).
+#
+# The compile-backend FX pass `inplace_donate_ssa_rename` reads this
+# attribute directly off `node.target` to identify which call_function
+# nodes are inplace-donate pallas ops. Keeping the flag on the op object
+# itself (instead of in a side-channel registry) means the pass doesn't
+# depend on registration order — any FX node that references the op
+# already references the annotated `OpOverload`.
+INPLACE_DONATE_ARGNUMS_ATTR = "_pallas_inplace_donate_argnums"
+
+
+def _annotate_inplace_donate(
+    custom_op_def: CustomOpDef,
+    donate_argnums: tuple[int, ...],
+) -> None:
+  """Stamps the inplace-donate marker onto the `CustomOpDef` and its
+  `OpOverload` so the compile-backend FX pass can recognize the op.
+
+  The attribute is set on BOTH objects: the `CustomOpDef` for any code
+  that holds the user-facing op handle, and the `OpOverload` because
+  that is what appears as `node.target` in FX graphs.
+  """
+  value = tuple(donate_argnums)
+  setattr(custom_op_def, INPLACE_DONATE_ARGNUMS_ATTR, value)
+  opoverload = getattr(custom_op_def, "_opoverload", None)
+  if opoverload is not None:
+    setattr(opoverload, INPLACE_DONATE_ARGNUMS_ATTR, value)
 
 
 # Based on torch/_C/__init__.pyi
@@ -411,6 +443,7 @@ class JaxCallable:
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
+      inplace_donate: bool = False,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -437,6 +470,18 @@ class JaxCallable:
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
+      inplace_donate: If True, after the kernel call each donated input
+        tensor's storage is rebound to its corresponding output buffer
+        (assumes a 1:1 input-index → output-index mapping), so
+        subsequent reads of the input observe the kernel's writes
+        WITHOUT requiring an explicit ``input.copy_(output)`` afterwards.
+        The returned output is still a fresh ``at::Tensor`` wrapping the
+        same buffer (returning the input itself would trip
+        torch.library's aliasing check). Use this when the same input
+        tensor is passed to many sequential donating kernel calls (e.g.
+        a shared KV cache bundle threaded through every attention layer)
+        — the explicit copy_ in that pattern degrades to a full-tensor
+        memcpy per call, which can dominate runtime.
     """
 
     self.name = name
@@ -445,6 +490,7 @@ class JaxCallable:
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
     self.static_argnums = static_argnums
+    self.inplace_donate = bool(inplace_donate)
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
     with jax._src.config.export_ignore_forward_compatibility(True):
@@ -515,10 +561,23 @@ class JaxCallable:
       )
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = self.exported(*jax_args, **kwargs)
+      serialized_mlir = lowered.mlir_module_serialized
+      if self.inplace_donate and self.donate_argnums:
+        # Annotate the kernel's inner stablehlo.custom_call with
+        # output_operand_aliases so XLA buffer-assignment reuses the
+        # donated input's buffer for the matching output buffer
+        # per-call. Without this, chains of N donating calls allocate N
+        # fresh output buffers and the runtime spends most of its time
+        # copying the donated input forward across them. See
+        # `_mlir_aliasing.inject_inplace_donate_aliases` for the
+        # rewrite semantics.
+        serialized_mlir = _mlir_aliasing.inject_inplace_donate_aliases(
+            serialized_mlir, self.donate_argnums,
+        )
       tpu_torch_pallas.register_custom_kernel(
           self.name,
           kernel_key,
-          serialized_mlir_module=lowered.mlir_module_serialized,
+          serialized_mlir_module=serialized_mlir,
       )
       # Use out_tree to format the outputs shapes - i.e. pack in tuple, nested
       # tuple, etc.
@@ -540,10 +599,15 @@ class JaxCallable:
         inputs=tensor_args,
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
+        inplace_donate=self.inplace_donate,
     )
 
-    for in_idx, out_idx in self.input_output_aliases.items():
-      tensor_args[in_idx].copy_(results[out_idx])
+    # `inplace_donate=True` already rebound each donated input's storage to
+    # the corresponding output buffer in C++ (see pallas_py.cc), so the
+    # `input.copy_(output)` republish below is redundant — skip it.
+    if not self.inplace_donate:
+      for in_idx, out_idx in self.input_output_aliases.items():
+        tensor_args[in_idx].copy_(results[out_idx])
 
     return out_tree.unflatten(results)
 
@@ -559,6 +623,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
   ...
 
@@ -574,6 +639,7 @@ def custom_jax_kernel(
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ) -> JaxCallable:
   ...
 
@@ -588,6 +654,7 @@ def custom_jax_kernel(
     input_partition_specs=None,
     *,
     warn_deprecated: bool = True,
+    inplace_donate: bool = False,
 ):
   """Deprecated: Please use `jax_op` instead.
 
@@ -668,6 +735,7 @@ def custom_jax_kernel(
         input_partition_specs=input_partition_specs,
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
+        inplace_donate=inplace_donate,
         input_output_aliases=input_output_aliases,
     )
 
@@ -685,6 +753,7 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    inplace_donate: bool = False,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
   ...
 
@@ -698,6 +767,7 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    inplace_donate: bool = False,
 ) -> CustomOpDef:
   ...
 
@@ -710,6 +780,7 @@ def jax_op(
     donate_argnums=None,
     mesh=None,
     input_partition_specs=None,
+    inplace_donate=False,
 ):
   """Registers a JAX function as a custom PyTorch operation.
 
@@ -728,6 +799,37 @@ def jax_op(
     donate_argnums: A sequence of argument indices to donate.
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None
+    inplace_donate: If True, each donated input tensor's storage is
+      rebound IN PLACE to the corresponding output buffer (1:1 by
+      index), so subsequent reads of the input observe the kernel's
+      writes WITHOUT the caller having to ``input.copy_(output)``. The
+      returned output is still a fresh ``at::Tensor`` (different
+      ``c10::StorageImpl``) wrapping the same buffer — returning the
+      input itself would alias an input and be rejected by
+      torch.library's aliasing check.
+
+      Useful when the donated input is a large tensor threaded through
+      many sequential donating calls (e.g. a shared KV cache bundle
+      across attention layers), where the explicit republish copy
+      degrades to a full-tensor memcpy per call.
+
+      Example:
+
+        ```python
+        # Without inplace_donate, callers must republish after the op:
+        op = pallas.jax_op("ns::add", add_vectors_jax, donate_argnums=(0,))
+        out = op(x, y)
+        x.copy_(out)   # ← memcpy x.numel() bytes, every call
+        # Subsequent reads of `x` see the kernel's writes.
+
+        # With inplace_donate=True, x's storage is rebound in place; no
+        # republish is needed:
+        op = pallas.jax_op(
+            "ns::add_inplace", add_vectors_jax,
+            donate_argnums=(0,), inplace_donate=True,
+        )
+        _ = op(x, y)   # ← x now reads the kernel's output buffer
+        ```
 
   Returns:
     A `CustomOpDef` instance if `fn` is provided, or a decorator that returns
@@ -754,6 +856,7 @@ def jax_op(
         input_partition_specs=input_partition_specs,
         static_argnums=static_argnums,
         warn_deprecated=False,
+        inplace_donate=inplace_donate,
     )
 
     # Jax functions are inherently immutable, even donated args are immutable in
@@ -795,9 +898,192 @@ def jax_op(
 
     result.register_fake(fake_fn)
 
+    if inplace_donate:
+      # Under torch.compile, sequential calls to this op are fused into a
+      # single executable. The host-side rebind in `PyCallCustomKernel` fires
+      # at most once during tracing, so the chained-donation semantics that
+      # work in eager mode do not survive into the compiled graph. The
+      # compile backend's `inplace_donate_ssa_rename` FX pass reads this
+      # annotation off the `OpOverload` to thread each donated input's
+      # matching output forward to subsequent uses, giving every donating
+      # call a distinct SSA value.
+      _annotate_inplace_donate(result, tuple(wrapped_fn.donate_argnums))
+
     return result
 
   if fn is None:
     return dec
   else:
     return dec(fn)
+
+
+class _LazyJaxCallable:
+  """Backs a `declare_jax_op`-registered op until a real kernel is bound.
+
+  The instance is registered with `torch.library.custom_op` as the op's
+  implementation. Until `bind_jax_kernel` swaps in a real
+  :class:`JaxCallable`, eager invocation (and the placeholder trace inside
+  `EagerLikeFxInterpreter`) raises a clear error so that any forward that
+  fires before binding is caught loudly instead of silently producing
+  wrong results.
+
+  Looks like a function to `torch.library`'s schema inference: we forward
+  ``inspect.signature`` to the user-provided ``fake_fn`` and stub out
+  ``__globals__`` the same way :class:`JaxCallable` does.
+  """
+
+  def __init__(
+      self,
+      name: str,
+      fake_fn: Callable[..., Any],
+      donate_argnums: list[int],
+      inplace_donate: bool,
+      static_argnums: tuple[int, ...],
+  ):
+    self.name = name
+    self.fake_fn = fake_fn
+    self.donate_argnums = list(donate_argnums)
+    self.inplace_donate = bool(inplace_donate)
+    self.static_argnums = tuple(static_argnums)
+    self._bound: "JaxCallable | None" = None  # filled by bind_jax_kernel.
+    # Make this instance look like a function to `torch.library.infer_schema`.
+    self.__signature__ = inspect.signature(fake_fn)
+    self.__globals__ = None
+
+  def __repr__(self):
+    state = "bound" if self._bound is not None else "unbound"
+    return f"_LazyJaxCallable(name={self.name!r}, state={state})"
+
+  def __call__(self, *args, **kwargs):
+    if self._bound is None:
+      raise RuntimeError(
+          f"pallas op {self.name!r} was declared via "
+          "pallas.declare_jax_op but its JAX kernel has not yet been "
+          "bound via pallas.bind_jax_kernel. Bind the kernel before "
+          "invoking the op (eagerly or under torch.compile)."
+      )
+    return self._bound(*args, **kwargs)
+
+
+def declare_jax_op(
+    name: str,
+    fake_fn: Callable[..., Any],
+    *,
+    donate_argnums: Sequence[int] | None = None,
+    inplace_donate: bool = False,
+    static_argnums: tuple[int, ...] = (),
+) -> CustomOpDef:
+  """Pre-declares a pallas op whose JAX kernel implementation is bound later.
+
+  Use this when the op's name and input/output shape contract are known at
+  module construction time but the JAX kernel itself depends on runtime
+  context that is not yet available (e.g. a `jax.sharding.Mesh`, weight
+  scales, or any partial-applied parameter assembled after model load).
+
+  The returned `CustomOpDef` is usable immediately by code that builds an
+  FX graph: `torch.compile` traces it, the FX node carries the
+  ``inplace_donate`` annotation, and the compile-backend
+  `inplace_donate_ssa_rename` FX pass picks it up. Eager invocation before
+  :func:`bind_jax_kernel` is called raises a clear error.
+
+  Args:
+    name: Qualified op name (must contain ``"::"``). Same constraints as
+      :func:`jax_op`.
+    fake_fn: Shape-inference function used by `torch.library.register_fake`.
+      Must accept the same positional/keyword arguments as the eventual
+      JAX kernel and return placeholder tensors (e.g. via
+      ``torch.empty_like`` for each output). Its parameter annotations
+      determine the op's torch schema.
+    donate_argnums: Indices of arguments that will be donated by the
+      bound kernel. Must match the donation contract of the JAX function
+      bound later.
+    inplace_donate: If True, marks the op so the
+      `inplace_donate_ssa_rename` FX pass threads each donated input's
+      matching output forward to subsequent uses under `torch.compile`.
+      See :func:`jax_op` for the semantics under eager execution.
+    static_argnums: Tuple of argument positions that are compile-time
+      constants.
+
+  Returns:
+    A `CustomOpDef` whose `__call__` raises until :func:`bind_jax_kernel`
+    is invoked with the actual JAX function.
+  """
+  if "::" not in name:
+    raise ValueError(f"Op name {name} does not contain a namespace.")
+  if len(name.split("::")) != 2:
+    raise ValueError(f"Op name {name} must have exactly one '::' separator.")
+
+  lazy = _LazyJaxCallable(
+      name=name,
+      fake_fn=fake_fn,
+      donate_argnums=list(donate_argnums or []),
+      inplace_donate=inplace_donate,
+      static_argnums=static_argnums,
+  )
+
+  result = torch.library.custom_op(
+      name,
+      lazy,
+      mutates_args=(),
+  )
+  result.register_fake(fake_fn)
+
+  # Stash the lazy callable on the CustomOpDef so `bind_jax_kernel` can
+  # find it without a side-channel registry.
+  result._pallas_lazy_callable = lazy  # pylint: disable=protected-access
+
+  if inplace_donate:
+    _annotate_inplace_donate(result, tuple(lazy.donate_argnums))
+
+  return result
+
+
+def bind_jax_kernel(
+    custom_op_def: CustomOpDef,
+    jax_fn: Callable[..., Any],
+    *,
+    mesh: jax.sharding.Mesh | None = None,
+    input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+) -> None:
+  """Binds the JAX kernel implementation for an op produced by
+  :func:`declare_jax_op`.
+
+  After this call eager invocation works normally, and the compile-backend
+  trace can lower the kernel to MLIR. `donate_argnums`, `inplace_donate`,
+  and `static_argnums` were fixed at declaration time and are not
+  re-specified here — they are read from the declared op's lazy callable.
+
+  Args:
+    custom_op_def: The `CustomOpDef` returned by :func:`declare_jax_op`.
+    jax_fn: The JAX function (typically a `functools.partial` over a
+      pallas kernel with `mesh`/scales/etc. baked in) to bind.
+    mesh: Optional sharding mesh.
+    input_partition_specs: Optional input partition specs.
+
+  Raises:
+    ValueError: If `custom_op_def` was not produced by
+      :func:`declare_jax_op`, or if its kernel has already been bound.
+  """
+  lazy = getattr(custom_op_def, "_pallas_lazy_callable", None)
+  if lazy is None:
+    raise ValueError(
+        "bind_jax_kernel: the given CustomOpDef was not produced by "
+        "pallas.declare_jax_op."
+    )
+  if lazy._bound is not None:
+    raise ValueError(
+        f"bind_jax_kernel: pallas op {lazy.name!r} already has a bound "
+        "kernel. Pre-declared ops can only be bound once."
+    )
+
+  wrapped_fn = custom_jax_kernel(
+      jax_fn,
+      lazy.name,
+      donate_argnums=lazy.donate_argnums,
+      mesh=mesh,
+      input_partition_specs=input_partition_specs,
+      static_argnums=lazy.static_argnums,
+      warn_deprecated=False,
+      inplace_donate=lazy.inplace_donate,
+  )
+  lazy._bound = wrapped_fn  # pylint: disable=protected-access

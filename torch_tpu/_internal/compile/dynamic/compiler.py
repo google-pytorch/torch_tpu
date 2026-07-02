@@ -25,6 +25,7 @@ from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic.dynamic_adapters import DynamicAdapterLinearHypothesis
+from torch_tpu._internal.compile.fx_passes import inplace_donate_ssa_rename
 from torch_tpu._internal.compile.dynamic.dynamic_adapters import ShapeBoundInfo
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
@@ -540,6 +541,13 @@ class DynamicCompiler(compiler.Compiler):
         "[DynamicTpuBackend] Compile FX Graph: %s",
         LazyString(graph_module.print_readable),
     )
+
+    # ``inplace_donate_ssa_rename`` is only plumbed through ``StaticCompiler``,
+    # so the dynamic-shapes path cannot honor ``inplace_donate=True`` today.
+    # Raise here (before any dynamic-shape transformation) so the user sees a
+    # clear "not supported" message instead of XLA's much less actionable
+    # "Donation requested for invalid buffer".
+    inplace_donate_ssa_rename.raise_if_present(graph_module)
 
     # Create a SymInt shape manager.
     sym_shape_manager = SymShapeManager(graph_module, example_inputs)

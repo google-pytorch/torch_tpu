@@ -55,9 +55,18 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "mlir_aliasing",
+    srcs = ["_mlir_aliasing.py"],
+    deps = [
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
     deps = [
+        ":mlir_aliasing",
         ":pallas_compat",
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
@@ -75,6 +84,7 @@ torch_tpu_cc_library(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
+        "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
@@ -86,6 +96,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
@@ -108,6 +119,7 @@ pybind_extension(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
+        "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
@@ -119,6 +131,7 @@ pybind_extension(
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",

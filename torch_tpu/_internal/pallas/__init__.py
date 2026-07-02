@@ -15,14 +15,18 @@
 
 from torch_tpu._internal.pallas import pallas
 
+bind_jax_kernel = pallas.bind_jax_kernel
 custom_jax_kernel = pallas.custom_jax_kernel
+declare_jax_op = pallas.declare_jax_op
 jax_op = pallas.jax_op
 
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
+    "bind_jax_kernel",
     "custom_jax_kernel",
+    "declare_jax_op",
     "jax_op",
     # go/keep-sorted end
 ]

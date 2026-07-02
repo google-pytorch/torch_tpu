@@ -37,6 +37,7 @@ from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.fx_passes import inplace_donate_ssa_rename
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
@@ -211,6 +212,18 @@ class StaticCompiler(Compiler):
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
     graph_transform_observer.GraphTransformObserver(
+        graph_module, "inplace_donate_ssa_rename"
+    ).apply_graph_pass(inplace_donate_ssa_rename.apply)
+    # Detect executable-level inplace-donate aliases AFTER the SSA rename has
+    # rewritten the chain (so the per-call ``getitem(call, 0)`` nodes for
+    # multi-output donations exist) but BEFORE any further pass might fold or
+    # erase the chain. Each entry is a ``(placeholder_index, terminus_node)``
+    # pair; the terminus is the final SSA value of the donation chain that
+    # the executable runtime should rebind onto the donated input tensor.
+    donate_alias_termini = inplace_donate_ssa_rename.find_donate_aliases(
+        graph_module
+    )
+    graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
     if not is_fwd:
@@ -260,6 +273,7 @@ class StaticCompiler(Compiler):
             graph_module,
             placeholder_args,
             build_mlir_module=(tracing_enabled or self._debug),
+            donate_alias_termini=donate_alias_termini,
         )
 
     if exported_mlir.is_noop:
@@ -291,6 +305,7 @@ class StaticCompiler(Compiler):
         executable=exported_mlir.executable,
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
         updates_default_generator_state=exported_mlir.updates_default_generator_state,
+        donate_input_output_aliases=exported_mlir.donate_input_output_aliases,
     )
 
     if self._debug and mlir_module is not None:
