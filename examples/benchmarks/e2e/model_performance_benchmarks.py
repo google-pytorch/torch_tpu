@@ -468,8 +468,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   )
   def test_gemma_4_26b_a4b_ragged_moe_12_layers_forward(self, run_mode):
     """Tests the forward pass of Gemma-4-26B-A4B (12 Layers) with Ragged MoE."""
-    if self._is_torchax_backend():
-      self.skipTest("TorchAX does not support distributed tests yet.")
 
     def modify_config_hook(config):
       if hasattr(config, "text_config"):
@@ -1157,10 +1155,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   )
   def test_qwen3_5_397b_a17b_4layer_moe_forward(self, run_mode):
     """Tests the forward pass of Qwen3-5-397B-A17B."""
-    if self._is_torchax_backend():
-      self.skipTest(
-          "Not supported on torchax. Missing grouped_mm op for torchax."
-      )
 
     def modify_config_hook(base_config):
       if hasattr(base_config, "get_text_config"):
@@ -1315,8 +1309,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_gpt_oss_20b_forward(self, run_mode):
     """Tests the forward pass of GPT-OSS-20B."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
 
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
@@ -1368,8 +1360,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_gpt_oss_120b_4_layers_forward(self, run_mode):
     """Tests the forward pass of GPT-OSS-20B."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
 
     def modify_config_hook(config):
       config.num_hidden_layers = 4
@@ -1769,8 +1759,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_detr_resnet_50_forward(self, run_mode):
     """Tests the forward pass of DETR ResNet-50."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             common.Platform.GFC_1X1X1,
@@ -1795,8 +1783,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_vjepa2_vitl_forward(self, run_mode):
     """Tests the forward pass of VJEPA2-ViT-L."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             common.Platform.V5E_1X1,
@@ -1819,8 +1805,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_vjepa2_vitg_forward(self, run_mode):
     """Tests the forward pass of VJEPA2-ViT-G."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
             common.Platform.GFC_1X1X1,
@@ -1842,8 +1826,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_nemotron_3_nano_30b_6_layers_forward(self, run_mode):
     """Tests the forward pass of NVIDIA-Nemotron-3-Nano-30B-A3B-BF16."""
-    if self._is_torchax_backend():
-      self.skipTest("Not supported on TorchAX")
     def modify_config_hook(config):
       config.layers_block_type = config.layers_block_type[:6]
       return config
