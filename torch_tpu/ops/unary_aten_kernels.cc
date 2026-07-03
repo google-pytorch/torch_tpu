@@ -79,6 +79,10 @@
       TT_ASSIGN_OR_THROW(                                                    \
           const auto out_mlir_type,                                          \
           ::torch_tpu::ConvertTo<mlir::ElementType>(out_dtype));             \
+      const auto comp_type = ToAccumulateType(self.scalar_type());           \
+      TT_ASSIGN_OR_THROW_IMPL_2_(                                            \
+          _statusor_comp_dtype, const auto computation_dtype,                \
+          ::torch_tpu::ConvertTo<mlir::ElementType>(comp_type));             \
       ::torch_tpu::MlirUnaryOpBuilder op_builder_with_out_dtype =            \
           [out_mlir_type](                                                   \
               mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {          \
@@ -87,7 +91,8 @@
       TT_THROW_IF_ERROR(::torch_tpu::UnaryOpOut(                             \
           self, out, std::move(op_builder_with_out_dtype),                   \
           {.op_param_cache_keys = std::move(param_keys),                     \
-           .out_dtype = out_mlir_type}));                                    \
+           .out_dtype = out_mlir_type,                                       \
+           .computation_dtype = computation_dtype}));                        \
       return out;                                                            \
     });                                                                      \
   }                                                                          \
