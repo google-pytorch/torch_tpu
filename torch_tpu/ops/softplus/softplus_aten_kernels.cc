@@ -16,7 +16,6 @@
 
 #include "torch_tpu/ops/softplus/softplus_aten_kernels.h"
 
-#include <functional>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
