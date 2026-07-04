@@ -88,7 +88,7 @@ export BAZEL_OUTPUT_BASE="$BAZEL_CACHE_DIR/output_base"
 print_info "Working directory: $PWD"
 print_info "Bazel cache: $BAZEL_CACHE_DIR"
 print_info "Locating PyTorch installation..."
-TORCH_PATH=$(python -c "import torch, os; print(os.path.dirname(torch.__file__))" 2>/dev/null)
+TORCH_PATH=$(python -c "import torch, os; print(os.path.dirname(torch.__file__))")
 
 if [[ -z "$TORCH_PATH" ]]; then
     print_error "Could not find PyTorch installation"
