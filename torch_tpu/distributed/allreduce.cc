@@ -63,7 +63,9 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllReduceShlo(
         }
       },
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
-      /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0),
+      /*channel_id=*/
+      BuildChannelHandleAttr(builder, /*handle=*/NextCollectiveChannelHandle(),
+                             /*type=*/0),
       /*use_global_device_ids=*/true);
 
   ABSL_CHECK_EQ(all_reduce_results.size(), 1);  // CRASH_OK

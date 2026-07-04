@@ -70,7 +70,9 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
       output_type, input, reduction_computation,
       /*scatter_dimension=*/0,
       /*replica_groups=*/BuildReplicaGroupsAttr(builder, device_groups),
-      /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0),
+      /*channel_id=*/
+      BuildChannelHandleAttr(builder, /*handle=*/NextCollectiveChannelHandle(),
+                             /*type=*/0),
       /*use_global_device_ids=*/true);
 
   if (reduce_op_type == c10d::ReduceOp::AVG) {

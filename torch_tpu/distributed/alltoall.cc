@@ -57,7 +57,9 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseShlo(
       /*concat_dimension=*/concat_dimension,
       /*split_count=*/split_count,
       /*replica_groups=*/replica_groups_attr,
-      /*channel_id=*/BuildChannelHandleAttr(builder, /*handle=*/1, /*type=*/0));
+      /*channel_id=*/
+      BuildChannelHandleAttr(builder, /*handle=*/NextCollectiveChannelHandle(),
+                             /*type=*/0));
 
   ABSL_CHECK_EQ(all_to_all_results.size(), 1);  // CRASH_OK
   mlir::MlirOp result = all_to_all_results[0];

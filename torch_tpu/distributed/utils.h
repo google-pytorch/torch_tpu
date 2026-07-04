@@ -32,6 +32,20 @@ namespace torch_tpu {
 mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
     mlir::MlirBuilder& builder, const DeviceGroupList& device_groups);
 
+// Returns the next channel handle for a collective op emitted into the
+// module currently being built, and advances the counter. Handles start at 1
+// and follow emission order, which matches the deferred-graph execution order
+// on every rank; giving each collective instance its own channel makes the
+// cross-device rendezvous independent of the per-program instruction
+// schedule (with a shared handle, devices pair collectives purely by launch
+// order, and two ranks whose executables schedule the same logical
+// collectives differently exchange data between the wrong ops).
+int NextCollectiveChannelHandle();
+
+// Resets the emission counter. Called at the start of building each MLIR
+// module so that handle assignment restarts at 1 for every program.
+void ResetCollectiveChannelCounter();
+
 // Given a channel handle and type, construct a MLIR constant used for the
 // `channel` attribute in StableHLO collectives.
 //

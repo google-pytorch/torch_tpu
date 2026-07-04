@@ -192,8 +192,13 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
     result_refs.push_back(std::move(buffer_ref));
   }
 
-  TT_ASSIGN_OR_RETURN(auto traversal, Traversal::Create(std::move(result_refs)),
-                      _.SetPrepend() << "failed to traverse graph: ");
+  std::vector<DeviceBufferRef> keep_alive_nodes =
+      internal::TakeKeepAliveNodes();
+  TT_ASSIGN_OR_RETURN(
+      auto traversal,
+      Traversal::Create(std::move(result_refs),
+                        /*stopping_points=*/{}, keep_alive_nodes),
+      _.SetPrepend() << "failed to traverse graph: ");
   TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
           .SetPrepend()
@@ -246,9 +251,13 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     result_refs.push_back(std::move(buffer_ref));
   }
 
+  std::vector<DeviceBufferRef> keep_alive_nodes =
+      internal::TakeKeepAliveNodes();
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
-      auto traversal, Traversal::Create(std::move(result_refs)),
+      auto traversal,
+      Traversal::Create(std::move(result_refs), /*stopping_points=*/{},
+                        keep_alive_nodes),
       _ << "failed to create traversal");
 
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens

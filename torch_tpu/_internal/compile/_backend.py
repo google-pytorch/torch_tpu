@@ -46,6 +46,7 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
 
@@ -376,6 +377,9 @@ class TpuBackend:
         example_inputs,
     )
 
+    # Only keep-alive nodes recorded while tracing this graph may anchor its
+    # traversal; drop any recorded by earlier eager ops or aborted traces.
+    tpu_torch_compile.clear_collective_keep_alive_nodes()
     executable = compiler_instance(graph_module, example_inputs, is_fwd=is_fwd)
 
     self._compiled_executables.append(executable)

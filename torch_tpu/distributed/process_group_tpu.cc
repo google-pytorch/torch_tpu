@@ -585,7 +585,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
                       {.out_dtype = output_dtype,
                        .out_dims = tensor.sizes(),
                        .op_param_cache_keys = std::move(param_keys),
-                       .split_mode = GetCollectiveSplitMode()}));
+                       .split_mode = GetCollectiveSplitMode(),
+                       .keep_alive = true}));
     // TODO: respect async.
 
     // All-reduce is inplace, assign output buffer ref to input tensors.
@@ -805,7 +806,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
                 {.out_dtypes = output_dtypes,
                  .out_dims_list = output_dims,
                  .op_param_cache_keys = std::move(param_keys),
-                 .split_mode = GetCollectiveSplitMode()})));
+                 .split_mode = GetCollectiveSplitMode(),
+                 .keep_alive = true})));
 
         // TODO: respect async.
 
@@ -917,7 +919,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
                           {.out_dtype = output_dtype,
                            .out_dims = output_tensor.sizes(),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .keep_alive = true}));
 
         // TODO: b/443120101 - defer if opts.asyncOp is true.
 
@@ -1215,7 +1218,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
                           {.out_dtype = out_dtype,
                            .out_dims = std::move(out_dims),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .keep_alive = true}));
 
         TT_THROW_IF_ERROR(
             AssignBufferToAtTensor(std::move(result_buffer), output));
@@ -1329,7 +1333,8 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
                        {.out_dtype = output_dtype,
                         .out_dims = output.sizes(),
                         .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode()});
+                        .split_mode = GetCollectiveSplitMode(),
+                        .keep_alive = true});
 }
 
 // TODO(mkkhanna): Implement support for uneven splits.
@@ -1398,7 +1403,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
                                {.out_dtypes = result_dtypes,
                                 .out_dims_list = result_dims_list,
                                 .op_param_cache_keys = std::move(param_keys),
-                                .split_mode = GetCollectiveSplitMode()})));
+                                .split_mode = GetCollectiveSplitMode(),
+                                .keep_alive = true})));
 
         for (int64_t i = 0; i < result_buffers.size(); ++i) {
           TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffers[i]),

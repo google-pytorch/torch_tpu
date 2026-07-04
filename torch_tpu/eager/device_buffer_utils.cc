@@ -193,8 +193,34 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     case EagerMode::kInternalDeferAll:
       break;
   }
+
+  if (params.keep_alive) {
+    for (const DeviceBufferRef& result : results) {
+      if (result.is_deferred()) {
+        RegisterKeepAliveNode(result);
+      }
+    }
+  }
   return results;
 }
+
+namespace {
+
+thread_local /* CPP_THREAD_LOCAL_OK=Nodes are collected per C++ thread */ std::
+    vector<DeviceBufferRef>
+        keep_alive_nodes;  // NOLINT
+
+}  // namespace
+
+void RegisterKeepAliveNode(const DeviceBufferRef& ref) {
+  keep_alive_nodes.push_back(ref);
+}
+
+std::vector<DeviceBufferRef> TakeKeepAliveNodes() {
+  return std::exchange(keep_alive_nodes, {});
+}
+
+void ClearKeepAliveNodes() { keep_alive_nodes.clear(); }
 
 }  // namespace internal
 

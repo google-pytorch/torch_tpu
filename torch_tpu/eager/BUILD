@@ -705,6 +705,7 @@ torch_tpu_cc_library(
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",
+        "//torch_tpu/distributed:utils",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops:python_context",

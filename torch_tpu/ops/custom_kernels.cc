@@ -236,6 +236,30 @@ absl::Status AddTpuPartitioningPasses(xla::HloModule* module,
       xla::spmd::GetDefaultCollectiveOpsCreator(
           module->config().num_partitions(), module->config().replica_count());
 
+  class ForceKeepAliveShardingPass : public xla::HloModulePass {
+   public:
+    std::string_view name() const override {
+      return "force-keep-alive-sharding";
+    }
+    using HloPassInterface::Run;
+    absl::StatusOr<bool> RunImpl(xla::HloModule* module,
+                                 const absl::flat_hash_set<std::string_view>&
+                                     execution_threads) override {
+      bool changed = false;
+      for (auto* comp : module->computations(execution_threads)) {
+        for (auto* inst : comp->instructions()) {
+          if (inst->opcode() == xla::HloOpcode::kCustomCall &&
+              inst->custom_call_target() == "torch_tpu.keep_alive") {
+            inst->set_sharding(xla::HloSharding::Replicate());
+            changed = true;
+          }
+        }
+      }
+      return changed;
+    }
+  };
+  pipeline->AddPass<ForceKeepAliveShardingPass>();
+
   pipeline->AddPass<xla::spmd::SpmdPartitioner>(
       module->config().num_partitions(), module->config().replica_count(),
       xla::spmd::SpmdPartitionerOptions{

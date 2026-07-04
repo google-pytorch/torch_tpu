@@ -57,6 +57,15 @@ mlir::DenseIntElementsAttr BuildReplicaGroupsAttr(
       mlir::makeConstant(llvm::ArrayRef<int64_t>(flattened_ids), tensor_type));
 }
 
+namespace {
+thread_local /* CPP_THREAD_LOCAL_OK=local to C++ thread */ int
+    next_collective_channel_handle = 1;  // NOLINT
+}  // namespace
+
+int NextCollectiveChannelHandle() { return next_collective_channel_handle++; }
+
+void ResetCollectiveChannelCounter() { next_collective_channel_handle = 1; }
+
 mlir::stablehlo::ChannelHandleAttr BuildChannelHandleAttr(
     mlir::MlirBuilder& builder, int handle, int type) {
   return mlir::stablehlo::ChannelHandleAttr::get(&builder.getContext(), handle,
