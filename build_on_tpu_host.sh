@@ -50,7 +50,7 @@ fi
 print_success "Found Python 3.12"
 
 # Install Bazel if needed
-BAZEL_VERSION="7.4.1"
+BAZEL_VERSION="8.6.0"
 if ! command -v bazel &> /dev/null; then
     print_info "Installing Bazel..."
     TEMP_DIR=$(mktemp -d)
