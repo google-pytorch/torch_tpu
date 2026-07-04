@@ -15,6 +15,8 @@
 """Tests PyTorch distributed ops with torch.compile()."""
 
 import os
+import sys
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -32,7 +34,23 @@ from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multi
 
 def compile_and_assert_outputs(func, inputs, expected_outputs=None):
   """Compiles a function, runs it, and returns compiled executables."""
-  backend = tt_compile.TpuBackend(debug=True)
+  rank = int(os.environ["RANK"])
+
+  class CustomBackend(tt_compile.TpuBackend):
+
+    def __call__(self, gm, example_inputs):
+      sys.stderr.write(f"\n[RANK {rank}] CustomBackend.__call__ started\n")
+      sys.stderr.flush()
+      compiled_callable = super().__call__(gm, example_inputs)
+      sys.stderr.write(f"\n[RANK {rank}] CustomBackend.__call__ compiled\n")
+      for i, ex in enumerate(self._compiled_executables):
+        sys.stderr.write(
+            f"[RANK {rank}] MLIR Executable {i}:\n{ex.mlir_text}\n"
+        )
+      sys.stderr.flush()
+      return compiled_callable
+
+  backend = CustomBackend(debug=True)
   compiled = torch.compile(func, backend=backend)
   output_compiled = compiled(*inputs)
 
@@ -350,7 +368,40 @@ def run_fake_tensor_side_effect_pruning_with_torch_compile() -> None:
   utils.assert_close(output.to("cpu"), expected)
 
 
+def run_keep_alive_collectives_with_torch_compile() -> None:
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = dist.get_world_size()
+
+  def func(x):
+    y = x.clone()
+    dist.all_reduce(y, dist.ReduceOp.SUM)
+    if rank == 0:
+      return y
+    return x
+
+  input_tpu = torch.tensor([1.0], device="tpu")
+  expected = (
+      torch.tensor([float(world_size)]) if rank == 0 else torch.tensor([1.0])
+  )
+
+  compile_and_assert_outputs(
+      func, inputs=(input_tpu,), expected_outputs=(expected,)
+  )
+
+
 class MultiTpuTorchCompileTest(absltest.TestCase):
+
+  @mock.patch.dict(
+      os.environ, {"TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS": "0"}
+  )
+  def test_keep_alive_collectives_with_torch_compile(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_keep_alive_collectives_with_torch_compile, world_size=8
+        ),
+    )
 
   def test_fake_tensor_side_effect_pruning_with_torch_compile(self):
     distributed_utils.dist_run(

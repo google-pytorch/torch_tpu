@@ -59,6 +59,12 @@ struct DeferredOpParams {
   // The indices of the donated inputs. This is primarily used by custom ops
   // (such as Pallas ops).
   Indices donated_indices = {};
+  // Whether the op must execute even when its results are never consumed
+  // locally. Cross-replica collectives set this: every rank of the process
+  // group has to run the op, so a rank that does not use the result still has
+  // to emit it. Deferred results of such ops are recorded via
+  // RegisterKeepAliveNode below.
+  bool keep_alive = false;
 };
 
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
@@ -66,6 +72,19 @@ struct DeferredOpParams {
 // CreateEmptyDeviceBufferRef.
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params);
+
+// Registry of deferred keep-alive nodes (see DeferredOpParams::keep_alive)
+// that the next compiled traversal must include even when none of its outputs
+// depend on them. A traversal that walks only from its outputs would silently
+// drop a locally-unused collective, and the other ranks' in-graph collectives
+// would then wait forever on device.
+//
+// The registry is thread-local. torch.compile's TPU backend clears it before
+// tracing an FX graph and drains it when building the traversal, so only
+// nodes recorded by that trace become anchors.
+void RegisterKeepAliveNode(const DeviceBufferRef& ref);
+std::vector<DeviceBufferRef> TakeKeepAliveNodes();
+void ClearKeepAliveNodes();
 
 }  // namespace internal
 

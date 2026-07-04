@@ -109,10 +109,15 @@ class Traversal {
   // Optional parameter `stopping_points` can be used to supply
   // DeviceBufferLists that should stop the traversal and, hence, be
   // treated as arguments (even though they may be associated to deferred ops).
+  // Optional parameter `anchors` supplies deferred nodes that must be part of
+  // the traversal (and hence of the emitted program) even when no output
+  // depends on them, e.g. cross-replica collectives whose results are unused
+  // on this rank. Anchors do not become traversal outputs.
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Create(
       std::vector<DeviceBufferRef> outputs,
       const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-          stopping_points = {});
+          stopping_points = {},
+      absl::Span<const DeviceBufferRef> anchors = {});
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Create(
       absl::Span<const SharedDeviceBufferList> output_nodes,
       const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
@@ -251,10 +256,12 @@ class Traversal {
   //   - Each tensor in outputs is in either arguments_ or execution_order.
   Traversal(std::vector<DeviceBufferRef> arguments,
             std::vector<SharedDeviceBufferList> execution_order,
-            std::vector<DeviceBufferRef> outputs)
+            std::vector<DeviceBufferRef> outputs,
+            std::vector<DeviceBufferRef> anchors = {})
       : arguments_(std::move(arguments)),
         execution_order_(std::move(execution_order)),
-        outputs_(std::move(outputs)) {}
+        outputs_(std::move(outputs)),
+        anchors_(std::move(anchors)) {}
 
   GraphKey BuildGraphKey() const;
 
@@ -272,6 +279,9 @@ class Traversal {
   // The tensor outputs of the Traversal. These may be in any state, but the
   // list is non-empty and all outputs are unique.
   std::vector<DeviceBufferRef> outputs_;
+  // Side-effecting nodes that must be preserved in the compiled graph even
+  // if not consumed by the outputs.
+  std::vector<DeviceBufferRef> anchors_;
   // The graph key of the Traversal; lazily computed.
   mutable std::optional<GraphKey> graph_key_;
 

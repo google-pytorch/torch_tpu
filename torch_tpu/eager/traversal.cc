@@ -41,6 +41,7 @@
 #include "absl/types/span.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -83,7 +84,8 @@ namespace torch_tpu {
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
     std::vector<DeviceBufferRef> outputs,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
-        stopping_points) {
+        stopping_points,
+    absl::Span<const DeviceBufferRef> anchors) {
   ABSL_VLOG(1) << "[Traversal::Create] creating Traversal";
   tsl::profiler::TraceMe t([] { return "Traversal::Create"; });
 
@@ -116,6 +118,19 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
     } else {
       if (visited_arguments.insert(output).second) {
         arguments.push_back(output);
+      }
+    }
+  }
+
+  // Anchors join the traversal walk so their subgraphs are emitted, but they
+  // are not outputs: an already-materialized anchor needs no emission and is
+  // skipped rather than recorded as an argument.
+  for (const auto& anchor : anchors) {
+    auto& node = anchor.device_buffer_list();
+    if (node->is_deferred()) {
+      if (visited_deferred.insert(std::make_pair(node.get(), Color::kGray))
+              .second) {
+        stack.push(node);
       }
     }
   }
@@ -193,8 +208,11 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
       stack.pop();
     }
   }
-  auto traversal = std::unique_ptr<Traversal>(new Traversal(
-      std::move(arguments), std::move(execution_order), std::move(outputs)));
+  // We copy the anchors vector since it's passed as a Span.
+  std::vector<DeviceBufferRef> anchors_vec(anchors.begin(), anchors.end());
+  auto traversal = std::unique_ptr<Traversal>(
+      new Traversal(std::move(arguments), std::move(execution_order),
+                    std::move(outputs), std::move(anchors_vec)));
 #ifndef NDEBUG
   if (auto status = traversal->Validate(); !status.ok()) {
     LogLines(traversal->DebugString());
@@ -555,6 +573,30 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   ABSL_VLOG(1) << "[Traversal::BuildMlirModule] Built a total of "
                << ref_to_op_map.size() << " MlirOps, returning "
                << results.size() << " of them as results.";
+
+  if (!anchors_.empty()) {
+    std::vector<mlir::Value> anchor_values;
+    for (const DeviceBufferRef& anchor : anchors_) {
+      if (auto it = ref_to_op_map.find(anchor); it != ref_to_op_map.end()) {
+        anchor_values.push_back(it->second.getValue());
+      }
+    }
+    if (!anchor_values.empty()) {
+      auto custom_call =
+          fb.getOpBuilder().create<mlir::stablehlo::CustomCallOp>(
+              fb.getLoc(),
+              mlir::RankedTensorType::get(
+                  {0}, mlir::IntegerType::get(&mlir_context, 32)),
+              anchor_values);
+      custom_call->setAttr(
+          mlir::StringAttr::get(&mlir_context, "call_target_name"),
+          mlir::StringAttr::get(&mlir_context, "torch_tpu.keep_alive"));
+      custom_call.setHasSideEffect(true);
+      custom_call->setAttr(
+          mlir::StringAttr::get(&mlir_context, "mhlo.sharding"),
+          mlir::StringAttr::get(&mlir_context, "{replicated}"));
+    }
+  }
 
   mlir::func::Return(fb, results);
   auto module = mb.build();

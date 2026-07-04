@@ -78,6 +78,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":tpu_torch_compile",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
@@ -181,6 +182,7 @@ torch_tpu_cc_library(
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",
         "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:device_buffer_utils",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:op_builder_utils",
@@ -243,6 +245,7 @@ pybind_extension(
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",
         "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:device_buffer_utils",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:op_builder_utils",

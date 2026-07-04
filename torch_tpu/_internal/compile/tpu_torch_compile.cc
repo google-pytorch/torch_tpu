@@ -65,6 +65,7 @@
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -1132,6 +1133,12 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         "Returns a tensor with equivalent logical values to the input tensor, "
         "but with the given strides and storage offset, copying "
         "data as necessary.");
+  m.def(
+      "clear_collective_keep_alive_nodes",
+      []() { torch_tpu::internal::ClearKeepAliveNodes(); },
+      "Clears keep-alive nodes recorded by collective ops on this thread. "
+      "Called before tracing an FX graph so that only nodes recorded by the "
+      "trace anchor its traversal.");
   m.def("get_materialize_collective_tensors_env_value",
         PyGetMaterializeCollectiveTensorsEnvValue,
         "Returns whether to materialize collective tensors.");
