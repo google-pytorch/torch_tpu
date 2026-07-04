@@ -587,6 +587,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/mse_loss:mse_loss_aten_kernels",
         "//torch_tpu/ops/multinomial:multinomial_aten_kernels",
         "//torch_tpu/ops/native_batch_norm:native_batch_norm_aten_kernels",
+        "//torch_tpu/ops/native_norm:native_norm_aten_kernels",
         "//torch_tpu/ops/nll_loss:nll_loss_aten_kernels",
         "//torch_tpu/ops/nonzero:nonzero_aten_kernels",
         "//torch_tpu/ops/normal:normal_aten_kernels",

@@ -348,8 +348,6 @@ UNREGISTERED_OPS = frozenset([
     'nansum',
     'nansum.out',
     'narrow_copy.out',
-    'native_norm',
-    'native_norm.ScalarOpt_dim_dtype',
     'nextafter.out',
     'nonzero_static',
     'nonzero_static.out',

@@ -5089,6 +5089,36 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.vector_norm(x, dtype=torch.float32, out=out)
 
+  def test_native_norm_int(self):
+    inp = torch.ones(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected a floating point or complex dtype, got int32""",
+        gpu="""norm(): input dtype should be either floating point or complex. Got Int instead.""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.native_norm.default(inp, p=2.0)
+
+  def test_native_norm_scalar_opt_dim_dtype_int(self):
+    inp = torch.ones(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm.ScalarOpt_dim_dtype(): expected a floating point or complex dtype, got int32""",
+        gpu="""norm(): input dtype should be either floating point or complex. Got Int instead.""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.native_norm.ScalarOpt_dim_dtype(inp, p=2.0)
+
+  def test_native_norm_empty_inf(self):
+    inp = torch.empty(0, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_norm(): expected a non-empty tensor when p is inf (which has no identity), got 0 elements""",
+        gpu="""linalg.vector_norm cannot compute the inf norm on an empty tensor because the operation does not have an identity""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.native_norm.default(inp, p=float("inf"))
+
   def test_rms_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)

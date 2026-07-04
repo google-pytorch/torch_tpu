@@ -1007,6 +1007,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "native_layer_norm";
     case OpName::kNativeLayerNormBackward:
       return "native_layer_norm_backward";
+    case OpName::kNativeNorm:
+      return "native_norm";
+    case OpName::kNativeNormScalarOptDimDtype:
+      return "native_norm.ScalarOpt_dim_dtype";
     case OpName::kNe:
       return "ne";
     case OpName::kNeOut:

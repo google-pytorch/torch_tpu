@@ -504,8 +504,10 @@ void CheckKernelArgType(  // NOLINT: cognitive complexity
   } else if constexpr (std::is_same_v<T, MaybePromotedScalar>) {
     CheckScalarInput<kOpName, UsesScalarInput::kNo>();
     // The argument is a MaybePromotedScalar, so we check it matches an
-    // at::Scalar parameter in the kernel function signature.
-    ABSL_CHECK_EQ(normalized_arg_type_in_func_sig, "at::Scalar")  // CRASH_OK
+    // at::Scalar or std::optional<at::Scalar> parameter in the kernel
+    // function signature.
+    ABSL_CHECK(normalized_arg_type_in_func_sig == "at::Scalar" ||  // CRASH_OK
+               normalized_arg_type_in_func_sig == "std::optional<at::Scalar>")
         << message();
   } else if constexpr (std::is_same_v<T, std::optional<PromotedScalar>>) {
     CheckScalarInput<kOpName, UsesScalarInput::kNo>();

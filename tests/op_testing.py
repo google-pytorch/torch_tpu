@@ -296,6 +296,125 @@ _OPS_WITHOUT_OUT_SHAPE_RESIZING: Final[set[str]] = {
 }
 
 
+def _sample_inputs_native_norm(
+    op_info: OpInfo,
+    device: str,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> collections.abc.Iterator[SampleInput]:
+  """Sample inputs for native_norm."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      common_utils.make_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  for shape in [(2, 3), (3, 2, 4), (1,), (0,)]:
+    t = make_arg(shape)
+    p_values = [2.0, 1.0, float("inf"), float("-inf"), 0.0, 0.5, 3.0, -1.0]
+    if t.numel() == 0:
+      # Exclude inf and negative p values for empty tensors as they have no
+      # identity.
+      p_values = [2.0, 1.0, 0.0, 0.5, 3.0]
+    for p in p_values:
+      yield SampleInput(t, args=(p,))
+
+
+def _sample_inputs_native_norm_scalar_opt_dim_dtype(
+    op_info: OpInfo,
+    device: str,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> collections.abc.Iterator[SampleInput]:
+  """Sample inputs for native_norm.ScalarOpt_dim_dtype."""
+  del op_info, kwargs
+  make_arg = functools.partial(
+      common_utils.make_tensor,
+      device=device,
+      dtype=dtype,
+      requires_grad=requires_grad,
+  )
+  for shape in [(2, 3, 4), (5, 5), (0, 3)]:
+    t = make_arg(shape)
+    is_empty = t.numel() == 0
+    p_values = [
+        2.0,
+        1.0,
+        float("inf"),
+        float("-inf"),
+        0.0,
+        0.5,
+        3.0,
+        -1.0,
+        None,
+    ]
+    if is_empty:
+      p_values = [2.0, 1.0, 0.0, 0.5, 3.0, None]
+    for p in p_values:
+      yield SampleInput(t, args=(p, [0], False, None))
+    # Test various dim and keepdim configurations with default p and dtype.
+    dims = [[0, -1], [], [1], [-1]] if not is_empty else [[1]]
+    for dim in dims:
+      for keepdim in [False, True]:
+        yield SampleInput(t, args=(2.0, dim, keepdim, None))
+    # Test output dtype conversion. XLA TPU does not support casting to
+    # complex128 (c128), so we restrict complex overrides to complex64.
+    out_dtypes = [torch.complex64] if dtype.is_complex else [torch.float64]
+    for out_dtype in out_dtypes:
+      yield SampleInput(t, args=(2.0, [0], False, out_dtype))
+
+
+def _native_norm_cpu_fallback(
+    self: torch.Tensor, p: float = 2.0
+) -> torch.Tensor:
+  """CPU fallback for native_norm."""
+  return torch.linalg.vector_norm(self, ord=p)
+
+
+def _native_norm_op(self: torch.Tensor, p: float = 2.0) -> torch.Tensor:
+  """Op reference for native_norm."""
+  if self.device.type == "cpu":
+    return _native_norm_cpu_fallback(self, p)
+  return torch.ops.aten.native_norm.default(self, p)
+
+
+def _native_norm_scalar_opt_dim_dtype_cpu_fallback(
+    self: torch.Tensor,
+    p: float | None = None,
+    dim: list[int] | None = None,
+    keepdim: bool = False,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+  """CPU fallback for native_norm.ScalarOpt_dim_dtype."""
+  return torch.linalg.vector_norm(
+      self,
+      ord=(2.0 if p is None else p),
+      dim=dim,
+      keepdim=keepdim,
+      dtype=dtype,
+  )
+
+
+def _native_norm_scalar_opt_dim_dtype_op(
+    self: torch.Tensor,
+    p: float | None = None,
+    dim: list[int] | None = None,
+    keepdim: bool = False,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+  """Op reference for native_norm.ScalarOpt_dim_dtype."""
+  if self.device.type == "cpu":
+    return _native_norm_scalar_opt_dim_dtype_cpu_fallback(
+        self, p, dim, keepdim, dtype
+    )
+  return torch.ops.aten.native_norm.ScalarOpt_dim_dtype(
+      self, p, dim, keepdim, dtype
+  )
+
+
 # Ops not included in the list of tested ops for pytorch.
 _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
@@ -338,6 +457,32 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         assert_autodiffed=True,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        supports_out=False,
+    ),
+    OpInfo(
+        "native_norm",
+        op=_native_norm_op,
+        aten_name="native_norm",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.float16, torch.bfloat16
+        ),
+        sample_inputs_func=_sample_inputs_native_norm,
+        assert_autodiffed=False,
+        supports_forward_ad=False,
+        supports_fwgrad_bwgrad=False,
+        supports_out=False,
+    ),
+    OpInfo(
+        "native_norm.ScalarOpt_dim_dtype",
+        op=_native_norm_scalar_opt_dim_dtype_op,
+        aten_name="native_norm",
+        dtypes=common_dtype.floating_and_complex_types_and(
+            torch.float16, torch.bfloat16
+        ),
+        sample_inputs_func=_sample_inputs_native_norm_scalar_opt_dim_dtype,
+        assert_autodiffed=False,
+        supports_forward_ad=False,
+        supports_fwgrad_bwgrad=False,
         supports_out=False,
     ),
 ]

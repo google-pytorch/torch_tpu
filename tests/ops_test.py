@@ -497,6 +497,14 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.bfloat16: {"rtol": 1.0, "atol": 2.5e-5},
         torch.float16: {"rtol": 6.9e-3, "atol": 3.0e-3},
     },
+    "native_norm": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
+    "native_norm.ScalarOpt_dim_dtype": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
     "nn.functional.adaptive_avg_pool2d": {
         torch.bfloat16: {"rtol": 2, "atol": 3e-2},
         torch.float16: {"rtol": 1.9e-1, "atol": 4e-3},
@@ -1048,6 +1056,14 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"atol": 4.3e-1},
         torch.float32: {"atol": 3.5e-1},
     },
+    "native_norm": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
+    "native_norm.ScalarOpt_dim_dtype": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
     "nn.functional.adaptive_avg_pool2d": {
         torch.bfloat16: {"atol": 1.6e-2},
         torch.float16: {"atol": 4e-3},
@@ -1346,6 +1362,14 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "mm": {
         torch.complex64: {"atol": 1.2},
     },
+    "native_norm": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
+    "native_norm.ScalarOpt_dim_dtype": {
+        torch.complex64: {"rtol": 6e-6, "atol": 1e-3},
+        torch.float32: {"rtol": 6e-6, "atol": 1e-3},
+    },
     "nn.functional.adaptive_avg_pool2d": {
         torch.bfloat16: {"atol": 1.6e-2},
         torch.float16: {"atol": 4e-3},
@@ -1521,6 +1545,14 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
             },
             "mul": {
                 torch.float16: {"rtol": 1.1e-3, "atol": 4e-3},
+            },
+            "native_norm": {
+                torch.bfloat16: {"rtol": 2.2e-2, "atol": 1.6e-2},
+                torch.float16: {"rtol": 2.1e-3, "atol": 3.7e-4},
+            },
+            "native_norm.ScalarOpt_dim_dtype": {
+                torch.bfloat16: {"rtol": 2.2e-2, "atol": 1.6e-2},
+                torch.float16: {"rtol": 2.1e-3, "atol": 3.7e-4},
             },
             "nn.functional.batch_norm": {
                 torch.float16: {"rtol": 1, "atol": 2.6e-3},
@@ -3018,6 +3050,14 @@ class TestOps(TorchTpuTestBase):
         # tensors of the same dtype as the input.
         skip_output_indices=[1, 2],
     )
+
+  def test_native_norm(self):
+    # Upstream PyTorch does not implement a backward derivative for native_norm.
+    self.do_test_op("native_norm", check_grad=False)
+
+  def test_native_norm_ScalarOpt_dim_dtype(self):
+    # Upstream PyTorch does not implement a backward derivative for native_norm.
+    self.do_test_op("native_norm.ScalarOpt_dim_dtype", check_grad=False)
 
   def test_ne(self):
     self.do_test_op("ne")
