@@ -23,6 +23,7 @@
 #include "ATen/core/Scalar.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/Builders.h"

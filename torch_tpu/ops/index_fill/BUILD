@@ -41,6 +41,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
