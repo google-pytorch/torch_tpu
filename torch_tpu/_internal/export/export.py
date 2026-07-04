@@ -506,35 +506,47 @@ def fx_to_mlir(
         module, fx_outputs
     )
 
-    # Plumb the final state tensor as the last output of the graph so that
-    # the updated RNG state can be returned from the executable and persisted.
-    for gen in argument_generators:
-      end_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
-      result_tensors.append(end_state_tensor)
+    # Each generator's post-trace device state tensor is its updated RNG state.
+    # The default generator is always the last one (see argument_generators).
+    end_state_tensors = [
+        tpu_torch_compile.get_device_state_tensor(gen)
+        for gen in argument_generators
+    ]
 
-    # Check if the module updates the default generator state.
-    begin_default_state_tensor = argument_tensors[-1]
-    end_default_state_tensor = result_tensors[-1]
+    # The graph advances the default RNG state iff the default generator's state
+    # tensor identity changed between its input placeholder and its end state.
     updates_default_generator_state = (
-        begin_default_state_tensor.data_ptr()
-        != end_default_state_tensor.data_ptr()
+        argument_tensors[-1].data_ptr() != end_state_tensors[-1].data_ptr()
     )
-    if not updates_default_generator_state:
-      if len(result_tensors) > 1:
-        # Remove the default generator state tensor from the arguments and
-        # outputs since it is not used.
-        argument_tensors.pop()
-        result_tensors.pop()
-      else:
-        # No RNG update and nothing to compute: this graph is a no-op.
-        return ExportedMlir(
-            module=None,
-            executable=None,
-            mlir_result_tensors=[],
-            reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
-            updates_default_generator_state=False,
-            is_noop=True,
-        )
+
+    if updates_default_generator_state:
+      # The graph advances the default RNG state, so it is never a no-op. Plumb
+      # every generator's end state as a graph output so the updated state is
+      # returned from the executable and persisted.
+      result_tensors.extend(end_state_tensors)
+    elif result_tensors:
+      # No RNG update, but the graph computes real outputs. Plumb the
+      # non-default generators' end states, and drop the unused default
+      # generator state from both inputs and outputs.
+      result_tensors.extend(end_state_tensors[:-1])
+      argument_tensors.pop()
+    else:
+      # No RNG update and nothing to compute: this graph is a no-op. There is
+      # nothing to lower to MLIR (traverse_and_compile requires >=1 result
+      # tensor) -- e.g. a torch.compile(fullgraph=False) seam between two graph
+      # breaks that threads a live input through but contains no traceable ops
+      # ("def forward(x): return ()"). Signal the backend via is_noop to return
+      # a do-nothing callable that reconstructs the (all-None / passthrough)
+      # output instead. In-place input mutations can't reach here --
+      # functionalization rewrites them into computed outputs.
+      return ExportedMlir(
+          module=None,
+          executable=None,
+          mlir_result_tensors=[],
+          reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
+          updates_default_generator_state=False,
+          is_noop=True,
+      )
 
     compile_result = tpu_torch_compile.traverse_and_compile(
         result_tensors=result_tensors,
