@@ -15,28 +15,45 @@
 """TorchInductor backend for TPU that lowers fused kernels to Pallas.
 
 `torch.compile(backend="tpu_inductor_pallas")` runs TorchInductor on graphs
-of TPU tensors. Pointwise/reduction fusions are code-generated as JAX Pallas
-kernels by reusing the upstream experimental Pallas codegen
-(`torch._inductor.codegen.pallas`); everything Inductor does not lower
-(matmuls, SDPA, embeddings, ...) falls back to aten ops executed by torch_tpu
-eager mode.
+of TPU tensors: pointwise/reduction fusions are code-generated as JAX Pallas
+kernels and executed natively on torch_tpu's PJRT runtime; matmuls, fused
+SDPA (decomposed to math), gathers/scatters and anything without a lowering
+fall back to torch_tpu eager.
 
-Unlike the upstream `PALLAS_TARGET_TPU` debug path — which round-trips every
-tensor through host memory into a separate JAX TPU client — the generated
-kernels here are executed natively by torch_tpu: the `jax.jit`-wrapped
-`pallas_call` is traced with `jax.export` (trace-only, platform "tpu"),
-serialized to StableHLO, and run on torch_tpu's own PJRT runtime via the same
-machinery that powers `torch_tpu.pallas.jax_op`. Tensors never leave the
-torch_tpu runtime and no second TPU client is created.
+Targets torch >= 2.11, whose Inductor Pallas codegen has first-class TPU
+support (device type "tpu" registered in-tree; the generated `<kernel>_main`
+compiles through `jax.export` -> serialized StableHLO ->
+`torch_tpu._internal.pallas.tpu_torch_pallas`). This module keeps that base
+and layers the pieces upstream still gets wrong for real training graphs:
 
-Deviations from the upstream Pallas codegen (see `TpuPallasKernel`):
-  * Output aliasing / input donation is disabled. The generated
-    `<kernel>_jit_wrapper` therefore contains a plain (alias-free)
-    `pallas_call`, which keeps the `jax.export` path simple; kernel results
-    are copied back into the Inductor-allocated output buffers.
-  * The generated `<kernel>_main` entry point (the function Inductor's
-    wrapper calls) is replaced with one that dispatches through
-    `torch_tpu._internal.inductor.pallas_runtime.run_kernel`.
+  * **Canonical iteration-space shapes for non-trivial access patterns.**
+    Upstream's multi-variable strided indexing still silently degrades to a
+    full `[...]` read (dropping permutations), its strided stores emit
+    `flatten().at[...].set(...)` (Mosaic supports neither general reshapes
+    nor scatter), and `pallas_partial_reduce` flattens pointwise dims so its
+    result cannot broadcast against >2-D values. Here, every load/store index
+    is classified: contiguous accesses stay plain `[...]` reads of
+    canonically-shaped refs; affine mixed-radix accesses become torch-side
+    `as_strided` boundary views applied in the generated main (free views +
+    one XLA copy — Mosaic never sees a reshape or gather); anything
+    non-affine raises `Unsupported` loudly. Partial reductions emit
+    `keepdims=True` on the canonically-shaped value.
+  * **A fixed `_codegen_main_entry_tpu`**: boundary views + dtype
+    canonicalization (Mosaic is 32-bit; int64/float64 are downcast on the way
+    in and upcast by the final copy_), rank-0 tensors reshaped to (1,)
+    (Pallas TPU requires refs of rank >= 1), keyword-argument calls into
+    tpu_torch_pallas (the torch 2.11.0 codegen predates the keyword-only
+    binding), `jax.export` tracing guarded by the kernel-registry lookup
+    instead of re-tracing every invocation, and no per-call
+    `jax.clear_caches()` / global x64 flip.
+  * a dynamo `DeviceInterface` for the tpu device;
+  * `SIMDKernel.dtype_to_str` (abstract upstream);
+  * math decompositions for `_scaled_dot_product_fused_attention_overrideable`
+    (forward AND backward — the joint trace records the fused backward before
+    forward decomps apply, and torch_tpu's eager implementation of the fused
+    op rejects Inductor's calling pattern);
+  * aten fallbacks for the gather/scatter family (XLA via torch_tpu eager
+    handles these well; Mosaic cannot).
 """
 
 import re
@@ -49,10 +66,8 @@ from torch._dynamo.backends import registry
 _BACKEND_NAME = "tpu_inductor_pallas"
 
 # Inductor config values this backend requires:
-#   inplace_buffers=False   -- prevents in_out_ptr kernel params. In-place
-#       params would require donating the corresponding jax buffers, which the
-#       torch_tpu execution path does not support yet (results are copied back
-#       into the Inductor-allocated buffers instead).
+#   inplace_buffers=False   -- prevents in_out_ptr kernel params, whose
+#       donation semantics we do not reconcile with jax.export yet.
 #   fallback_random=True    -- RNG ops run as aten fallbacks on the tpu device
 #       instead of being lowered (Philox-style lowering is CUDA-specific).
 #   implicit_fallbacks=True -- any op without an Inductor lowering falls back
@@ -66,17 +81,57 @@ _INDUCTOR_CONFIG_PATCHES = {
 
 _registered = False
 
-# Prepended to every generated kernel module; used by the rewritten
-# full-array stores. Runs under jax tracing, so jnp-only.
-_TPU_STORE_HELPER = '''
+# Spliced into every generated kernel module. `_tpu_prepare_store` runs under
+# jax tracing (jnp only); the other helpers run torch-side in `<kernel>_main`.
+_TPU_HELPERS = '''
 import math as _tpu_math
 import jax.numpy as _tpu_jnp
+import torch as _tpu_torch
 
 def _tpu_prepare_store(value, shape):
     value = _tpu_jnp.asarray(value)
     if value.size == _tpu_math.prod(shape):
         return value.reshape(shape)
     return _tpu_jnp.broadcast_to(value, shape)
+
+# Mosaic (the Pallas TPU compiler) has no 64-bit support, and JAX itself
+# canonicalizes 64-bit types away by default. Follow the same convention at
+# the kernel boundary; the final copy_ upcasts results again.
+_TPU_DTYPE_CANON = {
+    _tpu_torch.int64: _tpu_torch.int32,
+    _tpu_torch.uint64: _tpu_torch.uint32,
+    _tpu_torch.float64: _tpu_torch.float32,
+    _tpu_torch.complex128: _tpu_torch.complex64,
+}
+
+def _tpu_canon_input(t, view=None, canonical=None):
+    if view is not None:
+        sizes, strides, offset = view
+        t = _tpu_torch.as_strided(t, sizes, strides, t.storage_offset() + offset)
+    t = t.contiguous()
+    if t.ndim == 0:
+        t = t.reshape(1)
+    if canonical is not None:
+        t = t.reshape(canonical)
+    dt = _TPU_DTYPE_CANON.get(t.dtype)
+    if dt is not None:
+        t = t.to(dt)
+    return t
+
+def _tpu_copy_back(out, result, view=None):
+    if view is not None:
+        sizes, strides, offset = view
+        _tpu_torch.as_strided(
+            out, sizes, strides, out.storage_offset() + offset
+        ).copy_(result.reshape(sizes))
+    elif out.is_contiguous():
+        out.copy_(result.reshape(out.shape))
+    else:
+        # Full-array kernel stores write in the output buffer's memory
+        # order; Inductor allocates dense (possibly permuted) buffers.
+        _tpu_torch.as_strided(
+            out, (out.numel(),), (1,), out.storage_offset()
+        ).copy_(result.reshape(-1))
 '''
 
 
@@ -88,9 +143,15 @@ def _make_tpu_pallas_classes():
   before torch_tpu finishes loading).
   """
   from torch._inductor.codegen import pallas as pallas_codegen
-  from torch._inductor.codegen.common import DeviceOpOverrides
+  from torch._inductor.runtime.runtime_utils import torch_dtype_to_jax
   from torch._inductor.virtualized import V
-  from torch.utils._ordered_set import OrderedSet
+
+  _DTYPE_CANON = {
+      torch.int64: torch.int32,
+      torch.uint64: torch.uint32,
+      torch.float64: torch.float32,
+      torch.complex128: torch.complex64,
+  }
 
   class TpuPallasKernelOverrides(pallas_codegen.PallasKernelOverrides):
 
@@ -104,11 +165,12 @@ def _make_tpu_pallas_classes():
     def index_expr(expr, dtype: torch.dtype) -> str:
       """Iteration-position value with canonical broadcasting.
 
-      Upstream renders index expressions against the flat 1-D iteration-var
-      arrays, so an expression mixing pointwise and reduction vars (e.g. the
-      causal mask `r0_2 - x0`) collapses elementwise instead of forming the
-      (pw, r) outer product. Render each var as its mixed-radix digit of the
-      flat position, shaped (pw, 1) / (1, r) inside reduction kernels.
+      Upstream renders index expressions against the iteration-var arrays,
+      whose shapes follow the first output; under the canonical flat shapes
+      used here an expression mixing pointwise and reduction vars (e.g. the
+      causal mask `r0_2 - x0`) must form the (pw, r) outer product instead.
+      Render each var as its mixed-radix digit of the flat position, shaped
+      (pw, 1) / (1, r) inside reduction kernels.
       """
       from torch._inductor.utils import get_bounds_index_expr
 
@@ -121,9 +183,28 @@ def _make_tpu_pallas_classes():
       return TpuPallasKernelOverrides.to_dtype(var, dtype)
 
   class TpuPallasKernel(pallas_codegen.PallasKernel):
-    """Upstream Pallas kernel codegen, retargeted at torch_tpu execution."""
+    """Upstream Pallas kernel codegen, hardened for torch_tpu execution."""
 
     overrides = TpuPallasKernelOverrides  # type: ignore[assignment]
+
+    def __init__(self, *args, **kwargs):
+      super().__init__(*args, **kwargs)
+      # Kernel param name -> canonical shape tuple, as_strided spec, or None
+      # to pass the buffer through in its original (contiguous) shape.
+      self._tpu_canonical_shapes: dict[str, Any] = {}
+      # (buffer name, spec) -> alias kernel param, for buffers accessed
+      # through more than one pattern in the same kernel (e.g. the
+      # interleaved real/imag reads of complex RoPE). The buffer is simply
+      # passed twice with different boundary views.
+      self._tpu_alias_params: dict[tuple, str] = {}
+      # Set when an access required a boundary view; such kernels must keep
+      # 1-D canonical shapes (see the fold-to-2-D step in the main entry).
+      self._tpu_requires_flat = False
+
+    def dtype_to_str(self, dtype: torch.dtype) -> str:  # type: ignore[override]
+      # Needed by dtype propagation for kernels with indirect indexing;
+      # the base SIMDKernel leaves it abstract.
+      return torch_dtype_to_jax(dtype)
 
     def _tpu_index_value_str(self, prepared) -> str:
       pw_numel, r_numel = self._iteration_numels()
@@ -151,61 +232,20 @@ def _make_tpu_pallas_classes():
         expr_str = re.sub(rf"\b{re.escape(name)}\b", arr, expr_str)
       return expr_str
 
-    def dtype_to_str(self, dtype: torch.dtype) -> str:  # type: ignore[override]
-      # Needed by dtype propagation for kernels with indirect indexing
-      # (e.g. embedding gathers); the base SIMDKernel leaves it abstract.
-      from torch._inductor.runtime.runtime_utils import torch_dtype_to_jax
-
-      return torch_dtype_to_jax(dtype)
-
-    def _buffer_is_contiguous(self, buffer_name: str) -> bool:  # type: ignore[override]
-      # Upstream marks contiguous outputs as "aliasable" and donates them to
-      # the jax kernel. Returning False forces the no-alias path: every
-      # output goes through out_shapes/out_dtypes and is copied back.
-      del buffer_name
-      return False
-
     # --- Canonical shapes over the iteration space ------------------------
     #
-    # The upstream Pallas codegen mixes values whose shapes come from the
-    # underlying buffers (e.g. a (4, 64, 128) load) with values shaped by
-    # the flattened iteration space (e.g. a (256,) reduction result), and
-    # relies on size-matching heuristics to reconcile them. Those heuristics
-    # break for >2-D buffers, differently-viewed same-numel buffers, and
-    # post-reduction pointwise math (all hit by RMSNorm / cross-entropy
-    # style fusions).
-    #
-    # Instead, each kernel parameter is assigned a canonical shape over the
+    # Every value inside a kernel lives in a canonical shape over the
     # flattened iteration space:
     #     pointwise kernel, buffer spans the space   -> (numel,)
     #     reduction kernel, pointwise+reduction vars -> (pw_numel, r_numel)
     #     reduction kernel, pointwise vars only      -> (pw_numel, 1)
     #     reduction kernel, reduction vars only      -> (r_numel,)
-    # Crucially the reshapes happen OUTSIDE the Pallas kernel, at the torch
-    # boundary in pallas_runtime.run_kernel (free views on contiguous
-    # tensors) — Mosaic, the Pallas TPU compiler, supports only a narrow set
-    # of in-kernel reshapes, so the kernel must see already-canonical refs.
-    # Partial reductions emit keepdims results, (pw_numel, 1), so downstream
-    # pointwise math broadcasts against (pw_numel, r_numel) values.
-    #
-    # This assumes loads produce elements in iteration order (pointwise-
-    # major, reduction-minor), which holds for the contiguous/broadcast
-    # patterns Inductor generates here — the upstream `reshape(-1, r_numel)`
-    # reduction path makes the same assumption.
-
-    def __init__(self, *args, **kwargs):
-      super().__init__(*args, **kwargs)
-      # Kernel param name -> canonical shape tuple, or None to pass the
-      # buffer through in its original shape.
-      self._tpu_canonical_shapes: dict[str, Optional[tuple]] = {}
-      # (buffer name, spec) -> alias kernel param, for buffers accessed
-      # through more than one pattern in the same kernel (e.g. the
-      # interleaved real/imag reads of complex RoPE). The buffer is simply
-      # passed twice with different boundary views.
-      self._tpu_alias_params: dict[tuple, str] = {}
-      # Set when a load/store emitted flat-offset index arrays; such
-      # kernels must keep 1-D canonical shapes (see the fold-to-2-D step).
-      self._tpu_requires_flat = False
+    #     any 1-element buffer                       -> (1,)
+    # Deviations (permutes, broadcasts, strided views, digit splits) are
+    # reconciled OUTSIDE the kernel: the generated main applies torch-side
+    # as_strided views before the call (Mosaic supports neither general
+    # reshapes nor gathers in-kernel), so the kernel only ever does plain
+    # [...] reads/writes of canonically-shaped refs.
 
     def _iteration_numels(self):
       pw_numel = 1
@@ -263,7 +303,7 @@ def _make_tpu_pallas_classes():
         return (r_numel,)
       return None
 
-    def _record_canonical_shape(self, param: str, shape: Optional[tuple]):
+    def _record_canonical_shape(self, param: str, shape) -> None:
       if param in self._tpu_canonical_shapes:
         if self._tpu_canonical_shapes[param] != shape:
           # Conflicting access patterns (e.g. full load + partial slice):
@@ -300,16 +340,6 @@ def _make_tpu_pallas_classes():
             V.graph.name_to_buffer[alias_outer] = src
       return alias
 
-    # The upstream _convert_to_jax_slice silently returns "..." for
-    # multi-variable strided access ("TODO: Implement proper
-    # multi-dimensional strided indexing"), which drops permutations and
-    # corrupts values. Guard every non-indirect load/store: if the index is
-    # not exactly contiguous over the iteration space, express the affine
-    # access pattern as a torch-side as_strided view (recorded in the
-    # canonical-shape table and applied by pallas_runtime at the kernel
-    # boundary — Mosaic supports neither general reshapes nor general
-    # gathers inside the kernel), and fail loudly on anything non-affine.
-
     def _tpu_index_is_contiguous(self, prepared) -> bool:
       """True iff the index reads/writes in flat iteration order.
 
@@ -321,7 +351,7 @@ def _make_tpu_pallas_classes():
 
       free = prepared.free_symbols & set(self.range_tree_nodes.keys())
       if not free:
-        return True  # constant index; parent handles
+        return True  # constant index; handled separately
       pw_numel, r_numel = self._iteration_numels()
       if pw_numel is None:
         return True  # dynamic shapes: keep upstream behavior
@@ -452,8 +482,8 @@ def _make_tpu_pallas_classes():
     def _tpu_strided_load(self, name: str, prepared) -> Any:
       """Non-contiguous affine load: plain [...] read of a torch-side view.
 
-      The access pattern (including broadcasts: absent vars get stride 0)
-      becomes an as_strided view materialized by pallas_runtime, so the
+      The access pattern (including broadcasts: absent digits get stride 0)
+      becomes an as_strided view materialized by the generated main, so the
       kernel sees a canonically-shaped ref covering the full iteration
       space in iteration order.
       """
@@ -472,7 +502,9 @@ def _make_tpu_pallas_classes():
       sizes = tuple(s for s, _ in dims)
       view_strides = tuple(st for _, st in dims)
       canonical = (
-          (pw_numel, r_numel) if self.inside_reduction else (pw_numel * r_numel,)
+          (pw_numel, r_numel)
+          if self.inside_reduction
+          else (pw_numel * r_numel,)
       )
       spec = ("as_strided", sizes, view_strides, offset, canonical)
       param = self._tpu_param_for(name, spec)
@@ -494,9 +526,8 @@ def _make_tpu_pallas_classes():
       prepared = self.prepare_indexing(index)
       free = prepared.free_symbols & set(self.range_tree_nodes.keys())
       if not free and prepared.is_Integer:
-        # Constant index (e.g. a 0-d grad seed): `[0]` on a 0-d ref is
-        # invalid, and integer indexing of larger refs is not lowerable.
-        # A whole-ref load broadcasts fine for single-element buffers.
+        # Constant index (e.g. a 0-d grad seed): a whole-ref load
+        # broadcasts fine for single-element buffers.
         try:
           buf_numel = int(V.graph.get_buffer(name).get_numel())
         except (TypeError, ValueError):
@@ -516,8 +547,6 @@ def _make_tpu_pallas_classes():
           name, self._canonical_shape_for(name, index)
       )
       self.load_index_exprs[name] = index
-      if self.use_masked_ops is None:
-        self.use_masked_ops = self._determine_masked_ops_for_kernel()
       return self.cse.generate(
           self.compute,
           f"{param}[...]",
@@ -526,11 +555,9 @@ def _make_tpu_pallas_classes():
 
     def _tpu_strided_store(self, name: str, prepared, value) -> None:
       """Non-contiguous affine store: kernel writes iteration order; the
-      runtime scatters into the real buffer through an as_strided view.
-
-      Requires a bijection (every index var present, sizes covering the
-      buffer) — otherwise multiple iteration points would alias one output
-      element.
+      generated main scatters into the real buffer through an as_strided
+      view. Requires a bijection — otherwise multiple iteration points
+      would alias one output element.
       """
       terms = self._tpu_affine_terms(prepared)
       pw_numel, r_numel = self._iteration_numels()
@@ -540,7 +567,8 @@ def _make_tpu_pallas_classes():
         buf_numel = None
       if terms is None or pw_numel is None or buf_numel is None:
         raise pallas_codegen.Unsupported(
-            f"tpu pallas store with non-affine index not supported: {prepared}"
+            f"tpu pallas store with non-affine index not supported:"
+            f" {prepared}"
         )
       digits, offset = terms
       dims = self._tpu_view_dims(
@@ -620,7 +648,8 @@ def _make_tpu_pallas_classes():
 
       # broadcast_to handles every canonical input shape — (pw, r), (pw, 1),
       # (r,), scalars — and keepdims keeps the result 2-D, both natively
-      # supported by Mosaic (unlike reshapes).
+      # supported by Mosaic (unlike reshapes, which upstream's
+      # pallas_partial_reduce helper relies on).
       op = reduction_ops[reduction_type]
       reduction_expr = (
           f"{op}(jnp.broadcast_to({value}, ({pw_numel}, {r_numel})),"
@@ -633,81 +662,64 @@ def _make_tpu_pallas_classes():
     def call_kernel(self, name: str, node=None) -> None:  # type: ignore[override]
       """Same as upstream, but alias params resolve to their real buffer."""
       wrapper = V.graph.wrapper_code
-      _, call_args, _, _ = self.args.python_argdefs()
+      arg_defs, call_args, _, _ = self.args.python_argdefs()
+      kernel_param_names = [a.name for a in arg_defs]
+      pure_out_params = [
+          p for p in kernel_param_names if p.startswith("out_ptr")
+      ]
       call_arg_strs = [
           re.sub(r"__tpu_alias\d+$", "", str(arg)) for arg in call_args
       ]
-      wrapper.writeline(f"{name}.run({', '.join(call_arg_strs)})")
-
-    def codegen_kernel(self, name: Optional[str] = None) -> str:  # type: ignore[override]
-      src = super().codegen_kernel(name)
-      # Keep iteration variables flat 1-D. Upstream reshapes them to the
-      # first output's shape for N-D broadcasting; under the canonical flat
-      # shapes used here that reshape is wrong, and flat index arrays also
-      # keep gathers low-rank for Mosaic (which only supports 2-D gathers).
-      src = re.sub(
-          r"^(\s*(?:[xyz]\d+|r\d+_\d*) = jnp\.arange\([^)]*\))\.reshape\([^)]*\)\s*$",
-          r"\1",
-          src,
-          flags=re.MULTILINE,
+      aliasable = getattr(self, "aliasable_out_ptrs", {})
+      alias_call_args = [
+          call_arg_strs[kernel_param_names.index(p)]
+          for p in pure_out_params
+          if aliasable.get(p, False)
+      ]
+      wrapper.writeline(
+          f"{name}.run({', '.join(alias_call_args + call_arg_strs)})"
       )
-      # Upstream full-array stores emit `out[...] = value.reshape(out.shape)`,
-      # which breaks when the value only broadcasts over the output (e.g. a
-      # scalar zero-fill kernel). Route them through a broadcast-aware helper.
-      src = re.sub(
-          r"(\w+)\[\.\.\.\] = (\w+)\.reshape\(\1\.shape\)",
-          r"\1[...] = _tpu_prepare_store(\2, \1.shape)",
-          src,
-      )
-      # Same for scalar-output stores (`out[...] = tmpN` with no reshape):
-      # Pallas refs are at least rank-1, so a 0-d value needs broadcasting.
-      src = re.sub(
-          r"^(\s*)(\w+)\[\.\.\.\] = (\w+)\s*$",
-          r"\1\2[...] = _tpu_prepare_store(\3, \2.shape)",
-          src,
-          flags=re.MULTILINE,
-      )
-      src = _TPU_STORE_HELPER + src
-      # Shadow the upstream `<kernel>_main` (which converts tensors via
-      # DLPack / host round-trips) with a torch_tpu-native entry point.
-      # Later `def` of the same name wins when the module is executed.
-      src += "\n\n" + self._codegen_tpu_main(name or "<KERNEL_NAME>")
-      return src
 
-    def _codegen_tpu_main(self, kernel_name: str) -> str:
-      arg_defs, _, _, _ = self.args.python_argdefs()
-      params = [a.name for a in arg_defs]
-      in_out_params = [p for p in params if p.startswith("in_out_ptr")]
-      if in_out_params:
-        # inplace_buffers=False should make this unreachable; fail loudly
-        # rather than corrupting donated buffers.
-        raise pallas_codegen.Unsupported(
-            "tpu_inductor_pallas does not support in_out_ptr kernel"
-            f" parameters (got {in_out_params})"
-        )
-      out_params = [p for p in params if p.startswith("out_ptr")]
-      in_params = [p for p in params if p.startswith("in_ptr")]
+    def _codegen_imports(self, ctx) -> None:  # type: ignore[override]
+      super()._codegen_imports(ctx)
+      ctx.code.splice(_TPU_HELPERS, strip=True)
 
-      def as_tuple(items) -> str:
-        return "(" + ", ".join(str(i) for i in items) + (
-            "," if items else ""
-        ) + ")"
+    def _tpu_spec_for_param(self, param: str):
+      """Canonical spec for a kernel param; upstream out-aliases mirror
+      their output param's spec (they carry the same buffer)."""
+      if param in self._tpu_canonical_shapes:
+        return self._tpu_canonical_shapes[param]
+      if param.endswith("_alias"):
+        return self._tpu_canonical_shapes.get(param[: -len("_alias")])
+      return None
 
-      out_canonical = [self._tpu_canonical_shapes.get(p) for p in out_params]
-      in_canonical = [self._tpu_canonical_shapes.get(p) for p in in_params]
+    def _codegen_main_entry_tpu(self, ctx, jit_wrapper_name: str) -> None:  # type: ignore[override]
+      """Rewritten upstream main entry (torch v2.11.0 pallas.py:3189).
+
+      Differences from upstream, each load-bearing: canonical boundary
+      views + dtype canonicalization + rank-0 handling via _tpu_canon_input;
+      keyword-argument tpu_torch_pallas calls (the 2.11.0 codegen predates
+      the keyword-only binding); jax.export tracing only on registry miss
+      (upstream re-traces every invocation); no per-call jax.clear_caches()
+      or global x64 flip (dtypes are canonicalized to 32-bit instead).
+      """
+      code = ctx.code
 
       # Flat 1-D buffers tile poorly in VMEM (Mosaic pads them massively).
-      # For pointwise kernels where every value is canonical and the kernel
-      # body never references iteration-var arrays (index_expr / gathers),
-      # fold the flat shape into 2-D with a 128-wide lane dimension.
+      # For pointwise kernels where every value is canonical and no access
+      # needed a boundary view or index arrays, fold the flat shape into
+      # 2-D with a 128-wide lane dimension.
       pw_numel, r_numel = self._iteration_numels()
       total = None if pw_numel is None else pw_numel * r_numel
+      specs = {
+          p: self._tpu_spec_for_param(p) for p in ctx.full_kernel_params
+      }
       if (
           not self.inside_reduction
           and not self._tpu_requires_flat
           and total
           and total % 128 == 0
-          and all(c is not None for c in out_canonical + in_canonical)
+          and all(spec is not None for spec in specs.values())
       ):
         body_text = "\n".join(
             str(line) for line in list(self.compute._lines)  # pylint: disable=protected-access
@@ -718,25 +730,133 @@ def _make_tpu_pallas_classes():
         )
         if not uses_iter_vars:
           folded = (total // 128, 128)
-          out_canonical = [
-              folded if c == (total,) else c for c in out_canonical
-          ]
-          in_canonical = [
-              folded if c == (total,) else c for c in in_canonical
-          ]
-      lines = [
-          f"def {kernel_name}_main({', '.join(params)}, stream=None):",
-          "    from torch_tpu._internal.inductor import pallas_runtime",
-          "    pallas_runtime.run_kernel(",
-          f"        {kernel_name}_jit_wrapper,",
-          f"        '{kernel_name}',",
-          f"        outs={as_tuple(out_params)},",
-          f"        ins={as_tuple(in_params)},",
-          f"        out_canonical={as_tuple(out_canonical)},",
-          f"        in_canonical={as_tuple(in_canonical)},",
-          "    )",
-      ]
-      return "\n".join(lines) + "\n"
+          specs = {
+              p: (folded if spec == (total,) else spec)
+              for p, spec in specs.items()
+          }
+
+      def shape_of(spec, param):
+        if isinstance(spec, tuple) and spec and spec[0] == "as_strided":
+          return spec[4]
+        return spec  # tuple or None
+
+      code.writeline("")
+      main_name = f"{ctx.kernel_name}_main"
+      kernel_name_str = ctx.kernel_name
+      code.writeline(
+          f"def {main_name}({', '.join(ctx.full_kernel_params)},"
+          " stream=None):"
+      )
+      with code.indent():
+        input_params = list(ctx.alias_params) + list(ctx.pointer_tail)
+        code.writeline("# Canonical boundary views + dtype canonicalization")
+        for p in input_params:
+          spec = specs.get(p)
+          if isinstance(spec, tuple) and spec and spec[0] == "as_strided":
+            _, sizes, strides, offset, canonical = spec
+            code.writeline(
+                f"{p} = _tpu_canon_input({p}, view=({sizes}, {strides},"
+                f" {offset}), canonical={canonical})"
+            )
+          elif spec is not None:
+            code.writeline(f"{p} = _tpu_canon_input({p}, canonical={spec})")
+          else:
+            code.writeline(f"{p} = _tpu_canon_input({p})")
+
+        code.writeline("# Prepare output metadata")
+        out_shape_exprs = []
+        out_dtype_exprs = []
+        out_empty_dtypes = []
+        for name in ctx.output_params:
+          spec = specs.get(name)
+          shape = shape_of(spec, name)
+          if shape is not None:
+            out_shape_exprs.append(str(tuple(shape)))
+          else:
+            out_shape_exprs.append(
+                f"(tuple({name}.shape) if {name}.ndim else (1,))"
+            )
+          buf_name = ctx.output_buffer_lookup.get(name)
+          dtype = V.graph.get_dtype(buf_name) if buf_name is not None else None
+          if dtype is not None:
+            canon_dtype = _DTYPE_CANON.get(dtype, dtype)
+            out_dtype_exprs.append(torch_dtype_to_jax(canon_dtype))
+            out_empty_dtypes.append(repr(canon_dtype))
+          else:
+            out_dtype_exprs.append(
+                f"torch_dtype_to_jax_runtime(_TPU_DTYPE_CANON.get("
+                f"{name}.dtype, {name}.dtype))"
+            )
+            out_empty_dtypes.append(
+                f"_TPU_DTYPE_CANON.get({name}.dtype, {name}.dtype)"
+            )
+        code.writeline(
+            "out_shapes = (" + ", ".join(out_shape_exprs) + ",)"
+        )
+        code.writeline(
+            "out_dtypes = (" + ", ".join(out_dtype_exprs) + ",)"
+        )
+
+        code.writeline(
+            f"kernel_key = '{kernel_name_str}_' + "
+            "'_'.join(str(s) for shape in out_shapes for s in shape)"
+        )
+        code.writeline(
+            f"if not tpu_torch_pallas.lookup_custom_kernel("
+            f"'{kernel_name_str}', kernel_key):"
+        )
+        with code.indent():
+          code.writeline("# Build JAX placeholders for export tracing")
+          all_jax_input_names = []
+          for p in input_params:
+            code.writeline(
+                f"{p}_placeholder = jax.ShapeDtypeStruct("
+                f"{p}.shape, torch_dtype_to_jax_runtime({p}.dtype))"
+            )
+            all_jax_input_names.append(f"{p}_placeholder")
+          wrapper_placeholder_args = ["out_shapes", "out_dtypes"]
+          wrapper_placeholder_args.extend(ctx.size_var_params)
+          wrapper_placeholder_args.extend(all_jax_input_names)
+          code.writeline(
+              f"exported = jax.export.export("
+              f"{jit_wrapper_name}, platforms=['tpu'])"
+              f"({', '.join(wrapper_placeholder_args)})"
+          )
+          code.writeline(
+              f"tpu_torch_pallas.register_custom_kernel("
+              f"'{kernel_name_str}', kernel_key,"
+              f" serialized_mlir_module=exported.mlir_module_serialized)"
+          )
+
+        code.writeline(f"input_tensors = [{', '.join(input_params)}]")
+        code.writeline("output_shape_tensors = [")
+        with code.indent():
+          for name, shape_expr, dtype_expr in zip(
+              ctx.output_params, out_shape_exprs, out_empty_dtypes
+          ):
+            code.writeline(
+                f"torch.empty({shape_expr}, dtype={dtype_expr},"
+                " device='tpu'),"
+            )
+        code.writeline("]")
+
+        code.writeline(
+            f"results = tpu_torch_pallas.call_custom_kernel("
+            f"'{kernel_name_str}', kernel_key,"
+            f" inputs=input_tensors, output_shapes=output_shape_tensors)"
+        )
+
+        for idx in ctx.copy_output_indices:
+          out_name = ctx.output_params[idx]
+          spec = specs.get(out_name)
+          if isinstance(spec, tuple) and spec and spec[0] == "as_strided":
+            _, sizes, strides, offset, _ = spec
+            code.writeline(
+                f"_tpu_copy_back({out_name}, results[{idx}],"
+                f" view=({sizes}, {strides}, {offset}))"
+            )
+          else:
+            code.writeline(f"_tpu_copy_back({out_name}, results[{idx}])")
 
   class TpuPallasScheduling(pallas_codegen.PallasScheduling):
     kernel_type = TpuPallasKernel  # type: ignore[assignment]
@@ -749,13 +869,12 @@ def _make_tpu_pallas_classes():
         reduction_numel=None,
         coalesce_analysis=None,
     ):
-      # Never tile. The upstream Pallas codegen silently drops the
-      # permutation in tiled (multi-var) kernels — a full `[...]` load plus
-      # a reshape store loses the y/x axis reordering. With a single flat
-      # pointwise var, permuted access lowers to explicit index arrays,
-      # which is correct (and whole-array kernels have no launch-grid reason
-      # to tile anyway). select_tiling delegates here, so this covers every
-      # tiling query.
+      # Never tile. The canonical-shape scheme is defined over a single
+      # flat pointwise range plus a single flat reduction range; tiled
+      # (multi-var) kernels reintroduce the multi-dimensional strided
+      # patterns upstream cannot express. Whole-array kernels have no
+      # launch-grid reason to tile anyway. select_tiling delegates here,
+      # so this covers every tiling query.
       import sympy as sympy_mod
 
       del node_schedule, coalesce_analysis
@@ -763,32 +882,7 @@ def _make_tpu_pallas_classes():
         reduction_numel = sympy_mod.S.One
       return cls.create_tiling([numel], [reduction_numel]), None
 
-  class TpuDeviceOpOverrides(DeviceOpOverrides):
-    """Minimal device ops for the generated Python wrapper.
-
-    Pallas kernels are invoked as plain Python calls (no streams, no device
-    guards), so these only need to keep the wrapper codegen happy.
-    """
-
-    def import_get_raw_stream_as(self, name: str) -> str:
-      return f"{name} = lambda device_idx: None"
-
-    def set_device(self, device_idx: int) -> str:
-      return f"pass  # tpu set_device({device_idx})"
-
-    def synchronize(self) -> str:
-      return "torch.tpu.synchronize()"
-
-    def device_guard(self, device_idx: int) -> str:
-      return f"contextlib.nullcontext()  # tpu device_guard({device_idx})"
-
-    def cpp_device_guard(self) -> str:
-      raise NotImplementedError(
-          "tpu_inductor_pallas does not support cpp_wrapper"
-      )
-
-  del OrderedSet  # unused; kept import above minimal
-  return TpuPallasScheduling, TpuDeviceOpOverrides
+  return TpuPallasScheduling
 
 
 def _make_tpu_device_interface():
@@ -865,11 +959,12 @@ def _make_tpu_device_interface():
 def _register_gather_scatter_fallbacks() -> None:
   """Routes gather/scatter-family ops to aten fallbacks (torch_tpu eager).
 
-  The Pallas TPU compiler (Mosaic) only supports limited (2-D) gathers, so
-  arbitrary gathers/scatters cannot be code-generated into whole-array Pallas
-  kernels. XLA handles them well through torch_tpu eager dispatch instead.
-  Ops that Inductor decomposes anyway (e.g. embedding_dense_backward) end up
-  as the index/index_put leaves below, which are covered too.
+  The Pallas TPU compiler (Mosaic) only supports limited (2-D
+  take_along_axis-style) gathers and no scatter at all, so these cannot be
+  code-generated into whole-array Pallas kernels. XLA handles them well
+  through torch_tpu eager dispatch instead. Ops that Inductor decomposes
+  anyway (e.g. embedding_dense_backward) end up as the index/index_put
+  leaves below, which are covered too.
   """
   from torch._inductor import lowering as inductor_lowering
 
@@ -914,17 +1009,17 @@ def _ensure_registered() -> None:
   from torch._inductor.codegen import common as codegen_common
   from torch._inductor.codegen.wrapper import PythonWrapperCodegen
 
-  tpu_scheduling, tpu_device_op_overrides = _make_tpu_pallas_classes()
-
-  if codegen_common.get_scheduling_for_device("tpu") is None:
-    codegen_common.register_backend_for_device(
-        "tpu",
-        tpu_scheduling,
-        PythonWrapperCodegen,
-    )
-  codegen_common.register_device_op_overrides(
-      "tpu", tpu_device_op_overrides()
+  # Register unconditionally: torch 2.11's init_backend_registration
+  # installs the plain upstream PallasScheduling for "tpu" if nothing is
+  # there yet, and our subclass must win regardless of ordering.
+  codegen_common.register_backend_for_device(
+      "tpu",
+      _make_tpu_pallas_classes(),
+      PythonWrapperCodegen,
   )
+  # No DeviceOpOverrides registration needed: torch 2.11's
+  # get_device_op_overrides falls back to CpuDeviceOpOverrides (no-ops) for
+  # unknown devices.
   registered_interfaces = dict(
       dynamo_device_interface.get_registered_device_interfaces()
   )
@@ -934,16 +1029,13 @@ def _ensure_registered() -> None:
     )
   _register_gather_scatter_fallbacks()
 
-  # Keep fused SDPA ops out of traced graphs: the dispatcher would pick
-  # torch_tpu's _scaled_dot_product_fused_attention_overrideable (or a
-  # CPU-flavored flash op), whose eager implementation / output-layout
-  # contract does not survive Inductor's extern-kernel handling. With the
-  # fused backends off, SDPA lowers to the math path — softmax through
-  # Pallas codegen, matmuls through extern mm. Process-global, but only set
-  # once this backend is actually used.
+  # Keep fused SDPA ops out of traced graphs where the flags are honored;
+  # torch_tpu's own _fused_sdp_choice ignores these, which is why the
+  # decompositions in _build_decompositions are the real mechanism.
   torch._C._set_sdp_use_overrideable(False)  # pylint: disable=protected-access
   torch._C._set_sdp_use_flash(False)  # pylint: disable=protected-access
   torch._C._set_sdp_use_mem_efficient(False)  # pylint: disable=protected-access
+
   _registered = True
   logging.info(
       "Registered Inductor Pallas codegen for the 'tpu' device"
@@ -955,12 +1047,13 @@ def _ensure_registered() -> None:
 def _build_decompositions():
   """Inductor's decomp table + math decomps for fused SDPA ops.
 
-  Fused SDPA ops (e.g. _scaled_dot_product_flash_attention_for_cpu, which
-  the SDPA dispatcher picks for the tpu device) have CPU-specific output
-  layout contracts that torch_tpu's generic eager execution does not honor,
-  so keeping them as extern fallbacks risks silent stride corruption in the
-  backward. Decomposing to math (matmul + softmax) instead routes the
-  softmax through Pallas codegen and the matmuls through extern mm.
+  torch_tpu's `_fused_sdp_choice` picks
+  `_scaled_dot_product_fused_attention_overrideable` regardless of the
+  global SDP-backend flags, its eager implementation rejects Inductor's
+  extern calling pattern, and torch 2.11 still ships no decomposition for
+  it (both fwd and bwd are plain Inductor fallbacks upstream). Decomposing
+  to math (matmul + softmax) routes the softmax through Pallas codegen and
+  the matmuls through extern mm.
   """
   from torch._decomp import decomposition_table
   from torch._inductor.decomposition import select_decomp_table
@@ -983,14 +1076,7 @@ def _build_decompositions():
       *,
       scale=None,
   ):
-    """Math decomposition for the privateuse1 fused SDPA op.
-
-    torch_tpu's _fused_sdp_choice picks
-    _scaled_dot_product_fused_attention_overrideable regardless of the
-    global SDP backend flags, and there is no upstream decomposition for it.
-    Autograd traces through the math ops, so only the primary output needs
-    real data; the flash-style bookkeeping outputs are placeholders.
-    """
+    """Math decomposition for the privateuse1 fused SDPA op."""
     del return_debug_mask
     output, _ = aten._scaled_dot_product_attention_math.default(
         query,
@@ -1009,9 +1095,7 @@ def _build_decompositions():
         (batch, num_heads, seq_q), dtype=torch.float32, device=query.device
     )
     empty_scalar = torch.empty((), dtype=torch.long, device=query.device)
-    debug_mask = torch.empty(
-        (0,), dtype=query.dtype, device=query.device
-    )
+    debug_mask = torch.empty((0,), dtype=query.dtype, device=query.device)
     return (
         output,
         logsumexp,
@@ -1106,7 +1190,11 @@ def _build_decompositions():
       grad_value = grad_value_e
 
     grad_bias = None
-    if len(grad_input_mask) > 3 and grad_input_mask[3] and attn_bias is not None:
+    if (
+        len(grad_input_mask) > 3
+        and grad_input_mask[3]
+        and attn_bias is not None
+    ):
       grad_bias = grad_scores / softmax_scale
     return (grad_query, grad_key, grad_value, grad_bias)
 
