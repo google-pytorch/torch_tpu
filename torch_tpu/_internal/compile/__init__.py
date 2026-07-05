@@ -22,6 +22,10 @@ from torch_tpu._internal.compile._backend import TpuBackend
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")
 
+# Registers the "tpu_inductor_pallas" backend (TorchInductor with Pallas
+# codegen) as an import side effect.
+import torch_tpu._internal.inductor  # pylint: disable=g-import-not-at-top,unused-import
+
 
 def _initialize_graphsafe_rng():
   """Initializes graphsafe RNG operations for TPU.
