@@ -18,38 +18,73 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/broadcast_tensors.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "c10/core/ScalarType.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/device_type.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/copy_from/copy_from_aten_kernels.h"
-#include "torch_tpu/ops/gather/gather_aten_kernels.h"
+#include "torch_tpu/ops/gather/gather.h"
 #include "torch_tpu/ops/macros/kernel.h"
+#include "torch_tpu/ops/nonzero/nonzero.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
+#include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/reductions/reduction_utils.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 #include "torch_tpu/ops/resize/resize_aten_kernels.h"
-#include "torch_tpu/ops/sort/sort_aten_kernels.h"
 
 namespace torch_tpu {
 
 namespace {
 
+namespace stablehlo = mlir::stablehlo;
+
+absl::StatusOr<mlir::MlirOp> BuildMaskedSelectShlo(int64_t output_size,
+                                                   mlir::MlirOp self,
+                                                   mlir::MlirOp mask) {
+  mlir::MlirBuilder& builder = self.getBuilder();
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  TT_ASSIGN_OR_RETURN(const auto output_dtype,
+                      ConvertTo<mlir::ElementType>(self_type.getElementType()));
+
+  if (output_size == 0) {
+    return MakeConstant(builder, 0, output_dtype, {0});
+  }
+
+  mlir::MlirOp self_flat = Flatten(self);
+  mlir::MlirOp mask_flat = Flatten(mask);
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp indices_2d,
+                      BuildNonzeroShlo(output_size, mask_flat));
+
+  mlir::MlirOp indices_1d = stablehlo::Reshape(indices_2d, {output_size});
+
+  return BuildGatherShlo(self_flat, /*dim=*/0, indices_1d,
+                         /*sparse_grad=*/false, output_dtype);
+}
+
 // GetMaskedSelectOutputSize returns the output size of the masked_select op by
 // summing the mask.
 absl::StatusOr<at::Tensor> GetMaskedSelectOutputSize(const at::Tensor& mask) {
-  c10::ScalarType scalar_dtype = c10::ScalarType::Long;
+  const c10::ScalarType scalar_dtype = c10::ScalarType::Long;
   TT_ASSIGN_OR_RETURN(
       at::Tensor result,
       ApplySumReduction(mask, std::nullopt, ReductionMode::kDropDims,
@@ -57,51 +92,12 @@ absl::StatusOr<at::Tensor> GetMaskedSelectOutputSize(const at::Tensor& mask) {
   return result;
 }
 
-// TODO(b/444058028): Improve implementation by leveraging nonzeros.
-// MaskedSelectWithKnownOutputShape is a helper function that implements
-// masked_select when the output shape is known. It does this by flattening
-// the input tensors, sorting the flattened mask, slicing the sorted indices
-// to get the indices of the true values in the mask, and then using a gather
-// operation to select the true values from the input tensors.
-at::Tensor MaskedSelectWithKnownOutputShape(const at::Tensor& self,
-                                            const at::Tensor& mask,
-                                            int64_t num_selected_elems) {
-  // Flatten the tensors at all dimensions.
-  at::Tensor mask_flat = mask.flatten();
-  at::Tensor self_flat = self.flatten();
-
-  // Get indices of true values in mask.
-  TT_ASSIGN_OR_THROW(at::Tensor mask_flat_values,
-                     MakeEmptyTensor(mask_flat.sizes(), mask_flat.scalar_type(),
-                                     mask_flat.device()));
-  TT_ASSIGN_OR_THROW(
-      at::Tensor mask_flat_indices,
-      MakeEmptyTensor(mask_flat.sizes(), at::kLong, mask_flat.device()));
-  AtenSortValuesStable(mask_flat, /*stable_opt=*/true, /*dim=*/0,
-                       /*descending=*/true, mask_flat_values,
-                       mask_flat_indices);
-
-  // Slice the indices to get elements with true values in mask. We get the
-  // first `num_selected_elems` elements.
-  at::Tensor sliced_indices =
-      mask_flat_indices.slice(0, 0, num_selected_elems, 1);
-  // Use flattened self tensor as input to gather op.
-
-  TT_ASSIGN_OR_THROW(at::Tensor result, MakeEmptyTensor(sliced_indices.sizes(),
-                                                        self_flat.scalar_type(),
-                                                        self_flat.device()));
-  return AtenGatherOut(self_flat, 0, sliced_indices, false, result);
-}
-
 absl::Status PrepareOutTensor(const at::Tensor& result, at::Tensor& out) {
   TT_RET_CHECK(out.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
       << "the out tensor is expected to be on tpu, got " << out.device().str();
 
-  // Make out have the same shape as result.
-  out = AtenResize_(out, result.sizes(), std::nullopt);
-
-  // Check that the out tensor dtype is the same as the result dtype.
+  // Validate dtype prior to mutation.
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
   TT_ASSIGN_OR_RETURN(const auto result_dtype,
@@ -110,6 +106,9 @@ absl::Status PrepareOutTensor(const at::Tensor& result, at::Tensor& out) {
                error::kInvalidArgument)
       << "the out tensor dtype is expected to be " << ToString(result_dtype)
       << ", got " << ToString(out_dtype);
+
+  // Resize only if shape differs to avoid unnecessary dispatch overhead.
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, result.sizes()));
   return absl::OkStatus();
 }
 
@@ -119,35 +118,62 @@ absl::Status CheckMaskTensorIsBool(const at::Tensor& mask) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<at::Tensor> AtenMaskedSelectHelper(const at::Tensor& self,
+                                                  const at::Tensor& mask) {
+  TT_RETURN_IF_ERROR(CheckMaskTensorIsBool(mask));
+
+  const auto broadcasted = at::broadcast_tensors({mask, self});
+  const at::Tensor& mask_broadcasted = broadcasted[0];
+  const at::Tensor& self_broadcasted = broadcasted[1];
+
+  // Get the size of the mask.
+  TT_ASSIGN_OR_RETURN(at::Tensor size,
+                      GetMaskedSelectOutputSize(mask_broadcasted));
+
+  // Move `size` to the CPU. This transition is necessary to
+  // dispatch the op afterwards.
+  int64_t size_cpu = size.cpu().item<int64_t>();
+
+  if (size_cpu == 0) {
+    return AtenEfficientZeroTensor({0}, self_broadcasted.scalar_type(),
+                                   std::nullopt, self_broadcasted.device(),
+                                   std::nullopt);
+  }
+
+  TT_ASSIGN_OR_RETURN(auto param_keys, TT_MAKE_OP_PARAM_CACHE_KEYS(size_cpu));
+
+  TT_ASSIGN_OR_RETURN(
+      const auto output_dtype,
+      ConvertTo<mlir::ElementType>(self_broadcasted.scalar_type()));
+  Dimensions output_dims = {size_cpu};
+
+  auto builder_fn = [size_cpu](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+    auto& [self_op, mask_op] = inputs;
+    return BuildMaskedSelectShlo(size_cpu, self_op, mask_op);
+  };
+
+  TT_ASSIGN_OR_RETURN(
+      auto result,
+      DispatchOp<2>(std::move(builder_fn), {self_broadcasted, mask_broadcasted},
+                    {.out_dtype = output_dtype,
+                     .out_dims = output_dims,
+                     .op_param_cache_keys = std::move(param_keys)}));
+  return MakeTensor(std::move(result));
+}
+
 }  // namespace
 
 at::Tensor AtenMaskedSelect(const at::Tensor& self, const at::Tensor& mask) {
   TT_KERNEL(OpName::kMaskedSelect, _, (self, mask), {
-    TT_THROW_IF_ERROR(CheckMaskTensorIsBool(mask));
-
-    auto broadcasted = at::broadcast_tensors({mask, self});
-    at::Tensor& mask_broadcasted = broadcasted[0];
-    at::Tensor& self_broadcasted = broadcasted[1];
-
-    // Get the size of the mask.
-    TT_ASSIGN_OR_THROW(at::Tensor size,
-                       GetMaskedSelectOutputSize(mask_broadcasted));
-
-    // Move `size` to the CPU. This transition is necessary to
-    // dispatch the op afterwards.
-    int64_t size_cpu = size.cpu().item<int64_t>();
-
-    return MaskedSelectWithKnownOutputShape(self_broadcasted, mask_broadcasted,
-                                            size_cpu);
+    TT_ASSIGN_OR_THROW(at::Tensor result, AtenMaskedSelectHelper(self, mask));
+    return result;
   });
 }
 
 at::Tensor& AtenMaskedSelectOut(const at::Tensor& self, const at::Tensor& mask,
                                 at::Tensor& out) {
   TT_KERNEL(OpName::kMaskedSelect, _, (self, mask, out), {
-    TT_THROW_IF_ERROR(CheckMaskTensorIsBool(mask));
-
-    at::Tensor result = AtenMaskedSelect(self, mask);
+    TT_ASSIGN_OR_THROW(at::Tensor result, AtenMaskedSelectHelper(self, mask));
     TT_THROW_IF_ERROR(PrepareOutTensor(result, out));
 
     out = AtenCopyFrom(result, out, /*non_blocking=*/true);
