@@ -81,7 +81,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Use /data/ for Bazel caches to avoid filling up the root disk
-BAZEL_CACHE_DIR="/data/cache/bazel"
+BAZEL_CACHE_DIR="/dev/shm/torch_tpu_wheel"
 mkdir -p "$BAZEL_CACHE_DIR"
 export BAZEL_OUTPUT_BASE="$BAZEL_CACHE_DIR/output_base"
 
