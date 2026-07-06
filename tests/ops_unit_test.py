@@ -5847,6 +5847,189 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     )
 
   @parameterized.product(
+      input_val=[0, 2, 4, 6],
+      out_int32=[True, False],
+      right=[True, False],
+      dtype=[
+          torch.int32,
+          torch.int64,
+          torch.bfloat16,
+          torch.float32,
+          torch.float64,
+      ],
+  )
+  def test_searchsorted_1d_scalar(self, input_val, out_int32, right, dtype):
+    sorted_sequence = torch.tensor([1, 2, 3, 4, 5], dtype=dtype)
+
+    def run(device):
+      return torch.searchsorted(
+          sorted_sequence.to(device),
+          input_val,
+          out_int32=out_int32,
+          right=right,
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
+      input_shape=[(6,), (2, 3), (2, 1, 3)],
+      out_int32=[True, False],
+      right=[True, False],
+      dtype=[
+          torch.int32,
+          torch.int64,
+          torch.float32,
+          torch.float64,
+      ],
+  )
+  def test_searchsorted_1d_tensor(self, input_shape, out_int32, right, dtype):
+    sorted_sequence = torch.tensor([1, 2, 3, 4, 5], dtype=dtype)
+    values = torch.tensor([0, 1, 2, 4, 5, 7], dtype=dtype).reshape(input_shape)
+
+    def run(device):
+      return torch.searchsorted(
+          sorted_sequence.to(device),
+          values.to(device),
+          out_int32=out_int32,
+          right=right,
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.parameters(
+      ((3, 5), (3, 4)),
+      ((2, 3, 5), (2, 3, 4)),
+      ((2, 3, 5), (2, 3, 1)),
+  )
+  def test_searchsorted_nd_tensor(self, seq_shape, val_shape):
+    for out_int32 in [True, False]:
+      for right in [True, False]:
+        for dtype in [torch.int32, torch.float32]:
+          num_seq = 1
+          for s in seq_shape:
+            num_seq *= s
+          seq = torch.sort(
+              (torch.arange(num_seq, dtype=dtype) % 10).reshape(seq_shape),
+              dim=-1,
+          )[0]
+          num_vals = 1
+          for s in val_shape:
+            num_vals *= s
+          vals = (torch.arange(num_vals, dtype=dtype) % 14 - 2).reshape(
+              val_shape
+          )
+
+          def run(
+              device,
+              seq=seq,
+              vals=vals,
+              out_int32=out_int32,
+              right=right,
+          ):
+            return torch.searchsorted(
+                seq.to(device),
+                vals.to(device),
+                out_int32=out_int32,
+                right=right,
+            )
+
+          self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
+      side=["left", "right"],
+      out_int32=[True, False],
+      dtype=[torch.int32, torch.int64, torch.float32],
+  )
+  def test_searchsorted_side(self, side, out_int32, dtype):
+    sorted_sequence = torch.tensor([1, 2, 2, 4, 5], dtype=dtype)
+    values = torch.tensor([0, 2, 4, 6], dtype=dtype)
+
+    def run(device):
+      return torch.searchsorted(
+          sorted_sequence.to(device),
+          values.to(device),
+          out_int32=out_int32,
+          side=side,
+      )
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.parameters(
+      ((5,), (4,)),
+      ((3, 5), (3, 4)),
+      ((2, 3, 5), (2, 3, 4)),
+  )
+  def test_searchsorted_sorter(self, seq_shape, val_shape):
+    for out_int32 in [True, False]:
+      for right in [True, False]:
+        for dtype in [torch.int32, torch.float32]:
+          num_seq = 1
+          for s in seq_shape:
+            num_seq *= s
+          unsorted_seq = (torch.arange(num_seq, dtype=dtype) % 20 - 10).reshape(
+              seq_shape
+          )
+          sorter = torch.argsort(unsorted_seq, dim=-1)
+          num_vals = 1
+          for s in val_shape:
+            num_vals *= s
+          values = (torch.arange(num_vals, dtype=dtype) % 24 - 12).reshape(
+              val_shape
+          )
+
+          def run(
+              device,
+              unsorted_seq=unsorted_seq,
+              values=values,
+              out_int32=out_int32,
+              right=right,
+              sorter=sorter,
+          ):
+            return torch.searchsorted(
+                unsorted_seq.to(device),
+                values.to(device),
+                out_int32=out_int32,
+                right=right,
+                sorter=sorter.to(device),
+            )
+
+          self.assert_close_tpu_vs_cpu(run)
+
+  def test_searchsorted_out_tensor(self):
+    tpu_device = torch.device("tpu")
+    sorted_sequence = torch.tensor(
+        [[1, 3, 5, 7], [2, 4, 6, 8]], dtype=torch.float32, device=tpu_device
+    )
+    values = torch.tensor(
+        [[3, 6], [1, 5]], dtype=torch.float32, device=tpu_device
+    )
+    out = torch.empty((2, 2), dtype=torch.int64, device=tpu_device)
+    torch.searchsorted(sorted_sequence, values, out=out)
+
+    self.assertEqual(
+        out.cpu(), torch.tensor([[1, 3], [0, 2]], dtype=torch.int64)
+    )
+
+    out_int32 = torch.empty((2, 2), dtype=torch.int32, device=tpu_device)
+    torch.searchsorted(sorted_sequence, values, out_int32=True, out=out_int32)
+    self.assertEqual(
+        out_int32.cpu(), torch.tensor([[1, 3], [0, 2]], dtype=torch.int32)
+    )
+
+  def test_searchsorted_out_scalar(self):
+    tpu_device = torch.device("tpu")
+    sorted_sequence = torch.tensor(
+        [1, 3, 5, 7], dtype=torch.float32, device=tpu_device
+    )
+    out = torch.empty((), dtype=torch.int64, device=tpu_device)
+    torch.searchsorted(sorted_sequence, 5.0, out=out)
+    self.assertEqual(out.cpu(), torch.tensor(2, dtype=torch.int64))
+
+    out_int32 = torch.empty((), dtype=torch.int32, device=tpu_device)
+    torch.searchsorted(sorted_sequence, 5.0, out_int32=True, out=out_int32)
+    self.assertEqual(out_int32.cpu(), torch.tensor(2, dtype=torch.int32))
+
+  @parameterized.product(
       shape=[
           (4, 4),
           (10, 4),

@@ -3619,6 +3619,16 @@ class TestOps(TorchTpuTestBase):
         },
     )
 
+  def test_searchsorted(self):
+    self.do_test_op(
+        "searchsorted",
+        exclude_dtypes={  # EXCLUDE_DTYPES_OK=No total order for complex
+            # numbers and inconsistent CPU behavior with bool
+            "cpu": COMPLEX_DTYPES + (torch.bool,),
+            "gpu": COMPLEX_DTYPES + (torch.bool,),
+        },
+    )
+
   # geqrf testing isn't currently supported by PyTorch in other modes due to
   # certain operations not being implemented on CPU/GPU.
   @op_testing.skip_unless_torch_tpu_vs_gpu_mode

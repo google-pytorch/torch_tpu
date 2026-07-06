@@ -6411,6 +6411,112 @@ Supported combinations for non-constant padding:
     ):
       torch.bucketize(input_tensor, boundaries)
 
+  def test_searchsorted_invalid_side(self):
+    sorted_seq = torch.tensor([1.0, 2.0], device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected side to be 'left' or 'right', got invalid""",
+    ):
+      torch.searchsorted(sorted_seq, values, side="invalid")
+
+  def test_searchsorted_conflicting_side_right(self):
+    sorted_seq = torch.tensor([1.0, 2.0], device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected side to not be 'left' when right is true, got side='left' and right=true""",
+    ):
+      torch.searchsorted(sorted_seq, values, side="left", right=True)
+
+  def test_searchsorted_unsupported_complex_dtype(self):
+    sorted_seq = torch.tensor([1.0 + 1.0j], device=et.device())
+    values = torch.tensor([0.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected a non-complex dtype for sorted_sequence, got complex64""",
+    ):
+      torch.searchsorted(sorted_seq, values)
+
+    sorted_seq2 = torch.tensor([0.5], device=et.device())
+    values2 = torch.tensor([1.0 + 1.0j], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected a non-complex dtype for self, got complex64""",
+    ):
+      torch.searchsorted(sorted_seq2, values2)
+
+  def test_searchsorted_sorter_shape_mismatch(self):
+    sorted_seq = torch.tensor([1.0, 2.0, 3.0], device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    sorter = torch.tensor([0, 1], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected sorter to have the same shape as sorted_sequence [3], got [2]""",
+    ):
+      torch.searchsorted(sorted_seq, values, sorter=sorter)
+
+  def test_searchsorted_sorter_dtype_mismatch(self):
+    sorted_seq = torch.tensor([1.0, 2.0, 3.0], device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    sorter = torch.tensor([0, 1, 2], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected sorter to have int64 dtype, got int32""",
+    ):
+      torch.searchsorted(sorted_seq, values, sorter=sorter)
+
+  def test_searchsorted_invalid_dimensions(self):
+    sorted_seq = torch.tensor(1.0, device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected sorted_sequence to have > 0 dimensions, got 0""",
+    ):
+      torch.searchsorted(sorted_seq, values)
+
+    sorted_seq2 = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected sorted_sequence to be 1D when self is a scalar or 0D tensor, got sorted_sequence with shape [2, 2] and self with shape []""",
+    ):
+      torch.searchsorted(sorted_seq2, 1.5)
+
+    values3 = torch.tensor([1.5], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected self and sorted_sequence to have the same number of dimensions when sorted_sequence is not 1D, got sorted_sequence with shape [2, 2] and self with shape [1]""",
+    ):
+      torch.searchsorted(sorted_seq2, values3)
+
+    values4 = torch.tensor([[1.5], [2.5], [3.5]], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected self and sorted_sequence to have matching outer dimension sizes, got sorted_sequence with shape [2, 2] and self with shape [3, 1]""",
+    ):
+      torch.searchsorted(sorted_seq2, values4)
+
+  def test_searchsorted_invalid_out_dtype(self):
+    sorted_seq = torch.tensor([1.0, 2.0], device=et.device())
+    values = torch.tensor([1.5], device=et.device())
+    out = torch.empty(1, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu=re.compile(r".*", re.DOTALL),
+        tpu="""searchsorted(): expected out to have int64 dtype when out_int32 is false, got float32""",
+    ):
+      torch.searchsorted(sorted_seq, values, out=out)
+
   def test_geqrf_insufficient_dims(self):
     input_tensor = torch.ones(1, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
