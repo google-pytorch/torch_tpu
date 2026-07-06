@@ -141,75 +141,7 @@ def verify_op_supports_dynamism(
     None if the op+input is supported, or an skipTest message if not.
   """
 
-  untriaged_ops_deny_list = [
-      "addcdiv",  # dynamic triage (invalid result)
-      "bincount",  # MLIR assertion failure (bounds length vs rank)
-      "clamp_min",  # dynamic triage (invalid result)
-      "conj_physical",  # identity operation for i64 and f64 fails
-      "diagonal",  # materialization failure (negative dimension size)
-      "eq",  # dynamic triage (invalid result)
-      "expand",  # view op - expand not yet supported
-      "expm1",  # dynamic triage (result differ)
-      "fft.rfft",  # expected all dimensions to be static
-      "fft.irfft",  # expected all dimensions to be static
-      "fft.ifft",  # expected all dimensions to be static
-      "fft.fft",  # expected all dimensions to be static
-      "flip",  # dynamic triage (invalid result)
-      "floor_divide",  # currently failing dynamism tests
-      "index_add",  # invalid bound length (likely bad tensor copy)
-      "index_copy",  # invalid bound length (likely bad tensor copy)
-      "index_put",  # garbage data
-      "index_select",  # invalid gather
-      "isin",  # materialization failure (negative dimension size)
-      "kron",  # dynamic triage (invalid result)
-      "ldexp",  # dynamic shape value permutation mismatch
-      "linalg.lu_factor_ex",  # materialization failure (negative dim size)
-      "logical_and",  # dynamic triage (invalid result)
-      "masked_scatter",  # unflatten ambiguous error
-      "matmul",  # reshapes in the structured delegate
-      "maximum",  # dynamic triage (invalid result)
-      "ne",  # dynamic triage (invalid result)
-      "neg",  # dynamic triage (invalid result)
-      "nn.functional.adaptive_avg_pool2d",  # sort op fails to infer
-      "nn.functional.batch_norm",  # dynamic triage (xla error)
-      "nn.functional.embedding",  # crash in shard 27
-      "nn.functional.embedding_bag",  # invalid gather
-      "nn.functional.grid_sample",  #
-      "nn.functional.hardswish",  # dynamic triage (adjust tolerance)
-      "nn.functional.interpolate",  # gather with dynamic slice size
-      "nn.functional.leaky_relu",  # dynamic triage (invalid result)
-      "nn.functional.max_pool3d",  # crash (Aborted)
-      "nn.functional.mse_loss",  # binop LHS / RHS mismatch
-      "nn.functional.nll_loss",  # numerical mismatch or failure in some shards
-      "nn.functional.pdist",  # inlined vector size fail (likely using bound)
-      "nn.functional.relu",  # dynamic triage (tolerance)
-      "nn.functional.scaled_dot_product_attention",  # broadcasting issue in add
-      "nn.functional.upsample_bilinear",  # MLIR gather out of bounds
-      "nn.functional.upsample_nearest",  # MLIR gather build failure
-      "normal",  # OK
-      "pow",  # dynamic triage (invalid result)
-      "remainder",  # dynamic triage (invalid result)
-      "round",  # dynamic triage (invalid result)
-      "sgn",  # dynamic triage (invalid result)
-      "sign",  # dynamic triage (invalid result)
-      "sinh",  # dynamic triage (invalid result)
-      "slice",  # reshape reassociation not supported
-      "squeeze",  # unsupported view op - enhance view op to detect squeeze
-      "squeeze_copy",  # unsupported view op
-      "sub",  # dynamic triage (invalid result)
-      "sum",  # return i64, which has lowering issues
-      "take",  # dynamic triage (invalid result)
-      "tan",  # dynamic triage (invalid result)
-      "to",  # fails numerics (?)
-      "tril",  # bad broadcast
-      "triu",  # bad broadcast, iota-like
-      "trunc",  # dynamic triage (invalid result)
-      "var",  # dynamic triage (invalid result)
-      "vdot",  # MLIR assertion failure (bounds length vs rank)
-      "view_as_complex",  # crash (Aborted)
-      "view_as_real",  # OK
-      "xlogy",  # dynamic triage (invalid result)
-  ]
+  untriaged_ops_deny_list = []
   op = op_info
   if op.name in untriaged_ops_deny_list:
     return f"Op {op.name} is not supported."
@@ -245,6 +177,15 @@ def verify_op_supports_dynamism(
   if op.name in ["polar"]:
     return f"{op.name} op is not supported."
 
+  xla_static_shape_required_list = [
+      "fft.rfft",
+      "fft.irfft",
+      "fft.ifft",
+      "fft.fft",
+  ]
+  if op.name in xla_static_shape_required_list:
+    return f"{op.name} op requires static shapes in XLA."
+
   ### [VIEW OP BUGS] ###
   # TODO: b/449736443 - Reshape support for bounded dynamism needed.
   # transposes and permutes can lower to a reshape sometimes (1x3->3x1)
@@ -253,7 +194,7 @@ def verify_op_supports_dynamism(
 
   ### [TORCHTPU INFRA BUGS] ###
   # TODO: b/449736443 - incompatible buffer shapes at dimension 0;
-  reduction_deny_list = ["all", "any"]
+  reduction_deny_list = ["all", "any", "sum"]
   if op.name in reduction_deny_list:
     return f"reduction op {op.name} is not supported with dynamism."
 
@@ -384,7 +325,20 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
-    additional_binary_ops = ["equal"]
+    additional_binary_ops = [
+        "equal",
+        "clamp_min",
+        "eq",
+        "ldexp",
+        "logical_and",
+        "maximum",
+        "ne",
+        "nn.functional.mse_loss",
+        "pow",
+        "remainder",
+        "sub",
+        "xlogy",
+    ]
     return (
         isinstance(op_info, core.BinaryUfuncInfo)
         or op_info.name in additional_binary_ops
