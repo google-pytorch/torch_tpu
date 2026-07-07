@@ -76,7 +76,10 @@ archive_override(
     module_name = "rules_ml_toolchain",
     integrity = "sha256-izPVqzV2I7ox7EYzRzcRY6ogeLcHUr4LRP2xMrkWh6A=",
     patch_strip = 1,
-    patches = ["//bazel/patches/rules_ml_toolchain:remove_experimental_include.patch"],
+    patches = [
+        "//bazel/patches/rules_ml_toolchain:pywrap_external_binary_location.patch",
+        "//bazel/patches/rules_ml_toolchain:remove_experimental_include.patch",
+    ],
     strip_prefix = "rules_ml_toolchain-236a498d8624bef88e35ce2518a833204b0db19f",
     urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/236a498d8624bef88e35ce2518a833204b0db19f.tar.gz"],
 )
@@ -228,6 +231,15 @@ torch_tpu_version_repo = use_repo_rule("//bazel:wheel_version.bzl", "torch_tpu_v
 torch_tpu_version_repo(
     name = "torch_tpu_version",
     pyproject_toml = "//:pyproject.toml",
+)
+
+# The per-version glue pywrap packages for the multi-ABI wheel, generated from
+# WHEEL_TORCH_VERSIONS so adding a PyTorch version needs no new checked-in
+# packages. See //bazel:glue_packages.bzl.
+glue_packages = use_repo_rule("//bazel:glue_packages.bzl", "glue_packages")
+
+glue_packages(
+    name = "torch_tpu_glues",
 )
 
 # Load and run the custom extension

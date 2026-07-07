@@ -1,0 +1,29 @@
+Fix pywrap_binaries wheel locations for external-repository targets.
+
+_construct_final_binary_location derives the output root by splitting the
+binary's path on its short_path. For a file built in an external repository
+the short_path starts with "../<repo>/" while the path spells the same prefix
+"external/<repo>/", so the split never matches and the "root" ends up being
+the entire path (including the basename), producing a garbage wheel location.
+Normalize the short_path to the "external/" spelling before splitting so
+pywrap_library/pywrap_binaries targets can live in generated repositories.
+
+--- a/py/rules_pywrap/pywrap.impl.bzl
++++ b/py/rules_pywrap/pywrap.impl.bzl
+@@ -1307,8 +1307,15 @@
+     return [DefaultInfo(files = depset(direct = final_binaries))]
+ 
+ def _construct_final_binary_location(final_binary, new_package):
++    # An external repository's short_path starts with "../<repo>/", which never
++    # appears in path (that spells it "external/<repo>/"), so the split below
++    # would return the whole path as the root. Normalize to the "external/"
++    # spelling so binaries built in external repositories get proper locations.
++    short_path = final_binary.short_path
++    if short_path.startswith("../"):
++        short_path = "external/" + short_path[3:]
+     return "{root}{new_package}/{basename}".format(
+-        root = final_binary.path.split(final_binary.short_path, 1)[0],
++        root = final_binary.path.split(short_path, 1)[0],
+         new_package = new_package,
+         basename = final_binary.basename,
+     )
