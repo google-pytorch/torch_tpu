@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//bazel:pytorch_versions.bzl", "DEFAULT_TORCH_VERSION", "EXTRA_PYTORCH_VERSIONS")
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 
 package(
@@ -46,6 +47,26 @@ config_setting(
     flag_values = {":test_wheel": "True"},
     visibility = ["//visibility:public"],
 )
+
+# The PyTorch version a C++ extension is compiled/linked against. The pybind
+# transition (//shims/pybind11:pybind.bzl) sets this to build one glue per
+# supported PyTorch version; shims/torch selects the matching torch wheel on it.
+# Defaults to the version the standard (non-transitioned) build uses.
+string_flag(
+    name = "torch_version",
+    build_setting_default = DEFAULT_TORCH_VERSION,
+    visibility = ["//visibility:public"],
+)
+
+# One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
+# selection on these; the default build falls through to the existing
+# python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
+# built versions stay in step with the pip hubs and the wheel glues.
+[config_setting(
+    name = "torch_" + tv.replace(".", "_"),
+    flag_values = {":torch_version": tv},
+    visibility = ["//visibility:public"],
+) for tv in EXTRA_PYTORCH_VERSIONS]
 
 [config_setting(
     name = "wheel_test_" + v.replace(".", "_"),
