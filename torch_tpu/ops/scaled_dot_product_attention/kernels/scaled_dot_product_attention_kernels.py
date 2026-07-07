@@ -1,3 +1,4 @@
+# pytype: skip-file
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +17,7 @@
 
 import dataclasses
 import functools
-from typing import cast
+from typing import Any, cast
 
 import jax
 import jax.nn as jnn
@@ -115,9 +116,9 @@ class SDPAKernelReferenceJax:
             jnp.swapaxes(key, -3, -2),
             jnp.swapaxes(value, -3, -2),
             is_causal=is_causal,
-            scale=1.0 / jnp.sqrt(query.shape[-1])
-            if scale is None
-            else scale,  # scale,
+            scale=cast(
+                Any, 1.0 / jnp.sqrt(query.shape[-1]) if scale is None else scale
+            ),  # scale,
         ),
         -3,
         -2,

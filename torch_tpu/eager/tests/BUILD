@@ -25,6 +25,7 @@ torch_tpu_py_test(
     notest_oss = "Disabled during switch from opt-in to opt-out",
     strict = True,
     tags = ["requires-tpu-v5lite"],
+    type_checking = "pyrefly",
     deps = [
         "//shims/absl_py:app",
         "//shims/torch:pytorch",

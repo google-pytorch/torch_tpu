@@ -1,3 +1,4 @@
+# pytype: skip-file
 # Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +16,7 @@
 """Generate scaled dot product attention kernel."""
 
 from collections.abc import Sequence
+from typing import cast
 
 from absl import app
 from absl import flags
@@ -105,8 +107,8 @@ def export_forward_kernel(header_path, implementation_path):
     kernel_utils.generate_embedded_file(
         header_path,
         implementation_path,
-        [(  # pyrefly: ignore[bad-argument-type]
-            _KERNEL_NAME.value,
+        [(
+            cast(str, _KERNEL_NAME.value),
             # TODO(elliotenglish): change this to use mlir bytecode
             exported.mlir_module().encode(),
         )],
@@ -127,8 +129,8 @@ def export_backward_kernel(header_path, implementation_path):
     kernel_utils.generate_embedded_file(
         header_path,
         implementation_path,
-        [(  # pyrefly: ignore[bad-argument-type]
-            _KERNEL_NAME.value,
+        [(
+            cast(str, _KERNEL_NAME.value),
             # TODO(elliotenglish): change this to use mlir bytecode
             exported.mlir_module().encode(),
         )],

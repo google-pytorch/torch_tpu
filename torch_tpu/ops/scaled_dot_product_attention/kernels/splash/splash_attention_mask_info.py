@@ -1,3 +1,4 @@
+# pytype: skip-file
 # Copyright 2025 DeepMind Technologies Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -85,7 +86,7 @@ class MaskInfo(NamedTuple):
   block_mask: np.ndarray | jax.Array | None
   num_active_blocks: np.ndarray | jax.Array | None
   partial_mask_blocks: np.ndarray | jax.Array | None
-  q_sequence: np.ndarray | None
+  q_sequence: np.ndarray | jax.Array | None
 
 
 def _downcast_to_small_type(array: np.ndarray) -> np.ndarray:
