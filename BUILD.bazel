@@ -72,6 +72,24 @@ string_flag(
     visibility = ["//visibility:public"],
 )
 
+# True for the per-version wheel glues, whose torch dependencies must be
+# headers-only: their torch symbols are left undefined and resolved at runtime
+# from the user's installed torch (promoted to RTLD_GLOBAL in torch_tpu's
+# __init__). Set by the //shims/pybind11 glue transition. This keeps any single
+# PyTorch's libc10/libtorch_cpu out of the shared XLA common library, so all
+# versions' thin glues can share one common `.so`. The plain (single-version)
+# pywrap leaves it False and links real torch as before.
+bool_flag(
+    name = "torch_headers_only",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "torch_headers_only_enabled",
+    flag_values = {":torch_headers_only": "True"},
+    visibility = ["//visibility:public"],
+)
+
 # One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
 # selection on these; the default build falls through to the existing
 # python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
