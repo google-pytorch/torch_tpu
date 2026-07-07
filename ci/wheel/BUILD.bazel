@@ -18,6 +18,7 @@ load("@torch_tpu_deps//:dependencies.bzl", "WHEEL_REQUIRES")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
+load("//build_files:build_defs.bzl", "torch_tpu_py_test")
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//ci/wheel:pywrap_mapper.bzl", "remap_pywrap_binaries")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_library")
@@ -174,5 +175,30 @@ py_test(
     python_version = "PY3",
     deps = [
         "//shims/absl_py/testing:absltest",
+    ],
+)
+
+# Verifies the PyTorch/non-PyTorch split against the built wheel: imports
+# torch_tpu (dlopening the extension glues) and asserts libxla_base.so defines
+# no PyTorch symbols and the thin glues define no XLA symbols. It checks the
+# artifact we actually ship, so run it with `--config wheel_test_cpu`, under
+# which torch_tpu_py_test installs the wheel into a venv (via
+# //:torch_tpu_py_import) and makes `import torch_tpu` resolve to it.
+torch_tpu_py_test(
+    name = "pywrap_split_test",
+    srcs = ["pywrap_split_test.py"],
+    # The versioned split (libxla_base.so + per-version glues) exists only in the
+    # wheel, so this is meaningful only when --test_wheel is set (e.g.
+    # --config wheel_test_cpu); it is skipped as incompatible otherwise.
+    target_compatible_with = select({
+        "//:wheel_test_enabled": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/sync",
     ],
 )
