@@ -18,7 +18,9 @@ import textwrap
 from typing import TypeAlias
 from absl.testing import absltest
 import torch
+from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import utils
 
@@ -590,6 +592,39 @@ class CompileApiTest(absltest.TestCase):
     # Assert: the tensor values are unchanged
     actual = y.cpu()
     utils.assert_close(actual=actual, expected=expected)
+
+  def test_optimization_barrier_on_non_contiguous_tensor(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        return x.t()
+
+    model = Model()
+    x = torch.ones((2, 2), device=torch.device('tpu'))
+    self.assertEqual(x.shape, (2, 2))
+
+    gm = make_fx(model)(x)
+
+    # Mark the transpose node for recompute
+    for node in gm.graph.nodes:
+      if 'aten.t' in str(node.target):
+        node.meta['recompute'] = (
+            torch.utils.checkpoint.CheckpointPolicy.MUST_RECOMPUTE
+        )
+
+    # Compile with StaticCompiler.
+    compiler_instance = compiler.StaticCompiler()
+    x = torch.ones((2, 2), device=torch.device('tpu'))
+    # is_fwd=False triggers backward pass compilation which invokes marking of
+    # activation checkpoints.
+    executable = compiler_instance(gm, [x], is_fwd=False)
+
+    res = executable([x])
+
+    # Assert: the output should preserve the transposed strides (1, 2)
+    # instead of being contiguous (2, 1)
+    self.assertEqual(res.shape, (2, 2))
+    self.assertEqual(res.stride(), (1, 2))
 
 
 if __name__ == '__main__':

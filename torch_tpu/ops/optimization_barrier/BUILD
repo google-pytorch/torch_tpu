@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
+        "//torch_tpu/ops/view_decomposition:contiguous_to_view",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:Support",

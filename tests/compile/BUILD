@@ -175,6 +175,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/compile:compiler",
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/utils",

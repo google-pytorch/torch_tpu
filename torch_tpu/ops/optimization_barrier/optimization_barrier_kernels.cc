@@ -36,6 +36,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/view_decomposition/contiguous_to_view.h"
 
 namespace torch_tpu {
 
@@ -72,7 +73,10 @@ std::vector<at::Tensor> TorchTpuOptimizationBarrier(at::TensorList self) {
     std::vector<at::Tensor> result;
     result.reserve(result_buffers.size());
     for (auto i = 0; i < result_buffers.size(); ++i) {
-      result.emplace_back(MakeTensor(std::move(result_buffers[i])));
+      TT_ASSIGN_OR_THROW(
+          result.emplace_back(),
+          ContiguousToView(std::move(result_buffers[i]), inputs[i].strides(),
+                           inputs[i].storage_offset()));
     }
 
     return result;
