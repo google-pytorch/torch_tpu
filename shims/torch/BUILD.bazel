@@ -18,9 +18,14 @@ load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
+# The torch shared libraries, selected by the //:torch_version build flag (set
+# per-glue by the pybind transition) and, for the default version, the Python
+# version. Extra torch versions currently resolve to the Python 3.12 wheel; the
+# standard build is Python 3.12.
 alias(
     name = "libc10",
     actual = select({
+        "//:torch_2_12_1": "@pypi_torch_2_12_1_312//:libc10",
         "//:wheel_test_3_11": "@pypi_torch_311//:libc10",
         "//:wheel_test_3_12": "@pypi_torch_312//:libc10",
         "//:wheel_test_3_13": "@pypi_torch_313//:libc10",
@@ -32,6 +37,7 @@ alias(
 alias(
     name = "libtorch_cpu",
     actual = select({
+        "//:torch_2_12_1": "@pypi_torch_2_12_1_312//:libtorch_cpu",
         "//:wheel_test_3_11": "@pypi_torch_311//:libtorch_cpu",
         "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_cpu",
         "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_cpu",
@@ -43,6 +49,7 @@ alias(
 alias(
     name = "libtorch_python",
     actual = select({
+        "//:torch_2_12_1": "@pypi_torch_2_12_1_312//:libtorch_python",
         "//:wheel_test_3_11": "@pypi_torch_311//:libtorch_python",
         "//:wheel_test_3_12": "@pypi_torch_312//:libtorch_python",
         "//:wheel_test_3_13": "@pypi_torch_313//:libtorch_python",
@@ -135,6 +142,7 @@ cc_library(
 cc_library(
     name = "aten_headers",
     deps = select({
+        "//:torch_2_12_1": ["@pypi_torch_2_12_1_312//:torch_headers"],
         ":use_local_torch": ["@local_torch//:torch_headers"],
         "//conditions:default": ["@pypi//torch:torch_headers"],
     }),
@@ -143,6 +151,10 @@ cc_library(
 cc_library(
     name = "torch_headers",
     deps = select({
+        "//:torch_2_12_1": [
+            "@pypi_torch_2_12_1_312//:torch_headers",
+            "@rules_python//python/cc:current_py_cc_headers",
+        ],
         ":use_local_torch": [
             "@local_torch//:torch_headers",
             "@rules_python//python/cc:current_py_cc_headers",
