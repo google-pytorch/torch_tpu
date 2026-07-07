@@ -553,7 +553,9 @@ class JaxCallable:
     kernel_key = _get_kernel_invocation_key(
         self.trace_key, args, kwargs, self.static_argnums
     )
-    output_shapes, out_tree = self.output_shapes.get(kernel_key, (None, None))
+    output_shapes, out_tree, donate_alias_pairs = self.output_shapes.get(
+        kernel_key, (None, None, None)
+    )
     kernel_exists = tpu_torch_pallas.lookup_custom_kernel(self.name, kernel_key)
     if not output_shapes or not kernel_exists:
       jax_args = jax_placeholders(
@@ -585,7 +587,19 @@ class JaxCallable:
           torch_placeholder(aval, mesh=self.mesh) for aval in lowered.out_avals
       ]
       out_tree = lowered.out_tree
-      self.output_shapes[kernel_key] = (output_shapes, out_tree)
+      # The JIT-recorded input->output donation pairs drive the in-place
+      # rebind after the call: a donated input's aliased output generally
+      # sits at a different tuple position, so the pairing must be explicit.
+      donate_alias_pairs = (
+          _mlir_aliasing.read_inplace_donate_alias_pairs(serialized_mlir)
+          if self.inplace_donate and self.donate_argnums
+          else []
+      )
+      self.output_shapes[kernel_key] = (
+          output_shapes,
+          out_tree,
+          donate_alias_pairs,
+      )
 
     tensor_args = [
         arg
@@ -600,6 +614,8 @@ class JaxCallable:
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
         inplace_donate=self.inplace_donate,
+        donate_alias_inputs=[p[0] for p in donate_alias_pairs],
+        donate_alias_outputs=[p[1] for p in donate_alias_pairs],
     )
 
     # `inplace_donate=True` already rebound each donated input's storage to

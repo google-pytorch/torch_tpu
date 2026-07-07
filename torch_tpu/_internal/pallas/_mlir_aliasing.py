@@ -485,6 +485,25 @@ def _operation_key(op: ir.OpView) -> ir.Operation:
   return op.operation
 
 
+def read_inplace_donate_alias_pairs(
+    serialized_mlir: bytes,
+) -> list[tuple[int, int]]:
+  """Returns the ``[(arg_idx, output_idx), ...]`` donation pairs of a module.
+
+  Reads the ``tf.aliasing_output`` attributes JAX records on ``@main``
+  arg attrs from ``donate_argnums`` — the JIT-level input->output
+  aliasing. The eager call path uses these pairs to rebind each donated
+  input's storage to its aliased output buffer; the pairing is explicit
+  because a donated input's aliased output generally sits at a different
+  tuple position (e.g. a kernel donating input 3 into output 0).
+  """
+  context = ir.Context()
+  context.allow_unregistered_dialects = True
+  stablehlo.register_dialect(context)
+  module = stablehlo.deserialize_portable_artifact(context, serialized_mlir)
+  return _read_jit_alias_pairs(_find_main_function(module))
+
+
 def inject_inplace_donate_aliases(
     serialized_mlir: bytes,
     donate_argnums: Sequence[int],

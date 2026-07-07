@@ -70,12 +70,24 @@ std::vector<at::Tensor> PyCallCustomKernel(
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
     const std::vector<int64_t>& donate_argnums,  // INT_VEC_OK
-    bool inplace_donate) {
+    bool inplace_donate,
+    // Parallel (input_index, output_index) donation pairs from the module's
+    // tf.aliasing_output attrs; a donated input's aliased output generally
+    // sits at a different tuple position. Empty means identity pairing over
+    // donate_argnums (single-output kernels donating input 0).
+    const std::vector<int64_t>& donate_alias_inputs,   // INT_VEC_OK
+    const std::vector<int64_t>& donate_alias_outputs) {  // INT_VEC_OK
   TT_KERNEL(
       OpName::kCustomKernel, op_param_cache_keys,
       (name, kernel_key, inputs, output_shapes, donate_argnums,
        IgnoreInCacheKey(
            inplace_donate,
+           "Only affects host-side output wrapping, not op compilation."),
+       IgnoreInCacheKey(
+           donate_alias_inputs,
+           "Only affects host-side output wrapping, not op compilation."),
+       IgnoreInCacheKey(
+           donate_alias_outputs,
            "Only affects host-side output wrapping, not op compilation.")),
       {
         if (output_shapes.empty()) {
@@ -118,36 +130,53 @@ std::vector<at::Tensor> PyCallCustomKernel(
                            results_status);
 
         // When inplace_donate is set, each donated input tensor's storage is
-        // rebound to the corresponding output buffer (1:1 by index) below.
-        // The returned output is still a fresh at::Tensor wrapping the same
+        // rebound to its aliased output's buffer below. The pairing comes
+        // from the module's tf.aliasing_output attrs (donate_alias_inputs/outputs);
+        // without pairs it defaults to identity over donate_argnums. The
+        // returned output is still a fresh at::Tensor wrapping the same
         // buffer — both reads and writes to the input go to the kernel's
         // output buffer. See `_internal/pallas/pallas.py` JaxCallable
         // for the motivating workload (block-major KV cache threaded
         // through every attention layer).
-        absl::flat_hash_set<int64_t> donate_indices;
+        TT_CHECK_THROW(
+            donate_alias_inputs.size() == donate_alias_outputs.size(),
+            error::kInvalidArgument)
+            << "donate_alias_inputs/outputs must pair up";
+        absl::flat_hash_map<int64_t, int64_t> rebind_input_by_output;
         if (inplace_donate) {
-          donate_indices.insert(donate_argnums.begin(), donate_argnums.end());
+          if (!donate_alias_inputs.empty()) {
+            for (size_t p = 0; p < donate_alias_inputs.size(); ++p) {
+              rebind_input_by_output[donate_alias_outputs[p]] =
+                  donate_alias_inputs[p];
+            }
+          } else {
+            for (const int64_t idx : donate_argnums) {
+              rebind_input_by_output[idx] = idx;
+            }
+          }
         }
 
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
         for (auto i = 0; i < results.size(); ++i) {
           const int64_t out_idx = static_cast<int64_t>(i);
-          if (donate_indices.contains(out_idx)) {
-            TT_CHECK_THROW(out_idx < static_cast<int64_t>(inputs.size()),
+          if (const auto it = rebind_input_by_output.find(out_idx);
+              it != rebind_input_by_output.end()) {
+            const int64_t in_idx = it->second;
+            TT_CHECK_THROW(in_idx < static_cast<int64_t>(inputs.size()),
                            error::kInvalidArgument)
-                << "inplace_donate=True requires the donated index " << out_idx
+                << "inplace_donate=True requires the donated index " << in_idx
                 << " to be a valid input index (size " << inputs.size() << ")";
             // Two strong refs to the same buffer: one stays with the freshly
             // returned at::Tensor; the other rebinds the donated input's
-            // storage. We MUST NOT also return `inputs[out_idx]` — that
+            // storage. We MUST NOT also return `inputs[in_idx]` — that
             // would alias an input and trip torch.library's
             // `_c_check_aliasing_constraint`. The point of the rebind is
             // that subsequent reads of the input observe the kernel's
             // writes without the caller having to `input.copy_(output)`.
             DeviceBufferRef rebind_buf = results[i];
             TT_THROW_IF_ERROR(
-                AssignBufferToAtTensor(std::move(rebind_buf), inputs[out_idx]));
+                AssignBufferToAtTensor(std::move(rebind_buf), inputs[in_idx]));
           }
           result_tensors.push_back(MakeTensor(std::move(results[i])));
         }
@@ -169,7 +198,9 @@ PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
         py::arg("donate_argnums") = std::vector<int64_t>{},  // INT_VEC_OK
-        py::arg("inplace_donate") = false);
+        py::arg("inplace_donate") = false,
+        py::arg("donate_alias_inputs") = std::vector<int64_t>{},   // INT_VEC_OK
+        py::arg("donate_alias_outputs") = std::vector<int64_t>{});  // INT_VEC_OK
 }
 
 }  // namespace torch_tpu
