@@ -20,6 +20,8 @@ package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 cc_library(
     name = "c10",
     deps = select({
+        # Per-version wheel glues: headers only, torch symbols resolved at runtime.
+        "//:torch_headers_only_enabled": ["//shims/torch:torch_headers"],
         "//shims/torch:use_local_torch": [
             "@local_torch//:libc10",
             "@local_torch//:torch_headers",

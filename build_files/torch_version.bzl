@@ -19,20 +19,63 @@ XLA/MLIR backend that does not actually depend on PyTorch. To keep the shared
 backend in a single configuration (so pywrap factors it into one common library
 instead of one copy per PyTorch version), `xla_fixed` re-exports a target under
 a transition that pins `//:torch_version` to a canonical value.
+
+`torch_version_glue` is the dual: it re-exports a `pybind_extension` under a
+transition that *sets* `//:torch_version` to a specific value, so the same
+extension source is compiled once per supported PyTorch version. The versioned
+`.so`s (built by the wheel `pywrap_library`) share the single XLA/MLIR common
+library produced under the pinned config above.
 """
 
-_TORCH_VERSION = "//:torch_version"
+load("@rules_ml_toolchain//py/rules_pywrap:pywrap.impl.bzl", "PywrapInfo")
+load(
+    "//bazel:pytorch_versions.bzl",
+    "DEFAULT_TORCH_VERSION",
+    _WHEEL_TORCH_VERSIONS = "WHEEL_TORCH_VERSIONS",
+)
 
-# Canonical value the version-independent backend is always built under.
-_FIXED_TORCH_VERSION = "2.11.0"
+_TORCH_VERSION = "//:torch_version"
+_TORCH_HEADERS_ONLY = "//:torch_headers_only"
+
+# The PyTorch versions the separated pip wheel is built against (one thin glue
+# `.so` per version, all sharing one XLA/MLIR common library) are the single
+# source of truth in //bazel:pytorch_versions.bzl. They are re-exported here --
+# Starlark does not re-export a loaded symbol, so we load it under a private
+# alias and bind a real public global -- because shims/pybind11/pybind.bzl and
+# torch_tpu/common/BUILD already load WHEEL_TORCH_VERSIONS from this module.
+WHEEL_TORCH_VERSIONS = _WHEEL_TORCH_VERSIONS
+
+# Canonical values the version-independent backend is always built under. Both
+# axes are pinned so the backend has one configuration no matter which glue (or
+# the xla_base filter) reaches it: torch_version because the backend does not
+# depend on PyTorch, and torch_headers_only so a glue that links real torch and
+# the headers-only xla_base filter still produce byte-identical backend linker
+# inputs. headers_only is pinned to True specifically -- the shared base must
+# never pull real torch, or any stray torch reference in it would bind to this
+# canonical version's ABI and break against a different installed PyTorch. (The
+# per-version torch code, which does link real torch, is not part of the backend
+# and is not routed through here.)
+#
+# The default PyTorch version is the canonical pin: it is always one of the
+# built glues, so the backend's single configuration coincides with a real
+# glue's pinned backend rather than a version nothing else is built under.
+_FIXED_TORCH_VERSION = DEFAULT_TORCH_VERSION
+_FIXED_TORCH_HEADERS_ONLY = True
+
+def version_suffix(version):
+    """Turns a PyTorch version like "2.12.1" into a target/file suffix "2_12_1"."""
+    return version.replace(".", "_")
 
 def _fix_torch_version_impl(settings, attr):
-    return {_TORCH_VERSION: _FIXED_TORCH_VERSION}
+    return {
+        _TORCH_VERSION: _FIXED_TORCH_VERSION,
+        _TORCH_HEADERS_ONLY: _FIXED_TORCH_HEADERS_ONLY,
+    }
 
 _fix_torch_version = transition(
     implementation = _fix_torch_version_impl,
     inputs = [],
-    outputs = [_TORCH_VERSION],
+    outputs = [_TORCH_VERSION, _TORCH_HEADERS_ONLY],
 )
 
 def _xla_fixed_impl(ctx):
@@ -85,3 +128,127 @@ def is_backend_dep(dep):
         if dep.startswith(torch_prefix):
             return False
     return True
+
+def _set_torch_version_impl(settings, attr):
+    # Only the torch_version is set: the glue links real torch (headers_only stays
+    # at its default False), so its per-version common carries a DT_NEEDED on
+    # libc10/libtorch_cpu resolved from the user's install at load. Just the
+    # shared xla_base filter opts into headers-only, to stay torch-free.
+    return {_TORCH_VERSION: attr.torch_version}
+
+_set_torch_version = transition(
+    implementation = _set_torch_version_impl,
+    inputs = [],
+    outputs = [_TORCH_VERSION],
+)
+
+def _torch_version_glue_impl(ctx):
+    # Re-export the transitioned extension's providers unchanged. Keeping the
+    # child's PywrapInfo (rather than reconstructing it) preserves its `owner`,
+    # which pywrap_binaries uses to name the emitted `.so` -- so a child named
+    # `env_2_12_1` yields `env_2_12_1.so` with the unversioned `PyInit_env`.
+    child = ctx.attr.dep[0]
+    return [
+        child[PywrapInfo],
+        child[PyInfo],
+        child[DefaultInfo],
+    ]
+
+torch_version_glue = rule(
+    implementation = _torch_version_glue_impl,
+    doc = "Re-exports a pybind_extension compiled against a specific PyTorch version.",
+    attrs = {
+        "dep": attr.label(
+            cfg = _set_torch_version,
+            providers = [PywrapInfo],
+            mandatory = True,
+        ),
+        "torch_version": attr.string(mandatory = True),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+def pin_glue_backend_deps(name, deps):
+    """Pins a versioned glue's external backend deps to the canonical config.
+
+    A per-version glue is analyzed under a `//:torch_version` transition, which
+    reconfigures its *entire* dep graph -- including version-independent backend
+    code that a glue depends on directly (e.g. `@com_google_absl//...`). Left
+    alone, each version's copy lands in the shared common library under a
+    distinct config and collides at link time ("duplicate symbol ... built in a
+    different configuration"). Routing those deps through `xla_fixed` resets them
+    to the canonical config so pywrap factors them into one common library.
+
+    torch_tpu_cc_library deps already self-route; this covers the glue's own
+    direct backend deps. `//`-deps and torch headers are left untouched.
+    """
+    if type(deps) != "list":
+        # A select() or other non-list value: leave it untouched.
+        return deps
+    result = []
+    fixed_index = 0
+    for dep in deps:
+        if is_backend_dep(dep):
+            fixed_name = "_{}_glue_backend_fixed_{}".format(name, fixed_index)
+            xla_fixed(
+                name = fixed_name,
+                dep = dep,
+                visibility = ["//visibility:private"],
+            )
+            result.append(":" + fixed_name)
+            fixed_index += 1
+        else:
+            result.append(dep)
+    return result
+
+# A torch_version value used ONLY by the shared-XLA filter's configuration. It
+# must never appear in WHEEL_TORCH_VERSIONS: that guarantees the filter's own
+# torch_tpu object code is compiled under a config distinct from every glue, so
+# it is ignored when pywrap matches the filter against the glues' linker inputs.
+# Meanwhile the filter's backend deps -- routed through xla_fixed to the
+# canonical config, exactly like the glues' -- share linker-input identity with
+# the glues' pinned backend, so only the shared XLA/MLIR is captured.
+_SENTINEL_TORCH_VERSION = "0.0.0"
+
+def _xla_base_config_impl(settings, attr):
+    return {
+        _TORCH_VERSION: _SENTINEL_TORCH_VERSION,
+        # headers-only so no real torch is pulled into the shared XLA base. The
+        # glues themselves link real torch (headers_only=False), but xla_fixed
+        # canonicalizes both torch_version and torch_headers_only, so the backend
+        # linker inputs captured here still match the glues' pinned backend.
+        _TORCH_HEADERS_ONLY: True,
+    }
+
+_xla_base_config = transition(
+    implementation = _xla_base_config_impl,
+    inputs = [],
+    outputs = [_TORCH_VERSION, _TORCH_HEADERS_ONLY],
+)
+
+def _xla_base_filter_impl(ctx):
+    dep = ctx.attr.dep[0]
+    return [dep[CcInfo], dep[DefaultInfo]]
+
+xla_base_filter = rule(
+    implementation = _xla_base_filter_impl,
+    doc = """Re-exports a cc dep under the shared-XLA-base config.
+
+    Used as a pywrap `common_lib_filters` entry: its transitive linker inputs
+    that match the glues' (the pinned XLA/MLIR/absl) are factored into the shared
+    `libxla_base.so`; its torch_tpu object code, compiled under the sentinel
+    torch_version, matches no glue and is dropped.
+    """,
+    attrs = {
+        "dep": attr.label(
+            cfg = _xla_base_config,
+            providers = [CcInfo],
+            mandatory = True,
+        ),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)

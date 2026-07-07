@@ -72,6 +72,24 @@ string_flag(
     visibility = ["//visibility:public"],
 )
 
+# Collapses the torch shims to headers-only: no libc10/libtorch_cpu is linked
+# where this is True. Set by the backend-pinning transitions in
+# build_files/torch_version.bzl for everything routed into the shared XLA
+# common library, which must never pull real torch -- a stray torch reference
+# there would bind one version's ABI into the library every glue shares. The
+# glues and their per-version torch commons leave it False and link the real
+# torch matching their version.
+bool_flag(
+    name = "torch_headers_only",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "torch_headers_only_enabled",
+    flag_values = {":torch_headers_only": "True"},
+    visibility = ["//visibility:public"],
+)
+
 # One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
 # selection on these; the default build falls through to the existing
 # python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
