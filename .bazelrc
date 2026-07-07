@@ -370,6 +370,9 @@ build --flag_alias=test_wheel=//:test_wheel
 # Common config for all wheel.
 build:wheel_common --config=remote_caching_readonly
 build:wheel_common --config=remote_execution_readonly
+# The wheel is always the versioned, separated layout: route the XLA/MLIR backend
+# through the torch_version-reset transition so it is built once and shared.
+build:wheel_common --//:wheel_build=True
 
 # Common config for testing the wheel
 test:wheel_common_test --config=wheel_common

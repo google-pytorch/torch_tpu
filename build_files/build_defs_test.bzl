@@ -15,7 +15,50 @@
 """Unit tests for build_defs.bzl."""
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
-load("//build_files:build_defs.bzl", "check_and_adjust_test_tags_for_testing", "tpu_gen")
+load(
+    "//build_files:build_defs.bzl",
+    "check_and_adjust_test_tags_for_testing",
+    "is_backend_dep_for_testing",
+    "tpu_gen",
+)
+
+def _test_is_backend_dep(ctx):
+    """Tests classification of version-independent backend deps vs PyTorch/internal deps."""
+
+    env = unittest.begin(ctx)
+
+    # External, non-PyTorch backend deps are pinned to a single config.
+    for dep in [
+        "@xla//xla:shape_util",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:stablehlo_ops",
+        "@com_google_absl//absl/status",
+        "@eigen_archive//:eigen3",
+        "@com_googlesource_code_re2//:re2",
+        # Non-torch package in the shared @pypi hub -> still backend.
+        "@pypi//numpy:numpy_headers",
+        # Classification keys on the known torch sources, not on the substring
+        # "torch": a backend repo whose label happens to contain it is not torch.
+        "@backend_with_torch_in_name//:lib",
+    ]:
+        asserts.true(env, is_backend_dep_for_testing(dep), "expected backend: %s" % dep)
+
+    # Our PyTorch sources (which must vary per version) and torch_tpu's own code
+    # are not; keep in step with _TORCH_DEP_PREFIXES in build_defs.bzl.
+    for dep in [
+        "@pypi//torch:torch_headers",
+        "@local_torch//:libc10",
+        "@pypi_torch_2_12_1_312//:libc10",
+        "@pypi_torch_312//:libtorch_cpu",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/common:dtype",
+        ":a_local_target",
+    ]:
+        asserts.false(env, is_backend_dep_for_testing(dep), "expected not backend: %s" % dep)
+
+    return unittest.end(env)
+
+is_backend_dep_test = unittest.make(_test_is_backend_dep)
 
 def _test_nobuild(ctx):
     """Tests the nobuild parameter."""
@@ -413,6 +456,7 @@ def build_defs_test_suite(name):
     add_test(tests, internal_nopresubmit_oss_test, name + "_internal_nopresubmit_oss")
     add_test(tests, internal_notap_nobuild_test, name + "_internal_notap_nobuild")
     add_test(tests, internal_notest_oss_test, name + "_internal_notest_oss")
+    add_test(tests, is_backend_dep_test, name + "_is_backend_dep")
     add_test(tests, nobuild_test, name + "_nobuild")
     add_test(tests, nolocal_test, name + "_nolocal")
     add_test(tests, nopresubmit_test, name + "_nopresubmit")

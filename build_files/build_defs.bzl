@@ -27,6 +27,7 @@ load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
+load("//build_files:torch_version.bzl", "is_backend_dep", "xla_fixed")
 
 # This file is torch_tpu implementation details and should not be imported by
 # other projects.
@@ -122,6 +123,40 @@ def adjust_cc_options(copts, features):
     features.append("-use_header_modules")
     return copts, features
 
+def _route_backend_deps_through_fixed(name, deps):
+    """In a wheel build, routes external backend deps through the xla_fixed
+    torch_version-reset transition, so the backend is built in a single
+    configuration and pywrap factors it into one shared library instead of one
+    copy per PyTorch version. A bazel-only build keeps the deps unchanged.
+    """
+    if type(deps) != "list":
+        # TODO(pganssle): A non-list deps value -- a bare select(), or the common
+        # `[...] + select({...})` (a SelectorList) -- is left untouched, so any
+        # backend @-dep inside it escapes pinning and would fragment the shared
+        # XLA base instead of sharing it. Handle the `list + select` shape (or
+        # reject backend @-deps inside selects) here.
+        return deps
+    pinned = [d for d in deps if is_backend_dep(d)]
+    if not pinned:
+        return deps
+    kept = [d for d in deps if not is_backend_dep(d)]
+    wrapped = []
+    for i, dep in enumerate(pinned):
+        fixed_name = "_{}_backend_fixed_{}".format(name, i)
+        xla_fixed(
+            name = fixed_name,
+            dep = dep,
+            visibility = ["//visibility:private"],
+        )
+        wrapped.append(":" + fixed_name)
+    return kept + select({
+        "//:wheel_build_enabled": wrapped,
+        "//conditions:default": pinned,
+    })
+
+# Exported for build_defs_test.bzl.
+is_backend_dep_for_testing = is_backend_dep
+
 def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = None, **kwargs):
     """Creates a C++ library for torch_tpu.
 
@@ -142,6 +177,8 @@ def torch_tpu_cc_library(name, srcs = [], hdrs = [], copts = None, features = No
     if len(hdrs) > 1:
         fail("torch_tpu_cc_library must contain at most one hdrs file. This reduces build bloat " +
              "and prevents circular dependencies between files.")
+
+    kwargs["deps"] = _route_backend_deps_through_fixed(name, kwargs.get("deps", []))
 
     copts, features = adjust_cc_options(copts, features)
     cc_library(
