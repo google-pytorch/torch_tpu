@@ -175,3 +175,29 @@ py_test(
         "//shims/absl_py/testing:absltest",
     ],
 )
+
+# Verifies the PyTorch/non-PyTorch split against the built wheel: imports
+# torch_tpu (dlopening the version-matched glues) and asserts libxla_base.so
+# defines no PyTorch symbols and the thin glues define no XLA symbols. This only
+# makes sense against the packaged wheel -- the bazel source tree has no
+# versioned glues -- so run it with `--config wheel_test_cpu`, under which
+# torch_tpu_py_test installs the wheel into a venv (via //:torch_tpu_py_import)
+# and makes `import torch_tpu` resolve to it.
+torch_tpu_py_test(
+    name = "pywrap_split_test",
+    srcs = ["pywrap_split_test.py"],
+    # The versioned split (libxla_base.so + per-version glues) exists only in the
+    # wheel, so this is meaningful only when --test_wheel is set (e.g.
+    # --config wheel_test_cpu); it is skipped as incompatible otherwise.
+    target_compatible_with = select({
+        "//:wheel_test_enabled": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/sync",
+    ],
+)
