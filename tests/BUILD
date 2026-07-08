@@ -970,6 +970,7 @@ torch_tpu_py_test(
     srcs = ["sparse_dense_matmul_test.py"],
     main = "sparse_dense_matmul_test.py",
     notest_oss = "Disabled because of no support for tpu v7 in presubmit",
+    shard_count = 2,
     tags = [
         "ok-to-wait-for-v7x-in-presubmit",
         "requires-tpu-v7x",
