@@ -581,19 +581,16 @@ class JaxCallable:
         if arg is not None and i not in self.static_argnums
     ]
 
-    if (
-        self.inplace_donate
-        and torch.is_grad_enabled()
-        and any(
-            isinstance(t, torch.Tensor) and t.requires_grad
-            for t in tensor_args
-        )
+    # No is_grad_enabled() check: torch.library's autograd fallback runs
+    # this impl under no_grad, so requires_grad on the inputs is the only
+    # signal that survives to this point.
+    if self.inplace_donate and any(
+        isinstance(t, torch.Tensor) and t.requires_grad for t in tensor_args
     ):
       raise RuntimeError(
           f"{self.name}: inplace_donate=True kernels are inference-only."
           " A donated input's buffer is invalidated in place, so autograd"
-          " cannot replay it for the backward pass. Run under"
-          " torch.no_grad() or detach the inputs."
+          " cannot replay it for the backward pass. Detach the inputs."
       )
 
     results = tpu_torch_pallas.call_custom_kernel(
