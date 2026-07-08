@@ -14,28 +14,12 @@
 
 """Tests for inplace_donate=True Pallas custom kernels.
 
-The motivating workload (vLLM TPU serving) threads one device-resident state
-pool — larger than half of HBM — through many sequential Pallas calls per
-`torch.compile`d step, across many steps, inference-only. That contract is
-what this suite pins, in three parts:
-
-1. The pre-existing donation API cannot express it:
-   `donate_argnums` alone keeps the donated input and the kernel output as
-   distinct buffers, so one update of a >HBM/2 pool needs two copies and
-   OOMs (`test_existing_donation_api_cannot_update_half_hbm_pool`); the
-   documented `x.set_(out)` republish cannot be traced — Dynamo rejects
-   `set_` on a graph input (`test_caller_set_republish_rejected_under_compile`)
-   — and inside the op implementation `set_` trips torch.library's aliasing
-   check (`test_custom_op_impl_cannot_republish_via_set_`).
-
-2. `inplace_donate=True` does express it: the same >HBM/2 pool is
-   initialized and updated in place across compiled steps
-   (`test_inplace_donate_updates_half_hbm_pool_across_compiled_steps`).
-
-3. The mechanisms behind it hold individually: pair-driven eager rebind for
-   cross-index aliasing (input 1 -> output 0 — the case an index-identity
-   rebind silently misses), chained donation in eager and compiled form,
-   the SSA-rename FX pass, and the autograd guard.
+The workload: a device-resident state pool larger than half of HBM,
+threaded through sequential Pallas calls per torch.compile'd step, across
+steps, inference-only. Part 1 shows the pre-existing donation API cannot
+express it (double-buffer OOM; set_ republish rejected in compile and
+inside the op impl); part 2 shows inplace_donate does; part 3 pins the
+individual mechanisms.
 """
 
 import jax
@@ -181,11 +165,10 @@ class TestPallasInplaceDonate(absltest.TestCase):
       step(x, acc)
 
   def test_custom_op_impl_cannot_republish_via_set_(self):
-    # ... and inside a custom_op implementation, `set_` makes the returned
-    # output share the input's storage, which torch.library's aliasing
-    # check rejects. Device-agnostic (dispatcher-layer check), so plain CPU
-    # tensors suffice. This is why the in-place republish is a
-    # DeviceBuffer-level rebind in C++.
+    # Inside a custom_op impl, set_ makes the returned output share the
+    # input's storage — rejected by torch.library's aliasing check (why
+    # the republish is a DeviceBuffer-level rebind in C++). Dispatcher-
+    # layer check, so CPU tensors suffice.
     @torch.library.custom_op(
         "pallas_test::set_republish", mutates_args=()
     )
@@ -200,11 +183,8 @@ class TestPallasInplaceDonate(absltest.TestCase):
   # --- Part 2: inplace_donate expresses it.
 
   def test_inplace_donate_updates_half_hbm_pool_across_compiled_steps(self):
-    # The serving-loop contract, at the scale part 1 proved impossible:
-    # initialize the pool in place, then run a compiled step twice against
-    # the same Python handle. Requires per-call buffer aliasing (one pool
-    # copy total), the executable-level donation, and the post-execution
-    # storage rebind that keeps the handle valid across steps.
+    # The serving-loop contract at the scale part 1 proved impossible:
+    # fill in place, then run a compiled step twice on the same handle.
     pool = torch.empty(_POOL_ELEMS, dtype=torch.float32, device=self.device)
     inplace_fill_one(pool)
 
@@ -221,11 +201,9 @@ class TestPallasInplaceDonate(absltest.TestCase):
   # --- Part 3: the individual mechanisms.
 
   def test_eager_cross_index_rebind(self):
-    # The donated input (arg 1) aliases output 0. After the call, reads of
-    # the donated input must observe the kernel's writes — the host rebind
-    # has to follow the module's (input, output) alias pairs; a rebind that
-    # assumes the aliased output shares the input's tuple index never fires
-    # here and leaves the input pointing at the donated buffer.
+    # Donated input 1 aliases output 0: the rebind must follow the alias
+    # pairs — an index-identity rebind never fires here and leaves the
+    # input pointing at the donated buffer.
     x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=self.device)
     acc = torch.tensor(
         [10.0, 20.0, 30.0], dtype=torch.float32, device=self.device
@@ -254,12 +232,9 @@ class TestPallasInplaceDonate(absltest.TestCase):
     utils.assert_close(acc.to("cpu"), expected)
 
   def test_compiled_chained_donation(self):
-    # Under torch.compile the per-call host rebind cannot fire between the
-    # fused calls; the `inplace_donate_ssa_rename` FX pass must rewrite the
-    # second call's use of `acc` to the first call's aliased output. Both
-    # calls take the graph input `acc` (the workload threads one state
-    # bundle through every layer); returning both outputs keeps the first
-    # call alive.
+    # Both calls take the graph input `acc`; the SSA-rename pass must
+    # rewrite the second call to read the first call's output. Returning
+    # both outputs keeps the first call alive.
     @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
     def double_accumulate(x, acc):
       first = inplace_accumulate(x, acc)

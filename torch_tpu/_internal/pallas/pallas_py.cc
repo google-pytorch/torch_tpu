@@ -71,10 +71,8 @@ std::vector<at::Tensor> PyCallCustomKernel(
     // Use std::vector as pybind has built-in support for it.
     const std::vector<int64_t>& donate_argnums,  // INT_VEC_OK
     bool inplace_donate,
-    // Parallel (input_index, output_index) donation pairs from the module's
-    // tf.aliasing_output attrs; a donated input's aliased output generally
-    // sits at a different tuple position. Empty means identity pairing over
-    // donate_argnums (single-output kernels donating input 0).
+    // Parallel (input, output) donation pairs from the module's
+    // tf.aliasing_output attrs; empty = identity over donate_argnums.
     const std::vector<int64_t>& donate_alias_inputs,   // INT_VEC_OK
     const std::vector<int64_t>& donate_alias_outputs) {  // INT_VEC_OK
   TT_KERNEL(
@@ -129,15 +127,9 @@ std::vector<at::Tensor> PyCallCustomKernel(
         TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> results,
                            results_status);
 
-        // When inplace_donate is set, each donated input tensor's storage is
-        // rebound to its aliased output's buffer below. The pairing comes
-        // from the module's tf.aliasing_output attrs (donate_alias_inputs/outputs);
-        // without pairs it defaults to identity over donate_argnums. The
-        // returned output is still a fresh at::Tensor wrapping the same
-        // buffer — both reads and writes to the input go to the kernel's
-        // output buffer. See `_internal/pallas/pallas.py` JaxCallable
-        // for the motivating workload (block-major KV cache threaded
-        // through every attention layer).
+        // inplace_donate: rebind each donated input's storage to its aliased
+        // output buffer, paired by donate_alias_inputs/outputs (identity over
+        // donate_argnums when empty).
         TT_CHECK_THROW(
             donate_alias_inputs.size() == donate_alias_outputs.size(),
             error::kInvalidArgument)
@@ -167,13 +159,9 @@ std::vector<at::Tensor> PyCallCustomKernel(
                            error::kInvalidArgument)
                 << "inplace_donate=True requires the donated index " << in_idx
                 << " to be a valid input index (size " << inputs.size() << ")";
-            // Two strong refs to the same buffer: one stays with the freshly
-            // returned at::Tensor; the other rebinds the donated input's
-            // storage. We MUST NOT also return `inputs[in_idx]` — that
-            // would alias an input and trip torch.library's
-            // `_c_check_aliasing_constraint`. The point of the rebind is
-            // that subsequent reads of the input observe the kernel's
-            // writes without the caller having to `input.copy_(output)`.
+            // The returned tensor stays a fresh at::Tensor sharing the
+            // buffer — returning `inputs[in_idx]` itself would trip
+            // torch.library's `_c_check_aliasing_constraint`.
             DeviceBufferRef rebind_buf = results[i];
             TT_THROW_IF_ERROR(
                 AssignBufferToAtTensor(std::move(rebind_buf), inputs[in_idx]));

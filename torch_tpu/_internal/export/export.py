@@ -107,16 +107,11 @@ class ExportedMlir:
       is expected for the generator state tensor, and the one additional tensor
       as the last output is expected for the updated generator state tensor.
     is_noop: Whether the FX graph is a no-op (i.e. has no output tensors).
-    donate_input_output_aliases: A list of ``(arg_index, output_index)`` pairs
-      that describe inputs whose storage should be rebound to a specific
-      executable output buffer once execution completes. ``arg_index`` is the
-      position of the donated tensor in the runtime args list (matching the
-      FX graph's placeholder order, excluding non-tensor entries). ``output_index``
-      is the position of the corresponding extra output in the executable's
-      output list — placed *between* the user-visible outputs and any device
-      state tensors so that existing device-state slicing logic in
-      ``_TorchTpuCompiledExecutable`` continues to operate from the tail.
-      An empty list means no aliasing is required.
+    donate_input_output_aliases: ``(arg_index, output_index)`` pairs of
+      inputs whose storage is rebound to an executable output buffer after
+      execution. arg_index is tensor-only runtime-args position;
+      output_index points at the extra outputs placed between the user
+      outputs and the device-state tail. Empty = no aliasing.
   """
 
   module: tpu_torch_compile.ContextedModule | None
@@ -160,17 +155,10 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
   ):
     super().__init__(module)
     self.state_dict = module.state_dict()
-    # `torch.fx.Interpreter.run` (with the default
-    # ``garbage_collect_values=True``) evicts each node's value from
-    # ``self.env`` as soon as its last user has been processed. That
-    # behavior is correct for ordinary FX execution but loses values
-    # that we want to keep around AFTER the run completes — for example
-    # the terminus of a ``inplace_donate`` chain that the compile
-    # backend plumbs as an extra executable output. Callers pass any
-    # such nodes via ``capture_nodes``; this interpreter stores their
-    # values in ``self.captured_values`` (an unmanaged side channel)
-    # at the moment they are produced so that subsequent eviction
-    # cannot drop them.
+    # Interpreter.run evicts node values from `env` after their last user;
+    # `capture_nodes` values are stashed in `captured_values` so they
+    # survive the run (e.g. an inplace_donate chain terminus, which has no
+    # in-graph user).
     self._capture_nodes: frozenset[torch.fx.Node] = frozenset(
         capture_nodes or ()
     )
@@ -490,16 +478,11 @@ def fx_to_mlir(
       through an FX graph interpreter to identify the graph's output tensors.
     build_mlir_module: Whether to build and return the MLIR module in the
       result.
-    donate_alias_termini: A sequence of ``(arg_index, terminus_node)`` pairs
-      identifying inplace-donate chains whose final SSA value (``terminus_node``)
-      should be plumbed as an extra executable output. ``arg_index`` is the
-      position of the donated tensor in ``args`` (a tensor-only index, matching
-      the FX graph's placeholder order with non-tensors excluded). After
-      tracing, the runtime tensor bound to ``terminus_node`` in the interpreter
-      is added to the executable's output list, and the resulting
-      ``(arg_index, executable_output_index)`` pair is recorded in the returned
-      ``ExportedMlir.donate_input_output_aliases`` so the compile-mode runtime
-      can rebind the input tensor's storage after each execution.
+    donate_alias_termini: ``(arg_index, terminus_node)`` pairs of
+      inplace-donate chains. Each terminus is plumbed as an extra
+      executable output and the resulting (arg_index, output_index) pair
+      is recorded in ``ExportedMlir.donate_input_output_aliases`` for the
+      post-execution storage rebind.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -508,12 +491,8 @@ def fx_to_mlir(
   # Filter out non-tensor arguments.
   argument_tensors = [a for a in args if isinstance(a, torch.Tensor)]
 
-  # Build a map from each arg_index (position in `args`) to the position of
-  # that argument inside `argument_tensors`. This lets us translate
-  # `donate_alias_termini`'s arg_index — which refers to the FX placeholder
-  # order — into the runtime args list seen by the executable wrapper. Any
-  # arg_index that refers to a non-tensor placeholder is rejected; donation
-  # is only meaningful for tensors.
+  # Translate donate_alias_termini's arg_index (FX placeholder order) into
+  # the tensor-only runtime args list; non-tensor placeholders are rejected.
   arg_index_to_tensor_index: dict[int, int] = {}
   for arg_idx, arg in enumerate(args):
     if isinstance(arg, torch.Tensor):
@@ -571,19 +550,11 @@ def fx_to_mlir(
         module, fx_outputs
     )
 
-    # Append donation chain termini as extra executable outputs, BEFORE the
-    # generator state tensors so the existing tail-based device-state slicing
-    # in `_TorchTpuCompiledExecutable` does not need to know about donations.
-    # The executable output layout is therefore:
+    # Donation termini become extra executable outputs BEFORE the generator
+    # state tensors, so the tail-based device-state slicing is unaffected:
     #   [user_outputs..., donate_extras..., device_state_extras...]
-    #
-    # Terminus values are pulled from ``interpreter.captured_values`` rather
-    # than ``interpreter.env``: the base ``torch.fx.Interpreter.run`` evicts
-    # each node's value from ``env`` as soon as its last user has been
-    # processed, and a donation chain terminus has no user inside the FX
-    # graph by construction (callers stripped the explicit ``copy_``). The
-    # ``capture_nodes`` plumbing keeps a separate reference that survives
-    # garbage collection.
+    # Values come from `captured_values` — a terminus has no in-graph user,
+    # so Interpreter.run would have evicted it from `env`.
     donate_input_output_aliases: list[tuple[int, int]] = []
     for arg_idx, terminus in donate_alias_termini:
       if terminus not in interpreter.captured_values:

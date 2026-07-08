@@ -214,12 +214,8 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "inplace_donate_ssa_rename"
     ).apply_graph_pass(inplace_donate_ssa_rename.apply)
-    # Detect executable-level inplace-donate aliases AFTER the SSA rename has
-    # rewritten the chain (so the per-call ``getitem(call, 0)`` nodes for
-    # multi-output donations exist) but BEFORE any further pass might fold or
-    # erase the chain. Each entry is a ``(placeholder_index, terminus_node)``
-    # pair; the terminus is the final SSA value of the donation chain that
-    # the executable runtime should rebind onto the donated input tensor.
+    # Must run after the SSA rename and before passes that could fold the
+    # chain; termini become executable-level donation aliases.
     donate_alias_termini = inplace_donate_ssa_rename.find_donate_aliases(
         graph_module
     )

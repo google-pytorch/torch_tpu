@@ -12,80 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SSA-renames donated inputs for pallas ops registered with inplace_donate=True.
+"""SSA-renames donated inputs for pallas inplace_donate=True ops.
 
-The pallas eager wrapper at `pallas_py.cc::PyCallCustomKernel` implements the
-``inplace_donate=True`` contract by rebinding each donated input tensor's
-``c10::StorageImpl`` to the matching output buffer at the C++ binding layer.
-That host-side rebind is the mechanism that lets callers in eager mode drop
-the ``input.copy_(output)`` republish between sequential donating kernel
-calls.
+Under torch.compile, the eager per-call rebind cannot fire between calls
+fused into one executable, so the naive FX graph has every donating call
+reading the same donated SSA value — XLA rejects the double donation.
+:func:`apply` rewrites every later use of a donated input to the donating
+call's aliased output, giving each donation a distinct SSA value.
+:func:`find_donate_aliases` then returns each placeholder's chain
+*terminus*, which the compile backend plumbs as an extra executable output
+and rebinds the input tensor's storage to after execution.
 
-Under ``torch.compile`` with the TPU backend, sequential calls to the same
-pallas op are fused into a single PJRT executable, and
-``PyCallCustomKernel`` runs at most once during the placeholder trace.
-The host-side rebind is therefore a no-op for runtime correctness, and the
-naive FX graph has every donating call referencing the same donated SSA
-value — which XLA rejects because the same buffer is donated more than once
-(``"Donation requested for invalid buffer"``).
-
-This module exposes two coordinated helpers that together let compile-mode
-callers also drop the ``input.copy_(output)`` republish:
-
-* :func:`apply` walks every call to a pallas op registered with
-  ``inplace_donate=True``. For each donated input index it inserts a
-  ``getitem(call, donate_idx)`` immediately after the call (or reuses the
-  call node itself when the op has a single tensor output) and rewrites
-  every later use of the donated input to read the corresponding output
-  instead. After the pass each donation references a distinct SSA value
-  and the chain runs cleanly through XLA, with the final value of the
-  chain naturally flowing into whatever consumes the bundle next.
-
-* :func:`find_donate_aliases` identifies, for each graph placeholder that
-  feeds a donation chain, the *terminus* of that chain — the final SSA
-  value produced by the last donating call. The compile backend uses these
-  termini to add executable-level outputs and rebind each placeholder
-  tensor's storage to the corresponding output buffer after the executable
-  runs. That executable-level rebind makes the explicit
-  ``ctx.bundle.copy_(new_bundle)`` redundant: subsequent calls observe the
-  updated content because the tensor's storage now points at the
-  executable's final output buffer.
-
-Op identification is attribute-based, not registry-based: pallas stamps
-``_pallas_inplace_donate_argnums`` onto the ``OpOverload`` at registration
-time (see ``pallas._annotate_inplace_donate``). Both helpers read that
-attribute directly off ``node.target``. This makes them agnostic to when
-the op was registered relative to the FX trace, and lets them pick up
-ops produced by both ``pallas.jax_op(..., inplace_donate=True)`` and
-``pallas.declare_jax_op(..., inplace_donate=True)`` (the deferred-binding
-flavor) without coupling the pass module to the pallas package.
+Ops are identified by the ``_pallas_inplace_donate_argnums`` attribute
+pallas stamps on the ``OpOverload`` at registration.
 """
 
 import operator
 
 import torch
 
-# Name of the attribute set on a pallas `OpOverload` when it was registered
-# with ``inplace_donate=True``. Value is a tuple of donated input indices.
-# This is the cross-module contract between pallas registration
-# (``_annotate_inplace_donate`` in ``torch_tpu/_internal/pallas/pallas.py``)
-# and this pass. Keep these strings in sync.
+# Keep in sync with pallas._annotate_inplace_donate.
 _INPLACE_DONATE_ARGNUMS_ATTR = "_pallas_inplace_donate_argnums"
 
-# Optional {donated_input_index: aliased_output_index} map an op may stamp
-# when the donated input index does NOT equal its aliased output index (e.g.
-# a multi-output kernel that donates inputs 3,4 -> outputs 0,1). Absent it,
-# the pass falls back to the identity assumption (output_idx == input_idx),
-# which is correct for single/contiguous-bundle donations.
+# Optional {donated_input_index: aliased_output_index} map for ops whose
+# donated input index differs from the aliased output index; identity when
+# absent.
 _INPLACE_DONATE_OUTPUT_MAP_ATTR = "_pallas_inplace_donate_output_map"
 
 
 def _output_index(node: torch.fx.Node, donate_idx: int) -> int:
-  """Maps a donated *input* index to its aliased *output* index for ``node``.
-
-  Reads the optional ``_pallas_inplace_donate_output_map`` attribute; falls
-  back to ``donate_idx`` (the historical identity assumption) when unset.
-  """
+  """Donated input index -> aliased output index (identity when unmapped)."""
   output_map = getattr(node.target, _INPLACE_DONATE_OUTPUT_MAP_ATTR, None)
   if output_map is None:
     return donate_idx
@@ -93,23 +49,14 @@ def _output_index(node: torch.fx.Node, donate_idx: int) -> int:
 
 
 def _node_position_map(graph: torch.fx.Graph) -> dict[torch.fx.Node, int]:
-  """Returns a topological index for every node in `graph`.
-
-  FX graphs are kept in topological order, so a simple enumeration is
-  sufficient for "comes after" comparisons within the pass.
-  """
+  # FX graphs stay topologically ordered, so enumeration gives "comes after".
   return {node: idx for idx, node in enumerate(graph.nodes)}
 
 
 def _inplace_donate_argnums(
     node: torch.fx.Node,
 ) -> tuple[int, ...] | None:
-  """Returns donated input indices for a pallas-inplace-donate node.
-
-  Reads the ``_pallas_inplace_donate_argnums`` attribute that pallas
-  stamps onto an ``OpOverload`` at registration time. Returns ``None``
-  for any node that is not a call to such an op.
-  """
+  """Donated input indices for an inplace-donate call node, else None."""
   if node.op != "call_function":
     return None
   return getattr(node.target, _INPLACE_DONATE_ARGNUMS_ATTR, None)
@@ -118,19 +65,8 @@ def _inplace_donate_argnums(
 def _get_arg_value(
     call_node: torch.fx.Node, idx: int,
 ) -> torch.fx.Node | None:
-  """Returns the FX value bound to parameter index ``idx`` on ``call_node``.
-
-  Pallas custom ops are registered with `torch.library.custom_op`, which
-  produces a named schema for the wrapped JAX function. FX represents
-  positional arguments under ``call_node.args`` and keyword arguments
-  under ``call_node.kwargs`` (keyed by the schema's parameter name).
-
-  This helper checks the positional path first; if ``idx`` is past the
-  positional tail it falls back to the schema's ``arguments[idx].name``
-  and reads ``call_node.kwargs``. Returns ``None`` if no value is bound
-  at that parameter position (caller treats that as a non-applicable
-  donation step rather than crashing).
-  """
+  """FX value at parameter index ``idx``: positional args first, then
+  kwargs via the schema's parameter name; None when unbound."""
   if idx < len(call_node.args):
     return call_node.args[idx]
   schema = getattr(call_node.target, "_schema", None)
@@ -147,14 +83,9 @@ def _select_output_node(
     call_node: torch.fx.Node,
     donate_idx: int,
 ) -> torch.fx.Node:
-  """Returns an FX node that yields ``call_node[donate_idx]``.
-
-  When the op returns a single tensor the call node itself is the donated
-  output (the aliased output index is then required to be ``0``). When it
-  returns a tuple a ``getitem`` is inserted (or reused) immediately after the
-  call. The aliased *output* index is resolved from ``donate_idx`` (an
-  *input* index) via the op's optional output map.
-  """
+  """FX node yielding the donated output: the call node itself for a
+  single-output op (aliased output must be 0), else a getitem inserted or
+  reused right after the call."""
   output_idx = _output_index(call_node, donate_idx)
   val = call_node.meta.get("val")
   if not isinstance(val, (tuple, list)):
@@ -169,10 +100,7 @@ def _select_output_node(
       )
     return call_node
 
-  # Reuse an existing getitem(call_node, output_idx) if one already exists
-  # immediately after the call — keeps the rewrite idempotent and avoids
-  # cluttering the graph when one of the kernel's outputs was already being
-  # unpacked by user code.
+  # Reuse an existing getitem — keeps the rewrite idempotent.
   for user in call_node.users:
     if (
         user.op == "call_function"
@@ -210,20 +138,13 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
     for donate_idx in donate_argnums:
       donated_input = _get_arg_value(call_node, donate_idx)
       if not isinstance(donated_input, torch.fx.Node):
-        # The donated parameter wasn't passed at this call site (e.g. it
-        # has a default and the user omitted it), or the binding resolves
-        # to a non-Node literal. Either way there's no SSA value to
-        # rewrite; skip rather than crash.
+        # No SSA value bound at this parameter (defaulted / literal).
         continue
 
       output_node = _select_output_node(graph, call_node, donate_idx)
-      # `output_node` is either `call_node` itself or a getitem we just
-      # inserted — either way it must not feed back into itself.
       if output_node is donated_input:
         continue
 
-      # Track the getitem node's position so newly created users don't get
-      # rewritten in this same pass iteration.
       if output_node not in position:
         position[output_node] = call_pos + 0.5  # type: ignore[assignment]
 
@@ -243,15 +164,9 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
 def _follow_donate_chain_to_terminus(
     start: torch.fx.Node,
 ) -> torch.fx.Node | None:
-  """Walks forward from ``start`` through chained inplace-donate calls.
-
-  Returns the SSA value produced by the *last* donating call in the chain,
-  or ``None`` if ``start`` is not threaded through any inplace-donate
-  call. ``None`` is also returned when the chain is structurally broken
-  (e.g. a multi-output op's donated ``getitem`` is missing), because in
-  that case there is no single value that semantically represents the
-  donated content at the executable boundary.
-  """
+  """Returns the last donating call's SSA value in the chain rooted at
+  ``start``; None if ``start`` feeds no donating call or the chain is
+  structurally broken (missing donated getitem)."""
   current = start
   advanced = False
   visited: set[torch.fx.Node] = {current}
@@ -261,9 +176,6 @@ def _follow_donate_chain_to_terminus(
       donate_argnums = _inplace_donate_argnums(user)
       if donate_argnums is None:
         continue
-      # Find which donated index of `user` points at `current`. Checks
-      # positional args first and falls back to kwargs via the op's
-      # schema — mirrors ``_get_arg_value`` in ``apply``.
       donate_idx: int | None = None
       for didx in donate_argnums:
         if _get_arg_value(user, didx) is current:
@@ -279,7 +191,8 @@ def _follow_donate_chain_to_terminus(
           return None
         candidate = user
       else:
-        # Multi-output op: the donated output is `getitem(user, output_idx)`.
+        # Multi-output op: the donated output is `getitem(user, output_idx)`,
+        # inserted by apply(); its absence means no meaningful alias.
         candidate = None
         for sub_user in user.users:
           if (
@@ -292,10 +205,6 @@ def _follow_donate_chain_to_terminus(
             candidate = sub_user
             break
         if candidate is None:
-          # `apply()` always inserts this getitem when it rewrites a chain.
-          # Its absence means either (a) the rewrite hasn't run, or (b) the
-          # donated output is genuinely unused — in either case we cannot
-          # produce a meaningful executable-level alias.
           return None
       next_output = candidate
       break
@@ -303,9 +212,6 @@ def _follow_donate_chain_to_terminus(
     if next_output is None or next_output is current:
       break
     if next_output in visited:
-      # Defensive: prevents an infinite loop if the graph contains a cycle
-      # through donated users (which would be ill-formed but we still want
-      # to terminate).
       return None
     visited.add(next_output)
     current = next_output
@@ -317,25 +223,10 @@ def _follow_donate_chain_to_terminus(
 def find_donate_aliases(
     gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
 ) -> list[tuple[int, torch.fx.Node]]:
-  """Identifies executable-level input→output donation aliases.
-
-  For each placeholder of ``gm_or_graph`` that feeds a chain of pallas
-  inplace-donate calls (after :func:`apply` has SSA-renamed the chain),
-  returns a ``(placeholder_index, terminus_node)`` pair where
-  ``terminus_node`` is the final SSA value of the chain. The compile
-  backend appends each ``terminus_node`` as an additional executable
-  output and, after the executable runs, rebinds the corresponding input
-  tensor's storage to that output's buffer.
-
-  Placeholders that are not threaded through any inplace-donate chain
-  are skipped. Placeholder indices follow the order in which placeholders
-  appear in the FX graph, matching the convention that the
-  ``i``-th element of the runtime args list is the ``i``-th placeholder.
-
-  Must be called *after* :func:`apply` has rewritten the chain, so that
-  the per-call ``getitem`` nodes for multi-output donated outputs are
-  present and the chain can be followed unambiguously.
-  """
+  """Returns (placeholder_index, terminus_node) for each placeholder that
+  feeds a donation chain. Must run after :func:`apply`. The compile
+  backend plumbs each terminus as an extra executable output and rebinds
+  the input tensor's storage to it after execution."""
   if isinstance(gm_or_graph, torch.fx.GraphModule):
     graph = gm_or_graph.graph
   else:
@@ -348,9 +239,7 @@ def find_donate_aliases(
     if terminus is None:
       continue
     if terminus in seen_termini:
-      # Two placeholders converging on the same terminus would mean the
-      # same buffer would be rebound twice — defensively skip the duplicate
-      # rather than produce ambiguous storage semantics.
+      # Don't rebind the same buffer twice.
       continue
     seen_termini.add(terminus)
     aliases.append((ph_idx, terminus))
@@ -360,16 +249,9 @@ def find_donate_aliases(
 def raise_if_present(
     gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
 ) -> None:
-  """Raises ``NotImplementedError`` if any inplace-donate op call appears in
-  ``gm_or_graph``.
-
-  Compile paths that do not run :func:`apply` (e.g. the dynamic-shapes
-  ``DynamicCompiler``) call this to surface a clear "not supported" error
-  at the entry of compilation. Without it, the same FX graph would reach
-  XLA with the donated arg referenced by every chained call as the same
-  SSA value, and XLA would reject the program with the much less actionable
-  ``"Donation requested for invalid buffer"``.
-  """
+  """Raises if any inplace-donate op appears — for compile paths that do
+  not run :func:`apply` (e.g. DynamicCompiler), where the graph would
+  otherwise hit XLA's opaque double-donation error."""
   if isinstance(gm_or_graph, torch.fx.GraphModule):
     graph = gm_or_graph.graph
   else:

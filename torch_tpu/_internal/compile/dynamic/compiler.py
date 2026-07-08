@@ -542,11 +542,8 @@ class DynamicCompiler(compiler.Compiler):
         LazyString(graph_module.print_readable),
     )
 
-    # ``inplace_donate_ssa_rename`` is only plumbed through ``StaticCompiler``,
-    # so the dynamic-shapes path cannot honor ``inplace_donate=True`` today.
-    # Raise here (before any dynamic-shape transformation) so the user sees a
-    # clear "not supported" message instead of XLA's much less actionable
-    # "Donation requested for invalid buffer".
+    # inplace_donate is only supported by StaticCompiler; raise a clear
+    # error before XLA's opaque double-donation failure.
     inplace_donate_ssa_rename.raise_if_present(graph_module)
 
     # Create a SymInt shape manager.

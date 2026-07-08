@@ -173,9 +173,6 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     self._updates_default_generator_state: bool = (
         updates_default_generator_state
     )
-    # Defensive copy + validation: stored as a tuple of tuples so the field is
-    # cheap to pickle and equality-compare, and so it can't be mutated after
-    # construction.
     self._donate_input_output_aliases: tuple[tuple[int, int], ...] = tuple(
         (int(arg_idx), int(out_idx))
         for arg_idx, out_idx in donate_input_output_aliases
@@ -369,13 +366,9 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
             outputs_with_device_state_tensors[-len(device_state_tensors) :]
         )
 
-      # Strip the donation-alias outputs from the tail of the user-visible
-      # outputs and use them to rebind the corresponding donated input
-      # tensor's storage. Iterating in reverse keeps the slice indices stable
-      # even though we're popping from the list. The aliases are guaranteed
-      # sorted by ascending executable_output_index (validated in __init__),
-      # which after stripping device-state means they sit on the tail of
-      # `outputs` in the same order; reverse iteration covers that tail.
+      # Pop the donation-alias outputs off the tail (aliases are sorted by
+      # output index — validated in __init__) and rebind each donated
+      # input's storage to its output buffer.
       for arg_idx, _ in reversed(self._donate_input_output_aliases):
         donation_tensor = outputs.pop()
         tpu_torch_compile.rebind_tensor_storage(
