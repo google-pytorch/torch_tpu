@@ -35,11 +35,15 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile.fx_passes import inplace_donate_ssa_rename
 from torch_tpu._internal.utils import utils
 
-# Sized against the requires-tpu-v5lite tag (16 GiB HBM): one pool fits,
-# two copies of it do not.
-_POOL_BYTES = 9 * 1024**3
-_POOL_ELEMS = _POOL_BYTES // 4  # float32
 _CHUNK_ELEMS = 1024 * 1024
+
+
+def _pool_elems() -> int:
+  """float32 element count for a pool at 55% of device HBM: one copy
+  fits, two cannot — on any chip size."""
+  _, total_bytes = torch.accelerator.get_memory_info()
+  elems = int(total_bytes * 0.55) // 4
+  return (elems // _CHUNK_ELEMS) * _CHUNK_ELEMS
 
 
 def _accumulate_kernel_body(x_ref, acc_ref, o_ref):
@@ -143,7 +147,9 @@ class TestPallasInplaceDonate(absltest.TestCase):
   def test_existing_donation_api_cannot_update_half_hbm_pool(self):
     # Without in-place aliasing, one update of the pool holds the donated
     # input and the kernel output as two distinct >HBM/2 buffers.
-    pool = torch.empty(_POOL_ELEMS, dtype=torch.float32, device=self.device)
+    pool = torch.empty(
+        _pool_elems(), dtype=torch.float32, device=self.device
+    )
     with self.assertRaisesRegex(
         RuntimeError, "RESOURCE_EXHAUSTED|[Oo]ut of memory"
     ):
@@ -185,7 +191,9 @@ class TestPallasInplaceDonate(absltest.TestCase):
   def test_inplace_donate_updates_half_hbm_pool_across_compiled_steps(self):
     # The serving-loop contract at the scale part 1 proved impossible:
     # fill in place, then run a compiled step twice on the same handle.
-    pool = torch.empty(_POOL_ELEMS, dtype=torch.float32, device=self.device)
+    pool = torch.empty(
+        _pool_elems(), dtype=torch.float32, device=self.device
+    )
     inplace_fill_one(pool)
 
     @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
