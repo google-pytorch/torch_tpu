@@ -607,6 +607,21 @@ class JaxCallable:
         if arg is not None and i not in self.static_argnums
     ]
 
+    if (
+        self.inplace_donate
+        and torch.is_grad_enabled()
+        and any(
+            isinstance(t, torch.Tensor) and t.requires_grad
+            for t in tensor_args
+        )
+    ):
+      raise RuntimeError(
+          f"{self.name}: inplace_donate=True kernels are inference-only."
+          " A donated input's buffer is invalidated in place, so autograd"
+          " cannot replay it for the backward pass. Run under"
+          " torch.no_grad() or detach the inputs."
+      )
+
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
         kernel_key,
@@ -881,6 +896,20 @@ def jax_op(
     # If we mark donated args as mutable then Dynamo will copy back the
     # original value of the donated arg which then defeats the purpose of
     # donating.
+    #
+    # With `inplace_donate=True` this contract is kept sound by construction
+    # rather than by `mutates_args`:
+    #   * inference-only — the op raises if called under autograd with inputs
+    #     that require grad (see `JaxCallable.__call__`), so no backward pass
+    #     can observe the donated input;
+    #   * under torch.compile, the `inplace_donate_ssa_rename` FX pass
+    #     rewrites every later use of a donated input to the op's aliased
+    #     output, so the graph never reads the invalidated value;
+    #   * in eager, the host rebinds the donated input's storage to the
+    #     aliased output buffer at the DeviceBuffer level (pallas_py.cc).
+    #     The rebind must stay below ATen: republishing via `input.set_(out)`
+    #     inside the op would make a returned output share the input's
+    #     storage and trip `torch.library`'s custom-op aliasing check.
     mutates_args = ()
 
     # We require that the user pass us a function that is make_fx traceable,
