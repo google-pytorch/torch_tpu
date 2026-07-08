@@ -191,19 +191,32 @@ class TestPallasInplaceDonate(absltest.TestCase):
   def test_inplace_donate_updates_half_hbm_pool_across_compiled_steps(self):
     # The serving-loop contract at the scale part 1 proved impossible:
     # fill in place, then run a compiled step twice on the same handle.
+    # Every pool touch goes through torch.compile: only the compiled
+    # path's executable-level donation aliases the pool buffer through
+    # the program boundary (an eager donating call still peaks at two
+    # pool copies — donation frees the input only after execution). The
+    # step returns a small derived value, like the real workload;
+    # returning the donated output itself would add a second pool-sized
+    # executable output (the aliased extra plus a fresh copy).
     pool = torch.empty(
         _pool_elems(), dtype=torch.float32, device=self.device
     )
-    inplace_fill_one(pool)
+
+    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    def fill(pool):
+      return inplace_fill_one(pool)[:1]
 
     @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
     def step(pool):
-      return inplace_increment(pool)
+      return inplace_increment(pool)[:3]
 
+    fill(pool)
     step(pool)
-    step(pool)
+    second = step(pool)
 
     expected = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float32)
+    utils.assert_close(second.to("cpu"), expected)
+    # The handle observes the final state through the post-execution rebind.
     utils.assert_close(pool[:3].to("cpu"), expected)
 
   # --- Part 3: the individual mechanisms.
