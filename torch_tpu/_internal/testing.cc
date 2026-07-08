@@ -28,7 +28,7 @@ namespace {
 
 void ResetEagerState() {
   ResetRepeatedOpsHeuristicState();
-  ClearEventsQueue();
+  ClearAllStreams();
 }
 
 }  // namespace

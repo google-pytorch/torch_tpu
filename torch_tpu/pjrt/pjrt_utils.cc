@@ -49,6 +49,7 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -274,8 +275,8 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     TT_RETURN_IF_ERROR(AdaptXlaError(future.Await()));
   } else {
     ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Backing tensor present, "
-                    "creating DeviceBufferRef and marking stream active.";
-    MarkStreamActive(future);
+                    "creating DeviceBufferRef and recording async transfer.";
+    RecordAsyncHostToDevice(buffer_ref);
   }
 
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL EXIT] Created "
@@ -377,7 +378,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
         ABSL_LOG(ERROR) << "Async D2H ToLiteral transfer failed: " << s;
       }
     });
-    MarkStreamActive(future);
+    RecordAsyncDeviceToHost(std::move(future));
     return absl::OkStatus();
   } else {
     return AdaptXlaError(future.Await());

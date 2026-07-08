@@ -27,10 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
-#include "c10/core/Device.h"
-#include "c10/core/Stream.h"
 #include "torch_tpu/common/device_type.h"
-#include "xla/future.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/framework/allocator.h"
@@ -130,50 +127,6 @@ class PjrtBackend {
   PjRtInitializationOptions options_ ABSL_GUARDED_BY(mutex_) = {};
   bool init_attempted_ ABSL_GUARDED_BY(mutex_) = false;
   absl::Status init_status_ ABSL_GUARDED_BY(mutex_) = absl::OkStatus();
-};
-
-// Updates the tracked future for the given device and stream.
-void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
-                      xla::Future<void> future);
-
-// Updates the tracked future for the current stream.
-void MarkStreamActive(xla::Future<void> future);
-
-// Blocks until all pending operations on the given device and stream have
-// completed.
-void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id);
-
-// Blocks until all pending operations on ALL streams of the given device have
-// completed.
-void SynchronizeDevice(c10::DeviceIndex device_index);
-
-// An EventSnapshot is a collection of XLA futures that represents the state of
-// a stream at a particular point in time.
-class EventSnapshot {
- public:
-  ~EventSnapshot();
-
-  // Records an event snapshot for the given device and stream.
-  // This is an awaitable and queryable checkpoint; when it is reached, all
-  // prior async host-to-device and device-to-host operations on the stream
-  // are complete, as well as other futures recorded using MarkStreamActive().
-  // TODO(bawilson): also include deferred ops in the snapshot
-  static std::shared_ptr<EventSnapshot> Record(c10::DeviceIndex device_index,
-                                               c10::StreamId stream_id);
-
-  // Wait for the event snapshot to complete.
-  absl::Status Wait() const;
-
-  // Query whether the event snapshot has completed.
-  absl::StatusOr<bool> Query() const;
-
- private:
-  // The event ID of the event snapshot.
-  // Private; must use Record() so that the snapshot is tracked on the stream.
-  explicit EventSnapshot(int64_t event_id) : event_id_(event_id) {}
-
-  // The event ID of the event snapshot.
-  const int64_t event_id_;
 };
 
 }  // namespace torch_tpu

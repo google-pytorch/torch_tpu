@@ -61,7 +61,7 @@ absl::StatusOr<DynamicMlirOpResults> DummyBuilder(
 }
 
 TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -115,7 +115,7 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
 }
 
 TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -135,7 +135,7 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
 }
 
 TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -154,7 +154,7 @@ TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
 }
 
 TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
 
   // Create a fully-materialized buffer (filled with zeros) and record its
@@ -175,7 +175,7 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
 }
 
 TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{1}, mlir::ElementType::UI8);
 
@@ -226,7 +226,7 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
 }
 
 TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -239,7 +239,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   RecordNewDataPtrCreated(ref);
 
   // Clear the events queue.
-  ClearEventsQueue();
+  ClearAllStreams();
 
   // The buffer is no longer tracked.
   EXPECT_THAT(GetAllLiveUnsyncedDataPtrs(), testing::IsEmpty());
@@ -264,7 +264,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
 }
 
 TEST_F(EventsQueueTest, NoTraversalIfNothingToMaterialize) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -297,7 +297,7 @@ TEST_F(EventsQueueTest, NoTraversalIfNothingToMaterialize) {
 }
 
 TEST_F(EventsQueueTest, MissingNodesIgnored) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -347,7 +347,7 @@ TEST_F(EventsQueueTest, MissingNodesIgnored) {
 }
 
 TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -390,7 +390,7 @@ TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
 }
 
 TEST_F(EventsQueueTest, SplitModeRespected) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -453,7 +453,7 @@ TEST_F(EventsQueueTest, SplitModeRespected) {
 }
 
 TEST_F(EventsQueueTest, DeadCodeEliminated) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -500,7 +500,7 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
 }
 
 TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -567,7 +567,7 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
 }
 
 TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -605,7 +605,7 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
 }
 
 TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -658,7 +658,7 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
 }
 
 TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 
@@ -699,7 +699,7 @@ TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
 }
 
 TEST_F(EventsQueueTest, SideEffectsUsingPlaceholdersSkipped) {
-  ClearEventsQueue();
+  ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
   Shape shape(Dimensions{8}, mlir::ElementType::F32);
 

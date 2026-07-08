@@ -16,38 +16,28 @@
 
 #include "torch_tpu/pjrt/pjrt_state.h"
 
-#include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
-#include "absl/base/thread_annotations.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
-#include "c10/core/Device.h"
-#include "c10/core/Stream.h"
 #include "torch_tpu/common/contain.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/environment.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/distributed/slicebuilder/discovery.h"
-#include "torch_tpu/eager/current_stream.h"
 #include "torch_tpu/pjrt/pjrt_client.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
 #include "xla/backends/profiler/plugin/plugin_tracer.h"
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
-#include "xla/future.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_profiler_extension.h"
@@ -338,196 +328,6 @@ void PjrtBackend::Shutdown() {
   init_attempted_ = false;
   init_status_ = absl::OkStatus();
   ABSL_VLOG(1) << "PjRt shut down.";
-}
-
-namespace {
-struct StreamState {
-  using SharedFuture = std::shared_ptr<xla::Future<void>>;
-
-  absl::Mutex mutex;
-  absl::flat_hash_map<std::pair<c10::DeviceIndex, int64_t>,
-                      std::vector<SharedFuture>>
-      pending_futures ABSL_GUARDED_BY(mutex);
-  absl::flat_hash_map<int64_t, std::vector<SharedFuture>> event_snapshots
-      ABSL_GUARDED_BY(mutex);
-  int64_t next_snapshot_id ABSL_GUARDED_BY(mutex) = 1;
-};
-
-StreamState& GetStreamState() {
-  static absl::NoDestructor<StreamState> state;
-  return *state;
-}
-
-void PruneCompletedFutures(std::vector<StreamState::SharedFuture>& futures) {
-  futures.erase(std::remove_if(futures.begin(), futures.end(),
-                               [](const StreamState::SharedFuture& future) {
-                                 return future == nullptr ||
-                                        !future->IsValid() || future->IsReady();
-                               }),
-                futures.end());
-}
-
-void WaitForFutures(c10::DeviceIndex dev_idx, int64_t stream_id,
-                    const std::vector<StreamState::SharedFuture>& futures) {
-  for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      absl::Status s = future->Await();
-      if (!s.ok()) {
-        ABSL_LOG(ERROR) << "Stream synchronization failed for device "
-                        << static_cast<int>(dev_idx) << " stream " << stream_id
-                        << ": " << s;
-      }
-    }
-  }
-}
-
-struct StreamFutures {
-  c10::StreamId stream_id;
-  std::vector<StreamState::SharedFuture> futures;
-};
-
-}  // namespace
-
-void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
-                      xla::Future<void> future) {
-  StreamState& state = GetStreamState();
-  absl::MutexLock lock(state.mutex);
-  auto& futures = state.pending_futures[{device_index, stream_id}];
-  PruneCompletedFutures(futures);
-  futures.push_back(std::make_shared<xla::Future<void>>(std::move(future)));
-}
-
-void MarkStreamActive(xla::Future<void> future) {
-  const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  MarkStreamActive(device_index, stream_id, std::move(future));
-}
-
-// Blocks the calling thread until all previously enqueued operations on the
-// specified device's stream have completed.
-// If multiple threads call SynchronizeStream for the same device concurrently,
-// all threads will block until the pending operations at the time of their
-// call are finished.
-void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id) {
-  ABSL_VLOG(1) << "SynchronizeStream: device=" << static_cast<int>(device_index)
-               << ", stream=" << stream_id;
-  StreamState& state = GetStreamState();
-  std::vector<StreamState::SharedFuture> futures;
-  {
-    absl::MutexLock lock(state.mutex);
-    auto it = state.pending_futures.find({device_index, stream_id});
-    if (it == state.pending_futures.end()) {
-      // No pending futures for this device and stream.
-      return;
-    }
-    futures = it->second;
-  }
-  for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      absl::Status s = future->Await();
-      if (!s.ok()) {
-        ABSL_LOG(ERROR) << "Stream synchronization failed for device "
-                        << static_cast<int>(device_index) << " stream "
-                        << stream_id << ": " << s;
-      }
-    }
-  }
-  {
-    absl::MutexLock lock(state.mutex);
-    auto it = state.pending_futures.find({device_index, stream_id});
-    if (it != state.pending_futures.end()) {
-      PruneCompletedFutures(it->second);
-    }
-  }
-}
-
-void SynchronizeDevice(c10::DeviceIndex device_index) {
-  ABSL_VLOG(1) << "SynchronizeDevice: device="
-               << static_cast<int>(device_index);
-  StreamState& state = GetStreamState();
-  std::vector<StreamFutures> all_stream_futures;
-  {
-    absl::MutexLock lock(state.mutex);
-    for (const auto& [key, stream_futures] : state.pending_futures) {
-      if (key.first == device_index) {
-        all_stream_futures.push_back({key.second, stream_futures});
-      }
-    }
-  }
-
-  for (const auto& sf : all_stream_futures) {
-    WaitForFutures(device_index, sf.stream_id, sf.futures);
-  }
-
-  {
-    absl::MutexLock lock(state.mutex);
-    for (auto& [key, stream_futures] : state.pending_futures) {
-      if (key.first == device_index) {
-        PruneCompletedFutures(stream_futures);
-      }
-    }
-  }
-}
-
-EventSnapshot::~EventSnapshot() {
-  StreamState& state = GetStreamState();
-  absl::MutexLock lock(state.mutex);
-  state.event_snapshots.erase(event_id_);
-}
-
-std::shared_ptr<EventSnapshot> EventSnapshot::Record(
-    c10::DeviceIndex device_index, int64_t stream_id) {
-  StreamState& state = GetStreamState();
-  absl::MutexLock lock(state.mutex);
-  const int64_t event_id = state.next_snapshot_id++;
-  auto it = state.pending_futures.find({device_index, stream_id});
-  std::vector<StreamState::SharedFuture> futures =
-      it != state.pending_futures.end()
-          ? it->second
-          : std::vector<StreamState::SharedFuture>{};
-  state.event_snapshots.emplace(event_id, std::move(futures));
-  // Can't use make_shared because the constructor is private.
-  return std::shared_ptr<EventSnapshot>(new EventSnapshot(event_id));
-}
-
-absl::Status EventSnapshot::Wait() const {
-  std::vector<StreamState::SharedFuture> futures;
-  {
-    StreamState& state = GetStreamState();
-    absl::MutexLock lock(state.mutex);
-    auto it = state.event_snapshots.find(event_id_);
-    if (it == state.event_snapshots.end()) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "unknown event snapshot id: " << event_id_;
-    }
-    futures = it->second;
-  }
-
-  for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      TT_RETURN_IF_ERROR(future->Await());
-    }
-  }
-  return absl::OkStatus();
-}
-
-absl::StatusOr<bool> EventSnapshot::Query() const {
-  std::vector<StreamState::SharedFuture> futures;
-  {
-    StreamState& state = GetStreamState();
-    absl::MutexLock lock(state.mutex);
-    auto it = state.event_snapshots.find(event_id_);
-    if (it == state.event_snapshots.end()) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "unknown event snapshot id: " << event_id_;
-    }
-    futures = it->second;
-  }
-  for (const auto& future : futures) {
-    if (future != nullptr && future->IsValid() && !future->IsReady()) {
-      return false;
-    }
-  }
-  return true;
 }
 
 }  // namespace torch_tpu

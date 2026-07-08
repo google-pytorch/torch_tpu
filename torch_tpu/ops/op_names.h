@@ -680,6 +680,7 @@ enum class OpName {
   kToCopy,
   kTopkValues,
   kTorchTpuInternalConstant,
+  kTorchTpuInternalDataDependency,
   kTorchTpuInternalGatherAllSubgroups,
   kTorchTpuInternalZeroSize,
   kTorchTpuOptimizationBarrier,

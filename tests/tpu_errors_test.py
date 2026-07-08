@@ -3273,6 +3273,35 @@ module {
           computation_name,
       )
 
+  @et.why_tpu_only("Only TPU hardcodes a maximum possible device count of 8")
+  def test_current_stream_device_index_above_max_devices(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""Device index 8 is out of bounds of the maximum device count 8""",
+    ):
+      torch.accelerator.current_stream("tpu:8")
+
+  @et.why_tpu_only("PjRt addressable devices are TPU specific")
+  def test_current_stream_device_index_above_actual_devices(self):
+    actual_device_count = torch.accelerator.device_count()
+    expected_message = (
+        f"Device index {actual_device_count} is out of bounds of the number of"
+        f" addressable devices {actual_device_count}"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_message,
+    ):
+      torch.accelerator.current_stream(torch.device("tpu", actual_device_count))
+
+  @et.why_tpu_only("Stream ID behaviors are device specific")
+  def test_create_stream_with_out_of_bounds_device_index(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""device index must be in the range [0, 8), but got: 8""",
+    ):
+      torch.tpu.Stream(8)
+
 
 if __name__ == "__main__":
   absltest.main()

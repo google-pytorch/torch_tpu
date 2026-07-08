@@ -674,6 +674,7 @@ torch_tpu_cc_library(
         ":device_buffer",
         ":device_buffer_utils",
         ":device_gen_impl",
+        ":events_queue",
         ":tensor_to_buffer",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",  # TODO: keep macros
@@ -840,10 +841,16 @@ torch_tpu_cc_library(
     srcs = ["events_queue.cc"],
     hdrs = ["events_queue.h"],
     deps = [
+        ":current_stream",
         ":device_buffer",
         ":traversal",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:cache_key",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",
@@ -851,9 +858,15 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
+        "@xla//xla:future",
     ],
 )
 
@@ -892,9 +905,7 @@ torch_tpu_cc_library(
     name = "current_stream",
     srcs = ["current_stream.cc"],
     hdrs = ["current_stream.h"],
-    deps = [
-        "@com_google_absl//absl/log:absl_check",
-    ],
+    deps = ["@com_google_absl//absl/log:absl_check"],
 )
 
 torch_tpu_package_end()

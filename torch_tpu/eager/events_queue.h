@@ -17,14 +17,19 @@
 #ifndef TORCH_TPU_EAGER_EVENTS_QUEUE_H_
 #define TORCH_TPU_EAGER_EVENTS_QUEUE_H_
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/Stream.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/traversal.h"
+#include "xla/future.h"
 
 namespace torch_tpu {
 
@@ -50,8 +55,9 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 // duplicates.
 std::vector<SharedDeviceBufferList> GetAllLiveUnsyncedDataPtrs();
 
-// Clears all references to DeviceBufferLists from the events queue.
-void ClearEventsQueue();
+// Clears all references to DeviceBufferLists from the events queue and
+// drops all event snapshots for all streams.
+void ClearAllStreams();
 
 // Returns a sequence of Traversals that, if compiled and executed, would
 // materialize all live tensors up to and including all nodes_to_materialize
@@ -61,6 +67,48 @@ void ClearEventsQueue();
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 PrepareMaterializationTraversals(
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize);
+
+// Tracks that an async host-to-device copy has been started that will populate
+// the given DeviceBufferRef.
+void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref);
+
+// Tracks that an async device-to-host copy has been started.
+// The future should be the return value from a call to PjRtBuffer::ToLiteral.
+void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future);
+
+// Blocks until all pending operations on the given device and stream have
+// completed.
+void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id);
+
+// Blocks until all pending operations on ALL streams of the given device have
+// completed.
+void SynchronizeDevice(c10::DeviceIndex device_index);
+
+// An EventSnapshot is a collection of XLA futures that represents the state of
+// a stream at a particular point in time.
+class EventSnapshot {
+ public:
+  ~EventSnapshot();
+
+  // Records a fence over the async d2h copies already enqueued on the device
+  // and stream.
+  static std::shared_ptr<EventSnapshot> Record(c10::DeviceIndex device_index,
+                                               c10::StreamId stream_id);
+
+  // Wait for the event snapshot to complete.
+  absl::Status Wait() const;
+
+  // Query whether the event snapshot has completed.
+  absl::StatusOr<bool> Query() const;
+
+ private:
+  // The event ID of the event snapshot.
+  // Private; must use Record() so that the snapshot is tracked on the stream.
+  explicit EventSnapshot(int64_t event_id) : event_id_(event_id) {}
+
+  // The event ID of the event snapshot.
+  const int64_t event_id_;
+};
 
 }  // namespace torch_tpu
 
