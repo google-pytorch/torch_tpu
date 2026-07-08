@@ -615,4 +615,19 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "handshake_test",
+    srcs = ["handshake_test.py"],
+    shard_count = 4,
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/distributed:handshake",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
 torch_tpu_package_end()
