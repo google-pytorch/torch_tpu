@@ -108,8 +108,10 @@ absl::Status CheckArangeInputs(const RangeBound start, const RangeBound end,
 int64_t ComputeArangeNumElements(const at::Scalar& start, const at::Scalar& end,
                                  const at::Scalar& step,
                                  const at::ScalarType output_dtype) {
-  if (output_dtype == at::kLong) {
-    // Special case for kLong (64-bit integer).
+  if (output_dtype == at::kLong && start.isIntegral(false) &&
+      end.isIntegral(false) && step.isIntegral(false)) {
+    // Special case for kLong (64-bit integer) when start, end, and step are all
+    // integral.
     //
     // Due to the higher precision of kLong, we need to handle this case
     // separately. When the output dtype is kLong, we might end up mapping
@@ -118,8 +120,9 @@ int64_t ComputeArangeNumElements(const at::Scalar& start, const at::Scalar& end,
     const int64_t sgn = (step_i64 > 0) - (step_i64 < 0);
     return (end.toLong() - start.toLong() + step_i64 - sgn) / step_i64;
   } else {
-    // For all other cases, we can use the double precision, since there is no
-    // conversion issue.
+    // For all other cases, we can use double precision, since there is no
+    // conversion issue or one of the bounds/steps is already floating point and
+    // should follow standard PyTorch double-precision arange size calculation.
     return std::ceil((end.toDouble() - start.toDouble()) / step.toDouble());
   }
 }
