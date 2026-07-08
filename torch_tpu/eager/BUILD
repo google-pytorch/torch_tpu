@@ -584,6 +584,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/linalg/qr:linalg_qr_kernels",
         "//torch_tpu/ops/linalg/solve_triangular:linalg_solve_triangular_kernels",
         "//torch_tpu/ops/linalg/vector_norm:aten_vector_norm_kernels",
+        "//torch_tpu/ops/linear:linear_aten_kernels",
         "//torch_tpu/ops/linspace:linspace_aten_kernels",
         "//torch_tpu/ops/logcumsumexp:logcumsumexp_aten_kernels",
         "//torch_tpu/ops/logical:logical_aten_kernels",

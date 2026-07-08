@@ -456,6 +456,8 @@ enum class OpName {
   kLinalgSolveTriangular,
   kLinalgSolveTriangularOut,
   kLinalgVectorNormOut,
+  kLinear,
+  kLinearBackward,
   kLinspaceOut,
   kLocalScalarDense,
   kLog10Out,

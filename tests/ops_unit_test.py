@@ -8338,6 +8338,97 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=4e-2, atol=1e-2)
 
+  def test_linear_basic(self):
+    """Tests basic linear layer execution without bias."""
+    input_tensor = torch.randn(2, 8, 100)
+    weight = torch.randn(10, 100)
+
+    def test_fn(device):
+      return torch.nn.functional.linear(
+          input_tensor.to(device), weight.to(device)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=1e-1)
+
+  def test_linear_with_bias(self):
+    """Tests basic linear layer execution with bias."""
+    input_tensor = torch.randn(2, 8, 100)
+    weight = torch.randn(10, 100)
+    bias = torch.randn(10)
+
+    def test_fn(device):
+      return torch.nn.functional.linear(
+          input_tensor.to(device), weight.to(device), bias.to(device)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=1e-1)
+
+  def test_linear_bfloat16(self):
+    """Tests linear layer execution with bfloat16."""
+    input_tensor = torch.randn(2, 8, 100, dtype=torch.bfloat16)
+    weight = torch.randn(10, 100, dtype=torch.bfloat16)
+    bias = torch.randn(10, dtype=torch.bfloat16)
+
+    def test_fn(device):
+      return torch.nn.functional.linear(
+          input_tensor.to(device), weight.to(device), bias.to(device)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=2e-2)
+
+  def test_linear_high_rank(self):
+    """Tests linear layer execution with rank 4 inputs."""
+    input_tensor = torch.randn(1, 2, 4, 128)
+    weight = torch.randn(64, 128)
+
+    def test_fn(device):
+      return torch.nn.functional.linear(
+          input_tensor.to(device), weight.to(device)
+      )
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=1e-1)
+
+  def test_linear_compiled(self):
+    """Tests linear layer execution in compiled mode."""
+
+    class MyLinear(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(100, 10, bias=True)
+
+      def forward(self, x):
+        return self.linear(x)
+
+    model = MyLinear()
+    inputs = torch.randn(2, 8, 100)
+
+    def test_fn(device):
+      model_device = model.to(device)
+      inputs_device = inputs.to(device)
+      if torch.device(device).type == "tpu":
+        compiled_fn = torch.compile(model_device)
+        return compiled_fn(inputs_device)
+      return model_device(inputs_device)
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=1e-1)
+
+  def test_linear_backward(self):
+    """Tests linear layer backward pass."""
+    input_tensor = torch.randn(2, 8, 100, requires_grad=True)
+    weight = torch.randn(10, 100, requires_grad=True)
+    bias = torch.randn(10, requires_grad=True)
+
+    def test_fn(device):
+      inp = input_tensor.detach().to(device).clone().requires_grad_()
+      w = weight.detach().to(device).clone().requires_grad_()
+      b = bias.detach().to(device).clone().requires_grad_()
+      out = torch.nn.functional.linear(inp, w, b)
+      out.sum().backward()
+      return inp.grad, w.grad, b.grad
+
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=2e-2, atol=1e-1)
+
   def test_avg_pool3d_backward_padding(self):
     """Test for avg_pool3d_backward crashing when stride is large.
 

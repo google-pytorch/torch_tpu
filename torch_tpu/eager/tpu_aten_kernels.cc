@@ -127,6 +127,7 @@
 #include "torch_tpu/ops/linalg/qr/linalg_qr_kernels.h"
 #include "torch_tpu/ops/linalg/solve_triangular/linalg_solve_triangular_kernels.h"
 #include "torch_tpu/ops/linalg/vector_norm/aten_vector_norm_kernels.h"
+#include "torch_tpu/ops/linear/linear_aten_kernels.h"
 #include "torch_tpu/ops/linspace/linspace_aten_kernels.h"
 #include "torch_tpu/ops/logcumsumexp/logcumsumexp_aten_kernels.h"
 #include "torch_tpu/ops/logical/logical_aten_kernels.h"
@@ -710,6 +711,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLinalgSolveTriangularOut>(m,
                                                 AtenLinalgSolveTriangularOut);
   ImplStable<OpName::kLinalgVectorNormOut>(m, AtenLinalgVectorNormOut);
+  ImplStable<OpName::kLinear>(m, AtenLinear);
+  ImplStable<OpName::kLinearBackward>(m, AtenLinearBackward);
   ImplStable<OpName::kLinspaceOut>(m, AtenLinspaceOut);
   ImplStable<OpName::kLocalScalarDense>(m, AtenLocalScalarDense);
   ImplStable<OpName::kLog10Out>(m, AtenLog10Out);

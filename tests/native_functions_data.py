@@ -480,6 +480,7 @@ REGISTRATION_OVERRIDES = frozenset([
     'ldexp.Tensor',
     'ldexp.out',
     'ldexp_',
+    'linear',
     'native_layer_norm',  # pending removal
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
