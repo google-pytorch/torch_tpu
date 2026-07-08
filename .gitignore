@@ -1,4 +1,4 @@
-# Bzlmod lockfile.
+#Bzlmod lockfile.
 MODULE.bazel.lock
 # Bazel symlinks, e.g. bazel-out.
 bazel-*
@@ -16,5 +16,3 @@ user.bazelrc
 # Vim undo files.
 *.un~
 .*.un~
-# Wheel files.
-wheel
