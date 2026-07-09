@@ -15,6 +15,7 @@
 """Module to handle autoloading torch_tpu as torch.tpu."""
 
 import functools
+import importlib.util
 import inspect
 import os
 import sys
@@ -85,6 +86,47 @@ def _default_tpu_compile(*args, **kwargs):
   return _torch_compile(*args, **kwargs)
 
 
+def _register_dynamo_device_interface(device: str, device_module) -> None:
+  """Registers a torch._dynamo DeviceInterface delegating to `device_module`.
+
+  torch's built-in device interface leaves device_count()/synchronize() as
+  NotImplementedError stubs even with torch_tpu loaded, so dynamo/inductor and
+  device-agnostic tooling (e.g. tritonbench) break on TPU despite the device
+  module implementing working equivalents. Registering a delegating interface
+  makes get_interface_for_device(device) consistent with torch.<device> and
+  torch.accelerator. See google-pytorch/torch_tpu#2130.
+  """
+  # Older torch may not have a pluggable device-interface registry.
+  if importlib.util.find_spec("torch._dynamo.device_interface") is None:
+    return
+  from torch._dynamo import device_interface  # pylint: disable=g-import-not-at-top
+
+  class _TorchTpuDeviceInterface(device_interface.DeviceInterface):
+    """Delegates to the registered torch.<device> device module."""
+
+    current_device = staticmethod(device_module.current_device)
+    set_device = staticmethod(device_module.set_device)
+    device_count = staticmethod(device_module.device_count)
+    synchronize = staticmethod(device_module.synchronize)
+    is_available = staticmethod(device_module.is_available)
+
+    class Worker:
+      """Inductor's compile-worker view of the device."""
+
+      @staticmethod
+      def set_device(device_idx: int) -> None:
+        device_module.set_device(device_idx)
+
+      @staticmethod
+      def current_device() -> int:
+        return device_module.current_device()
+
+  _TorchTpuDeviceInterface.__name__ = f"{device.capitalize()}DeviceInterface"
+  device_interface.register_interface_for_device(
+      device, _TorchTpuDeviceInterface
+  )
+
+
 def _init_device_impl(device: str) -> torch.device:
   """Initializes a lazy pytorch device.
 
@@ -146,6 +188,11 @@ def _init_device_impl(device: str) -> torch.device:
       f"Device type: {device_d.type}, Device index:"
       f" {device_d.index if device_d.index is not None else 'default'}"
   )
+
+  # Wire torch._dynamo's device interface to the registered device module so
+  # get_interface_for_device(device) matches torch.<device> / torch.accelerator
+  # instead of raising NotImplementedError (see #2130).
+  _register_dynamo_device_interface(device, device_module)
 
   if device == "tpu" and not torch.distributed.is_initialized():
     # Register the TPU distributed runtime; users will also need to
