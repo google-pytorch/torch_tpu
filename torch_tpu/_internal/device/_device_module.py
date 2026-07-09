@@ -290,16 +290,32 @@ class _DeviceModule(abc.ABC):
 
   @classmethod
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices."""
-    if cls._device_count is None:
-      if cls.is_initialized():
-        cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
-      elif cls._device_type == "tpu":
-        return hardware.get_tpu_device_count()
-      else:
-        # Fallback to init for other devices if needed.
-        cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
+    """Returns the number of devices this process manages.
 
+    For TPU this is always 1 under the "one process owns one TPU" contract
+    (RFC #2213): torch_tpu binds exactly one addressable device per process
+    (see pjrt_state.cc, ``addressable_devices()[0]``) and ``set_device``
+    rejects any other index. This mirrors ``torch.cuda`` under
+    ``CUDA_VISIBLE_DEVICES=n``, where ``device_count()==1`` and
+    ``current_device()==0`` regardless of the physical chip.
+
+    The value is stable across pre- and post-init. In particular it does NOT
+    return the host-wide PCI chip count (``hardware.get_tpu_device_count()``,
+    which can be >1 on a multi-chip host); that scan is a launch/topology
+    detail and is used here only to decide whether a TPU is present at all
+    before the runtime is initialized.
+    """
+    if cls._device_type == "tpu":
+      if cls.is_initialized():
+        return 1
+      # Pre-init: report 1 iff a TPU is actually present on the host, so
+      # is_available() (device_count() > 0) stays correct, without leaking
+      # the host chip count.
+      return 1 if hardware.get_tpu_device_count() > 0 else 0
+
+    # xla_cpu / xla_cuda keep addressable-device-count semantics.
+    if cls._device_count is None:
+      cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
     assert cls._device_count is not None
     return cls._device_count
 
