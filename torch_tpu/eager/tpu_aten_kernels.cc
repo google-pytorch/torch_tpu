@@ -171,6 +171,7 @@
 #include "torch_tpu/ops/split_with_sizes_copy/split_with_sizes_copy_aten_kernels.h"
 #include "torch_tpu/ops/take/take_aten_kernels.h"
 #include "torch_tpu/ops/tanh/tanh_aten_kernels.h"
+#include "torch_tpu/ops/thnn_fused_lstm_cell/thnn_fused_lstm_cell_aten_kernels.h"
 #include "torch_tpu/ops/threshold/threshold_aten_kernels.h"
 #include "torch_tpu/ops/to_copy/to_copy_aten_kernels.h"
 #include "torch_tpu/ops/topk/topk_aten_kernels.h"
@@ -888,6 +889,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kTanOut>(m, AtenTanOut);
   ImplStable<OpName::kTanhBackwardGradInput>(m, AtenTanhBackwardGradInput);
   ImplStable<OpName::kTanhOut>(m, AtenTanhOut);
+  ImplStable<OpName::kThnnFusedLstmCell>(m, AtenThnnFusedLstmCell);
   ImplStable<OpName::kThresholdBackwardGradInput>(
       m, AtenThresholdBackwardGradInput);
   ImplStable<OpName::kThresholdOut>(m, AtenThresholdOut);
