@@ -66,7 +66,9 @@
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_gen_impl.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/eager/traversal.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/python_context.h"
@@ -434,6 +436,30 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
       CompileMlirExecutable(xla::MaybeOwningMlirModule(module->get()),
                             std::move(compilation_spec.xla_compile_options)));
   return executable;
+}
+
+bool PyHasSideEffects() { return HasSideEffects(); }
+
+std::vector<at::Tensor> PySuspendEventsQueue() {
+  std::vector<DeviceBufferRef> refs = SuspendEventsQueue();
+  std::vector<at::Tensor> tensors;
+  tensors.reserve(refs.size());
+  for (auto& ref : refs) {
+    tensors.push_back(MakeTensor(std::move(ref)));
+  }
+  return tensors;
+}
+
+void PyResumeEventsQueue(const std::vector<at::Tensor>& suspended_tensors) {
+  std::vector<DeviceBufferRef> refs;
+  refs.reserve(suspended_tensors.size());
+  for (const auto& tensor : suspended_tensors) {
+    TT_ASSIGN_OR_THROW(auto ref, GetBuffer(tensor));
+    refs.push_back(std::move(ref));
+  }
+  TT_ASSIGN_OR_THROW(auto traversal, Traversal::Create(std::move(refs)));
+  traversal->SortByCreationOrder();
+  ResumeEventsQueue(*traversal);
 }
 
 CompileResult PyTraverseAndCompile(
@@ -1179,6 +1205,10 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));
   m.def("is_device_shape_dynamic", &PyIsDeviceShapeDynamic, py::arg("tensor"));
+  m.def("suspend_events_queue", &PySuspendEventsQueue);
+  m.def("resume_events_queue", &PyResumeEventsQueue,
+        py::arg("suspended_tensors"));
+  m.def("has_side_effects", &PyHasSideEffects);
   m.def("traverse_and_compile", PyTraverseAndCompile, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("fast_compile") = false,
         py::arg("build_mlir_module") = false,

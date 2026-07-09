@@ -16,6 +16,7 @@
 
 #include "torch_tpu/eager/events_queue.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <iterator>
@@ -113,6 +114,72 @@ class EventsQueue {
     return result;
   }
 
+  std::vector<DeviceBufferRef> Suspend() {
+    absl::MutexLock lock(deferred_ops_mu_);
+
+    // Determine the minimal set of "leaf nodes" that can be used to
+    // reconstruct the deferred ops queue through a DFS traversal.
+    absl::flat_hash_set<const DeviceBufferList*> reconstruction_nodes_set;
+    for (const DeferredOpEvent& event : deferred_ops_) {
+      // Filter to non-empty, non-expired deferred ops.
+      // Side-effecting ops will never be be removed this way.
+      auto device_buffer_list = event.lock();
+      if (!device_buffer_list || device_buffer_list->is_empty()) continue;
+
+      // Filter to anything that isn't deferred.
+      auto deferred_op = device_buffer_list->deferred_op();
+      if (!deferred_op) continue;
+
+      // Remove any inputs that can be reached from this node, as they are
+      // redundant with this one.
+      for (const auto& input : deferred_op->inputs()) {
+        if (auto it =
+                reconstruction_nodes_set.find(input.device_buffer_list().get());
+            it != reconstruction_nodes_set.end()) {
+          reconstruction_nodes_set.erase(it);
+        }
+      }
+
+      // Add this node to the reconstruction set.
+      reconstruction_nodes_set.insert(device_buffer_list.get());
+    }
+
+    // Clear the deferred ops queue, retaining only the reconstruction nodes.
+    std::vector<DeviceBufferRef> result;
+    result.reserve(reconstruction_nodes_set.size());
+    while (!deferred_ops_.empty()) {
+      auto event = std::move(deferred_ops_.front());
+      deferred_ops_.pop_front();
+      auto device_buffer_list = event.lock();
+      if (!device_buffer_list || device_buffer_list->is_empty()) continue;
+      if (!reconstruction_nodes_set.contains(device_buffer_list.get()))
+        continue;
+      TT_ASSIGN_OR_CRASH(auto ref,  // CRASH_OK=all lists are size >= 1
+                         DeviceBufferRef::Create(device_buffer_list, 0));
+      result.push_back(std::move(ref));
+    }
+    return result;
+  }
+
+  void Resume(const absl::Span<const SharedDeviceBufferList> execution_order) {
+    absl::MutexLock lock(deferred_ops_mu_);
+    for (auto it = execution_order.rbegin(); it != execution_order.rend();
+         ++it) {
+      if (auto event = DeferredOpEvent::FromDeferredOp(*it);
+          event.has_value()) {
+        deferred_ops_.push_front(std::move(*event));
+      }
+    }
+  }
+
+  bool HasSideEffects() {
+    absl::MutexLock lock(deferred_ops_mu_);
+    return std::any_of(deferred_ops_.begin(), deferred_ops_.end(),
+                       [](const DeferredOpEvent& event) {
+                         return event.side_effects != nullptr;
+                       });
+  }
+
   // Clears all tracked DeviceBufferLists from the events queue.
   void Clear() {
     {
@@ -134,10 +201,6 @@ class EventsQueue {
     static std::optional<DeferredOpEvent> FromDeferredOp(
         const SharedDeviceBufferList& device_buffer_list) {
       const auto deferred_op = device_buffer_list->deferred_op();
-      if (!deferred_op || deferred_op->depends_on_placeholder()) {
-        // TODO: better identify compiled mode tracing.
-        return std::nullopt;
-      }
       DeferredOpEvent event;
       if (IsSideEffectingOp(deferred_op->op_name())) {
         ABSL_VLOG(3) << "[DeferredOpEvent] Created side-effecting event for "
@@ -468,6 +531,8 @@ PrepareMaterializationTraversals(
       EventsQueue::GetInstance().TakeUntil(nodes_to_materialize_set);
 
   // Partition the deferred ops queue into separate traversals with these rules:
+  //   - If an op depends on a placeholder, it is not materialized as this is
+  //     part of a compiled mode trace, not an eager mode execution.
   //   - If an op is SplitBefore, it must be first in its execution order.
   //   - If an op is SplitAfter, it must be last in its execution order, and
   //     must be an output.
@@ -488,7 +553,9 @@ PrepareMaterializationTraversals(
     auto device_buffer_list = event.lock();
     if (!device_buffer_list) continue;
     const auto deferred_op = device_buffer_list->deferred_op();
-    if (!deferred_op) continue;
+    // TODO(bawilson): remove the "depends on placeholder" check once we have
+    // a dedicated compiled mode stream.
+    if (!deferred_op || deferred_op->depends_on_placeholder()) continue;
 
     const auto split_mode = deferred_op->split_mode();
 
@@ -551,6 +618,16 @@ PrepareMaterializationTraversals(
                << traversals.size() << " traversals to materialize "
                << nodes_to_materialize.size() << " nodes.";
   return traversals;
+}
+
+bool HasSideEffects() { return EventsQueue::GetInstance().HasSideEffects(); }
+
+std::vector<DeviceBufferRef> SuspendEventsQueue() {
+  return EventsQueue::GetInstance().Suspend();
+}
+
+void ResumeEventsQueue(const Traversal& traversal) {
+  EventsQueue::GetInstance().Resume(traversal.execution_order());
 }
 
 }  // namespace torch_tpu

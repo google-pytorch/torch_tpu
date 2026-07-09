@@ -210,6 +210,10 @@ class StaticCompiler(Compiler):
       the compiled graph on TPU.
     """  # fmt: skip
 
+    # Suspend the events queue so that prior eager mode operations are not
+    # included in the compiled graph.
+    suspended_tensors = tpu_torch_compile.suspend_events_queue()
+
     # Decompose auto functionalized ops, we need to explicitly do this because
     # the default behaviour inserts flatten and unflatten ops at the boundaries
     # which then blocks buffer donation.
@@ -280,6 +284,10 @@ class StaticCompiler(Compiler):
             use_stablehlo_bounds=self._use_stablehlo_bounds,
             argument_layouts=argument_layouts,
         )
+
+    # Done with the events queue, reset it to where it was before this function.
+    tpu_torch_compile.resume_events_queue(suspended_tensors)
+    del suspended_tensors
 
     if exported_mlir.is_noop:
       # The FX graph produced no computed output tensors (e.g. a

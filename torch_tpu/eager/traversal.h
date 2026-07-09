@@ -123,6 +123,10 @@ class Traversal {
   static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
   CreateFromExecutionOrder(
       absl::Span<const SharedDeviceBufferList> execution_order,
+      absl::Span<const DeviceBufferRef> refs_to_materialize);
+  static absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
+  CreateFromExecutionOrder(
+      absl::Span<const SharedDeviceBufferList> execution_order,
       absl::Span<const SharedDeviceBufferList> nodes_to_materialize);
 
   // Composes a cache key for the traversal with a specific compilation setting.

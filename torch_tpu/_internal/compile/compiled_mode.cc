@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "absl/flags/declare.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/check.h"
@@ -46,12 +46,12 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -232,6 +232,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     argument_refs.push_back(std::move(buffer_ref));
   }
 
+  // Get the result refs first to ensure that the view operations are created.
   std::vector<DeviceBufferRef> result_refs;
   result_refs.reserve(result_tensors.size());
   for (const at::Tensor& tensor : result_tensors) {
@@ -246,11 +247,39 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     result_refs.push_back(std::move(buffer_ref));
   }
 
+  // Reconstruct the full execution order from arguments to results.
+  std::vector<SharedDeviceBufferList> execution_order;
+  {
+    std::vector<DeviceBufferRef> reconstruction_nodes = SuspendEventsQueue();
+    // SuspendEventsQueue() skips empty() ops, assuming they're not needed.
+    // If an empty op is a result, it needs to be manually re-added.
+    absl::flat_hash_set<const DeviceBufferList*> empty_result_nodes;
+    for (const auto& result_ref : result_refs) {
+      if (result_ref.is_empty() &&
+          empty_result_nodes.insert(result_ref.device_buffer_list().get())
+              .second) {
+        reconstruction_nodes.push_back(result_ref);
+      }
+    }
+
+    TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
+                         // happens
+        auto reconstruction_traversal, Traversal::Create(reconstruction_nodes),
+        _ << "failed to create traversal");
+    auto parts = reconstruction_traversal->IntoParts();
+    execution_order = std::move(parts.execution_order);
+  }
+
+  // Lift this execution order back into a traversal with the new results.
+  // If any result is an argument-to-result direct passthrough, it will be added
+  // as an input by CreateFromExecutionOrder().
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
-      auto traversal, Traversal::Create(std::move(result_refs)),
+      auto traversal,
+      Traversal::CreateFromExecutionOrder(execution_order, result_refs),
       _ << "failed to create traversal");
 
+  // Validate and reorder the arguments.
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
       << "failed to validate and reorder traversal inputs";

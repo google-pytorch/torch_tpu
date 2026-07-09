@@ -51,6 +51,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -297,6 +298,7 @@ std::vector<at::Tensor> PyCreateScanOp(
                          OpName::kCustomKernel, std::move(op_builder),
                          std::move(input_buffers), std::move(cache_keys),
                          std::move(output_shapes)));
+  RecordDeferredOpCreated(result_refs[0].device_buffer_list());
 
   std::vector<at::Tensor> results;
   results.reserve(result_refs.size());

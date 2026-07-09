@@ -207,6 +207,7 @@ def exported_to_mlir(
     An `ExportedMlir` object containing the MLIR representation of the graph and
     FX output reconstruction information.
   """
+  suspended_tensors = tpu_torch_compile.suspend_events_queue()
 
   sample_args = _extract_sample_arguments(exported)
   _, state = _extract_states_from_exported_program(exported)
@@ -219,7 +220,9 @@ def exported_to_mlir(
   args = pytree.tree_map_only(torch.Tensor, to_xla, args)
   module = exported.graph_module.to(device)
 
-  return fx_to_mlir(module, args=args)
+  output = fx_to_mlir(module, args=args)
+  tpu_torch_compile.resume_events_queue(suspended_tensors)
+  return output
 
 
 @dataclasses.dataclass(frozen=True)
@@ -517,7 +520,14 @@ def fx_to_mlir(
       cloned_args = (
           x.clone() if isinstance(x, torch.Tensor) else x for x in args
       )
+
+      # Run the module through the interpreter, and hold the outputs as live
+      # tensors to ensure they, and anything they rely on, are not marked as
+      # dead code.
       fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
+
+      # Check if the module has any side effects.
+      has_side_effects = tpu_torch_compile.has_side_effects()
 
     result_tensors, reconstruct_fx_outputs_fn = _process_fx_outputs(
         module, fx_outputs
@@ -540,12 +550,18 @@ def fx_to_mlir(
       if len(result_tensors) > 1:
         # Remove the default generator state tensor from the arguments and
         # outputs since it is not used.
+        #
+        # If the graph only has a single output (the default generator state)
+        # but has side effects, we need to compute something; leave the default
+        # generator state tensor as the single output to ensure side effects are
+        # run.
         argument_tensors.pop()
         result_tensors.pop()
         if internal_layouts:
           internal_layouts.pop()
-      else:
-        # No RNG update and nothing to compute: this graph is a no-op.
+      elif not has_side_effects:
+        # No RNG update, no side effects, and nothing to compute:
+        # this graph is a no-op.
         return ExportedMlir(
             module=None,
             executable=None,

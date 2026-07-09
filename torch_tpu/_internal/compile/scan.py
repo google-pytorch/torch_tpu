@@ -39,6 +39,10 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
     A tuple of flat tensors representing the final carry and the stacked
     outputs of the scan operation.
   """
+  # Suspend the events queue so that prior eager mode operations are not
+  # included in the compiled graph.
+  suspended_tensors = tpu_torch_compile.suspend_events_queue()
+
   # Normalize inputs to lists.
   init_list, _ = pytree.tree_flatten(init)
   xs_list, _ = pytree.tree_flatten(xs)
@@ -83,9 +87,16 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
       ys_shape = [seq_len] + list(y.shape)
       dummy_ys.append(torch.zeros(ys_shape, dtype=y.dtype, device="meta"))
 
+  # Throw away the queue from the fake_result = actual_combine_fn(...) call.
+  _ = tpu_torch_compile.suspend_events_queue()
+
   # Compile the body sub-graph to MLIR.
   body_args = init_list + x_list + extra_list
   body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
+
+  # Resume the events queue to where it was before calling _handle_scan_impl.
+  tpu_torch_compile.resume_events_queue(suspended_tensors)
+  del suspended_tensors
 
   # Call the C++ binding to create a deferred scan operation.
   scan_direction = (

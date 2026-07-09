@@ -50,6 +50,22 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 // duplicates.
 std::vector<SharedDeviceBufferList> GetAllLiveUnsyncedDataPtrs();
 
+// Returns a vector of a minimal set of DeviceBufferLists that, if traced by a
+// depth-first traversal, will reconstruct the events queue up to the current
+// point. This excludes any unused torch.empty() DeviceBufferLists.
+//
+// This clears the events queue.
+std::vector<DeviceBufferRef> SuspendEventsQueue();
+
+// Prepends the execution order of the given traversal to the events queue.
+// This Traversal is expected to have been produced by using Traversal::Create()
+// on the vector returned by SuspendEventsQueue().
+void ResumeEventsQueue(const Traversal& traversal);
+
+// Returns true if any DeviceBufferList in the events queue has side effects.
+// This does not modify the state of the events queue.
+bool HasSideEffects();
+
 // Clears all references to DeviceBufferLists from the events queue.
 void ClearEventsQueue();
 

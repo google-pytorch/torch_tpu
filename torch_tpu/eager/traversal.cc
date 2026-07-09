@@ -222,6 +222,22 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
 Traversal::CreateFromExecutionOrder(
     absl::Span<const SharedDeviceBufferList> execution_order,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize) {
+  // Compute the traversal outputs.
+  std::vector<DeviceBufferRef> outputs;
+  for (const auto& node : nodes_to_materialize) {
+    for (auto i = 0; i < node->size(); ++i) {
+      TT_ASSIGN_OR_RETURN(auto output, DeviceBufferRef::Create(node, i));
+      outputs.push_back(std::move(output));
+    }
+  }
+
+  return CreateFromExecutionOrder(execution_order, outputs);
+}
+
+absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>>
+Traversal::CreateFromExecutionOrder(
+    absl::Span<const SharedDeviceBufferList> execution_order,
+    absl::Span<const DeviceBufferRef> refs_to_materialize) {
   ABSL_VLOG(1) << "[Traversal::CreateFromExecutionOrder] Creating Traversal";
   tsl::profiler::TraceMe t(
       [] { return "Traversal::CreateFromExecutionOrder"; });
@@ -244,14 +260,14 @@ Traversal::CreateFromExecutionOrder(
       }
       defs.insert(node.get());
     }
-  }
 
-  // Compute the traversal outputs.
-  std::vector<DeviceBufferRef> outputs;
-  for (const auto& node : nodes_to_materialize) {
-    for (auto i = 0; i < node->size(); ++i) {
-      TT_ASSIGN_OR_RETURN(auto output, DeviceBufferRef::Create(node, i));
-      outputs.push_back(std::move(output));
+    // If any ref to materialize is not in the execution order, then add it as
+    // a passthrough input (once).
+    for (const auto& ref : refs_to_materialize) {
+      if (!defs.contains(ref.device_buffer_list().get()) &&
+          uses.insert(ref).second) {
+        inputs.push_back(ref);
+      }
     }
   }
 
@@ -259,7 +275,8 @@ Traversal::CreateFromExecutionOrder(
       new Traversal(std::move(inputs),
                     std::vector<SharedDeviceBufferList>(execution_order.begin(),
                                                         execution_order.end()),
-                    std::move(outputs)));
+                    std::vector<DeviceBufferRef>(refs_to_materialize.begin(),
+                                                 refs_to_materialize.end())));
 #ifndef NDEBUG
   if (auto status = traversal->Validate(); !status.ok()) {
     LogLines(traversal->DebugString());
