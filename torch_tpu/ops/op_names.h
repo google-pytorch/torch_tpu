@@ -656,6 +656,8 @@ enum class OpName {
   kTanOut,
   kTanhBackwardGradInput,
   kTanhOut,
+  kThnnFusedGruCell,
+  kThnnFusedGruCellBackward,
   kThnnFusedLstmCell,
   kThnnFusedLstmCellBackwardImpl,
   kThresholdBackwardGradInput,

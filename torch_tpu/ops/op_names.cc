@@ -1289,6 +1289,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "tanh_backward.grad_input";
     case OpName::kTanhOut:
       return "tanh.out";
+    case OpName::kThnnFusedGruCell:
+      return "_thnn_fused_gru_cell";
+    case OpName::kThnnFusedGruCellBackward:
+      return "_thnn_fused_gru_cell_backward";
     case OpName::kThnnFusedLstmCell:
       return "_thnn_fused_lstm_cell";
     case OpName::kThnnFusedLstmCellBackwardImpl:
