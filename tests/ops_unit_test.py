@@ -85,6 +85,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   add it here.
   """
 
+  def test_dynamic_arange_custom(self):
+    # Test case for uint8 overflow in dynamic_arange
+    start = torch.tensor(0, dtype=torch.float32, device="tpu")
+    end = torch.tensor(256, dtype=torch.float32, device="tpu")
+    step = torch.tensor(1, dtype=torch.float32, device="tpu")
+
+    expected = torch.arange(0, 256, 1, dtype=torch.uint8)
+    actual = torch.ops.tpu.dynamic_arange(start, end, step, 300, torch.uint8)
+    self.assertEqual(expected, actual[: expected.size(0)].cpu())
+
+    # Test case for int64
+    start_i64 = torch.tensor(0, dtype=torch.int64, device="tpu")
+    end_i64 = torch.tensor(10, dtype=torch.int64, device="tpu")
+    step_i64 = torch.tensor(1, dtype=torch.int64, device="tpu")
+    expected_i64 = torch.arange(0, 10, 1, dtype=torch.int64)
+    actual_i64 = torch.ops.tpu.dynamic_arange(
+        start_i64, end_i64, step_i64, 20, torch.int64
+    )
+    self.assertEqual(expected_i64, actual_i64[: expected_i64.size(0)].cpu())
+
   def _run_addmm_activation_test(
       self,
       self_shape,

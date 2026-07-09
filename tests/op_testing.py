@@ -1318,7 +1318,6 @@ def _compiled_supports_op(
       # TODO: failed to validate and reorder inputs.
       # This is mostly the same as the numel == 0 case, but for embedded
       # constants in the graph.
-      "arange",
       "empty",
       "split_with_sizes",
       "tril_indices",

@@ -42,6 +42,29 @@
 #include "torch_tpu/ops/op_names.h"
 
 namespace torch_tpu {
+namespace {
+absl::StatusOr<mlir::ElementType> GetComputationType(mlir::Type t1,
+                                                     mlir::Type t2,
+                                                     mlir::Type t3) {
+  TT_ASSIGN_OR_RETURN(mlir::ElementType et1, ConvertTo<mlir::ElementType>(t1));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType et2, ConvertTo<mlir::ElementType>(t2));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType et3, ConvertTo<mlir::ElementType>(t3));
+
+  auto is_float = [](mlir::ElementType et) {
+    return et == mlir::ElementType::F32 || et == mlir::ElementType::F64 ||
+           et == mlir::ElementType::BF16 || et == mlir::ElementType::F16;
+  };
+
+  if (is_float(et1) || is_float(et2) || is_float(et3)) {
+    if (et1 == mlir::ElementType::F64 || et2 == mlir::ElementType::F64 ||
+        et3 == mlir::ElementType::F64) {
+      return mlir::ElementType::F64;
+    }
+    return mlir::ElementType::F32;
+  }
+  return mlir::ElementType::I64;
+}
+}  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildDynamicArange(
     mlir::MlirBuilder& builder, mlir::MlirOp start_op, mlir::MlirOp end_op,
@@ -49,49 +72,60 @@ absl::StatusOr<mlir::MlirOp> BuildDynamicArange(
   TT_ASSIGN_OR_RETURN(const mlir::Type mlir_type,
                       GetMlirType(builder.getContext(), element_type));
 
-  // Cast inputs to the requested target element type
+  // Determine computation type
+  TT_ASSIGN_OR_RETURN(mlir::ElementType comp_element_type,
+                      GetComputationType(GetElementTypeOrSelf(start_op),
+                                         GetElementTypeOrSelf(end_op),
+                                         GetElementTypeOrSelf(step_op)));
+  TT_ASSIGN_OR_RETURN(const mlir::Type comp_mlir_type,
+                      GetMlirType(builder.getContext(), comp_element_type));
+
+  // Cast inputs to computation type
   TT_ASSIGN_OR_RETURN(mlir::MlirOp start_cast,
-                      CastIfNeeded(start_op, element_type));
+                      CastIfNeeded(start_op, comp_element_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp end_cast,
-                      CastIfNeeded(end_op, element_type));
+                      CastIfNeeded(end_op, comp_element_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp step_cast,
-                      CastIfNeeded(step_op, element_type));
+                      CastIfNeeded(step_op, comp_element_type));
 
-  mlir::RankedTensorType output_type =
-      mlir::RankedTensorType::get({max_length}, mlir_type);
+  // We need output type for broadcast and iota in computation type
+  mlir::RankedTensorType comp_output_type =
+      mlir::RankedTensorType::get({max_length}, comp_mlir_type);
 
-  // Broadcast start and step to 1D [max_length]
+  // Broadcast start and step to 1D [max_length] in computation type
   mlir::MlirOp broadcasted_start =
-      mlir::stablehlo::BroadcastInDim(output_type, start_cast, {});
+      mlir::stablehlo::BroadcastInDim(comp_output_type, start_cast, {});
   mlir::MlirOp broadcasted_step =
-      mlir::stablehlo::BroadcastInDim(output_type, step_cast, {});
+      mlir::stablehlo::BroadcastInDim(comp_output_type, step_cast, {});
 
-  // Generate full static iota sequence
-  mlir::MlirOp iota = mlir::stablehlo::Iota(builder, output_type, 0);
+  // Generate full static iota sequence in computation type
+  mlir::MlirOp iota = mlir::stablehlo::Iota(builder, comp_output_type, 0);
 
-  // Compute values: iota * step + start
+  // Compute values: iota * step + start in computation type
   mlir::MlirOp iota_step = mlir::stablehlo::Mul(iota, broadcasted_step);
   mlir::MlirOp padded_arange =
       mlir::stablehlo::Add(iota_step, broadcasted_start);
 
-  // Compute dynamic length
+  // Compute dynamic length in computation type
   mlir::MlirOp dynamic_length;
-  if (mlir_type.isInteger()) {
+  if (comp_mlir_type.isInteger()) {
     // Formula: (end - start + step - sgn) / step
     // sgn = (step > 0) - (step < 0)
     mlir::MlirOp diff = mlir::stablehlo::Subtract(end_cast, start_cast);
 
     mlir::MlirOp zero_i64 = mlir::stablehlo::Constant(builder, (int64_t)0);
     mlir::MlirOp zero =
-        mlir::stablehlo::ConvertElementType(zero_i64, mlir_type);
+        mlir::stablehlo::ConvertElementType(zero_i64, comp_mlir_type);
 
     mlir::MlirOp gt = mlir::stablehlo::Compare(
         step_cast, zero, mlir::stablehlo::ComparisonDirection::GT);
     mlir::MlirOp lt = mlir::stablehlo::Compare(
         step_cast, zero, mlir::stablehlo::ComparisonDirection::LT);
 
-    mlir::MlirOp gt_int = mlir::stablehlo::ConvertElementType(gt, mlir_type);
-    mlir::MlirOp lt_int = mlir::stablehlo::ConvertElementType(lt, mlir_type);
+    mlir::MlirOp gt_int =
+        mlir::stablehlo::ConvertElementType(gt, comp_mlir_type);
+    mlir::MlirOp lt_int =
+        mlir::stablehlo::ConvertElementType(lt, comp_mlir_type);
     mlir::MlirOp sgn = mlir::stablehlo::Subtract(gt_int, lt_int);
 
     mlir::MlirOp term1 = mlir::stablehlo::Add(diff, step_cast);
@@ -102,6 +136,12 @@ absl::StatusOr<mlir::MlirOp> BuildDynamicArange(
     mlir::MlirOp diff = mlir::stablehlo::Subtract(end_cast, start_cast);
     mlir::MlirOp div = mlir::stablehlo::Div(diff, step_cast);
     dynamic_length = mlir::stablehlo::Ceil(div);
+  }
+
+  // Cast padded_arange to target element type
+  if (comp_element_type != element_type) {
+    padded_arange =
+        mlir::stablehlo::ConvertElementType(padded_arange, mlir_type);
   }
 
   dynamic_length = mlir::stablehlo::ConvertElementType(
