@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+import operator
 from typing import Any, NamedTuple
 
 import jax
@@ -27,6 +28,27 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 import jax.numpy as jnp
+
+
+def _is_concrete(x):
+  if isinstance(x, jax.core.Tracer):
+    return x.to_concrete_value() is not None
+  return x is not None
+
+
+def _is_constant_dim(d) -> bool:
+  if isinstance(d, jax.core.Tracer) and not _is_concrete(d):
+    return False
+  try:
+    operator.index(d)
+    return True
+  except TypeError:
+    return False
+
+
+def _is_constant_shape(s) -> bool:
+  return all(_is_constant_dim(d) for d in s)
+
 
 DEFAULT_MASK_VALUE = -0.7 * float(jnp.finfo(jnp.dtype("float32")).max)
 NUM_LANES = 128
@@ -752,9 +774,9 @@ def _flash_attention_impl(
   ]
 
   if (
-      jax.core.is_constant_shape(q.shape)
-      and jax.core.is_constant_shape(k.shape)
-      and jax.core.is_constant_shape(v.shape)
+      _is_constant_shape(q.shape)
+      and _is_constant_shape(k.shape)
+      and _is_constant_shape(v.shape)
   ):
     cost_estimate = _fwd_cost_estimate(
         q,
