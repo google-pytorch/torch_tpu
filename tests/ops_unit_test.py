@@ -302,6 +302,99 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     self.assert_close_tpu_vs_cpu(test_out)
 
+  # --- Fused RNN-cell ops (_thnn_fused_lstm_cell / _thnn_fused_gru_cell) -----
+  # These are the ops stock nn.LSTM / nn.GRU lower to on the TPU backend. They
+  # are CUDA-only in ATen (no CPU kernel), so they are exercised through the
+  # public modules -- which run comparable math on both devices -- rather than
+  # called directly. Params + inputs are seeded and built on CPU, then moved,
+  # so the TPU and CPU runs use identical values.
+
+  def _check_rnn_tpu_vs_cpu(
+      self, ctor, *, bias, bidirectional, num_layers, backward
+  ):
+    def compute(device):
+      torch.manual_seed(0)
+      module = ctor(
+          8, 8, num_layers=num_layers, bias=bias, bidirectional=bidirectional
+      ).to(device)
+      x = torch.randn(6, 3, 8).to(device)
+      if backward:
+        x.requires_grad_(True)
+        output, _ = module(x)
+        output.pow(2).sum().backward()
+        parts = [x.grad.reshape(-1)]
+        parts += [p.grad.reshape(-1) for p in module.parameters()]
+        return torch.cat(parts)
+      output, state = module(x)
+      states = state if isinstance(state, tuple) else (state,)
+      return torch.cat([output.reshape(-1)] + [s.reshape(-1) for s in states])
+
+    # rtol for TPU matmul drift over the recurrence; atol so the handful of
+    # near-zero gradient entries (where relative error is meaningless) pass.
+    self.assert_close_tpu_vs_cpu(compute, rtol=2e-2, atol=1e-2)
+
+  @parameterized.product(bidirectional=[False, True], num_layers=[1, 2])
+  def test__thnn_fused_lstm_cell(self, bidirectional, num_layers):
+    """nn.LSTM forward lowers to _thnn_fused_lstm_cell on TPU."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.LSTM,
+        bias=True,
+        bidirectional=bidirectional,
+        num_layers=num_layers,
+        backward=False,
+    )
+
+  def test__thnn_fused_lstm_cell_no_bias(self):
+    """LSTM cell with bias=False (no input/hidden bias inputs)."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.LSTM,
+        bias=False,
+        bidirectional=False,
+        num_layers=1,
+        backward=False,
+    )
+
+  def test__thnn_fused_lstm_cell_backward(self):
+    """nn.LSTM backward lowers to _thnn_fused_lstm_cell_backward_impl on TPU."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.LSTM,
+        bias=True,
+        bidirectional=True,
+        num_layers=2,
+        backward=True,
+    )
+
+  @parameterized.product(bidirectional=[False, True], num_layers=[1, 2])
+  def test__thnn_fused_gru_cell(self, bidirectional, num_layers):
+    """nn.GRU forward lowers to _thnn_fused_gru_cell on TPU."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.GRU,
+        bias=True,
+        bidirectional=bidirectional,
+        num_layers=num_layers,
+        backward=False,
+    )
+
+  def test__thnn_fused_gru_cell_no_bias(self):
+    """GRU cell with bias=False (no input/hidden bias inputs)."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.GRU,
+        bias=False,
+        bidirectional=False,
+        num_layers=1,
+        backward=False,
+    )
+
+  def test__thnn_fused_gru_cell_backward(self):
+    """nn.GRU backward lowers to _thnn_fused_gru_cell_backward on TPU."""
+    self._check_rnn_tpu_vs_cpu(
+        torch.nn.GRU,
+        bias=True,
+        bidirectional=True,
+        num_layers=2,
+        backward=True,
+    )
+
   def test_ldexp_integer_promotion(self):
     """Tests that ldexp promotes integer base and exponent to float."""
     self.assert_close_tpu_vs_cpu(

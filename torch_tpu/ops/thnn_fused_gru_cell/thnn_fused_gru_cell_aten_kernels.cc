@@ -141,7 +141,10 @@ std::tuple<at::Tensor, at::Tensor> AtenThnnFusedGruCell(
     const std::optional<at::Tensor>& hidden_bias) {
   const int64_t batch = hx.size(0);
   const int64_t hidden = hx.size(1);
-  const bool has_bias = input_bias.has_value() && hidden_bias.has_value();
+  // nn.GRU(bias=False) passes the biases as optionals holding *undefined*
+  // tensors (has_value() is true but .defined() is false), so check both.
+  const bool has_bias = input_bias.has_value() && input_bias->defined() &&
+                        hidden_bias.has_value() && hidden_bias->defined();
 
   TT_KERNEL(OpName::kThnnFusedGruCell, param_keys,
             (input_gates, hidden_gates, hx, input_bias, hidden_bias), {
