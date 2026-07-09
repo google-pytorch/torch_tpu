@@ -31,6 +31,7 @@ torch_tpu_cc_library(
         "//torch_tpu/common:fixed_size_span",
         "//torch_tpu/eager:op_dispatcher",
         "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/status:statusor",

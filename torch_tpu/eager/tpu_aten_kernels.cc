@@ -890,6 +890,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kTanhBackwardGradInput>(m, AtenTanhBackwardGradInput);
   ImplStable<OpName::kTanhOut>(m, AtenTanhOut);
   ImplStable<OpName::kThnnFusedLstmCell>(m, AtenThnnFusedLstmCell);
+  ImplStable<OpName::kThnnFusedLstmCellBackwardImpl>(
+      m, AtenThnnFusedLstmCellBackwardImpl);
   ImplStable<OpName::kThresholdBackwardGradInput>(
       m, AtenThresholdBackwardGradInput);
   ImplStable<OpName::kThresholdOut>(m, AtenThresholdOut);

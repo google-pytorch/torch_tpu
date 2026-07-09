@@ -168,7 +168,6 @@ UNREGISTERED_OPS = frozenset([
     '_standard_gamma_grad',
     '_thnn_fused_gru_cell',
     '_thnn_fused_gru_cell_backward',
-    '_thnn_fused_lstm_cell_backward_impl',
     '_to_dense',
     '_to_sparse',
     '_to_sparse.sparse_dim',

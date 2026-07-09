@@ -39,6 +39,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenThnnFusedLstmCell(
     const at::Tensor& cx, const std::optional<at::Tensor>& input_bias,
     const std::optional<at::Tensor>& hidden_bias);
 
+// Backward of the fused LSTM cell (aten::_thnn_fused_lstm_cell_backward_impl).
+// Returns (grad_gates, grad_cx, grad_bias); the fused-cell backward wrapper
+// duplicates grad_gates/grad_bias to the input/hidden gate/bias grads.
+std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenThnnFusedLstmCellBackwardImpl(
+    const std::optional<at::Tensor>& grad_hy,
+    const std::optional<at::Tensor>& grad_cy, const at::Tensor& cx,
+    const at::Tensor& cy, const at::Tensor& workspace, bool has_bias);
+
 }  // namespace torch_tpu
 
 #endif  // THIRD_PARTY_PY_TORCH_TPU_OPS_THNN_FUSED_LSTM_CELL_THNN_FUSED_LSTM_CELL_ATEN_KERNELS_H_
