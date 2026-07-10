@@ -14,19 +14,23 @@
 
 """Tests for inplace_donate=True Pallas custom kernels.
 
-The workload: a device-resident state pool larger than half of HBM,
-threaded through sequential Pallas calls per torch.compile'd step, across
-steps, inference-only. Part 1 shows the pre-existing donation API cannot
-express it (double-buffer OOM; set_ republish rejected in compile and
-inside the op impl); part 2 shows inplace_donate does; part 3 pins the
-individual mechanisms.
+The workload: a device-resident state pool larger than half of HBM, written
+in place by Pallas calls per torch.compile'd step, across steps,
+inference-only. The pool is a graph *input* and never a graph output — the
+step returns small derived values, so no pool-sized buffer crosses the
+program boundary.
+
+Program-boundary donation only applies to a buffer the program returns, so
+under the pre-existing API a graph-input pool forces XLA to materialize a
+fresh pool-sized output for the write. Part 1 is that failure and part 2 is
+inplace_donate expressing the same step; the two differ by one kwarg. Part 3
+pins the individual mechanisms.
 """
 
 import jax
 from jax.experimental import pallas as pl
 import jax.numpy as jnp
 import torch
-from torch._dynamo import exc as dynamo_exc
 
 from absl.testing import absltest
 from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
@@ -121,17 +125,12 @@ inplace_increment = pallas.jax_op(
     inplace_donate=True,
 )
 
-# The pre-existing API: donation without the in-place machinery.
+# The pre-existing API: the same kernel, donation without the in-place
+# machinery. Part 1 and part 2 differ only by which of these they call.
 plain_donating_increment = pallas.jax_op(
     "pallas::plain_donating_increment",
     _chunked(_increment_kernel_body),
     donate_argnums=(0,),
-)
-
-plain_accumulate = pallas.jax_op(
-    "pallas::plain_accumulate",
-    accumulate_jax,
-    donate_argnums=(1,),
 )
 
 
@@ -144,31 +143,26 @@ class TestPallasInplaceDonate(absltest.TestCase):
 
   # --- Part 1: the pre-existing donation API cannot express the workload.
 
-  def test_existing_donation_api_cannot_update_half_hbm_pool(self):
-    # Without in-place aliasing, one update of the pool holds the donated
-    # input and the kernel output as two distinct >HBM/2 buffers.
+  def test_plain_donation_cannot_update_graph_input_pool(self):
+    # The one-kwarg counterpart of part 2's step: a donating call writes a
+    # pool that is a graph input and never a graph output. Plain donation
+    # only reaches the program boundary for a returned buffer, so XLA must
+    # allocate a fresh pool-sized output for the write and the two do not
+    # fit. `set_` cannot rescue this: no pool-sized value leaves the region,
+    # so the caller has nothing to rebind to. One writer is enough to fail;
+    # the count of donating calls is not what breaks.
     pool = torch.empty(
         _pool_elems(), dtype=torch.float32, device=self.device
     )
-    with self.assertRaisesRegex(
-        RuntimeError, "RESOURCE_EXHAUSTED|[Oo]ut of memory"
-    ):
-      plain_donating_increment(pool).cpu()  # .cpu() forces execution
 
-  def test_caller_set_republish_rejected_under_compile(self):
-    # The documented eager republish for plain donation (`x.set_(out)`)
-    # cannot be used in the compiled serving loop: Dynamo rejects `set_`
-    # on a graph input.
     @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
-    def step(x, acc):
-      out = plain_accumulate(x, acc)
-      acc.set_(out)
-      return out
+    def step(pool):
+      return plain_donating_increment(pool)[:3]
 
-    x = torch.ones(3, dtype=torch.float32, device=self.device)
-    acc = torch.zeros(3, dtype=torch.float32, device=self.device)
-    with self.assertRaises(dynamo_exc.Unsupported):
-      step(x, acc)
+    with self.assertRaisesRegex(
+        RuntimeError, "RESOURCE_EXHAUSTED|HbmOom|[Oo]ut of memory"
+    ):
+      step(pool)
 
   def test_custom_op_impl_cannot_republish_via_set_(self):
     # Inside a custom_op impl, set_ makes the returned output share the
@@ -189,15 +183,15 @@ class TestPallasInplaceDonate(absltest.TestCase):
   # --- Part 2: inplace_donate expresses it.
 
   def test_inplace_donate_updates_half_hbm_pool_across_compiled_steps(self):
-    # The serving-loop contract at the scale part 1 proved impossible:
-    # fill in place, then run a compiled step twice on the same handle.
-    # Every pool touch goes through torch.compile: only the compiled
-    # path's executable-level donation aliases the pool buffer through
-    # the program boundary (an eager donating call still peaks at two
-    # pool copies — donation frees the input only after execution). The
-    # step returns a small derived value, like the real workload;
-    # returning the donated output itself would add a second pool-sized
-    # executable output (the aliased extra plus a fresh copy).
+    # Part 1's step with `inplace_donate=True`: the terminus is appended as
+    # an aliased extra executable output and the caller's storage is rebound
+    # to it, so the graph-input pool is written in place and carries across
+    # steps. Every pool touch goes through torch.compile; an eager donating
+    # call gets donation but not program-boundary aliasing, so it still
+    # peaks at two pool copies. The step returns a small derived value, like
+    # the real workload; returning the donated output itself would add a
+    # second pool-sized executable output (the aliased extra plus a fresh
+    # copy).
     pool = torch.empty(
         _pool_elems(), dtype=torch.float32, device=self.device
     )
