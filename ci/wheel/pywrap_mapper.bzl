@@ -21,29 +21,31 @@ the location of these files to resolve the original file directory.
 """
 
 def _remapper_impl(ctx):
-    manifest = None
+    manifests = []
     binaries = []
 
     for f in ctx.files.srcs:
         if f.extension == "json":
-            manifest = f
+            manifests.append(f)
         else:
             binaries.append(f)
 
-    if not manifest:
+    if not manifests:
         fail("Could not find a .json manifest in srcs. Ensure pywrap_binaries has JSON output.")
 
     out_dir = ctx.actions.declare_directory(ctx.attr.name + "_pkg")
 
-    # 3. Construct arguments for the python script
+    # 3. Construct arguments for the python script. Multiple pywrap_binaries
+    # (one per PyTorch version) each contribute a manifest; the per-version
+    # common libraries all reference the single shared libxla_base.so.
     args = ctx.actions.args()
-    args.add("--manifest", manifest)
+    args.add_all(manifests, before_each = "--manifest")
     args.add("--out_dir", out_dir.path)
     args.add_all(binaries)
 
     # 4. Run the script
     ctx.actions.run(
-        inputs = binaries + [manifest],
+        inputs = binaries + manifests,
         outputs = [out_dir],
         executable = ctx.executable._mapper_script,
         arguments = [args],
@@ -56,7 +58,7 @@ def _remapper_impl(ctx):
 remap_pywrap_binaries = rule(
     implementation = _remapper_impl,
     attrs = {
-        "srcs": attr.label(mandatory = True, allow_files = True),
+        "srcs": attr.label_list(mandatory = True, allow_files = True),
         "_mapper_script": attr.label(
             default = Label("//ci/wheel:wheel_mapper_bin"),
             executable = True,
