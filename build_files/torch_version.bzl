@@ -185,8 +185,19 @@ def pin_glue_backend_deps(name, deps):
     direct backend deps. `//`-deps and torch headers are left untouched.
     """
     if type(deps) != "list":
-        # A select() or other non-list value: leave it untouched.
-        return deps
+        # A non-list deps value -- a bare select(), or a `[...] + select({...})`
+        # SelectorList -- is opaque to Starlark: it cannot be iterated or
+        # decomposed, so a backend @-dep hidden inside it cannot be discovered
+        # and routed through xla_fixed. Passing it through would let such a dep
+        # silently escape pinning and fragment the shared XLA base, so refuse the
+        # shape outright rather than miscompile. Keep every glue dep in a plain
+        # list; select() is not supported here.
+        fail(
+            ("pin_glue_backend_deps {}: `deps` must be a plain list so backend " +
+             "@-deps can be routed to the shared XLA base, but got a select(). " +
+             "Backend deps hidden in a select cannot be pinned; keep deps a " +
+             "plain list.").format(name),
+        )
     result = []
     fixed_index = 0
     for dep in deps:
