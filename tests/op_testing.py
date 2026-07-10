@@ -841,11 +841,11 @@ def to(
 
 
 def _make_tensors_empty(x: _pytree.PyTree) -> _pytree.PyTree:
-  """Makes all torch.Tensors in x empty."""
+  """Makes all torch.Tensors in x empty contiguous tensors."""
 
   def transform_leaf(obj: Any) -> Any:
     if isinstance(obj, torch.Tensor):
-      return torch.empty_like(obj)
+      return torch.empty(obj.shape, dtype=obj.dtype, device=obj.device)
     return obj
 
   return _tensor_tree_map(transform_leaf, x)
