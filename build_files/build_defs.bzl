@@ -130,12 +130,20 @@ def _route_backend_deps_through_fixed(name, deps):
     copy per PyTorch version. A bazel-only build keeps the deps unchanged.
     """
     if type(deps) != "list":
-        # TODO(pganssle): A non-list deps value -- a bare select(), or the common
-        # `[...] + select({...})` (a SelectorList) -- is left untouched, so any
-        # backend @-dep inside it escapes pinning and would fragment the shared
-        # XLA base instead of sharing it. Handle the `list + select` shape (or
-        # reject backend @-deps inside selects) here.
-        return deps
+        # A non-list deps value -- a bare select(), or the common
+        # `[...] + select({...})` (a SelectorList) -- is opaque to Starlark: it
+        # cannot be iterated or decomposed, so a backend @-dep hidden inside it
+        # cannot be discovered and routed through xla_fixed. Passing it through
+        # would let such a dep silently escape pinning and fragment the shared
+        # XLA base, so refuse the shape outright rather than miscompile. Keep
+        # every dep (backend and conditional alike) in a plain list; select() is
+        # not supported for torch_tpu_cc_library deps.
+        fail(
+            ("torch_tpu_cc_library {}: `deps` must be a plain list so backend " +
+             "@-deps can be routed to the shared XLA base, but got a select(). " +
+             "Backend deps hidden in a select cannot be pinned; keep deps a " +
+             "plain list.").format(name),
+        )
     pinned = [d for d in deps if is_backend_dep(d)]
     if not pinned:
         return deps
