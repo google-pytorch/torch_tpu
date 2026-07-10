@@ -2787,9 +2787,14 @@ def set_up_test_module() -> None:
   #
   # The very first invocation of `CompilationCache::GetOrCompile` will determine
   # the globally shared default compilation context.
-  if _torch_tpu_vs_gpu_mode() or _gen_gpu_golden_mode():
-    if is_compiled_mode():
-      torch.backends.tpu.allow_excess_precision = True  # pytype: disable=module-attr
+  if _torch_tpu_vs_gpu_mode():
+    # TODO: b/502610173 - When the default value is changed to False for excess
+    # precision, keep configuring the value as True for compile mode to compare
+    # with the GPU inductor backend.
+    if not is_compiled_mode():
+      torch.backends.tpu.allow_excess_precision = False  # pytype: disable=module-attr
+  elif _torch_tpu_vs_cpu_mode():
+    torch.backends.tpu.allow_excess_precision = False  # pytype: disable=module-attr
 
   # Pick a random seed for the test.
   global _RANDOM_SEED

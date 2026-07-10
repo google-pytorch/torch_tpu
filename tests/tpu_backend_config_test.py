@@ -36,8 +36,8 @@ class TpuBackendConfigTest(parameterized.TestCase):
     # pytype: disable=module-attr
     original_allow = torch.backends.tpu.allow_excess_precision
     try:
-      # Default value is False.
-      self.assertIs(torch.backends.tpu.allow_excess_precision, False)
+      # Default value is True.
+      self.assertIs(torch.backends.tpu.allow_excess_precision, True)
 
       torch.backends.tpu.allow_excess_precision = allow
       self.assertIs(torch.backends.tpu.allow_excess_precision, allow)

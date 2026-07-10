@@ -3642,11 +3642,11 @@ def setUpModule() -> None:
   op_testing.set_up_test_module()
 
   if (
-      op_testing._torch_tpu_vs_gpu_mode() or op_testing._gen_gpu_golden_mode()
-  ) and op_testing.is_compiled_mode():
-    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
-  else:
+      op_testing._torch_tpu_vs_gpu_mode() and not op_testing.is_compiled_mode()
+  ) or op_testing._torch_tpu_vs_cpu_mode():
     assert not torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
+  else:
+    assert torch.backends.tpu.allow_excess_precision  # pytype: disable=module-attr
 
 
 def tearDownModule() -> None:

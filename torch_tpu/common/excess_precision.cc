@@ -17,10 +17,8 @@
 #include "torch_tpu/common/excess_precision.h"
 
 #include <atomic>
-#include <string>
 
 #include "absl/base/no_destructor.h"
-#include "torch_tpu/common/env_vars.h"
 #include "xla/client/executable_build_options.h"
 
 namespace torch_tpu {
@@ -63,23 +61,17 @@ bool GetAllowExcessPrecision() {
     case ExcessPrecisionState::kDisallow:
       return false;
     case ExcessPrecisionState::kUnset:
-      // Fall back to XLA_FLAGS or default to false.
+      // Fall back to XLA_FLAGS or default to true.
       // Use static to memoize the value to avoid reading the debug options
       // multiple times.
       static const bool allow_excess_precision = [] {
-        // We manually check if the flag is present in XLA_FLAGS string because
-        // xla::DebugOptions always provides a value for
-        // xla_allow_excess_precision (defaulting to true), making it impossible
-        // to distinguish between a user-set value and XLA's internal default.
-        const auto& xla_flags = GetEnvOnce<kXlaFlagsEnvVar>();
-        if (xla_flags.has_value() &&
-            xla_flags->find("xla_allow_excess_precision") !=
-                std::string::npos) {
-          const xla::DebugOptions& debug_options =
-              GetDefaultExecutableBuildOptions().debug_options();
+        const xla::DebugOptions& debug_options =
+            GetDefaultExecutableBuildOptions().debug_options();
+        if (debug_options.has_xla_allow_excess_precision()) {
           return debug_options.xla_allow_excess_precision();
         }
-        return false;
+        // TODO: b/502610173 - Set to False when XLA_FLAGS is not set.
+        return true;
       }();
       return allow_excess_precision;
   }

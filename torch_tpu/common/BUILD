@@ -253,7 +253,6 @@ torch_tpu_cc_library(
     srcs = ["excess_precision.cc"],
     hdrs = ["excess_precision.h"],
     deps = [
-        ":env_vars",
         "@com_google_absl//absl/base:no_destructor",
         "@xla//xla/client:executable_build_options",
     ],
@@ -975,49 +974,6 @@ torch_tpu_cc_library(
         ":compilation",
         ":compilation_spec",
         "@com_google_absl//absl/log:absl_check",
-    ],
-)
-
-# Since GetAllowExcessPrecision() memoizes the value of XLA_FLAGS in a static
-# variable, we need three separate test targets to verify different
-# environment configurations in fresh processes.
-#
-# Tests that excess precision defaults to False when XLA_FLAGS env var is unset.
-torch_tpu_cc_test(
-    name = "compilation_excess_precision_env_unset_test",
-    srcs = ["compilation_excess_precision_env_test.cc"],
-    env = {"EXPECTED_VALUE": "false"},
-    deps = [
-        ":excess_precision",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-# Tests that excess precision is True when XLA_FLAGS explicitly enables it.
-torch_tpu_cc_test(
-    name = "compilation_excess_precision_env_true_test",
-    srcs = ["compilation_excess_precision_env_test.cc"],
-    env = {
-        "EXPECTED_VALUE": "true",
-        "XLA_FLAGS": "--xla_allow_excess_precision=true",
-    },
-    deps = [
-        ":excess_precision",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-# Tests that excess precision is False when XLA_FLAGS explicitly disables it.
-torch_tpu_cc_test(
-    name = "compilation_excess_precision_env_false_test",
-    srcs = ["compilation_excess_precision_env_test.cc"],
-    env = {
-        "EXPECTED_VALUE": "false",
-        "XLA_FLAGS": "--xla_allow_excess_precision=false",
-    },
-    deps = [
-        ":excess_precision",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
