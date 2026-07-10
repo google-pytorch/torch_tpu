@@ -44,6 +44,17 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "topology",
+    srcs = ["topology.py"],
+    deps = [
+        ":tpu_distributed",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "@pypi//numpy",
+    ],
+)
+
 # This library is not used directly, but is needed for go/cclean. Without
 # this rule, cclean complains that tpu_distributed.cc has no rule depending on it.
 torch_tpu_cc_library(

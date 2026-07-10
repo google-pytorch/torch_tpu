@@ -29,9 +29,12 @@ os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 # pylint: disable=g-import-not-at-top
 import torch
 import torch._dynamo.backends.registry as backend_registry
+import torch.distributed as dist
+import torch.distributed.device_mesh as py_device_mesh
 from torch_tpu._internal import tracing
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _tpu_backend_config
+from torch_tpu._internal.distributed import topology
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import hardware
 
@@ -169,19 +172,53 @@ def _init_device_impl(device: str) -> torch.device:
       f" {device_d.index if device_d.index is not None else 'default'}"
   )
 
-  if device == "tpu" and not torch.distributed.is_initialized():
-    # Register the TPU distributed runtime; users will also need to
-    # init_process_group() in their code. Registered unconditionally
-    # (not gated on multi-host) so single-host runs that still go
-    # through init_process_group(backend="tpu_dist") work.
-    #
-    # Pass `devices` as a list (not the bare string "tpu") to work around a
-    # register_backend string-handling bug fixed upstream in
-    # pytorch/pytorch#187960; the list form is correct regardless.
-    print("Initializing TPU distributed runtime")
-    torch.distributed.Backend.register_backend(
-        "tpu_dist", tpu_distributed.create_process_group, devices=["tpu"]
-    )
+  if device == "tpu":
+    if not torch.distributed.is_initialized():
+      # Register the TPU distributed runtime; users will also need to
+      # init_process_group() in their code. Registered unconditionally
+      # (not gated on multi-host) so single-host runs that still go
+      # through init_process_group(backend="tpu_dist") work.
+      #
+      # Pass `devices` as a list (not the bare string "tpu") to work around a
+      # register_backend string-handling bug fixed upstream in
+      # pytorch/pytorch#187960; the list form is correct regardless.
+      print("Initializing TPU distributed runtime")
+      torch.distributed.Backend.register_backend(
+          "tpu_dist", tpu_distributed.create_process_group, devices=["tpu"]
+      )
+
+    # Monkeypatch init_device_mesh with topology awareness if enabled
+    if os.environ.get("TORCH_TPU_TOPOLOGY_AWARE", "1") == "1":
+
+      _original_init_device_mesh = py_device_mesh.init_device_mesh
+
+      def _improved_init_device_mesh(
+          device_type, mesh_shape, *, mesh_dim_names=None, backend_override=None
+      ):
+        if (
+            device_type == "tpu"
+            and os.environ.get("TORCH_TPU_TOPOLOGY_AWARE", "1") == "1"
+        ):
+          return topology.init_topology_aware_device_mesh(
+              device_type,
+              mesh_shape,
+              mesh_dim_names=mesh_dim_names,
+              backend_override=backend_override,
+          )
+        else:
+          return _original_init_device_mesh(
+              device_type,
+              mesh_shape,
+              mesh_dim_names=mesh_dim_names,
+              backend_override=backend_override,
+          )
+
+      py_device_mesh.init_device_mesh = _improved_init_device_mesh
+      dist.init_device_mesh = _improved_init_device_mesh
+      print(
+          "Monkeypatched init_device_mesh for TPU topology awareness",
+          file=sys.stderr,
+      )
 
   # Register the Kineto backend.
   from torch_tpu._internal import profiler  # pylint: disable=g-import-not-at-top

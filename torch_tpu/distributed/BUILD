@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_cc_library",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -215,6 +220,14 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Support",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "distributed",
+    srcs = ["__init__.py"],
+    deps = [
+        "//torch_tpu/_internal/distributed:topology",
     ],
 )
 

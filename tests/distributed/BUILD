@@ -615,4 +615,15 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "topology_test",
+    srcs = ["topology_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//torch_tpu",
+        "//torch_tpu/_internal/distributed:topology",
+        "//torch_tpu/distributed",
+    ],
+)
+
 torch_tpu_package_end()
