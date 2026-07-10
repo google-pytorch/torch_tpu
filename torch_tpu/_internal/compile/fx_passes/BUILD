@@ -36,4 +36,22 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "pass_utils",
+    srcs = ["pass_utils.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "tpu_scoped_compilation",
+    srcs = ["tpu_scoped_compilation.py"],
+    deps = [
+        ":pass_utils",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()

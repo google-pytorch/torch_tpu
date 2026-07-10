@@ -81,6 +81,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
+        "//torch_tpu/_internal/compile/fx_passes:tpu_scoped_compilation",
         "//torch_tpu/_internal/utils",
     ],
 )

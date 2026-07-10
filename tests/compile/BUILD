@@ -379,4 +379,37 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "pass_utils_test",
+    srcs = ["pass_utils_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile/fx_passes:pass_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "tpu_scoped_compilation_test",
+    srcs = ["tpu_scoped_compilation_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/compile/fx_passes:pass_utils",
+        "//torch_tpu/_internal/compile/fx_passes:tpu_scoped_compilation",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
 torch_tpu_package_end()

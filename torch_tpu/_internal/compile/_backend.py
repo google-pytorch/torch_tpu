@@ -47,6 +47,7 @@ import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
+from torch_tpu._internal.compile.fx_passes import tpu_scoped_compilation
 from torch_tpu._internal.utils import utils
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
@@ -284,6 +285,7 @@ class TpuBackend:
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[compiler.CompiledArtifact] = []
 
+  @tpu_scoped_compilation.TpuScopedCompilation
   def __call__(
       self,
       graph_module: torch.fx.GraphModule,
