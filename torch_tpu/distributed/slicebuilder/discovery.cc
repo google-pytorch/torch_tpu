@@ -114,15 +114,16 @@ GetDistributedWorkerConfiguration() {
                       GetRequiredEnvOnce<kTpuSlicebuilderAddressesEnvVar>());
 
   std::vector<std::string> addresses = absl::StrSplit(sb_addrs, ',');
-  if (rank < 0 || rank >= addresses.size()) {
+  int slice_rank = rank % addresses.size();
+  if (slice_rank < 0 || slice_rank >= addresses.size()) {
     return TT_ERROR(error::kFailedPrecondition)
-           << "RANK " << rank << " is out of bounds for "
+           << "Slice rank " << slice_rank << " is out of bounds for "
            << kTpuSlicebuilderAddressesEnvVar << " (size " << addresses.size()
            << ")";
   }
 
   // Get the local port.
-  std::string my_addr = addresses[rank];
+  std::string my_addr = addresses[slice_rank];
   std::vector<std::string> my_parts = absl::StrSplit(my_addr, ':');
   if (my_parts.size() != 2) {
     return TT_ERROR(error::kFailedPrecondition)

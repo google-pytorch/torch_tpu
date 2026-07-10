@@ -31,7 +31,9 @@ namespace torch_tpu {
 
 absl::Status InitializeDistributedEnvironment(
     const DistributedWorkerConfiguration& config) {
-  SetEnv(kCloudTpuTaskIdEnvVar, absl::StrCat(config.rank));
+  std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
+  int slice_rank = config.rank % addresses.size();
+  SetEnv(kCloudTpuTaskIdEnvVar, absl::StrCat(slice_rank));
   SetEnv(kTpuVisibleChipsEnvVar, absl::StrCat(config.local_rank));
 
   std::vector<std::string> topology_dims = absl::StrSplit(config.topology, ',');

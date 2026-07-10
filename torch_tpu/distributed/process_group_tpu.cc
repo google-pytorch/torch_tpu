@@ -1466,12 +1466,15 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
     at::Tensor subgroups = at::zeros({world_size, group_size},
                                      at::device(at::kCPU).dtype(at::kLong));
 
-    // This process knows the members of its own subgroup, thanks to
-    // c10d::Store.
-    ABSL_CHECK_EQ(group_size, rank_to_device_id_.size())  // CRASH_OK
-        << "Inconsisent device subgroup. This is a bug.";
+    auto it = std::find(device_ids_.begin(), device_ids_.end(),
+                        addressable_device_id_);
+    TT_CHECK_THROW(it != device_ids_.end(), error::kInternal)
+        << "addressable device ID " << addressable_device_id_
+        << " not found in device list: " << ToString(device_ids_);
+    int64_t addressable_device_idx = std::distance(device_ids_.begin(), it);
+
     for (int i = 0; i < group_size; ++i) {
-      subgroups.index({addressable_device_id_, i}) = rank_to_device_id_[i];
+      subgroups.index({addressable_device_idx, i}) = rank_to_device_id_[i];
     }
     subgroups = subgroups.to(at::device(GetPrivateUse1DeviceType()));
 
