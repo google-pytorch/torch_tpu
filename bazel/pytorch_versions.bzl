@@ -43,3 +43,13 @@ EXTRA_PYTORCH_VERSIONS = [
 # Every PyTorch version the wheel is built against -- the default plus the
 # extras -- one thin glue `.so` each.
 WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
+
+# Intermediate patch releases the wheel ships no exact glue for: earlier
+# patches of a minor whose latest patch is in WHEEL_TORCH_VERSIONS. The
+# runtime dispatch loader serves these from the same-minor glue, relying on
+# PyTorch's ABI being stable across patch releases; the
+# `intermediate_patch_abi` nox session (noxfile.py) proves that stability in
+# practice for each entry here.
+INTERMEDIATE_PATCH_VERSIONS = [
+    "2.12.0",
+]

@@ -228,11 +228,3 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/sync",
     ],
 )
-
-# The within-minor PyTorch ABI check (that a same-minor glue serves an
-# intermediate patch we ship no exact glue for) is NOT a bazel test: it installs
-# non-default torch patches into throwaway venvs, which bazel's wheel-test venv
-# cannot provide, and we do not want bazel driving a hand-rolled venv. It is a
-# standalone entrypoint, ci/wheel/check_intermediate_patch_abi.py, run against
-# the built wheel from .github/workflows/build_wheel.yml.
-exports_files(["check_intermediate_patch_abi.py"])

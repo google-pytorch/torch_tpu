@@ -178,17 +178,40 @@ jobs:
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
-      # Confirm each intermediate PyTorch patch (one we ship no exact glue for)
-      # loads its same-minor glue. This installs non-default torch into throwaway
-      # venvs, which bazel's wheel-test venv cannot provide, so it is a standalone
-      # entrypoint rather than a bazel test. Only meaningful for the standard
-      # wheel against the default Python, where the intermediate torch wheels
-      # exist.
-      - name: Verify within-minor PyTorch ABI
-        if: matrix.wheel_version == 'standard' && matrix.python_version == needs.setup.outputs.default_python_version
+
+  # Confirm each intermediate PyTorch patch (one we ship no exact glue for) is
+  # served by its same-minor glue: the nox session runs the CPU smoke tests
+  # once per entry in INTERMEDIATE_PATCH_VERSIONS (bazel/pytorch_versions.bzl),
+  # all within this single job. The glue is linked with `-z now`, so an
+  # ABI-incompatible glue fails the autoload import outright. Nothing here is
+  # TPU-specific, so it runs on a CPU runner against the default Python.
+  test_wheel_intermediate_patches:
+    name: "Test wheel on intermediate PyTorch patches (Python ${{ needs.setup.outputs.default_python_version }})"
+    needs: [build_wheels, setup]
+    runs-on: linux-x86-n4-16
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
+      # container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
         run: |
-          WHEEL=$(ls "$(pwd)"/dist/*.whl | head -n 1)
-          python3 ci/wheel/check_intermediate_patch_abi.py --wheel "$WHEEL"
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${{ needs.setup.outputs.default_python_version }}" | tr -d '.')
+          gcloud storage cp "${{ needs.build_wheels.outputs.gcs_wheel_dir }}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Run smoke tests against intermediate patches via nox
+        run: uvx nox --force-python ${{ needs.setup.outputs.default_python_version }} -s intermediate_patch_abi
 
   test_wheels_tpu:
     name: Test wheel on ${{ matrix.custom_name || 'TPU' }} (Python ${{ matrix.python_version }})

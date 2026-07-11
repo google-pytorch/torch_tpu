@@ -23,7 +23,6 @@ Details on configuration can be found at: https://nox.thea.codes/
 
 from collections.abc import Mapping, Sequence
 import pathlib
-import re
 from typing import Final
 
 import nox
@@ -54,25 +53,32 @@ def format(session: nox.Session) -> None:
   session.run("ci/tools/clang_format.sh", "format", external=True)
 
 
-def _newest_supported_torch() -> str:
-  """Return the newest PyTorch version the wheel ships a glue for.
+def _load_pytorch_versions() -> Mapping[str, object]:
+  """Load the torch-version source of truth from bazel/pytorch_versions.bzl.
 
-  Parsed out of the `WHEEL_TORCH_VERSIONS` source of truth in
-  bazel/pytorch_versions.bzl so the smoke tests track it automatically.
+  That file is deliberately data-only (plain assignments, no `load()`)
+  precisely so that it can be parsed as Python as well as Starlark.
   """
-  text = pathlib.Path("bazel/pytorch_versions.bzl").read_text()
-  default = re.search(
-      r'^DEFAULT_TORCH_VERSION = "([0-9.]+)"', text, re.MULTILINE
+  namespace: dict[str, object] = {}
+  bzl = pathlib.Path(__file__).parent / "bazel" / "pytorch_versions.bzl"
+  exec(bzl.read_text(), namespace)  # pylint: disable=exec-used
+  return namespace
+
+
+_PYTORCH_VERSIONS: Final[Mapping[str, object]] = _load_pytorch_versions()
+_WHEEL_TORCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
+    "WHEEL_TORCH_VERSIONS"
+]
+_INTERMEDIATE_PATCH_VERSIONS: Final[Sequence[str]] = _PYTORCH_VERSIONS[
+    "INTERMEDIATE_PATCH_VERSIONS"
+]
+
+
+def _newest_supported_torch() -> str:
+  """Return the newest PyTorch version the wheel ships a glue for."""
+  return max(
+      _WHEEL_TORCH_VERSIONS, key=lambda v: tuple(map(int, v.split(".")))
   )
-  extras_block = re.search(
-      r"^EXTRA_PYTORCH_VERSIONS = \[(.*?)\]", text, re.MULTILINE | re.DOTALL
-  )
-  if default is None or extras_block is None:
-    raise RuntimeError(
-        "Could not parse torch versions from bazel/pytorch_versions.bzl"
-    )
-  versions = [default.group(1), *re.findall(r'"([0-9.]+)"', extras_block.group(1))]
-  return max(versions, key=lambda v: tuple(map(int, v.split("."))))
 
 
 def _dist_wheel(session: nox.Session) -> pathlib.Path:
@@ -104,7 +110,7 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
   dependency set together, then the autoload smoke test for the given device
   is run against the resulting environment.
   """
-  install_args = [str(_dist_wheel(session)), "pytest>=9"]
+  install_args: list[str] = []
   if (index := _TORCH_INDEXES[torch_variant]) is not None:
     # Unlike pip, uv gives --extra-index-url priority over the default index
     # and resolves each package from the first index that carries it, so
@@ -117,7 +123,36 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
     # An unconstrained resolve may pick a torch newer than any the wheel
     # ships a glue for, which fails to load; pin to the newest supported one.
     install_args.append(f"torch=={_newest_supported_torch()}")
-  session.install(*install_args)
+  _install_and_run_smoke_tests(session, device, *install_args)
+
+
+@nox.session
+@nox.parametrize("torch_version", _INTERMEDIATE_PATCH_VERSIONS)
+def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
+  """Run the smoke tests against an intermediate PyTorch patch.
+
+  The wheel ships one glue per supported PyTorch minor at its latest patch,
+  relying on PyTorch's ABI being stable across patch releases so the dispatch
+  loader can serve, e.g., a torch 2.12.0 install from the 2.12.1 glue. This
+  session proves that stability in practice: it installs the intermediate
+  patch alongside the built wheel and runs the CPU smoke tests against it.
+  The glue is linked with ``-z now``, so an ABI-incompatible glue fails the
+  autoload import outright with an undefined-symbol error.
+  """
+  _install_and_run_smoke_tests(
+      session,
+      "cpu",
+      f"torch=={torch_version}",
+      "--extra-index-url",
+      _TORCH_INDEXES["cpu"],
+  )
+
+
+def _install_and_run_smoke_tests(
+    session: nox.Session, device: str, *install_args: str
+) -> None:
+  """Install the dist/ wheel plus install_args, then run the autoload tests."""
+  session.install(str(_dist_wheel(session)), "pytest>=9", *install_args)
   # Mirrors the env of the corresponding bazel target in tests/BUILD: the
   # xla_cpu backend only registers when explicitly allowed.
   env = {"TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1"} if device == "cpu" else {}
