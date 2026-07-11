@@ -5,6 +5,8 @@ bazel-*
 user.bazelrc
 # Generated Python artifacts.
 *.pyc
+# Built wheels, consumed by the nox smoke-test sessions.
+dist/
 */**/__pycache__
 # Vim swap files (used for recovery).
 .*.swp
