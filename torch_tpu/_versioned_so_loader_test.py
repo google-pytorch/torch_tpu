@@ -51,6 +51,30 @@ class ResolveSuffixTest(parameterized.TestCase):
     with self.assertRaisesRegex(ImportError, "predates"):
       loader.resolve_suffix("2_9_0", {"2_11_0", "2_12_0"})
 
+  def test_dev_build_gets_the_nightly_glue(self):
+    self.assertEqual(
+        loader.resolve_suffix(
+            "2_14_0", {"2_11_0", "2_12_0", "nightly"}, running_is_dev=True
+        ),
+        "nightly",
+    )
+
+  def test_dev_build_without_a_nightly_glue_gets_the_newest_release_glue(self):
+    self.assertEqual(
+        loader.resolve_suffix(
+            "2_14_0", {"2_11_0", "2_12_0"}, running_is_dev=True
+        ),
+        "2_12_0",
+    )
+
+  def test_release_never_gets_the_nightly_glue(self):
+    # Even a release newer than every numbered glue: the nightly glue tracks a
+    # transient dev snapshot, not the eventual release.
+    self.assertEqual(
+        loader.resolve_suffix("2_14_0", {"2_11_0", "2_12_0", "nightly"}),
+        "2_12_0",
+    )
+
   def test_comparison_is_by_semver_not_lexicographic(self):
     # "2_11_10" > "2_11_9" numerically although not lexicographically.
     self.assertEqual(
@@ -63,6 +87,20 @@ class ResolveSuffixTest(parameterized.TestCase):
   def test_undetectable_running_version_with_built_glues_raises(self):
     with self.assertRaises(ImportError):
       loader.resolve_suffix(None, {"2_11_0", "2_12_0"})
+
+
+class IsDevVersionTest(parameterized.TestCase):
+
+  @parameterized.parameters(
+      ("2.14.0.dev20260711+cpu", True),
+      ("2.13.0+cpu", False),
+      ("2.13.0", False),
+      # An rc is a released ABI candidate, not a nightly snapshot.
+      ("2.13.0rc1", False),
+      (None, False),
+  )
+  def test_is_dev_version(self, version, expected):
+    self.assertEqual(loader.is_dev_version(version), expected)
 
 
 class DiscoverBuiltSuffixesTest(absltest.TestCase):
@@ -82,6 +120,15 @@ class DiscoverBuiltSuffixesTest(absltest.TestCase):
 
     self.assertEqual(
         loader.discover_built_suffixes(root), frozenset({"2_11_0", "2_12_0"})
+    )
+
+  def test_finds_the_nightly_glue(self):
+    root = pathlib.Path(self.create_tempdir().full_path)
+    self._touch(root, "_internal/env_2_11_0.so")
+    self._touch(root, "_internal/env_nightly.so")
+
+    self.assertEqual(
+        loader.discover_built_suffixes(root), frozenset({"2_11_0", "nightly"})
     )
 
   def test_no_versioned_glues_returns_empty(self):

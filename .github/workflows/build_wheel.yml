@@ -100,6 +100,11 @@ jobs:
         uses: ./.github/actions/build-wheel
         with:
           python_version: ${{ matrix.python_version }}
+          # The oldest Python version builds with the release config (no
+          # PyTorch-nightly glue), so both wheel flavors are exercised in
+          # presubmit; the nightly smoke tests only run against the default
+          # Python's wheel, which keeps the nightly glue.
+          bazel_config: ${{ matrix.python_version == '3.11' && 'wheel_release' || 'wheel_common' }}
 
   test_wheels_cpu:
     name: "Test wheel on ${{ matrix.custom_name || 'CPU' }} (Python ${{ matrix.python_version }})"
@@ -125,9 +130,11 @@ jobs:
             custom_name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n4-16
             nox_smoke_test: "cpu-nightly"
-            # Nightly torch is typically ahead of every glue the wheel ships,
-            # so this cannot gate PRs yet; it goes green (and can be promoted
-            # to a hard gate) once nightly-compatible glue lands.
+            # The wheel ships a nightly glue built against the dev snapshot
+            # pinned in requirements/requirements_torch_nightly.txt, but this
+            # installs the *latest* nightly, which can drift ABI-incompatibly
+            # from that snapshot between lock refreshes -- so this stays a
+            # soft failure.
             allowed_to_fail: true
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.allowed_to_fail }}
@@ -238,9 +245,11 @@ jobs:
             runner: linux-x86-ct5lp-224-8tpu
             custom_name: "TPU v5 (PyTorch Nightly)"
             nox_smoke_test: "tpu-nightly"
-            # Nightly torch is typically ahead of every glue the wheel ships,
-            # so this cannot gate PRs yet; it goes green (and can be promoted
-            # to a hard gate) once nightly-compatible glue lands.
+            # The wheel ships a nightly glue built against the dev snapshot
+            # pinned in requirements/requirements_torch_nightly.txt, but this
+            # installs the *latest* nightly, which can drift ABI-incompatibly
+            # from that snapshot between lock refreshes -- so this stays a
+            # soft failure.
             allowed_to_fail: true
     runs-on: ${{ matrix.runner || 'linux-x86-ct5lp-224-8tpu' }}
     continue-on-error: ${{ matrix.allowed_to_fail }}

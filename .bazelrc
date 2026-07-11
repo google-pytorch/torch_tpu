@@ -374,6 +374,12 @@ build:wheel_common --config=remote_execution_readonly
 # through the torch_version-reset transition so it is built once and shared.
 build:wheel_common --//:wheel_build=True
 
+# Release-channel wheel: wheel_common without the PyTorch-nightly glue. Use this
+# for artifacts published to an index (the nightly glue is built against a
+# transient dev snapshot and does not belong in a release).
+build:wheel_release --config=wheel_common
+build:wheel_release --//:include_nightly_glue=False
+
 # Common config for testing the wheel
 test:wheel_common_test --config=wheel_common
 test:wheel_common_test --test_output=errors

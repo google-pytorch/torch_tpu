@@ -87,3 +87,26 @@ for version in $(uv run bazel/pytorch_versions.py EXTRA_PYTORCH_VERSIONS); do
 torch==${version}+cpu
 EOF
 done
+
+# Torch-only lock for the nightly glue. Unlike the release locks above this is
+# not pinned by us: each run re-resolves to the newest dev build on the nightly
+# index and pins that, so refreshing the nightly snapshot the glue is built
+# against is just re-running this script. The nightly index only carries
+# recent snapshots, so this needs re-running periodically anyway.
+REQUIREMENTS_FILE="requirements/requirements_torch_nightly.txt"
+echo "Generating torch-only lock for PyTorch nightly -> $REQUIREMENTS_FILE"
+if [ -f "$REQUIREMENTS_FILE" ]; then
+  rm "$REQUIREMENTS_FILE"
+fi
+
+uv pip compile - \
+  --no-deps \
+  --index-url https://pypi.org/simple \
+  --extra-index-url https://download.pytorch.org/whl/nightly/cpu \
+  --python-platform "$PYTHON_PLATFORM" \
+  --index-strategy unsafe-best-match \
+  --prerelease allow \
+  --generate-hashes \
+  --output-file "$REQUIREMENTS_FILE" <<EOF
+torch
+EOF

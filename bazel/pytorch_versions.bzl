@@ -46,9 +46,26 @@ EXTRA_PYTORCH_VERSIONS = [
     "2.13.0",
 ]
 
-# Every PyTorch version the wheel is built against -- the default plus the
-# extras -- one thin glue `.so` each.
+# Every released PyTorch version the wheel is built against -- the default plus
+# the extras -- one thin glue `.so` each.
 WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
+
+# The PyTorch nightly channel, treated as one more glue "version" throughout
+# the build (glue package glue_nightly, config setting //:torch_nightly, pip
+# hub torch_tpu_pypi_nightly, artifacts like env_nightly.so). The snapshot it
+# is built against is pinned in requirements/requirements_torch_nightly.txt;
+# re-running requirements/lock_environments.sh advances it to the newest dev
+# build. Unlike the release glues it is optional in the wheel: the
+# //:include_nightly_glue flag (on by default, off under --config
+# wheel_release) selects it in or out, and at runtime it is only ever chosen
+# when the installed torch is itself a dev build.
+NIGHTLY_TORCH_VERSION = "nightly"
+
+# Every glue the build can produce: the released versions plus the nightly
+# channel. This is what the per-glue build machinery (target fan-out, glue
+# packages, torch shim selects) iterates over; WHEEL_TORCH_VERSIONS remains
+# the released subset with numeric-version semantics.
+GLUE_TORCH_VERSIONS = WHEEL_TORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
 # Released PyTorch versions the wheel ships no exact glue for; the runtime
 # dispatch serves each from the newest older glue. Every released version in
