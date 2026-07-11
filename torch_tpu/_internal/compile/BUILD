@@ -152,6 +152,37 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_test(
+    name = "compiled_mode_test",
+    srcs = ["compiled_mode_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    deps = [
+        ":compiled_mode",
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:compilation_spec",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/eager:tpu_hooks",
+        "//torch_tpu/ops/copy_from:cpu_to_tpu",
+        "//torch_tpu/pjrt:pjrt_state",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/tsl/platform:statusor",
+    ],
+)
+
 # This library is not used directly, but is needed for go/cclean. Without
 # this rule, cclean complains that tpu_torch_compile.cc has no rule depending on it.
 torch_tpu_cc_library(
