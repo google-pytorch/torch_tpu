@@ -182,7 +182,7 @@ _TORCH_WHL_MODIFICATIONS = {
 # above -- this list is kept in sync by hand. requirements/lock_environments.sh
 # reads the same .bzl to regenerate the torch-only locks.
 EXTRA_PYTORCH_VERSIONS = [
-    "2.12.1",
+    "2.12.0",
 ]
 
 [pip.parse(

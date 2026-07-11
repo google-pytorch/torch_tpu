@@ -21,14 +21,17 @@ torch_tpu bundles a thin ``.so`` glue per supported PyTorch build, each named
 and an ``ExtensionProxyLoader`` bridges the artifact's version-suffixed filename
 to the unversioned ``PyInit_<module>`` symbol the C++ code actually exports.
 
-Selection policy: there is no ABI-stability guarantee across PyTorch releases --
-even patch releases -- so an exact ``major.minor.patch`` glue is preferred. If
-none was built for the installed PyTorch, the newest glue we shipped is used as
-a best effort (with a warning); loading it eagerly binds its symbols, so an
-ABI-incompatible glue fails loudly at import rather than crashing later. If the
-installed PyTorch version cannot be determined while versioned glues exist, that
-is an error. When no versioned glues are present at all (e.g. an unversioned
-developer build) the hook is not installed and imports resolve normally.
+Selection policy: a new glue is added to the wheel only when a PyTorch release
+breaks ABI compatibility with the previous glue, so each glue serves every
+release from its own version up to (but not including) the next glue's -- and
+the newest glue serves everything after it, including releases newer than any
+we built for. The loader therefore picks the newest glue whose version is <=
+the installed PyTorch. Loading eagerly binds its symbols (the glues are linked
+with ``-z now``), so an ABI-incompatible glue fails loudly at import rather
+than crashing later. If the installed PyTorch version cannot be determined
+while versioned glues exist, or predates every built glue, that is an error.
+When no versioned glues are present at all (e.g. an unversioned developer
+build) the hook is not installed and imports resolve normally.
 """
 
 import collections.abc
@@ -39,7 +42,6 @@ import importlib.util
 import pathlib
 import re
 import sys
-import warnings
 
 _INTERNAL_PREFIX = "torch_tpu._internal."
 
@@ -86,20 +88,19 @@ def resolve_suffix(
 ) -> str | None:
   """Chooses the glue suffix to load, or None to disable dispatch.
 
-  Prefers an exact ``major.minor.patch`` match, then the newest patch built for
-  the same ``(major, minor)`` -- PyTorch does not guarantee ABI stability across
-  patch releases, but in practice it holds within a minor -- then, as a last
-  resort for an unsupported minor, the newest glue built at all.
+  Glues are built only for the PyTorch releases that broke ABI compatibility
+  with the previous glue, so each glue serves every release from its own
+  version up to the next glue's -- and the newest glue serves everything after
+  it. The choice is therefore the newest built glue whose version is <= the
+  running PyTorch.
 
   Raises:
     ImportError: if versioned glues exist but the installed PyTorch version
-      cannot be determined.
+      cannot be determined, or predates every built glue.
   """
   if not built:
     # Unversioned build; leave imports to the normal finders.
     return None
-  if running is not None and running in built:
-    return running
 
   supported = ", ".join(s.replace("_", ".") for s in sorted(built, key=_parse))
   if running is None:
@@ -109,23 +110,14 @@ def resolve_suffix(
         f"for PyTorch: {supported}."
     )
 
-  running_minor = _parse(running)[:2]
-  same_minor = [b for b in built if _parse(b)[:2] == running_minor]
-  if same_minor:
-    chosen = max(same_minor, key=_parse)
-    reason = "the same minor"
-  else:
-    chosen = max(built, key=_parse)
-    reason = "the newest available"
-  warnings.warn(
-      f"torch_tpu has no extension module built for PyTorch "
-      f"{running.replace('_', '.')}; falling back to {reason} build "
-      f"({chosen.replace('_', '.')}). This may fail to load or misbehave if the "
-      f"PyTorch ABI has changed. Built for: {supported}.",
-      RuntimeWarning,
-      stacklevel=3,
-  )
-  return chosen
+  candidates = [b for b in built if _parse(b) <= _parse(running)]
+  if not candidates:
+    raise ImportError(
+        "torch_tpu has no extension module compatible with PyTorch "
+        f"{running.replace('_', '.')}: it predates the oldest supported "
+        f"release. Extensions are available for PyTorch: {supported}."
+    )
+  return max(candidates, key=_parse)
 
 
 class ExtensionProxyLoader(importlib.abc.Loader):

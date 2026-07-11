@@ -15,7 +15,6 @@
 """Tests for the version-dispatch selection logic."""
 
 import pathlib
-import warnings
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -29,38 +28,37 @@ class ResolveSuffixTest(parameterized.TestCase):
     self.assertIsNone(loader.resolve_suffix("2_12_0", []))
     self.assertIsNone(loader.resolve_suffix(None, []))
 
-  def test_exact_match_is_preferred(self):
+  def test_exact_match_is_chosen(self):
     self.assertEqual(
         loader.resolve_suffix("2_12_0", {"2_11_0", "2_12_0", "2_13_0"}),
         "2_12_0",
     )
 
-  def test_no_exact_match_falls_back_to_newest_patch_of_same_minor(self):
-    with self.assertWarns(RuntimeWarning):
-      resolved = loader.resolve_suffix("2_12_5", {"2_11_0", "2_12_0"})
-    self.assertEqual(resolved, "2_12_0")
+  def test_release_between_glues_gets_the_newest_older_glue(self):
+    # 2.12.5 postdates the 2.12.0 glue and predates the 2.13.0 one, so the
+    # 2.12.0 glue (which serves everything up to the next ABI break) is chosen.
+    self.assertEqual(
+        loader.resolve_suffix("2_12_5", {"2_11_0", "2_12_0", "2_13_0"}),
+        "2_12_0",
+    )
 
-  def test_same_minor_is_preferred_over_a_newer_other_minor(self):
-    # On 2.11.3, a 2.11.x glue is chosen even though 2.13.0 is newer overall.
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      resolved = loader.resolve_suffix(
-          "2_11_3", {"2_11_9", "2_12_0", "2_13_0"}
-      )
-    self.assertEqual(resolved, "2_11_9")
+  def test_release_newer_than_every_glue_gets_the_newest(self):
+    self.assertEqual(
+        loader.resolve_suffix("2_14_0", {"2_11_0", "2_12_0"}), "2_12_0"
+    )
 
-  def test_unsupported_minor_falls_back_to_newest_overall(self):
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      resolved = loader.resolve_suffix("2_9_0", {"2_11_0", "2_12_0"})
-    self.assertEqual(resolved, "2_12_0")
+  def test_release_older_than_every_glue_raises(self):
+    with self.assertRaisesRegex(ImportError, "predates"):
+      loader.resolve_suffix("2_9_0", {"2_11_0", "2_12_0"})
 
-  def test_newest_is_by_semver_not_lexicographic(self):
-    # No same-minor match (2.20) -> newest overall, compared numerically.
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      resolved = loader.resolve_suffix("2_20_0", {"2_11_0", "2_11_10", "2_9_0"})
-    self.assertEqual(resolved, "2_11_10")
+  def test_comparison_is_by_semver_not_lexicographic(self):
+    # "2_11_10" > "2_11_9" numerically although not lexicographically.
+    self.assertEqual(
+        loader.resolve_suffix("2_11_10", {"2_11_9", "2_11_10"}), "2_11_10"
+    )
+    self.assertEqual(
+        loader.resolve_suffix("2_11_12", {"2_11_2", "2_11_10"}), "2_11_10"
+    )
 
   def test_undetectable_running_version_with_built_glues_raises(self):
     with self.assertRaises(ImportError):

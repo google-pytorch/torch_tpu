@@ -15,9 +15,14 @@
 """Single source of truth for the PyTorch versions the multi-ABI wheel targets.
 
 The wheel ships one thin extension glue per version in `WHEEL_TORCH_VERSIONS`,
-all sharing a single XLA/MLIR base library. One entry per supported PyTorch
-minor, at its latest patch (see the runtime dispatch in
-`torch_tpu/_versioned_so_loader.py`).
+all sharing a single XLA/MLIR base library. A version is added here only when
+that PyTorch release breaks ABI compatibility with the previous glue; the
+runtime dispatch (`torch_tpu/_versioned_so_loader.py`) then serves each install
+from the newest glue at or below its version, so every release between two
+entries -- and everything after the last one -- loads the preceding glue. The
+`intermediate_patch_abi` nox sessions keep the list honest: when a release in
+INTERMEDIATE_PATCH_VERSIONS starts failing them, it broke ABI and must move
+into this list.
 
 This file is deliberately data-only (plain assignments, no `load()`): it is
 loaded by Starlark (`build_files/torch_version.bzl`, and thence
@@ -37,19 +42,19 @@ DEFAULT_TORCH_VERSION = "2.11.0"
 # is ABI-independent and shared, so each extra version needs only a torch-only
 # lock (requirements_torch_<version>.txt) and its own pip hub in MODULE.bazel.
 EXTRA_PYTORCH_VERSIONS = [
-    "2.12.1",
+    "2.12.0",
 ]
 
 # Every PyTorch version the wheel is built against -- the default plus the
 # extras -- one thin glue `.so` each.
 WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
 
-# Intermediate patch releases the wheel ships no exact glue for: earlier
-# patches of a minor whose latest patch is in WHEEL_TORCH_VERSIONS. The
-# runtime dispatch loader serves these from the same-minor glue, relying on
-# PyTorch's ABI being stable across patch releases; the
-# `intermediate_patch_abi` nox session (noxfile.py) proves that stability in
-# practice for each entry here.
+# Released PyTorch versions the wheel ships no exact glue for; the runtime
+# dispatch serves each from the newest older glue. Every released version in
+# the supported range that is not in WHEEL_TORCH_VERSIONS belongs here, so the
+# `intermediate_patch_abi` nox sessions (noxfile.py) prove the served glue
+# really is ABI-compatible -- a failure here means the version broke ABI and
+# needs a glue of its own.
 INTERMEDIATE_PATCH_VERSIONS = [
-    "2.12.0",
+    "2.12.1",
 ]

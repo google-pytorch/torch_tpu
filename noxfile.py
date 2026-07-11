@@ -120,8 +120,10 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
   if torch_variant == "nightly":
     install_args.append("--prerelease=allow")
   else:
-    # An unconstrained resolve may pick a torch newer than any the wheel
-    # ships a glue for, which fails to load; pin to the newest supported one.
+    # Pin so the session is deterministic and exercises the newest glue as an
+    # exact match. Releases without an exact glue are covered by the
+    # intermediate_patch_abi sessions, and newer-than-any-glue by the nightly
+    # variant (the dispatch loader serves both from the nearest older glue).
     install_args.append(f"torch=={_newest_supported_torch()}")
   _install_and_run_smoke_tests(session, device, *install_args)
 
@@ -129,15 +131,17 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
 @nox.session
 @nox.parametrize("torch_version", _INTERMEDIATE_PATCH_VERSIONS)
 def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
-  """Run the smoke tests against an intermediate PyTorch patch.
+  """Run the smoke tests against an intermediate PyTorch release.
 
-  The wheel ships one glue per supported PyTorch minor at its latest patch,
-  relying on PyTorch's ABI being stable across patch releases so the dispatch
-  loader can serve, e.g., a torch 2.12.0 install from the 2.12.1 glue. This
-  session proves that stability in practice: it installs the intermediate
-  patch alongside the built wheel and runs the CPU smoke tests against it.
-  The glue is linked with ``-z now``, so an ABI-incompatible glue fails the
-  autoload import outright with an undefined-symbol error.
+  The wheel ships a glue only for the PyTorch releases that broke ABI
+  compatibility with the previous glue; the dispatch loader serves every other
+  release from the newest older glue (e.g. a torch 2.12.0 install from the
+  2.11.0 glue). This session proves that compatibility in practice: it
+  installs the intermediate release alongside the built wheel and runs the
+  CPU smoke tests against it. The glue is linked with ``-z now``, so an
+  ABI-incompatible glue fails the autoload import outright with an
+  undefined-symbol error -- which means the release broke ABI and needs a
+  glue of its own in WHEEL_TORCH_VERSIONS.
   """
   _install_and_run_smoke_tests(
       session,
