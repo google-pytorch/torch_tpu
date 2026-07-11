@@ -23,9 +23,11 @@
 #include "ATen/ops/result_type.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/ChloOps.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -40,16 +42,17 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/precision_context.h"
 
 namespace torch_tpu {
 namespace {
 
 static absl::StatusOr<mlir::MlirOp> BuildRaggedDotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
-    mlir::ElementType output_element_type) {
+    mlir::ElementType output_element_type,
+    mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
   const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  // TODO(pfilipiuk): Add precision to the API.
   // Assuming mk, gkn, g -> mn
   auto dimension_numbers = mlir::chlo::RaggedDotDimensionNumbersAttr::get(
       &lhs.getContext(), /*lhsBatchingDimensions=*/{},
@@ -61,8 +64,16 @@ static absl::StatusOr<mlir::MlirOp> BuildRaggedDotShlo(
   mlir::Type out_type = mlir::makeTensorType(
       lhs.getContext(), {lhs_type.getShape()[0], rhs_type.getShape()[2]},
       output_element_type);
+
+  mlir::chlo::Precision chlo_precision =
+      static_cast<mlir::chlo::Precision>(precision);
+  auto precision_attr =
+      mlir::chlo::PrecisionAttr::get(&lhs.getContext(), chlo_precision);
+  auto precision_config =
+      mlir::ArrayAttr::get(&lhs.getContext(), {precision_attr, precision_attr});
+
   return mlir::chlo::RaggedDot(out_type, lhs, rhs, group_sizes,
-                               dimension_numbers);
+                               dimension_numbers, precision_config);
 }
 
 static absl::StatusOr<DeviceBufferRef> RaggedDotCommon(
@@ -85,9 +96,12 @@ static absl::StatusOr<DeviceBufferRef> RaggedDotCommon(
   at::ScalarType out_scalar_type = at::result_type(lhs, rhs);
   TT_ASSIGN_OR_RETURN(auto out_dtype,
                       ConvertTo<mlir::ElementType>(out_scalar_type));
-  auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+  const auto current_precision = GetAndAddPrecisionTo(param_keys);
+  auto op_builder = [out_dtype,
+                     current_precision](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
     auto& [lhs, rhs, group_sizes] = inputs;
-    return BuildRaggedDotShlo(lhs, rhs, group_sizes, out_dtype);
+    return BuildRaggedDotShlo(lhs, rhs, group_sizes, out_dtype,
+                              current_precision);
   };
   return DispatchOp<3>(std::move(op_builder), {lhs, rhs, group_sizes},
                        {.out_dtype = out_dtype,

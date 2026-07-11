@@ -36,6 +36,7 @@ torch_tpu_cc_library(
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:precision_context",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
@@ -44,6 +45,7 @@ torch_tpu_cc_library(
         "@stablehlo//:chlo_builder",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_ops",
     ],
 )
 

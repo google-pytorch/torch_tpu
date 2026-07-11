@@ -27,6 +27,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/util/SmallVector.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -99,6 +100,13 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   const bool a_is_2d = self_type.getRank() == 2;
   const bool b_is_2d = mat2_type.getRank() == 2;
 
+  mlir::chlo::Precision chlo_precision =
+      static_cast<mlir::chlo::Precision>(precision);
+  auto precision_attr =
+      mlir::chlo::PrecisionAttr::get(&self_op.getContext(), chlo_precision);
+  auto precision_config = mlir::ArrayAttr::get(
+      &self_op.getContext(), {precision_attr, precision_attr});
+
   if (a_is_2d && !b_is_2d) {
     // Case 1 (2D x 3D with offs): lhs first dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
@@ -129,7 +137,7 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
         self_op.getContext(),
         {self_type.getShape()[0], mat2_type.getShape()[2]}, out_dtype);
     return mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                                 dimension_numbers);
+                                 dimension_numbers, precision_config);
   } else if (!a_is_2d && b_is_2d) {
     // Case 2 (3D x 2D with offs): rhs tailing dimension is ragged (Mode 1).
     ABSL_CHECK(offs_op.has_value());  // CRASH_OK
@@ -165,7 +173,7 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
         {mat2_type.getShape()[1], self_type.getShape()[1]}, out_dtype);
     mlir::MlirOp ragged_dot =
         mlir::chlo::RaggedDot(ragged_out_type, mat2_transposed, self_transposed,
-                              group_sizes, dimension_numbers);
+                              group_sizes, dimension_numbers, precision_config);
     return mlir::stablehlo::Transpose(ragged_dot, {1, 0});
   } else if (a_is_2d && b_is_2d) {
     // Case 3 (2D x 2D with offs): contracting dimension is ragged (Mode 2).
@@ -200,7 +208,7 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
         {num_groups, self_type.getShape()[0], mat2_type.getShape()[1]},
         out_dtype);
     return mlir::chlo::RaggedDot(out_type, self_op, mat2_op, group_sizes,
-                                 dimension_numbers);
+                                 dimension_numbers, precision_config);
   } else {
     // Case 4 (3D x 3D without offs): fallback to standard batched matrix
     // multiplication (DotGeneral).
