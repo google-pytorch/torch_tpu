@@ -52,12 +52,10 @@ jobs:
         with:
           enable-cache: true
 
-      # Instead of installing 'tox' system-wide (which violates PEP 668), we use 'uvx' (uv's fast
-      # tool-runner equivalent to pipx).
-      # '--with tox-uv' injects the tox-uv plugin into a temporary, isolated sandbox environment in
-      # milliseconds. This allows tox to discover its runner back-end instantly without touching or
-      # dirtying the host runner's global python paths.
-      - name: Run Clang Format via Tox
+      # Instead of installing 'nox' system-wide (which violates PEP 668), we use 'uvx' (uv's fast
+      # tool-runner equivalent to pipx) to run it in a temporary, isolated sandbox environment
+      # without touching or dirtying the host runner's global python paths.
+      - name: Run Clang Format via Nox
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: uvx --with tox-uv tox run -e lint
+        run: uvx nox -s lint
