@@ -91,6 +91,8 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
   std::vector<DeviceBufferRef> arguments;
   // This will contain a topological sort of the internal traversal nodes.
   std::vector<SharedDeviceBufferList> execution_order;
+  // This will contain the DeferredOps corresponding to execution_order.
+  std::vector<std::shared_ptr<DeferredOp>> deferred_ops;
   // A stack of deferred nodes to process in depth first, by traversing reverse
   // edges.
   std::stack<SharedDeviceBufferList> stack;
@@ -190,11 +192,13 @@ absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
       ABSL_CHECK_EQ(stack.top(), node);  // CRASH_OK
       visited_deferred.find(node.get())->second = Color::kBlack;
       execution_order.push_back(node);
+      deferred_ops.push_back(node->deferred_op());
       stack.pop();
     }
   }
-  auto traversal = std::unique_ptr<Traversal>(new Traversal(
-      std::move(arguments), std::move(execution_order), std::move(outputs)));
+  auto traversal = std::unique_ptr<Traversal>(
+      new Traversal(std::move(arguments), std::move(execution_order),
+                    std::move(deferred_ops), std::move(outputs)));
 #ifndef NDEBUG
   if (auto status = traversal->Validate(); !status.ok()) {
     LogLines(traversal->DebugString());
@@ -255,11 +259,20 @@ Traversal::CreateFromExecutionOrder(
     }
   }
 
+  std::vector<std::shared_ptr<DeferredOp>> deferred_ops;
+  deferred_ops.reserve(execution_order.size());
+  for (const auto& node : execution_order) {
+    auto deferred_op = node->deferred_op();
+    TT_RET_CHECK(deferred_op, error::kFailedPrecondition)
+        << "DeviceBufferList in execution_order has no deferred op";
+    deferred_ops.push_back(std::move(deferred_op));
+  }
+
   auto traversal = std::unique_ptr<Traversal>(
       new Traversal(std::move(inputs),
                     std::vector<SharedDeviceBufferList>(execution_order.begin(),
                                                         execution_order.end()),
-                    std::move(outputs)));
+                    std::move(deferred_ops), std::move(outputs)));
 #ifndef NDEBUG
   if (auto status = traversal->Validate(); !status.ok()) {
     LogLines(traversal->DebugString());
@@ -282,12 +295,11 @@ GraphKey Traversal::BuildGraphKey() const {
     tensor_index_map[argument] =
         graph.AddInput(argument.dimensions(), argument.element_type());
   }
-  for (const SharedDeviceBufferList& node : execution_order()) {
-    const auto maybe_deferred_op = node->deferred_op();
-    ABSL_VLOG(1) << "[Traversal::BuildGraphKey] node: " << node.get()
-                 << " maybe_deferred_op: " << maybe_deferred_op;
-    ABSL_CHECK(maybe_deferred_op != nullptr);  // CRASH_OK
-    const DeferredOp& deferred_op = *maybe_deferred_op;
+  for (size_t i = 0; i < execution_order().size(); ++i) {
+    const auto& node = execution_order()[i];
+    const auto& deferred_op_ptr = deferred_ops_[i];
+    ABSL_CHECK(deferred_op_ptr != nullptr);  // CRASH_OK
+    const DeferredOp& deferred_op = *deferred_op_ptr;
 
     graph.AddOp(deferred_op.op_name(), deferred_op.op_param_cache_keys(),
                 deferred_op.donated_indices(),
@@ -295,10 +307,10 @@ GraphKey Traversal::BuildGraphKey() const {
                   for (const DeviceBufferRef& op_input : deferred_op.inputs()) {
                     op.AddInput(tensor_index_map.at(op_input));
                   }
-                  for (int64_t i = 0; i < node->size(); ++i) {
-                    auto output = DeviceBufferRef::Create(node, i);
+                  for (int64_t j = 0; j < node->size(); ++j) {
+                    auto output = DeviceBufferRef::Create(node, j);
                     ABSL_CHECK(output.ok())  // CRASH_OK
-                        << "Failed to create DeviceBufferRef for output: " << i;
+                        << "Failed to create DeviceBufferRef for output: " << j;
                     tensor_index_map[*output] = op.AddOutput(
                         output->dimensions(), output->element_type());
                   }
@@ -453,11 +465,11 @@ mlir::MlirOp CreateArgumentOp(mlir::func::FunctionBuilder& fb,
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
-  if (!execution_order().empty() && execution_order().back()->deferred_op()) {
+  if (!deferred_ops_.empty() && deferred_ops_.back() != nullptr) {
     // Use the python context of the last op in the execution order as the
     // module name. This will include the op that triggered materialization or
     // traversal split in the module name.
-    return &execution_order().back()->deferred_op()->op_context();
+    return &deferred_ops_.back()->op_context();
   }
   return nullptr;
 }
@@ -494,12 +506,12 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   ABSL_VLOG(2) << "[Traversal::BuildMlirModule] building MLIR ops for "
                << execution_order.size() << " deferred ops";
   std::vector<mlir::MlirOp> deferred_inputs;
-  for (const SharedDeviceBufferList& node : execution_order) {
-    // Get the deferred op we need to build.
-    const auto maybe_deferred_op = node->deferred_op();
-    TT_RET_CHECK(maybe_deferred_op, error::kInternal)
+  for (size_t i = 0; i < execution_order.size(); ++i) {
+    const auto& node = execution_order[i];
+    const auto& deferred_op_ptr = deferred_ops_[i];
+    TT_RET_CHECK(deferred_op_ptr, error::kInternal)
         << "DeviceBufferList in execution_order has no deferred op";
-    const DeferredOp& deferred_op = *maybe_deferred_op;
+    const DeferredOp& deferred_op = *deferred_op_ptr;
 
     // Get the MlirOps for all inputs.
     deferred_inputs.clear();
@@ -662,7 +674,8 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
 
   CompilationCacheKey compilation_cache_key =
       GetCacheKey(spec.compile_options_key);
-  ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
+  ABSL_LOG(INFO) << "[Compile] compilation cache key: "
+                 << compilation_cache_key;
 
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
@@ -1120,5 +1133,4 @@ absl::StatusOr<std::string> GetGraphviz(
                   "\n}\n");
   return result;
 }
-
 }  // namespace torch_tpu

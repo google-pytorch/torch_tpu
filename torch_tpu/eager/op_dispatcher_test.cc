@@ -16,8 +16,10 @@
 
 #include "torch_tpu/eager/op_dispatcher.h"
 
+#include <future>  // NOLINT(build/c++11)
 #include <optional>
 #include <string>
+#include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <vector>
 
@@ -37,6 +39,7 @@
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/eager/call_site_cache.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/eager_mode.h"
@@ -143,6 +146,113 @@ TEST(OpDispatcher, OutputCastingWithoutComputationDtype) {
   // The output should have been casted to BF16
   auto res_type = GetTensorTypeOrDie(wrapped_results[0]);
   EXPECT_EQ(res_type.getElementType(), bf16_mlir_type);
+}
+
+TEST(CallSiteCache, ThreadLocalCleanup) {
+  std::shared_ptr<const LoadedExecutableWithMetadata> dummy_exec;
+  {
+    auto dummy = std::make_shared<int>(42);
+    dummy_exec = std::shared_ptr<const LoadedExecutableWithMetadata>(
+        dummy,
+        reinterpret_cast<const LoadedExecutableWithMetadata*>(dummy.get()));
+    {
+      std::promise<absl::StatusOr<SharedLoadedExecutableWithMetadata>> p;
+      p.set_value(dummy_exec);
+      auto future = p.get_future().share();
+      CompiledKernel kernel;
+      kernel.fixed_shape_kernel = future;
+
+      std::thread t([kernel]() {
+        // clang-format off
+        thread_local  // CPP_THREAD_LOCAL_OK=performance cache is lock-free
+            CallSiteCache local_cache;
+        // clang-format on
+        CallSiteOutputShapes out_shapes;
+        // Insert the kernel into the thread-local cache.
+        local_cache.Update({}, OpParamCacheKeys::Empty(), kernel, out_shapes);
+        // The thread-local cache now holds a reference via std::shared_future.
+      });
+      t.join();
+      // Thread joins and destroys its TLS.
+    }
+  }
+  // All local handles are destroyed. The only reference should be 'dummy_exec'.
+  // If the thread-local cache leaked it, use_count will be 2. If cleaned up, it
+  // will be 1.
+  EXPECT_EQ(dummy_exec.use_count(), 1);
+}
+
+TEST(CallSiteCache, WeakReferenceLifetime) {
+  std::shared_ptr<const LoadedExecutableWithMetadata> dummy_exec;
+  CallSiteCache cache;
+  {
+    auto dummy = std::make_shared<int>(42);
+    dummy_exec = std::shared_ptr<const LoadedExecutableWithMetadata>(
+        dummy,
+        reinterpret_cast<const LoadedExecutableWithMetadata*>(dummy.get()));
+
+    std::promise<absl::StatusOr<SharedLoadedExecutableWithMetadata>> p;
+    p.set_value(dummy_exec);
+    auto future = p.get_future().share();
+    CompiledKernel kernel;
+    kernel.fixed_shape_kernel = future;
+
+    CallSiteOutputShapes out_shapes;
+    cache.Update({}, OpParamCacheKeys::Empty(), kernel, out_shapes);
+
+    CompiledKernel looked_up_kernel;
+    EXPECT_TRUE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                             out_shapes));
+    auto exec_or = looked_up_kernel.fixed_shape_kernel.get();
+    EXPECT_TRUE(exec_or.ok());
+    EXPECT_EQ(exec_or.value().get(), dummy_exec.get());
+  }
+  dummy_exec.reset();
+  CompiledKernel looked_up_kernel;
+  CallSiteOutputShapes out_shapes;
+  EXPECT_FALSE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                            out_shapes));
+}
+
+TEST(CallSiteCache, ConsecutiveMissBypass) {
+  CallSiteCache cache;
+  CompiledKernel looked_up_kernel;
+  CallSiteOutputShapes out_shapes;
+
+  // 1. Trigger 33 misses to activate bypass.
+  for (int i = 0; i < 33; ++i) {
+    EXPECT_FALSE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                              out_shapes));
+  }
+
+  // 2. Prepare a kernel to insert.
+  auto dummy = std::make_shared<int>(42);
+  auto dummy_exec = std::shared_ptr<const LoadedExecutableWithMetadata>(
+      dummy,
+      reinterpret_cast<const LoadedExecutableWithMetadata*>(dummy.get()));
+  std::promise<absl::StatusOr<SharedLoadedExecutableWithMetadata>> p;
+  p.set_value(dummy_exec);
+  auto future = p.get_future().share();
+  CompiledKernel kernel;
+  kernel.fixed_shape_kernel = future;
+
+  // 3. Update the cache.
+  cache.Update({}, OpParamCacheKeys::Empty(), kernel, out_shapes);
+
+  // 4. Lookup should STILL fail because we are in bypass mode.
+  EXPECT_FALSE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                            out_shapes));
+
+  // 5. Exhaust the bypass counter (1000 calls).
+  // We already did 1 lookup in step 4, so we need 999 more to exhaust.
+  for (int i = 0; i < 999; ++i) {
+    EXPECT_FALSE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                              out_shapes));
+  }
+
+  // 6. The 1001st lookup should HIT.
+  EXPECT_TRUE(cache.Lookup({}, OpParamCacheKeys::Empty(), looked_up_kernel,
+                           out_shapes));
 }
 
 }  // namespace

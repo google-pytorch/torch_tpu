@@ -1,0 +1,20 @@
+{
+    "aten.cos.default": [
+        {
+            "inputs": "([T([1, 4096, 64], torch.float32)], {})",
+            "count": 1
+        }
+    ],
+    "aten.add.Tensor": [
+        {
+            "inputs": "([T([1, 4096, 64], torch.float32), T([1, 4096, 64], torch.float32)], {})",
+            "count": 1
+        }
+    ],
+    "aten.mul.Tensor": [
+        {
+            "inputs": "([T([1, 4096, 64], torch.float32), T([1, 4096, 64], torch.float32)], {})",
+            "count": 1
+        }
+    ]
+}

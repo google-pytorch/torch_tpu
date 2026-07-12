@@ -27,6 +27,7 @@ torch_tpu_cc_test(
     },
     notest_oss = "Fails due to TPU_LIBRARY_PATH not set.",
     deps = [
+        ":call_site_cache",
         ":device_buffer",
         ":device_buffer_utils",
         ":eager_mode",
@@ -293,10 +294,12 @@ torch_tpu_cc_library(
     srcs = ["materialize_common.cc"],
     hdrs = ["materialize_common.h"],
     deps = [
+        ":call_site_cache",
         ":device_buffer",
         ":structured_log_buffer",
         ":traversal",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:compilation",
         "//torch_tpu/common:compilation_spec",
@@ -417,10 +420,13 @@ torch_tpu_cc_library(
         "op_dispatcher.h",
     ],
     deps = [
+        ":call_site_cache",
         ":device_buffer",
         ":device_buffer_utils",
         ":eager_mode",
+        ":materialize_common",
         ":tensor_to_buffer",
+        ":traversal",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
@@ -829,6 +835,22 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "call_site_cache",
+    hdrs = ["call_site_cache.h"],
+    deps = [
+        "//shims/torch:aten_headers",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:compilation",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/common:utils",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "events_queue",
     srcs = ["events_queue.cc"],
     hdrs = ["events_queue.h"],
@@ -878,6 +900,21 @@ torch_tpu_cc_test(
         "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "op_dispatcher_fast_path",
+    srcs = ["op_dispatcher_fast_path.cc"],
+    hdrs = ["op_dispatcher_fast_path.h"],
+    deps = [
+        ":call_site_cache",
+        ":eager_mode",
+        ":materialize",
+        ":tensor_to_buffer",
+        "//shims/torch:aten_headers",
+        "//torch_tpu/ops/resize:resize_aten_kernels",
+        "@com_google_absl//absl/log:absl_log",
     ],
 )
 

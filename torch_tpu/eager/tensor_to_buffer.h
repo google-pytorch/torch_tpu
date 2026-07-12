@@ -17,6 +17,7 @@
 #ifndef TORCH_TPU_EAGER_TENSOR_TO_BUFFER_H_
 #define TORCH_TPU_EAGER_TENSOR_TO_BUFFER_H_
 
+#include <optional>
 #include <vector>
 
 #include "ATen/core/CachingHostAllocator.h"
@@ -114,6 +115,7 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 // calling a PjRtLoadedExecutable.
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor);
 absl::StatusOr<DeviceBufferRef> GetBuffer(const c10::TensorImpl& tensor);
+std::optional<DeviceBufferRef> GetBufferFast(const at::Tensor& tensor);
 
 // Extracts all DeviceBufferRefs from the list of AtenTensors.
 // This is just GetBuffer in a loop, exiting on the first error.

@@ -1135,7 +1135,6 @@ void CompilationCache::Compile(CompilationCacheKey key,
   absl::StatusOr<SharedLoadedExecutableWithMetadata> executable =
       torch_tpu::Compile(*client, std::move(executable_builder),
                          std::move(compile_options));
-
   SetExecutable(key, std::move(executable),
                 {
                     .compilation_duration = absl::Now() - compile_start,

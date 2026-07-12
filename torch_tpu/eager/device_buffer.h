@@ -130,6 +130,7 @@ inline bool IsSplitAfter(OpSplitMode split_mode) {
 
 class DeviceBufferList;
 class DeferredOp;
+class CallSiteCache;
 
 using SharedDeviceBufferList = absl_nonnull std::shared_ptr<DeviceBufferList>;
 
@@ -359,6 +360,7 @@ class DeferredOp {
              std::vector<DeviceBufferRef> inputs,
              OpParamCacheKeys op_param_cache_keys,
              std::vector<Shape> output_shapes,
+             CallSiteCache* call_site_cache = nullptr,
              OpSplitMode split_mode = OpSplitMode::kNone,
              Indices donated_indices = {})
       : op_name_(op_name),
@@ -368,6 +370,7 @@ class DeferredOp {
         output_shapes_(std::move(output_shapes)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
+        call_site_cache_(call_site_cache),
         split_mode_(split_mode) {
     for (const auto& input : inputs_) {
       depends_on_placeholder_ |=
@@ -411,6 +414,11 @@ class DeferredOp {
   // Returns the split mode of the DeferredOp, which determines how the op is
   // split into subgraphs for compilation.
   [[nodiscard]] OpSplitMode split_mode() const { return split_mode_; }
+
+  // Returns the call-site cache associated with this DeferredOp, if any.
+  [[nodiscard]] CallSiteCache* call_site_cache() const {
+    return call_site_cache_;
+  }
 
   // Returns the name of the custom kernel, if this DeferredOp is a custom
   // kernel. Otherwise, returns an empty string.
@@ -480,6 +488,7 @@ class DeferredOp {
   // When computing the cache key, use op_name_ to ensure that the key is
   // unique.
   PythonContext op_context_;
+  CallSiteCache* call_site_cache_ = nullptr;
 
   // The split mode of the DeferredOp, which determines how the op is split into
   // subgraphs for compilation.
@@ -539,6 +548,9 @@ class DeviceBufferList {
   // PjRtBuffer::on_device_shape().
   static absl::StatusOr<DeviceBufferRef> CreateMaterialized(
       absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer);
+  static absl::StatusOr<DeviceBufferRef> CreateMaterialized(
+      absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
+      Dimensions dimensions, mlir::ElementType element_type);
 
   // Creates a deferred DeviceBufferList containing a DeferredOp, and returns as
   // many DeviceBufferRefs as there are outputs in the list.
@@ -551,8 +563,8 @@ class DeviceBufferList {
       OpName op_name, MlirOpBuilder op_builder,
       std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
       std::vector<Shape> output_shapes,
-      OpSplitMode split_mode = OpSplitMode::kNone,
-      Indices donated_indices = {});
+      OpSplitMode split_mode = OpSplitMode::kNone, Indices donated_indices = {},
+      CallSiteCache* call_site_cache = nullptr);
 
   // Creates a DeviceBufferList that represents a compiled-mode placeholder.
   // This is a buffer that is not backed by any data, but is used to represent
@@ -757,6 +769,30 @@ class DeviceBufferList {
                  << ", Type: " << ToString(shapes_[0].dtype())
                  << ", PjRtBuffer: " << buffer_ptr
                  << ", creation_index: " << creation_index_;
+  }
+
+  DeviceBufferList(absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer,
+                   Dimensions dimensions, const mlir::ElementType element_type)
+      : data_(std::move(buffer)) {
+    const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
+    device_index_ = device_index;
+    stream_id_ = stream_id;
+    creation_index_ = g_creation_index_.fetch_add(1);
+
+    Shape shape(std::move(dimensions), element_type);
+    shapes_.push_back(std::move(shape));
+
+    if (ABSL_VLOG_IS_ON(3)) {
+      auto buffer_or = data_[0];
+      ABSL_CHECK_OK(buffer_or);  // CRASH_OK: we just created it
+      const xla::PjRtBuffer* absl_nonnull buffer_ptr = buffer_or.value();
+      ABSL_VLOG(3) << "[DeviceBuffer CONSTRUCTOR (materialized optimized)] "
+                      "Created. Dims: "
+                   << ToString(shapes_[0].dimensions())
+                   << ", Type: " << ToString(shapes_[0].dtype())
+                   << ", PjRtBuffer: " << buffer_ptr
+                   << ", creation_index: " << creation_index_;
+    }
   }
 
   // Private constructor for a deferred DeviceBufferList.

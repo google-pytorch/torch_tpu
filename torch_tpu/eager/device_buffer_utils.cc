@@ -125,6 +125,22 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
   };
 }
 
+// Handles post-op creation events for the kDeferAndFuse eager mode.
+absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
+                                  const OpName op_name) {
+  const auto& device_buffer_list = results[0].device_buffer_list();
+
+  // Don't consider metadata-only ops for the repeated ops heuristic.
+  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
+    return ApplyRepeatedOpsHeuristic(device_buffer_list);
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+namespace internal {
+
 // Handles post-op creation events for the kDeferNever and
 // kDeferNeverAndLaunchBlocking eager modes.
 absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
@@ -148,22 +164,6 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
   return absl::OkStatus();
 }
 
-// Handles post-op creation events for the kDeferAndFuse eager mode.
-absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
-                                  const OpName op_name) {
-  const auto& device_buffer_list = results[0].device_buffer_list();
-
-  // Don't consider metadata-only ops for the repeated ops heuristic.
-  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
-    return ApplyRepeatedOpsHeuristic(device_buffer_list);
-  }
-  return absl::OkStatus();
-}
-
-}  // namespace
-
-namespace internal {
-
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params) {
   ApplyComputationDtype(params);
@@ -174,18 +174,22 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
           params.op_name, std::move(params.op_builder),
           std::move(params.inputs), std::move(params.op_param_cache_keys),
           std::move(params.output_shapes), params.split_mode,
-          std::move(params.donated_indices)));
+          std::move(params.donated_indices), params.call_site_cache));
 
   RecordDeferredOpCreated(results[0].device_buffer_list());
 
   switch (GetEagerMode()) {
     case EagerMode::kDeferNever:
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/false));
+      if (!params.defer_materialization) {
+        TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
+                                              /*block=*/false));
+      }
       break;
     case EagerMode::kDeferNeverAndLaunchBlocking:
-      TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
-                                            /*block=*/true));
+      if (!params.defer_materialization) {
+        TT_RETURN_IF_ERROR(DeferNeverDispatch(results, params.op_name,
+                                              /*block=*/true));
+      }
       break;
     case EagerMode::kDeferAndFuse:
       TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results, params.op_name));

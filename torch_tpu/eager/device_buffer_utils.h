@@ -33,6 +33,8 @@
 
 namespace torch_tpu {
 
+class CallSiteCache;
+
 namespace internal {
 
 // Parameters for creating a deferred DeviceBufferList.
@@ -59,6 +61,11 @@ struct DeferredOpParams {
   // The indices of the donated inputs. This is primarily used by custom ops
   // (such as Pallas ops).
   Indices donated_indices = {};
+  // If true, disables eager materialization in kDeferNever mode.
+  // The caller is responsible for materializing the results.
+  bool defer_materialization = false;
+  // The call-site cache to update when compilation is complete.
+  CallSiteCache* call_site_cache = nullptr;
 };
 
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,
@@ -66,6 +73,9 @@ struct DeferredOpParams {
 // CreateEmptyDeviceBufferRef.
 absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
     DeferredOpParams&& params);
+
+absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
+                                const OpName op_name, const bool block);
 
 }  // namespace internal
 

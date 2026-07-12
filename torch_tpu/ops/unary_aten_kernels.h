@@ -30,6 +30,8 @@
 
 namespace torch_tpu {
 
+class CallSiteCache;
+
 struct UnaryOpOptions {
   // The op name for dispatching. If omitted, use the op name from the active
   // TT_KERNEL() context.
@@ -44,6 +46,7 @@ struct UnaryOpOptions {
   // If specified, all inputs will be casted to this dtype before
   // the op_builder is applied.
   std::optional<mlir::ElementType> computation_dtype;
+  CallSiteCache* call_site_cache = nullptr;
 };
 
 // Safely applies a functional unary operation to the input tensor.

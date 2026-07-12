@@ -35,6 +35,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
 #include "llvm/ADT/STLExtras.h"
@@ -271,6 +272,8 @@ absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers) {
   tsl::profiler::TraceMe trace("Execute");
+  static absl::Mutex execute_mu;
+  absl::MutexLock lock(execute_mu);
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
   std::vector<std::vector<xla::PjRtBuffer*>> execution_arguments;

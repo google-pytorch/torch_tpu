@@ -1454,5 +1454,57 @@ class CompileTest(LayoutTest):
     self.assertEqual(y_compiled.shape, torch.Size([1, 512, 1024]))
 
 
+class EagerDispatchHardeningViewTest(LayoutTest):
+
+  def test_non_contiguous_sliced_view_binary_op(self):
+    x_cpu = torch.randn(4, 4, device="cpu")
+    x_tpu = x_cpu.to(self.tpu_device)
+
+    v_cpu = x_cpu[:, ::2]
+    v_tpu = x_tpu[:, ::2]
+
+    res_cpu = v_cpu + 1.0
+    res_tpu = v_tpu + 1.0
+
+    utils.assert_close(res_tpu.cpu(), res_cpu)
+
+  def test_transposed_view_unary_op(self):
+    x_cpu = torch.randn(3, 4, device="cpu")
+    x_tpu = x_cpu.to(self.tpu_device)
+
+    v_cpu = x_cpu.t()
+    v_tpu = x_tpu.t()
+
+    res_cpu = torch.cos(v_cpu)
+    res_tpu = torch.cos(v_tpu)
+
+    utils.assert_close(res_tpu.cpu(), res_cpu)
+
+  def test_non_zero_storage_offset_binary_op(self):
+    x_cpu = torch.randn(10, device="cpu")
+    x_tpu = x_cpu.to(self.tpu_device)
+
+    v_cpu = x_cpu[1:]
+    v_tpu = x_tpu[1:]
+
+    res_cpu = v_cpu + v_cpu
+    res_tpu = v_tpu + v_tpu
+
+    utils.assert_close(res_tpu.cpu(), res_cpu)
+
+  def test_inplace_op_on_view(self):
+    x_cpu = torch.randn(4, 4, device="cpu")
+    x_tpu = x_cpu.to(self.tpu_device)
+
+    v_cpu = x_cpu[:, ::2]
+    v_tpu = x_tpu[:, ::2]
+
+    v_cpu.cos_()
+    v_tpu.cos_()
+
+    utils.assert_close(v_tpu.cpu(), v_cpu)
+    utils.assert_close(x_tpu.cpu(), x_cpu)
+
+
 if __name__ == "__main__":
   absltest.main()

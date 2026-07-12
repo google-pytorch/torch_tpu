@@ -49,8 +49,11 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/eager/call_site_cache.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/op_dispatcher_fast_path.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/binary.h"
 #include "torch_tpu/ops/macros/kernel.h"
@@ -136,7 +139,8 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
        .out_dims = output_dims,
        .computation_dtype = computation_dtype,
        .op_param_cache_keys = std::move(opts.op_param_cache_keys),
-       .split_mode = opts.split_mode});
+       .split_mode = opts.split_mode,
+       .call_site_cache = opts.call_site_cache});
 }
 
 absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
@@ -949,15 +953,28 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpShlo(mlir::MlirOp self_op,
 // NOLINTEND
 at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
                        const at::Scalar& alpha, at::Tensor& out) {
+  // clang-format off
+  thread_local  // CPP_THREAD_LOCAL_OK=performance cache is lock-free
+      ::torch_tpu::CallSiteCache call_site_cache;
+  // clang-format on
   auto promoted_alpha = PromoteScalar(alpha).AvoidPromoting(ScalarValue::kOne);
-  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, promoted_alpha, out), {
+  if (promoted_alpha.IsOne()) {
+    if (::torch_tpu::internal::TryBinaryOpFastPath(self, other, out,
+                                                   call_site_cache)) {
+      return out;
+    }
+  }
+  auto ignored_alpha = IgnoreInCacheKey(
+      promoted_alpha, "alpha is handled manually to support call-site caching");
+  TT_KERNEL(OpName::kAddOut, param_keys, (self, other, ignored_alpha, out), {
     TT_THROW_IF_ERROR(CheckAlphaTypeSupported(alpha));
 
     // As an optimization, skip the scaling if alpha is 1.
     if (promoted_alpha.IsOne()) {
       TT_THROW_IF_ERROR(
           BinaryOpOut(self, other, out, BuildAddShlo,
-                      {.op_param_cache_keys = std::move(param_keys)}));
+                      {.op_param_cache_keys = std::move(param_keys),
+                       .call_site_cache = &call_site_cache}));
       return out;
     }
 
@@ -1465,10 +1482,19 @@ at::Tensor& AtenMinimumOut(const at::Tensor& self, const at::Tensor& other,
 
 at::Tensor& AtenMulOut(const at::Tensor& self, const at::Tensor& other,
                        at::Tensor& out) {
+  // clang-format off
+  thread_local  // CPP_THREAD_LOCAL_OK=performance cache is lock-free
+      ::torch_tpu::CallSiteCache call_site_cache;
+  // clang-format on
+  if (::torch_tpu::internal::TryBinaryOpFastPath(self, other, out,
+                                                 call_site_cache)) {
+    return out;
+  }
   TT_KERNEL(OpName::kMulOut, _, (self, other, out), {
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, other, out, BuildMulShlo,
-                    {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
+                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                     .call_site_cache = &call_site_cache}));
     return out;
   });
 }

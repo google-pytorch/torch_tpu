@@ -251,9 +251,11 @@ class Traversal {
   //   - Each tensor in outputs is in either arguments_ or execution_order.
   Traversal(std::vector<DeviceBufferRef> arguments,
             std::vector<SharedDeviceBufferList> execution_order,
+            std::vector<std::shared_ptr<DeferredOp>> deferred_ops,
             std::vector<DeviceBufferRef> outputs)
       : arguments_(std::move(arguments)),
         execution_order_(std::move(execution_order)),
+        deferred_ops_(std::move(deferred_ops)),
         outputs_(std::move(outputs)) {}
 
   GraphKey BuildGraphKey() const;
@@ -269,6 +271,10 @@ class Traversal {
   // Nullary ops, which are typically either factory ops like torch.ones or
   // compiled mode constants, appear here.
   std::vector<SharedDeviceBufferList> execution_order_;
+  // The DeferredOps corresponding to execution_order_. Kept here to ensure
+  // they remain alive during async compilation even if the buffers are
+  // materialized concurrently.
+  std::vector<std::shared_ptr<DeferredOp>> deferred_ops_;
   // The tensor outputs of the Traversal. These may be in any state, but the
   // list is non-empty and all outputs are unique.
   std::vector<DeviceBufferRef> outputs_;

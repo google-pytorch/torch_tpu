@@ -1715,6 +1715,41 @@ class TestOps(TorchTpuTestBase):
         dynamism_test_utils.mark_input_dynamic,
     )
 
+  def test_eager_dispatch_view_correctness(self):
+    # Allocate base tensor
+    x_cpu = torch.randn(4, 4, dtype=torch.float32)
+    x_tpu = x_cpu.to("tpu")
+
+    # 1. Slice view (non-contiguous)
+    v_slice_cpu = x_cpu[:, ::2]
+    v_slice_tpu = x_tpu[:, ::2]
+    self.assertEqual(torch.cos(v_slice_tpu).cpu(), torch.cos(v_slice_cpu))
+
+    # 2. Offset view (contiguous but storage offset > 0)
+    v_offset_cpu = x_cpu[1:, 1:]
+    v_offset_tpu = x_tpu[1:, 1:]
+    self.assertEqual(torch.cos(v_offset_tpu).cpu(), torch.cos(v_offset_cpu))
+
+    # 3. Transposed view (non-contiguous, offset = 0)
+    v_trans_cpu = x_cpu.t()
+    v_trans_tpu = x_tpu.t()
+    self.assertEqual(torch.cos(v_trans_tpu).cpu(), torch.cos(v_trans_cpu))
+
+    # 4. Binary ops on slice view
+    self.assertEqual(
+        torch.add(v_slice_tpu, v_slice_tpu).cpu(),
+        torch.add(v_slice_cpu, v_slice_cpu),
+    )
+    self.assertEqual(
+        torch.mul(v_slice_tpu, v_slice_tpu).cpu(),
+        torch.mul(v_slice_cpu, v_slice_cpu),
+    )
+
+    # 5. In-place operation on offset view (must mutate base tensor correctly!)
+    v_offset_cpu.cos_()
+    v_offset_tpu.cos_()
+    self.assertEqual(x_tpu.cpu(), x_cpu)
+
   def test_abs(self):
     self.do_test_op(
         "abs",

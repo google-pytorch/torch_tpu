@@ -258,6 +258,48 @@ absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
   return GetBuffer(*tensor.unsafeGetTensorImpl());
 }
 
+std::optional<DeviceBufferRef> GetBufferFast(const at::Tensor& tensor) {
+  const c10::TensorImpl* tensor_impl = tensor.unsafeGetTensorImpl();
+  if (!tensor_impl) {
+    return std::nullopt;
+  }
+  if (!tensor_impl->has_storage()) {
+    return std::nullopt;
+  }
+  const c10::Storage& storage = tensor_impl->storage();
+  if (!storage.data_ptr()) {
+    return std::nullopt;
+  }
+  if (storage.allocator() != GetTpuAllocator()) {
+    return std::nullopt;
+  }
+  const DeviceBufferRef* base_buffer_ref =
+      static_cast<const DeviceBufferRef*>(storage.data_ptr().get_context());
+  if (!base_buffer_ref) {
+    return std::nullopt;
+  }
+
+  // Check if it is a contiguous base buffer.
+  if (tensor_impl->is_conj() || !tensor_impl->is_contiguous() ||
+      tensor_impl->storage_offset() != 0 ||
+      tensor_impl->sizes() != base_buffer_ref->dimensions()) {
+    return std::nullopt;
+  }
+
+  // Convert tensor scalar_type to mlir::ElementType.
+  auto scalar_type = GetScalarType(*tensor_impl);
+  auto element_type_or = ConvertTo<mlir::ElementType>(scalar_type);
+  if (!element_type_or.ok()) {
+    return std::nullopt;
+  }
+
+  if (element_type_or.value() != base_buffer_ref->element_type()) {
+    return std::nullopt;
+  }
+
+  return *base_buffer_ref;
+}
+
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
     absl::Span<const at::Tensor> tensors) {
   std::vector<DeviceBufferRef> buffers;

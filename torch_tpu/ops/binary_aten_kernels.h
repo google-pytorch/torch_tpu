@@ -38,6 +38,8 @@
 
 namespace torch_tpu {
 
+class CallSiteCache;
+
 struct BinaryOpOptions {
   // The op name for dispatching. If omitted, use the op name from the active
   // TT_KERNEL() context.
@@ -48,6 +50,7 @@ struct BinaryOpOptions {
   std::optional<mlir::ElementType> output_dtype_override = std::nullopt;
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
+  CallSiteCache* call_site_cache = nullptr;
 };
 
 struct TernaryOpOptions {

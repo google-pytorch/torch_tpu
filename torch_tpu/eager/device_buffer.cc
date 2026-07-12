@@ -348,11 +348,22 @@ absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateMaterialized(
   return DeviceBufferRef(std::move(device_buffer_list), 0);
 }
 
+absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreateMaterialized(
+    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer, Dimensions dimensions,
+    mlir::ElementType element_type) {
+  TT_RETURN_IF_ERROR(ValidateTensorByteSize(dimensions, element_type));
+  // Can't use make_shared because the constructor is private.
+  auto device_buffer_list =
+      std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
+          std::move(buffer), std::move(dimensions), element_type));
+  return DeviceBufferRef(std::move(device_buffer_list), 0);
+}
+
 absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
     OpName op_name, MlirOpBuilder op_builder,
     std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
     std::vector<Shape> output_shapes, OpSplitMode split_mode,
-    Indices donated_indices) {
+    Indices donated_indices, CallSiteCache* call_site_cache) {
   // Validate that the output shapes are valid.
   for (const auto& output_shape : output_shapes) {
     TT_RETURN_IF_ERROR(ValidateTensorByteSize(output_shape.dimensions(),
@@ -363,8 +374,8 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   // Create the DeferredOp.
   auto op = std::make_unique<DeferredOp>(
       op_name, std::move(op_builder), std::move(inputs),
-      std::move(op_param_cache_keys), output_shapes, split_mode,
-      std::move(donated_indices));
+      std::move(op_param_cache_keys), output_shapes, call_site_cache,
+      split_mode, std::move(donated_indices));
 
   // Wrap the DeferredOp in a DeviceBufferList.
   // Can't use make_shared because the constructor is private.

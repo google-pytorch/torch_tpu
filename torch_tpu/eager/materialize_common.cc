@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// WARNING: Eager dispatch contains a Fast Path (op_dispatcher_fast_path.cc)
+// and a Slow Path (materialize_common.cc). If you modify shape propagation,
+// data type casting, or dynamic shape validation logic in the slow path,
+// you MUST update the corresponding logic in the fast path helpers to prevent
+// correctness mismatches or silent compilation failures.
 
 #include "torch_tpu/eager/materialize_common.h"
 
@@ -40,6 +45,7 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "torch_tpu/common/cache_key.h"
@@ -49,6 +55,7 @@
 #include "torch_tpu/common/dynamism_utils.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
+#include "torch_tpu/eager/call_site_cache.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/traversal.h"
@@ -248,6 +255,52 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
         traversal->Compile(std::move(compilation_spec), out_mlir_text));
+  }
+
+  // Update CallSiteCache if applicable.
+  if (traversal->execution_order().size() == 1) {
+    auto deferred_op = traversal->execution_order().front()->deferred_op();
+    if (deferred_op != nullptr && deferred_op->call_site_cache() != nullptr) {
+      std::vector<SmallInt64Vector> shapes;
+      std::vector<c10::ScalarType> dtypes;
+      shapes.reserve(traversal->arguments().size());
+      dtypes.reserve(traversal->arguments().size());
+      for (const auto& argument : traversal->arguments()) {
+        shapes.push_back(CopyIntVector(argument.dimensions()));
+        dtypes.push_back(ConvertTo<c10::ScalarType>(argument.element_type()));
+      }
+      CallSiteOutputShapes output_shapes;
+      output_shapes.reserve(traversal->outputs().size());
+      for (const auto& output : traversal->outputs()) {
+        output_shapes.push_back(output.shape());
+      }
+      ABSL_VLOG(2) << "Updating CallSiteCache "
+                   << deferred_op->call_site_cache()
+                   << " asynchronously on worker thread for op: "
+                   << ToBaseName(deferred_op->op_name()) << " with "
+                   << traversal->arguments().size() << " arguments";
+      for (size_t i = 0; i < traversal->arguments().size(); ++i) {
+        ABSL_VLOG(2) << "  Argument " << i << ": "
+                     << ToString(traversal->arguments()[i].shape());
+      }
+      if (compiled_kernel.ok()) {
+        auto exec_or = compiled_kernel->fixed_shape_kernel.get();
+        if (exec_or.ok()) {
+          auto memory_kinds_or =
+              (*exec_or)->GetExecutable()->GetParameterMemoryKinds();
+          int num_exec_args = -1;
+          if (memory_kinds_or.ok() && !memory_kinds_or->empty()) {
+            num_exec_args = memory_kinds_or->front().size();
+          }
+          ABSL_VLOG(2) << "  Compiled executable expects " << num_exec_args
+                       << " arguments";
+        }
+      }
+      deferred_op->call_site_cache()->Update(
+          std::move(shapes), std::move(dtypes),
+          deferred_op->op_param_cache_keys(), *compiled_kernel,
+          std::move(output_shapes));
+    }
   }
 
   // Mark all outputs of the split as scheduled/materialized.
