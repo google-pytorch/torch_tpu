@@ -22,21 +22,28 @@ import torch.multiprocessing as mp
 
 
 def _worker_fn(
-    rank: int,
-    world_size: int,
-    master_port: int,
+    local_rank: int,
+    nproc_per_node: int,
+    default_master_port: int,
     fn: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> None:
   """Worker function for mp.spawn."""
-  os.environ["MASTER_ADDR"] = "localhost"
-  os.environ["MASTER_PORT"] = str(master_port)
-  os.environ["RANK"] = str(rank)
+  node_rank = int(os.environ.get("NODE_RANK", "0"))
+  world_size = int(os.environ.get("WORLD_SIZE", str(nproc_per_node)))
+  global_rank = node_rank * nproc_per_node + local_rank
+
+  if "MASTER_ADDR" not in os.environ:
+    os.environ["MASTER_ADDR"] = "localhost"
+  if "MASTER_PORT" not in os.environ:
+    os.environ["MASTER_PORT"] = str(default_master_port)
+
+  os.environ["RANK"] = str(global_rank)
+  os.environ["LOCAL_RANK"] = str(local_rank)
   os.environ["WORLD_SIZE"] = str(world_size)
-  os.environ["LOCAL_RANK"] = str(rank)
-  os.environ["GROUP_RANK"] = "0"
-  os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
+  os.environ["LOCAL_WORLD_SIZE"] = str(nproc_per_node)
+  os.environ["GROUP_RANK"] = str(node_rank)
 
   fn(*args, **kwargs)
 
@@ -48,6 +55,9 @@ def dist_run(
 
   Think of dist_run(n, foo, *args, **kwargs) as running
   n copies of foo(*args, **kwargs) in parallel, each with a different rank.
+  Preserves multi-host environment variables (MASTER_ADDR, MASTER_PORT,
+  NODE_RANK,
+  WORLD_SIZE) if already present in os.environ.
 
   Args:
     nproc_per_node: The number of processes to spawn on the current node.
@@ -55,11 +65,14 @@ def dist_run(
     *args: Positional arguments to pass to the function.
     **kwargs: Keyword arguments to pass to the function.
   """
-
-  master_port = portpicker.pick_unused_port()
+  default_master_port = (
+      int(os.environ["MASTER_PORT"])
+      if "MASTER_PORT" in os.environ
+      else portpicker.pick_unused_port()
+  )
   mp.spawn(
       _worker_fn,
-      args=(nproc_per_node, master_port, fn, args, kwargs),
+      args=(nproc_per_node, default_master_port, fn, args, kwargs),
       nprocs=nproc_per_node,
       join=True,
   )
