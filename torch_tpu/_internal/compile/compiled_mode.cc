@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
-#include "absl/flags/declare.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/log/check.h"
@@ -33,6 +32,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/TensorImpl.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -46,7 +46,6 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/flags.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -126,9 +125,15 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
                                            bool requires_grad) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType tensor_element_type,
                       ConvertTo<mlir::ElementType>(dtype));
+  Dimensions physical_sizes(sizes.begin(), sizes.end());
+  if (dtype == at::kFloat4_e2m1fn_x2) {
+    TT_RET_CHECK(!physical_sizes.empty(), error::kInvalidArgument)
+        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional";
+    physical_sizes.back() *= 2;
+  }
   TT_ASSIGN_OR_RETURN(DeviceBufferRef placeholder,
-                      DeviceBufferList::CreatePlaceholder(CopyIntVector(sizes),
-                                                          tensor_element_type));
+                      DeviceBufferList::CreatePlaceholder(
+                          std::move(physical_sizes), tensor_element_type));
   auto new_tensor = MakeTensor(std::move(placeholder));
   new_tensor.set_requires_grad(requires_grad);
   return new_tensor;

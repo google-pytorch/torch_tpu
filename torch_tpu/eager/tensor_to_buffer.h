@@ -19,6 +19,7 @@
 
 #include <vector>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/CachingHostAllocator.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -26,7 +27,6 @@
 #include "c10/core/Allocator.h"
 #include "c10/core/Device.h"
 #include "c10/core/Storage.h"
-#include "c10/core/TensorImpl.h"
 #include "c10/util/Optional.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
@@ -92,7 +92,6 @@ void DeleteDeviceBufferRef(void* ctx_ptr);
 // The returned DeviceBufferRef is always the contiguous buffer that was used
 // to create the c10::StorageImpl backing the tensor; if tensor is a view, then
 // the returned DeviceBufferRef may have different dimensions than the tensor.
-absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::TensorImpl& tensor);
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor);
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 
@@ -113,7 +112,6 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage);
 // unexpected states; for example, erroring on a placeholder state before
 // calling a PjRtLoadedExecutable.
 absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor);
-absl::StatusOr<DeviceBufferRef> GetBuffer(const c10::TensorImpl& tensor);
 
 // Extracts all DeviceBufferRefs from the list of AtenTensors.
 // This is just GetBuffer in a loop, exiting on the first error.

@@ -60,9 +60,10 @@
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/device_type.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/status_builder.h"
+#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -79,17 +80,6 @@
 
 namespace torch_tpu {
 
-namespace {
-
-at::ScalarType GetScalarType(const c10::TensorImpl& tensor) {
-  // For some reason, c10::TensorImpl does not have a scalar_type() method;
-  // we have to use "dtype()" and convert instead.
-  auto type_meta = tensor.dtype();
-  return c10::typeMetaToScalarType(type_meta);
-}
-
-}  // namespace
-
 absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
                                     const at::Tensor& tensor) {
   ABSL_VLOG(1)
@@ -98,8 +88,8 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
       << result_buf.DebugString() << "\n"
       << "\nTensor:" << ToString(tensor)
       << "\n\tscalar_type: " << ToString(tensor.scalar_type())
-      << "\n\tsizes: " << ToString(absl::MakeConstSpan(tensor.sizes()))
-      << "\n\tstrides: " << ToString(absl::MakeConstSpan(tensor.strides()))
+      << "\n\tsizes: " << ToString(tensor.sizes())
+      << "\n\tstrides: " << ToString(tensor.strides())
       << (tensor.is_contiguous() ? " (contiguous)" : " (non-contiguous)")
       << "\n\tstorage nbytes: " << tensor.storage().nbytes()
       << "\n\tstorage offset: " << tensor.storage_offset();
@@ -112,10 +102,27 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
   // a DeviceBufferRef of shape (100,), or vice-versa.
   // Shape alignments will be handled by view decomposition logic on extraction
   // during GetBuffer later, if and only if required.
-  ABSL_CHECK_EQ(result_buf.num_elements(), tensor.numel());  // CRASH_OK
-  TT_ASSIGN_OR_RETURN(const auto tensor_element_type,
-                      ConvertTo<mlir::ElementType>(tensor.scalar_type()));
-  ABSL_CHECK_EQ(result_buf.element_type(), tensor_element_type);  // CRASH_OK
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
+  ABSL_CHECK_EQ(result_buf.element_type(),  // CRASH_OK
+                tpu_layout.element_type);
+
+  // Calculate expected number of elements from the resolved TPU layout.
+  // This already accounts for FP4 size doubling.
+  int64_t expected_elements = 1;
+  for (const int64_t size : tpu_layout.sizes) {
+    TT_ASSIGN_OR_RETURN(expected_elements,
+                        SafeMultiply(expected_elements, size));
+  }
+
+  ABSL_CHECK_EQ(result_buf.num_elements(), expected_elements)  // CRASH_OK
+      << "Cannot assign buffer of size " << result_buf.num_elements()
+      << " to tensor of shape " << ToString(tensor.sizes())
+      << " (resolved TPU layout shape: " << ToString(tpu_layout.sizes)
+      << ", expected elements: " << expected_elements << ")."
+      << (tpu_layout.element_type == mlir::ElementType::F4E2M1FN
+              ? " For FP4 tensors, the expected element count is doubled "
+                "because they are packed 2-per-byte in PyTorch."
+              : "");
 
   if (result_buf.num_elements() == 0) {
     // Writing 0 elements is a no-op.
@@ -155,12 +162,10 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
         MakeDataPtr(std::move(result_buf), tensor.device().index()));
   } else {
     TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
-    TT_ASSIGN_OR_RETURN(
-        DeviceBufferRef new_base_buffer_ref,
-        CreateInverseViewDeviceBufferRef(
-            std::move(base_buffer_ref), std::move(result_buf), tensor.sizes(),
-            tensor.strides(), tensor.storage_offset(), tensor_element_type,
-            tensor.is_conj()));
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef new_base_buffer_ref,
+                        CreateInverseViewDeviceBufferRef(
+                            std::move(base_buffer_ref), std::move(result_buf),
+                            tpu_layout, tensor.is_conj()));
 
     // Assign the new deferred DeviceBufferRef to the c10::DataPtr
     // All reads that happened before the write will be unaffected, but reads
@@ -175,45 +180,33 @@ absl::Status AssignBufferToAtTensor(DeviceBufferRef result_buf,
   ABSL_VLOG(1) << "[AssignBufferToAtTensor] Final tensor after assignment:"
                << ToString(tensor)
                << "\nscalar_type: " << ToString(tensor.scalar_type())
-               << "\nsizes: " << ToString(absl::MakeConstSpan(tensor.sizes()))
-               << "\nstrides: "
-               << ToString(absl::MakeConstSpan(tensor.strides()))
+               << "\nsizes: " << ToString(tensor.sizes())
+               << "\nstrides: " << ToString(tensor.strides())
                << (tensor.is_contiguous() ? " (contiguous)"
                                           : " (non-contiguous)")
                << "\nstorage nbytes: " << tensor.storage().nbytes()
                << "\nstorage offset: " << tensor.storage_offset();
   return absl::OkStatus();
 }
-absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::TensorImpl& tensor) {
-  // If the user tries to call a torch_tpu kernel with tensors that are
-  // on different devices, then we return an error status, which will be
-  // propagated to the user as a Python exception (with context).
-  // We only need to uphold invariants for tensors torch_tpu constructs.
+absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
+  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+      << "tensor is undefined";
+
   TT_RET_CHECK(tensor.device().type() == GetPrivateUse1DeviceType(),
                error::kInvalidArgument)
       << "tensor is expected to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << tensor.device().str();
 
-  // This will trigger a device mismatch in Pytorch, with a good call stack.
   TT_RET_CHECK(tensor.storage().data_ptr(), error::kPythonNotImplementedError)
       << "tensor is on the custom PrivateUse1 device. But its storage data_ptr "
          "is null. This is usually caused by FakeTensor being run on TPU ops. "
          "And it is not supported";
 
-  // If the tensor is on the PrivateUse1 device, then we check invariants.
-  // Any errors indicate serious bugs and we crash to prevent worsening the
-  // application state.
   ABSL_CHECK_EQ(tensor.storage().allocator(), GetTpuAllocator())  // CRASH_OK
       << "tensor is on PrivateUse1 device, but is not allocated by "
          "g_tpu_allocator";
 
   return GetBaseBuffer(tensor.storage());
-}
-
-absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const at::Tensor& tensor) {
-  const c10::TensorImpl* tensor_impl = tensor.unsafeGetTensorImpl();
-  TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined.";
-  return GetBaseBuffer(*tensor.unsafeGetTensorImpl());
 }
 
 absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
@@ -227,35 +220,24 @@ absl::StatusOr<DeviceBufferRef> GetBaseBuffer(const c10::Storage& storage) {
       << "tensor storage has a null DeviceBufferRef via data_ptr context";
   return *base_buffer_ref;
 }
-absl::StatusOr<DeviceBufferRef> GetBuffer(const c10::TensorImpl& tensor) {
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
 
-  // Get the element types; if they're different, we need to do a bitwise cast.
-  auto scalar_type = GetScalarType(tensor);
-  TT_ASSIGN_OR_RETURN(const auto tensor_element_type,
-                      ConvertTo<mlir::ElementType>(scalar_type));
+absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
+  TT_RET_CHECK(tensor.defined(), error::kInvalidArgument)
+      << "tensor is undefined";
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef base_buffer_ref, GetBaseBuffer(tensor));
+  TT_ASSIGN_OR_RETURN(const TpuLayout tpu_layout, ResolveTpuLayout(tensor));
 
   if (!tensor.is_conj() && tensor.is_contiguous() &&
       tensor.storage_offset() == 0 &&
-      tensor.sizes() == base_buffer_ref.dimensions() &&
-      tensor_element_type == base_buffer_ref.element_type()) {
+      tpu_layout.sizes == base_buffer_ref.dimensions() &&
+      tpu_layout.element_type == base_buffer_ref.element_type()) {
     ABSL_VLOG(1) << "[GetBuffer] Tensor is a contiguous base, "
                     "returning base buffer.";
-    // This is the base tensor, no view to apply.
     return base_buffer_ref;
   }
 
-  return CreateViewDeviceBufferRef(base_buffer_ref, tensor.sizes(),
-                                   tensor.strides(), tensor.storage_offset(),
-                                   tensor_element_type, tensor.is_conj());
-}
-
-absl::StatusOr<DeviceBufferRef> GetBuffer(const at::Tensor& tensor) {
-  // Trying to get the buffer from an undefined tensor is a user error, not
-  // a critical invariant violation.
-  const c10::TensorImpl* tensor_impl = tensor.unsafeGetTensorImpl();
-  TT_RET_CHECK(tensor_impl, error::kInvalidArgument) << "tensor is undefined";
-  return GetBuffer(*tensor.unsafeGetTensorImpl());
+  return CreateViewDeviceBufferRef(base_buffer_ref, tpu_layout,
+                                   tensor.is_conj());
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> GetBuffers(
@@ -287,7 +269,14 @@ at::Tensor MakeTensor(DeviceBufferRef buffer_ref, int device_idx) {
 
   const auto dtype = ConvertTo<at::ScalarType>(buffer_ref.element_type());
   auto caffe2_type_meta = c10::scalarTypeToTypeMeta(dtype);
-  absl::Span<const int64_t> sizes = buffer_ref.dimensions();
+  Dimensions sizes(buffer_ref.dimensions().begin(),
+                   buffer_ref.dimensions().end());
+  if (buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
+    ABSL_CHECK(!sizes.empty());         // CRASH_OK
+    ABSL_CHECK_EQ(sizes.back() % 2, 0)  // CRASH_OK
+        << "Last dimension of FP4 must be even, got " << sizes.back();
+    sizes.back() /= 2;
+  }
 
   c10::Storage storage = MakeStorage(std::move(buffer_ref), device_idx);
   at::Tensor tensor(c10::make_intrusive<c10::TensorImpl>(
@@ -297,9 +286,8 @@ at::Tensor MakeTensor(DeviceBufferRef buffer_ref, int device_idx) {
   tensor.unsafeGetTensorImpl()->set_storage_offset(0);
   ABSL_VLOG(1) << "[MakeTensor] Final ATen tensor created:" << ToString(tensor)
                << "\nscalar_type: " << ToString(tensor.scalar_type())
-               << "\nsizes: " << ToString(absl::MakeConstSpan(tensor.sizes()))
-               << "\nstrides: "
-               << ToString(absl::MakeConstSpan(tensor.strides()))
+               << "\nsizes: " << ToString(tensor.sizes())
+               << "\nstrides: " << ToString(tensor.strides())
                << (tensor.is_contiguous() ? " (contiguous)"
                                           : " (non-contiguous)")
                << "\nstorage nbytes: " << tensor.storage().nbytes()
@@ -642,9 +630,23 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
                       ConvertTo<mlir::ElementType>(dtype_opt.value_or(
                           c10::get_default_dtype_as_scalartype())));
 
+  Dimensions xla_sizes = CopyIntVector(size);
+  if (dtype == mlir::ElementType::F4E2M1FN) {
+    TT_RET_CHECK(!xla_sizes.empty(), error::kInvalidArgument)
+        << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, "
+           "got 0-dimensional";
+    // A PyTorch tensor of shape [..., N] of dtype float4_e2m1fn_x2 represents
+    // N container elements (each 1 byte), which contain 2N packed FP4 values.
+    // On the TPU/XLA side, FP4 elements are represented as unpacked 1-byte
+    // elements. To store all 2N values, the TPU buffer must have a physical
+    // size of 2N bytes. We achieve this by doubling the size of the last
+    // dimension in the XLA shape.
+    xla_sizes.back() *= 2;
+  }
+
   // Create an empty DeviceBufferRef.
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer,
-                      CreateEmptyDeviceBufferRef(CopyIntVector(size), dtype));
+                      CreateEmptyDeviceBufferRef(std::move(xla_sizes), dtype));
   at::Tensor result = MakeTensor(std::move(buffer));
 
   // MakeTensor defaults to a contiguous tensor, and so

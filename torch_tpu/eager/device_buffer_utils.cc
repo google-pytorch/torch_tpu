@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -42,6 +43,7 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -65,6 +67,47 @@
 namespace torch_tpu {
 namespace {
 
+// Upcasts inputs to computation_dtype if specified.
+std::vector<mlir::MlirOp> CastInputs(
+    mlir::MlirBuilder& builder, absl::Span<mlir::MlirOp> inputs,
+    std::optional<mlir::ElementType> computation_dtype) {
+  std::vector<mlir::MlirOp> casted_inputs;
+  casted_inputs.reserve(inputs.size());
+  if (computation_dtype) {
+    mlir::Type computation_type =
+        mlir::getElementType(builder.getContext(), *computation_dtype);
+    for (auto input : inputs) {
+      const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+      if (input_type.getElementType() != computation_type) {
+        input = mlir::stablehlo::ConvertElementType(input, *computation_dtype);
+      }
+      casted_inputs.push_back(input);
+    }
+  } else {
+    casted_inputs.assign(inputs.begin(), inputs.end());
+  }
+  return casted_inputs;
+}
+
+// Downcasts outputs to their expected dtypes.
+DynamicMlirOpResults CastOutputs(
+    mlir::MlirBuilder& builder, const DynamicMlirOpResults& results,
+    absl::Span<const mlir::ElementType> expected_out_dtypes) {
+  DynamicMlirOpResults casted_results;
+  casted_results.reserve(results.size());
+  for (size_t i = 0; i < results.size(); ++i) {
+    mlir::MlirOp res = results[i];
+    const mlir::RankedTensorType res_type = GetTensorTypeOrDie(res);
+    const mlir::Type expected_type =
+        mlir::getElementType(builder.getContext(), expected_out_dtypes[i]);
+    if (res_type.getElementType() != expected_type) {
+      res = mlir::stablehlo::ConvertElementType(res, expected_out_dtypes[i]);
+    }
+    casted_results.push_back(res);
+  }
+  return casted_results;
+}
+
 // Modifies the op_builder to reflect the computation dtype of the op, if
 // specified.
 void ApplyComputationDtype(internal::DeferredOpParams& params) {
@@ -80,23 +123,8 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
                           mlir::MlirBuilder& builder,
                           absl::Span<mlir::MlirOp> inputs)
       -> absl::StatusOr<DynamicMlirOpResults> {
-    std::vector<mlir::MlirOp> casted_inputs;
-    if (computation_dtype) {
-      // 1. Upcast inputs to computation_dtype.
-      mlir::Type computation_type =
-          mlir::getElementType(builder.getContext(), *computation_dtype);
-      casted_inputs.reserve(inputs.size());
-      for (auto input : inputs) {
-        const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-        if (input_type.getElementType() != computation_type) {
-          input =
-              mlir::stablehlo::ConvertElementType(input, *computation_dtype);
-        }
-        casted_inputs.push_back(input);
-      }
-    } else {
-      casted_inputs.assign(inputs.begin(), inputs.end());
-    }
+    std::vector<mlir::MlirOp> casted_inputs =
+        CastInputs(builder, inputs, computation_dtype);
 
     // 2. Run the original op builder.
     TT_ASSIGN_OR_RETURN(DynamicMlirOpResults results,
@@ -109,19 +137,7 @@ void ApplyComputationDtype(internal::DeferredOpParams& params) {
         << " outputs from op, but got " << results.size();
 
     // 4. Downcast outputs to their expected dtypes.
-    DynamicMlirOpResults casted_results;
-    casted_results.reserve(results.size());
-    for (size_t i = 0; i < results.size(); ++i) {
-      mlir::MlirOp res = results[i];
-      const mlir::RankedTensorType res_type = GetTensorTypeOrDie(res);
-      const mlir::Type expected_type =
-          mlir::getElementType(builder.getContext(), expected_out_dtypes[i]);
-      if (res_type.getElementType() != expected_type) {
-        res = mlir::stablehlo::ConvertElementType(res, expected_out_dtypes[i]);
-      }
-      casted_results.push_back(res);
-    }
-    return casted_results;
+    return CastOutputs(builder, results, expected_out_dtypes);
   };
 }
 
@@ -434,9 +450,12 @@ AsStridedInverseBuilderPair MakeAsStridedInverseBuilder(
 }  // namespace
 
 absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
-    DeviceBufferRef base_buffer_ref, absl::Span<const int64_t> view_dimensions,
-    absl::Span<const int64_t> view_strides, int64_t view_storage_offset,
-    mlir::ElementType view_element_type, bool view_is_conj) {
+    DeviceBufferRef base_buffer_ref, const TpuLayout& tpu_layout,
+    bool view_is_conj) {
+  absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
+  absl::Span<const int64_t> view_strides = tpu_layout.strides;
+  int64_t view_storage_offset = tpu_layout.storage_offset;
+  mlir::ElementType view_element_type = tpu_layout.element_type;
   TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
                error::kInvalidArgument)
       << "view dimensions and strides must have the same size.";
@@ -530,9 +549,11 @@ absl::StatusOr<DeviceBufferRef> CreateViewDeviceBufferRef(
 
 absl::StatusOr<DeviceBufferRef> CreateInverseViewDeviceBufferRef(
     DeviceBufferRef base_buffer_ref, DeviceBufferRef write_buf,
-    absl::Span<const int64_t> view_dimensions,
-    absl::Span<const int64_t> view_strides, int64_t view_storage_offset,
-    mlir::ElementType view_element_type, bool view_is_conj) {
+    const TpuLayout& tpu_layout, bool view_is_conj) {
+  absl::Span<const int64_t> view_dimensions = tpu_layout.sizes;
+  absl::Span<const int64_t> view_strides = tpu_layout.strides;
+  int64_t view_storage_offset = tpu_layout.storage_offset;
+  mlir::ElementType view_element_type = tpu_layout.element_type;
   TT_RET_CHECK(view_dimensions.size() == view_strides.size(),
                error::kInvalidArgument)
       << "view dimensions and strides must have the same size.";

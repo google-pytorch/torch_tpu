@@ -17,22 +17,16 @@
 #include "torch_tpu/ops/nullary_aten_kernels.h"
 
 #include <cstdint>
-#include <sstream>
-#include <string>
 #include <string_view>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/native/Resize.h"
-#include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_join.h"
 #include "c10/core/DefaultDtype.h"
 #include "c10/core/Device.h"
-#include "c10/core/Layout.h"
 #include "c10/core/SymIntArrayRef.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/util/Optional.h"
@@ -48,7 +42,6 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/as_strided/as_strided_aten_kernels.h"
@@ -59,19 +52,6 @@
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
-
-namespace {
-
-void LogKernelStart(std::string_view op_name,
-                    const OpParamCacheKeys& op_param_cache_keys) {
-  if (ABSL_VLOG_IS_ON(1)) {
-    ABSL_VLOG(1) << "[C++ KERNEL " << op_name << "]"
-                 << absl::StrJoin(op_param_cache_keys, ",",
-                                  absl::PairFormatter(": "));
-  }
-}
-
-}  // namespace
 
 at::Tensor ApplyNullaryOp(MlirNullaryOpBuilder op_builder,
                           c10::ScalarType out_dtype, at::IntArrayRef out_dims,
