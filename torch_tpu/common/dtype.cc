@@ -142,6 +142,8 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       return mlir::ElementType::F32;
     case at::kDouble:
       return mlir::ElementType::F64;
+    case at::kFloat4_e2m1fn_x2:
+      return mlir::ElementType::F4E2M1FN;
     // Complex types.
     case at::kComplexFloat:
       return mlir::ElementType::COMPLEXF32;
@@ -179,7 +181,6 @@ absl::StatusOr<mlir::ElementType> ToElementType(
     case at::kBits4x2:
     case at::kBits8:
     case at::kComplexHalf:
-    case at::kFloat4_e2m1fn_x2:  // Not the same as F4E2M1FN
     case at::kInt1:
     case at::kInt2:
     case at::kInt3:
@@ -305,41 +306,39 @@ absl::StatusOr<mlir::ElementType> ToElementType(
          << "invalid XLA PrimitiveType: " << xla_type;
 }
 
+static std::optional<mlir::ElementType> ToIntegerElementType(
+    mlir::IntegerType int_type) {
+  const bool is_signed = int_type.isSignless();
+  switch (int_type.getWidth()) {
+    case 1:
+      return mlir::ElementType::PRED;
+    case 2:
+      return is_signed ? mlir::ElementType::I2 : mlir::ElementType::UI2;
+    case 4:
+      return is_signed ? mlir::ElementType::I4 : mlir::ElementType::UI4;
+    case 8:
+      return is_signed ? mlir::ElementType::I8 : mlir::ElementType::UI8;
+    case 16:
+      return is_signed ? mlir::ElementType::I16 : mlir::ElementType::UI16;
+    case 32:
+      return is_signed ? mlir::ElementType::I32 : mlir::ElementType::UI32;
+    case 64:
+      return is_signed ? mlir::ElementType::I64 : mlir::ElementType::UI64;
+  }
+  return std::nullopt;
+}
+
 absl::StatusOr<mlir::ElementType> ToElementType(mlir::Type type) {
   auto element_type =
       llvm::TypeSwitch<mlir::Type, std::optional<mlir::ElementType>>(type)
-          .Case<mlir::IntegerType>([](mlir::IntegerType int_type)
-                                       -> std::optional<mlir::ElementType> {
-            const bool is_signed = int_type.isSignless();
-            switch (int_type.getWidth()) {
-              case 1:
-                return mlir::ElementType::PRED;
-              case 2:
-                return is_signed ? mlir::ElementType::I2
-                                 : mlir::ElementType::UI2;
-              case 4:
-                return is_signed ? mlir::ElementType::I4
-                                 : mlir::ElementType::UI4;
-              case 8:
-                return is_signed ? mlir::ElementType::I8
-                                 : mlir::ElementType::UI8;
-              case 16:
-                return is_signed ? mlir::ElementType::I16
-                                 : mlir::ElementType::UI16;
-              case 32:
-                return is_signed ? mlir::ElementType::I32
-                                 : mlir::ElementType::UI32;
-              case 64:
-                return is_signed ? mlir::ElementType::I64
-                                 : mlir::ElementType::UI64;
-            }
-            return std::nullopt;
-          })
+          .Case<mlir::IntegerType>(ToIntegerElementType)
           .Case<mlir::BFloat16Type>(
               [](auto) { return mlir::ElementType::BF16; })
           .Case<mlir::Float16Type>([](auto) { return mlir::ElementType::F16; })
           .Case<mlir::Float32Type>([](auto) { return mlir::ElementType::F32; })
           .Case<mlir::Float64Type>([](auto) { return mlir::ElementType::F64; })
+          .Case<mlir::Float4E2M1FNType>(
+              [](auto) { return mlir::ElementType::F4E2M1FN; })
           .Case<mlir::Float8E4M3FNType>(
               [](auto) { return mlir::ElementType::F8E4M3FN; })
           .Case<mlir::Float8E4M3FNUZType>(
@@ -423,12 +422,13 @@ at::ScalarType ToScalarType(const mlir::ElementType element_type) {
       return at::ScalarType::Float8_e5m2fnuz;
     case mlir::ElementType::F8E8M0FNU:
       return at::ScalarType::Float8_e8m0fnu;
+    case mlir::ElementType::F4E2M1FN:
+      return at::ScalarType::Float4_e2m1fn_x2;
     case mlir::ElementType::COMPLEXF32:
       return at::ScalarType::ComplexFloat;
     case mlir::ElementType::COMPLEXF64:
       return at::ScalarType::ComplexDouble;
     // These types have no corresponding ScalarType.
-    case mlir::ElementType::F4E2M1FN:  // Not the same as Float4_e2m1fn_x2
     case mlir::ElementType::F6E2M3FN:
     case mlir::ElementType::F6E3M2FN:
     case mlir::ElementType::F8E3M4:
@@ -487,6 +487,8 @@ at::ScalarType ToScalarType(mlir::Type type) {
           .Case<mlir::Float16Type>([](auto) { return at::kHalf; })
           .Case<mlir::Float32Type>([](auto) { return at::kFloat; })
           .Case<mlir::Float64Type>([](auto) { return at::kDouble; })
+          .Case<mlir::Float4E2M1FNType>(
+              [](auto) { return at::kFloat4_e2m1fn_x2; })
           .Case<mlir::Float8E4M3FNType>([](auto) { return at::kFloat8_e4m3fn; })
           .Case<mlir::Float8E4M3FNUZType>(
               [](auto) { return at::kFloat8_e4m3fnuz; })

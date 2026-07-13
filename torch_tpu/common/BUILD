@@ -98,6 +98,36 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "layout_utils",
+    srcs = ["layout_utils.cc"],
+    hdrs = ["layout_utils.h"],
+    deps = [
+        ":dimension_types",
+        ":dtype",
+        ":error_utils",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "@com_google_absl//absl/status:statusor",
+        "@stablehlo//:attr_type_builder_util",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "layout_utils_test",
+    srcs = ["layout_utils_test.cc"],
+    deps = [
+        ":dimension_types",
+        ":error_utils",
+        ":layout_utils",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
+        "@com_google_googletest//:gtest_main",
+        "@stablehlo//:attr_type_builder_util",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "shape",
     srcs = ["shape.cc"],
     hdrs = ["shape.h"],

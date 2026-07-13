@@ -37,6 +37,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
+#include "c10/util/Exception.h"
 #include "llvm/ADT/STLExtras.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/DeviceType.h"
@@ -44,6 +45,7 @@
 #include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/context_manager.h"
 #include "torch_tpu/common/context_states.h"
+#include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -59,6 +61,97 @@
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
+namespace {
+
+// Unpacks packed float4_e2m1fn_x2 data from host_data into a byte vector where
+// each element occupies one byte (lower 4 bits).
+// Contract:
+// - host_data must not be null.
+// - num_elements must be non-negative and even.
+// - host_data must point to a buffer containing at least num_elements / 2
+// bytes.
+std::vector<uint8_t> UnpackFp4(const uint8_t* absl_nonnull host_data,
+                               int64_t num_elements) {
+  ABSL_CHECK(host_data != nullptr);    // CRASH_OK
+  ABSL_CHECK_GE(num_elements, 0);      // CRASH_OK
+  ABSL_CHECK_EQ(num_elements % 2, 0);  // CRASH_OK
+
+  std::vector<uint8_t> temp_unpacked_data(num_elements);
+  for (int64_t i = 0; i < num_elements / 2; ++i) {
+    uint8_t byte = host_data[i];
+    temp_unpacked_data[2 * i] = byte & 0x0F;
+    temp_unpacked_data[2 * i + 1] = (byte >> 4) & 0x0F;
+  }
+  return temp_unpacked_data;
+}
+
+// Packs unpacked float4_e2m1fn_x2 data (1 element per byte) from unpacked_data
+// into packed_data where each byte contains 2 elements (lower 4 bits of first
+// element, upper 4 bits of second element).
+// Contract:
+// - unpacked_data must not be null.
+// - packed_data must not be null.
+// - num_packed_elements must be non-negative.
+// - unpacked_data must point to a buffer containing at least
+//   2 * num_packed_elements elements.
+// - packed_data must point to a buffer containing at least num_packed_elements
+//   bytes.
+void PackFp4(const uint8_t* absl_nonnull unpacked_data,
+             uint8_t* absl_nonnull packed_data, int64_t num_packed_elements) {
+  ABSL_CHECK(unpacked_data != nullptr);   // CRASH_OK
+  ABSL_CHECK(packed_data != nullptr);     // CRASH_OK
+  ABSL_CHECK_GE(num_packed_elements, 0);  // CRASH_OK
+
+  for (int64_t i = 0; i < num_packed_elements; ++i) {
+    uint8_t val0 = unpacked_data[2 * i] & 0x0F;
+    uint8_t val1 = unpacked_data[2 * i + 1] & 0x0F;
+    packed_data[i] = (val1 << 4) | val0;
+  }
+}
+
+void ValidateFp4Dimensions(absl::Span<const int64_t> dimensions) {
+  ABSL_CHECK(!dimensions.empty())  // CRASH_OK
+      << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional, got "
+         "0-dimensional";
+  ABSL_CHECK_EQ(dimensions.back() % 2, 0)  // CRASH_OK
+      << "expected even size in the last dimension for float4_e2m1fn_x2 "
+         "tensors, got "
+      << dimensions.back();
+}
+
+/**
+ * Unpacks float4_e2m1fn_x2 data from the device PjRtBuffer via a temporary
+ * 1-byte-per-element buffer, then packs it back into the receiver CPU tensor.
+ */
+absl::Status TpuMemcpyDtoHFP4(xla::PjRtBuffer* absl_nonnull buffer,
+                              absl::Span<const int64_t> buffer_expected_dims,
+                              at::Tensor& cpu_tensor_receiver) {
+  // XLA's default layout for sub-byte types (like FP4) in host memory
+  // literals is unpacked (1 byte per element). We allocate a
+  // 1-byte-per-element temporary buffer to receive the unpacked elements from
+  // PjRt/XLA.
+  const int64_t num_packed_elements = cpu_tensor_receiver.numel();
+  std::vector<uint8_t> unpacked_receiver(2 * num_packed_elements);
+
+  xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
+      xla::PrimitiveType::F4E2M1FN, buffer_expected_dims);
+
+  auto literal = std::make_unique<xla::MutableBorrowingLiteral>(
+      reinterpret_cast<char*>(unpacked_receiver.data()), xla_shape);
+  auto future = buffer->ToLiteral(literal.get());
+  {
+    tsl::profiler::TraceMe trace_await("TpuMemcpyDtoHFP4::Await");
+    TT_RETURN_IF_ERROR(AdaptXlaError(future.Await()));
+  }
+
+  // Pack the data back into cpu_tensor_receiver
+  PackFp4(unpacked_receiver.data(),
+          static_cast<uint8_t*>(cpu_tensor_receiver.data_ptr()),
+          num_packed_elements);
+  return absl::OkStatus();
+}
+
+}  // namespace
 
 absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
     const void* host_data, mlir::ElementType element_type,
@@ -67,8 +160,12 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
   tsl::profiler::TraceMe trace("TpuMallocAndMemcpyHtoD");
   if (backing_tensor.has_value() && backing_tensor->data_ptr() != host_data) {
     return TT_ERROR(error::kInvalidArgument)
-           << "backing tensor that was given is not matching the received "
-              "host_data pointer";
+           << "expected backing tensor data pointer to be " << host_data
+           << ", got " << backing_tensor->data_ptr();
+  }
+
+  if (element_type == mlir::ElementType::F4E2M1FN) {
+    ValidateFp4Dimensions(dimensions);
   }
 
   const xla::PrimitiveType type = ConvertTo<xla::PrimitiveType>(element_type);
@@ -80,10 +177,14 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
   xla::PjRtDevice* const device = PjrtBackend::GetInstance().GetDevice();
 
-  ABSL_CHECK_NE(client, nullptr)  // CRASH_OK
-      << "PjRt client not initialized in TpuMallocAndMemcpyHtoD";
-  ABSL_CHECK_NE(device, nullptr)  // CRASH_OK
-      << "PjRt device not initialized in TpuMallocAndMemcpyHtoD";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt client invariants ensure
+                 // PjRtClient is always initialized during runtime.
+      client != nullptr, error::kFailedPrecondition)
+      << "pjrt client not initialized in TpuMallocAndMemcpyHtoD";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt device invariants ensure
+                 // PjRtDevice is always initialized during runtime.
+      device != nullptr, error::kFailedPrecondition)
+      << "pjrt device not initialized in TpuMallocAndMemcpyHtoD";
 
   int64_t num_elements = 1;
   if (dimensions.empty() && type != xla::TUPLE) {
@@ -97,8 +198,10 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
                << device->DebugString();
   TT_ASSIGN_OR_RETURN(xla::PjRtMemorySpace* const memory_space,
                       device->default_memory_space());
-  ABSL_CHECK_NE(memory_space, nullptr)  // CRASH_OK
-      << "Default memory space is null";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA PjRt memory space invariants ensure
+                 // default memory space is always non-null.
+      memory_space != nullptr, error::kInternal)
+      << "default memory space is null";
   ABSL_VLOG(1) << "[TpuMallocAndMemcpyHtoD INTERNAL] Got memory space: "
                << memory_space->DebugString();
 
@@ -106,8 +209,13 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
       xla::PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes;
   const void* effective_host_data = host_data;
   std::vector<char> zeroed_host_data_for_alloc;
+  std::vector<uint8_t> temp_unpacked_data;
 
-  if (host_data == nullptr && num_elements > 0) {
+  if (host_data != nullptr && element_type == mlir::ElementType::F4E2M1FN) {
+    temp_unpacked_data =
+        UnpackFp4(static_cast<const uint8_t*>(host_data), num_elements);
+    effective_host_data = temp_unpacked_data.data();
+  } else if (host_data == nullptr && num_elements > 0) {
     size_t buffer_size_bytes =
         xla::ShapeUtil::ByteSizeOf(xla::ShapeUtil::MakeShape(type, dimensions));
     if (buffer_size_bytes > 0) {
@@ -144,14 +252,12 @@ absl::StatusOr<DeviceBufferRef> TpuMallocAndMemcpyHtoD(
           effective_host_data,
 
           type, dimensions, std::nullopt, semantics,
-          [backing_tensor = std::move(backing_tensor)]() mutable {
-            // This lambda isn't really doing anything, but we
-            // need to ensure the C++ compiler doesn't optimize
-            // by dropping the backing tensor before the
-            // transfer completes.
-            if (backing_tensor.has_value()) {
-              backing_tensor.reset();
-            }
+          [backing_tensor = std::move(backing_tensor),
+           temp_unpacked = std::move(temp_unpacked_data)]() mutable {
+            // This lambda ensures that the backing tensor and the temporary
+            // unpacked FP4 buffer are kept alive until the transfer completes.
+            backing_tensor.reset();
+            temp_unpacked = std::vector<uint8_t>();
           },
           memory_space, layout_ptr)));
 
@@ -195,10 +301,14 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
   const auto buffer_tensor_type =
       ConvertTo<at::ScalarType>(buffer_ref.element_type());
   absl::Span<const int64_t> buffer_expected_dims = buffer_ref.dimensions();
+  Dimensions cpu_dims(buffer_expected_dims.begin(), buffer_expected_dims.end());
+  if (buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
+    ValidateFp4Dimensions(cpu_dims);
+    cpu_dims.back() /= 2;
+  }
 
-  at::Tensor cpu_tensor_receiver =
-      at::empty(buffer_expected_dims,
-                at::TensorOptions().dtype(buffer_tensor_type).device(at::kCPU));
+  at::Tensor cpu_tensor_receiver = at::empty(
+      cpu_dims, at::TensorOptions().dtype(buffer_tensor_type).device(at::kCPU));
 
   if (buffer_expected_bytes == 0) {
     ABSL_VLOG(1) << "[TpuMemcpyDtoH] DeviceBufferRef size_bytes is 0. "
@@ -206,10 +316,9 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
     return cpu_tensor_receiver;
   }
 
-  TT_ASSIGN_OR_RETURN(
-      auto* buffer, buffer_ref.AwaitBuffer(),
-      _ << " - TpuMemcpyDtoH: DeviceBufferRef has nonzero size, "
-           "but does not have a PjRtBuffer to copy from");
+  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer(),
+                      _ << "device buffer ref has nonzero size, "
+                           "but does not have a PjRtBuffer to copy from");
 
   ABSL_VLOG(1) << "[TpuMemcpyDtoH] PjRtBuffer Details - OnDeviceSizeInBytes: "
                << buffer->GetOnDeviceSizeInBytes()
@@ -218,6 +327,12 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
                << ", Shape: " << buffer->on_device_shape().ToString(true);
 
   ABSL_VLOG(1) << "[TpuMemcpyDtoH] Calling PjRtBuffer::ToLiteral()...";
+
+  if (buffer_ref.element_type() == mlir::ElementType::F4E2M1FN) {
+    TT_RETURN_IF_ERROR(
+        TpuMemcpyDtoHFP4(buffer, buffer_expected_dims, cpu_tensor_receiver));
+    return cpu_tensor_receiver;
+  }
 
   xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
       ConvertTo<xla::PrimitiveType>(buffer_ref.element_type()),
@@ -235,15 +350,17 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
 
 absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
                                  void* dst_ptr, bool non_blocking) {
+  ABSL_CHECK_NE(buffer_ref.element_type(),  // CRASH_OK
+                mlir::ElementType::F4E2M1FN)
+      << "direct copy to host is not supported for float4_e2m1fn_x2";
   size_t buffer_expected_bytes = buffer_ref.size_bytes();
   if (buffer_expected_bytes == 0) {
     return absl::OkStatus();
   }
 
-  TT_ASSIGN_OR_RETURN(
-      auto* buffer, buffer_ref.AwaitBuffer(),
-      _ << " - TpuMemcpyDtoHDirect: DeviceBufferRef has nonzero size, "
-           "but does not have a PjRtBuffer to copy from");
+  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer(),
+                      _ << "device buffer ref has nonzero size, "
+                           "but does not have a PjRtBuffer to copy from");
 
   absl::Span<const int64_t> buffer_expected_dims = buffer_ref.dimensions();
   xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
@@ -282,8 +399,10 @@ absl::StatusOr<PjRtBufferPointers> Execute(
                       AdaptXlaError(executable->GetLoadedExecutable()->Execute(
                           execution_arguments, execute_options)));
 
-  ABSL_CHECK(!results_per_device.empty())  // CRASH_OK
-      << "XLA execution did not return any results";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=XLA execution contracts guarantee
+                 // non-empty results on successful execution.
+      !results_per_device.empty(), error::kInternal)
+      << "xla execution did not return any results";
 
   PjRtBufferPointers result_pointers;
   result_pointers.reserve(results_per_device[0].size());

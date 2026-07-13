@@ -355,17 +355,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.empty(2, dtype=torch.complex32, device="tpu")
 
-  @et.why_tpu_only("TODO: support float4_e2m1fn_x2 on TPU.")
-  def test_dtype_float4_e2m1fn_x2_unsupported(self):
-    # The float4_e2m1fn_x2 dtype represents 2x f4e2m1fn values packed into 8bits
-    # which is different from XLA's supported single-value f4e2m1fn dtype.
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""empty(): TorchTPU does not yet support dtype float4_e2m1fn_x2""",
-        message_reviewed_by="wan",
-    ):
-      torch.empty(2, dtype=torch.float4_e2m1fn_x2, device="tpu")
-
   @et.why_tpu_only("TODO: support complex32 on TPU.")
   def test_empty_strided(self):
     with et.assert_raises_message(
