@@ -17,12 +17,10 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -33,8 +31,8 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -63,7 +61,7 @@ bool PyLookupCustomKernel(c10::string_view name, c10::string_view kernel_key) {
 }
 
 std::vector<at::Tensor> PyCallCustomKernel(
-    const c10::string_view name, const c10::string_view kernel_key,
+    c10::string_view name, c10::string_view kernel_key,
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
@@ -86,12 +84,17 @@ std::vector<at::Tensor> PyCallCustomKernel(
         std::vector<absl::Span<const int64_t>> output_dims_list;
         output_dtypes.reserve(output_shapes.size());
         output_dims_list.reserve(output_shapes.size());
+
+        std::vector<Dimensions> resolved_dims;
+        resolved_dims.reserve(output_shapes.size());
+
         for (const auto& output_shape : output_shapes) {
-          TT_ASSIGN_OR_THROW(
-              const auto output_dtype,
-              ConvertTo<mlir::ElementType>(output_shape.scalar_type()));
-          output_dtypes.push_back(output_dtype);
-          output_dims_list.push_back(output_shape.sizes());
+          TT_ASSIGN_OR_THROW(auto layout, ResolveTpuLayout(output_shape));
+          output_dtypes.push_back(layout.element_type);
+          resolved_dims.push_back(std::move(layout.sizes));
+        }
+        for (const auto& dims : resolved_dims) {
+          output_dims_list.push_back(dims);
         }
 
         DispatchOpOptions<kDynamicSize> options{
@@ -108,13 +111,15 @@ std::vector<at::Tensor> PyCallCustomKernel(
         absl::StatusOr<std::vector<DeviceBufferRef>> results_status =
             DispatchOp<kDynamicSize, kDynamicSize>(std::move(custom_op_builder),
                                                    inputs, std::move(options));
-        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> results,
-                           results_status);
+        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> results, results_status,
+                           _.SetOverride()
+                               << ::torch_tpu::AdaptExternalErrorMessage(
+                                      results_status.status().message()));
 
         std::vector<at::Tensor> result_tensors;
         result_tensors.reserve(results.size());
-        for (auto i = 0; i < results.size(); ++i) {
-          result_tensors.push_back(MakeTensor(std::move(results[i])));
+        for (auto& result : results) {
+          result_tensors.push_back(MakeTensor(std::move(result)));
         }
         return result_tensors;
       });
