@@ -528,6 +528,9 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.bfloat16: {"rtol": 7.4e-2, "atol": 2.6e-2},
         torch.float16: {"rtol": 4.4e-3, "atol": 2e-3},
     },
+    "nn.functional.binary_cross_entropy": {
+        torch.float32: {"rtol": 2e-4, "atol": 5e-4},
+    },
     "nn.functional.conv1d": {
         torch.bfloat16: {"rtol": 2.6e-2, "atol": 1.2e-2},
         torch.float16: {"rtol": 5e-2, "atol": 5.4e-1},
@@ -1923,6 +1926,14 @@ class TestOps(TorchTpuTestBase):
         check_value=CheckValueMode.SKIP,
         # GPU (CUDA) does not support complex dtypes for bernoulli.
         exclude_dtypes=COMPLEX_DTYPES,
+    )
+
+  def test_binary_cross_entropy(self):
+    self.do_test_op(
+        "nn.functional.binary_cross_entropy",
+        exclude_dtypes=(  # EXCLUDE_DTYPES_OK=BCE requires floating point
+            COMPLEX_DTYPES + INTEGRAL_DTYPES
+        ),
     )
 
   def test_bincount(self):

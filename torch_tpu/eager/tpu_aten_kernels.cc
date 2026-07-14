@@ -51,6 +51,7 @@
 #include "torch_tpu/ops/baddbmm/baddbmm_aten_kernels.h"
 #include "torch_tpu/ops/bernoulli/bernoulli_aten_kernels.h"
 #include "torch_tpu/ops/binary_aten_kernels.h"  // IWYU pragma: keep for AtenMulTensor, etc
+#include "torch_tpu/ops/binary_cross_entropy/binary_cross_entropy_aten_kernels.h"
 #include "torch_tpu/ops/bincount/bincount_aten_kernels.h"
 #include "torch_tpu/ops/bmm/bmm_aten_kernels.h"
 #include "torch_tpu/ops/bucketize/bucketize_aten_kernels.h"
@@ -364,6 +365,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kBernoulli_Float>(m, AtenBernoulli_Float);
   ImplStable<OpName::kBernoulli_Tensor>(m, AtenBernoulli_Tensor);
   ImplStable<OpName::kBinCount>(m, AtenBinCount);
+  ImplStable<OpName::kBinaryCrossEntropy>(m, AtenBinaryCrossEntropy);
+  ImplStable<OpName::kBinaryCrossEntropyBackward>(
+      m, AtenBinaryCrossEntropyBackward);
+  ImplStable<OpName::kBinaryCrossEntropyBackwardGradInput>(
+      m, AtenBinaryCrossEntropyBackwardGradInput);
+  ImplStable<OpName::kBinaryCrossEntropyOut>(m, AtenBinaryCrossEntropyOut);
   ImplStable<OpName::kBitwiseAndTensorOut>(m, AtenBitwiseAndTensorOut);
   ImplStable<OpName::kBitwiseLeftShiftTensorOut>(m,
                                                  AtenBitwiseLeftShiftTensorOut);

@@ -1402,6 +1402,108 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
       self.assert_close_tpu_vs_cpu(test_fn)
 
+  @parameterized.product(
+      reduction=["none", "sum", "mean"],
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_binary_cross_entropy_reductions(self, reduction, dtype):
+    input_val = torch.rand(3, 3, dtype=dtype)
+    target_val = torch.rand(3, 3, dtype=dtype)
+
+    def compute(device):
+      return torch.nn.functional.binary_cross_entropy(
+          input_val.to(device), target_val.to(device), reduction=reduction
+      )
+
+    if dtype == torch.float32:
+      self.assert_close_tpu_vs_cpu(compute, rtol=1.5e-5, atol=1e-4)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_binary_cross_entropy_with_weight(self, dtype):
+    input_val = torch.rand(3, 3, dtype=dtype)
+    target_val = torch.rand(3, 3, dtype=dtype)
+    weight_val = torch.rand(3, 3, dtype=dtype)
+
+    def compute(device):
+      return torch.nn.functional.binary_cross_entropy(
+          input_val.to(device),
+          target_val.to(device),
+          weight=weight_val.to(device),
+      )
+
+    if dtype == torch.float32:
+      self.assert_close_tpu_vs_cpu(compute, rtol=1.5e-5, atol=1e-4)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      dtype=[torch.float32, torch.bfloat16],
+      weight_dtype=[torch.int32, torch.int64],
+  )
+  def test_binary_cross_entropy_with_integer_weight(self, dtype, weight_dtype):
+    input_val = torch.rand(3, 3, dtype=dtype)
+    target_val = torch.rand(3, 3, dtype=dtype)
+    weight_val = torch.randint(1, 5, (3, 3), dtype=weight_dtype)
+
+    def compute(device):
+      return torch.nn.functional.binary_cross_entropy(
+          input_val.to(device),
+          target_val.to(device),
+          weight=weight_val.to(device),
+      )
+
+    if dtype == torch.float32:
+      self.assert_close_tpu_vs_cpu(compute, rtol=1.5e-5, atol=1e-4)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(
+      reduction=["none", "sum", "mean"],
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_binary_cross_entropy_backward(self, reduction, dtype):
+    input_val = torch.rand(3, 3, dtype=dtype, requires_grad=True)
+    target_val = torch.rand(3, 3, dtype=dtype)
+
+    def compute(device):
+      inp = input_val.detach().clone().to(device).requires_grad_(True)
+      out = torch.nn.functional.binary_cross_entropy(
+          inp, target_val.to(device), reduction=reduction
+      )
+      if reduction == "none":
+        grad_output = torch.ones_like(out)
+      else:
+        grad_output = torch.tensor(1.5, device=device, dtype=dtype)
+      out.backward(grad_output)
+      return inp.grad
+
+    if dtype == torch.float32:
+      self.assert_close_tpu_vs_cpu(compute, rtol=1.5e-5, atol=1e-4)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(0, 1, 2)
+  def test_binary_cross_entropy_backward_broadcasting(self, reduction):
+    """Tests binary_cross_entropy_backward with broadcasting grad_output."""
+    input_t = torch.rand((3, 3), dtype=torch.float32)
+    target_t = torch.rand((3, 3), dtype=torch.float32)
+    grad_output = torch.tensor(1.5, dtype=torch.float32)
+
+    def compute(device):
+      return torch.ops.aten.binary_cross_entropy_backward(
+          grad_output.to(device),
+          input_t.to(device),
+          target_t.to(device),
+          None,
+          reduction,
+      )
+
+    self.assert_close_tpu_vs_cpu(compute, rtol=1.5e-5, atol=1e-4)
+
   def test_bincount(self):
     inputs = torch.tensor([0, 1, 3, 5, 1])
     weights = torch.tensor([0.1, 0.1, 0.3, 0.5, 0.1])

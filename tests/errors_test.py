@@ -388,6 +388,42 @@ class TpuVsGpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
           grad_input=grad_input,
       )
 
+  def test_binary_cross_entropy_invalid_dtype_input(self):
+    input_tensor = torch.tensor([0, 1], device=et.device(), dtype=torch.int32)
+    target = torch.tensor([0.0, 1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""binary_cross_entropy(): expected floating point for input, got 'Int'""",
+        gpu="""Found dtype Float but expected Int""",
+    ):
+      torch.nn.functional.binary_cross_entropy(input_tensor, target)
+
+  def test_binary_cross_entropy_invalid_dtype_target(self):
+    input_tensor = torch.tensor(
+        [0.0, 1.0], device=et.device(), dtype=torch.float32
+    )
+    target = torch.tensor([0, 1], device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""binary_cross_entropy(): expected floating point for target, got 'Int'""",
+        gpu="""Found dtype Int but expected Float""",
+    ):
+      torch.nn.functional.binary_cross_entropy(input_tensor, target)
+
+  def test_binary_cross_entropy_mismatched_shapes(self):
+    input_tensor = torch.tensor(
+        [0.0, 1.0], device=et.device(), dtype=torch.float32
+    )
+    target = torch.tensor(
+        [0.0, 1.0, 2.0], device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""binary_cross_entropy(): expected input and target to have the same shape, got [2] and [3]""",
+        gpu="""The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0""",
+    ):
+      torch.ops.aten.binary_cross_entropy(input_tensor, target, None, 1)
+
   def test_ctc_loss_log_probs_3d(self):
     log_probs = torch.randn(2, 3, device=et.device())
     targets = torch.randint(1, 3, (2, 3), dtype=torch.int32, device=et.device())
