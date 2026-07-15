@@ -109,8 +109,11 @@ absl::Status ValidateAndEraseShapeAssertions(mlir::ModuleOp module) {
 }
 
 // Given a custom MLIR kernel, move it to the destination module and
-// return the moved function. Custom kernel must be refined and have a single
-// function.
+// return the moved entry function. The kernel module has one entry function
+// plus any helper functions referenced symbolically. For example, StableHLO
+// serialization encodes region-carrying MHLO ops (such as mhlo.scan) as a
+// stablehlo.custom_call whose body lives in a separate function referenced
+// via called_computations.
 absl::StatusOr<mlir::func::FuncOp> MoveCustomMlirKernel(
     mlir::ModuleOp custom_kernel, mlir::ModuleOp dst_module,
     std::optional<std::string_view> kernel_id_str = std::nullopt) {
@@ -125,49 +128,66 @@ absl::StatusOr<mlir::func::FuncOp> MoveCustomMlirKernel(
   mlir::SymbolTable& dst_st = symbol_tables.getSymbolTable(dst_module);
   mlir::SymbolTable& src_st = symbol_tables.getSymbolTable(custom_kernel);
 
-  // Rename all functions in the module to be unique.
+  // Identify the entry function: the function named "main", or the only
+  // function in the module.
   auto funcs = custom_kernel.getOps<mlir::func::FuncOp>();
   const size_t num_funcs = absl::c_distance(funcs);
-  // After running the inliner pass, the kernel must only have 1 function.
-  ABSL_CHECK(  // CRASH_OK=Infra only handles importing a single function.
-      num_funcs == 1)
-      << "custom kernel must have exactly one function after specialization, "
-         "got "
-      << num_funcs;
-
-  mlir::func::FuncOp src_main = *funcs.begin();
-  if (kernel_id_str.has_value()) {
-    // Rename the function to the given kernel id string.
-    // A kernel id string is expected to be something like
-    // "foo_0x1234567890", where the suffix is a hash of the kernel's kwargs and
-    // input shapes/dtypes.
-    ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
-        mlir::succeeded(src_st.rename(src_main, *kernel_id_str)))
-        << "failed to rename function " << src_main.getName().str();
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=the partitioning round trip through
+                 // HLO always produces an entry function.
+      num_funcs >= 1, error::kInternal)
+      << "custom kernel must have at least one function after specialization";
+  mlir::func::FuncOp src_main;
+  if (num_funcs == 1) {
+    src_main = *funcs.begin();
   } else {
-    // Rename the function to something representative, but also unique.
-    mlir::StringRef custom_kernel_name =
-        custom_kernel.getName().value_or("kernel");
+    for (mlir::func::FuncOp func : funcs) {
+      if (func.getSymName() == "main") {
+        src_main = func;
+        break;
+      }
+    }
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=the round trip through HLO names
+                   // the entry function 'main'.
+        src_main, error::kInternal)
+        << "custom kernel with " << num_funcs
+        << " functions must have a 'main' entry function";
+  }
+
+  // Rename the entry function to its externally visible name: the given kernel
+  // id string, or a representative name. A kernel id string is expected to be
+  // something like "foo_0x1234567890", where the suffix is a hash of the
+  // kernel's kwargs and input shapes/dtypes.
+  mlir::StringRef entry_name =
+      kernel_id_str.value_or(custom_kernel.getName().value_or("kernel"));
+  ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
+      mlir::succeeded(src_st.rename(src_main, entry_name)))
+      << "failed to rename function " << src_main.getName().str();
+
+  // Rename functions to be unique in the destination module. Renaming through
+  // the symbol table keeps symbolic references to them (such as
+  // called_computations) in sync. The entry function is skipped when a kernel
+  // id was given: CallCustomKernel looks it up by that exact name to reuse an
+  // already-injected kernel, and renameToUnique would append a suffix.
+  for (mlir::func::FuncOp func : funcs) {
+    if (func == src_main && kernel_id_str.has_value()) continue;
     ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
-        mlir::succeeded(src_st.rename(src_main, custom_kernel_name)))
-        << "failed to rename function " << src_main.getName().str();
-    ABSL_CHECK(  // CRASH_OK=Rename should never fail, unrecoverable if it does.
-        mlir::succeeded(src_st.renameToUnique(src_main, &dst_st)))
-        << "failed to rename function " << src_main.getName().str();
+        mlir::succeeded(src_st.renameToUnique(func, &dst_st)))
+        << "failed to rename function " << func.getName().str();
   }
 
   // Now clone the unique functions into the destination module.
   module_rewriter.setInsertionPointToStart(dst_module.getBody());
   mlir::func::FuncOp cloned_entry_fn;
   for (auto func : funcs) {
-    auto cloned_func = module_rewriter.clone(*func);
+    auto cloned_func =
+        mlir::cast<mlir::func::FuncOp>(module_rewriter.clone(*func));
+    // Mark imported functions as private; the kernel entry is no longer the
+    // module entry function, and helpers are internal by construction.
+    cloned_func.setVisibility(mlir::SymbolTable::Visibility::Private);
     if (func == src_main) {
-      cloned_entry_fn = mlir::cast<mlir::func::FuncOp>(cloned_func);
+      cloned_entry_fn = cloned_func;
     }
   }
-
-  // Mark imported function as private, it is no longer the entry function.
-  cloned_entry_fn.setVisibility(mlir::SymbolTable::Visibility::Private);
 
   ABSL_CHECK(  // CRASH_OK=Unreachable given the above logic.
       cloned_entry_fn)
