@@ -15,6 +15,9 @@
 """Tests for the version-dispatch selection logic."""
 
 import pathlib
+import sys
+import types
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -51,30 +54,6 @@ class ResolveSuffixTest(parameterized.TestCase):
     with self.assertRaisesRegex(ImportError, "predates"):
       loader.resolve_suffix("2_9_0", {"2_11_0", "2_12_0"})
 
-  def test_dev_build_gets_the_nightly_glue(self):
-    self.assertEqual(
-        loader.resolve_suffix(
-            "2_14_0", {"2_11_0", "2_12_0", "nightly"}, running_is_dev=True
-        ),
-        "nightly",
-    )
-
-  def test_dev_build_without_a_nightly_glue_gets_the_newest_release_glue(self):
-    self.assertEqual(
-        loader.resolve_suffix(
-            "2_14_0", {"2_11_0", "2_12_0"}, running_is_dev=True
-        ),
-        "2_12_0",
-    )
-
-  def test_release_never_gets_the_nightly_glue(self):
-    # Even a release newer than every numbered glue: the nightly glue tracks a
-    # transient dev snapshot, not the eventual release.
-    self.assertEqual(
-        loader.resolve_suffix("2_14_0", {"2_11_0", "2_12_0", "nightly"}),
-        "2_12_0",
-    )
-
   def test_comparison_is_by_semver_not_lexicographic(self):
     # "2_11_10" > "2_11_9" numerically although not lexicographically.
     self.assertEqual(
@@ -89,18 +68,31 @@ class ResolveSuffixTest(parameterized.TestCase):
       loader.resolve_suffix(None, {"2_11_0", "2_12_0"})
 
 
-class IsDevVersionTest(parameterized.TestCase):
+class VersionSuffixTest(parameterized.TestCase):
 
   @parameterized.parameters(
-      ("2.14.0.dev20260711+cpu", True),
-      ("2.13.0+cpu", False),
-      ("2.13.0", False),
-      # An rc is a released ABI candidate, not a nightly snapshot.
-      ("2.13.0rc1", False),
-      (None, False),
+      ("2.13.0", "2_13_0"),
+      ("2.13.0+cpu", "2_13_0"),
+      # A dev build's suffix is the release triple it leads up to, so it is
+      # served by the glue built against the matching dev snapshot.
+      ("2.14.0.dev20260711+cpu", "2_14_0"),
+      ("2.11.10", "2_11_10"),
+      # Undeterminable versions disable rather than misdirect the dispatch.
+      ("2.13", None),
+      ("main", None),
   )
-  def test_is_dev_version(self, version, expected):
-    self.assertEqual(loader.is_dev_version(version), expected)
+  def test_version_suffix(self, version, expected):
+    self.assertEqual(loader.version_suffix(version), expected)
+
+
+class InstalledTorchVersionTest(absltest.TestCase):
+
+  def test_prefers_the_imported_torch_over_install_metadata(self):
+    # The glue must match the torch actually loaded in this process, which the
+    # install metadata need not reflect.
+    fake_torch = types.SimpleNamespace(__version__="2.12.5+fake")
+    with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+      self.assertEqual(loader.installed_torch_version(), "2.12.5+fake")
 
 
 class DiscoverBuiltSuffixesTest(absltest.TestCase):
@@ -117,18 +109,10 @@ class DiscoverBuiltSuffixesTest(absltest.TestCase):
     self._touch(root, "_internal/sync/_tpu_torch_sync_2_11_0.so")
     self._touch(root, "_internal/env.py")  # not a .so
     self._touch(root, "common/libpywrap_torch_tpu_common.so")  # unversioned
+    self._touch(root, "common/libpywrap_2_11_0_common.so")  # not a glue
 
     self.assertEqual(
         loader.discover_built_suffixes(root), frozenset({"2_11_0", "2_12_0"})
-    )
-
-  def test_finds_the_nightly_glue(self):
-    root = pathlib.Path(self.create_tempdir().full_path)
-    self._touch(root, "_internal/env_2_11_0.so")
-    self._touch(root, "_internal/env_nightly.so")
-
-    self.assertEqual(
-        loader.discover_built_suffixes(root), frozenset({"2_11_0", "nightly"})
     )
 
   def test_no_versioned_glues_returns_empty(self):

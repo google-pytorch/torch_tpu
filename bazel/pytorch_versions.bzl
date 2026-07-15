@@ -50,21 +50,24 @@ EXTRA_PYTORCH_VERSIONS = [
 # the extras -- one thin glue `.so` each.
 WHEEL_TORCH_VERSIONS = [DEFAULT_TORCH_VERSION] + EXTRA_PYTORCH_VERSIONS
 
-# The PyTorch nightly channel, treated as one more glue "version" throughout
-# the build (glue package glue_nightly, config setting //:torch_nightly, pip
-# hub torch_tpu_pypi_nightly, artifacts like env_nightly.so). The snapshot it
-# is built against is pinned in requirements/requirements_torch_nightly.txt;
-# re-running requirements/lock_environments.sh advances it to the newest dev
-# build. Unlike the release glues it is optional in the wheel: the
+# The release version the PyTorch nightly channel currently leads up to. The
+# nightly glue is one more glue like any other -- named by this version (glue
+# package glue_2_14_0, config setting //:torch_2_14_0, artifacts like
+# env_2_14_0.so), and served by the runtime dispatch through the ordinary
+# newest-at-or-below rule (a dev build's version triple is the release it
+# precedes). Only its torch differs: it is built against the dev snapshot
+# pinned in requirements/requirements_torch_nightly.txt, so this constant must
+# stay the release triple of that pin -- lock_environments.sh refreshes the
+# pin and errors if this no longer matches. Its one packaging difference: the
 # //:include_nightly_glue flag (on by default, off under --config
-# wheel_release) selects it in or out, and at runtime it is only ever chosen
-# when the installed torch is itself a dev build.
-NIGHTLY_TORCH_VERSION = "nightly"
+# wheel_release) selects it out of artifacts published to an index, since a
+# transient dev snapshot must not ship to PyPI.
+NIGHTLY_TORCH_VERSION = "2.14.0"
 
 # Every glue the build can produce: the released versions plus the nightly
-# channel. This is what the per-glue build machinery (target fan-out, glue
+# channel's. This is what the per-glue build machinery (target fan-out, glue
 # packages, torch shim selects) iterates over; WHEEL_TORCH_VERSIONS remains
-# the released subset with numeric-version semantics.
+# the released subset actually published in every wheel.
 GLUE_TORCH_VERSIONS = WHEEL_TORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
 # Released PyTorch versions the wheel ships no exact glue for; the runtime

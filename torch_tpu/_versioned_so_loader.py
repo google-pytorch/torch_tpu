@@ -33,56 +33,60 @@ while versioned glues exist, or predates every built glue, that is an error.
 When no versioned glues are present at all (e.g. an unversioned developer
 build) the hook is not installed and imports resolve normally.
 
-Nightly-channel wheels additionally bundle a ``nightly`` glue (e.g.
-``env_nightly.so``), built against a pinned PyTorch dev snapshot. It is chosen
-if and only if the installed torch is itself a dev build (a PEP 440 ``.dev``
-version, as the nightly wheels ship); a released torch never loads it, and a
-dev torch in a wheel without it falls back to the newest release glue.
+A dev build's version compares by the release triple it leads up to
+(``2.14.0.dev20260711`` -> ``2.14.0``), so the glue the nightly-channel wheel
+bundles -- built against a pinned dev snapshot and named by that snapshot's
+release triple, like any other glue -- serves it whenever present.
 """
 
-import collections.abc
+from collections.abc import Collection
 import importlib.abc
 import importlib.machinery
 import importlib.metadata
 import importlib.util
 import pathlib
-import re
 import sys
+from typing import Final
 
-_INTERNAL_PREFIX = "torch_tpu._internal."
-
-# The glue suffix of the PyTorch nightly channel.
-_NIGHTLY_SUFFIX = "nightly"
-
-# Matches a versioned extension artifact, capturing the "<major>_<minor>_<patch>"
-# (or "nightly") suffix, e.g. "env_2_12_0.so" -> "2_12_0".
-_VERSIONED_SO = re.compile(r"_(\d+_\d+_\d+|nightly)\.so$")
+_INTERNAL_PREFIX: Final[str] = "torch_tpu._internal."
 
 # Resolved once by install_hook(): the suffix of the glue variant this process
 # loads, or None when dispatch is disabled.
 _VERSION_SUFFIX: str | None = None
 
 
-def _parse(suffix: str) -> tuple[float, ...]:
-  if suffix == _NIGHTLY_SUFFIX:
-    # The nightly glue tracks the unreleased next version, so it sorts after
-    # every numbered glue (only relevant for display ordering; selection never
-    # compares it against a release).
-    return (float("inf"),)
+def _parse(suffix: str) -> tuple[int, ...]:
   return tuple(int(part) for part in suffix.split("_"))
 
 
 def installed_torch_version() -> str | None:
-  """Returns the installed torch's full version string, or None."""
+  """Returns the installed torch's full version string, or None.
+
+  Prefers ``torch.__version__`` -- it reflects the torch actually loaded in
+  this process, which is what the glue must match. torch is deliberately never
+  imported from here: torch_tpu is itself mid-import and importing torch would
+  re-enter it through torch's backend autoload. When torch is not already in
+  ``sys.modules`` (torch_tpu imported first), the install metadata answers
+  instead.
+  """
+  version = getattr(sys.modules.get("torch"), "__version__", None)
+  if version is not None:
+    return str(version)
   try:
     return importlib.metadata.version("torch")
   except importlib.metadata.PackageNotFoundError:
     return None
 
 
-def is_dev_version(version: str | None) -> bool:
-  """Whether a torch version string is a dev build (e.g. 2.14.0.dev20260711)."""
-  return version is not None and ".dev" in version
+def version_suffix(version: str) -> str | None:
+  """Turns a torch version into a glue suffix ("2.13.0+cpu" -> "2_13_0")."""
+  # Cut any local tag first so it cannot ride on the patch component
+  # ("2.13.0+cpu" would otherwise split into ("2", "13", "0+cpu")); a ".dev"
+  # tag is a component of its own and falls off the triple.
+  parts = version.split("+")[0].split(".")[:3]
+  if len(parts) < 3 or not all(part.isdigit() for part in parts):
+    return None
+  return "_".join(parts)
 
 
 def torch_version_suffix() -> str | None:
@@ -90,29 +94,35 @@ def torch_version_suffix() -> str | None:
   version = installed_torch_version()
   if version is None:
     return None
-  match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
-  if match is None:
+  return version_suffix(version)
+
+
+def _glue_suffix(so_name: str) -> str | None:
+  """Returns the version suffix of a glue filename, or None if unversioned.
+
+  A glue artifact is named ``<module>_<major>_<minor>_<patch>.so``, e.g.
+  ``env_2_12_0.so`` -> ``2_12_0``.
+  """
+  parts = so_name.removesuffix(".so").split("_")
+  if len(parts) < 4 or not all(part.isdigit() for part in parts[-3:]):
     return None
-  return f"{match.group(1)}_{match.group(2)}_{match.group(3)}"
+  return "_".join(parts[-3:])
 
 
 def discover_built_suffixes(
     package_dir: pathlib.Path,
 ) -> frozenset[str]:
   """Returns the set of glue suffixes bundled under ``package_dir``."""
-  suffixes = set()
-  for so in package_dir.rglob("*.so"):
-    match = _VERSIONED_SO.search(so.name)
-    if match is not None:
-      suffixes.add(match.group(1))
-  return frozenset(suffixes)
+  return frozenset(
+      suffix
+      for so in package_dir.rglob("*.so")
+      if (suffix := _glue_suffix(so.name)) is not None
+  )
 
 
 def resolve_suffix(
     running: str | None,
-    built: collections.abc.Collection[str],
-    *,
-    running_is_dev: bool = False,
+    built: Collection[str],
 ) -> str | None:
   """Chooses the glue suffix to load, or None to disable dispatch.
 
@@ -120,9 +130,7 @@ def resolve_suffix(
   with the previous glue, so each glue serves every release from its own
   version up to the next glue's -- and the newest glue serves everything after
   it. The choice is therefore the newest built glue whose version is <= the
-  running PyTorch. The nightly glue sits outside that ordering: it serves a
-  dev-build torch (and nothing else), since it was built against a nightly
-  snapshot rather than a release.
+  running PyTorch.
 
   Raises:
     ImportError: if versioned glues exist but the installed PyTorch version
@@ -140,17 +148,7 @@ def resolve_suffix(
         f"for PyTorch: {supported}."
     )
 
-  if running_is_dev and _NIGHTLY_SUFFIX in built:
-    return _NIGHTLY_SUFFIX
-
-  # A released torch never gets the nightly glue (it tracks a transient dev
-  # snapshot); a dev torch in a wheel without one falls through to the newest
-  # release glue, exactly like any release newer than every glue.
-  candidates = [
-      b
-      for b in built
-      if b != _NIGHTLY_SUFFIX and _parse(b) <= _parse(running)
-  ]
+  candidates = [b for b in built if _parse(b) <= _parse(running)]
   if not candidates:
     raise ImportError(
         "torch_tpu has no extension module compatible with PyTorch "
@@ -235,7 +233,6 @@ def install_hook(package_dir: pathlib.Path) -> None:
   resolved = resolve_suffix(
       torch_version_suffix(),
       discover_built_suffixes(package_dir),
-      running_is_dev=is_dev_version(installed_torch_version()),
   )
   if resolved is None:
     return

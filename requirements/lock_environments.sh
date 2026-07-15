@@ -110,3 +110,18 @@ uv pip compile - \
   --output-file "$REQUIREMENTS_FILE" <<EOF
 torch
 EOF
+
+# The nightly glue is named by the release its snapshot leads up to
+# (NIGHTLY_TORCH_VERSION in bazel/pytorch_versions.bzl, mirrored by hand in
+# MODULE.bazel like the version lists). When the fresh pin rolls into a new
+# release cycle those constants must roll with it, so fail loudly rather than
+# let a stale name ship a glue built against a different ABI.
+pinned_snapshot=$(grep -m1 '^torch==' "$REQUIREMENTS_FILE" | cut -d'=' -f3)
+pinned_release=$(echo "$pinned_snapshot" | cut -d'+' -f1 | cut -d'.' -f1-3)
+declared=$(uv run bazel/pytorch_versions.py NIGHTLY_TORCH_VERSION)
+if [ "$pinned_release" != "$declared" ]; then
+  echo "ERROR: the nightly lock now pins torch $pinned_snapshot (release $pinned_release)," >&2
+  echo "but NIGHTLY_TORCH_VERSION is $declared. Update it in bazel/pytorch_versions.bzl" >&2
+  echo "and MODULE.bazel to $pinned_release." >&2
+  exit 1
+fi

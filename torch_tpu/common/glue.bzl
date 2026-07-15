@@ -42,8 +42,7 @@ def versioned_glue_library():
 
     Call once, with no arguments, from a `//torch_tpu/common/glue_<suffix>/BUILD`.
     The PyTorch version is the `<suffix>` in the package name (e.g. `glue_2_12_1`
-    -> `2.12.1`, `glue_nightly` -> `nightly`), checked against
-    GLUE_TORCH_VERSIONS.
+    -> `2.12.1`), checked against GLUE_TORCH_VERSIONS.
     """
     leaf = native.package_name().rsplit("/", 1)[-1]
     if not leaf.startswith(_GLUE_PACKAGE_PREFIX):

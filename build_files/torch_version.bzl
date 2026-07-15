@@ -46,9 +46,9 @@ _TORCH_HEADERS_ONLY = "//:torch_headers_only"
 # torch_tpu/common/BUILD already load WHEEL_TORCH_VERSIONS from this module.
 WHEEL_TORCH_VERSIONS = _WHEEL_TORCH_VERSIONS
 
-# All buildable glues: the released versions plus the nightly channel. This is
-# what the per-glue fan-out iterates; "nightly" flows through the same
-# machinery as a release version (its version_suffix is just "nightly").
+# All buildable glues: the released versions plus the nightly channel's, which
+# flows through the same machinery under the release version its dev snapshot
+# leads up to. This is what the per-glue fan-out iterates.
 GLUE_TORCH_VERSIONS = _GLUE_TORCH_VERSIONS
 
 # Canonical values the version-independent backend is always built under. Both

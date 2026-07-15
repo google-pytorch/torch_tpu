@@ -26,8 +26,8 @@ truth, so adding a version updates every torch shim at once.
 load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS", "NIGHTLY_TORCH_VERSION")
 
 # Every non-default version needing its own select() row: the extra release
-# versions plus the nightly channel, whose wheel comes from the
-# @pypi_torch_nightly_* hubs exactly like a release wheel.
+# versions plus the nightly channel's, whose dev-snapshot wheel comes from its
+# own @pypi_torch_<version>_* hub exactly like a release wheel.
 _EXTRA_GLUE_VERSIONS = EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
 # The Python version whose wheel every extra torch version currently resolves
