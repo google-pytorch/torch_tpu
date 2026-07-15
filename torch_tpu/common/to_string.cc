@@ -254,7 +254,7 @@ std::string_view ToString(const at::ScalarType scalar_type) {
       return "complex128";
     case at::ScalarType::ComplexHalf:
       return "complex32";
-#if TT_TORCH_VERSION_GE(2, 13)
+#if TT_HAS_BCOMPLEX32
     case at::ScalarType::BComplex32:
       return "bcomplex32";
 #endif

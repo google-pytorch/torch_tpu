@@ -22,6 +22,7 @@ load(
 )
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "torch_tpu_cc_library",
     "torch_tpu_cc_test",
     "torch_tpu_package_end",
@@ -70,6 +71,10 @@ torch_tpu_cc_library(
     name = "dtype",
     srcs = ["dtype.cc"],
     hdrs = ["dtype.h"],
+    local_defines = if_oss(
+        ["OSS_BUILD"],
+        [],
+    ),
     deps = [
         ":dimension_types",
         ":error_utils",
@@ -638,6 +643,10 @@ torch_tpu_cc_library(
     name = "to_string",
     srcs = ["to_string.cc"],
     hdrs = ["to_string.h"],
+    local_defines = if_oss(
+        ["OSS_BUILD"],
+        [],
+    ),
     deps = [
         ":macro_utils",
         ":utils",

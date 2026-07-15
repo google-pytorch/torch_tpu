@@ -85,10 +85,19 @@
 #define TT_IF_DEBUG(...) __VA_ARGS__
 #endif  // NDEBUG
 
-// True in an #if when built against PyTorch >= major.minor.
 #define TT_TORCH_VERSION_GE(major, minor) \
   (TORCH_VERSION_MAJOR > (major) ||       \
    (TORCH_VERSION_MAJOR == (major) && TORCH_VERSION_MINOR >= (minor)))
+
+#if defined(OSS_BUILD)
+// OSS PyTorch 2.13.0 does not have BComplex32
+#define TT_HAS_BCOMPLEX32 0
+#elif TT_TORCH_VERSION_GE(2, 13)
+// Google PyTorch 2.13.0 has BComplex32
+#define TT_HAS_BCOMPLEX32 1
+#else
+#define TT_HAS_BCOMPLEX32 0
+#endif
 
 namespace torch_tpu {
 namespace internal {

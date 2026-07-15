@@ -170,7 +170,7 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       // Boolean.
     case at::kBool:
       return mlir::ElementType::PRED;
-#if TT_TORCH_VERSION_GE(2, 13)
+#if TT_HAS_BCOMPLEX32
     case at::ScalarType::BComplex32:
 #endif
       // These cases should never happen.
