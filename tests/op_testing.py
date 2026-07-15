@@ -94,6 +94,7 @@ class TestMode(enum.Enum):
       "torch_tpu_vs_gpu"
   )
   GEN_GPU_GOLDEN = "gen_gpu_golden"  # Generate GPU golden results.
+  GEN_CPU_GOLDEN = "gen_cpu_golden"  # Generate CPU golden results.
   PERF = "perf"  # Measure op performance.
 
 
@@ -134,6 +135,13 @@ _IGNORE_ACCURACY_OVERRIDES: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
     "ignore_accuracy_overrides",
     False,
     "If set, accuracy overrides will be ignored, forcing strict checks.",
+)
+
+_USE_CPU_GOLDEN: Final[flags.FlagHolder[bool]] = flags.DEFINE_bool(
+    "use_cpu_golden",
+    False,
+    "If True, load pregenerated CPU golden files instead of generating samples"
+    " at runtime.",
 )
 
 _CHECK_DYNAMISM_USING_SEED: Final[flags.FlagHolder[int]] = flags.DEFINE_integer(
@@ -328,6 +336,11 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
 # We cannot use a defaultdict here because it contains a function object, which
 # cannot be pickled.
 _GOLDEN_GPU_DATA: MutableMapping[
+    str,
+    MutableMapping[torch.dtype, MutableSequence[tuple["OpInput", "OpOutput"]]],
+] = {}
+
+_GOLDEN_CPU_DATA: MutableMapping[
     str,
     MutableMapping[torch.dtype, MutableSequence[tuple["OpInput", "OpOutput"]]],
 ] = {}
@@ -856,6 +869,11 @@ def _gen_gpu_golden_mode() -> bool:
   return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
 
 
+def _gen_cpu_golden_mode() -> bool:
+  """Returns true if the test is running in gen_cpu_golden mode."""
+  return _TEST_MODE.value == TestMode.GEN_CPU_GOLDEN
+
+
 def _torch_tpu_vs_cpu_mode() -> bool:
   """Returns true if the test is running in torch_tpu_vs_cpu mode."""
   return _TEST_MODE.value == TestMode.TORCH_TPU_VS_CPU
@@ -864,6 +882,11 @@ def _torch_tpu_vs_cpu_mode() -> bool:
 def _torch_tpu_vs_gpu_mode() -> bool:
   """Returns true if the test is running in torch_tpu_vs_gpu mode."""
   return _TEST_MODE.value == TestMode.TORCH_TPU_VS_GPU
+
+
+def _use_cpu_golden_mode() -> bool:
+  """Returns true if the test should use pregenerated CPU golden files."""
+  return _USE_CPU_GOLDEN.value
 
 
 def _perf_mode() -> bool:
@@ -1107,11 +1130,17 @@ def _add_golden_result(
     dtype: torch.dtype,
     op_input: OpInput,
     op_output: OpOutput,
+    test_mode: TestMode | str,
 ) -> None:
-  """Adds the golden result to _GOLDEN_GPU_DATA."""
-  if op_name not in _GOLDEN_GPU_DATA:
-    _GOLDEN_GPU_DATA[op_name] = {}
-  dtype_to_pairs = _GOLDEN_GPU_DATA[op_name]
+  """Adds the golden result to _GOLDEN_GPU_DATA or _GOLDEN_CPU_DATA."""
+  target_dict = (
+      _GOLDEN_GPU_DATA
+      if test_mode == TestMode.GEN_GPU_GOLDEN
+      else _GOLDEN_CPU_DATA
+  )
+  if op_name not in target_dict:
+    target_dict[op_name] = {}
+  dtype_to_pairs = target_dict[op_name]
   if dtype not in dtype_to_pairs:
     dtype_to_pairs[dtype] = []
   pairs = dtype_to_pairs[dtype]
@@ -1371,14 +1400,21 @@ class TorchTpuTestBase(TestCase):
     # results are read from the golden file.
     self.golden_device = {
         # go/keep-sorted start
+        TestMode.GEN_CPU_GOLDEN: torch.device("cpu"),
         TestMode.GEN_GPU_GOLDEN: torch.device("cuda"),
         TestMode.PERF: torch.device("cpu"),
-        TestMode.TORCH_TPU_VS_CPU: torch.device("cpu"),
+        TestMode.TORCH_TPU_VS_CPU: (
+            None if _use_cpu_golden_mode() else torch.device("cpu")
+        ),
         TestMode.TORCH_TPU_VS_GPU: None,
         # go/keep-sorted end
     }[_TEST_MODE.value]
 
-    if _TEST_MODE.value in (TestMode.TORCH_TPU_VS_CPU, TestMode.PERF):
+    if _TEST_MODE.value in (
+        TestMode.TORCH_TPU_VS_CPU,
+        TestMode.PERF,
+        TestMode.GEN_CPU_GOLDEN,
+    ):
       self.golden_device_type = "cpu"
     elif _TEST_MODE.value in (
         TestMode.GEN_GPU_GOLDEN,
@@ -1626,16 +1662,22 @@ class TorchTpuTestBase(TestCase):
     """
 
     op_name = _op_name_for_logging(op, variant)
+    op_key = f"{op_name}_grad" if compute_grad else op_name
     if verbose:
       print(
-          f">>> Getting golden results for {op_name}() with dtype {dtype} ...",
+          f">>> Getting golden results for {op_key}() with dtype {dtype} ...",
           flush=True,
       )
 
     if _torch_tpu_vs_gpu_mode():
       if out_variant_type != OutVariantType.CORRECT:
         return []
-      return _GOLDEN_GPU_DATA.get(op_name, {}).get(dtype, [])
+      return _GOLDEN_GPU_DATA.get(op_key, {}).get(dtype, [])
+
+    if _torch_tpu_vs_cpu_mode() and _use_cpu_golden_mode():
+      if out_variant_type != OutVariantType.CORRECT:
+        return []
+      return _GOLDEN_CPU_DATA.get(op_key, {}).get(dtype, [])
 
     # Generate sample inputs on the golden device.
     try:
@@ -1648,9 +1690,9 @@ class TorchTpuTestBase(TestCase):
           )
       )
     except Exception as e:  # pylint: disable=broad-except
-      if _gen_gpu_golden_mode():
+      if _gen_gpu_golden_mode() or _gen_cpu_golden_mode():
         print(
-            f"WARNING: Skipping golden generation for {op_name}() with dtype"
+            f"WARNING: Skipping golden generation for {op_key}() with dtype"
             f" {dtype} because sample generation failed on"
             f" {self.golden_device}: {e}",
             flush=True,
@@ -1698,7 +1740,21 @@ class TorchTpuTestBase(TestCase):
       golden_output = OpOutput(golden_result)
       pairs.append((golden_input, golden_output))
       if _gen_gpu_golden_mode():
-        _add_golden_result(op_name, dtype, golden_input, golden_output)
+        _add_golden_result(
+            op_key,
+            dtype,
+            golden_input,
+            golden_output,
+            test_mode=TestMode.GEN_GPU_GOLDEN,
+        )
+      elif _gen_cpu_golden_mode():
+        _add_golden_result(
+            op_key,
+            dtype,
+            golden_input,
+            golden_output,
+            test_mode=TestMode.GEN_CPU_GOLDEN,
+        )
     return pairs
 
   def _run_op(
@@ -2278,7 +2334,7 @@ class TorchTpuTestBase(TestCase):
           )
           continue
 
-        if _gen_gpu_golden_mode():
+        if _gen_gpu_golden_mode() or _gen_cpu_golden_mode():
           continue
 
         if skip_if and skip_if(self.golden_device_type, variant, golden_input):
@@ -2566,13 +2622,14 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
     self.skip_unless_torch_tpu_vs_cpu()
 
 
-def _golden_file_prefix() -> str:
-  """Returns the prefix for the golden file name."""
-  return (
-      "ops_test_gpu_golden_compiled"
-      if is_compiled_mode()
-      else "ops_test_gpu_golden"
+def _golden_file_prefix(test_mode: TestMode | str) -> str:
+  """Returns the prefix for the golden file name based on test_mode."""
+  prefix = (
+      "ops_test_gpu_golden"
+      if test_mode in (TestMode.GEN_GPU_GOLDEN, TestMode.TORCH_TPU_VS_GPU)
+      else "ops_test_cpu_golden"
   )
+  return f"{prefix}_compiled" if is_compiled_mode() else prefix
 
 
 def _save_golden_file() -> None:
@@ -2591,10 +2648,15 @@ def _save_golden_file() -> None:
      is then gzipped to further reduce its size.
   """
 
+  mode = _TEST_MODE.value
+  golden_data = (
+      _GOLDEN_GPU_DATA if mode == TestMode.GEN_GPU_GOLDEN else _GOLDEN_CPU_DATA
+  )
+  prefix = _golden_file_prefix(mode)
   test_shard = _get_test_shard()
   golden_file = (
       os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp")
-      + f"/{_golden_file_prefix()}{test_shard}.gz"
+      + f"/{prefix}{test_shard}.gz"
   )
   print(
       f"Dumping the collected input/output pairs for each op to {golden_file}",
@@ -2631,7 +2693,7 @@ def _save_golden_file() -> None:
         is_leaf=is_leaf,
     )
 
-  encoded_data = to_plistlib_pytree(_GOLDEN_GPU_DATA)
+  encoded_data = to_plistlib_pytree(golden_data)
   try:
     # pytype thinks `plistlib.FMT_BINARY` is `int` for whatever reason
     bin_data = plistlib.dumps(
@@ -2647,16 +2709,22 @@ def _save_golden_file() -> None:
     f.write(bin_data)
 
 
-def _load_golden_files() -> None:
-  """Loads the checked in golden files into _GOLDEN_GPU_DATA."""
-  golden_file_pattern = f"{_golden_file_prefix()}*.gz"
+def _load_golden_files(test_mode: TestMode | str) -> None:
+  """Loads the checked in golden files into _GOLDEN_GPU_DATA or _GOLDEN_CPU_DATA."""
+  prefix = _golden_file_prefix(test_mode)
+  golden_file_pattern = f"{prefix}*.gz"
   golden_files = list(pathlib.Path(__file__).parent.glob(golden_file_pattern))
   if not golden_files:
     raise ValueError(
         f"No golden files found matching the pattern: {golden_file_pattern}"
     )
 
-  _GOLDEN_GPU_DATA.clear()
+  target_dict = (
+      _GOLDEN_GPU_DATA
+      if test_mode == TestMode.TORCH_TPU_VS_GPU
+      else _GOLDEN_CPU_DATA
+  )
+  target_dict.clear()
   for golden_file in golden_files:
     print(
         "Loading the collected input/output pairs for each op from"
@@ -2670,8 +2738,8 @@ def _load_golden_files() -> None:
           f, fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY)
       )
     for op, dt_to_encoded_samples in plist_ptree.items():
-      if op not in _GOLDEN_GPU_DATA:
-        _GOLDEN_GPU_DATA[op] = {}
+      if op not in target_dict:
+        target_dict[op] = {}
       for dtype_name, encoded_samples in dt_to_encoded_samples.items():
         dtype = getattr(torch, dtype_name)
         samples = []
@@ -2679,7 +2747,7 @@ def _load_golden_files() -> None:
           op_input = OpInput.from_plistlib_pytree(encoded_op_input)
           op_output = OpOutput.from_plistlib_pytree(encoded_op_output)
           samples.append((op_input, op_output))
-        _GOLDEN_GPU_DATA[op][dtype] = samples
+        target_dict[op][dtype] = samples
 
 
 def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
@@ -2799,7 +2867,12 @@ def set_up_test_module() -> None:
 
   if _torch_tpu_vs_gpu_mode():
     print("Running in TorchTPU vs GPU mode.", flush=True)
-    _load_golden_files()
+    _load_golden_files(TestMode.TORCH_TPU_VS_GPU)
+    return
+
+  if _torch_tpu_vs_cpu_mode() and _use_cpu_golden_mode():
+    print("Running in TorchTPU vs CPU (golden) mode.", flush=True)
+    _load_golden_files(TestMode.TORCH_TPU_VS_CPU)
     return
 
   if _perf_mode():
@@ -2878,7 +2951,7 @@ def set_up_test_module() -> None:
 def tear_down_test_module() -> None:
   """Tears down the entire test module."""
 
-  if _gen_gpu_golden_mode():
+  if _gen_gpu_golden_mode() or _gen_cpu_golden_mode():
     _save_golden_file()
   elif _perf_mode() and _UPDATE_PERF_DATA.value:
     _save_perf_data()

@@ -155,6 +155,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=-foreach,-nonzero",
     ] + if_oss(
@@ -163,6 +164,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 50,
@@ -190,6 +192,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=foreach",
     ] + if_oss(
@@ -198,6 +201,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 35,
@@ -224,6 +228,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=nonzero",
     ] + if_oss(
@@ -232,6 +237,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 1,
@@ -258,10 +264,12 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=-foreach,-nonzero",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -289,10 +297,12 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=foreach",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -318,10 +328,12 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--print_op_inputs=1",
         "--test_categories=nonzero",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -347,6 +359,7 @@ torch_tpu_py_test(
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=-foreach,-nonzero",
     ] + if_oss(
@@ -355,6 +368,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 35,
@@ -381,6 +395,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=foreach",
     ] + if_oss(
@@ -389,6 +404,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 15,
@@ -415,6 +431,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=nonzero",
     ] + if_oss(
@@ -423,6 +440,7 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 1,
@@ -449,10 +467,12 @@ torch_tpu_py_test(
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=-foreach,-nonzero",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -480,10 +500,12 @@ torch_tpu_py_test(
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=foreach",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -509,10 +531,12 @@ torch_tpu_py_test(
     timeout = "long",  # Needed for asan.
     srcs = ["ops_test.py"],
     args = [
+        "--use_cpu_golden=True",
         "--compute_grad=True",
         "--test_categories=nonzero",
         "--max_samples_per_op_dtype=20",  # Prevent long test run time.
     ],
+    data = glob(["ops_test_cpu_golden*.gz"]),
     main = "ops_test.py",
     nopresubmit = "Long Forge wait times for v6e. Run in postsubmit only.",
     notest_oss = "The test is specifically for TPU v6e, but OSS build doesn't allow specifying the TPU version yet.",
@@ -866,7 +890,18 @@ torch_tpu_py_test(
     ],
 )
 
-# See go/tt-devguide#updating-gpu-goldens for how to update the GPU goldens.
+# See go/tt-devguide#updating-goldens for how to update the GPU and CPU goldens.
+#
+# Targets for generating golden reference files (GPU and CPU).
+# Each shard generates one golden file that contains one slice of the golden data.
+# We set shard_count = 3 to keep individual .gz files below GitHub's 100 MB limit
+# while keeping the number of tracked binary files small.
+#
+# Note: If shard_count is adjusted, update the data attribute in consuming test targets
+# (e.g. ops_test_tpu, ops_test_grad, ops_test_tpu_vs_gpu).
+#
+# Note: By default CPU tests run with --use_cpu_golden=True. Pass
+# --test_arg=--use_cpu_golden=False to force dynamic on-the-fly CPU generation.
 torch_tpu_py_test(
     name = "ops_test_gen_gpu_golden",
     srcs = ["ops_test.py"],
@@ -876,20 +911,36 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
-    # Each shard generates one golden file that contains one slice of the
-    # golden data. Therefore the smaller the count, the bigger each file
-    # will be.
-    #
-    # We should minimize the shard count without making a golden file larger
-    # than 100 MB (a limit imposed by GitHub). The problem with a large shard
-    # count is that it makes updating the golden files more tedious as it's
-    # still done manually.
-    #
-    # If we adjust this, we must also adjust the data attribute in the
-    # ops_test_vs_gpu target.
     shard_count = 3,
     tags = [
         "requires-gpu-sm80",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils",
+        "//torch_tpu/eager:tpu_aten_kernels",
+    ],
+)
+
+# Generates CPU golden datasets for both forward and gradient passes across all operators.
+# Runs on demand when updating CPU goldens.
+torch_tpu_py_test(
+    name = "ops_test_gen_cpu_golden",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_cpu_golden",
+    ],
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    shard_count = 3,
+    tags = [
+        "requires-tpu-v5lite",
     ],
     deps = [
         ":dynamism_test_utils",
