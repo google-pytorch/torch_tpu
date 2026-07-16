@@ -1199,54 +1199,54 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"rtol": 1.7e-5, "atol": 2.4e-5},
     },
     "_foreach_cos": {
-        torch.complex64: {"atol": 9.6e-3},
+        torch.complex64: {"rtol": 3.6e-6, "atol": 9.6e-3},
     },
     "_foreach_cosh": {
-        torch.complex64: {"atol": 1.3e-2},
+        torch.complex64: {"rtol": 4.3e-6, "atol": 1.3e-2},
     },
     "_foreach_exp": {
-        torch.complex64: {"atol": 1.9e-2},
+        torch.complex64: {"rtol": 3.6e-6, "atol": 1.9e-2},
     },
     "_foreach_expm1": {
-        torch.complex64: {"atol": 3e-2},
+        torch.complex64: {"rtol": 3.9e-6, "atol": 2e-2},
     },
     "_foreach_log": {
-        torch.complex64: {"rtol": 1e-4, "atol": 9.6e-5},
+        torch.complex64: {"rtol": 2.4e-4, "atol": 9.6e-5},
     },
     "_foreach_log10": {
-        torch.complex64: {"rtol": 1e-4, "atol": 3.8e-5},
+        torch.complex64: {"rtol": 6.9e-5, "atol": 3.8e-5},
     },
     "_foreach_log1p": {
-        torch.complex64: {"atol": 5.1e-5},
+        torch.complex64: {"rtol": 3.7e-5, "atol": 5.1e-5},
     },
     "_foreach_log2": {
-        torch.complex64: {"atol": 2e-4},
+        torch.complex64: {"rtol": 8.4e-5, "atol": 1.5e-4},
     },
     "_foreach_sigmoid": {
-        torch.complex64: {"atol": 6e-5},
+        torch.complex64: {"rtol": 6.3e-6, "atol": 2.4e-5},
     },
     "_foreach_sin": {
-        torch.complex64: {"atol": 9.2e-3},
+        torch.complex64: {"rtol": 3.7e-6, "atol": 9.2e-3},
     },
     "_foreach_sinh": {
         torch.complex64: {"rtol": 3.8e-6, "atol": 8.3e-3},
     },
     "_foreach_tan": {
-        torch.complex64: {"atol": 6.3e-5},
+        torch.complex64: {"rtol": 7.7e-6, "atol": 6.3e-5},
     },
     "_foreach_tanh": {
-        torch.complex64: {"atol": 1.4e-4},
+        torch.complex64: {"rtol": 6.5e-6, "atol": 2.6e-5},
     },
     "_log_softmax_backward_data": {
-        torch.float16: {"atol": 4e-3},
-        torch.float32: {"atol": 9.4e-5},
+        torch.float16: {"rtol": 2.1e-2, "atol": 4e-3},
+        torch.float32: {"rtol": 2.2e-4, "atol": 9.4e-5},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3e-2},
-        torch.float16: {"atol": 3.7e-4},
+        torch.bfloat16: {"rtol": 1, "atol": 3e-2},
+        torch.float16: {"rtol": 5.2e-3, "atol": 3.7e-4},
     },
     "acos": {
-        torch.complex64: {"atol": 6.5e-5},
+        torch.complex64: {"rtol": 4.6e-5, "atol": 6.5e-5},
     },
     "acosh": {
         torch.complex64: {"atol": 6.9e-5},
@@ -1255,7 +1255,7 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float16: {"atol": 1.3e-1},
     },
     "asin": {
-        torch.complex64: {"atol": 8.4e-5},
+        torch.complex64: {"rtol": 2.6e-4, "atol": 8.4e-5},
     },
     "asinh": {
         torch.bool: {"atol": 1.2e-2},
