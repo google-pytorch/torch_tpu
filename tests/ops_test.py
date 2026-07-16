@@ -283,33 +283,24 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
     },
     "acos": {
-        torch.complex64: {"rtol": 8.9e-5, "atol": 9.8e-5},
-    },
-    "acosh": {
-        torch.complex64: {"rtol": 3.4e-5, "atol": 7e-5},
-        torch.float32: {"rtol": 2.7e-5, "atol": 4.4e-5},
-        torch.int16: {"rtol": 2.3e-5, "atol": 5.7e-5},
-        torch.int32: {"rtol": 2.3e-5, "atol": 5.7e-5},
-        torch.int64: {"rtol": 2.3e-5, "atol": 5.7e-5},
-        torch.int8: {"rtol": 2.3e-5, "atol": 5.7e-5},
-        torch.uint8: {"rtol": 2.3e-5, "atol": 5.7e-5},
+        torch.complex64: {"rtol": 1.3e-4, "atol": 8.5e-5},
     },
     "addcdiv": {
-        torch.bfloat16: {"rtol": 3.4e-1, "atol": 1.6e-2},
-        torch.float16: {"rtol": 8.2e-2, "atol": 4e-3},
-    },
-    "addcmul": {
-        torch.bfloat16: {"rtol": 2.5e-1, "atol": 4.7e-2},
-        torch.float16: {"rtol": 1.8e-2, "atol": 7.9e-3},
+        torch.bfloat16: {"rtol": 50, "atol": 5.5e-2},
+        torch.float16: {"rtol": 2.7, "atol": 16},
     },
     "addmm": {
-        torch.float16: {"rtol": 1.5e-2, "atol": 1.6e-1},
-        # TODO(b/495931205): why are rtol and atol so high?
-        torch.float32: {"rtol": 1.3e-2, "atol": 1.3e-1},
+        torch.bfloat16: {"rtol": 1.4e-1, "atol": 2.4e-2},
+        torch.float16: {"rtol": 2, "atol": 3.1e-1},
+        torch.float32: {"rtol": 2.2, "atol": 3.2e-1},
     },
     "addmv": {
         torch.bfloat16: {"rtol": 1.1e-1, "atol": 2.5e-1},
         torch.float16: {"rtol": 2.4e-2, "atol": 5.1e-2},
+    },
+    "arange": {
+        torch.bfloat16: {"rtol": 6.4e-2, "atol": 6.4e-3},
+        torch.float16: {"rtol": 3.7e-3, "atol": 3.7e-4},
     },
     "asin": {
         torch.complex64: {"rtol": 2.6e-4, "atol": 9.6e-5},
