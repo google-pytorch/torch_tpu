@@ -33,6 +33,31 @@ concurrency:
 
 
 jobs:
+  module_bazel_sync:
+    name: "MODULE.bazel version sync"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out code"
+        uses: "actions/checkout@v5"
+      - name: "Install uv"
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: "Run the sync script's tests"
+        run: uv run --no-project --with "pytest>=9" pytest ci/tools/sync_module_bazel_versions_test.py
+      # MODULE.bazel cannot load() Starlark, so its version constants are
+      # hand-copied from their source-of-truth .bzl files. The sync script
+      # rewrites the copies in place; a diff after running it means they had
+      # drifted, so fail and show the corrected file.
+      - name: "Check MODULE.bazel version constants"
+        run: |
+          uv run --no-project ci/tools/sync_module_bazel_versions.py
+          if ! git diff --quiet MODULE.bazel; then
+            echo "::error file=MODULE.bazel::MODULE.bazel's version constants are out of sync with their .bzl sources. Run 'uv run ci/tools/sync_module_bazel_versions.py' and commit the result -- or copy the corrected MODULE.bazel from the log below."
+            echo "::group::Corrected MODULE.bazel"
+            cat MODULE.bazel
+            echo "::endgroup::"
+            exit 1
+          fi
+
   run_tests:
     name: "Lint check"
     runs-on: ubuntu-latest
