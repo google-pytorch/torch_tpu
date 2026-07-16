@@ -24,6 +24,7 @@ truth, so adding a version updates every torch shim at once.
 """
 
 load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS", "NIGHTLY_TORCH_VERSION")
+load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION")
 
 # Every non-default version needing its own select() row: the extra release
 # versions plus the nightly channel's, whose dev-snapshot wheel comes from its
@@ -31,10 +32,10 @@ load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS", "NIGHTLY_TORCH_VE
 _EXTRA_GLUE_VERSIONS = EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
 # The Python version whose wheel every extra torch version currently resolves
-# to. The standard build is Python 3.12; extra torch versions are not yet built
-# per Python. This is the single place to change when they are: switch to keying
+# to: the default Python, since the extra versions are not yet built per
+# Python. This is the single place to change when they are: switch to keying
 # on the (torch_version, python_version) pair.
-_EXTRA_TORCH_PY = "312"
+_EXTRA_TORCH_PY = DEFAULT_PYTHON_VERSION.replace(".", "")
 
 def _torch_version_setting(version):
     return "//:torch_" + version.replace(".", "_")
