@@ -26,46 +26,55 @@ from torch_tpu import _versioned_so_loader as loader
 
 class ResolveSuffixTest(parameterized.TestCase):
 
-  def test_no_built_glues_disables_dispatch(self):
-    # Unversioned build: dispatch is disabled regardless of running version.
-    self.assertIsNone(loader.resolve_suffix("2_12_0", []))
-    self.assertIsNone(loader.resolve_suffix(None, []))
+  @parameterized.named_parameters(
+      # Unversioned build: dispatch is disabled regardless of running version.
+      ("no_built_glues_disables_dispatch", "2_12_0", [], None),
+      ("no_built_glues_and_no_version_disables_dispatch", None, [], None),
+      (
+          "exact_match_is_chosen",
+          "2_12_0",
+          {"2_11_0", "2_12_0", "2_13_0"},
+          "2_12_0",
+      ),
+      # 2.12.5 postdates the 2.12.0 glue and predates the 2.13.0 one, so the
+      # 2.12.0 glue (which serves everything up to the next ABI break) is
+      # chosen.
+      (
+          "release_between_glues_gets_the_newest_older_glue",
+          "2_12_5",
+          {"2_11_0", "2_12_0", "2_13_0"},
+          "2_12_0",
+      ),
+      (
+          "release_newer_than_every_glue_gets_the_newest",
+          "2_14_0",
+          {"2_11_0", "2_12_0"},
+          "2_12_0",
+      ),
+      # "2_11_10" > "2_11_9" numerically although not lexicographically.
+      (
+          "comparison_is_numeric_not_lexicographic",
+          "2_11_10",
+          {"2_11_9", "2_11_10"},
+          "2_11_10",
+      ),
+      (
+          "comparison_is_numeric_below_the_running_version",
+          "2_11_12",
+          {"2_11_2", "2_11_10"},
+          "2_11_10",
+      ),
+  )
+  def test_resolution(self, running, built, expected):
+    self.assertEqual(loader.resolve_suffix(running, built), expected)
 
-  def test_exact_match_is_chosen(self):
-    self.assertEqual(
-        loader.resolve_suffix("2_12_0", {"2_11_0", "2_12_0", "2_13_0"}),
-        "2_12_0",
-    )
-
-  def test_release_between_glues_gets_the_newest_older_glue(self):
-    # 2.12.5 postdates the 2.12.0 glue and predates the 2.13.0 one, so the
-    # 2.12.0 glue (which serves everything up to the next ABI break) is chosen.
-    self.assertEqual(
-        loader.resolve_suffix("2_12_5", {"2_11_0", "2_12_0", "2_13_0"}),
-        "2_12_0",
-    )
-
-  def test_release_newer_than_every_glue_gets_the_newest(self):
-    self.assertEqual(
-        loader.resolve_suffix("2_14_0", {"2_11_0", "2_12_0"}), "2_12_0"
-    )
-
-  def test_release_older_than_every_glue_raises(self):
-    with self.assertRaisesRegex(ImportError, "predates"):
-      loader.resolve_suffix("2_9_0", {"2_11_0", "2_12_0"})
-
-  def test_comparison_is_by_semver_not_lexicographic(self):
-    # "2_11_10" > "2_11_9" numerically although not lexicographically.
-    self.assertEqual(
-        loader.resolve_suffix("2_11_10", {"2_11_9", "2_11_10"}), "2_11_10"
-    )
-    self.assertEqual(
-        loader.resolve_suffix("2_11_12", {"2_11_2", "2_11_10"}), "2_11_10"
-    )
-
-  def test_undetectable_running_version_with_built_glues_raises(self):
-    with self.assertRaises(ImportError):
-      loader.resolve_suffix(None, {"2_11_0", "2_12_0"})
+  @parameterized.named_parameters(
+      ("release_older_than_every_glue", "2_9_0", "predates"),
+      ("undetectable_running_version", None, "could not determine"),
+  )
+  def test_raises_import_error(self, running, message):
+    with self.assertRaisesRegex(ImportError, message):
+      loader.resolve_suffix(running, {"2_11_0", "2_12_0"})
 
 
 class VersionSuffixTest(parameterized.TestCase):
