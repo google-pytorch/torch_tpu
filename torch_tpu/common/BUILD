@@ -28,7 +28,7 @@ load(
     "//shims/pybind11:pybind.bzl",
     "backend_probe_labels",
 )
-load(":pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
+load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 load(
     "//build_files:build_defs.bzl",
     "oss_target",

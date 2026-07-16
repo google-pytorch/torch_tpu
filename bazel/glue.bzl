@@ -32,8 +32,8 @@ load(
     "pywrap_library",
 )
 load("//bazel:pytorch_versions.bzl", "GLUE_TORCH_VERSIONS")
+load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 load("//shims/pybind11:pybind.bzl", "versioned_glue_labels_for")
-load("//torch_tpu/common:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 
 _GLUE_PACKAGE_PREFIX = "glue_"
 
