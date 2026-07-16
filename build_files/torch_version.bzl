@@ -87,16 +87,21 @@ _fix_torch_version = transition(
     outputs = [_TORCH_VERSION, _TORCH_HEADERS_ONLY],
 )
 
+# Every provider a cc_library can carry that a consumer might rely on:
+# compile/link inputs (CcInfo), coverage and sanitizer instrumentation
+# (InstrumentedFilesInfo), secondary/debug outputs (OutputGroupInfo), and
+# shared-library metadata (CcSharedLibraryInfo). Aspect-provided providers
+# cannot be re-exported from a rule and are still dropped.
+_FORWARDED_PROVIDERS = [
+    CcInfo,
+    InstrumentedFilesInfo,
+    OutputGroupInfo,
+    CcSharedLibraryInfo,
+]
+
 def _xla_fixed_impl(ctx):
-    # Only DefaultInfo and CcInfo are forwarded -- enough for the cc_library
-    # backend deps this routes (XLA, MLIR, ...). Any other provider a dep carries
-    # (OutputGroupInfo, CcSharedLibraryInfo, aspect providers, ...) is dropped, so
-    # do not route deps that are consumed for anything beyond compile/link inputs.
     dep = ctx.attr.dep[0]
-    providers = [dep[DefaultInfo]]
-    if CcInfo in dep:
-        providers.append(dep[CcInfo])
-    return providers
+    return [dep[DefaultInfo]] + [dep[p] for p in _FORWARDED_PROVIDERS if p in dep]
 
 xla_fixed = rule(
     implementation = _xla_fixed_impl,
