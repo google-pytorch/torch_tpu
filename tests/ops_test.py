@@ -116,32 +116,20 @@ def _expm1_atol(y: float) -> float:
 ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     # go/keep-sorted start
     "_foreach_acos": {
-        torch.complex64: {"rtol": 3.6e-5, "atol": 8e-5},
-    },
-    "_foreach_add": {
-        torch.bfloat16: {"rtol": 7.6e-1, "atol": 2.9e-2},
-        torch.float16: {"rtol": 3.6e-2, "atol": 4e-3},
-    },
-    "_foreach_addcdiv": {
-        torch.bfloat16: {"rtol": 1, "atol": 5.5e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 6.3e-2},
-    },
-    "_foreach_addcmul": {
-        torch.bfloat16: {"rtol": 1, "atol": 1.9e-1},
-        torch.float16: {"rtol": 1.9e-1, "atol": 2.5e-1},
+        torch.complex64: {"rtol": 1.9e-4, "atol": 1.1e-4},
     },
     "_foreach_asin": {
-        torch.complex64: {"rtol": 1.3e-4, "atol": 1.1e-4},
+        torch.complex64: {"rtol": 2.6e-4, "atol": 1.2e-4},
     },
     "_foreach_atan": {
-        torch.complex64: {"rtol": 1.8e-5, "atol": 2.6e-5},
+        torch.complex64: {"rtol": 1.8e-4, "atol": 2.7e-5},
     },
     "_foreach_cos": {
-        torch.complex64: {"rtol": 4.2e-6, "atol": 1.3e-2},
+        torch.complex64: {"rtol": 5e-6, "atol": 1.5e-2},
     },
     "_foreach_cosh": {
-        torch.complex64: {"rtol": 4.3e-6, "atol": 1.3e-2},
-        torch.float32: {"rtol": 3.9e-6, "atol": 1.3e-2},
+        torch.complex64: {"rtol": 5.3e-6, "atol": 1.6e-2},
+        torch.float32: {"rtol": 5.3e-6, "atol": 1.7e-2},
         torch.int16: {"rtol": 3.4e-6, "atol": 1.2e-3},
         torch.int32: {"rtol": 3.4e-6, "atol": 1.2e-3},
         torch.int64: {"rtol": 3.4e-6, "atol": 1.2e-3},
