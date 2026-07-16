@@ -13,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Print a PyTorch-version value from the canonical ``pytorch_versions.bzl``.
+"""Print a PyTorch-version value from the canonical `pytorch_versions.bzl`.
 
-``//bazel:pytorch_versions.bzl`` is the single source of truth for the PyTorch
+`//bazel:pytorch_versions.bzl` is the single source of truth for the PyTorch
 versions the multi-ABI wheel targets. It is data-only Starlark (plain
 assignments), which is also valid Python, so shell tooling -- namely
-``requirements/lock_environments.sh`` -- can read the same lists from it through
+`requirements/lock_environments.sh` -- can read the same lists from it through
 this helper instead of hardcoding the versions a second time.
 
 Each element is printed on its own line (a bare string value prints as a single
-line), which is convenient for a shell ``for`` loop.
+line), which is convenient for a shell `for` loop.
 """
 
 import argparse
@@ -45,9 +45,9 @@ _KNOWN_NAMES: Final[Set[str]] = frozenset({
 
 
 def read_value(name: str, bzl_path: pathlib.Path = _BZL_PATH) -> Sequence[str]:
-  """Returns the value bound to ``name`` in the canonical ``.bzl`` file.
+  """Returns the value bound to `name` in the canonical `.bzl` file.
 
-  A scalar (e.g. ``DEFAULT_TORCH_VERSION``) is returned as a one-element
+  A scalar (e.g. `DEFAULT_TORCH_VERSION`) is returned as a one-element
   sequence so every caller can treat the result uniformly.
   """
   namespace: dict[str, object] = {}

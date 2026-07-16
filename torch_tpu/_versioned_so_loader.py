@@ -14,12 +14,12 @@
 
 """Runtime dispatch of PyTorch-version-specific torch_tpu C++ extensions.
 
-torch_tpu bundles a thin ``.so`` glue per supported PyTorch build, each named
-``<module>_<major>_<minor>_<patch>.so`` (e.g. ``env_2_12_0.so``). A
-``MetaPathFinder`` installed at import time rewrites imports of
-``torch_tpu._internal.<module>`` to the glue that matches the installed PyTorch,
-and an ``ExtensionProxyLoader`` bridges the artifact's version-suffixed filename
-to the unversioned ``PyInit_<module>`` symbol the C++ code actually exports.
+torch_tpu bundles a thin `.so` glue per supported PyTorch build, each named
+`<module>_<major>_<minor>_<patch>.so` (e.g. `env_2_12_0.so`). A
+`MetaPathFinder` installed at import time rewrites imports of
+`torch_tpu._internal.<module>` to the glue that matches the installed PyTorch,
+and an `ExtensionProxyLoader` bridges the artifact's version-suffixed filename
+to the unversioned `PyInit_<module>` symbol the C++ code actually exports.
 
 Selection policy: a new glue is added to the wheel only when a PyTorch release
 breaks ABI compatibility with the previous glue, so each glue serves every
@@ -27,14 +27,14 @@ release from its own version up to (but not including) the next glue's -- and
 the newest glue serves everything after it, including releases newer than any
 we built for. The loader therefore picks the newest glue whose version is <=
 the installed PyTorch. Loading eagerly binds its symbols (the glues are linked
-with ``-z now``), so an ABI-incompatible glue fails loudly at import rather
+with `-z now`), so an ABI-incompatible glue fails loudly at import rather
 than crashing later. If the installed PyTorch version cannot be determined
 while versioned glues exist, or predates every built glue, that is an error.
 When no versioned glues are present at all (e.g. an unversioned developer
 build) the hook is not installed and imports resolve normally.
 
 A dev build's version compares by the release triple it leads up to
-(``2.14.0.dev20260711`` -> ``2.14.0``), so the glue the nightly-channel wheel
+(`2.14.0.dev20260711` -> `2.14.0`), so the glue the nightly-channel wheel
 bundles -- built against a pinned dev snapshot and named by that snapshot's
 release triple, like any other glue -- serves it whenever present.
 """
@@ -62,11 +62,11 @@ def _parse(suffix: str) -> tuple[int, ...]:
 def installed_torch_version() -> str | None:
   """Returns the installed torch's full version string, or None.
 
-  Prefers ``torch.__version__`` -- it reflects the torch actually loaded in
+  Prefers `torch.__version__` -- it reflects the torch actually loaded in
   this process, which is what the glue must match. torch is deliberately never
   imported from here: torch_tpu is itself mid-import and importing torch would
   re-enter it through torch's backend autoload. When torch is not already in
-  ``sys.modules`` (torch_tpu imported first), the install metadata answers
+  `sys.modules` (torch_tpu imported first), the install metadata answers
   instead.
   """
   version = getattr(sys.modules.get("torch"), "__version__", None)
@@ -100,8 +100,8 @@ def torch_version_suffix() -> str | None:
 def _glue_suffix(so_name: str) -> str | None:
   """Returns the version suffix of a glue filename, or None if unversioned.
 
-  A glue artifact is named ``<module>_<major>_<minor>_<patch>.so``, e.g.
-  ``env_2_12_0.so`` -> ``2_12_0``.
+  A glue artifact is named `<module>_<major>_<minor>_<patch>.so`, e.g.
+  `env_2_12_0.so` -> `2_12_0`.
   """
   parts = so_name.removesuffix(".so").split("_")
   if len(parts) < 4 or not all(part.isdigit() for part in parts[-3:]):
@@ -112,7 +112,7 @@ def _glue_suffix(so_name: str) -> str | None:
 def discover_built_suffixes(
     package_dir: pathlib.Path,
 ) -> frozenset[str]:
-  """Returns the set of glue suffixes bundled under ``package_dir``."""
+  """Returns the set of glue suffixes bundled under `package_dir`."""
   return frozenset(
       suffix
       for so in package_dir.rglob("*.so")
@@ -162,8 +162,8 @@ class ExtensionProxyLoader(importlib.abc.Loader):
   """Loads a version-suffixed glue under its unversioned module name.
 
   The C++ artifact is renamed to carry a version suffix but still exports
-  ``PyInit_<unversioned>``. CPython derives the expected init symbol from
-  ``spec.name``, so we present the unversioned name while the real
+  `PyInit_<unversioned>`. CPython derives the expected init symbol from
+  `spec.name`, so we present the unversioned name while the real
   ExtensionFileLoader creates the module.
   """
 
@@ -176,7 +176,7 @@ class ExtensionProxyLoader(importlib.abc.Loader):
     if not hasattr(self._real_loader, "create_module"):
       return None
     original_name = spec.name
-    # Safe: ``spec`` is freshly minted per find_spec() call (never shared), and
+    # Safe: `spec` is freshly minted per find_spec() call (never shared), and
     # CPython holds the per-module import lock across create_module().
     try:
       spec.name = self._unversioned_name
@@ -193,7 +193,7 @@ class ExtensionProxyLoader(importlib.abc.Loader):
 
 
 class VersionDispatchFinder(importlib.abc.MetaPathFinder):
-  """Redirects ``torch_tpu._internal.<m>`` imports to the resolved glue."""
+  """Redirects `torch_tpu._internal.<m>` imports to the resolved glue."""
 
   def find_spec(self, fullname, path, target=None):
     if _VERSION_SUFFIX is None or not fullname.startswith(_INTERNAL_PREFIX):

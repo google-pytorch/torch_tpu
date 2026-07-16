@@ -16,10 +16,10 @@
 
 The separated wheel bundles, for every supported PyTorch version, a thin glue
 `.so` per C++ extension plus a small per-version "torch common" library, and
-shares a single large XLA/MLIR base library (``libxla_base.so``) across all
-versions. This test opens the built wheel (``WHEEL_PATH``) and asserts:
+shares a single large XLA/MLIR base library (`libxla_base.so`) across all
+versions. This test opens the built wheel (`WHEEL_PATH`) and asserts:
 
-  * exactly one shared ``libxla_base.so``;
+  * exactly one shared `libxla_base.so`;
   * a versioned glue and a per-version torch common exist for each built version;
   * the shared base holds the XLA backend and defines no PyTorch symbols, so it
     is genuinely version-independent (it is the same file for every version);

@@ -139,7 +139,7 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
   release from the newest older glue (e.g. a torch 2.12.0 install from the
   2.11.0 glue). This session proves that compatibility in practice: it
   installs the intermediate release alongside the built wheel and runs the
-  CPU smoke tests against it. The glue is linked with ``-z now``, so an
+  CPU smoke tests against it. The glue is linked with `-z now`, so an
   ABI-incompatible glue fails the autoload import outright with an
   undefined-symbol error -- which means the release broke ABI and needs a
   glue of its own in WHEEL_TORCH_VERSIONS.
