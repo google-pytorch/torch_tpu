@@ -31,6 +31,7 @@ load("@rules_ml_toolchain//py/rules_pywrap:pywrap.impl.bzl", "PywrapInfo")
 load(
     "//bazel:pytorch_versions.bzl",
     "DEFAULT_TORCH_VERSION",
+    "SENTINEL_TORCH_VERSION",
     _GLUE_TORCH_VERSIONS = "GLUE_TORCH_VERSIONS",
     _WHEEL_TORCH_VERSIONS = "WHEEL_TORCH_VERSIONS",
 )
@@ -57,15 +58,17 @@ GLUE_TORCH_VERSIONS = _GLUE_TORCH_VERSIONS
 # depend on PyTorch, and torch_headers_only so a glue that links real torch and
 # the headers-only xla_base filter still produce byte-identical backend linker
 # inputs. headers_only is pinned to True specifically -- the shared base must
-# never pull real torch, or any stray torch reference in it would bind to this
-# canonical version's ABI and break against a different installed PyTorch. (The
+# never pull real torch, or any stray torch reference in it would bind to one
+# version's ABI and break against a different installed PyTorch. (The
 # per-version torch code, which does link real torch, is not part of the backend
 # and is not routed through here.)
 #
-# The default PyTorch version is the canonical pin: it is always one of the
-# built glues, so the backend's single configuration coincides with a real
-# glue's pinned backend rather than a version nothing else is built under.
-_FIXED_TORCH_VERSION = DEFAULT_TORCH_VERSION
+# torch_version is pinned to the sentinel -- the flag's default, so the pin is
+# a reset to the top-level configuration's value rather than a divergence from
+# it. In particular, bumping DEFAULT_TORCH_VERSION does not change this
+# configuration, so it does not force the version-independent backend to
+# rebuild.
+_FIXED_TORCH_VERSION = SENTINEL_TORCH_VERSION
 _FIXED_TORCH_HEADERS_ONLY = True
 
 def version_suffix(version):
@@ -140,6 +143,13 @@ def _set_torch_version_impl(settings, attr):
     # at its default False), so its per-version common carries a DT_NEEDED on
     # libc10/libtorch_cpu resolved from the user's install at load. Just the
     # shared xla_base filter opts into headers-only, to stay torch-free.
+    #
+    # The default version maps to the sentinel -- its torch is the default pip
+    # hub's, exactly what every select() serves at the flag's default value, so
+    # its glue builds in the top-level configuration instead of forking an
+    # identical one. Only the non-default versions need a config of their own.
+    if attr.torch_version == DEFAULT_TORCH_VERSION:
+        return {_TORCH_VERSION: SENTINEL_TORCH_VERSION}
     return {_TORCH_VERSION: attr.torch_version}
 
 _set_torch_version = transition(
@@ -220,18 +230,17 @@ def pin_glue_backend_deps(name, deps):
             result.append(dep)
     return result
 
-# A torch_version value used ONLY by the shared-XLA filter's configuration. It
-# must never appear in WHEEL_TORCH_VERSIONS: that guarantees the filter's own
-# torch_tpu object code is compiled under a config distinct from every glue, so
-# it is ignored when pywrap matches the filter against the glues' linker inputs.
-# Meanwhile the filter's backend deps -- routed through xla_fixed to the
-# canonical config, exactly like the glues' -- share linker-input identity with
-# the glues' pinned backend, so only the shared XLA/MLIR is captured.
-_SENTINEL_TORCH_VERSION = "0.0.0"
-
 def _xla_base_config_impl(settings, attr):
+    # The filter builds under the canonical pinned config: its backend deps --
+    # routed through xla_fixed, exactly like the glues' -- share linker-input
+    # identity with the glues' pinned backend, so the shared XLA/MLIR is
+    # captured. Its own torch_tpu object code must match NO glue, so pywrap
+    # drops it: the extra versions differ on torch_version (the sentinel never
+    # appears in WHEEL_TORCH_VERSIONS), and the default version's glue -- which
+    # also builds at the sentinel -- differs on torch_headers_only, which is
+    # True here and always False for a glue.
     return {
-        _TORCH_VERSION: _SENTINEL_TORCH_VERSION,
+        _TORCH_VERSION: SENTINEL_TORCH_VERSION,
         # headers-only so no real torch is pulled into the shared XLA base. The
         # glues themselves link real torch (headers_only=False), but xla_fixed
         # canonicalizes both torch_version and torch_headers_only, so the backend

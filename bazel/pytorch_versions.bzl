@@ -79,3 +79,11 @@ GLUE_TORCH_VERSIONS = WHEEL_TORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 INTERMEDIATE_PATCH_VERSIONS = [
     "2.12.1",
 ]
+
+# The //:_torch_version value meaning "no specific PyTorch version" -- the
+# flag's default, and what the pinning transitions reset to. Everything that
+# does not need a particular torch ABI builds under it: the plain build, the
+# shared XLA/MLIR backend, and the default version's glue (whose torch comes
+# from the default pip hub, needing no reconfiguration). It must never appear
+# in WHEEL_TORCH_VERSIONS.
+SENTINEL_TORCH_VERSION = "0.0.0"

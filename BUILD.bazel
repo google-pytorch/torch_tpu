@@ -18,9 +18,9 @@ load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 load(
     "//bazel:pytorch_versions.bzl",
-    "DEFAULT_TORCH_VERSION",
     "EXTRA_PYTORCH_VERSIONS",
     "NIGHTLY_TORCH_VERSION",
+    "SENTINEL_TORCH_VERSION",
 )
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 
@@ -70,12 +70,14 @@ config_setting(
 # The PyTorch version a C++ extension is compiled/linked against. The pybind
 # transition (//shims/pybind11:pybind.bzl) sets this to build one glue per
 # supported PyTorch version; shims/torch selects the matching torch wheel on it.
-# Defaults to the version the standard (non-transitioned) build uses. Only
-# ever set by transitions, never on the command line -- a wheel build always
-# builds every version.
+# Defaults to the sentinel ("no specific version"): the standard build and the
+# default version's glue use the default pip hub's torch and never leave this
+# configuration, so the pinning transitions reset to the default rather than
+# diverge from it. Only ever set by transitions, never on the command line --
+# a wheel build always builds every version.
 string_flag(
     name = "_torch_version",
-    build_setting_default = DEFAULT_TORCH_VERSION,
+    build_setting_default = SENTINEL_TORCH_VERSION,
     visibility = ["//visibility:public"],
 )
 
@@ -124,18 +126,19 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-# The Python-version rows only apply to the default torch version; the extra
-# versions are selected on //:_torch_version alone (see //shims/torch). Pinning
-# the torch version here keeps these mutually exclusive with the //:torch_<v>
-# settings, so a glue transitioned to an extra version under a wheel-test build
-# (whose top-level PYTHON_VERSION leaks into the transitioned config) does not
-# match both rows and trip an "ambiguous match" on the torch shim selects.
+# The Python-version rows only apply to the default torch version (which
+# builds at the sentinel); the extra versions are selected on //:_torch_version
+# alone (see //shims/torch). Pinning the torch version here keeps these
+# mutually exclusive with the //:torch_<v> settings, so a glue transitioned to
+# an extra version under a wheel-test build (whose top-level PYTHON_VERSION
+# leaks into the transitioned config) does not match both rows and trip an
+# "ambiguous match" on the torch shim selects.
 [config_setting(
     name = "wheel_test_" + v.replace(".", "_"),
     define_values = {"PYTHON_VERSION": v},
     flag_values = {
         ":test_wheel": "True",
-        ":_torch_version": DEFAULT_TORCH_VERSION,
+        ":_torch_version": SENTINEL_TORCH_VERSION,
     },
     visibility = ["//visibility:public"],
 ) for v in SUPPORTED_PYTHON_VERSIONS]
