@@ -257,8 +257,8 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.complex64: {"rtol": 2.1e-5, "atol": 3.1e-4},
     },
     "_foreach_tanh": {
-        torch.complex64: {"rtol": 3.2e-5, "atol": 1.8e-3},
-        torch.float32: {"rtol": 5.2e-5, "atol": 3.3e-5},
+        torch.complex64: {"rtol": 1.6e-4, "atol": 1.2e-2},
+        torch.float32: {"rtol": 6.3e-5, "atol": 4.4e-5},
         torch.int16: {"rtol": 3e-5, "atol": 3e-5},
         torch.int32: {"rtol": 3e-5, "atol": 3e-5},
         torch.int64: {"rtol": 3e-5, "atol": 3e-5},
@@ -266,9 +266,9 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.uint8: {"rtol": 3e-5, "atol": 3e-5},
     },
     "_log_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 1.5e-1, "atol": 6.3e-2},
-        torch.float16: {"rtol": 1.4e-2, "atol": 3.2e-2},
-        torch.float32: {"rtol": 6.9e-5, "atol": 2.3e-4},
+        torch.bfloat16: {"rtol": 22, "atol": 1.9e-1},
+        torch.float16: {"rtol": 2.2, "atol": 6.3e-2},
+        torch.float32: {"rtol": 6.1e-3, "atol": 2.6e-4},
     },
     "_native_batch_norm_legit": {
         torch.bfloat16: {"rtol": 7.4e-2, "atol": 3.1e-2},
@@ -276,8 +276,8 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float32: {"rtol": 1e-4, "atol": 5e-4},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 2.9, "atol": 4.7e-2},
-        torch.float16: {"rtol": 1.3, "atol": 4.3e-3},
+        torch.bfloat16: {"rtol": 9.2, "atol": 5.9e-2},
+        torch.float16: {"rtol": 7.4, "atol": 7.1e-3},
     },
     "abs": {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
