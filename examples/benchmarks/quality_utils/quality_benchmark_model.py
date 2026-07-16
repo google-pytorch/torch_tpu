@@ -17,12 +17,12 @@
 import abc
 import dataclasses
 import hashlib
-from typing import Any, Iterable, final
-
+from typing import Any
+from typing import final
+from typing import Iterable
 from absl import logging
 import torch
 from torch_tpu._internal.utils import log_utils
-
 
 log_utils.log_to_stderr()
 

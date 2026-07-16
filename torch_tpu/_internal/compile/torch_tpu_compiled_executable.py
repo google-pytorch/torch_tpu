@@ -15,10 +15,11 @@
 """Compiled artifact and executable definitions for TorchTPU."""
 
 import abc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from collections.abc import Sequence
 import operator
-from typing import Any, TypeAlias
-
+from typing import Any
+from typing import TypeAlias
 from absl import logging
 import torch
 from torch._inductor.output_code import OutputCode

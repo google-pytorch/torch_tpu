@@ -16,7 +16,6 @@
 
 import logging  # PYTHON_LOGGING_OK=Used to configure absl logging.
 import sys
-
 from absl import logging as absl_logging
 
 

@@ -16,7 +16,8 @@
 
 import os
 import sys
-from typing import Final, Tuple
+from typing import Final
+from typing import Tuple
 
 LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"
 sys.argv.extend(

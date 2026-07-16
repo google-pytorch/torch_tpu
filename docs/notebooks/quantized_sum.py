@@ -169,7 +169,7 @@ def _():
   import os
   import random
   import sys
-  from typing import Callable, Final
+  from typing import Final
 
   # Inject flags and env var to libtpu. It sometimes needs flags, sometimes envvar.
   LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"

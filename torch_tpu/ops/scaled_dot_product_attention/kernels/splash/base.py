@@ -15,12 +15,13 @@
 """Base functionality for Sparse Flash Attention."""
 
 import functools
-from typing import Final, NamedTuple, TypeAlias
+from typing import Final
+from typing import NamedTuple
+from typing import TypeAlias
 import jax
 import jax.numpy as jnp
 import numpy as np
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask_info as mask_info_lib
-
 
 MaskInfo = mask_info_lib.MaskInfo
 

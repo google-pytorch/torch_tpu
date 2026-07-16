@@ -14,13 +14,15 @@
 
 """TorchTPU support for torch.export to MLIR."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable
+from collections.abc import Mapping
+from collections.abc import Sequence
 import contextlib
 import copy
 import dataclasses
 import functools
-from typing import Any, TypeAlias
-
+from typing import Any
+from typing import TypeAlias
 from absl import logging
 import torch
 import torch.export

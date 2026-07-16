@@ -15,8 +15,8 @@
 
 from collections.abc import Callable
 import functools
-from typing import Any, TypeVar
-
+from typing import Any
+from typing import TypeVar
 import torch
 from torch.utils import _pytree
 from torch_tpu._internal.distributed import tpu_distributed

@@ -15,12 +15,10 @@
 """Smoke test of HuggingFace Wan2.2-TI2V-5B inference."""
 
 import pathlib
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest
 import diffusers
-from PIL import Image
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths

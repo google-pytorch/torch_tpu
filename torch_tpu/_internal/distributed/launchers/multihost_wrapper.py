@@ -41,7 +41,6 @@ RANK, LOCAL_RANK, and WORLD_SIZE set in environment variables.
 
 import os
 import time
-
 from absl import logging
 
 

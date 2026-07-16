@@ -21,10 +21,9 @@ app = marimo.App(width="medium")
 
 @app.cell(hide_code=True)
 def _():
-  import marimo as mo
   import os
   import shutil
-  import time
+  import marimo as mo
 
   # Pre-set environment variables globally for HTML export so that all examples have output
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
@@ -227,9 +226,8 @@ def _(mo):
 def _(os):
   def _run():
     # RESTART KERNEL BEFORE RUNNING
-    import torch
-    import shutil
     import glob
+    import torch
 
     dump_dir = "/tmp/hlo_dump"
     os.makedirs(dump_dir, exist_ok=True)
@@ -305,9 +303,8 @@ def _(mo):
 def _(os, safe_init):
   def _run():
     # RESTART KERNEL BEFORE RUNNING
-    import torch
-    import shutil
     import time
+    import torch
 
     tier2_name = "tpu_tier2_cache"
     # The backend automatically places named tier-2 caches inside /dev/shm/torch_tpu_cache/

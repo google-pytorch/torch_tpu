@@ -21,7 +21,6 @@ import enum
 import pathlib
 import time
 from typing import Any
-
 from absl import app
 from absl import flags
 from absl import logging
@@ -32,7 +31,6 @@ from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 import transformers
-
 from torch_tpu._internal.shims.xprof import traceme
 
 log_utils.log_to_stderr()

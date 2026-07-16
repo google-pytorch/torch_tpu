@@ -30,12 +30,14 @@ The `torch.compile()` function has the following relevant arguments:
     Disables the compilation. No ops for us.
 """
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable
+from collections.abc import Iterator
+from collections.abc import Sequence
 import contextlib
 import functools
 import hashlib
-from typing import Any, TypeAlias
-
+from typing import Any
+from typing import TypeAlias
 from absl import logging
 import torch
 from torch._dynamo.backends.common import aot_autograd

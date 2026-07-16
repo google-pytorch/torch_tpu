@@ -15,7 +15,6 @@
 """Full definition of a GPT Language Model, all of it in this single file."""
 
 import math
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F

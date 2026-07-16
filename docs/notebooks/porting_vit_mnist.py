@@ -21,9 +21,9 @@ app = marimo.App(width="medium")
 
 @app.cell(hide_code=True)
 def _():
+  import warnings
   import marimo as mo
   import torch
-  import warnings
   # Suppress internal PJRT warnings about non-leaf grad access during training
   warnings.filterwarnings(
       "ignore",
@@ -56,9 +56,9 @@ def _(mo):
 
 @app.cell
 def _(torch):
+  import math
   import torch.nn as nn
   import torch.nn.functional as F
-  import math
 
   class TpuAttentionBlock(nn.Module):
     """Manual multi-head attention — avoids SDP MATH fallback on TPU."""
@@ -144,8 +144,8 @@ def _(mo):
 
 @app.cell
 def _(F, torch):
-  from sklearn.datasets import fetch_openml
   import numpy as np
+  from sklearn.datasets import fetch_openml
 
   print("Fetching MNIST data...")
   mnist = fetch_openml("mnist_784", version=1, as_frame=False)
@@ -241,8 +241,10 @@ def _(mo):
 
 @app.cell
 def _(X_test_tensor, Y_test_tensor, device, mo, model, torch):
+  import base64
+  import io
+  import random
   import matplotlib.pyplot as plt
-  import io, base64, random
 
   # Pick a random test image
   test_idx = random.randint(0, len(X_test_tensor) - 1)

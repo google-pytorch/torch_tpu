@@ -15,7 +15,6 @@
 """Tests for index.py — all cells are markdown-only."""
 
 # pylint: skip-file
-import importlib
 
 
 def test_notebook_parses(setup_sys_path):

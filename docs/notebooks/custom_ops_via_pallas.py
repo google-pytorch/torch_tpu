@@ -131,7 +131,8 @@ def _(mo):
 def _():
   import os
   import sys
-  from typing import Final, Tuple
+  from typing import Final
+  from typing import Tuple
 
   # Inject flags and env var to libtpu.
   LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"
@@ -249,10 +250,10 @@ def _(
     dump_dir(XLA_DUMP_TO)
     dump_dir(LLO_DUMP_TO)
 
-    print(f"\n=========================================")
+    print("\n=========================================")
     print(f"Expected scale: 4.0. Actual: {scale.item()=}")
     print(f"Expected packed: 0x66666666. Actual: {packed.item()=:#08x}")
-    print(f"=========================================")
+    print("=========================================")
     print("Success.")
     return 0
 

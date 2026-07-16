@@ -183,7 +183,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/utils:log_utils",
         "@pypi//accelerate",  # buildcleaner: keep
         "@pypi//diffusers",
-        "@pypi//pillow",
         "@pypi//transformers",  # buildcleaner: keep
     ],
 )

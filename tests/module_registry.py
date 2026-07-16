@@ -29,17 +29,17 @@ inputs.
 # pylint: disable=g-import-not-at-top
 
 import abc
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from collections.abc import Sequence
 import enum
 from importlib import resources
 from importlib.resources import abc as resources_abc
 import inspect
 import pathlib
-from typing import Any, Iterator
-
+from typing import Any
+from typing import Iterator
 from absl import flags
 from absl import logging
-
 from etils import epath
 import torch
 

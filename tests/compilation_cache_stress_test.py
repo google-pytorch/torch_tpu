@@ -16,7 +16,6 @@
 
 import concurrent.futures
 import time
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.compile import tpu_torch_compile

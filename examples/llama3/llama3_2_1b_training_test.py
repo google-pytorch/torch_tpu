@@ -15,11 +15,11 @@
 # %%
 """Tests of Llama3 1B training based on llama3_1B_training_nb.py."""
 
-import os
 import sys
 import time
-from typing import Any, Dict, TypeAlias
-
+from typing import Any
+from typing import Dict
+from typing import TypeAlias
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -33,7 +33,6 @@ from torch_tpu._internal.utils import log_utils
 from examples import paths
 import tqdm
 import transformers
-
 from torch_tpu._internal.shims.xprof import traceme
 
 EagerMode: TypeAlias = execution_mode.EagerMode

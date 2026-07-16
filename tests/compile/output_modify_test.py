@@ -15,8 +15,9 @@
 """Ensure we error out at torch.compile() when "dynamic" is applied."""
 
 import os
-from typing import Callable, List, Tuple
-
+from typing import Callable
+from typing import List
+from typing import Tuple
 from absl import logging
 from absl.testing import absltest
 import torch

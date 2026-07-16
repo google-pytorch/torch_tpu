@@ -15,7 +15,6 @@
 """Generate scaled dot product attention kernel."""
 
 from collections.abc import Sequence
-
 from absl import app
 from absl import flags
 import jax.numpy as jnp

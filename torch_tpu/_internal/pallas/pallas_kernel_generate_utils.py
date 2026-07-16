@@ -49,7 +49,7 @@ def generate_embedded_file(
       hdr_f.write(f"extern const unsigned int {d[0]}_len;\n")
       impl_f.write(
           f"extern const unsigned char {d[0]}_data[] ="
-          f" {{{','.join(['0x%x'%c for c in d[1]])}}};\n"
+          f" {{{','.join(['0x%x' % c for c in d[1]])}}};\n"
       )
       impl_f.write(
           f"extern const unsigned int {d[0]}_len = sizeof({d[0]}_data);\n"

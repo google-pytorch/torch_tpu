@@ -14,8 +14,8 @@
 
 """Generates text using a HuggingFace Transformers model from the command line."""
 
-from typing import Final, Sequence
-
+from typing import Final
+from typing import Sequence
 from absl import app
 from absl import flags
 from examples.huggingface_transformers import generate

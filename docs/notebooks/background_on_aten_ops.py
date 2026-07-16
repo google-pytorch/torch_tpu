@@ -151,7 +151,6 @@ def _(mo):
 
 @app.cell
 def _():
-  from absl import app as absl_app
   import torch
 
   torch._logging.set_logs(aot_graphs=True)  # pylint: disable=protected-access

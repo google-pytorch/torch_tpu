@@ -23,17 +23,17 @@ import dataclasses
 import enum
 import threading
 import time
-from typing import Dict, Iterator, List, Tuple
-
+from typing import Dict
+from typing import Iterator
+from typing import List
+from typing import Tuple
 from absl import logging
 from etils import epath
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 import transformers
-from transformers import masking_utils
 from transformers import modeling_outputs
-
 
 log_utils.log_to_stderr()
 

@@ -44,13 +44,13 @@ Architecture Note on `num_hidden_layers` (e.g., 62 for 27B):
 import copy
 import math
 import types
-from typing import Any, Optional, cast
-
+from typing import Any
+from typing import cast
+from typing import Optional
 from absl import logging
 import torch
 from torch import nn
 from torch_tpu._internal.utils import log_utils
-
 
 log_utils.log_to_stderr()
 

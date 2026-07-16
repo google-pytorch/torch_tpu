@@ -14,7 +14,8 @@
 import dataclasses
 import os
 import pickle
-from typing import Any, Callable
+from typing import Any
+from typing import Callable
 from unittest import mock
 
 from absl.testing import absltest

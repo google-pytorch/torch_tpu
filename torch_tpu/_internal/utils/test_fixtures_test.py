@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import collections.abc
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_fixtures

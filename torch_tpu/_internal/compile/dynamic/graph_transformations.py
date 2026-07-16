@@ -31,7 +31,6 @@ from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic import view_ops_transformations
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 
-
 GraphTransformObserver = graph_transform_observer.GraphTransformObserver
 get_symint_bounds = symbol_bounds.get_symint_bounds
 

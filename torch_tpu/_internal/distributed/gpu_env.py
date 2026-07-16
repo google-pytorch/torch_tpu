@@ -14,7 +14,6 @@
 
 """GPU-specific boilerplate we need to run on multiple GPUs."""
 import os
-
 from absl import logging
 import torch
 import torch.distributed as dist

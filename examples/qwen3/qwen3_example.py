@@ -14,7 +14,6 @@
 
 """Example use of Qwen3 model."""
 import sys
-
 from absl import app
 from absl import flags
 import torch

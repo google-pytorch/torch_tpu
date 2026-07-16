@@ -15,13 +15,12 @@
 """Helper functions for loading data for quality benchmarks."""
 
 import enum
-from typing import Any, Iterable
-
+from typing import Any
+from typing import Iterable
 from absl import logging
 import grain.python as grain
 import tensorflow_datasets as tfds
 from torch_tpu._internal.utils import log_utils
-
 
 log_utils.log_to_stderr()
 

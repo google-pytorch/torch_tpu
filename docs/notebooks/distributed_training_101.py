@@ -60,10 +60,10 @@ def _(mo):
 @app.cell(disabled=True)
 def _():
   import torch
-  import torch.nn as nn
-  import torch.optim as optim
-  from torch.nn.parallel import DistributedDataParallel as DDP
   import torch.distributed as dist
+  import torch.nn as nn
+  from torch.nn.parallel import DistributedDataParallel as DDP
+  import torch.optim as optim
 
   class ToyModel(nn.Module):
 

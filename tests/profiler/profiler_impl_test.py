@@ -15,7 +15,6 @@
 """Tests for _internal.profiler._impl internal APIs."""
 
 import os
-
 from absl.testing import absltest
 import portpicker
 import torch

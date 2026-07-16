@@ -15,10 +15,8 @@
 """Helper routines to assist in micro-benchmarking."""
 
 import time
-
 from absl import flags
 import torch
-
 
 _ACC = flags.DEFINE_enum(
     "acc",

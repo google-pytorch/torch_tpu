@@ -15,7 +15,6 @@
 """Example use of ResNet model."""
 
 import sys
-
 from absl import app
 from absl import flags
 import torch

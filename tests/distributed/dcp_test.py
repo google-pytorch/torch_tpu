@@ -20,7 +20,6 @@ catch regressions early on by ensuring the happy path is functional.
 """
 
 import os
-
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -32,7 +31,6 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 _IN_FEATURES = 64

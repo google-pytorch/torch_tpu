@@ -14,7 +14,6 @@
 """Benchmarks for model quality."""
 
 from typing import Any
-
 from absl.testing import absltest
 import torch
 import torch.multiprocessing as mp
@@ -27,9 +26,7 @@ from examples.benchmarks.quality_utils.metrics import perplexity_metric
 from examples.benchmarks.quality_utils.models import llama3_2_1b_quality_benchmark
 from examples.benchmarks.quality_utils.models import meta_llama3_quality_benchmark
 from examples.benchmarks.quality_utils.models import qwen3_1_7b_quality_benchmark
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
 
 _HF_LLAMA_3_2_1B_BENCHMARK_NAME = "hf_llama_3_2_1b"
 _META_LLAMA_3_2_8B_BENCHMARK_NAME = "meta_llama_3_2_8b"

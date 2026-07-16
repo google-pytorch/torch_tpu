@@ -17,8 +17,8 @@
 
 import collections
 import functools
-from typing import Any, NamedTuple
-
+from typing import Any
+from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np

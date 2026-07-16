@@ -15,13 +15,11 @@
 """Example use of Llama 3.2 model."""
 
 import sys
-
 from absl import app
 from absl import flags
 import torch
 from torch_tpu._internal.utils import utils
 from examples.llama3.impl import llama3_2
-
 
 CheckValueMode = utils.CheckValueMode
 Llama32Model = llama3_2.Llama32Model

@@ -16,7 +16,6 @@
 
 import os
 from unittest import mock
-
 from absl.testing import absltest
 from torch_tpu._internal.distributed.launchers import multihost_wrapper
 

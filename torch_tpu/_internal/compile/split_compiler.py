@@ -18,12 +18,12 @@ This module contains the logic for splitting a GraphModule on collective
 operations and compiling it's submodules.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from collections.abc import Sequence
 import copy
 import functools
 import operator
 from typing import Any
-
 from absl import logging
 import torch
 from torch._dynamo.utils import detect_fake_mode

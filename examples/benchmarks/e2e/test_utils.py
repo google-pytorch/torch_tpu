@@ -19,17 +19,15 @@ import errno
 import os
 import queue
 import sys
-from typing import Any, Sequence
-
+from typing import Any
+from typing import Sequence
 from absl import flags
 from absl import logging
 from absl.testing import parameterized
-from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e import performance_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 USE_SUBPROCESS = flags.DEFINE_bool(

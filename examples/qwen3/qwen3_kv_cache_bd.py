@@ -18,8 +18,9 @@
 from contextlib import contextmanager
 import time
 import types
-from typing import Any, Optional, Sequence
-
+from typing import Any
+from typing import Optional
+from typing import Sequence
 from absl import app
 from absl import flags
 import torch
@@ -27,9 +28,9 @@ from torch_tpu._internal import dynamism
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
 import transformers
-from transformers.cache_utils import DynamicCache, DynamicLayer
+from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import DynamicLayer
 from transformers.models.qwen3 import modeling_qwen3
-
 from torch_tpu._internal.shims.xprof import traceme
 from rules_python.python.runfiles import runfiles
 

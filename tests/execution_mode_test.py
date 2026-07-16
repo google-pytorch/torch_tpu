@@ -18,8 +18,8 @@ import concurrent
 import random
 import threading
 from typing import TypeAlias
-
 from absl.testing import absltest
+
 # pylint: disable-next=unused-import - avoid libtorch.so link error in OSS build.
 import torch
 from torch_tpu._internal import execution_mode

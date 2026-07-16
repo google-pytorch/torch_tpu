@@ -16,15 +16,15 @@
 
 import json
 import os
-from typing import Any, Callable, Sequence
-
+from typing import Any
+from typing import Callable
+from typing import Sequence
 from absl import logging
 import psutil
 import torch
 from torch.utils._pytree import tree_flatten
 from torch_tpu._internal import compile as torch_tpu_compile
 from torch_tpu._internal import sync as tpu_sync
-
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
 
 _BYTES_IN_MB = 1024 * 1024

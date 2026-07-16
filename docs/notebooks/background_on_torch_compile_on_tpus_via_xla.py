@@ -140,7 +140,6 @@ def _():
       f"--xla_dump_to={XLA_DUMP_TO} --xla_dump_hlo_as_text"
   )
 
-  from absl import app as absl_app
   import torch
 
   return LLO_DUMP_TO, XLA_DUMP_TO, torch

@@ -18,7 +18,6 @@ import shutil
 import threading
 import time
 import unittest
-
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -26,7 +25,6 @@ import torch
 from torch.autograd import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
-
 # pylint: disable=g-direct-tensorflow-import
 from tsl.profiler.protobuf import profiler_options_pb2
 from tsl.profiler.protobuf import xplane_pb2

@@ -15,11 +15,9 @@
 """Example of using Pallas JAX op for popcount in quantized sum."""
 
 import os
-import os
 import random
 import sys
-import sys
-from typing import Callable, Final
+from typing import Callable
 from typing import Final
 
 # Inject flags and env var to libtpu. It sometimes needs flags, sometimes envvar.

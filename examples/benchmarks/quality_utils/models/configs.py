@@ -15,7 +15,6 @@
 """Configs for meta-llama3 example."""
 
 import json
-
 import llama_models.llama3.model as m
 from examples import paths
 

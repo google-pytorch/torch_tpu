@@ -19,7 +19,6 @@ For the model itself, see simple_model.py
 """
 
 import os
-
 from absl import logging
 from torch import distributed as dist
 from torch import nn
@@ -27,7 +26,6 @@ from torch import optim
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.data_parallel import dp_utils
-
 
 log_utils.log_to_stderr()
 

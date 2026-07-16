@@ -21,8 +21,8 @@ import enum
 import functools
 import json
 import math
-from typing import Any, NamedTuple
-
+from typing import Any
+from typing import NamedTuple
 import jax
 from jax import ad_checkpoint
 from jax import lax
@@ -34,7 +34,6 @@ import numpy as np
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import base
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask as mask_lib
 from torch_tpu.ops.scaled_dot_product_attention.kernels.splash import splash_attention_mask_info as mask_info_lib
-
 
 P = jax.P
 MaskInfo = mask_info_lib.MaskInfo

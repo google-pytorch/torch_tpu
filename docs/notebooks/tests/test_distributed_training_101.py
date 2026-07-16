@@ -23,7 +23,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import pytest
 
 
 def get_distributed_env():

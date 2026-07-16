@@ -19,7 +19,6 @@ import torch
 from torch_tpu._internal.utils.utils import OpTracer
 from tests import op_testing
 
-
 OpInput = op_testing.OpInput
 TorchTpuVsCpuTestBase = op_testing.TorchTpuVsCpuTestBase
 to = op_testing.to

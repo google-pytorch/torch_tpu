@@ -14,12 +14,12 @@
 
 """Tests of Llama3 as implemented by HuggingFace Transformers."""
 
-import os
 import pprint
 import sys
 import time
-from typing import Any, Callable, Dict, TypeAlias
-
+from typing import Any
+from typing import Callable
+from typing import TypeAlias
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -30,7 +30,6 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import log_utils
 import transformers
-
 from torch_tpu._internal.shims.xprof import traceme
 from rules_python.python.runfiles import runfiles
 

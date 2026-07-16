@@ -16,13 +16,12 @@
 """Flash Attention TPU kernel."""
 
 from __future__ import annotations
-
 import dataclasses
 import functools
 import math
 import operator
-from typing import Any, NamedTuple
-
+from typing import Any
+from typing import NamedTuple
 import jax
 from jax import lax
 from jax.experimental import pallas as pl

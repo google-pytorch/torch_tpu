@@ -26,7 +26,6 @@
 
 import os
 import time
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -74,7 +73,8 @@ class SingleAcceleratorTest(parameterized.TestCase):
       assert str(self.acc_device).split(":", 1)[0] == _DEVICE.value
 
     # Load model directly from transformers.
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer
 
     weights = _WEIGHTS_DIR
 

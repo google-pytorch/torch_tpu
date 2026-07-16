@@ -22,7 +22,6 @@ import enum
 import functools
 import gc
 from typing import Any
-
 from absl import flags
 from absl.testing import absltest
 from absl.testing import parameterized

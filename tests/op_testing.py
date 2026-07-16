@@ -18,7 +18,12 @@ See go/torch-tpu-op-test for more details.
 """
 
 import collections
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable
+from collections.abc import Iterable
+from collections.abc import Mapping
+from collections.abc import MutableMapping
+from collections.abc import MutableSequence
+from collections.abc import Sequence
 import copy
 import enum
 import functools
@@ -34,9 +39,10 @@ import sys
 import time
 import traceback
 import typing
-from typing import Any, Final, IO
+from typing import Any
+from typing import Final
+from typing import IO
 import unittest
-
 from absl import flags
 from absl.testing import absltest
 from etils import epath

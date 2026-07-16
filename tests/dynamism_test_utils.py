@@ -24,7 +24,6 @@ Handles the following details for per-op unit testing:
 from collections.abc import Sequence
 import random
 from typing import Any
-
 from absl import logging
 import torch
 from torch.testing._internal import common_methods_invocations

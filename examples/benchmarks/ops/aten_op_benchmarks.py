@@ -28,7 +28,10 @@ if _G3_ROOT not in sys.path:
   sys.path.insert(0, _G3_ROOT)
 
 import time
-from typing import Any, Callable, Dict, List, Mapping, Tuple
+from typing import Callable
+from typing import List
+from typing import Mapping
+from typing import Tuple
 import unittest
 from absl import flags
 from absl.testing import absltest
@@ -36,9 +39,9 @@ from absl.testing import parameterized
 import numpy as np
 import torch
 import torch.utils.benchmark as benchmark
-from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
+from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.e2e.performance_utils import _run_mode_context

@@ -13,18 +13,14 @@
 # limitations under the License.
 
 import time
-
 from absl.testing import absltest
 import numpy as np
 import torch
-from torch.testing._internal.common_device_type import (
-    dtypes,
-    instantiate_device_type_tests,
-)
-
-from torch.testing._internal.common_utils import TestCase, run_tests
+from torch.testing._internal.common_device_type import dtypes
+from torch.testing._internal.common_device_type import instantiate_device_type_tests
+from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import TestCase
 from torch_tpu._internal.utils import utils
-
 
 CheckValueMode = utils.CheckValueMode
 

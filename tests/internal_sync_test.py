@@ -15,7 +15,6 @@
 import os
 import re
 from typing import TypeAlias
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import execution_mode

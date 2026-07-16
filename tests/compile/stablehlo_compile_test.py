@@ -140,9 +140,9 @@ class StableHloCompileTimeTest(sct.StableHloCompileTimeTestBase):
 
     def make_shlo(i: int) -> str:
       # This is the SHLO for torch.randint().
-      return f"""
-module {{
-  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {{
+      return """
+module {
+  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {
     %c = stablehlo.constant dense<4294967295> : tensor<ui32>
     %output_state, %output = stablehlo.rng_bit_generator %arg0, algorithm =  DEFAULT : (tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xui32>)
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
@@ -153,8 +153,8 @@ module {{
     %4 = stablehlo.add %2, %3 : tensor<3x3xi64>
     %5 = stablehlo.convert %4 : (tensor<3x3xi64>) -> tensor<3x3xf32>
     return %output_state, %5 : tensor<2xui64>, tensor<3x3xf32>
-  }}
-}}
+  }
+}
 """
 
     self.do_test("Compilation/Randint_Float32_fast", make_shlo)
@@ -164,9 +164,9 @@ module {{
 
     def make_shlo(i: int) -> str:
       # This is the SHLO for torch.randint().
-      return f"""
-module {{
-  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {{
+      return """
+module {
+  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {
     %c = stablehlo.constant dense<4294967296> : tensor<ui64>
     %output_state, %output = stablehlo.rng_bit_generator %arg0, algorithm =  DEFAULT : (tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xui64>)
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
@@ -177,8 +177,8 @@ module {{
     %4 = stablehlo.add %2, %3 : tensor<3x3xi64>
     %5 = stablehlo.convert %4 : (tensor<3x3xi64>) -> tensor<3x3xf32>
     return %output_state, %5 : tensor<2xui64>, tensor<3x3xf32>
-  }}
-}}
+  }
+}
 """
 
     self.do_test("Compilation/Randint_Float32_slow", make_shlo)
@@ -193,9 +193,9 @@ module {{
 
     def make_shlo(i: int) -> str:
       # This is the SHLO for torch.randint().
-      return f"""
-module {{
-  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {{
+      return """
+module {
+  func.func @main(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xf32>) {
     %c = stablehlo.constant dense<137438953472> : tensor<ui64>
     %output_state, %output = stablehlo.rng_bit_generator %arg0, algorithm =  DEFAULT : (tensor<2xui64>) -> (tensor<2xui64>, tensor<3x3xui64>)
     %c_0 = stablehlo.constant dense<0> : tensor<i64>
@@ -209,8 +209,8 @@ module {{
     %6 = stablehlo.add %4, %5 : tensor<3x3xi64>
     %7 = stablehlo.convert %6 : (tensor<3x3xi64>) -> tensor<3x3xf32>
     return %output_state, %7 : tensor<2xui64>, tensor<3x3xf32>
-  }}
-}}
+  }
+}
 """
 
     self.do_test("Compilation/Randint_Float32_power_of_two", make_shlo)

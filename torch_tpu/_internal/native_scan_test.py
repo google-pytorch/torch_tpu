@@ -16,7 +16,6 @@
 
 import sys
 from unittest import mock
-
 from absl.testing import absltest
 from torch_tpu._internal import native_scan
 

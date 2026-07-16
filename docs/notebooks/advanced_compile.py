@@ -39,7 +39,6 @@ def _(mo):
 
 @app.cell
 def _():
-  import sys
   import torch
 
   # One time initialization of the TPU

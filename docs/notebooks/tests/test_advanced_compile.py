@@ -22,7 +22,6 @@ import torch.optim as optim
 
 def test_device_init(device):
   """Verifies that the TPU device is correctly initialized and registered."""
-  import torch_tpu
   from torch_tpu import api
 
   # Assert device type is correct

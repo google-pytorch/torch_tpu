@@ -15,13 +15,10 @@
 """Qwen 3 1.7B quality benchmark model."""
 
 from typing import Any
-
 import torch
-from examples import paths
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.quality_utils import quality_benchmark_model
 from tests import module_registry
-import transformers
 
 
 class Qwen317BQualityBenchmarkModel(

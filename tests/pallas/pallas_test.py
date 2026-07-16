@@ -18,12 +18,13 @@ import functools
 import os
 import pathlib
 import sys
-from typing import Optional, Tuple, TypeAlias
+from typing import Optional
+from typing import Tuple
+from typing import TypeAlias
 import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
-import jax.export
 import jax.numpy as jnp
 from packaging import version
 import torch

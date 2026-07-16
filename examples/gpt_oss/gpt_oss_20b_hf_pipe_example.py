@@ -15,12 +15,10 @@
 """Example gpt-oss-20b model inference."""
 
 import time
-
 from absl import app
 import torch
 from examples import paths
 import transformers
-
 
 XM_HOME = paths.XM_HOME
 MAX_DECODE_STEPS = 2

@@ -21,12 +21,12 @@ variables, then we use this to decode their topology given the generation of the
 device and the world size.
 """
 
-from collections.abc import Mapping, Set
+from collections.abc import Mapping
+from collections.abc import Set
 import enum
 import os
 import pathlib
 from typing import Final
-
 import immutabledict
 
 # Google's PCI vendor ID (found in /sys/bus/pci/devices/*/vendor)

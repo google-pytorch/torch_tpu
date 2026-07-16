@@ -18,7 +18,6 @@ from collections.abc import Sequence
 import sys
 import time
 from typing import TypeAlias
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -29,7 +28,6 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import log_utils
-
 from torch_tpu._internal.shims.xprof import traceme
 from torch_tpu._internal.shims.xprof import xprof_session
 

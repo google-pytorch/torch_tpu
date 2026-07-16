@@ -15,7 +15,8 @@
 """Manage symbolic integers and their bounds for dynamic shape support."""
 
 from __future__ import annotations
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from collections.abc import Sequence
 import dataclasses
 from typing import Any
 from absl import logging

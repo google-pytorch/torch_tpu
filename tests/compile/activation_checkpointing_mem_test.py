@@ -14,11 +14,9 @@
 
 import gc
 import queue
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compile as compile_lib
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 

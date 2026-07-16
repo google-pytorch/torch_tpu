@@ -31,9 +31,7 @@ Currently needed aten ops:
 """
 
 import sys
-
 from absl import app
-from absl import flags
 import torch
 from torch import nn
 from torch_tpu._internal.utils import utils

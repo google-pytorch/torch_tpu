@@ -75,7 +75,6 @@ torch_tpu_py_library(
         ":scan",
         ":tpu_backend",
         ":tpu_torch_compile",
-        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
 )

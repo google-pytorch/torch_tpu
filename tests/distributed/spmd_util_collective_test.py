@@ -18,7 +18,6 @@ import os
 import re
 from typing import TypeAlias
 from unittest import mock
-
 from absl.testing import absltest
 import torch
 from torch import distributed as dist
@@ -27,7 +26,6 @@ from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.sync import sync
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 EagerMode: TypeAlias = execution_mode.EagerMode

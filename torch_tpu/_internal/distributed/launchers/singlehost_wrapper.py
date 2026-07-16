@@ -39,8 +39,8 @@ RANK, LOCAL_RANK, and WORLD_SIZE set in environment variables.
 
 import os
 import time
-from typing import Any, Callable
-
+from typing import Any
+from typing import Callable
 from absl import logging
 import portpicker
 from torch_tpu._internal.utils import hardware

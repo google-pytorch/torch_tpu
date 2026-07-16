@@ -25,7 +25,6 @@ This implementation was created with help of the instructions in:
 import torch
 from torch import nn
 
-
 flatten = torch.flatten
 Tensor = torch.Tensor
 

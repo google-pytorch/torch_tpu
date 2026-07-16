@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from unittest import mock
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.distributed import spmd_util

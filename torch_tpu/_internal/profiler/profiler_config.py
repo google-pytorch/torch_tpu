@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
+from collections.abc import Mapping
 import os
 from typing import TypeAlias
 

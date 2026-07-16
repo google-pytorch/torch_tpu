@@ -19,7 +19,6 @@ For the model itself, see simple_model.py
 """
 
 import sys
-
 from absl import flags
 from absl import logging
 from torch import distributed as dist
@@ -28,7 +27,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP  # pylint: disable=
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.data_parallel import dp_utils
-
 
 FLAGS = flags.FLAGS
 

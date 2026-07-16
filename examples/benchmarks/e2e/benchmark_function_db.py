@@ -16,8 +16,8 @@
 """Database of benchmark execution functions for backend performance tests."""
 
 import contextlib
-from typing import Any, Callable
-
+from typing import Any
+from typing import Callable
 import torch
 from examples.benchmarks.e2e import common
 

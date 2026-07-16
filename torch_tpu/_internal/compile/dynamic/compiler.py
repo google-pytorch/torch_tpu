@@ -15,8 +15,10 @@
 """Compiler for handling dynamic shape in torch.compile()."""
 
 from __future__ import annotations
-from collections.abc import Callable, Sequence
-from typing import Any, NamedTuple
+from collections.abc import Callable
+from collections.abc import Sequence
+from typing import Any
+from typing import NamedTuple
 from absl import logging
 import torch
 from torch._inductor.utils import InputType

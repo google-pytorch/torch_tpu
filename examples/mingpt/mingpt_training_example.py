@@ -41,13 +41,12 @@ https://github.com/karpathy/minGPT/blob/master/demo.ipynb
 
 from collections.abc import Sequence
 import pickle
-
 from absl import app
 import torch
 from torch.utils.data import Dataset
-from torch.utils.data.dataloader import DataLoader
 from torch_tpu._internal import execution_mode
 from examples.mingpt.impl.mingpt import GPT
+
 # create a Trainer object
 from examples.mingpt.impl.trainer import Trainer
 from examples.mingpt.impl.utils import set_seed

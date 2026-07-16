@@ -82,7 +82,7 @@ def _(mo):
 def _():
   import os
   import sys
-  from typing import Final, Tuple
+  from typing import Final
 
   LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"
   sys.argv.extend(
@@ -97,9 +97,7 @@ def _():
       f"--xla_dump_to={XLA_DUMP_TO} --xla_dump_hlo_as_text"
   )
 
-  from absl import app as absl_app  # pylint: disable=g-import-not-at-top
   import torch  # pylint: disable=g-import-not-at-top
-  import torch_tpu  # pylint: disable=g-import-not-at-top,unused-import
 
   # pylint: disable=protected-access
   torch._logging.set_logs(aot_graphs=True)

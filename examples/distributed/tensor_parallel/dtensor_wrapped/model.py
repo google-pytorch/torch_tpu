@@ -15,7 +15,6 @@
 """Example model for tensor parallelism using PyTorch wrappers."""
 
 import math
-
 import torch
 from torch import nn
 

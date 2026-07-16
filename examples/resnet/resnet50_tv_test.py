@@ -19,7 +19,6 @@ typically run as FP32.
 """
 
 import io
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -31,7 +30,6 @@ from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 from examples import paths
 import torchvision
-
 
 log_utils.log_to_stderr()
 

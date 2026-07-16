@@ -28,7 +28,6 @@ from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 from examples.deepseek import model
 
-
 log_utils.log_to_stderr()
 
 
