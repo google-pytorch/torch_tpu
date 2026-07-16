@@ -14,14 +14,14 @@
 
 """Transitions for building torch_tpu against multiple PyTorch versions.
 
-The `//:torch_version` flag reconfigures the whole build graph, including the
+The `//:_torch_version` flag reconfigures the whole build graph, including the
 XLA/MLIR backend that does not actually depend on PyTorch. To keep the shared
 backend in a single configuration (so pywrap factors it into one common library
 instead of one copy per PyTorch version), `xla_fixed` re-exports a target under
-a transition that pins `//:torch_version` to a canonical value.
+a transition that pins `//:_torch_version` to a canonical value.
 
 `torch_version_glue` is the dual: it re-exports a `pybind_extension` under a
-transition that *sets* `//:torch_version` to a specific value, so the same
+transition that *sets* `//:_torch_version` to a specific value, so the same
 extension source is compiled once per supported PyTorch version. The versioned
 `.so`s (built by the wheel `pywrap_library`) share the single XLA/MLIR common
 library produced under the pinned config above.
@@ -35,8 +35,8 @@ load(
     _WHEEL_TORCH_VERSIONS = "WHEEL_TORCH_VERSIONS",
 )
 
-_TORCH_VERSION = "//:torch_version"
-_TORCH_HEADERS_ONLY = "//:torch_headers_only"
+_TORCH_VERSION = "//:_torch_version"
+_TORCH_HEADERS_ONLY = "//:_torch_headers_only"
 
 # The PyTorch versions the separated pip wheel is built against (one thin glue
 # `.so` per version, all sharing one XLA/MLIR common library) are the single
@@ -179,7 +179,7 @@ torch_version_glue = rule(
 def pin_glue_backend_deps(name, deps):
     """Pins a versioned glue's external backend deps to the canonical config.
 
-    A per-version glue is analyzed under a `//:torch_version` transition, which
+    A per-version glue is analyzed under a `//:_torch_version` transition, which
     reconfigures its *entire* dep graph -- including version-independent backend
     code that a glue depends on directly (e.g. `@com_google_absl//...`). Left
     alone, each version's copy lands in the shared common library under a

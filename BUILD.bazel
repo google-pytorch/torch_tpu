@@ -70,9 +70,11 @@ config_setting(
 # The PyTorch version a C++ extension is compiled/linked against. The pybind
 # transition (//shims/pybind11:pybind.bzl) sets this to build one glue per
 # supported PyTorch version; shims/torch selects the matching torch wheel on it.
-# Defaults to the version the standard (non-transitioned) build uses.
+# Defaults to the version the standard (non-transitioned) build uses. Only
+# ever set by transitions, never on the command line -- a wheel build always
+# builds every version.
 string_flag(
-    name = "torch_version",
+    name = "_torch_version",
     build_setting_default = DEFAULT_TORCH_VERSION,
     visibility = ["//visibility:public"],
 )
@@ -83,15 +85,16 @@ string_flag(
 # common library, which must never pull real torch -- a stray torch reference
 # there would bind one version's ABI into the library every glue shares. The
 # glues and their per-version torch commons leave it False and link the real
-# torch matching their version.
+# torch matching their version. Only ever set by transitions, never on the
+# command line.
 bool_flag(
-    name = "torch_headers_only",
+    name = "_torch_headers_only",
     build_setting_default = False,
 )
 
 config_setting(
     name = "torch_headers_only_enabled",
-    flag_values = {":torch_headers_only": "True"},
+    flag_values = {":_torch_headers_only": "True"},
     visibility = ["//visibility:public"],
 )
 
@@ -102,7 +105,7 @@ config_setting(
 # hubs and the wheel glues.
 [config_setting(
     name = "torch_" + tv.replace(".", "_"),
-    flag_values = {":torch_version": tv},
+    flag_values = {":_torch_version": tv},
     visibility = ["//visibility:public"],
 ) for tv in EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]]
 
@@ -122,7 +125,7 @@ config_setting(
 )
 
 # The Python-version rows only apply to the default torch version; the extra
-# versions are selected on //:torch_version alone (see //shims/torch). Pinning
+# versions are selected on //:_torch_version alone (see //shims/torch). Pinning
 # the torch version here keeps these mutually exclusive with the //:torch_<v>
 # settings, so a glue transitioned to an extra version under a wheel-test build
 # (whose top-level PYTHON_VERSION leaks into the transitioned config) does not
@@ -132,7 +135,7 @@ config_setting(
     define_values = {"PYTHON_VERSION": v},
     flag_values = {
         ":test_wheel": "True",
-        ":torch_version": DEFAULT_TORCH_VERSION,
+        ":_torch_version": DEFAULT_TORCH_VERSION,
     },
     visibility = ["//visibility:public"],
 ) for v in SUPPORTED_PYTHON_VERSIONS]

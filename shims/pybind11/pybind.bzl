@@ -18,7 +18,7 @@ In addition to the plain extension `name` (used by bazel-only builds and by the
 handful of non-pywrap label references), this macro fans out one extra glue per
 supported PyTorch version so the separated pip wheel can ship a thin `.so` per
 version. Each versioned glue is compiled against that version's torch headers
-via a `//:torch_version` transition and keeps the unversioned `PyInit_<name>`
+via a `//:_torch_version` transition and keeps the unversioned `PyInit_<name>`
 symbol so the runtime dispatch loader (torch_tpu/_versioned_so_loader.py) can
 rename the module at import time.
 

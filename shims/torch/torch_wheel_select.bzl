@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""select() builders that route torch deps by the //:torch_version flag.
+"""select() builders that route torch deps by the //:_torch_version flag.
 
 The multi-ABI wheel builds one glue per PyTorch version (see
 //shims/pybind11:pybind.bzl). For each extra (non-default) version, torch deps
