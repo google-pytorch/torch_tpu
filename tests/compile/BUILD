@@ -382,4 +382,19 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "test_layout_stride_bug",
+    srcs = ["test_layout_stride_bug.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:tpu_backend",
+    ],
+)
+
 torch_tpu_package_end()
