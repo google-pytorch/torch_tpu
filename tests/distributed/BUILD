@@ -619,4 +619,29 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "split_collective_ops_test",
+    srcs = ["split_collective_ops_test.py"],
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        ":distributed_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:compiler",
+        "//torch_tpu/_internal/compile:split_compiler",
+        "//torch_tpu/_internal/compile:torch_tpu_compiled_executable",
+        "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
 torch_tpu_package_end()

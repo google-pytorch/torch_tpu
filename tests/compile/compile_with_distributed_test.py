@@ -22,12 +22,34 @@ from torch import distributed as dist
 from torch.distributed import tensor
 import torch.multiprocessing as mp
 from torch_tpu._internal import compile as tt_compile
+from torch_tpu._internal.compile import split_compiler
+from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.device import _device_module as tpu_device
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
 
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
+
+TorchTpuCompiledExecutable = (
+    torch_tpu_compiled_executable.TorchTpuCompiledExecutable
+)
+_WrapperModule = split_compiler._WrapperModule
+_SplitCompiledExecutable = split_compiler._SplitCompiledExecutable
+
+
+def get_all_compiled_executables(execs) -> list[TorchTpuCompiledExecutable]:
+  flat_execs = []
+  for exe in execs:
+    if isinstance(exe, TorchTpuCompiledExecutable):
+      flat_execs.append(exe)
+    elif isinstance(exe, _SplitCompiledExecutable):
+      for child in exe._split_gm.children():
+        if isinstance(child, _WrapperModule) and isinstance(
+            child.submod, TorchTpuCompiledExecutable
+        ):
+          flat_execs.append(child.submod)
+  return flat_execs
 
 
 def compile_and_assert_outputs(func, inputs, expected_outputs=None):
@@ -42,7 +64,7 @@ def compile_and_assert_outputs(func, inputs, expected_outputs=None):
     for actual, expected in zip(output_compiled, expected_outputs):
       utils.assert_close(actual.to("cpu"), expected.to("cpu"))
 
-  return backend._compiled_executables
+  return get_all_compiled_executables(backend._compiled_executables)
 
 
 def run_all_reduce_with_torch_compile() -> None:
@@ -68,17 +90,23 @@ def run_all_reduce_with_torch_compile() -> None:
   execs = compile_and_assert_outputs(
       func, inputs=(input_tpu,), expected_outputs=(expected,)
   )
-  assert len(execs) == 2, f"Expected 2 graphs, got {len(execs)}"
+  assert len(execs) == 3, f"Expected 3 graphs, got {len(execs)}"
 
   # debug mode enabled so expect graphs to be set and in plaintext
   assert "torch.ops.aten.abs" not in execs[0].graph_module_debug_str
   assert "stablehlo.abs" not in execs[0].mlir_text
 
-  assert "torch.ops.aten.abs" in execs[1].graph_module_debug_str
-  assert "stablehlo.abs" in execs[1].mlir_text
+  assert (
+      "torch.ops._c10d_functional.all_reduce" in execs[1].graph_module_debug_str
+  )
 
-  assert execs[0].graph_module_debug_str != execs[1].graph_module_debug_str
-  assert execs[0].mlir_text != execs[1].mlir_text
+  assert "stablehlo.all_reduce" in execs[1].mlir_text
+
+  assert "torch.ops.aten.abs" in execs[2].graph_module_debug_str
+  assert "stablehlo.abs" in execs[2].mlir_text
+
+  assert len({e.graph_module_debug_str for e in execs}) == 3
+  assert len({e.mlir_text for e in execs}) == 3
 
 
 def run_all_gather_into_tensor_with_torch_compile() -> None:
@@ -105,7 +133,7 @@ def run_all_gather_into_tensor_with_torch_compile() -> None:
       inputs=(torch.tensor([float(rank)], device="tpu"),),
       expected_outputs=(expected,),
   )
-  assert len(execs) == 2, f"Expected 2 graphs, got {len(execs)}"
+  assert len(execs) == 3, f"Expected 3 graphs, got {len(execs)}"
 
 
 def run_all_gather_with_torch_compile() -> None:
@@ -131,7 +159,7 @@ def run_all_gather_with_torch_compile() -> None:
       inputs=(torch.tensor([float(rank)], device="tpu"),),
       expected_outputs=(expected,),
   )
-  assert len(execs) == 2, f"Expected 2 graphs, got {len(execs)}"
+  assert len(execs) == 3, f"Expected 3 graphs, got {len(execs)}"
 
 
 def run_all_to_all_single_with_torch_compile() -> None:
@@ -163,7 +191,7 @@ def run_all_to_all_single_with_torch_compile() -> None:
       ),
       expected_outputs=(expected,),
   )
-  assert len(execs) == 2, f"Expected 2 graphs, got {len(execs)}"
+  assert len(execs) == 3, f"Expected 3 graphs, got {len(execs)}"
 
 
 def run_all_to_all_with_torch_compile() -> None:
@@ -298,7 +326,7 @@ def run_reduce_scatter_tensor_with_torch_compile() -> None:
   execs = compile_and_assert_outputs(
       func, inputs=(input_tpu,), expected_outputs=(torch.tensor([57.0]),)
   )
-  assert len(execs) == 2, f"Expected 2 graphs, got {len(execs)}"
+  assert len(execs) == 3, f"Expected 3 graphs, got {len(execs)}"
 
 
 def run_broadcast_with_torch_compile() -> None:
