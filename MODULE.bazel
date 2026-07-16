@@ -82,10 +82,7 @@ archive_override(
     module_name = "rules_ml_toolchain",
     integrity = "sha256-izPVqzV2I7ox7EYzRzcRY6ogeLcHUr4LRP2xMrkWh6A=",
     patch_strip = 1,
-    patches = [
-        "//bazel/patches/rules_ml_toolchain:pywrap_external_binary_location.patch",
-        "//bazel/patches/rules_ml_toolchain:remove_experimental_include.patch",
-    ],
+    patches = ["//bazel/patches/rules_ml_toolchain:remove_experimental_include.patch"],
     strip_prefix = "rules_ml_toolchain-236a498d8624bef88e35ce2518a833204b0db19f",
     urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/236a498d8624bef88e35ce2518a833204b0db19f.tar.gz"],
 )

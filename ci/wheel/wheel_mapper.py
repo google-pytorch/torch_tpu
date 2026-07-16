@@ -51,13 +51,19 @@ def main():
       continue
 
     src = binary_map[basename]
-    clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
-
-    # If the regex didn't match (e.g. no /bin/), fallback to original
-    if clean_dest_path == dest_full_path:
-      # Fallback logic: Assume the first directory component is the start
-      # This handles cases where the path might be different
-      pass
+    if dest_full_path.startswith(original_path) and len(dest_full_path) > len(
+        original_path
+    ):
+      # pywrap_binaries derives each destination as "<root><package>/<basename>",
+      # where <root> comes from splitting the binary's path on its short_path.
+      # For a binary built in an external repository (our generated glue
+      # packages) the short_path spells the repo "../<repo>/" while the path
+      # spells it "external/<repo>/", so the split never matches and the "root"
+      # degenerates to the binary's entire path -- which is also this mapping's
+      # key. The intended "<package>/<basename>" tail survives after it.
+      clean_dest_path = dest_full_path[len(original_path):].lstrip("/")
+    else:
+      clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
 
     dest = os.path.join(args.out_dir, clean_dest_path)
 
