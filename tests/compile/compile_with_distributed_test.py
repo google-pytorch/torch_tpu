@@ -378,6 +378,28 @@ def run_fake_tensor_side_effect_pruning_with_torch_compile() -> None:
   utils.assert_close(output.to("cpu"), expected)
 
 
+def run_rank_variable_dead_collectives_with_torch_compile() -> None:
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = dist.get_world_size()
+
+  def func(x):
+    y = x.clone()
+    dist.all_reduce(y, dist.ReduceOp.SUM)
+    if rank == 0:
+      return y
+    return x
+
+  input_tpu = torch.tensor([1.0], device="tpu")
+  expected = (
+      torch.tensor([float(world_size)]) if rank == 0 else torch.tensor([1.0])
+  )
+
+  compile_and_assert_outputs(
+      func, inputs=(input_tpu,), expected_outputs=(expected,)
+  )
+
+
 class MultiTpuTorchCompileTest(absltest.TestCase):
 
   def test_fake_tensor_side_effect_pruning_with_torch_compile(self):
@@ -465,6 +487,14 @@ class MultiTpuTorchCompileTest(absltest.TestCase):
         nproc_per_node=8,
         fn=singlehost_wrapper.tpu_env_wrapper(
             run_gather_with_torch_compile, world_size=8
+        ),
+    )
+
+  def test_rank_variable_dead_collectives_with_torch_compile(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_rank_variable_dead_collectives_with_torch_compile, world_size=8
         ),
     )
 

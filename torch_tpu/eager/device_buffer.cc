@@ -82,8 +82,8 @@ DeviceBufferList::Data::Data(
   ABSL_CHECK(client_or.ok()) << client_or.status();  // CRASH_OK
   std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers;
   buffers.push_back(std::move(buffer));
-  materialized_buffers_ =
-      MaterializedData(std::move(client_or).value(), std::move(buffers));
+  materialized_buffers_ = std::make_unique<MaterializedData>(
+      std::move(client_or).value(), std::move(buffers));
   auto [promise, future] = xla::MakePromise<void>();
   materialization_promise_ = std::move(promise);
   materialization_future_ = std::move(future);
@@ -165,7 +165,7 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
                       PjrtBackend::GetInstance().GetSharedClient());
 
   materialized_buffers_ =
-      MaterializedData(std::move(client), std::move(buffers));
+      std::make_unique<MaterializedData>(std::move(client), std::move(buffers));
   materialization_promise_.Set(absl::OkStatus());
 
   return absl::OkStatus();
@@ -173,7 +173,7 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
 
 void DeviceBufferList::Data::ValidateMaterializedBuffers(int64_t index) const {
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=internal check
-      materialized_buffers_.has_value(), error::kFailedPrecondition)
+      materialized_buffers_ != nullptr, error::kFailedPrecondition)
       << "expected materialized buffers to be populated";
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=internal check
       index >= 0 && index < materialized_buffers_->buffers().size(),
