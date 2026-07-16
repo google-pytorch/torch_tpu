@@ -147,6 +147,102 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
   return False
 
 
+def _force_collective_outputs(split_gm: torch.fx.GraphModule) -> None:
+  """Forces all is_collective submodules to output their collective results."""
+  # Filter to only call_module nodes with a submodule target.
+  for call_submodule_node in split_gm.graph.nodes:
+    if call_submodule_node.op != "call_module":
+      continue
+    submod_name = str(call_submodule_node.target)
+    if not hasattr(split_gm, submod_name):
+      continue
+    submod = getattr(split_gm, submod_name)
+    if not isinstance(submod, torch.fx.GraphModule):
+      continue
+
+    # Find the (first) output node in the submodule.
+    output_node = None
+
+    # Keep track of nodes that must be outputs.
+    # Every collective and wait_tensor will be inserted to the list and set
+    # initially, and then we'll remove already-forced nodes later.
+    forced_nodes_set = set()
+    forced_nodes_list = []
+
+    # Scan over all nodes in the submodule, looking for collectives,
+    # wait_tensors, and outputs.
+    for sn in submod.graph.nodes:
+      if sn.op == "output":
+        if output_node is None:
+          output_node = sn
+        continue
+
+      if sn.op != "call_function":
+        continue
+
+      maybe_collective = getattr(sn.target, "overloadpacket", None)
+      if maybe_collective in _COLLECTIVE_OPS:
+        # All collectives must be outputs unless used by a wait_tensor.
+        forced_nodes_set.add(sn)
+        forced_nodes_list.append(sn)
+      elif maybe_collective == torch.ops._c10d_functional.wait_tensor:  # pylint: disable=protected-access
+        # All wait_tensors must be outputs.
+        forced_nodes_set.add(sn)
+        forced_nodes_list.append(sn)
+        for wait_arg in sn.args:
+          # If a wait_tensor node uses a collective, we don't need to force the
+          # collective to be an output directly.
+          forced_nodes_set.discard(wait_arg)
+
+    if not output_node:
+      # Can't modify the output node if there isn't one.
+      continue
+
+    # Get the original outputs (arguments to the output node).
+    output_arg = output_node.args[0] if output_node.args else ()
+    if isinstance(output_arg, tuple):
+      existing_outputs, was_tuple = list(output_arg), True
+    else:
+      existing_outputs, was_tuple = [output_arg], False
+
+    # Don't need to force anything that was already an existing output.
+    for e in existing_outputs:
+      forced_nodes_set.discard(e)
+
+    if not forced_nodes_set:
+      # No new collectives or wait_tensors to promote to outputs.
+      # No changes needed to this submodule.
+      continue
+
+    # Filter down to the nodes that need to be additional outputs.
+    # Append the new outputs to the existing outputs.
+    new_outputs = existing_outputs + [
+        sn for sn in forced_nodes_list if sn in forced_nodes_set
+    ]
+    # We always want to output a tuple here:
+    #   - If the original output node had no outputs, it would have been an
+    #     empty tuple; we replace this with a non-empty tuple.
+    #   - If the original output node had 1 or more outputs, then we're
+    #     replacing it at least 2 outputs, which must be a tuple.
+    output_node.args = (tuple(new_outputs),)
+    submod.recompile()
+
+    # If the submodule used to return a single non-tuple value, we might have
+    # just changed it to be a tuple. In this case we need to insert a getitem
+    # node to extract the original single output, and redirect all later users
+    # to the getitem node.
+    if not was_tuple and call_submodule_node.users:
+      with split_gm.graph.inserting_after(call_submodule_node):
+        getitem_node = split_gm.graph.call_function(
+            operator.getitem, (call_submodule_node, 0)
+        )
+      for user in list(call_submodule_node.users):
+        if user != getitem_node:
+          user.replace_input_with(call_submodule_node, getitem_node)
+
+  split_gm.recompile()
+
+
 class _WrapperModule(torch.nn.Module):
   """Wrapper module for compiled submodules."""
 
@@ -394,6 +490,7 @@ class SplitCompiler(compiler.Compiler):
         None,  # type: ignore[arg-type]
         lambda node: partition_map[node],
     )
+    _force_collective_outputs(split_gm)
 
     fake_mode = detect_fake_mode(example_inputs)
     if fake_mode is None:
