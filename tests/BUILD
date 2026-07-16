@@ -47,6 +47,17 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "_versioned_so_loader_test",
+    srcs = ["_versioned_so_loader_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//torch_tpu",
+        "//torch_tpu:_versioned_so_loader",
+    ],
+)
+
 torch_tpu_py_library(
     name = "module_registry",
     srcs = ["module_registry.py"],

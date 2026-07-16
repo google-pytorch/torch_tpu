@@ -79,17 +79,6 @@ torch_tpu_py_library(
     srcs = ["_versioned_so_loader.py"],
 )
 
-torch_tpu_py_test(
-    name = "_versioned_so_loader_test",
-    srcs = ["_versioned_so_loader_test.py"],
-    deps = [
-        ":_versioned_so_loader",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//torch_tpu",
-    ],
-)
-
 py_library_providing_imports_info(
     name = "torch_tpu",
     srcs = [
