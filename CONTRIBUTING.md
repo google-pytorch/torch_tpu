@@ -58,8 +58,9 @@ for this purpose.
     usually responsible for making such changes. They can pick one of two ways
     depending on the task:
     1.  **Patch the CL into a workspace**, iterate there, get approval from the
-        quality champion, submit it, add a comment on the original PR with the
-        commit SHA, and manually close the PR.
+        quality champion, and submit it. Make sure to preserve the CL
+        description (which contains the PR link) so that the bot can close the
+        original PR automatically.
     1.  **Make changes to the PR's branch** (exact instructions to be
         documented), let the bot update the CL, iterate until the CL is ready,
         and get approval from the quality champion. The CL will auto submit, and
