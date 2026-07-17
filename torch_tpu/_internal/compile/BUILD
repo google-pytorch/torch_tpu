@@ -40,6 +40,17 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "split_compiler",
+    srcs = ["split_compiler.py"],
+    deps = [
+        ":compiler",
+        ":torch_tpu_compiled_executable",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
     name = "torch_tpu_compiled_executable",
     srcs = ["torch_tpu_compiled_executable.py"],
     deps = [
@@ -78,6 +89,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":split_compiler",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",

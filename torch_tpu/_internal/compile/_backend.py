@@ -46,6 +46,7 @@ from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompil
 import torch._functorch.config as functorch_config
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
 from torch_tpu._internal.utils import utils
 
@@ -300,13 +301,14 @@ class TpuBackend:
 
     has_dynamic_symints = compiler.has_dynamic_symints(example_inputs)
     if has_dynamic_symints:
-      compiler_instance = dynamic_compiler.DynamicCompiler(
+      base_compiler = dynamic_compiler.DynamicCompiler(
           debug=self._debug,
           precompile_steps=self._precompile_steps,
       )
     else:
-      compiler_instance = compiler.StaticCompiler(debug=self._debug)
+      base_compiler = compiler.StaticCompiler(debug=self._debug)
 
+    compiler_instance = split_compiler.SplitCompiler(base_compiler)
     compiler_instance.execute_pre_grad_passes(graph_module)
 
     # DynamicCompiler artifacts are not pickleable yet, so only static
@@ -378,7 +380,7 @@ class TpuBackend:
         example_inputs,
     )
 
-    executable = compiler_instance(graph_module, example_inputs, is_fwd=is_fwd)
+    executable = compiler_instance(graph_module, example_inputs, is_fwd)
 
     self._compiled_executables.append(executable)
 

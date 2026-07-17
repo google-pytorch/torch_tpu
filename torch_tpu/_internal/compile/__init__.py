@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""Public API for torch_tpu._internal.compile."""
+
 from absl import logging
 import torch
 from torch._dynamo import decorators
@@ -44,46 +47,6 @@ def _initialize_graphsafe_rng():
 # available in OSS PyTorch release.
 if hasattr(aot_utils, "register_graphsafe_rng_device_type"):
   _initialize_graphsafe_rng()
-
-# pylint: disable=protected-access
-_COLLECTIVE_OPS = (
-    torch.ops._c10d_functional.all_reduce,
-    torch.ops._c10d_functional.all_reduce_,
-    torch.ops._c10d_functional.all_reduce_coalesced,
-    torch.ops._c10d_functional.all_reduce_coalesced_,
-    torch.ops._c10d_functional.all_gather_into_tensor,
-    torch.ops._c10d_functional.all_gather_into_tensor_out,
-    torch.ops._c10d_functional.all_gather_into_tensor_coalesced,
-    torch.ops._c10d_functional.reduce_scatter_tensor,
-    torch.ops._c10d_functional.reduce_scatter_tensor_out,
-    torch.ops._c10d_functional.reduce_scatter_tensor_coalesced,
-    torch.ops._c10d_functional.all_to_all_single,
-    torch.ops._c10d_functional.broadcast,
-    torch.ops._c10d_functional.broadcast_,
-    torch.ops._c10d_functional.wait_tensor,
-)
-# pylint: enable=protected-access
-
-
-def _disallow_collective_ops_in_graph() -> None:
-  """Disallows collective ops in the Dynamo graph.
-
-  Compiling a graph with collective ops can cause deadlocks on TPU if there are
-  slight graph differences between ranks (e.g. from "if rank == 0: ..."). We
-  avoid this by triggering a graph break for collective ops. This behavior can
-  be disabled by setting the environment variable
-  `TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS` to `"false"` or `"0"`.
-  """
-
-  if not tpu_torch_compile.get_materialize_collective_tensors_env_value():
-    return
-
-  logging.info("[TpuBackend] Force graph break for collective ops enabled.")
-  for op in _COLLECTIVE_OPS:
-    decorators.disallow_in_graph(op)
-
-
-_disallow_collective_ops_in_graph()
 
 
 # New Dynamo flag that enables tracing through the `backward` function call.
