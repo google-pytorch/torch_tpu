@@ -47,6 +47,7 @@ torch_tpu_py_library(
         ":torch_tpu_compiled_executable",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/distributed:spmd_util",
     ],
 )
 

@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import glob
+import hashlib
 import os
 from typing import TypeAlias
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -40,7 +42,7 @@ def _test_wrapper(test_fn, *args, **kwargs):
       dist.destroy_process_group()
 
 
-def run_spmd_safe_decorator_test():
+def run_spmd_safe_decorator_test(compile_test: bool = False):
   @spmd_util.spmd_safe
   def eager_fused_all_reduce(x):
     y = x * 5
@@ -49,34 +51,39 @@ def run_spmd_safe_decorator_test():
 
   x = torch.ones((2, 2), device="cpu").to("tpu")
 
-  with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
-    res = eager_fused_all_reduce(x)
-    sync.synchronize(res, wait=True)
+  if compile_test:
+    compiled_fn = torch.compile(eager_fused_all_reduce)
+    res = compiled_fn(x)
+  else:
+    with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
+      res = eager_fused_all_reduce(x)
+  sync.synchronize(res, wait=True)
+
+
+def run_spmd_safe_decorator_backward_test():
+  @spmd_util.spmd_safe
+  def eager_fused_all_reduce(x):
+    y = x * 5
+    dist.all_reduce(y)
+    return y
+
+  x = torch.ones((2, 2), device="tpu", requires_grad=True)
+  compiled_fn = torch.compile(eager_fused_all_reduce)
+  res = compiled_fn(x)
+  loss = res.sum()
+  loss.backward()
+  sync.synchronize(x.grad, wait=True)
 
 
 class SpmdSafeDecoratorTest(absltest.TestCase):
   _world_size = 4
 
-  def test_spmd_safe_decorator(self):
-
-    dump_dir = self.create_tempdir(name="xla_dump_fused_collective").full_path
-
-    # We set XLA_FLAGS to dump the MLIR modules.
-    # We set it here so it's inherited by the spawned worker processes.
-    os.environ["XLA_FLAGS"] = f"--xla_dump_to={dump_dir}"
-
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            _test_wrapper, world_size=self._world_size
-        ),
-        test_fn=run_spmd_safe_decorator_test,
-    )
-
+  def _check_fused_mlir(self, dump_dir, expected_count=1):
+    """Checks there is exactly `expected_count` unique fused modules with all_reduce and multiply."""
     # Search for .mlir files in the dump directory.
     mlir_files = glob.glob(os.path.join(dump_dir, "**/*.mlir"), recursive=True)
 
-    found_fused_module = False
+    unique_fused_hashes = set()
     fusion_details = []
 
     for fpath in mlir_files:
@@ -86,18 +93,66 @@ class SpmdSafeDecoratorTest(absltest.TestCase):
         has_multiply = "stablehlo.multiply" in mlir
 
         if has_all_reduce and has_multiply:
-          found_fused_module = True
-          break
+          h = hashlib.sha256(mlir.encode()).hexdigest()
+          unique_fused_hashes.add(h)
         elif has_all_reduce:
           fusion_details.append(f"Found all_reduce WITHOUT multiply in {fpath}")
-    if not found_fused_module:
+
+    if len(unique_fused_hashes) != expected_count:
       details_str = "\n".join(fusion_details)
       raise RuntimeError(
-          "Could not find an MLIR module containing both 'multiply' and "
-          "'all_reduce'. "
-          f"Dumps were in {dump_dir}. Files found: {mlir_files}\n"
-          f"Details:\n{details_str}"
+          f"Expected exactly {expected_count} UNIQUE fused modules, but only"
+          f" found {len(unique_fused_hashes)}. Unique hashes:"
+          f" {unique_fused_hashes}\nDumps were in {dump_dir}. Files found:"
+          f" {mlir_files}\nDetails:\n{details_str}"
       )
+
+  def test_spmd_safe_decorator(self):
+    dump_dir = self.create_tempdir(name="xla_dump_fused_collective").full_path
+    with mock.patch.dict(
+        os.environ, {"XLA_FLAGS": f"--xla_dump_to={dump_dir}"}
+    ):
+      distributed_utils.dist_run(
+          nproc_per_node=self._world_size,
+          fn=singlehost_wrapper.tpu_env_wrapper(
+              _test_wrapper, world_size=self._world_size
+          ),
+          test_fn=run_spmd_safe_decorator_test,
+      )
+    self._check_fused_mlir(dump_dir)
+
+  def test_spmd_safe_decorator_compile(self):
+    dump_dir = self.create_tempdir(
+        name="xla_dump_fused_collective_compile"
+    ).full_path
+    with mock.patch.dict(
+        os.environ, {"XLA_FLAGS": f"--xla_dump_to={dump_dir}"}
+    ):
+      distributed_utils.dist_run(
+          nproc_per_node=self._world_size,
+          fn=singlehost_wrapper.tpu_env_wrapper(
+              _test_wrapper, world_size=self._world_size
+          ),
+          test_fn=run_spmd_safe_decorator_test,
+          compile_test=True,
+      )
+    self._check_fused_mlir(dump_dir)
+
+  def test_spmd_safe_decorator_compile_backward(self):
+    dump_dir = self.create_tempdir(
+        name="xla_dump_fused_collective_compile_backward"
+    ).full_path
+    with mock.patch.dict(
+        os.environ, {"XLA_FLAGS": f"--xla_dump_to={dump_dir}"}
+    ):
+      distributed_utils.dist_run(
+          nproc_per_node=self._world_size,
+          fn=singlehost_wrapper.tpu_env_wrapper(
+              _test_wrapper, world_size=self._world_size
+          ),
+          test_fn=run_spmd_safe_decorator_backward_test,
+      )
+    self._check_fused_mlir(dump_dir, expected_count=2)
 
 
 if __name__ == "__main__":

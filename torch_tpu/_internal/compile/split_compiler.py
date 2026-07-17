@@ -32,6 +32,9 @@ from torch.fx.passes.split_module import split_module
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 
+# Required to register the SPMD safe region ops.
+from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import
+
 # pylint: disable=protected-access
 _COLLECTIVE_OPS = (
     torch.ops._c10d_functional.all_reduce,
@@ -317,11 +320,22 @@ class SplitCompiler(compiler.Compiler):
   ) -> CompiledArtifact:
     """Splits the graph on collectives and compiles the submodules."""
 
+    enter_target = torch.ops.torch_tpu.enter_spmd_safe_region.default
+    exit_target = torch.ops.torch_tpu.exit_spmd_safe_region.default
+
+    spmd_safe_depth = 0
     partition_id = 0
     partition_map = {}
     for node in graph_module.graph.nodes:
       if node.op in ("placeholder", "output"):
         continue
+
+      if node.target == enter_target:
+        spmd_safe_depth += 1
+      elif node.target == exit_target:
+        spmd_safe_depth -= 1
+
+      in_spmd_safe_region = spmd_safe_depth > 0
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
       is_collective = (
@@ -353,8 +367,7 @@ class SplitCompiler(compiler.Compiler):
               "getitem of a collective producer not found in partition map."
           )
         partition_map[node] = partition_map[node.args[0]]
-      elif is_collective:
-
+      elif is_collective and not in_spmd_safe_region:
         # Make sure the collective doesn't end up in the previous partition.
         partition_id += 1
         partition_map[node] = partition_id
