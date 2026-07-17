@@ -79,6 +79,7 @@ pytype_strict_library(
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/export",
+        "//torch_tpu/_internal/optim",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/performance/micro:utils",
         "//torch_tpu/_internal/profiler",
