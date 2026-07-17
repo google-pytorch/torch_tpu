@@ -19,6 +19,12 @@ load(
     "pywrap_binaries",
     "pywrap_library",
 )
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(":pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
+load(
+    "//shims/pybind11:pybind.bzl",
+    "backend_probe_labels",
+)
 load(
     "//build_files:build_defs.bzl",
     "oss_target",
@@ -802,33 +808,34 @@ torch_tpu_cc_library(
     visibility = ["//visibility:private"],
 )
 
+# Aggregate of every extension's `_backend_probe` (a plain mirror of its
+# external backend deps -- XLA, MLIR, absl, ..., everything but PyTorch). As a
+# `common_lib_filters` entry its transitive linker inputs tell pywrap which of
+# the extensions' inputs to factor into the shared libxla_base.so; everything
+# else (torch_tpu's own PyTorch-touching code) stays in the default common
+# library. The split keeps the massive PyTorch-free backend in a library that
+# never depends on libtorch, the prerequisite for shipping one thin glue per
+# PyTorch version later without duplicating it.
+cc_library(
+    name = "_xla_base_agg",
+    deps = backend_probe_labels(PYWRAP_EXTENSIONS),
+    visibility = ["//visibility:private"],
+)
+
 # NOTE: Central aggregator for all C++ Python extensions in torch_tpu.
-# Any new pybind_extension target created in the codebase MUST be added to the
-# deps list below to ensure it is packaged into the standalone pip wheel.
+# Any new pybind_extension target created in the codebase MUST be added to
+# pywrap_extensions.bzl to ensure it is packaged into the standalone pip wheel.
 pywrap_library(
     name = "pywrap_torch_tpu",
+    common_lib_filters = {
+        "torch_tpu/common/xla_base": ":_xla_base_agg",
+    },
     extra_deps = [
         ":torch_rpath_flags",
         "//shims/torch:torch_python",
     ],
     visibility = ["//:__subpackages__"],
-    deps = [
-        "//torch_tpu/_internal:env",
-        "//torch_tpu/_internal:testing",
-        "//torch_tpu/_internal/batch_transfer:batch_transfer_impl",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
-        "//torch_tpu/_internal/compiler_options:compiler_options_impl",
-        "//torch_tpu/_internal/device:_device_ops_backend",
-        "//torch_tpu/_internal/device_utils:annotations_py",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/dynamism:_tpu_torch_dynamism",
-        "//torch_tpu/_internal/execution_mode:execution_mode_impl",
-        "//torch_tpu/_internal/pallas:tpu_torch_pallas",
-        "//torch_tpu/_internal/precision:precision_impl",
-        "//torch_tpu/_internal/profiler:_profiler_backend",
-        "//torch_tpu/_internal/sync:_tpu_torch_sync",
-        "//torch_tpu/_internal/tracing:_tpu_torch_tracing",
-    ],
+    deps = PYWRAP_EXTENSIONS,
 )
 
 pywrap_binaries(
