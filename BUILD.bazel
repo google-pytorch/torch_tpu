@@ -34,8 +34,6 @@ filegroup(
     srcs = ["pyproject.toml"],
 )
 
-exports_files(["README.md"])
-
 bool_flag(
     name = "test_wheel",
     build_setting_default = False,

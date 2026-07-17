@@ -15,8 +15,9 @@
 """Nox configuration for torch_tpu automation environments.
 
 Nox manages isolated execution environments (backed here by `uv`), so
-contributors do not need to manually install tools like `clang-format` via
-OS-specific package managers. Run `nox -l` to list the available sessions.
+contributors do not need to manually install tools like `clang-format` and
+`ruff` via OS-specific package managers. Run `nox -l` to list the available
+sessions.
 
 Details on configuration can be found at: https://nox.thea.codes/
 """
@@ -29,13 +30,15 @@ nox.options.sessions = ["lint"]
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check on target branch modifications."""
-  session.install("clang-format")
+  """Run C++ (clang-format) and Python (ruff) checks on target branch modifications."""
+  session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
+  session.run("ci/tools/ruff_lint.sh", "lint", external=True)
 
 
 @nox.session
 def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
-  """Apply clang-format fixes to modified files automatically."""
-  session.install("clang-format")
+  """Apply C++ (clang-format) and Python (ruff) fixes to modified files automatically."""
+  session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "format", external=True)
+  session.run("ci/tools/ruff_lint.sh", "format", external=True)
