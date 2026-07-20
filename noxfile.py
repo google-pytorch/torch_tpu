@@ -21,13 +21,11 @@ OS-specific package managers. Run `nox -l` to list the available sessions.
 Details on configuration can be found at: https://nox.thea.codes/
 """
 
-import pathlib
-import re
-
 import nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.sessions = ["lint"]
+
 
 @nox.session
 def lint(session: nox.Session) -> None:
@@ -37,7 +35,7 @@ def lint(session: nox.Session) -> None:
 
 
 @nox.session
-def format(session: nox.Session) -> None:
+def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
   """Apply clang-format fixes to modified files automatically."""
   session.install("clang-format")
   session.run("ci/tools/clang_format.sh", "format", external=True)
