@@ -16,9 +16,13 @@
 
 #include "torch_tpu/ops/dropout/dropout.h"
 
+#include <cstdint>
+
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallVectorExtras.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
@@ -26,6 +30,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {
@@ -41,16 +46,20 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
   mlir::MlirBuilder& builder = input.getBuilder();
   mlir::OpBuilder& op_builder = builder.getOpBuilder();
 
-  // Call rng bit generator,
+  const mlir::stablehlo::Dimensions dims = GetDimensions(input);
+  const llvm::SmallVector<int64_t> static_shape = llvm::map_to_vector(
+      dims, [](const mlir::stablehlo::DimensionInfo& dim) { return dim.size; });
+
   auto input_type_float = input_type.clone(op_builder.getF64Type());
-  auto input_type_uint64 =
-      input_type.clone(op_builder.getIntegerType(64, false));
+
+  const mlir::RankedTensorType static_type_uint64 = mlir::RankedTensorType::get(
+      static_shape, op_builder.getIntegerType(64, false));
 
   auto algorithm = mlir::stablehlo::RngAlgorithmAttr::get(
       op_builder.getContext(), mlir::stablehlo::RngAlgorithm::PHILOX);
   auto rng_op = mlir::stablehlo::RngBitGeneratorOp::create(
       op_builder, input.getValue().getLoc(), rng_input_state_type,
-      input_type_uint64, algorithm, rng_input_state.getValue());
+      static_type_uint64, algorithm, rng_input_state.getValue());
 
   mlir::MlirOp rng_output_op = mlir::MlirOp(builder, rng_op.getOutput());
   const mlir::RankedTensorType rng_output_op_type =
@@ -61,6 +70,16 @@ absl::StatusOr<MlirOpResults<2>> BuildDropoutTrainShlo(
   // set to 1.
   // TODO(unda): extract this to a common util, probably part of some other rng
   // op, and make the random bit usage more efficient.
+
+  for (const mlir::stablehlo::DimensionInfo& dim : dims) {
+    if (!dim.boundOp) {
+      continue;
+    }
+    mlir::MlirOp dim_size =
+        mlir::stablehlo::GetDimensionSize(input, dim.boundOpDim);
+    rng_output_op = mlir::stablehlo::SetDimensionSize(rng_output_op, dim_size,
+                                                      dim.boundOpDim);
+  }
 
   // Clear the exponent and sign bits
   mlir::MlirOp clear_exponent_mask =

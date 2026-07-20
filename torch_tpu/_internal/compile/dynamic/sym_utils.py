@@ -16,9 +16,12 @@
 
 from collections.abc import Mapping
 import operator
+import re
 from absl import logging
 import sympy
 import torch
+
+_INVALID_IDENTIFIER_CHAR = re.compile(r"[^a-zA-Z0-9_]+")
 
 
 CUSTOM_SYMPY_FUNCS = {
@@ -142,3 +145,13 @@ def symexpr_to_aten(
           "Failed to create ops for expression %s: %s", expr, repr(e)
       )
       return None
+
+
+def sanitize_identifier(name: str) -> str:
+  """Sanitizes a string to make it a valid Python identifier."""
+  if not name:
+    return "_"
+  name = _INVALID_IDENTIFIER_CHAR.sub("_", name)
+  if name[0].isdigit():
+    name = "_" + name
+  return name

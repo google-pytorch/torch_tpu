@@ -319,14 +319,13 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
           target_idx += 1
         continue
 
-      if isinstance(arg, torch.Tensor):
-        if self.sym_shape_manager.get_num_dynamic_dims(idx) > 0:
-          self._dynamic_tensor_map.append((pad_idx, target_idx))
-          pad_idx += 1
-          target_idx += 1
-        else:
-          self._static_tensor_map.append((idx, target_idx))
-          target_idx += 1
+      if self.sym_shape_manager.get_num_dynamic_dims(idx) > 0:
+        self._dynamic_tensor_map.append((pad_idx, target_idx))
+        pad_idx += 1
+        target_idx += 1
+      else:
+        self._static_tensor_map.append((idx, target_idx))
+        target_idx += 1
 
     self._model_inputs_template_length = target_idx
 
@@ -351,7 +350,13 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     backend_device = self._get_backend_device()
 
     for arg_idx, target_idx in self._static_tensor_map:
-      model_inputs[target_idx] = args[arg_idx]
+      arg = args[arg_idx]
+      # Metadata inputs (like dropout probability or RNG state parameters) are
+      # CPU tensors, which should be moved to the TPU device before executing
+      # the compiled model.
+      if isinstance(arg, torch.Tensor) and not arg.is_tpu:
+        arg = arg.to(backend_device)
+      model_inputs[target_idx] = arg
 
     for pad_idx, target_idx in self._dynamic_tensor_map:
       model_inputs[target_idx] = pad_outputs[pad_idx]
@@ -372,10 +377,12 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       if isinstance(arg, torch.SymInt):
         upper_bound = self.sym_shape_manager.get_symint_upper_bound(arg)
         padded_input_shapes.append(upper_bound)
-      else:
+      elif isinstance(arg, torch.Tensor):
         padded_input_shapes.append(
             self.sym_shape_manager.get_bounded_shape(idx)
         )
+      else:
+        padded_input_shapes.append(arg)
     padded_output_shapes = _compute_output_shapes(
         self.sym_shape_manager, padded_input_shapes
     )
@@ -387,7 +394,10 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     argument_layouts = []
     for val in model_inputs:
       if isinstance(val, torch.Tensor):
-        layout = tpu_torch_compile.get_device_layout_if_materialized(val)
+        if val.is_tpu:
+          layout = tpu_torch_compile.get_device_layout_if_materialized(val)
+        else:
+          layout = None
         if layout is not None:
           minor_to_major = layout[0]
         else:
@@ -517,7 +527,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       )
       logging.debug(
           "[DynamicTpuBackend] Compiled model executable layouts %s",
-          executable.parameter_layouts,  # type: ignore[attr-defined]
+          getattr(executable, "parameter_layouts", None),  # type: ignore[attr-defined]
       )
       self.model_executables[layout_key] = executable
 
@@ -525,8 +535,13 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     output_shapes = _compute_output_shapes(self.sym_shape_manager, args)
 
-    # Run model executable with constructed inputs
-    outputs = executable(model_inputs, output_shapes=output_shapes)
+    # Run model executable with constructed inputs.
+    # Pass `original_args=args` (preserving original types and indexing) so that
+    # the output reconstruction function can pull raw non-tensor inputs (like
+    # SymInts or FakeScriptObjects) that were passed through as outputs.
+    outputs = executable(
+        model_inputs, output_shapes=output_shapes, original_args=args
+    )
 
     if self._precompile_steps > 0:
       self._precompile_dynamic_adapters(args, tensor_info)
@@ -636,7 +651,7 @@ class DynamicCompiler(compiler.Compiler):
     )
 
     default_layout_key = _extract_minor_to_major(
-        default_executable.parameter_layouts,  # type: ignore[attr-defined]
+        getattr(default_executable, "parameter_layouts", None),  # type: ignore[attr-defined]
     )
     logging.info(
         "[DynamicTpuBackend] Compiled default executable with layouts: %s",

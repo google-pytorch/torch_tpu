@@ -30,7 +30,6 @@ from torch_tpu._internal.compile.dynamic import view_ops_transformations
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
 
-
 GraphTransformObserver = graph_transform_observer.GraphTransformObserver
 
 
@@ -170,7 +169,8 @@ class ScanInputsCreatePlaceholdersPass:
         # Create a new placeholder next to it (always create to keep
         # signature match).
         with graph_module.graph.inserting_after(node):
-          size_ph = graph_module.graph.placeholder(f"{sym_str}_size")
+          sanitized_name = sym_utils.sanitize_identifier(f"{sym_str}_size")
+          size_ph = graph_module.graph.placeholder(sanitized_name)
 
         # Store the first placeholder encountered for this sym_str.
         first_size_ph = (

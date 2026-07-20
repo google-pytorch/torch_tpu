@@ -15,6 +15,8 @@
 """Unit tests for graph transformations."""
 
 from __future__ import annotations
+import types
+from unittest import mock
 from absl.testing import absltest
 import torch
 from torch._dynamo.backends.common import aot_autograd
@@ -255,6 +257,28 @@ class GraphTransformationsTest(absltest.TestCase):
     self.assertEqual(size_input_0, size_input_1)
     self.assertEqual(size_input_0.op, "placeholder")
     self.assertTrue(size_input_0.name.endswith("_size"))
+
+  def test_scan_inputs_create_placeholders_pass_sanitization(self):
+    g = torch.fx.Graph()
+    node = g.placeholder("dummy_input")
+    node.meta["val"] = "s0 + 1"
+
+    mock_sm = types.SimpleNamespace(
+        symint_to_placeholder={}, symint_node_to_tensor_node={}
+    )
+    mock_gm = types.SimpleNamespace(graph=g)
+
+    with mock.patch(
+        "torch_tpu._internal.compile.dynamic.sym_utils.is_symint_node",
+        return_value=True,
+    ):
+      graph_transformations.ScanInputsCreatePlaceholdersPass(mock_sm, [node])(
+          mock_gm
+      )
+
+    placeholders = [n for n in g.nodes if n.op == "placeholder"]
+    self.assertLen(placeholders, 2)
+    self.assertEqual(placeholders[1].target, "s0_1_size")
 
 
 if __name__ == "__main__":
