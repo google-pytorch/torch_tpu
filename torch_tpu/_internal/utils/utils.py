@@ -19,6 +19,7 @@ from collections.abc import MutableSequence
 import contextlib
 import enum
 import functools
+import math
 import os
 import re
 import sys
@@ -42,6 +43,23 @@ EagerMode: TypeAlias = execution_mode.EagerMode
 # the value range, and thus be tighter than the same global tolerance.
 Tolerance: TypeAlias = float | Callable[[float], float]
 
+_SAFETY_FACTOR: float = 1.2
+
+
+def _format_sci_ceil(val: float) -> str:
+  """Formats a float in scientific notation, rounded up to 1 decimal place."""
+  if val == 0:
+    return "0.0e+00"
+  if not np.isfinite(val):
+    return str(val)
+  exponent = int(np.floor(np.log10(abs(val))))
+  mantissa = val / (10**exponent)
+  mantissa_ceil = np.ceil(mantissa * 10) / 10
+  if mantissa_ceil >= 10:
+    mantissa_ceil = 1.0
+    exponent += 1
+  return f"{mantissa_ceil:.1f}e{exponent:+03d}"
+
 
 class CheckValueMode(enum.Enum):
   """How to check the values when comparing tensors.
@@ -64,21 +82,7 @@ class CheckValueMode(enum.Enum):
   STRICT = "strict"
 
 
-_RE_INDEX_CAPTURE = re.compile(r"at index \((.*)\) \(up to .* allowed\)")
-
-# Regex for extracting the actual absolute and relative differences for both
-# tensor and scalar outputs.
-_RE_TOLERANCE = re.compile(
-    r"\n("
-    # Tensor tolerance error message.
-    r"Greatest absolute difference: (?P<tensor_atol>\S*) at index.*\n"
-    r"Greatest relative difference: (?P<tensor_rtol>\S*) at index.*"
-    r"|"
-    # Scalar tolerance error message.
-    r"Absolute difference: (?P<scalar_atol>\S*) \(up to .*\).*\n"
-    r"Relative difference: (?P<scalar_rtol>\S*) \(up to .*\)"
-    r")"
-)
+_RE_INDEX_CAPTURE = re.compile(r"at index \((.*?)\) \(up to .* allowed\)")
 
 _RE_STRICT_REL_FAILURE = re.compile(r"\(up to 1.*e-07 allowed\)")
 
@@ -268,6 +272,232 @@ def _raw_assert_tensor_close(
     )
 
 
+def _round_up_float(val: float) -> float:
+  """Rounds float upward towards +infinity to prevent truncation errors."""
+  # Rounds float upward toward +infinity using nextafter to avoid truncation.
+  if not math.isfinite(val) or val == 0.0:
+    return val
+  return math.nextafter(val, math.inf)
+
+
+def compute_optimal_tolerances(
+    actual: Any,
+    expected: Any,
+    safety_factor: float = _SAFETY_FACTOR,
+) -> tuple[float, float]:
+  """Computes optimal (atol, rtol) bounds for comparing actual and expected.
+
+  Follows the optimal error bound framework in go/tt-optimal-error-bounds:
+  - Objective: Minimize atol + rtol subject to |a - e| <= atol + rtol * |e|.
+  - Case 1: |e| <= 1 -> atol = |a - e|, rtol = 0.
+  - Case 2: |e| > 1  -> atol = 0, rtol = |a - e| / |e|.
+  The final bounds are max(atol_i) and max(rtol_i) over all elements,
+  multiplied by safety_factor (default 1.2x), rounded up to avoid truncation.
+
+  Args:
+    actual: Computed tensor or collection of tensors or scalar.
+    expected: Expected tensor or collection of tensors or scalar.
+    safety_factor: Safety margin multiplier (default 1.2).
+
+  Returns:
+    Tuple of (optimal_atol, optimal_rtol).
+  """
+  assert actual is not None and expected is not None, (
+      "actual and expected values for tolerance computation must both be"
+      f" non-None, got actual={actual} and expected={expected}"
+  )
+
+  # Enforce matching container types for sequences.
+  assert isinstance(actual, list) == isinstance(expected, list), (
+      f"Container type mismatch: actual is {type(actual).__name__}, expected is"
+      f" {type(expected).__name__}"
+  )
+  assert isinstance(actual, tuple) == isinstance(expected, tuple), (
+      f"Container type mismatch: actual is {type(actual).__name__}, expected is"
+      f" {type(expected).__name__}"
+  )
+
+  # Recursively compute optimal error bounds across list/tuple elements.
+  if isinstance(actual, (list, tuple)):
+    assert len(actual) == len(expected), (
+        f"Sequence length mismatch: len(actual)={len(actual)} vs"
+        f" len(expected)={len(expected)}"
+    )
+    atols, rtols = [], []
+    for a, e in zip(actual, expected, strict=True):
+      a_tol, r_tol = compute_optimal_tolerances(a, e, safety_factor)
+      atols.append(a_tol)
+      rtols.append(r_tol)
+    if any(math.isnan(x) for x in atols) or any(math.isnan(x) for x in rtols):
+      return float("nan"), float("nan")
+    return (max(atols, default=0.0), max(rtols, default=0.0))
+
+  # Enforce matching input types before coercion.
+  assert isinstance(actual, torch.Tensor) == isinstance(
+      expected, torch.Tensor
+  ), (
+      f"Input type mismatch: actual is {type(actual).__name__}, expected is"
+      f" {type(expected).__name__}"
+  )
+
+  # Coerce inputs to tensors and return zero tolerances if empty.
+  if not isinstance(actual, torch.Tensor):
+    actual = torch.as_tensor(actual)
+    expected = torch.as_tensor(expected)
+
+  # Assert structural and dtype compatibility.
+  assert isinstance(actual, torch.Tensor) and isinstance(
+      expected, torch.Tensor
+  ), f"Expected torch.Tensors, got {type(actual)} and {type(expected)}"
+  assert actual.dtype == expected.dtype, (
+      f"Dtype mismatch: actual.dtype={actual.dtype} vs"
+      f" expected.dtype={expected.dtype}"
+  )
+  assert actual.shape == expected.shape, (
+      f"Shape mismatch: actual.shape={actual.shape} vs"
+      f" expected.shape={expected.shape}"
+  )
+
+  if actual.numel() == 0 or expected.numel() == 0:
+    return 0.0, 0.0
+
+  # Synchronize TPU execution and cast CPU tensors to float64/complex128.
+  sync.synchronize([actual, expected], wait=True)
+
+  actual = actual.detach().cpu()
+  expected = expected.detach().cpu()
+
+  if actual.dtype.is_complex:
+    actual = actual.to(torch.complex128)
+    expected = expected.to(torch.complex128)
+  else:
+    actual = actual.to(torch.float64)
+    expected = expected.to(torch.float64)
+
+  # Return NaN for unmatched NaNs, or zero tolerances for matching NaNs.
+  actual_nan = torch.isnan(actual)
+  expected_nan = torch.isnan(expected)
+  if (actual_nan ^ expected_nan).any():
+    return float("nan"), float("nan")
+
+  # Both tensors are guaranteed to have matching NaN positions at this point.
+  valid_mask = ~actual_nan
+  # If valid_mask has no True elements, all elements in both actual and
+  # expected are NaNs.
+  if not valid_mask.any():
+    return 0.0, 0.0
+
+  # At this point, actual[valid_mask] and expected[valid_mask] contain no NaN
+  # values. Compute absolute diffs and partition into Case 1 (|e|<=1) and
+  # Case 2 (|e|>1).
+  diff = torch.abs(actual[valid_mask] - expected[valid_mask])
+  if torch.isinf(diff).any():
+    return float("inf"), float("inf")
+
+  abs_expected = torch.abs(expected[valid_mask])
+
+  mask_case1 = abs_expected <= 1.0
+  mask_case2 = ~mask_case1
+
+  atol_opt = 0.0
+  rtol_opt = 0.0
+
+  # Case 1 (|e| <= 1): Minimize atol + rtol by setting rtol = 0 and atol =
+  # max diff. Round up to avoid floating-point truncation during difference
+  # calculation.
+  if mask_case1.any():
+    atol_opt = _round_up_float(float(diff[mask_case1].max().item()))
+
+  # Case 2 (|e| > 1): Minimize atol + rtol by setting atol = 0, rtol =
+  # max rel diff.
+  if mask_case2.any():
+    case2_expected = abs_expected[mask_case2]
+    case2_diff = diff[mask_case2]
+    finite_mask = torch.isfinite(case2_expected)
+    if finite_mask.any():
+      # Round up to avoid floating-point truncation introduced by division.
+      rtol_opt = _round_up_float(
+          float(
+              (case2_diff[finite_mask] / case2_expected[finite_mask])
+              .max()
+              .item()
+          )
+      )
+    elif torch.isinf(case2_diff).any():
+      rtol_opt = float("inf")
+
+  # Apply safety margin multiplier and round up to avoid truncation errors.
+  final_atol = _round_up_float(safety_factor * atol_opt)
+  final_rtol = _round_up_float(safety_factor * rtol_opt)
+
+  return final_atol, final_rtol
+
+
+def _add_tolerance_suggestions(
+    msg: str,
+    check_mode: CheckValueMode,
+    actual: Any,
+    expected: Any,
+) -> str:
+  """Augments the error message with tolerance suggestions.
+
+  Tolerances are determined by computing tight bounds using
+  `compute_optimal_tolerances(actual, expected)`,
+  which minimizes atol + rtol with a safety factor margin
+  (_SAFETY_FACTOR = 1.2).
+
+  Args:
+    msg: Original assertion error message string.
+    check_mode: CheckValueMode (LOOSE, STRICT, or SKIP).
+    actual: Computed result (torch.Tensor, scalar, or nested sequence thereof).
+    expected: Expected result (torch.Tensor, scalar, or nested sequence
+      thereof).
+
+  Returns:
+    Augmented error message string containing suggested tolerance values.
+  """
+  try:
+    atol_val, rtol_val = compute_optimal_tolerances(actual, expected)
+  except Exception:  # pylint: disable=broad-except
+    return msg
+
+  formatted_rtol = _format_sci_ceil(rtol_val)
+  formatted_atol = _format_sci_ceil(atol_val)
+
+  suggestion_lines = ["\n\nTolerance Suggestions:"]
+
+  if check_mode == CheckValueMode.LOOSE:
+    suggestion_lines.append("\n  Loose check failed.")
+  elif check_mode == CheckValueMode.STRICT:
+    suggestion_lines.append("\n  Strict check failed.")
+    suggestion_lines.append(
+        "\n  Note: Optimal single-bound tradeoffs (rtol=0 or atol=0) apply to"
+        " LOOSE mode."
+    )
+
+  if np.isnan(atol_val) or np.isnan(rtol_val):
+    suggestion_lines.append(
+        "\n    - Automatic tolerance calculation omitted due to NaN values."
+    )
+    return msg + "".join(suggestion_lines)
+
+  suggestion_lines.append(
+      "\n  Optimal tight tolerances (with 1.2x safety margin):"
+  )
+
+  if np.isinf(rtol_val):
+    suggestion_lines.append("\n    - rtol check is impossible or infinite")
+  else:
+    suggestion_lines.append(f"\n    - rtol >= {rtol_val} ({formatted_rtol})")
+
+  if np.isinf(atol_val):
+    suggestion_lines.append("\n    - atol check is impossible or infinite")
+  else:
+    suggestion_lines.append(f"\n    - atol >= {atol_val} ({formatted_atol})")
+
+  return msg + "".join(suggestion_lines)
+
+
 def _assert_tensor_close(
     actual: torch.Tensor,
     expected: torch.Tensor,
@@ -321,6 +551,8 @@ def _assert_tensor_close(
     )
     raise AssertionError(msg)
 
+  sync.synchronize([actual, expected], wait=True)
+
   def get_indices(msg: str) -> list[tuple[int, ...]]:
     """Returns the indices from the given message."""
     # The message looks like:
@@ -348,128 +580,11 @@ def _assert_tensor_close(
         break
     return indices
 
-  def _add_tolerance_suggestions(msg: str, check_mode: CheckValueMode) -> str:
-    """Augments the error message with tolerance suggestions."""
-    # We use regex to find the max absolute and relative differences reported by
-    # torch.testing.assert_close.
-    #
-    # Example lines (for tensor outputs):
-    # Greatest absolute difference: 0.02114 at index (21, 36) (up to 1e-07 ...)
-    # Greatest relative difference: 23.9766 at index (41, 104) (up to 0.1 ...)
-    #
-    # Example lines (for scalar outputs):
-    # Expected 0.5 but got 0.5029680728912354.
-    # Absolute difference: 0.0029680728912353516
-    # Relative difference: 0.005936145782470703
-
-    # Try to find the actual tolerances.
-    tol_match = _RE_TOLERANCE.search(msg)
-
-    assert tol_match, (
-        "could not extract the tolerance from the error message given by"
-        " PyTorch `torch.testing.assert_close` function, using the"
-        " `_RE_TOLERANCE` regex. You need to update the regex to fix this"
-        " issue.\n"
-        " \n"
-        " Error message:\n"
-        + msg
-    )
-
-    def get_tol(tol: str) -> float:
-      """Returns the tolerance value from the tensor or scalar match."""
-      for ty in ("scalar", "tensor"):
-        val = tol_match.group(f"{ty}_{tol}")
-        if val is not None:
-          return float(val)
-      raise ValueError(
-          f"could not find tolerance '{tol}' in: {tol_match.groupdict()}"
-      )
-
-    try:
-      max_abs = get_tol("atol")
-      max_rel = get_tol("rtol")
-    except ValueError:
-      return msg
-
-    def _format_sci_ceil(val: float) -> str:
-      """Formats a float in scientific notation, rounded up to 1 decimal."""
-      if val == 0:
-        return "0.0e+00"
-      if not np.isfinite(val):
-        return str(val)
-      exponent = int(np.floor(np.log10(abs(val))))
-      mantissa = val / (10**exponent)
-      mantissa_ceil = np.ceil(mantissa * 10) / 10
-      if mantissa_ceil >= 10:
-        mantissa_ceil = 1.0
-        exponent += 1
-      return f"{mantissa_ceil:.1f}e{exponent:+03d}"
-
-    suggestion_lines = ["\n\nTolerance Suggestions:"]
-
-    if check_mode == CheckValueMode.LOOSE:
-      suggestion_lines.append("\n  Loose check failed.")
-      suggestion_lines.append("\n  To pass in LOOSE mode, you need either:")
-      if np.isfinite(max_rel):
-        suggestion_lines.append(
-            f"\n    - rtol >= {max_rel} ({_format_sci_ceil(max_rel)}) (with"
-            " atol=0)"
-        )
-      else:
-        suggestion_lines.append(
-            "\n    - (rtol check impossible due to zero expected values)"
-        )
-      suggestion_lines.append(
-          f"\n    - OR atol >= {max_abs} ({_format_sci_ceil(max_abs)}) (with"
-          " rtol=0)"
-      )
-      suggestion_lines.append(
-          "\n    - OR a combination such that atol + rtol * |expected| covers"
-          " the diffs."
-      )
-
-    elif check_mode == CheckValueMode.STRICT:
-      suggestion_lines.append("\n  Strict check failed.")
-      suggestion_lines.append("\n  To pass in STRICT mode, you need BOTH:")
-
-      if np.isinf(max_rel):
-        suggestion_lines.append(
-            "\n    - rtol check is impossible because `expected` is 0 but"
-            " `actual` is not."
-        )
-        suggestion_lines.append("\n      (Use LOOSE mode or fix the values)")
-      else:
-        suggestion_lines.append(
-            f"\n    - rtol >= {max_rel} ({_format_sci_ceil(max_rel)})"
-        )
-
-      suggestion_lines.append(
-          f"\n    - atol >= {max_abs} ({_format_sci_ceil(max_abs)})"
-      )
-
-    return msg + "".join(suggestion_lines)
-
   def refine_assert_close_message(msg: str) -> str:
     """Refines the message from torch.testing.assert_close with more details."""
-
-    # The message from torch.testing.assert_close looks like (for scalars):
-    #
-    # Scalars are not equal!
-    #
-    # Expected 0.5 but got 0.5029680728912354.
-    # Absolute difference: 0.0029680728912353516
-    # Relative difference: 0.005936145782470703
-    #
-    # or (for tensors):
-    #
-    # ...
-    # Greatest absolute difference: 1.8008867502212524 at index (2, 0, 0) \
-    # (up to 0 allowed)
-    # Greatest relative difference: 0.10574676096439362 at index (1, 2, 2) \
-    # (up to 1e-05 allowed)
-    #
-    # We want to show the actual and expected tensor elements at the given
-    # indices, so we need to parse the message and extract the indices.
+    # Parses scalar vs tensor error messages from torch.testing.assert_close
+    # to extract failure indices and display detailed actual/expected element
+    # values.
     details = ""
     if _RE_SCALAR_COMP_FAILURE.search(msg):
       atol_str = "None"
@@ -517,7 +632,10 @@ def _assert_tensor_close(
 
     def msg_handler(msg: str) -> str:
       return _add_tolerance_suggestions(
-          refine_assert_close_message(msg), CheckValueMode.LOOSE
+          refine_assert_close_message(msg),
+          check_mode=CheckValueMode.LOOSE,
+          actual=actual,
+          expected=expected,
       )
 
     # To support partial overrides (where only rtol or only atol is specified),
@@ -549,7 +667,12 @@ def _assert_tensor_close(
         # Note: We do this replacement AFTER refine_assert_close_message because
         # get_indices depends on the format.
         msg = _RE_STRICT_REL_FAILURE.sub("(strict relative check failure)", msg)
-      return _add_tolerance_suggestions(msg, CheckValueMode.STRICT)
+      return _add_tolerance_suggestions(
+          msg,
+          check_mode=CheckValueMode.STRICT,
+          actual=actual,
+          expected=expected,
+      )
 
     _raw_assert_tensor_close(
         actual=actual,
