@@ -97,6 +97,21 @@ class CompileTest(absltest.TestCase):
     metrics = self.call_and_compare(simple_add, test_inputs, None)
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
+  def test_rng_with_generator(self):
+    backend = _backend.TpuBackend(debug=True, dynamism=True)
+
+    @torch.compile(backend=backend, dynamic=True)
+    def fn(x, gen):
+      y = torch.rand(x.size(0), generator=gen, device=self.device)
+      return torch.matmul(x, y.unsqueeze(0))
+
+    x = torch.randn(16, 1, device=self.device)
+    torch._dynamo.mark_dynamic(x, 0)
+    gen = torch.Generator(device=self.device)
+
+    out = fn(x, gen)
+    self.assertEqual(tuple(out.shape), (16, 16))
+
   def test_mul(self):
     def simple_mul(x):
       a = 0.3 * x

@@ -297,7 +297,8 @@ class SymShapeManager:
         if idx not in self.dynamic_scalar_indices:
           self.symint_to_arg_idx[str(arg)] = idx
         continue
-      assert isinstance(arg, torch.Tensor)
+      if not isinstance(arg, torch.Tensor):
+        continue
       for dim_idx, dim in enumerate(arg.shape):
         if isinstance(dim, torch.SymInt):
           sym_str = str(dim)

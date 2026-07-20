@@ -43,6 +43,53 @@ _ReconstructFxOutputsFn: TypeAlias = Callable[
 ]
 
 
+def _dedupe_output_shapes(
+    output_shapes: Sequence[list[int]],
+    reconstruct_fx_outputs_fn: Callable[..., Any],
+) -> Sequence[list[int]]:
+  """Maps user-provided output shapes to unique XLA output shapes.
+
+  The user provides shapes for all FX graph outputs (which can include
+  duplicates and non-tensors). However, the XLA executable only returns
+  a flattened list of unique tensors. This function uses the `output_map`
+  from the reconstruction function to map the user-provided shapes to the
+  unique tensors returned by XLA.
+
+  Args:
+    output_shapes: User-provided output shapes matching FX outputs.
+    reconstruct_fx_outputs_fn: Function used to reconstruct FX outputs.
+
+  Returns:
+    The mapped output shapes matching unique XLA outputs, or the original
+    output_shapes if mapping is not needed or possible.
+  """
+  if not output_shapes:
+    return output_shapes
+
+  keywords = getattr(reconstruct_fx_outputs_fn, "keywords", {})
+  output_map = keywords.get("output_map")
+  expected_layouts = keywords.get("expected_layouts")
+
+  if not output_map or not expected_layouts:
+    return output_shapes
+
+  # The number of unique outputs is the length of `expected_layouts`.
+  xla_tensor_shapes = [None] * len(expected_layouts)
+
+  for fx_idx, item in enumerate(output_map):
+    tensor_idx = getattr(item, "tensor_idx", None)
+    if tensor_idx is not None:
+      xla_tensor_shapes[tensor_idx] = output_shapes[fx_idx]
+
+  deduped_shapes = [shape for shape in xla_tensor_shapes if shape is not None]
+  if len(deduped_shapes) != len(expected_layouts):
+    raise AssertionError(
+        f"Expected {len(expected_layouts)} shapes, got {len(deduped_shapes)}"
+    )
+
+  return deduped_shapes
+
+
 class CompiledArtifact(abc.ABC, OutputCode):
   """Abstract base class for a compiled executable.
 
@@ -247,7 +294,10 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     return filtered
 
   def __call__(
-      self, *args: Any, output_shapes: Sequence[list[int]] | None = None
+      self,
+      *args: Any,
+      output_shapes: Sequence[list[int]] | None = None,
+      original_args: Sequence[Any] | None = None,
   ) -> Any:
     """Executes the compiled TPU function.
 
@@ -262,6 +312,11 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         compilation.
       output_shapes: Optional sequence of shapes for the output tensors. This is
         typically used in dynamic shape scenarios.
+      original_args: Optional sequence of original arguments. This is needed
+        when compiling with dynamic shapes to allow the output reconstruction
+        function to restore the original Python types of passthrough inputs
+        (like SymInts or FakeScriptObjects) that were converted to device
+        tensors for execution.
 
     Returns:
       The result of the computation. The structure and types of the result
@@ -306,6 +361,10 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       # append the shapes of the device state tensors to match the number of
       # outputs from the executable.
       if output_shapes:
+        if self._reconstruct_fx_outputs_fn:
+          output_shapes = _dedupe_output_shapes(
+              output_shapes, self._reconstruct_fx_outputs_fn
+          )
         executable_output_shapes = list(output_shapes) + [
             list(t.shape) for t in device_state_tensors
         ]
@@ -333,7 +392,8 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         tpu_torch_compile.set_device_state_tensor(gen, device_state_tensor)
 
     if self._reconstruct_fx_outputs_fn is not None:
-      outputs = self._reconstruct_fx_outputs_fn(args, outputs)
+      reconstruct_args = original_args if original_args is not None else args
+      outputs = self._reconstruct_fx_outputs_fn(reconstruct_args, outputs)
 
     return outputs
 
@@ -406,9 +466,12 @@ class NoOpCompiledArtifact(CompiledArtifact):
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
 
   def __call__(
-      self, *args: Any, output_shapes: Sequence[list[int]] | None = None
+      self,
+      *args: Any,
+      output_shapes: Sequence[list[int]] | None = None,
+      **kwargs: Any,
   ) -> Any:
-    del output_shapes  # Unused
+    del output_shapes, kwargs  # Unused
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]
     if self._reconstruct_fx_outputs_fn is None:
