@@ -44,6 +44,7 @@ from torch._functorch._aot_autograd import graph_compile as _graph_compile
 from torch._functorch._aot_autograd.schemas import AOTAutogradCacheInfo
 from torch._functorch._aot_autograd.schemas import SerializableAOTDispatchCompiler
 import torch._functorch.config as functorch_config
+from torch._functorch.partitioners import min_cut_rematerialization_partition
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
@@ -337,6 +338,7 @@ class TpuBackend:
       result = aot_autograd(
           fw_compiler=fw_compiler,
           bw_compiler=bw_compiler,
+          partition_fn=min_cut_rematerialization_partition,
           keep_inference_input_mutations=False,
       )(
           graph_module, example_inputs

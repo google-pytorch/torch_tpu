@@ -125,6 +125,30 @@ class RandomOpsTest(parameterized.TestCase):
 
     self.assert_random_outputs(runner)
 
+  def test_dropout_compile_autograd_bwd_mask_match(self):
+    torch.manual_seed(42)
+    device = torch.device("tpu")
+
+    class MyModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.dropout = torch.nn.Dropout(p=0.5)
+
+      def forward(self, x):
+        return self.dropout(x)
+
+    module = MyModule().to(device)
+    compiled_module = torch.compile(module, backend="tpu")
+    x = torch.randn(10, 10, device=device, requires_grad=True)
+
+    with torch._functorch.config.patch(activation_memory_budget=0.0):
+      out = compiled_module(x)
+      out.sum().backward()
+
+    expected_grad = torch.where(out != 0, 2.0, 0.0)
+    utils.assert_close(x.grad, expected_grad)
+
   def test_dropout_compile_with_former_eager_run(self):
     torch.manual_seed(42)
     device = torch.device("tpu")
