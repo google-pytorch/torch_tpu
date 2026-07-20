@@ -66,6 +66,21 @@ TEST(UpdateLayoutSlice, TensorToTensor) {
   };
   EXPECT_EQ(layout, expected);
 }
+TEST(UpdateLayoutSlice, DynamicDimension) {
+  StridedLayout layout = {
+      .strided_dims = {{.size = -1, .stride = 128}, {.size = 128, .stride = 1}},
+      .storage_offset = 0,
+  };
+  SlicePrimitive slice = {
+      .slice_dims = {{.start_index = 0, .limit_index = 1, .stride = 1},
+                     {.start_index = 0, .limit_index = 128, .stride = 1}}};
+  EXPECT_TRUE(UpdateLayout(layout, slice));
+  StridedLayout expected = {
+      .strided_dims = {{.size = 1, .stride = 128}, {.size = 128, .stride = 1}},
+      .storage_offset = 0,
+  };
+  EXPECT_EQ(layout, expected);
+}
 
 TEST(MergeSlice, ValidMerge) {
   Dimensions contiguous_base_shape = {6, 4, 2};

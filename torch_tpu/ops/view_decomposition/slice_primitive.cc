@@ -71,13 +71,15 @@ void CheckSlice(const SlicePrimitive& slice, absl::Span<const int64_t> sizes,
         << "expected the SlicePrimitive start index at dimension " << i
         << " to be >= 0, got " << slice_dim.start_index
         << get_error_message_suffix();
-    ABSL_CHECK_LT(  // CRASH_OK=Internal error on view
-                    // decomposition.
-        slice_dim.start_index, input_dim)
-        << "expected the SlicePrimitive start index at dimension " << i
-        << " to be < " << input_dim
-        << ", which is the size of the input dimension " << i << ", got "
-        << slice_dim.start_index << get_error_message_suffix();
+    if (input_dim >= 0) {
+      ABSL_CHECK_LT(  // CRASH_OK=Internal error on view
+                      // decomposition.
+          slice_dim.start_index, input_dim)
+          << "expected the SlicePrimitive start index at dimension " << i
+          << " to be < " << input_dim
+          << ", which is the size of the input dimension " << i << ", got "
+          << slice_dim.start_index << get_error_message_suffix();
+    }
     ABSL_CHECK_LT(  // CRASH_OK=Internal error on view
                     // decomposition.
         slice_dim.start_index, slice_dim.limit_index)
@@ -93,11 +95,13 @@ void CheckSlice(const SlicePrimitive& slice, absl::Span<const int64_t> sizes,
 
     const int64_t new_size = ComputeNewSize(slice_dim);
 
-    ABSL_CHECK_LE(  // CRASH_OK=Guaranteed by checks above.
-        new_size, input_dim)
-        << "expected the SlicePrimitive slice size to be <= " << input_dim
-        << ", which is the size of the input at dimension " << i << ", got "
-        << new_size << get_error_message_suffix();
+    if (input_dim >= 0) {
+      ABSL_CHECK_LE(  // CRASH_OK=Guaranteed by checks above.
+          new_size, input_dim)
+          << "expected the SlicePrimitive slice size to be <= " << input_dim
+          << ", which is the size of the input at dimension " << i << ", got "
+          << new_size << get_error_message_suffix();
+    }
   }
 }
 
