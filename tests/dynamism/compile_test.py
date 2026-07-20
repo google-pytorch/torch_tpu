@@ -97,6 +97,30 @@ class CompileTest(absltest.TestCase):
     metrics = self.call_and_compare(simple_add, test_inputs, None)
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
+  def test_dropout_dynamic(self):
+    class DropoutModel(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.dropout = torch.nn.Dropout(0.5)
+
+      def forward(self, x):
+        return self.dropout(x)
+
+    model = DropoutModel().to(self.device).train()
+    backend = _backend.TpuBackend(debug=True, dynamism=True)
+    compiled_model = torch.compile(model, backend=backend)
+
+    x1 = torch.randn(16, 128, device=self.device)
+    torch._dynamo.mark_dynamic(x1, 0)
+    out1 = compiled_model(x1)
+
+    x2 = torch.randn(32, 128, device=self.device)
+    out2 = compiled_model(x2)
+
+    self.assertEqual(tuple(out1.shape), (16, 128))
+    self.assertEqual(tuple(out2.shape), (32, 128))
+
   def test_mul(self):
     def simple_mul(x):
       a = 0.3 * x
