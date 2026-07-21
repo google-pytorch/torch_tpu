@@ -395,6 +395,328 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     res_ab = compiled(input_a, input_b).to("cpu")
     utils.assert_close(res_a.sum(), res_ab.sum(), rtol=1e-3, atol=1e-5)
 
+  def test_nested_compile_region_simple(self):
+    @torch.compiler.nested_compile_region
+    def gn(x, y):
+      return torch.mul(x, y)
+
+    def fn(x, y):
+      return gn(x, y)
+
+    x_cpu = torch.randn(8, requires_grad=True)
+    y_cpu = torch.randn(8, requires_grad=True)
+    ref = fn(x_cpu, y_cpu)
+    ref.sum().backward()
+
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+    y_tpu = y_cpu.detach().clone().to("tpu").requires_grad_(True)
+    compiled = torch.compile(fn, backend="tpu")
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x_tpu, y_tpu)
+      res.sum().backward()
+
+    utils.assert_close(res.to("cpu"), ref)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+    utils.assert_close(y_tpu.grad.to("cpu"), y_cpu.grad)
+
+  def test_nested_compile_region_multiple_functions(self):
+    @torch.compiler.nested_compile_region
+    def cos_fn(x):
+      return torch.cos(x)
+
+    @torch.compiler.nested_compile_region
+    def sin_fn(x):
+      return torch.sin(x)
+
+    def fn(x):
+      a = cos_fn(x)
+      b = sin_fn(a)
+      return cos_fn(b)
+
+    x_cpu = torch.randn(8, requires_grad=True)
+    ref = fn(x_cpu)
+    ref.sum().backward()
+
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+    compiled = torch.compile(fn, backend="tpu")
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x_tpu)
+      res.sum().backward()
+
+    utils.assert_close(res.to("cpu"), ref)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+
+  def test_nested_compile_region_module_forward(self):
+    class Mod(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.c = 5.0
+
+      @torch.compiler.nested_compile_region
+      def forward(self, x, y):
+        return torch.mul(x, y).sin() + self.c
+
+    mod_cpu = Mod()
+
+    def fn_cpu(x, y):
+      return mod_cpu(x, y) + mod_cpu(x, y)
+
+    mod_tpu = Mod().to("tpu")
+
+    def fn_tpu(x, y):
+      return mod_tpu(x, y) + mod_tpu(x, y)
+
+    x_cpu = torch.randn(8, requires_grad=True)
+    y_cpu = torch.randn(8, requires_grad=True)
+    ref = fn_cpu(x_cpu, y_cpu)
+    ref.sum().backward()
+
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+    y_tpu = y_cpu.detach().clone().to("tpu").requires_grad_(True)
+    compiled = torch.compile(fn_tpu, backend="tpu")
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x_tpu, y_tpu)
+      res.sum().backward()
+
+    utils.assert_close(res.to("cpu"), ref)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+    utils.assert_close(y_tpu.grad.to("cpu"), y_cpu.grad)
+
+  def test_nested_compile_region_with_constants(self):
+    @torch.compiler.nested_compile_region
+    def nested(x):
+      c = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=x.device)
+      return x * c + 1.0
+
+    def outer(x):
+      return nested(x) + nested(x)
+
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      self._run_and_compare(outer, [x])
+
+  def test_nested_compile_region_single_model_reuse_mlir(self):
+    @torch.compiler.nested_compile_region
+    def inner(x, y):
+      return torch.cos(torch.sin(x + y))
+
+    def fn(x, y):
+      return inner(x * 2.0, y) + inner(x * 4.0, y)
+
+    x = torch.tensor([1.0, 2.0, 3.0], device="tpu")
+    y = torch.tensor([4.0, 5.0, 6.0], device="tpu")
+    tpu_backend = _backend.TpuBackend(debug=True)
+    compiled = torch.compile(fn, backend=tpu_backend)
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x, y).to("cpu")
+
+    expected = torch.cos(
+        torch.sin(
+            torch.tensor([1.0, 2.0, 3.0]) * 2.0 + torch.tensor([4.0, 5.0, 6.0])
+        )
+    ) + torch.cos(
+        torch.sin(
+            torch.tensor([1.0, 2.0, 3.0]) * 4.0 + torch.tensor([4.0, 5.0, 6.0])
+        )
+    )
+    utils.assert_close(res, expected)
+    self.assertLen(tpu_backend._compiled_executables, 1)
+    mlir_text = tpu_backend._compiled_executables[0].mlir_texts[0]
+    self.assertIn("call @nested_region", mlir_text)
+
+  def test_nested_compile_region_cross_model_reuse(self):
+    @torch.compiler.nested_compile_region
+    def shared_kernel(x, y):
+      return torch.sin(x * y) + 1.0
+
+    class ModelA(torch.nn.Module):
+
+      def forward(self, x, y):
+        return shared_kernel(x + 1.0, y)
+
+    class ModelB(torch.nn.Module):
+
+      def forward(self, x, y):
+        return shared_kernel(x * 3.0, y)
+
+    x = torch.tensor([0.5, 1.0, 1.5], device="tpu")
+    y = torch.tensor([2.0, 2.5, 3.0], device="tpu")
+
+    b1 = _backend.TpuBackend(debug=True)
+    b2 = _backend.TpuBackend(debug=True)
+    c1 = torch.compile(ModelA().to("tpu"), backend=b1)
+    c2 = torch.compile(ModelB().to("tpu"), backend=b2)
+
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res1 = c1(x, y).to("cpu")
+      res2 = c2(x, y).to("cpu")
+
+    expected1 = (
+        torch.sin(
+            (torch.tensor([0.5, 1.0, 1.5]) + 1.0)
+            * torch.tensor([2.0, 2.5, 3.0])
+        )
+        + 1.0
+    )
+    expected2 = (
+        torch.sin(
+            (torch.tensor([0.5, 1.0, 1.5]) * 3.0)
+            * torch.tensor([2.0, 2.5, 3.0])
+        )
+        + 1.0
+    )
+    utils.assert_close(res1, expected1)
+    utils.assert_close(res2, expected2)
+
+  def test_nested_compile_region_training_backward_reuse(self):
+    @torch.compiler.nested_compile_region
+    def block(x, weight):
+      return (x * weight).sin()
+
+    def fn(x, w1, w2):
+      return block(x, w1).sum() + block(x, w2).sum()
+
+    x_cpu = torch.randn(4, 8, requires_grad=True)
+    w1_cpu = torch.randn(4, 8, requires_grad=True)
+    w2_cpu = torch.randn(4, 8, requires_grad=True)
+    ref = fn(x_cpu, w1_cpu, w2_cpu)
+    ref.backward()
+
+    x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+    w1_tpu = w1_cpu.detach().clone().to("tpu").requires_grad_(True)
+    w2_tpu = w2_cpu.detach().clone().to("tpu").requires_grad_(True)
+    compiled = torch.compile(fn, backend="tpu")
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x_tpu, w1_tpu, w2_tpu)
+      res.backward()
+
+    utils.assert_close(res.to("cpu"), ref)
+    utils.assert_close(x_tpu.grad.to("cpu"), x_cpu.grad)
+    utils.assert_close(w1_tpu.grad.to("cpu"), w1_cpu.grad)
+    utils.assert_close(w2_tpu.grad.to("cpu"), w2_cpu.grad)
+
+  def test_nested_compile_region_multi_tensor_outputs(self):
+    @torch.compiler.nested_compile_region
+    def multi_out(x, y):
+      return x + y, x * y, torch.sin(x)
+
+    def fn(x, y):
+      a, b, c = multi_out(x, y)
+      return a * b + c
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5]),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6]),
+    ]
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      self._run_and_compare(fn, inputs_val)
+
+  def test_nested_compile_region_hierarchical(self):
+    @torch.compiler.nested_compile_region
+    def inner_kernel(x):
+      return torch.sin(x) * 2.0
+
+    @torch.compiler.nested_compile_region
+    def outer_kernel(x, y):
+      return inner_kernel(x) + inner_kernel(y)
+
+    def fn(x, y):
+      return outer_kernel(x, y) + outer_kernel(y, x)
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5]),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6]),
+    ]
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      self._run_and_compare(fn, inputs_val)
+
+  def test_nested_compile_region_mlir_dump_inspection(self):
+    @torch.compiler.nested_compile_region
+    def my_custom_kernel(a, b):
+      return torch.abs(a * b) + 2.5
+
+    def outer_model(x, y):
+      return my_custom_kernel(x, y) * 3.0
+
+    x = torch.tensor([1.0, -2.0, 3.0], device="tpu")
+    y = torch.tensor([4.0, 5.0, -6.0], device="tpu")
+    tpu_backend = _backend.TpuBackend(debug=True)
+    compiled = torch.compile(outer_model, backend=tpu_backend)
+
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x, y).to("cpu")
+
+    expected = (
+        torch.abs(
+            torch.tensor([1.0, -2.0, 3.0]) * torch.tensor([4.0, 5.0, -6.0])
+        )
+        + 2.5
+    ) * 3.0
+    utils.assert_close(res, expected)
+
+    self.assertLen(tpu_backend._compiled_executables, 1)
+    mlir_text = tpu_backend._compiled_executables[0].mlir_texts[0]
+
+    # Verify MLIR function definition and direct call
+    self.assertIn("func.func private @nested_region_", mlir_text)
+    self.assertIn("call @nested_region_", mlir_text)
+    # Verify expected StableHLO math ops inside the module
+    self.assertIn("stablehlo.abs", mlir_text)
+    self.assertIn("stablehlo.multiply", mlir_text)
+    self.assertIn("stablehlo.add", mlir_text)
+
+  def test_nested_compile_region_positional_and_kwargs(self):
+    @torch.compiler.nested_compile_region
+    def my_region(a, b, *, scale=1.0, offset=0.0):
+      return (a + b) * scale + offset
+
+    def outer_fn(x, y, z):
+      # Positional + keyword args with explicit values and defaults
+      out1 = my_region(x, b=y, scale=2.0, offset=1.5)
+      out2 = my_region(y, z, scale=0.5)
+      return out1 + out2
+
+    x = torch.tensor([1.0, 2.0, 3.0], device="tpu")
+    y = torch.tensor([4.0, 5.0, 6.0], device="tpu")
+    z = torch.tensor([7.0, 8.0, 9.0], device="tpu")
+
+    tpu_backend = _backend.TpuBackend(debug=True)
+    compiled = torch.compile(outer_fn, backend=tpu_backend)
+
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x, y, z).to("cpu")
+
+    x_cpu = torch.tensor([1.0, 2.0, 3.0])
+    y_cpu = torch.tensor([4.0, 5.0, 6.0])
+    z_cpu = torch.tensor([7.0, 8.0, 9.0])
+    expected = ((x_cpu + y_cpu) * 2.0 + 1.5) + ((y_cpu + z_cpu) * 0.5 + 0.0)
+    utils.assert_close(res, expected)
+
+  def test_nested_compile_region_different_shapes(self):
+    @torch.compiler.nested_compile_region
+    def gn(x):
+      return x.sin() * 2.0
+
+    def fn(x, y):
+      a = gn(x)
+      b = gn(y)
+      return a.sum() + b.sum()
+
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="tpu")
+    y = torch.tensor([5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0], device="tpu")
+
+    tpu_backend = _backend.TpuBackend(debug=True)
+    compiled = torch.compile(fn, backend=tpu_backend)
+
+    with torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False):
+      res = compiled(x, y).to("cpu")
+
+    x_cpu = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    y_cpu = torch.tensor([5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
+    expected = (x_cpu.sin() * 2.0).sum() + (y_cpu.sin() * 2.0).sum()
+    utils.assert_close(res, expected)
+
   def test_fx_graph_generates_more_than_one_graph_to_compile(self):
     # The if case trigger a graph break, so tpu_backend will generate two graphs
     # to compile.

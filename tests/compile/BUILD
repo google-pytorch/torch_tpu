@@ -608,4 +608,30 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "nested_compile_region_benchmark_test",
+    timeout = "long",
+    srcs = ["nested_compile_region_benchmark_test.py"],
+    nobuild_oss = "Not intended to run in OSS",
+    notap = "Slow manual benchmark test.",
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Offload heavy TorchDynamo/Inductor compilation suites to TPU v7",
+    ),
+    tags = [
+        "nofastbuild",
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal:testing",
+        "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
 torch_tpu_package_end()

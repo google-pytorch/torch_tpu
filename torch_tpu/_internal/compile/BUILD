@@ -82,6 +82,7 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":nested_compile_region",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -105,6 +106,17 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//torch_tpu/_internal/profiler:xprof_adapter",
         "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "nested_compile_region",
+    srcs = ["nested_compile_region.py"],
+    deps = [
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/export",
+        "//torch_tpu/_internal/pallas:tpu_torch_pallas",
     ],
 )
 

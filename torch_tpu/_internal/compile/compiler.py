@@ -448,8 +448,10 @@ class StaticCompiler(Compiler):
           graph_module, "mark_activation_checkpoints"
       ).apply_graph_pass(mark_activation_checkpoints.apply)
 
-    graph_module.graph.lint()
-    graph_module.recompile()
+    for mod in graph_module.modules():
+      if isinstance(mod, torch.fx.GraphModule):
+        mod.graph.lint()
+        mod.recompile()
 
     # Emit FX graph artifact for tlparse when TORCH_TRACE is set.
     if _is_tracing_enabled():

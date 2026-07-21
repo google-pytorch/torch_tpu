@@ -532,6 +532,7 @@ def fx_to_mlir(
       ] + [device_module.default_generators[device.index or 0]]
 
       orig_generator_states = {}
+      orig_device_state_tensors = {}
       for gen in argument_generators:
         orig_generator_states[gen] = gen.graphsafe_get_state().clone_state()
 
@@ -539,6 +540,7 @@ def fx_to_mlir(
         # This intercepts the C++ backend's state so that random operations
         # are correctly chained against this placeholder during graph capture.
         device_state_tensor = tpu_torch_compile.get_device_state_tensor(gen)
+        orig_device_state_tensors[gen] = device_state_tensor
         begin_state_tensor = tpu_torch_compile.placeholder_like(
             device_state_tensor
         )
@@ -606,9 +608,15 @@ def fx_to_mlir(
             )
 
       finally:
-        # Restore original generator states.
+        # Restore original generator states and device state tensors.
         for gen in argument_generators:
           gen.graphsafe_set_state(orig_generator_states[gen])
+          with execution_mode.set_eager_mode(
+              EagerMode.INTERNAL_COMPILE_FX_GRAPH
+          ):
+            tpu_torch_compile.set_device_state_tensor(
+                gen, orig_device_state_tensors[gen]
+            )
 
     compile_result = tpu_torch_compile.traverse_and_compile(
         result_tensors=result_tensors,
