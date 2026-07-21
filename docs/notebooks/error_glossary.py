@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 
 """Marimo notebook for Error Code Glossary."""
 
@@ -23,8 +23,8 @@ app = marimo.App(width="medium")
 
 @app.cell(hide_code=True)
 def _():
-  import marimo as mo
   import os
+  import marimo as mo
 
   # Environment Configuration
   os.environ["ACCELERATOR_TYPE"] = "v6e-4"
@@ -64,7 +64,6 @@ def _(os):
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
 
   import torch
-  from torch_tpu import api
   import tpu_utils
 
   device = tpu_utils.safe_init()
@@ -175,7 +174,9 @@ def _(mo):
 
 @app.cell
 def _():
-  import subprocess, sys, textwrap
+  import subprocess
+  import sys
+  import textwrap
 
   # Run in a subprocess to isolate the dispatcher corruption
   # that inference_mode + torch.compile causes.
@@ -238,8 +239,8 @@ def _(mo):
 
 @app.cell
 def _(device, torch):
-  from torch_tpu._internal.utils import utils
   from torch_tpu._internal import sync
+  from torch_tpu._internal.utils import utils
 
   # Build a small model and materialize its weights
   diag_model = (

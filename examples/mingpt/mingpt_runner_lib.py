@@ -15,7 +15,6 @@
 """Library for running mingpt examples."""
 
 import time
-
 import torch
 from examples.mingpt.impl import mingpt
 

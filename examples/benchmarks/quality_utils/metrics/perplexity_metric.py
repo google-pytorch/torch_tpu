@@ -18,7 +18,6 @@
 from typing import Sequence
 from absl import logging
 import torch
-import torch.nn.functional as F
 from examples.benchmarks.quality_utils import quality_benchmark_model
 
 

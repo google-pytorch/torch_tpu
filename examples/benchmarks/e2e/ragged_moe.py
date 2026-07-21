@@ -15,7 +15,6 @@
 """MoE implementation for Qwen3 model using XLA ragged dot op."""
 
 import math
-
 import torch
 import torch.nn.functional as F
 from transformers import activations

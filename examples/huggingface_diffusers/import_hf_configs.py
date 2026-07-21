@@ -21,11 +21,9 @@ directory named after the model in `model_configs`.
 
 from collections.abc import Sequence
 import os
-
 from absl import app
 from absl import flags
 import huggingface_hub
-
 
 _MODEL_ID = flags.DEFINE_string(
     "model_id",

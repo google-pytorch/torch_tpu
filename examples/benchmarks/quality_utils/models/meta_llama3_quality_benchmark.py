@@ -15,14 +15,12 @@
 """Llama3 quality benchmark model."""
 
 from typing import Any
-
 from fairscale.nn.model_parallel import initialize as fairscale_init
 from llama_models.llama3 import generation
 import torch
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.quality_utils import quality_benchmark_model
 from examples.benchmarks.quality_utils.models import configs
-
 
 RANDOM_SEED = 4242
 

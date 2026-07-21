@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 
 import marimo
 
@@ -60,10 +60,10 @@ def _(mo):
 @app.cell(disabled=True)
 def _():
   import torch
-  import torch.nn as nn
-  import torch.optim as optim
-  from torch.nn.parallel import DistributedDataParallel as DDP
   import torch.distributed as dist
+  import torch.nn as nn
+  from torch.nn.parallel import DistributedDataParallel as DDP
+  import torch.optim as optim
 
   class ToyModel(nn.Module):
 

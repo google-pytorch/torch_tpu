@@ -15,12 +15,10 @@
 """Example use of Llama3.2 1B model."""
 
 import time
-
 from absl import app
 import torch
 from examples.paths import XM_HOME
 import transformers
-
 
 pipeline = transformers.pipeline
 MODEL_PATH = f"{XM_HOME}weights/huggingface/meta-llama/Llama-3.2-1B"

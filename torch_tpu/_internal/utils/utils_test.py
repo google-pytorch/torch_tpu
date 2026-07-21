@@ -14,7 +14,6 @@
 
 from collections.abc import Sequence
 from typing import Any
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import dynamism

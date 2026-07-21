@@ -21,7 +21,6 @@ device (either CPU or GPU, depending on the test mode).
 import collections.abc
 import copy
 from typing import Any
-
 from absl import flags
 from absl.testing import absltest
 import torch

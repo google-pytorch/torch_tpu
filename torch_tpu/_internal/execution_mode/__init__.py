@@ -17,8 +17,8 @@
 import contextlib
 import sys
 import types
-from typing import TYPE_CHECKING, TypeAlias
-
+from typing import TYPE_CHECKING
+from typing import TypeAlias
 from torch_tpu._internal.execution_mode import execution_mode_impl
 
 EagerMode: TypeAlias = execution_mode_impl.EagerMode

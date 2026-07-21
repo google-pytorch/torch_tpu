@@ -47,9 +47,9 @@ def apply(
 
   # Exit Fake mode since we're creating new tensors.
   with unset_fake_temporarily():
-    unique_attr_targets = set(
+    unique_attr_targets = {
         node.target for node in graph.find_nodes(op="get_attr")
-    )
+    }
 
     for attr_target in unique_attr_targets:
       if attr_target in gm._processed_constant_attrs:

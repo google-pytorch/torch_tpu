@@ -16,7 +16,8 @@
 
 import os
 import sys
-from typing import Final, Tuple
+from typing import Final
+from typing import Tuple
 
 # Inject flags and env var to libtpu.
 LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"

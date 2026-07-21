@@ -105,8 +105,8 @@ def test_model_architecture(device):
 
 def test_data_preparation():
   """Cell: load MNIST data, verify shapes."""
-  from sklearn.datasets import fetch_openml
   import numpy as np
+  from sklearn.datasets import fetch_openml
 
   mnist = fetch_openml("mnist_784", version=1, as_frame=False)
 
@@ -123,8 +123,8 @@ def test_data_preparation():
 
 def test_training_loop(device):
   """Cell: run 1 epoch of training (reduced from 4 for speed)."""
-  from sklearn.datasets import fetch_openml
   import numpy as np
+  from sklearn.datasets import fetch_openml
 
   mnist = fetch_openml("mnist_784", version=1, as_frame=False)
   X_train = mnist.data[:100].astype(np.float32) / 255.0

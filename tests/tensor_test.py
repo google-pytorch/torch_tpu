@@ -14,7 +14,9 @@
 
 import copy
 import time
-from typing import Any, Callable, Tuple
+from typing import Any
+from typing import Callable
+from typing import Tuple
 from absl.testing import absltest
 import numpy as np
 import torch
@@ -22,7 +24,6 @@ from torch.testing._internal import common_device_type
 from torch.testing._internal import common_utils as torch_test_utils
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import utils
-
 
 CheckValueMode = utils.CheckValueMode
 

@@ -15,7 +15,6 @@
 """Example use of Qwen3 model."""
 
 import time
-
 from absl import app
 from absl import logging
 import torch
@@ -119,14 +118,14 @@ def main(argv):
   output_tpu = model_generate(
       model_tpu, inputs.to("tpu"), tokenizer, max_decode_steps
   )
-  logging.info(f"output_tpu=%s", output_tpu)
+  logging.info("output_tpu=%s", output_tpu)
   assert output_cpu == output_tpu
 
   model_tpu_compiled = torch.compile(model_tpu, dynamic=False, backend="tpu")
   output_tpu_compiled = model_generate(
       model_tpu_compiled, inputs.to("tpu"), tokenizer, max_decode_steps
   )
-  logging.info(f"output_tpu_compiled=%s", output_tpu_compiled)
+  logging.info("output_tpu_compiled=%s", output_tpu_compiled)
   assert output_cpu == output_tpu_compiled
 
 

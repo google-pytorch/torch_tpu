@@ -15,7 +15,8 @@
 """Tests error handling on TPU only."""
 
 import re
-from typing import Any, TypeAlias
+from typing import Any
+from typing import TypeAlias
 import unittest
 from absl.testing import absltest
 from absl.testing import parameterized

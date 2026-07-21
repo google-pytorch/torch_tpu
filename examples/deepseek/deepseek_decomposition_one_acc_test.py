@@ -19,7 +19,6 @@ These tests focus on single TPU mode.
 
 import copy
 import unittest
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest

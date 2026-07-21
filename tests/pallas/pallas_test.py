@@ -18,17 +18,18 @@ import functools
 import os
 import pathlib
 import sys
-from typing import Optional, Tuple, TypeAlias
+from typing import Optional
+from typing import Tuple
+from typing import TypeAlias
 import warnings
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
-import jax.export
 import jax.numpy as jnp
 from packaging import version
 import torch
 import torch._library.custom_ops as torch_custom_ops
-from torch_tpu._internal import compile  # pylint: disable=redefined-builtin
+from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
@@ -311,7 +312,9 @@ class TestPallasKernels(absltest.TestCase):
         lambda ctx, grad: add_vectors_backward(grad)
     )
 
-    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
     def add_vectors_sum(x, y):
       return add_vectors_op(x, y).sum()
 
@@ -354,7 +357,9 @@ class TestPallasKernels(absltest.TestCase):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
 
-    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
     def donated_add_vectors_sum(x, y):
       return torch_donating_add_vectors(x, y).sum()
 
@@ -376,7 +381,9 @@ class TestPallasKernels(absltest.TestCase):
         donate_argnums=(0,),
     )
 
-    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
     def add_vectors_inplace(x: torch.Tensor, y: torch.Tensor) -> None:
       result = donating_add_vectors(x, y)
       x.copy_(result)
@@ -405,7 +412,7 @@ class TestPallasKernels(absltest.TestCase):
     # Create a deferred op that depends on the pre-donation value of x.
     pre_x_sum = x.sum()
 
-    tpu_backend = compile.TpuBackend(debug=True)
+    tpu_backend = tpu_compile.TpuBackend(debug=True)
 
     # Run a donating compiled operation.
     @torch.compile(fullgraph=True, dynamic=False, backend=tpu_backend)
@@ -439,7 +446,9 @@ class TestPallasKernels(absltest.TestCase):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
 
-    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
     def x_used_and_donated(x, y):
       # This op uses x but does not donate it.
       x_sum = x.sum()
@@ -679,7 +688,9 @@ class TestPallasKernels(absltest.TestCase):
     x = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32, device=self.device)
     y = torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32, device=self.device)
 
-    @torch.compile(fullgraph=True, dynamic=False, backend=compile.TpuBackend())
+    @torch.compile(
+        fullgraph=True, dynamic=False, backend=tpu_compile.TpuBackend()
+    )
     def aliased_add_vectors_sum(x, y):
       return torch_aliasing_add_vectors(x, y).sum()
 

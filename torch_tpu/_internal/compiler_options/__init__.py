@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import contextlib
-
 from torch_tpu._internal.compiler_options import compiler_options_impl as compiler
 
 

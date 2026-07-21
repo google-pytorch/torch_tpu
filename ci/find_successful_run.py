@@ -16,13 +16,15 @@
 """Script to find the latest successful workflow run (build + TPU test) and return GCS path."""
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from collections.abc import Sequence
 import json
 import os
 import subprocess
 import sys
 import time
-from typing import Any, Final
+from typing import Any
+from typing import Final
 import urllib.error
 import urllib.request
 

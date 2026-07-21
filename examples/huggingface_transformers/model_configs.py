@@ -15,7 +15,6 @@
 """Model configurations for HuggingFace Transformers examples."""
 
 from typing import Callable
-
 from etils import epath
 import transformers
 

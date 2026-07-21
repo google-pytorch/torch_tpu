@@ -14,12 +14,10 @@
 
 """Public API for torch_tpu._internal.compile."""
 
-from absl import logging
 import torch
-from torch._dynamo import decorators
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile import tpu_torch_compile  # noqa: F401
 from torch_tpu._internal.compile._backend import TpuBackend
 
 # Register "tpu" backend
@@ -61,7 +59,7 @@ if hasattr(torch._dynamo.config, "trace_autograd_ops"):
 
 def _register_scan_operator() -> None:
   """Registers the custom scan operator implementation for TPU."""
-  from torch_tpu._internal.compile import scan as _  # pylint: disable=g-import-not-at-top
+  from torch_tpu._internal.compile import scan as _  # pylint: disable=g-import-not-at-top  # noqa: F401
 
 
 _register_scan_operator()

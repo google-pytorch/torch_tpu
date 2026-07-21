@@ -41,10 +41,6 @@ These are not intended as the primary interface for users. These are currently
 only used internally for performance evaluation by the torch_tpu developers.
 """
 
-from collections.abc import Callable, Sequence
-import functools
-from typing import Any, Optional, Union
-import torch
 from torch_tpu._internal.sync import sync
 
 computation_graphviz = sync.computation_graphviz

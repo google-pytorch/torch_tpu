@@ -15,11 +15,9 @@
 """Tests for TPU Visualizer on 8 chips."""
 
 import re
-
 from absl.testing import absltest
 import torch
 from examples.tpu_visualizer import tpu_visualizer
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 

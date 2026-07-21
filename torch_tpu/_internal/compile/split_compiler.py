@@ -18,12 +18,12 @@ This module contains the logic for splitting a GraphModule on collective
 operations and compiling it's submodules.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from collections.abc import Sequence
 import copy
 import functools
 import operator
 from typing import Any
-
 from absl import logging
 import torch
 from torch._dynamo.utils import detect_fake_mode
@@ -33,7 +33,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 
 # Required to register the SPMD safe region ops.
-from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import
+from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import  # noqa: F401, unused-import
 
 # pylint: disable=protected-access
 _COLLECTIVE_OPS = (
@@ -377,7 +377,7 @@ class SplitCompiler(compiler.Compiler):
       else:
         partition_map[node] = partition_id
 
-    num_partitions = len(set(v for v in partition_map.values()))
+    num_partitions = len(set(partition_map.values()))
     if num_partitions <= 1:
       logging.info(
           "Skipping split because there is only %d partition", num_partitions

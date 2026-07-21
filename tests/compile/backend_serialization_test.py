@@ -15,15 +15,12 @@
 import pickle
 import random
 import tempfile
-
 from absl.testing import absltest
 import torch
 from torch._dynamo.backends import registry
 from torch._dynamo.functional_export import dynamo_graph_capture_for_export
 from torch._dynamo.utils import counters
-from torch._functorch._aot_autograd.aot_autograd_result import (
-    deserialize_bundled_cache_entry,
-)
+from torch._functorch._aot_autograd.aot_autograd_result import deserialize_bundled_cache_entry
 from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend

@@ -28,13 +28,13 @@
 
 # %%
 from threading import Thread
-import tqdm
-
 import datasets
 from etils import epath
 import torch
-import transformers
 from examples import paths
+import tqdm
+import transformers
+
 # %% [markdown]
 # ## Set up the TPU device for PyTorch
 # %%
@@ -181,7 +181,8 @@ t.join()
 # %% [markdown]
 # ## Example of profiling
 # %%
-from torch.profiler import profile, ProfilerActivity
+from torch.profiler import profile
+from torch.profiler import ProfilerActivity
 
 with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
   for epoch in range(1, EPOCHS + 1):

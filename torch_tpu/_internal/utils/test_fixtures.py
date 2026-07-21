@@ -13,8 +13,8 @@
 # limitations under the License.
 """Shared nn.Module subclasses for testing."""
 import abc
-from typing import Any, TypeVar
-
+from typing import Any
+from typing import TypeVar
 import torch
 
 

@@ -15,7 +15,6 @@
 """Llama 3.2 1B quality benchmark model."""
 
 from typing import Any
-
 import torch
 from examples import paths
 from examples.benchmarks.e2e import device_utils

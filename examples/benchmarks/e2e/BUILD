@@ -41,7 +41,6 @@ torch_tpu_py_library(
     name = "benchmark_utils",
     srcs = ["benchmark_utils.py"],
     deps = [
-        ":common",
         ":device_utils",
         "//examples/benchmarks/ops:op_capture",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
@@ -114,7 +113,6 @@ torch_tpu_py_library(
     testonly = 1,
     srcs = ["test_utils.py"],
     deps = [
-        ":benchmark_utils",
         ":common",
         ":mlcompass_utils",
         ":model_utils",

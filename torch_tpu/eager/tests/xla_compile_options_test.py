@@ -16,10 +16,9 @@
 
 import glob
 import os
-
 from absl.testing import absltest
 import torch
-import torch_tpu  # pylint: disable=unused-import
+import torch_tpu  # pylint: disable=unused-import  # noqa: F401, unused-import
 from torch_tpu._internal import execution_mode
 
 EagerMode = execution_mode.EagerMode

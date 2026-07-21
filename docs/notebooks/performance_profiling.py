@@ -139,7 +139,7 @@ def _(mo):
     tensorboard --logdir=/tmp/profiler_output --port=6006
     ```
 
-    xprof can also be run as a standalone server. 
+    xprof can also be run as a standalone server.
     ```shell
     xprof --logdir=profiler/demo --port=6006
     ```
@@ -204,7 +204,7 @@ def _(log_dir):
     print(f"  {f} ({size_kb:.1f} KB)")
 
   if trace_files:
-    print(f"\n✅ Traces ready. View with:")
+    print("\n✅ Traces ready. View with:")
     print(f"   tensorboard --logdir={log_dir}")
   else:
     print("\n❌ No trace files found. Check profiler configuration.")

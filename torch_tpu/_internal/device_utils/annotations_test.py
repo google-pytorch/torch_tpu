@@ -16,7 +16,6 @@
 
 from absl.testing import absltest
 import torch
-import torch.testing
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 import torch_tpu._internal.device_utils.annotations as tpu_annotations

@@ -16,7 +16,8 @@
 
 import os
 import sys
-from typing import Final, Tuple
+from typing import Final
+from typing import Tuple
 
 LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"
 sys.argv.extend(
@@ -31,7 +32,7 @@ os.environ["XLA_FLAGS"] = f"--xla_dump_to={XLA_DUMP_TO} --xla_dump_hlo_as_text"
 
 from absl import app  # pylint: disable=g-import-not-at-top
 import torch  # pylint: disable=g-import-not-at-top
-import torch_tpu  # pylint: disable=g-import-not-at-top,unused-import
+import torch_tpu  # pylint: disable=g-import-not-at-top,unused-import  # noqa: F401, unused-import
 
 # pylint: disable=protected-access
 torch._logging.set_logs(aot_graphs=True)

@@ -19,13 +19,11 @@ import datetime
 import os
 import socket
 import threading
-
 from absl import logging
 from torch_tpu._internal.profiler._profiler_backend import start_profiler_server
 from torch_tpu._internal.profiler._profiler_backend import start_trace as start_trace_backend
 from torch_tpu._internal.profiler._profiler_backend import stop_profiler_server
 from torch_tpu._internal.profiler._profiler_backend import stop_trace as stop_trace_backend
-
 
 _profiler_server = None
 

@@ -29,7 +29,6 @@ import torch.nn.functional as F
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 
-
 log_utils.log_to_stderr()
 
 

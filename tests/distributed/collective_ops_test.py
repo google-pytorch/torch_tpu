@@ -28,8 +28,10 @@ before the open source release.
 
 import os
 import time
-from typing import Any, Callable, List, Union
-
+from typing import Any
+from typing import Callable
+from typing import List
+from typing import Union
 from absl import logging
 from absl.testing import absltest
 
@@ -51,11 +53,9 @@ if __name__ == "__main__":  # We are in the parent process.
 import torch  # pylint: disable=g-import-not-at-top
 from torch import distributed as dist
 import torch.multiprocessing as mp
-
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 

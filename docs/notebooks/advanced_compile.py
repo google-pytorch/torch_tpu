@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 """Advanced compilation with torch.compile notebook."""
 
 import marimo
@@ -39,7 +39,6 @@ def _(mo):
 
 @app.cell
 def _():
-  import sys
   import torch
 
   # One time initialization of the TPU

@@ -15,13 +15,11 @@
 """Small graph test for TPU backend."""
 
 import functools
-
 from absl import logging
 from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
-import jax.export
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
@@ -30,9 +28,7 @@ from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
-
 
 P = jax.sharding.PartitionSpec
 

@@ -63,13 +63,11 @@ torch_tpu_py_library(
     name = "qwen3_1_7b_quality_benchmark",
     srcs = ["qwen3_1_7b_quality_benchmark.py"],
     deps = [
-        "//examples:paths",
         "//examples/benchmarks/e2e:device_utils",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//shims/safetensors",  # build_cleaner: keep
         "//shims/torch:pytorch",
         "//tests:module_registry",
-        "@pypi//transformers",
     ],
 )
 

@@ -24,7 +24,6 @@ Handles the following details for per-op unit testing:
 from collections.abc import Sequence
 import random
 from typing import Any
-
 from absl import logging
 import torch
 from torch.testing._internal import common_methods_invocations
@@ -407,13 +406,13 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
 class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
   """A wrapper around OpInfo that supports bounded dynamism."""
 
-  ternary_elementwise_ops = set([
+  ternary_elementwise_ops = {
       "addcdiv",
       "addcmul",
       "clamp",
       "lerp",
       "where",
-  ])
+  }
 
   @staticmethod
   def adapter_supports_op(op_info: core.OpInfo):

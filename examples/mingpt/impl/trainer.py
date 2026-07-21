@@ -19,10 +19,8 @@ so nothing in this file really has anything to do with GPT specifically.
 
 from collections import defaultdict
 import time
-
 import torch
 from torch.utils.data.dataloader import DataLoader
-
 from .utils import CfgNode as CN
 
 

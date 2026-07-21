@@ -22,7 +22,6 @@ can run independently "along rows/columns" of the device mesh.
 """
 
 import os
-
 from absl import logging
 from absl.testing import absltest
 import torch
@@ -31,7 +30,6 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 

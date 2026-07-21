@@ -15,8 +15,8 @@
 """Python interface for streams and events on TPU."""
 
 import itertools
-from typing import Optional, Self
-
+from typing import Optional
+from typing import Self
 import torch
 from torch_tpu._internal.device import _device_ops_backend
 

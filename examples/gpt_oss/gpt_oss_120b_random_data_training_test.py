@@ -14,11 +14,9 @@
 
 """Tests of GPT-OSS 120B as implemented by HuggingFace Transformers."""
 
-import os
 import sys
 import time
-from typing import Any, Dict, TypeAlias
-
+from typing import TypeAlias
 from absl import flags
 from absl import logging
 from absl.testing import absltest
@@ -29,7 +27,6 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import log_utils
 import transformers
-
 from torch_tpu._internal.shims.xprof import traceme
 from rules_python.python.runfiles import runfiles
 

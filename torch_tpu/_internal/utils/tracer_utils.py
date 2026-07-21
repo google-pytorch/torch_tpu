@@ -19,7 +19,9 @@ replay the collected data and modules on CPU to check for numerical differences.
 """
 from collections.abc import Sequence
 import copy
-from typing import Any, TypeVar, cast
+from typing import Any
+from typing import cast
+from typing import TypeVar
 import torch
 from torch_tpu._internal.utils import utils
 

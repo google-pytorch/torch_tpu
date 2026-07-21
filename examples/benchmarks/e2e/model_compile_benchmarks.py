@@ -19,7 +19,6 @@ import functools
 import json
 import os
 import time
-
 from absl import logging
 from absl.testing import absltest
 import torch
@@ -31,7 +30,6 @@ from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e import performance_utils
 from examples.benchmarks.e2e import test_utils
-
 from torch_tpu._internal.shims.xprof import traceme
 
 log_utils.log_to_stderr()

@@ -27,8 +27,9 @@ so for op / layer testing, we can set world_size = 1.
 
 from dataclasses import dataclass  # pylint: disable=g-importing-member
 import math
-from typing import Literal, Optional, Tuple
-
+from typing import Literal
+from typing import Optional
+from typing import Tuple
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -418,12 +419,12 @@ def precompute_freqs_cis(args: ModelArgs) -> torch.Tensor:  # pylint: disable=re
     high = math.ceil(find_correction_dim(high_rot, dim, base, max_seq_len))
     return max(low, 0), min(high, dim - 1)
 
-  def linear_ramp_factor(min, max, dim):  # pylint: disable=redefined-builtin
+  def linear_ramp_factor(min_val, max_val, dim):
     """Computes a linear ramp function used to smooth values between a minimum and maximum range.
 
     Args:
-        min (float): Minimum value for the ramp function.
-        max (float): Maximum value for the ramp function.
+        min_val (float): Minimum value for the ramp function.
+        max_val (float): Maximum value for the ramp function.
         dim (int): Dimensionality of the ramp tensor.
 
     Returns:
@@ -431,9 +432,11 @@ def precompute_freqs_cis(args: ModelArgs) -> torch.Tensor:  # pylint: disable=re
         between 0 and 1,
             clamped to the range [0, 1].
     """
-    if min == max:
-      max += 0.001
-    linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
+    if min_val == max_val:
+      max_val += 0.001
+    linear_func = (torch.arange(dim, dtype=torch.float32) - min_val) / (
+        max_val - min_val
+    )
     ramp_func = torch.clamp(linear_func, 0, 1)
     return ramp_func
 

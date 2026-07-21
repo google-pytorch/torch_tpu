@@ -27,7 +27,6 @@ from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 import torchvision
 
-
 log_utils.log_to_stderr()
 
 

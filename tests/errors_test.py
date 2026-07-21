@@ -1464,7 +1464,7 @@ Device-side assertion tracking was not enabled by user.""",
           tpu=f"""select(): index {index} out of range for tensor of size [2, 3]"""
           f""" at dimension {dim}""",
       ):
-        t.select(dim, index)  # pylint: disable=unused-variable
+        _ = t.select(dim, index)
 
   def test_select_dim_out_of_bounds(self):
     """Select function fails when dimension is out of bounds."""
@@ -1478,7 +1478,7 @@ Device-side assertion tracking was not enabled by user.""",
           tpu="""Dimension out of range (expected to be in range of [-2, 1], but"""
           f""" got {dim})""",
       ):
-        t.select(dim, 1)  # pylint: disable=unused-variable
+        _ = t.select(dim, 1)
 
   def test_slice_on_scalar(self):
     t = torch.scalar_tensor(1.0, device=et.device(), dtype=torch.float32)
@@ -1489,7 +1489,7 @@ Device-side assertion tracking was not enabled by user.""",
         # we don't have control over this error message.
         tpu="""slice() cannot be applied to a 0-dim tensor.""",
     ):
-      sliced_t = t[0:1:1]  # pylint: disable=unused-variable
+      _sliced_t = t[0:1:1]  # pylint: disable=unused-variable
 
   def test_slice_zero_step(self):
     t = torch.ones(10, device=et.device(), dtype=torch.float32)
@@ -1499,7 +1499,7 @@ Device-side assertion tracking was not enabled by user.""",
         # we don't have control over this error message.
         tpu="""slice step cannot be zero""",
     ):
-      sliced_t = t[0:10:0]  # pylint: disable=unused-variable
+      _sliced_t = t[0:10:0]  # pylint: disable=unused-variable
 
   def test_slice_negative_step(self):
     t = torch.ones(10, device=et.device(), dtype=torch.float32)
@@ -1509,7 +1509,7 @@ Device-side assertion tracking was not enabled by user.""",
         # we don't have control over this error message.
         tpu="""step must be greater than zero""",
     ):
-      sliced_t = t[0:10:-1]  # pylint: disable=unused-variable
+      _sliced_t = t[0:10:-1]  # pylint: disable=unused-variable
 
   def test_cat_empty_input(self):
     with et.assert_raises_message(

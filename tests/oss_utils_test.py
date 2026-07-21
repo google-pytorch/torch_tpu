@@ -14,7 +14,6 @@
 
 import sys
 from unittest import mock
-
 from absl.testing import absltest
 from tests import oss_utils
 

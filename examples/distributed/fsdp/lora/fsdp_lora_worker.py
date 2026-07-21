@@ -23,7 +23,6 @@ https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html
 
 import os
 import tempfile
-
 from absl import logging
 import peft
 from peft.utils.constants import WEIGHTS_NAME
@@ -36,12 +35,10 @@ from torch.distributed import fsdp
 from torch.distributed.fsdp import StateDictType
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
-import torch.multiprocessing as mp
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.fsdp import fsdp_worker as fsdp_tp_worker
 from examples.distributed.fsdp import model
-
 
 log_utils.log_to_stderr()
 

@@ -18,7 +18,6 @@ import shutil
 import threading
 import time
 import unittest
-
 from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -26,7 +25,6 @@ import torch
 from torch.autograd import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
-
 # pylint: disable=g-direct-tensorflow-import
 from tsl.profiler.protobuf import profiler_options_pb2
 from tsl.profiler.protobuf import xplane_pb2
@@ -147,7 +145,7 @@ class ProfilerIntegrationTest(parameterized.TestCase):
 
     events = trace_data.get("traceEvents", [])
     tpu_events = [e for e in events if e.get("cat") == "Trace"]
-    cats = set(e.get("cat") for e in events if "cat" in e)
+    cats = {e.get("cat") for e in events if "cat" in e}
 
     xplane_exists = tpu_xplane_path.exists()
     xplane_contents = (

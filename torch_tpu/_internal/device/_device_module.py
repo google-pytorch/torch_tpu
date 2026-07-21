@@ -22,7 +22,9 @@ import abc
 import atexit
 from collections.abc import Mapping
 import dataclasses
-from typing import Any, Final, List
+from typing import Any
+from typing import Final
+from typing import List
 import torch
 from torch_tpu._internal.device import _device_ops_backend
 import torch_tpu._internal.precision as _precision_module

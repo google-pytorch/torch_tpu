@@ -16,7 +16,6 @@
 
 import contextlib
 from typing import Generator
-
 from torch_tpu._internal.precision import precision_impl
 
 __all__ = ["precision", "Precision"]

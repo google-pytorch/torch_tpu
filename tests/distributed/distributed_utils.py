@@ -15,8 +15,8 @@
 """Distributed testing utilities for TorchTPU."""
 
 import os
-from typing import Any, Callable
-
+from typing import Any
+from typing import Callable
 import portpicker
 import torch.multiprocessing as mp
 

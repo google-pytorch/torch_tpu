@@ -52,9 +52,9 @@ def _(mo):
 
 @app.cell
 def _():
-  import torch
   import jax
   from jax.experimental import pallas as pl
+  import torch
   from torch_tpu._internal import pallas  # This will likely change from _internal to experimental
 
   device = torch.device("tpu")
@@ -173,7 +173,6 @@ def _(mo):
 
 @app.cell
 def _(jax, pallas, pl, torch):
-  from torch_tpu._internal import compile
 
   # 1. Define the Pallas kernel and its JAX wrapper
   def mul_kernel_fn(x_ref, y_ref, o_ref):

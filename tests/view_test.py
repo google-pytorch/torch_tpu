@@ -17,8 +17,8 @@
 from collections.abc import Sequence
 import dataclasses
 import time
-from typing import Callable, Tuple
-
+from typing import Callable
+from typing import Tuple
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compile as compile_lib

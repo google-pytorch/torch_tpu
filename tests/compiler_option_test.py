@@ -15,7 +15,6 @@
 """Unit tests for ops."""
 
 import concurrent
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compiler_options as compiler

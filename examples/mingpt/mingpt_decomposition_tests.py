@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 import math
-import time
-
 from absl import app
 import numpy as np
 import torch
@@ -1012,7 +1009,7 @@ def main(argv):
   if T_current > config.block_size:
     T_current = config.block_size
 
-  print(f"\n--- Test Configuration ---")
+  print("\n--- Test Configuration ---")
   print(
       f"  B: {B}, T: {T_current}, C: {C_embd}, n_head: {config.n_head},"
       f" block_size: {config.block_size}"

@@ -15,7 +15,6 @@
 """Tests for _internal.profiler.profile APIs."""
 
 import os
-
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import profiler

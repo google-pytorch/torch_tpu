@@ -16,7 +16,6 @@
 
 import os
 import re
-
 from absl import logging
 import torch
 from torch import distributed as dist

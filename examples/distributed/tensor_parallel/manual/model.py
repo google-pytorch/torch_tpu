@@ -22,7 +22,6 @@ collective ops, as opposed to using something like DTensor, or another wrapper.
 """
 
 import math
-
 from torch import nn
 import torch.distributed
 

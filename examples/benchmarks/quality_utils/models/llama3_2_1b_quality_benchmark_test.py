@@ -23,7 +23,6 @@ if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
 from unittest import mock
-
 from absl.testing import absltest
 import torch
 from examples.benchmarks.quality_utils import quality_benchmark_model

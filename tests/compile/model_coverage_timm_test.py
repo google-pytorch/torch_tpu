@@ -17,8 +17,8 @@
 import copy
 import dataclasses
 import random
-from typing import Any, Callable
-
+from typing import Any
+from typing import Callable
 from absl.testing import absltest
 from absl.testing import parameterized
 from etils import epath

@@ -20,7 +20,6 @@ implemented yet.
 
 import random
 import sys
-
 from absl import app
 from absl import flags
 import torch

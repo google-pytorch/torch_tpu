@@ -29,7 +29,6 @@ from torch_tpu._internal.utils import log_utils
 from examples import paths
 import transformers
 
-
 log_utils.log_to_stderr()
 
 # Configuration Variables

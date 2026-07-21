@@ -31,7 +31,6 @@ from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples.distributed.fsdp import model
 
-
 log_utils.log_to_stderr()
 
 CheckValueMode = utils.CheckValueMode

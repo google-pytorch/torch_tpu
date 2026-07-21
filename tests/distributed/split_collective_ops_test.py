@@ -13,8 +13,8 @@
 # limitations under the License.
 import dataclasses
 import pickle
-from typing import Any, Callable
-
+from typing import Any
+from typing import Callable
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
@@ -26,7 +26,6 @@ from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 TpuBackend = _backend.TpuBackend

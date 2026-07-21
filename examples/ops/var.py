@@ -30,7 +30,6 @@ We also use this code to drive the development of the missing TPU ops:
 """
 
 import sys
-
 from absl import app
 from absl import flags
 import torch

@@ -20,8 +20,14 @@ import functools
 import gc
 import os
 import sys
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeAlias, Union
-
+from typing import Any
+from typing import Callable
+from typing import Mapping
+from typing import Optional
+from typing import Sequence
+from typing import Tuple
+from typing import TypeAlias
+from typing import Union
 from absl import flags
 from absl import logging
 from tensorboardX import writer
@@ -35,7 +41,6 @@ from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import model_utils
 from tests.distributed import distributed_utils
-
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
 
 EagerMode: TypeAlias = execution_mode.EagerMode

@@ -25,11 +25,10 @@ first device load.
 """
 
 import atexit
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
+from collections.abc import Mapping
 import threading
-import traceback as _tb_mod
 from typing import Any
-
 from absl import logging
 from torch._logging import trace_structured
 from torch_tpu._internal.compile import tpu_torch_compile

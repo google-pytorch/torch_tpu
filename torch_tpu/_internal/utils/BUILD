@@ -118,7 +118,6 @@ torch_tpu_py_test(
     strict = True,
     tags = ["requires-tpu-v5lite"],
     deps = [
-        ":test_fixtures",
         ":tracer_utils",
         ":utils",
         "//shims/absl_py/logging",

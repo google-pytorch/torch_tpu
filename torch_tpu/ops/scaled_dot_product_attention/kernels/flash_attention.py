@@ -12,17 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: skip-file
+# pylint: skip-file  # ruff: excluded from toml
 """Flash Attention TPU kernel."""
 
 from __future__ import annotations
-
 import dataclasses
 import functools
 import math
 import operator
-from typing import Any, NamedTuple
-
+from typing import Any
+from typing import NamedTuple
 import jax
 from jax import lax
 from jax.experimental import pallas as pl

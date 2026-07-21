@@ -15,11 +15,9 @@
 """Tests for device_utils."""
 
 from unittest import mock
-
 from absl.testing import absltest
 import torch
 from examples.benchmarks.e2e import device_utils
-
 from torch_tpu._internal.shims.xprof import xprof_analysis_client
 
 

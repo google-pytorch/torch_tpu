@@ -15,11 +15,10 @@
 """TPU specific profiler configuration."""
 
 from __future__ import annotations
-
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
+from collections.abc import Mapping
 import pathlib
 from typing import TypeAlias
-
 import torch
 
 _ExperimentalValue: TypeAlias = int | bool | str

@@ -17,7 +17,6 @@
 
 import time
 from typing import Sequence
-
 from absl import app
 from absl import flags
 import torch

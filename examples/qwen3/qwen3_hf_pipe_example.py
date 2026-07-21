@@ -15,13 +15,10 @@
 """Example use of Qwen3 model."""
 
 import time
-
 from absl import app
 import torch
-from torch_tpu._internal import compiler_options as compiler
 from examples import paths
 import transformers
-
 
 _MODEL_PATH = f"{paths.XM_HOME}weights/huggingface/Qwen/Qwen3-0.6B"
 _MAX_DECODE_STEPS = 2

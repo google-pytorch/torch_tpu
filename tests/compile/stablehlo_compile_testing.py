@@ -16,7 +16,6 @@
 
 import time
 from typing import Callable
-
 from absl import flags
 from absl import logging
 from absl.testing import absltest

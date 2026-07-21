@@ -16,7 +16,6 @@
 
 from absl.testing import absltest
 import torch
-import torch.accelerator
 
 
 class AutoloadCPUTest(absltest.TestCase):

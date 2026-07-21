@@ -16,7 +16,6 @@ import concurrent.futures
 import threading
 import unittest
 import warnings
-
 from absl.testing import absltest
 import torch
 import torch_tpu._internal.precision as p

@@ -17,7 +17,6 @@
 import dataclasses
 import functools
 from typing import cast
-
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp

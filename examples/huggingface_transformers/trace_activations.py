@@ -23,7 +23,6 @@ from torch_tpu._internal.utils import utils
 from examples import paths
 import transformers
 
-
 _DEVICE = flags.DEFINE_enum(
     "device",
     None,

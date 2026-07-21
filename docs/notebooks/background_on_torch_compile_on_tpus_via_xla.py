@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 
 import marimo
 
@@ -47,14 +47,14 @@ def _(mo):
           }
         </style>
         <div style='margin-bottom: 24px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; line-height: 1.8;'>
-          <a class='nav-link' data-page='index' href='index.html'>Home</a> | 
-          <a class='nav-link' data-page='extending_modules_and_functions_via_composition' href='extending_modules_and_functions_via_composition.html'>Composition</a> | 
-          <a class='nav-link' data-page='customizing_autograd_via_torch_autograd_function' href='customizing_autograd_via_torch_autograd_function.html'>Custom Autograd</a> | 
-          <a class='nav-link' data-page='background_on_aten_ops' href='background_on_aten_ops.html'>ATen Ops</a> | 
-          <a class='nav-link' data-page='background_on_torch_compile' href='background_on_torch_compile.html'>torch.compile</a> | 
-          <span class='nav-strong'>Compile on TPU</span> | 
-          <a class='nav-link' data-page='quantized_sum' href='quantized_sum.html'>JAX Custom Ops</a> | 
-          <a class='nav-link' data-page='quant' href='quant.html'>Python Baseline</a> | 
+          <a class='nav-link' data-page='index' href='index.html'>Home</a> |
+          <a class='nav-link' data-page='extending_modules_and_functions_via_composition' href='extending_modules_and_functions_via_composition.html'>Composition</a> |
+          <a class='nav-link' data-page='customizing_autograd_via_torch_autograd_function' href='customizing_autograd_via_torch_autograd_function.html'>Custom Autograd</a> |
+          <a class='nav-link' data-page='background_on_aten_ops' href='background_on_aten_ops.html'>ATen Ops</a> |
+          <a class='nav-link' data-page='background_on_torch_compile' href='background_on_torch_compile.html'>torch.compile</a> |
+          <span class='nav-strong'>Compile on TPU</span> |
+          <a class='nav-link' data-page='quantized_sum' href='quantized_sum.html'>JAX Custom Ops</a> |
+          <a class='nav-link' data-page='quant' href='quant.html'>Python Baseline</a> |
           <a class='nav-link' data-page='custom_ops_via_pallas' href='custom_ops_via_pallas.html'>Pallas TPU Kernel</a>
         </div>
         <script>
@@ -140,7 +140,6 @@ def _():
       f"--xla_dump_to={XLA_DUMP_TO} --xla_dump_hlo_as_text"
   )
 
-  from absl import app as absl_app
   import torch
 
   return LLO_DUMP_TO, XLA_DUMP_TO, torch
