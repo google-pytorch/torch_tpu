@@ -638,6 +638,26 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
         )
     )
 
+  def test_foreach_lgamma_complex(self):
+    t = torch.randn(2, 2, dtype=torch.complex64)
+    with self.assertRaisesRegex(RuntimeError, "not to be complex"):
+      torch._foreach_lgamma([t.to("tpu")])
+
+  def test_foreach_unary_ops_complex(self):
+    t = torch.randn(2, 2, dtype=torch.complex64)
+    ops = [
+        torch._foreach_round,
+        torch._foreach_floor,
+        torch._foreach_erfc,
+        torch._foreach_frac,
+        torch._foreach_ceil,
+        torch._foreach_erf,
+        torch._foreach_trunc,
+    ]
+    for op in ops:
+      with self.assertRaisesRegex(RuntimeError, "not to be complex"):
+        op([t.to("tpu")])
+
   def test_assert_close_partial_override(self):
     """Tests that utils.assert_close works with partial numeric overrides.
 

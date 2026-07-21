@@ -987,6 +987,7 @@ void AtenForeachAtan_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachCeil(at::TensorList self) {
   TT_KERNEL(OpName::kForeachCeil, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, out_dtypes, BuildCeilShlo));
@@ -996,6 +997,7 @@ std::vector<at::Tensor> AtenForeachCeil(at::TensorList self) {
 
 void AtenForeachCeil_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachCeil_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1056,6 +1058,7 @@ void AtenForeachCosh_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachErf(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErf, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes,
                        GetOutputDtypes(self, /*cast_integral_to_float=*/true));
     TT_ASSIGN_OR_THROW(auto result_buffers,
@@ -1066,6 +1069,7 @@ std::vector<at::Tensor> AtenForeachErf(at::TensorList self) {
 
 void AtenForeachErf_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErf_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
@@ -1079,6 +1083,7 @@ void AtenForeachErf_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachErfc(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErfc, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes,
                        GetOutputDtypes(self, /*cast_integral_to_float=*/true));
     TT_ASSIGN_OR_THROW(auto result_buffers,
@@ -1089,6 +1094,7 @@ std::vector<at::Tensor> AtenForeachErfc(at::TensorList self) {
 
 void AtenForeachErfc_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErfc_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
@@ -1150,6 +1156,7 @@ void AtenForeachExpm1_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachFloor(at::TensorList self) {
   TT_KERNEL(OpName::kForeachFloor, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, out_dtypes, BuildFloorShlo));
@@ -1159,6 +1166,7 @@ std::vector<at::Tensor> AtenForeachFloor(at::TensorList self) {
 
 void AtenForeachFloor_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachFloor_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1172,6 +1180,7 @@ void AtenForeachFloor_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachFrac(at::TensorList self) {
   TT_KERNEL(OpName::kForeachFrac, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes,
                        GetOutputDtypes(self, /*cast_integral_to_float=*/true));
@@ -1183,6 +1192,7 @@ std::vector<at::Tensor> AtenForeachFrac(at::TensorList self) {
 
 void AtenForeachFrac_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachFrac_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
@@ -1197,6 +1207,7 @@ void AtenForeachFrac_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachLgamma(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLgamma, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes,
                        GetOutputDtypes(self, /*cast_integral_to_float=*/true));
     TT_ASSIGN_OR_THROW(auto result_buffers,
@@ -1207,7 +1218,7 @@ std::vector<at::Tensor> AtenForeachLgamma(at::TensorList self) {
 
 void AtenForeachLgamma_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLgamma_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1372,6 +1383,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> ForeachRound(
 
 std::vector<at::Tensor> AtenForeachRound(at::TensorList self) {
   TT_KERNEL(OpName::kForeachRound, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers, ForeachRound(self, out_dtypes));
     return ForeachConvertToTensor(result_buffers, out_dtypes);
@@ -1380,6 +1392,7 @@ std::vector<at::Tensor> AtenForeachRound(at::TensorList self) {
 
 void AtenForeachRound_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachRound_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachRound(self, std::move(out_dtypes)));
@@ -1579,6 +1592,7 @@ void AtenForeachTanh_(at::TensorList self) {
 
 std::vector<at::Tensor> AtenForeachTrunc(at::TensorList self) {
   TT_KERNEL(OpName::kForeachTrunc, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
@@ -1589,6 +1603,7 @@ std::vector<at::Tensor> AtenForeachTrunc(at::TensorList self) {
 
 void AtenForeachTrunc_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachTrunc_, _, (self), {
+    TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
     TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
