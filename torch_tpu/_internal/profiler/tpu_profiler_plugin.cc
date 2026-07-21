@@ -84,6 +84,10 @@ class PrivateUse1ProfilerRegistry {
 
 namespace torch_tpu {
 
+std::string SanitizeStringForKineto(std::string_view value) {
+  return absl::StrReplaceAll(value, {{"\"", "'"}});
+}
+
 // The set of valid parameter names for configuring the TPU profiler.
 constexpr std::string_view kDeviceTracerLevel = "device_tracer_level";
 constexpr std::string_view kHostTracerLevel = "host_tracer_level";
@@ -538,9 +542,9 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
     int32_t device_id = is_device ? plane.id() : getpid();
 
     if (is_device) {
-      libkineto::DeviceInfo device_info = {device_id, device_id,
-                                           std::string(plane.name()),
-                                           std::string(plane.name())};
+      libkineto::DeviceInfo device_info = {
+          device_id, device_id, SanitizeStringForKineto(plane.name()),
+          SanitizeStringForKineto(plane.name())};
       logger.handleDeviceInfo(device_info, 0);
     }
 
@@ -573,8 +577,9 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
       uint32_t thread_id = static_cast<uint32_t>(
           line.display_id() ? line.display_id() : line.id());
 
-      libkineto::ResourceInfo resource_info = {thread_id, thread_id, device_id,
-                                               std::string(line.name())};
+      libkineto::ResourceInfo resource_info = {
+          thread_id, thread_id, device_id,
+          SanitizeStringForKineto(line.name())};
       resource_infos_.push_back(resource_info);
       logger.handleResourceInfo(resource_info, 0);
 
@@ -634,7 +639,7 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
         if (activity_name.empty()) activity_name = "Unknown";
 
         libkineto::GenericTraceActivity activity;
-        activity.activityName = activity_name;
+        activity.activityName = SanitizeStringForKineto(activity_name);
         activity.activityType = type;
 
         int64_t duration_ps = event.duration_ps();
@@ -660,7 +665,8 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
 
           switch (stat->value_case()) {
             case tensorflow::profiler::XStat::kStrValue:
-              activity.addMetadataQuoted(stat_name_str, stat->str_value());
+              activity.addMetadataQuoted(
+                  stat_name_str, SanitizeStringForKineto(stat->str_value()));
               break;
             case tensorflow::profiler::XStat::kInt64Value:
               activity.addMetadataQuoted(stat_name_str,
@@ -683,8 +689,8 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
             case tensorflow::profiler::XStat::kRefValue: {
               if (auto ref_it = stat_name_map.find(stat->ref_value());
                   ref_it != stat_name_map.end()) {
-                activity.addMetadataQuoted(stat_name_str,
-                                           std::string(ref_it->second));
+                activity.addMetadataQuoted(
+                    stat_name_str, SanitizeStringForKineto(ref_it->second));
               }
               break;
             }

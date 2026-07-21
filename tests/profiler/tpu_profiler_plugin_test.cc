@@ -36,6 +36,8 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir);
 
+std::string SanitizeStringForKineto(std::string_view value);
+
 namespace {
 
 TEST(TpuProfilerPluginTest, BasicSanity) {
@@ -310,6 +312,15 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsTrailingBackslash) {
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
   EXPECT_EQ(status.message(), "Trailing backslash in string");
+}
+
+TEST(TpuProfilerPluginTest, SanitizeStringForKineto) {
+  EXPECT_EQ(SanitizeStringForKineto(""), "");
+  EXPECT_EQ(SanitizeStringForKineto("abc"), "abc");
+  EXPECT_EQ(SanitizeStringForKineto(
+                "custom-call custom_call_target=\"tpu_custom_call\""),
+            "custom-call custom_call_target='tpu_custom_call'");
+  EXPECT_EQ(SanitizeStringForKineto("\"already_quoted\""), "'already_quoted'");
 }
 
 }  // namespace
