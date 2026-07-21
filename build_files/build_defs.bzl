@@ -33,6 +33,7 @@ load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict
 visibility(
     [
         "//...",
+        "@pypi//torch_tpu_embedding/...",
         # Visibility is not ignored for .bzl loads in experimental
         # unlike regular targets.
         # copybara:uncomment "//experimental/users/...",

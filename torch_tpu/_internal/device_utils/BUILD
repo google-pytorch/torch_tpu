@@ -24,6 +24,7 @@ package(
     default_applicable_licenses = ["//:license"],
     default_visibility = [
         "//:__subpackages__",
+        "@pypi//torch_tpu_embedding:__subpackages__",
     ],
 )
 

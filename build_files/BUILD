@@ -28,7 +28,10 @@ exports_files([
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = [
+        "//:__subpackages__",
+        "@pypi//torch_tpu_embedding:__subpackages__",
+    ],
 )
 
 bzl_library(
