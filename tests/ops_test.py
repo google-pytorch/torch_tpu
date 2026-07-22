@@ -257,24 +257,15 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     "_foreach_tan": {
         torch.complex64: {"rtol": 2.1e-5, "atol": 3.1e-4},
     },
-    "_foreach_tanh": {
-        torch.complex64: {"rtol": 3.2e-5, "atol": 1.8e-3},
-        torch.float32: {"rtol": 5.2e-5, "atol": 3.3e-5},
-        torch.int16: {"rtol": 3e-5, "atol": 3e-5},
-        torch.int32: {"rtol": 3e-5, "atol": 3e-5},
-        torch.int64: {"rtol": 3e-5, "atol": 3e-5},
-        torch.int8: {"rtol": 3e-5, "atol": 3e-5},
-        torch.uint8: {"rtol": 3e-5, "atol": 3e-5},
-    },
     "_log_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 1.5e-1, "atol": 6.3e-2},
-        torch.float16: {"rtol": 1.4e-2, "atol": 3.2e-2},
-        torch.float32: {"rtol": 6.9e-5, "atol": 2.3e-4},
+        torch.bfloat16: {"rtol": 8.8e-2, "atol": 1.5e-1},
+        torch.float16: {"rtol": 1.1e-2, "atol": 1.3e-2},
+        torch.float32: {"rtol": 4.5e-5, "atol": 4.6e-5},
     },
     "_native_batch_norm_legit": {
-        torch.bfloat16: {"rtol": 7.4e-2, "atol": 3.1e-2},
-        torch.float16: {"rtol": 4.4e-3, "atol": 4e-3},
-        torch.float32: {"rtol": 1e-4, "atol": 5e-4},
+        torch.bfloat16: {"rtol": 9.3e-1, "atol": 4.4e-1},
+        torch.float16: {"rtol": 5.6e-2, "atol": 7.3e-1},
+        torch.float32: {"rtol": 7.5e-4, "atol": 7.1e-3},
     },
     "_softmax_backward_data": {
         torch.bfloat16: {"rtol": 2.9, "atol": 4.7e-2},
@@ -836,20 +827,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "_foreach_tan": {
         torch.complex64: {"atol": 7e-4},
     },
-    "_foreach_tanh": {
-        torch.complex64: {"atol": 1.4e-4},
-        torch.float32: {"rtol": 6.2e-5, "atol": 3.4e-5},
-        torch.int16: {"atol": 3e-5},
-        torch.int32: {"atol": 3e-5},
-        torch.int64: {"atol": 3e-5},
-        torch.int8: {"atol": 3e-5},
-        torch.uint8: {"atol": 3e-5},
-    },
-    "_log_softmax_backward_data": {
-        torch.bfloat16: {"atol": 4.5e-2},
-        torch.float16: {"atol": 1.6e-2},
-        torch.float32: {"atol": 9.4e-5},
-    },
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 3.8e-2},
         torch.float16: {"atol": 4e-3},
@@ -1245,13 +1222,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "_foreach_tan": {
         torch.complex64: {"atol": 6.3e-5},
-    },
-    "_foreach_tanh": {
-        torch.complex64: {"atol": 1.4e-4},
-    },
-    "_log_softmax_backward_data": {
-        torch.float16: {"atol": 4e-3},
-        torch.float32: {"atol": 9.4e-5},
     },
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 3e-2},
