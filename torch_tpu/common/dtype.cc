@@ -170,7 +170,9 @@ absl::StatusOr<mlir::ElementType> ToElementType(
       // Boolean.
     case at::kBool:
       return mlir::ElementType::PRED;
-#if TT_TORCH_VERSION_GE(2, 13)
+// BComplex32 is not in the released 2.13.0 (its headers report 2.13 but do
+// not define it); it lands in 2.14.
+#if TT_TORCH_VERSION_GE(2, 14)
     case at::ScalarType::BComplex32:
 #endif
       // These cases should never happen.
