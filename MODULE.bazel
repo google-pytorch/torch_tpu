@@ -13,7 +13,7 @@ SUPPORTED_PYTHON_VERSIONS = [
 # The Python version the standard build defaults to. Like the list above, the
 # single source of truth is //bazel:supported_python_versions.bzl -- this copy
 # exists because MODULE.bazel cannot load() Starlark, and is kept in sync by
-# hand.
+# ci/tools/sync_module_bazel_versions.py.
 DEFAULT_PYTHON_VERSION = "3.12"
 
 # BCR dependencies
