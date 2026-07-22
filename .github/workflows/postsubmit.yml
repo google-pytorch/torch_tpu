@@ -131,7 +131,7 @@ jobs:
   vllm_perf_eval:
     name: "vLLM Perf Eval"
     needs: [build_wheels]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     runs-on: linux-x86-tpu7x-224-4tpu
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
