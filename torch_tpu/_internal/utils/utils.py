@@ -43,7 +43,7 @@ EagerMode: TypeAlias = execution_mode.EagerMode
 # the value range, and thus be tighter than the same global tolerance.
 Tolerance: TypeAlias = float | Callable[[float], float]
 
-_SAFETY_FACTOR: float = 1.2
+_SAFETY_FACTOR: float = 1.5
 
 
 def _format_sci_ceil(val: float) -> str:

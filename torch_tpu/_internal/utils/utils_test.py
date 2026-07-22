@@ -123,20 +123,20 @@ class AllTest(absltest.TestCase):
     self.assertIn("atol >= 0.0 (0.0e+00)", str(cm.exception))
 
   def test_compute_optimal_tolerances_case1_expected_le_1(self):
-    # |e| <= 1: atol = |a - e| * 1.2, rtol = 0.0
+    # |e| <= 1: atol = |a - e| * utils._SAFETY_FACTOR, rtol = 0.0
     actual = torch.tensor([0.52, 0.8])
     expected = torch.tensor([0.50, 0.8])
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
-    self.assertAlmostEqual(atol, 0.02 * 1.2, places=5)
+    self.assertAlmostEqual(atol, 0.02 * utils._SAFETY_FACTOR, places=5)
     self.assertEqual(rtol, 0.0)
 
   def test_compute_optimal_tolerances_case2_expected_gt_1(self):
-    # |e| > 1: atol = 0.0, rtol = (|a - e| / |e|) * 1.2
+    # |e| > 1: atol = 0.0, rtol = (|a - e| / |e|) * utils._SAFETY_FACTOR
     actual = torch.tensor([11.0, 10.0])
     expected = torch.tensor([10.0, 10.0])
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
     self.assertEqual(atol, 0.0)
-    self.assertAlmostEqual(rtol, (1.0 / 10.0) * 1.2, places=5)
+    self.assertAlmostEqual(rtol, (1.0 / 10.0) * utils._SAFETY_FACTOR, places=5)
 
   def test_compute_optimal_tolerances_mixed_and_zero(self):
     # Element 1 (e=0 <= 1): diff=0.1 -> atol_1=0.1, rtol_1=0
@@ -144,15 +144,16 @@ class AllTest(absltest.TestCase):
     actual = torch.tensor([0.1, 10.5])
     expected = torch.tensor([0.0, 10.0])
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
-    self.assertAlmostEqual(atol, 0.1 * 1.2, places=5)
-    self.assertAlmostEqual(rtol, 0.05 * 1.2, places=5)
+    self.assertAlmostEqual(atol, 0.1 * utils._SAFETY_FACTOR, places=5)
+    self.assertAlmostEqual(rtol, 0.05 * utils._SAFETY_FACTOR, places=5)
 
   def test_compute_optimal_tolerances_boundary_exact_one(self):
-    # |e| = 1.0 falls under Case 1 (|e| <= 1): atol = |a - e| * 1.2, rtol = 0.0
+    # |e| = 1.0 falls under Case 1 (|e| <= 1): atol = |a - e| *
+    # utils._SAFETY_FACTOR, rtol = 0.0
     actual = torch.tensor([1.05])
     expected = torch.tensor([1.00])
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
-    self.assertAlmostEqual(atol, 0.05 * 1.2, places=5)
+    self.assertAlmostEqual(atol, 0.05 * utils._SAFETY_FACTOR, places=5)
     self.assertEqual(rtol, 0.0)
 
   def test_compute_optimal_tolerances_bfloat16_precision(self):
@@ -161,7 +162,7 @@ class AllTest(absltest.TestCase):
     expected = torch.tensor([0.50], dtype=torch.bfloat16)
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
     diff_exact = float(actual.to(torch.float64) - expected.to(torch.float64))
-    self.assertAlmostEqual(atol, diff_exact * 1.2, places=5)
+    self.assertAlmostEqual(atol, diff_exact * utils._SAFETY_FACTOR, places=5)
     self.assertEqual(rtol, 0.0)
 
   def test_compute_optimal_tolerances_unmatched_nan_handling(self):
@@ -176,7 +177,7 @@ class AllTest(absltest.TestCase):
     actual = torch.tensor([float("nan"), 0.52])
     expected = torch.tensor([float("nan"), 0.50])
     atol, rtol = utils.compute_optimal_tolerances(actual, expected)
-    self.assertAlmostEqual(atol, 0.02 * 1.2, places=5)
+    self.assertAlmostEqual(atol, 0.02 * utils._SAFETY_FACTOR, places=5)
     self.assertEqual(rtol, 0.0)
 
   def test_compute_optimal_tolerances_upward_rounding(self):
