@@ -42,6 +42,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "split_compiler_unit_test",
+    srcs = ["split_compiler_unit_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:split_compiler",
+    ],
+)
+
+torch_tpu_py_test(
     name = "small_graph_test",
     srcs = ["small_graph_test.py"],
     tags = [
