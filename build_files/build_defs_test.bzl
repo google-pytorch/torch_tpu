@@ -16,7 +16,7 @@
 
 load("@rules_testing//lib:analysis_test.bzl", "analysis_test")
 load("@rules_testing//lib:test_suite.bzl", "test_suite")
-load("//build_files:build_defs.bzl", "check_and_adjust_test_tags_for_testing", "is_oss", "torch_tpu_cc_test", "tpu_gen")
+load("//build_files:build_defs.bzl", "check_and_adjust_test_tags_for_testing", "is_backend_dep_for_testing", "is_oss", "torch_tpu_cc_test", "tpu_gen")
 
 _TagsInfo = provider(
     "Provider for extracting rule attributes during analysis tests.",
@@ -146,6 +146,38 @@ def _test_requires_libtpu_explicit_false(name):
         targets = {"subject": name + "_subject"},
         attrs = {"subject": {"aspects": [tags_aspect]}},
     )
+
+def _test_is_backend_dep(env):
+    """Tests classification of version-independent backend deps vs PyTorch/internal deps."""
+
+    # External, non-PyTorch backend deps are pinned to a single config.
+    for dep in [
+        "@xla//xla:shape_util",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:stablehlo_ops",
+        "@com_google_absl//absl/status",
+        "@eigen_archive//:eigen3",
+        "@com_googlesource_code_re2//:re2",
+        # Non-torch package in the shared @pypi hub -> still backend.
+        "@pypi//numpy:numpy_headers",
+        # Classification keys on the known torch sources, not on the substring
+        # "torch": a backend repo whose label happens to contain it is not torch.
+        "@backend_with_torch_in_name//:lib",
+    ]:
+        env.expect.where(dep = dep).that_bool(is_backend_dep_for_testing(dep)).equals(True)
+
+    # Our PyTorch sources (which must vary per version) and torch_tpu's own code
+    # are not; keep in step with _TORCH_DEP_PREFIXES in build_defs.bzl.
+    for dep in [
+        "@pypi//torch:torch_headers",
+        "@local_torch//:libc10",
+        "@pypi_torch_2_12_1_312//:libc10",
+        "@pypi_torch_312//:libtorch_cpu",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/common:dtype",
+        ":a_local_target",
+    ]:
+        env.expect.where(dep = dep).that_bool(is_backend_dep_for_testing(dep)).equals(False)
 
 def _test_nobuild(env):
     """Tests the nobuild parameter."""
@@ -436,6 +468,7 @@ def build_defs_test_suite(name):
             _test_internal_nopresubmit_oss,
             _test_internal_notap_nobuild,
             _test_internal_notest_oss,
+            _test_is_backend_dep,
             _test_nobuild,
             _test_nolocal,
             _test_nopresubmit,
