@@ -189,6 +189,7 @@ _TORCH_WHL_MODIFICATIONS = {
 # reads the same .bzl to regenerate the torch-only locks.
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
+    "2.13.0",
 ]
 
 [pip.parse(

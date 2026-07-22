@@ -43,6 +43,7 @@ DEFAULT_TORCH_VERSION = "2.11.0"
 # lock (requirements_torch_<version>.txt) and its own pip hub in MODULE.bazel.
 EXTRA_PYTORCH_VERSIONS = [
     "2.12.0",
+    "2.13.0",
 ]
 
 # Every PyTorch version the wheel is built against -- the default plus the
