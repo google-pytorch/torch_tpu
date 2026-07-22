@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_python//python:py_test.bzl", "py_test")
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -44,6 +46,45 @@ torch_tpu_py_test(
         ":oss_utils",
         "//shims/absl_py/testing:absltest",
         "//torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "_versioned_so_loader_test",
+    srcs = ["_versioned_so_loader_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//torch_tpu",
+        "//torch_tpu:_versioned_so_loader",
+    ],
+)
+
+# A real extension module (exporting only the unversioned PyInit_ symbol) that
+# the integration test lays out under version-suffixed filenames, mirroring how
+# the multi-ABI wheel bundles its per-PyTorch-version glues.
+cc_binary(
+    name = "dispatch_probe.so",
+    testonly = True,
+    srcs = ["dispatch_probe_module.c"],
+    linkshared = True,
+    deps = ["@rules_python//python/cc:current_py_cc_headers"],
+)
+
+# A plain py_test rather than torch_tpu_py_test: the test fabricates the
+# package layout it dispatches over, so it must not depend on //torch_tpu (nor
+# the pywrap extensions) -- nothing is built beyond the probe extension and the
+# loader module, keeping the full import-machinery integration cheap enough to
+# run everywhere.
+py_test(
+    name = "_versioned_so_loader_integration_test",
+    srcs = ["_versioned_so_loader_integration_test.py"],
+    data = [":dispatch_probe.so"],
+    env = {"DISPATCH_PROBE_SO": "$(location :dispatch_probe.so)"},
+    python_version = "PY3",
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//torch_tpu:_versioned_so_loader",
     ],
 )
 

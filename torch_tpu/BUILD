@@ -5,6 +5,7 @@ load(
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_test",
 )
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//build_files:py_dist_info.bzl", "py_dist_info")
@@ -74,6 +75,11 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "_versioned_so_loader",
+    srcs = ["_versioned_so_loader.py"],
+)
+
 py_library_providing_imports_info(
     name = "torch_tpu",
     srcs = [
@@ -97,6 +103,7 @@ py_library_providing_imports_info(
         [],
     ) + [
         ":_loader",
+        ":_versioned_so_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
     ],
 )
