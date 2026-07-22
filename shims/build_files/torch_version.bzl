@@ -35,6 +35,7 @@ load(
     "//bazel:pytorch_versions.bzl",
     "DEFAULT_TORCH_VERSION",
     "SENTINEL_TORCH_VERSION",
+    _GLUE_TORCH_VERSIONS = "GLUE_TORCH_VERSIONS",
     _WHEEL_TORCH_VERSIONS = "WHEEL_TORCH_VERSIONS",
 )
 
@@ -48,6 +49,11 @@ _TORCH_HEADERS_ONLY = "//:_torch_headers_only"
 # alias and bind a real public global -- because shims/pybind11/pybind.bzl and
 # torch_tpu/common/BUILD already load WHEEL_TORCH_VERSIONS from this module.
 WHEEL_TORCH_VERSIONS = _WHEEL_TORCH_VERSIONS
+
+# All buildable glues: the released versions plus the nightly channel's, which
+# flows through the same machinery under the release version its dev snapshot
+# leads up to. This is what the per-glue fan-out iterates.
+GLUE_TORCH_VERSIONS = _GLUE_TORCH_VERSIONS
 
 # Canonical values the version-independent backend is always built under. Both
 # axes are pinned so the backend has one configuration no matter which glue (or

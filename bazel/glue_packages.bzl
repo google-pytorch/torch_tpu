@@ -14,7 +14,7 @@
 
 """Generates the per-version glue pywrap packages for the multi-ABI wheel.
 
-Each PyTorch version in WHEEL_TORCH_VERSIONS gets its own bazel package for its
+Each PyTorch version in GLUE_TORCH_VERSIONS gets its own bazel package for its
 `pywrap_library`: the shared xla_base common library must keep the same target
 name (and hence `libxla_base.so` basename) in every version, so two versions
 cannot share a package. The packages are identical bar the version encoded in
@@ -24,7 +24,7 @@ single-sourced in //bazel:pytorch_versions.bzl. See
 //bazel:glue.bzl for the package contents.
 """
 
-load("//bazel:pytorch_versions.bzl", "WHEEL_TORCH_VERSIONS")
+load("//bazel:pytorch_versions.bzl", "GLUE_TORCH_VERSIONS")
 
 # Main-repo labels resolved here (a main-repo .bzl) so their canonical form can
 # be spliced into the generated BUILD files, where plain "//..." labels would
@@ -48,7 +48,7 @@ versioned_glue_library()
 
 def _glue_packages_impl(rctx):
     rctx.file("BUILD", "")
-    for version in WHEEL_TORCH_VERSIONS:
+    for version in GLUE_TORCH_VERSIONS:
         suffix = version.replace(".", "_")
         rctx.file(
             "torch_tpu/common/glue_{}/BUILD".format(suffix),
@@ -57,5 +57,5 @@ def _glue_packages_impl(rctx):
 
 glue_packages = repository_rule(
     implementation = _glue_packages_impl,
-    doc = "One glue pywrap package per PyTorch version in WHEEL_TORCH_VERSIONS.",
+    doc = "One glue pywrap package per PyTorch version in GLUE_TORCH_VERSIONS.",
 )

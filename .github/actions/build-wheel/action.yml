@@ -19,6 +19,10 @@ inputs:
   python_version:
     description: "Python version to build for"
     required: true
+  bazel_config:
+    description: "The bazel --config to build the wheel with (wheel_common bundles the PyTorch-nightly glue; wheel_release omits it)"
+    required: false
+    default: "wheel_common"
 outputs:
   gcs_wheel_path:
     description: "The GCS path to the built wheel file"
@@ -34,7 +38,7 @@ runs:
       run: |
         WHEEL_DIR=dist
         WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
-        bazel build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS --repo_env=HERMETIC_PYTHON_VERSION=${{ inputs.python_version }} --define PYTHON_VERSION=${{ inputs.python_version }}
+        bazel build -c opt //ci/wheel:torch_tpu_wheel --config=${{ inputs.bazel_config }} --repo_env=WHEEL_VERSION_EXTRAS=$WHEEL_VERSION_EXTRAS --repo_env=HERMETIC_PYTHON_VERSION=${{ inputs.python_version }} --define PYTHON_VERSION=${{ inputs.python_version }}
         mkdir -p $WHEEL_DIR
         cp bazel-bin/ci/wheel/*.whl $WHEEL_DIR
     - name: Check wheel metadata

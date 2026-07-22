@@ -37,6 +37,8 @@ _BZL_PATH: Final[pathlib.Path] = pathlib.Path(__file__).with_suffix(".bzl")
 _KNOWN_NAMES: Final[Set[str]] = frozenset({
     "DEFAULT_TORCH_VERSION",
     "EXTRA_PYTORCH_VERSIONS",
+    "GLUE_TORCH_VERSIONS",
+    "NIGHTLY_TORCH_VERSION",
     "SENTINEL_TORCH_VERSION",
     "WHEEL_TORCH_VERSIONS",
 })

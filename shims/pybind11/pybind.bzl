@@ -36,7 +36,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@xla//third_party/py/rules_pywrap:pywrap.default.bzl", _pybind_extension = "pybind_extension")
 load(
     "//shims/build_files:torch_version.bzl",
-    "WHEEL_TORCH_VERSIONS",
+    "GLUE_TORCH_VERSIONS",
     "pin_glue_backend_deps",
     "torch_version_glue",
     "version_suffix",
@@ -92,7 +92,7 @@ def pybind_extension(name, **kwargs):
         "-Wl,--allow-shlib-undefined",
         "-Wl,-z,now",
     ]
-    for version in WHEEL_TORCH_VERSIONS:
+    for version in GLUE_TORCH_VERSIONS:
         versioned_name = "{}_{}".format(name, version_suffix(version))
         per_version_kwargs = dict(versioned_kwargs)
 
@@ -140,6 +140,6 @@ def versioned_glue_labels(extension_labels):
     """All per-version glue labels across every supported PyTorch version."""
     return [
         glue
-        for version in WHEEL_TORCH_VERSIONS
+        for version in GLUE_TORCH_VERSIONS
         for glue in versioned_glue_labels_for(extension_labels, version)
     ]

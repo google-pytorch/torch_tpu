@@ -19,6 +19,7 @@ load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 load(
     "//bazel:pytorch_versions.bzl",
     "EXTRA_PYTORCH_VERSIONS",
+    "NIGHTLY_TORCH_VERSION",
     "SENTINEL_TORCH_VERSION",
 )
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
@@ -99,15 +100,31 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-# One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
-# selection on these; the default build falls through to the existing
-# python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
-# built versions stay in step with the pip hubs and the wheel glues.
+# One per extra (non-default) PyTorch version, plus the nightly channel.
+# shims/torch keys its torch-wheel selection on these; the default build falls
+# through to the existing python-version selection. Sourced from
+# //bazel:pytorch_versions.bzl so the built versions stay in step with the pip
+# hubs and the wheel glues.
 [config_setting(
     name = "torch_" + tv.replace(".", "_"),
     flag_values = {":_torch_version": tv},
     visibility = ["//visibility:public"],
-) for tv in EXTRA_PYTORCH_VERSIONS]
+) for tv in EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]]
+
+# Whether the wheel bundles the nightly glue alongside the release glues. On by
+# default (presubmits and the nightly channel build with it); release artifacts
+# are built with --config wheel_release, which turns it off so nothing built
+# against a transient nightly snapshot ships to PyPI.
+bool_flag(
+    name = "include_nightly_glue",
+    build_setting_default = True,
+)
+
+config_setting(
+    name = "nightly_glue_included",
+    flag_values = {":include_nightly_glue": "True"},
+    visibility = ["//visibility:public"],
+)
 
 # The Python-version rows only apply to the default torch version (which
 # builds at the sentinel); the extra versions are selected on //:_torch_version

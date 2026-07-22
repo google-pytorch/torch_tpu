@@ -141,8 +141,9 @@ def smoke_test(session: nox.Session, device: str, torch_variant: str) -> None:
   else:
     # Pin so the session is deterministic and exercises the newest glue as an
     # exact match. Releases without an exact glue are covered by the
-    # intermediate_patch_abi sessions, and newer-than-any-glue by the nightly
-    # variant (the dispatch loader serves both from the nearest older glue).
+    # intermediate_patch_abi sessions; the nightly variant exercises the
+    # nightly glue (or, on a release-channel wheel without one, the dispatch
+    # loader's fallback to the newest release glue).
     install_args.append(f"torch=={_newest_supported_torch()}")
   _install_and_run_smoke_tests(session, device, *install_args)
 
