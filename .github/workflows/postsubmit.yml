@@ -155,12 +155,12 @@ jobs:
         run: |
           apt-get update && apt-get install -y openssh-client || true
 
-      - name: Checkout torchtpu-vllm
+      - name: Checkout vllm-torchtpu
         uses: actions/checkout@v5
         with:
-          repository: google-pytorch/torchtpu-vllm
+          repository: vllm-project/vllm-torchtpu
           path: torchtpu-vllm
-          ref: main
+          ref: fix-split-compiled-executable-support
           ssh-key: ${{ secrets.TORCHTPU_VLLM_DEPLOY_KEY }}
 
       - name: Setup uv
