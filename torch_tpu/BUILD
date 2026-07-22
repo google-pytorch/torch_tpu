@@ -65,7 +65,6 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/device:_tpu_backend_config",
         "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/optim",
         "//torch_tpu/_internal/precision",
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/sync",

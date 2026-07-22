@@ -21,6 +21,7 @@ import torch
 from torch import distributed as dist
 import torch.distributed.tensor as dt
 import torch.multiprocessing as mp
+from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import sync
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import utils
@@ -173,6 +174,168 @@ def run_dtensor_1d_partial_to_shard() -> None:
   _test_redistribute(dtensor, [dt.Shard(0)])
 
 
+def run_dtensor_1d_small_tensor_shard_to_replicate(tensor_size: int) -> None:
+  """Redistributing a small tensor (size < mesh) from shard to replicate."""
+  dist.init_process_group(backend="tpu_dist")
+  world_size = int(os.environ["WORLD_SIZE"])
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+
+  # Create a 1D tensor of size tensor_size
+  rank = int(os.environ["RANK"])
+  if rank == 0:
+    full_tensor = torch.ones(tensor_size, dtype=torch.float32)
+  else:
+    full_tensor = torch.zeros(tensor_size, dtype=torch.float32)
+
+  dtensor = dt.distribute_tensor(
+      full_tensor,
+      device_mesh=device_mesh,
+      placements=[dt.Shard(0)],
+      src_data_rank=0,
+  )
+  _test_redistribute(dtensor, [dt.Replicate()])
+
+
+def run_dtensor_1d_small_tensor_shard_to_replicate_compiled(
+    tensor_size: int,
+) -> None:
+  """Redistributing a small tensor from shard to replicate using torch.compile."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+
+  def shard_and_redistribute(x):
+    dtensor = dt.DTensor.from_local(x, device_mesh, [dt.Shard(0)])
+    replicated = dtensor.redistribute(device_mesh, [dt.Replicate()])
+    return replicated.to_local()
+
+  # Create local tensor
+  local_size = 1 if rank < tensor_size else 0
+  local_tensor = torch.ones(local_size, dtype=torch.float32, device="tpu")
+
+  backend = tt_compile.TpuBackend(debug=True)
+  compiled_func = torch.compile(
+      shard_and_redistribute, backend=backend, fullgraph=True
+  )
+
+  output = compiled_func(local_tensor)
+  # Force synchronization to detect hang
+  output_cpu = output.cpu()
+
+  # Verify correctness if we didn't hang
+  expected_size = tensor_size
+  assert output_cpu.shape == (
+      expected_size,
+  ), f"Expected shape {(expected_size,)}, got {output_cpu.shape}"
+  expected = torch.ones(expected_size, dtype=torch.float32)
+  utils.assert_close(output_cpu, expected)
+
+
+def run_dtensor_1d_small_tensor_shard_to_replicate_compiled_fixed(
+    tensor_size: int,
+) -> None:
+  """Redistributing a small tensor from shard to replicate using torch.compile, passing shape."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+
+  def shard_and_redistribute(x):
+    global_shape = torch.Size((tensor_size,))
+    global_stride = torch.empty(global_shape, device="meta").stride()
+    dtensor = dt.DTensor.from_local(
+        x, device_mesh, [dt.Shard(0)], shape=global_shape, stride=global_stride
+    )
+    replicated = dtensor.redistribute(device_mesh, [dt.Replicate()])
+    return replicated.to_local()
+
+  # Create local tensor
+  local_size = 1 if rank < tensor_size else 0
+  local_tensor = torch.ones(local_size, dtype=torch.float32, device="tpu")
+
+  backend = tt_compile.TpuBackend(debug=True)
+  compiled_func = torch.compile(
+      shard_and_redistribute, backend=backend, fullgraph=True
+  )
+
+  output = compiled_func(local_tensor)
+  # Force synchronization to detect hang
+  output_cpu = output.cpu()
+
+  # Verify correctness
+  expected_size = tensor_size
+  assert output_cpu.shape == (
+      expected_size,
+  ), f"Expected shape {(expected_size,)}, got {output_cpu.shape}"
+  expected = torch.ones(expected_size, dtype=torch.float32)
+  utils.assert_close(output_cpu, expected)
+
+
+def run_dtensor_1d_small_tensor_from_local_no_shape(tensor_size: int) -> None:
+  """Use from_local without shape in eager mode, and redistribute."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+
+  # Create local tensor
+  local_size = 1 if rank < tensor_size else 0
+  local_tensor = torch.ones(local_size, dtype=torch.float32, device="tpu")
+
+  # from_local without shape. This will infer wrong global shape (8 or 0)
+  dtensor = dt.DTensor.from_local(local_tensor, device_mesh, [dt.Shard(0)])
+
+  print(f"Rank {rank}: Inferred shape: {dtensor.shape}", flush=True)
+
+  # Redistribute. This will HANG because ranks disagree on shape.
+  print(f"Rank {rank}: Calling redistribute (expected to hang)...", flush=True)
+  replicated = dtensor.redistribute(device_mesh, [dt.Replicate()])
+  _ = replicated.to_local().cpu()
+  print(f"Rank {rank}: Eager no-shape succeeded (unexpected!).", flush=True)
+
+
+def run_dtensor_1d_small_tensor_from_local_with_shape_compiled(
+    tensor_size: int,
+) -> None:
+  """Redistributing a small tensor from shard to replicate using compile, passing shape/stride."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  device_mesh = dt.init_device_mesh("tpu", (world_size,))
+
+  global_shape = torch.Size([tensor_size])
+  global_stride = torch.empty(global_shape, device="meta").stride()
+
+  def shard_and_redistribute(x):
+    dtensor = dt.DTensor.from_local(
+        x, device_mesh, [dt.Shard(0)], shape=global_shape, stride=global_stride
+    )
+    replicated = dtensor.redistribute(device_mesh, [dt.Replicate()])
+    return replicated.to_local()
+
+  # Create local tensor
+  local_size = 1 if rank < tensor_size else 0
+  local_tensor = torch.ones(local_size, dtype=torch.float32, device="tpu")
+
+  backend = tt_compile.TpuBackend(debug=True)
+  compiled_func = torch.compile(
+      shard_and_redistribute, backend=backend, fullgraph=True
+  )
+
+  output = compiled_func(local_tensor)
+  # Force synchronization to detect hang
+  output_cpu = output.cpu()
+
+  # Verify correctness if we didn't hang
+  expected_size = tensor_size
+  assert output_cpu.shape == (
+      expected_size,
+  ), f"Expected shape {(expected_size,)}, got {output_cpu.shape}"
+  expected = torch.ones(expected_size, dtype=torch.float32)
+  utils.assert_close(output_cpu, expected)
+
+
 class DTensor1DimTest(absltest.TestCase):
 
   def test_apply_op(self):
@@ -229,6 +392,57 @@ class DTensor1DimTest(absltest.TestCase):
         fn=singlehost_wrapper.tpu_env_wrapper(
             run_dtensor_1d_partial_to_shard, world_size=8
         ),
+    )
+
+  def test_small_tensor_shard_to_replicate(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_dtensor_1d_small_tensor_shard_to_replicate, world_size=8
+        ),
+        tensor_size=4,
+    )
+
+  def test_small_tensor_shard_to_replicate_compiled(self):
+    with self.assertRaises(mp.ProcessExitedException):
+      distributed_utils.dist_run(
+          nproc_per_node=8,
+          fn=singlehost_wrapper.tpu_env_wrapper(
+              run_dtensor_1d_small_tensor_shard_to_replicate_compiled,
+              world_size=8,
+          ),
+          tensor_size=4,
+      )
+
+  def test_small_tensor_shard_to_replicate_compiled_fixed(self):
+    # This should PASS without exception because we pass shape/stride
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_dtensor_1d_small_tensor_shard_to_replicate_compiled_fixed,
+            world_size=8,
+        ),
+        tensor_size=4,
+    )
+
+  def test_small_tensor_from_local_no_shape_eager(self):
+    with self.assertRaises(mp.ProcessExitedException):
+      distributed_utils.dist_run(
+          nproc_per_node=8,
+          fn=singlehost_wrapper.tpu_env_wrapper(
+              run_dtensor_1d_small_tensor_from_local_no_shape, world_size=8
+          ),
+          tensor_size=4,
+      )
+
+  def test_small_tensor_from_local_with_shape_compiled(self):
+    distributed_utils.dist_run(
+        nproc_per_node=8,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_dtensor_1d_small_tensor_from_local_with_shape_compiled,
+            world_size=8,
+        ),
+        tensor_size=4,
     )
 
 
