@@ -417,9 +417,8 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.uint8: {"rtol": 3.7e-6, "atol": 2.4e-3},
     },
     "ldexp": {
-        torch.complex64: {"rtol": 4.8e-6, "atol": 1.7e-2},
-        torch.float16: {"rtol": 1.3e-3, "atol": 1.6e-2},
-        torch.float32: {"rtol": 4.9e-6, "atol": 1.6e-2},
+        torch.float32: {"rtol": 3e-6, "atol": 1.5e-3},
+        torch.complex64: {"rtol": 4e-6, "atol": 1.5e-2},
     },
     "lgamma": {
         torch.float16: {"rtol": 1.2e-3, "atol": 2.5e-4},
@@ -975,10 +974,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int64: {"atol": _expm1_atol},
         torch.float32: {"atol": _expm1_atol},
     },
-    "ldexp": {
-        torch.complex64: {"rtol": 3.7e-6, "atol": 9.1e-3},
-        torch.float32: {"rtol": 3.3e-6, "atol": 4.9e-3},
-    },
     "lgamma": {
         torch.bfloat16: {"rtol": 2.6e-2, "atol": 1.6e-4},
         torch.float16: {"rtol": 1.3e-2, "atol": 1.5e-4},
@@ -1326,9 +1321,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.int64: {"atol": 2.4e-3},
         torch.int8: {"atol": 2.4e-3},
         torch.uint8: {"atol": 2.4e-3},
-    },
-    "ldexp": {
-        torch.complex64: {"rtol": 3.7e-6, "atol": 9.1e-3},
     },
     "linalg.lu_factor_ex": {
         torch.complex64: {"atol": 39},
@@ -1832,9 +1824,6 @@ class TestOps(TorchTpuTestBase):
         # TODO: make this work with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
     )
-
-  def test_angle(self):
-    self.do_test_op("angle")
 
   def test_arange(self):
     """Tests arange, arange.start, arange.out, arange.start_step, arange.start_out."""

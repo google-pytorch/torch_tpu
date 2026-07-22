@@ -97,10 +97,6 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "amin.out";
     case OpName::kAminmaxOut:
       return "aminmax.out";
-    case OpName::kAngle:
-      return "angle";
-    case OpName::kAngleOut:
-      return "angle.out";
     case OpName::kAnyAllOut:
       return "any.all_out";
     case OpName::kAnyOut:

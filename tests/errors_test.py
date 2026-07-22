@@ -6289,25 +6289,6 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.acos(t, out=out)
 
-  def test_angle_out_dtype_mismatch(self):
-    t = torch.tensor([1.0 + 1.0j], device=et.device())
-    out_int = torch.empty(1, device=et.device(), dtype=torch.int32)
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""angle(): expected the output dtype to be float32, got int32""",
-        gpu="""result type Float can't be cast to the desired output type Int""",
-    ):
-      torch.angle(t, out=out_int)
-
-    t_real = torch.tensor([1.0], device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""angle(): expected the output dtype to be float32, got int32""",
-        gpu="""result type Float can't be cast to the desired output type Int""",
-        message_reviewed_by="wan",
-    ):
-      torch.angle(t_real, out=out_int)
-
   def test_sign_unsupported_dtype_complex(self):
     t = torch.tensor([1 + 1j], device=et.device())
 
