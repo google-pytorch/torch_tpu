@@ -27,6 +27,7 @@ from typing import Any
 from absl import logging
 import torch
 from torch._dynamo.utils import detect_fake_mode
+from torch.fx.experimental.symbolic_shapes import size_hint
 from torch._inductor.utils import InputType
 from torch.fx.passes.split_module import split_module
 from torch_tpu._internal.compile import compiler
@@ -51,7 +52,56 @@ _COLLECTIVE_OPS = (
     torch.ops._c10d_functional.broadcast,
     torch.ops._c10d_functional.broadcast_,
 )
+_REGISTERED_COLLECTIVE_OPS = set()
 # pylint: enable=protected-access
+
+
+def register_collective_op(op: Any) -> None:
+  """Registers an opaque custom op that executes a distributed collective."""
+  _REGISTERED_COLLECTIVE_OPS.add(getattr(op, "overloadpacket", op))
+
+
+def _get_collective_target(node: torch.fx.Node) -> Any | None:
+  if node.op != "call_function":
+    return None
+  target = getattr(node.target, "overloadpacket", node.target)
+  collective_ops = _COLLECTIVE_OPS + tuple(_REGISTERED_COLLECTIVE_OPS)
+  if target in collective_ops:
+    return target
+  if (
+      getattr(node.target, "__name__", "") == "auto_functionalized_v2"
+      and node.args
+  ):
+    wrapped_target = getattr(node.args[0], "overloadpacket", node.args[0])
+    if wrapped_target in collective_ops:
+      return wrapped_target
+  return None
+
+
+def _concretize_fake_tensor(
+    tensor: torch._subclasses.FakeTensor,  # pylint: disable=protected-access
+    fake_mode: torch._subclasses.fake_tensor.FakeTensorMode,
+) -> torch._subclasses.FakeTensor:  # pylint: disable=protected-access
+  if tensor.layout != torch.strided:
+    return tensor
+  sizes = tuple(size_hint(size) for size in tensor.shape)
+  strides = tuple(size_hint(stride) for stride in tensor.stride())
+  storage_offset = size_hint(
+      torch.ops.aten.sym_storage_offset.default(tensor)
+  )
+  storage_size = storage_offset + 1
+  for size, stride in zip(sizes, strides):
+    if size:
+      storage_size += (size - 1) * stride
+  elem = torch.as_strided(
+      torch.empty(max(storage_size, 1), dtype=tensor.dtype, device="meta"),
+      sizes,
+      strides,
+      storage_offset,
+  )
+  return torch._subclasses.FakeTensor(  # pylint: disable=protected-access
+      fake_mode, elem, tensor.fake_device
+  )
 
 
 def _get_unique_wait_tensor_producer(
@@ -140,9 +190,7 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
     if len(curr.args) == 0:
       break
     curr = curr.args[0]
-  if isinstance(curr, torch.fx.Node) and (
-      getattr(curr.target, "overloadpacket", curr.target) in _COLLECTIVE_OPS
-  ):
+  if isinstance(curr, torch.fx.Node) and _get_collective_target(curr) is not None:
     return True
   return False
 
@@ -220,14 +268,15 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
 
     # Use FakeTensors for tracing.
     for arg in args:
-      if isinstance(arg, torch.Tensor) and not isinstance(
-          arg, torch._subclasses.FakeTensor  # pylint: disable=protected-access
-      ):
-        new_args.append(
-            torch._dynamo.utils.to_fake_tensor(arg, self.fake_mode)  # pylint: disable=protected-access
-        )
-      else:
-        new_args.append(arg)
+      if isinstance(arg, torch.Tensor):
+        if not isinstance(
+            arg, torch._subclasses.FakeTensor  # pylint: disable=protected-access
+        ):
+          arg = torch._dynamo.utils.to_fake_tensor(  # pylint: disable=protected-access
+              arg, self.fake_mode
+          )
+        arg = _concretize_fake_tensor(arg, self.fake_mode)
+      new_args.append(arg)
 
     if n.op == "call_module":
       real_mod = self.fetch_attr(str(n.target))
@@ -338,9 +387,7 @@ class SplitCompiler(compiler.Compiler):
       in_spmd_safe_region = spmd_safe_depth > 0
 
       maybe_collective = getattr(node.target, "overloadpacket", node.target)
-      is_collective = (
-          node.op == "call_function" and maybe_collective in _COLLECTIVE_OPS
-      )
+      is_collective = _get_collective_target(node) is not None
 
       # `wait_tensor`` is a special case. It is a collective-related op, but it
       # should not be used to split the graph.
