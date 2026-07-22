@@ -177,28 +177,6 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.bfloat16: {"rtol": 1.5, "atol": 6.1e-2},
         torch.float16: {"rtol": 5.1e-1, "atol": 6.3e-2},
     },
-    "_foreach_lgamma": {
-        torch.bfloat16: {"rtol": 5e-2, "atol": 1e-2},
-        torch.float32: {"rtol": 1e-1, "atol": 1e-3},
-    },
-    "_foreach_log": {
-        torch.complex64: {"rtol": 5.8e-5, "atol": 1.1e-4},
-        torch.float32: {"rtol": 2.5e-4, "atol": 9e-5},
-        torch.int16: {"rtol": 5.7e-5, "atol": 6.3e-5},
-        torch.int32: {"rtol": 5.7e-5, "atol": 6.3e-5},
-        torch.int64: {"rtol": 5.7e-5, "atol": 6.3e-5},
-        torch.int8: {"rtol": 5.7e-5, "atol": 6.3e-5},
-        torch.uint8: {"rtol": 5.7e-5, "atol": 6.3e-5},
-    },
-    "_foreach_log10": {
-        torch.complex64: {"rtol": 9.4e-5, "atol": 4.4e-5},
-        torch.float32: {"rtol": 2.7e-4, "atol": 4.5e-5},
-        torch.int16: {"rtol": 5.7e-5, "atol": 2.8e-5},
-        torch.int32: {"rtol": 5.7e-5, "atol": 2.8e-5},
-        torch.int64: {"rtol": 5.7e-5, "atol": 2.8e-5},
-        torch.int8: {"rtol": 5.7e-5, "atol": 2.8e-5},
-        torch.uint8: {"rtol": 5.7e-5, "atol": 2.8e-5},
-    },
     "_foreach_log1p": {
         torch.complex64: {"rtol": 3.1e-5, "atol": 4.4e-5},
         torch.float32: {"rtol": 2.5e-4, "atol": 6.9e-5},
@@ -765,24 +743,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"atol": 9.4e-2},
         torch.float16: {"atol": 1.3e-1},
     },
-    "_foreach_log": {
-        torch.complex64: {"rtol": 2.4e-4, "atol": 9.6e-5},
-        torch.float32: {"atol": 9.6e-5},
-        torch.int16: {"atol": 6.3e-5},
-        torch.int32: {"atol": 6.3e-5},
-        torch.int64: {"atol": 6.3e-5},
-        torch.int8: {"atol": 6.3e-5},
-        torch.uint8: {"atol": 6.3e-5},
-    },
-    "_foreach_log10": {
-        torch.complex64: {"rtol": 6.9e-5, "atol": 4.4e-5},
-        torch.float32: {"rtol": 2.6e-4, "atol": 3.5e-5},
-        torch.int16: {"atol": 2.8e-5},
-        torch.int32: {"atol": 2.8e-5},
-        torch.int64: {"atol": 2.8e-5},
-        torch.int8: {"atol": 2.8e-5},
-        torch.uint8: {"atol": 2.8e-5},
-    },
     "_foreach_log1p": {
         torch.complex64: {"atol": 5.1e-5},
         torch.float32: {"rtol": 2.7e-4, "atol": 7e-5},
@@ -1222,11 +1182,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_foreach_expm1": {
         torch.complex64: {"atol": 3e-2},
     },
-    "_foreach_log": {
-        torch.complex64: {"rtol": 1e-4, "atol": 9.6e-5},
-    },
     "_foreach_log10": {
-        torch.complex64: {"rtol": 1e-4, "atol": 3.8e-5},
+        torch.complex64: {"rtol": 3.9e-5, "atol": 4.5e-5},
     },
     "_foreach_log1p": {
         torch.complex64: {"atol": 5.1e-5},
