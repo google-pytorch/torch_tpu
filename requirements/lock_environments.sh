@@ -32,7 +32,9 @@ script_dir=$(dirname "$(readlink -f "$0")")
 working_dir="$script_dir/.."
 cd "$working_dir"
 
-# Loop over supported Python versions and generate lock files
+PYTHON_PLATFORM="x86_64-manylinux_2_31"
+
+# Loop over supported Python versions and generate the full-environment locks.
 for version in "3.11" "3.12" "3.13" "3.14"; do
   version_und=$(echo "$version" | tr '.' '_')
   REQUIREMENTS_FILE="requirements/requirements_${version_und}.txt"
@@ -46,8 +48,42 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
   uv pip compile pyproject.toml \
     --all-extras \
     --python-version "$version" \
-    --python-platform x86_64-manylinux_2_31 \
+    --python-platform "$PYTHON_PLATFORM" \
     --resolution lowest-direct \
     --generate-hashes \
     --output-file "$REQUIREMENTS_FILE"
+done
+
+# Torch-only locks for the extra PyTorch versions the multi-ABI wheel ships a
+# glue for. The default version's torch is already pinned by the full locks
+# above (it comes from pyproject.toml), so only the extras need a standalone
+# lock. The version list is read from the single source of truth in
+# //bazel:pytorch_versions.bzl so it stays in step with the pip hubs in
+# MODULE.bazel.
+for version in $(uv run bazel/pytorch_versions.py EXTRA_PYTORCH_VERSIONS); do
+  version_und=$(echo "$version" | tr '.' '_')
+  REQUIREMENTS_FILE="requirements/requirements_torch_${version_und}.txt"
+
+  echo "Generating torch-only lock for PyTorch $version -> $REQUIREMENTS_FILE"
+  if [ -f "$REQUIREMENTS_FILE" ]; then
+    rm "$REQUIREMENTS_FILE"
+  fi
+
+  # Lock torch itself and nothing else: torch's runtime dependencies are
+  # ABI-independent and already covered by the full environment locks above, so
+  # --no-deps keeps this file to just "torch==<version>+cpu". --universal lists
+  # every wheel for the version (all supported Python versions and platforms);
+  # pip/rules_python selects the matching wheel at fetch time.
+  # --index-strategy unsafe-best-match lets the "+cpu" local build resolve from
+  # the PyTorch CPU index while PyPI stays the primary index.
+  uv pip compile - \
+    --no-deps \
+    --index-url https://pypi.org/simple \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --python-platform "$PYTHON_PLATFORM" \
+    --index-strategy unsafe-best-match \
+    --generate-hashes \
+    --output-file "$REQUIREMENTS_FILE" <<EOF
+torch==${version}+cpu
+EOF
 done

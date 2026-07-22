@@ -12,8 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_test.bzl", "py_test")
+load(
+    "//build_files:torch_version.bzl",
+    "WHEEL_TORCH_VERSIONS",
+    "torch_versioned",
+    "version_suffix",
+)
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -2335,6 +2343,42 @@ torch_tpu_py_test(
     deps = [
         "//torch_tpu",
         "@pypi//pytest",
+    ],
+)
+
+# Compile-time probes proving each supported PyTorch version's hub delivers
+# the headers it claims: torch_version_probe.cc static_asserts the resolved
+# TORCH_VERSION_* triple against the version the //:_torch_version transition
+# configured. The bare per-version cc_library is tagged manual -- built
+# directly (without the transition) its assertion would only hold for the
+# default version -- and is always reached through its torch_versioned
+# wrapper.
+[[
+    cc_library(
+        name = "_torch_version_probe_" + version_suffix(v),
+        testonly = True,
+        srcs = ["torch_version_probe.cc"],
+        local_defines = [
+            "EXPECTED_TORCH_MAJOR=" + v.split(".")[0],
+            "EXPECTED_TORCH_MINOR=" + v.split(".")[1],
+            "EXPECTED_TORCH_PATCH=" + v.split(".")[2],
+        ],
+        tags = ["manual"],
+        deps = ["//shims/torch/torch/headeronly:torch_headeronly"],
+    ),
+    torch_versioned(
+        name = "torch_version_probe_" + version_suffix(v),
+        testonly = True,
+        dep = ":_torch_version_probe_" + version_suffix(v),
+        torch_version = v,
+    ),
+] for v in WHEEL_TORCH_VERSIONS]
+
+build_test(
+    name = "torch_version_probe_test",
+    targets = [
+        ":torch_version_probe_" + version_suffix(v)
+        for v in WHEEL_TORCH_VERSIONS
     ],
 )
 

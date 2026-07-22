@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load(
+    "//bazel:pytorch_versions.bzl",
+    "EXTRA_PYTORCH_VERSIONS",
+    "SENTINEL_TORCH_VERSION",
+)
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 
 package(
@@ -47,10 +52,77 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# True when building (or testing) the pip wheel, which is always the versioned,
+# separated layout. Set by `build:wheel_common` in .bazelrc. Bazel-only builds
+# leave it False and are unaffected by the multi-version machinery.
+bool_flag(
+    name = "wheel_build",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "wheel_build_enabled",
+    flag_values = {":wheel_build": "True"},
+    visibility = ["//visibility:public"],
+)
+
+# The PyTorch version a C++ extension is compiled/linked against. The pybind
+# transition (//shims/pybind11:pybind.bzl) sets this to build one glue per
+# supported PyTorch version; shims/torch selects the matching torch wheel on it.
+# Defaults to the sentinel ("no specific version"): the standard build and the
+# default version's glue use the default pip hub's torch and never leave this
+# configuration, so the pinning transitions reset to the default rather than
+# diverge from it. Only ever set by transitions, never on the command line --
+# a wheel build always builds every version.
+string_flag(
+    name = "_torch_version",
+    build_setting_default = SENTINEL_TORCH_VERSION,
+    visibility = ["//visibility:public"],
+)
+
+# Collapses the torch shims to headers-only: no libc10/libtorch_cpu is linked
+# where this is True. Set by the backend-pinning transitions in
+# build_files/torch_version.bzl for everything routed into the shared XLA
+# common library, which must never pull real torch -- a stray torch reference
+# there would bind one version's ABI into the library every glue shares. The
+# glues and their per-version torch commons leave it False and link the real
+# torch matching their version. Only ever set by transitions, never on the
+# command line.
+bool_flag(
+    name = "_torch_headers_only",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "torch_headers_only_enabled",
+    flag_values = {":_torch_headers_only": "True"},
+    visibility = ["//visibility:public"],
+)
+
+# One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
+# selection on these; the default build falls through to the existing
+# python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
+# built versions stay in step with the pip hubs and the wheel glues.
+[config_setting(
+    name = "torch_" + tv.replace(".", "_"),
+    flag_values = {":_torch_version": tv},
+    visibility = ["//visibility:public"],
+) for tv in EXTRA_PYTORCH_VERSIONS]
+
+# The Python-version rows only apply to the default torch version (which
+# builds at the sentinel); the extra versions are selected on //:_torch_version
+# alone (see //shims/torch). Pinning the torch version here keeps these
+# mutually exclusive with the //:torch_<v> settings, so a glue transitioned to
+# an extra version under a wheel-test build (whose top-level PYTHON_VERSION
+# leaks into the transitioned config) does not match both rows and trip an
+# "ambiguous match" on the torch shim selects.
 [config_setting(
     name = "wheel_test_" + v.replace(".", "_"),
     define_values = {"PYTHON_VERSION": v},
-    flag_values = {":test_wheel": "True"},
+    flag_values = {
+        ":test_wheel": "True",
+        ":_torch_version": SENTINEL_TORCH_VERSION,
+    },
     visibility = ["//visibility:public"],
 ) for v in SUPPORTED_PYTHON_VERSIONS]
 
