@@ -23,8 +23,13 @@ The extra versions come from //bazel:pytorch_versions.bzl, the single source of
 truth, so adding a version updates every torch shim at once.
 """
 
-load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS")
+load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS", "NIGHTLY_TORCH_VERSION")
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION")
+
+# Every non-default version needing its own select() row: the extra release
+# versions plus the nightly channel's, whose dev-snapshot wheel comes from its
+# own @pypi_torch_<version>_* hub exactly like a release wheel.
+_EXTRA_GLUE_VERSIONS = EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
 
 # The Python version whose wheel every extra torch version currently resolves
 # to: the default Python, since the extra versions are not yet built per
@@ -54,7 +59,7 @@ def torch_lib_select(target, base):
     """
     rows = {
         _torch_version_setting(v): _extra_wheel(v, target)
-        for v in EXTRA_PYTORCH_VERSIONS
+        for v in _EXTRA_GLUE_VERSIONS
     }
     rows.update(base)
     return rows
@@ -73,7 +78,7 @@ def torch_headers_select(base, extra = []):
     """
     rows = {
         _torch_version_setting(v): [_extra_wheel(v, "torch_headers")] + extra
-        for v in EXTRA_PYTORCH_VERSIONS
+        for v in _EXTRA_GLUE_VERSIONS
     }
     rows.update(base)
     return rows

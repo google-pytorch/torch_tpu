@@ -192,18 +192,38 @@ EXTRA_PYTORCH_VERSIONS = [
     "2.13.0",
 ]
 
+# The release version the nightly channel currently leads up to. Its glue's
+# torch comes from the same machinery as the extra release versions -- hub
+# torch_tpu_pypi_2_14_0 -- except that it resolves from the nightly index and
+# its lock is requirements_torch_nightly.txt (a dev-build pin refreshed by
+# re-running requirements/lock_environments.sh). Kept in sync with
+# NIGHTLY_TORCH_VERSION/GLUE_TORCH_VERSIONS in //bazel:pytorch_versions.bzl,
+# like the list above.
+NIGHTLY_TORCH_VERSION = "2.14.0"
+
+EXTRA_GLUE_TORCH_VERSIONS = EXTRA_PYTORCH_VERSIONS + [NIGHTLY_TORCH_VERSION]
+
+_TORCH_NIGHTLY_EXTRA_PIP_ARGS = [
+    "--index-url",
+    "https://pypi.org/simple",
+    "--extra-index-url",
+    "https://download.pytorch.org/whl/nightly/cpu",
+]
+
 [pip.parse(
     extra_hub_aliases = _TORCH_HUB_ALIASES,
-    extra_pip_args = _TORCH_EXTRA_PIP_ARGS,
+    extra_pip_args = _TORCH_NIGHTLY_EXTRA_PIP_ARGS if torch_version == NIGHTLY_TORCH_VERSION else _TORCH_EXTRA_PIP_ARGS,
     hub_name = "torch_tpu_pypi_" + torch_version.replace(".", "_"),
     python_version = python_version,
     # A single torch-only lock lists every wheel for the version; pip selects the
-    # one matching each Python version at fetch time.
+    # one matching each Python version at fetch time. The nightly channel's lock
+    # keeps a channel name rather than a version name: its pin rolls to whatever
+    # dev build is newest, so the version lives inside the file, not in its name.
     requirements_lock = "//requirements:requirements_torch_{}.txt".format(
-        torch_version.replace(".", "_"),
+        "nightly" if torch_version == NIGHTLY_TORCH_VERSION else torch_version.replace(".", "_"),
     ),
     whl_modifications = _TORCH_WHL_MODIFICATIONS,
-) for torch_version in EXTRA_PYTORCH_VERSIONS for python_version in SUPPORTED_PYTHON_VERSIONS]
+) for torch_version in EXTRA_GLUE_TORCH_VERSIONS for python_version in SUPPORTED_PYTHON_VERSIONS]
 
 # Expose the pip repositories using the names your BUILD files expect
 use_repo(pip, pypi = "torch_tpu_pypi")
@@ -231,7 +251,7 @@ use_repo(pip, pypi = "torch_tpu_pypi")
             DEFAULT_PYTHON_VERSION.replace(".", ""),
         ),
     }
-) for tv in EXTRA_PYTORCH_VERSIONS]
+) for tv in EXTRA_GLUE_TORCH_VERSIONS]
 
 # Custom repository rules
 torch_local_repo = use_repo_rule("//bazel:torch_local_repo.bzl", "torch_local_repo")
@@ -248,7 +268,7 @@ torch_tpu_version_repo(
 )
 
 # The per-version glue pywrap packages for the multi-ABI wheel, generated from
-# WHEEL_TORCH_VERSIONS so adding a PyTorch version needs no new checked-in
+# GLUE_TORCH_VERSIONS so adding a PyTorch version needs no new checked-in
 # packages. See //bazel:glue_packages.bzl.
 glue_packages = use_repo_rule("//bazel:glue_packages.bzl", "glue_packages")
 

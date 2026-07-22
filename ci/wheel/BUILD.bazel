@@ -17,7 +17,7 @@ load("@rules_python//python:py_test.bzl", "py_test")
 load("@torch_tpu_deps//:dependencies.bzl", "WHEEL_REQUIRES")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
-load("//bazel:pytorch_versions.bzl", "WHEEL_TORCH_VERSIONS")
+load("//bazel:pytorch_versions.bzl", "NIGHTLY_TORCH_VERSION", "WHEEL_TORCH_VERSIONS")
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 load("//build_files:build_defs.bzl", "torch_tpu_py_test")
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
@@ -67,13 +67,22 @@ pytype_strict_binary(
 # (libxla_base.so), with runtime dispatch (torch_tpu/_versioned_so_loader.py)
 # selecting the glue for the installed torch. Each per-version pywrap_library
 # lives in its own package, generated into @torch_tpu_glues from
-# WHEEL_TORCH_VERSIONS (see //bazel:glue_packages.bzl).
+# GLUE_TORCH_VERSIONS (see //bazel:glue_packages.bzl). The nightly glue rides
+# along by default but is dropped under --config wheel_release, so artifacts
+# published to an index carry only the release glues.
 remap_pywrap_binaries(
     name = "remapped_pywrap_binaries",
     srcs = [
         "@torch_tpu_glues//torch_tpu/common/glue_{}:binaries".format(version_suffix(v))
         for v in WHEEL_TORCH_VERSIONS
-    ],
+    ] + select({
+        "//:nightly_glue_included": [
+            "@torch_tpu_glues//torch_tpu/common/glue_{}:binaries".format(
+                version_suffix(NIGHTLY_TORCH_VERSION),
+            ),
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 pytype_strict_library(

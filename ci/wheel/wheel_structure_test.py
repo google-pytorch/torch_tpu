@@ -53,8 +53,9 @@ _TORCH_NAMESPACE_PREFIXES: Final[Sequence[str]] = ("c10::", "at::", "torch::")
 # (w/W/v/V). Only strong-defined symbols mean the code lives in the library.
 _NON_STRONG_TYPES: Final[Set[str]] = frozenset({"U", "w", "W", "v", "V"})
 
-# Each glue file is <module>_<major>_<minor>_<patch>.so; the per-version torch
-# common is lib<...>_<major>_<minor>_<patch>_common.so.
+# Each glue file is <module>_<major>_<minor>_<patch>.so (the nightly channel's
+# glue carries the release triple its snapshot leads up to, like any other);
+# the per-version torch common is lib<...>_<version>_common.so.
 _GLUE_RE: Final[re.Pattern[str]] = re.compile(r"_(\d+_\d+_\d+)\.so$")
 _TORCH_COMMON_RE: Final[re.Pattern[str]] = re.compile(
     r"_(\d+_\d+_\d+)_common\.so$"

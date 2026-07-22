@@ -109,6 +109,11 @@ jobs:
         uses: ./.github/actions/build-wheel
         with:
           python_version: ${{ matrix.python_version }}
+          # The oldest Python version builds with the release config (no
+          # PyTorch-nightly glue), so both wheel flavors are exercised in
+          # presubmit; the nightly smoke tests only run against the default
+          # Python's wheel, which keeps the nightly glue.
+          bazel_config: ${{ matrix.python_version == '3.11' && 'wheel_release' || 'wheel_common' }}
 
   test_wheels_cpu:
     name: "Test wheel on ${{ matrix.custom_name || 'CPU' }} (Python ${{ matrix.python_version }})"
@@ -134,9 +139,11 @@ jobs:
             custom_name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n4-16
             nox_smoke_test: "cpu-nightly"
-            # Nightly torch is typically ahead of every glue the wheel ships,
-            # so this cannot gate PRs yet; it goes green (and can be promoted
-            # to a hard gate) once nightly-compatible glue lands.
+            # The wheel ships a nightly glue built against the dev snapshot
+            # pinned in requirements/requirements_torch_nightly.txt, but this
+            # installs the *latest* nightly, which can drift ABI-incompatibly
+            # from that snapshot between lock refreshes -- so this stays a
+            # soft failure.
             allowed_to_fail: true
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.allowed_to_fail }}
@@ -200,9 +207,8 @@ jobs:
   # Confirm each intermediate PyTorch patch (one we ship no exact glue for) is
   # served by its same-minor glue: the nox session runs the CPU smoke tests
   # once per entry in INTERMEDIATE_PATCH_VERSIONS (bazel/pytorch_versions.bzl),
-  # all within this single job. The glue is linked with `-z now`, so an
-  # ABI-incompatible glue fails the autoload import outright. Nothing here is
-  # TPU-specific, so it runs on a CPU runner against the default Python.
+  # all within this single job. Nothing here is TPU-specific, so it runs on a
+  # CPU runner against the default Python.
   test_wheel_intermediate_patches:
     name: "Test wheel on intermediate PyTorch patches (Python ${{ needs.setup.outputs.default_python_version }})"
     needs: [build_wheels, setup]
@@ -249,24 +255,12 @@ jobs:
             config: "wheel_test_tpu_v5"
             custom_name: "TPU v5"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
-            allowed_to_fail: false
           - wheel_version: "v7"
             runner: linux-x86-tpu7x-224-4tpu
             config: "wheel_test_tpu_v7"
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
             custom_name: "TPU v7"
-            allowed_to_fail: false
-          - python_version: ${{ needs.setup.outputs.default_python_version }}
-            wheel_version: "nightly"
-            runner: linux-x86-ct5lp-224-8tpu
-            custom_name: "TPU v5 (PyTorch Nightly)"
-            nox_smoke_test: "tpu-nightly"
-            # Nightly torch is typically ahead of every glue the wheel ships,
-            # so this cannot gate PRs yet; it goes green (and can be promoted
-            # to a hard gate) once nightly-compatible glue lands.
-            allowed_to_fail: true
     runs-on: ${{ matrix.runner || 'linux-x86-ct5lp-224-8tpu' }}
-    continue-on-error: ${{ matrix.allowed_to_fail }}
     container:
       image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
       options: --privileged
@@ -294,28 +288,7 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      # For the alternate-torch wheel variants (nightly), run a trimmed-down
-      # smoke test instead of the bazel test suite: nox installs the built
-      # wheel and the torch variant in a single uv resolution, then checks that
-      # the backend autoloads. Soft-fail variants swallow the failure at the
-      # step level (a job-level continue-on-error still shows a red X on the
-      # PR) and surface it as a warning annotation instead.
-      - name: Run smoke tests via nox
-        id: nox_smoke
-        if: matrix.nox_smoke_test
-        continue-on-error: ${{ matrix.allowed_to_fail == true }}
-        env:
-          PYTHON_VERSION: ${{ matrix.python_version }}
-          NOX_SMOKE_TEST: ${{ matrix.nox_smoke_test }}
-        run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
-      - name: Surface soft-failed smoke tests as a warning
-        if: matrix.nox_smoke_test && steps.nox_smoke.outcome == 'failure'
-        env:
-          CUSTOM_NAME: ${{ matrix.custom_name }}
-          WHEEL_VERSION: ${{ matrix.wheel_version }}
-        run: echo "::warning title=${CUSTOM_NAME} smoke test failed (allowed)::The ${WHEEL_VERSION} torch smoke test failed; this variant is allowed to fail until compatible glue ships."
       - name: Run Impacted Tests via bazel-diff
-        if: ${{ !matrix.nox_smoke_test }}
         uses: ./.github/actions/bazel-diff
         with:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
@@ -323,3 +296,44 @@ jobs:
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  # Smoke-test the nightly glue on TPU: nox installs the built wheel plus the
+  # *latest* PyTorch nightly in a single uv resolution and checks that the
+  # backend autoloads. The latest nightly can drift ABI-incompatibly from the
+  # snapshot pinned in requirements/requirements_torch_nightly.txt between
+  # lock refreshes, so this runs in postsubmit only -- a hard failure there is
+  # the signal to refresh the lock, without ever blocking presubmit on drift.
+  test_wheel_tpu_nightly:
+    name: "Test wheel on TPU v5 (PyTorch Nightly) (Python ${{ needs.setup.outputs.default_python_version }})"
+    if: github.event_name != 'pull_request'
+    needs: [build_wheels, setup]
+    runs-on: linux-x86-ct5lp-224-8tpu
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      options: --privileged
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
+      # container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        env:
+          PYTHON_VERSION: ${{ needs.setup.outputs.default_python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Run the nightly smoke test via nox
+        env:
+          PYTHON_VERSION: ${{ needs.setup.outputs.default_python_version }}
+        run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(tpu-nightly)"
