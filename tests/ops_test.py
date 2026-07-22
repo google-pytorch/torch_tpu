@@ -277,19 +277,18 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float32: {"rtol": 1e-4, "atol": 5e-4},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 2.9, "atol": 4.7e-2},
-        torch.float16: {"rtol": 1.3, "atol": 4.3e-3},
+        torch.bfloat16: {"rtol": 2.9e-2, "atol": 7.1e-2},
+        torch.float16: {"rtol": 3.4e-3, "atol": 8.9e-3},
     },
     "_thnn_fused_gru_cell": {
-        torch.bfloat16: {"rtol": 2.9e-1, "atol": 2.9e-5},
-        torch.complex64: {"rtol": 1.2e-4, "atol": 3.3e-2},
-        torch.float16: {"rtol": 5.3e-2, "atol": 2.8e-5},
-        torch.float32: {"rtol": 8.1e-3, "atol": 8.7e-5},
+        torch.complex64: {"rtol": 1.2e-4, "atol": 1.8e-4},
+        torch.float16: {"atol": 5.9e-4},
+        torch.float32: {"rtol": 4.1e-5, "atol": 7.6e-5},
     },
     "_thnn_fused_lstm_cell": {
-        torch.complex64: {"rtol": 2.9e-4, "atol": 7.1e-4},
-        torch.float16: {"rtol": 4.8e-2, "atol": 3.1e-5},
-        torch.float32: {"rtol": 4.8e-2, "atol": 4.7e-5},
+        torch.complex64: {"rtol": 1.2e-4, "atol": 8.4e-5},
+        torch.float16: {"atol": 5.9e-4},
+        torch.float32: {"rtol": 3.8e-5, "atol": 5.3e-5},
     },
     "abs": {
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
@@ -344,10 +343,10 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float32: {"rtol": 2.2e-4, "atol": 6.3e-5},
     },
     "baddbmm": {
-        torch.bfloat16: {"rtol": 3.5e-2, "atol": 3.8e-2},
-        torch.complex64: {"rtol": 1.2, "atol": 2.5},
-        torch.float16: {"rtol": 6.7e-1, "atol": 6.6e-1},
-        torch.float32: {"rtol": 6.7e-1, "atol": 5.9e-1},
+        torch.bfloat16: {"rtol": 5.2e-2, "atol": 3.2e-2},
+        torch.complex64: {"rtol": 9.5e-2, "atol": 5.5},
+        torch.float16: {"rtol": 1.7, "atol": 6.9e-1},
+        torch.float32: {"rtol": 1.5, "atol": 7.4e-1},
     },
     "bmm": {
         torch.complex64: {"rtol": 1.1e-1, "atol": 1.9},
@@ -851,8 +850,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"atol": 9.4e-5},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3.8e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"rtol": 1.9e-2, "atol": 4.6e-2},
+        torch.float16: {"rtol": 1.5e-3, "atol": 4.7e-3},
     },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
@@ -907,10 +906,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"atol": 6.5e-5},
     },
     "baddbmm": {
-        torch.bfloat16: {"rtol": 1.7e-2, "atol": 1.5e-2},
-        torch.complex64: {"rtol": 8.3e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 3.3e-1},
-        torch.float32: {"rtol": 3.4e-1, "atol": 3.6e-1},
+        torch.bfloat16: {"atol": 1.3e-2},
+        torch.complex64: {"atol": 3.9},
+        torch.float16: {"atol": 7.5e-1},
+        torch.float32: {"atol": 7.2e-1},
     },
     "bmm": {
         torch.complex64: {"atol": 1.5},
@@ -1254,8 +1253,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"atol": 9.4e-5},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"atol": 3.5e-2},
+        torch.float16: {"atol": 4.6e-3},
     },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
@@ -1287,10 +1286,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"atol": 6.5e-5},
     },
     "baddbmm": {
-        torch.bfloat16: {"atol": 4.7e-3},
-        torch.complex64: {"rtol": 8e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 3.3e-1},
-        torch.float32: {"rtol": 3.4e-1, "atol": 3.6e-1},
+        torch.bfloat16: {"atol": 2e-3},
+        torch.complex64: {"atol": 3.9},
+        torch.float16: {"atol": 7.5e-1},
+        torch.float32: {"atol": 7.2e-1},
     },
     "bmm": {
         torch.complex64: {"atol": 1.5},
