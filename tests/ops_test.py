@@ -116,17 +116,6 @@ def _expm1_atol(y: float) -> float:
 #   https://docs.pytorch.org/docs/stable/testing.html
 ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     # go/keep-sorted start
-    "_foreach_acos": {
-        torch.complex64: {"rtol": 3.6e-5, "atol": 8e-5},
-    },
-    "_foreach_add": {
-        torch.bfloat16: {"rtol": 7.6e-1, "atol": 2.9e-2},
-        torch.float16: {"rtol": 3.6e-2, "atol": 4e-3},
-    },
-    "_foreach_addcdiv": {
-        torch.bfloat16: {"rtol": 1, "atol": 5.5e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 6.3e-2},
-    },
     "_foreach_addcmul": {
         torch.bfloat16: {"rtol": 1, "atol": 1.9e-1},
         torch.float16: {"rtol": 1.9e-1, "atol": 2.5e-1},
@@ -704,17 +693,6 @@ def update_dict(d, u):
 # Like ACCURACY_OVERRIDES_VS_CPU, but for TPU vs GPU instead.
 ACCURACY_OVERRIDES_VS_GPU = {
     # go/keep-sorted start
-    "_foreach_acos": {
-        torch.complex64: {"rtol": 4.2e-5, "atol": 7.1e-5},
-    },
-    "_foreach_add": {
-        torch.bfloat16: {"rtol": 1, "atol": 3.2e-2},
-        torch.float16: {"rtol": 1, "atol": 1.6e-2},
-    },
-    "_foreach_addcdiv": {
-        torch.bfloat16: {"rtol": 2.2, "atol": 9.4e-2},
-        torch.float16: {"rtol": 11, "atol": 3.2e-2},
-    },
     "_foreach_addcmul": {
         torch.bfloat16: {"atol": 6.3e-2},
         torch.float16: {"rtol": 1, "atol": 2.5e-1},
@@ -1201,9 +1179,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
 # Like ACCURACY_OVERRIDES_VS_CPU, but for TPU vs GPU with torch.compile().
 ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     # go/keep-sorted start
-    "_foreach_acos": {
-        torch.complex64: {"rtol": 4.2e-5, "atol": 7e-5},
-    },
     "_foreach_asin": {
         torch.complex64: {"rtol": 5.7e-5, "atol": 9.4e-5},
     },
