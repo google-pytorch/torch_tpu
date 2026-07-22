@@ -473,6 +473,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu",
+        "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
         "//torch_tpu/_internal/sync",

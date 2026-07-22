@@ -245,6 +245,60 @@ def _init_device(device: str) -> torch.device:
     return _init_device_impl(device)
 
 
+def _monkeypatch_dtensor() -> None:
+  """Monkeypatches DTensor.from_local to fail fast on uneven TPU sharding."""
+  try:
+    from torch.distributed.tensor import DTensor  # pylint: disable=g-import-not-at-top
+
+    original_from_local = DTensor.from_local
+
+    @functools.wraps(original_from_local)
+    def tpu_from_local(
+        local_tensor,
+        device_mesh=None,
+        placements=None,
+        *,
+        run_check=False,
+        shape=None,
+        stride=None,
+        grad_placements=None,
+    ):
+
+      if (
+          local_tensor.device.type == "tpu"
+          and shape is None
+          and any(d == 0 for d in local_tensor.shape)
+      ):
+        rank = os.environ.get("RANK", "unknown")
+        msg = (
+            f"\n[Rank {rank}] ValueError: DTensor.from_local on TPU encountered"
+            " a 0-sized local tensor dim with no global shape passed. This"
+            " indicates uneven sharding which will lead to deadlocks in"
+            " collectives. You must pass explicit shape and stride to"
+            " from_local when sharding is uneven.\n"
+        )
+        print(msg, file=sys.stderr)
+        import traceback  # pylint: disable=g-import-not-at-top
+
+        traceback.print_stack(file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(1)
+      return original_from_local(
+          local_tensor,
+          device_mesh,
+          placements,
+          run_check=run_check,
+          shape=shape,
+          stride=stride,
+          grad_placements=grad_placements,
+      )
+
+    DTensor.from_local = tpu_from_local
+    print("Successfully monkeypatched DTensor.from_local", file=sys.stderr)
+  except ImportError:
+    pass
+
+
 def load(allow_xla_backend: bool | None = None) -> None:
   """Loads the torch_tpu backend.
 
@@ -273,6 +327,9 @@ def load(allow_xla_backend: bool | None = None) -> None:
     else:
       _init_device("xla_cpu")
     _LOADED = True
+
+  if _LOADED:
+    _monkeypatch_dtensor()
 
   # Start the eager-mode trace daemon if TORCH_TRACE was set at process
   # startup. No-op when TORCH_TRACE is unset.
