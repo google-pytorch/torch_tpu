@@ -33,7 +33,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 
 # Required to register the SPMD safe region ops.
-from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import
+from torch_tpu._internal.distributed import spmd_util as _spmd_util  # noqa: F401  # pylint: disable=unused-import
 
 # pylint: disable=protected-access
 _COLLECTIVE_OPS = (
@@ -278,6 +278,20 @@ class _SplitCompiledExecutable(CompiledArtifact):
         _unpickle_split_compiled_executable,
         (self._split_gm,),
     )
+
+  def prepare_for_serialization(self) -> None:
+    pass
+
+  def post_compile(
+      self,
+      example_inputs: Sequence[Any],
+      constants: Any,
+      graph_kwargs: Any,
+  ) -> None:
+    pass
+
+  def set_triton_bundle(self, triton_bundle: Any) -> None:
+    pass
 
 
 def _unpickle_split_compiled_executable(

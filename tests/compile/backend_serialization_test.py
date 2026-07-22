@@ -27,10 +27,26 @@ from torch._functorch._aot_autograd.aot_autograd_result import (
 from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.utils import utils
 
 
 class BackendSerializationTest(absltest.TestCase):
+
+  def test_split_executable_supports_output_code_cache_lifecycle(self):
+    graph = torch.fx.Graph()
+    input_node = graph.placeholder("input")
+    graph.output(input_node)
+    executable = split_compiler._SplitCompiledExecutable(
+        torch.fx.GraphModule({}, graph)
+    )
+
+    executable.prepare_for_serialization()
+    restored = pickle.loads(pickle.dumps(executable))
+    restored.post_compile([torch.ones(1)], None, None)
+    restored.set_triton_bundle(None)
+
+    torch.testing.assert_close(restored(torch.ones(1)), torch.ones(1))
 
   def setUp(self):
     super().setUp()
