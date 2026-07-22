@@ -30,6 +30,7 @@ _PK_CHECK_EXPERIMENTAL_OPTIONS = "check_experimental_options"
 _PK_DEVICE_TRACER_LEVEL = "device_tracer_level"
 _PK_HOST_TRACER_LEVEL = "host_tracer_level"
 _PK_PYTHON_TRACER_LEVEL = "python_tracer_level"
+_PK_RANK = "rank"
 _PK_RUN_DIR = "run_dir"
 # go/keep-sorted end
 # LINT.ThenChange(profiler_config.py:stable_keys_set)
@@ -43,6 +44,7 @@ _STABLE_KEYS = frozenset({
     _PK_DEVICE_TRACER_LEVEL,
     _PK_HOST_TRACER_LEVEL,
     _PK_PYTHON_TRACER_LEVEL,
+    _PK_RANK,
     _PK_RUN_DIR,
     # go/keep-sorted end
 })
@@ -88,6 +90,7 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       device_tracer_level: int = 1,
       python_tracer_level: int = 0,
       run_dir: os.PathLike[str] | str | None = None,
+      rank: int | None = None,
       experimental_options: Mapping[str, _ExperimentalValue] | None = None,
       check_experimental_options: bool = True,
   ):
@@ -113,6 +116,8 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         (default), falls back to Kineto's `activitiesLogFile` directory (which
         defaults to "/tmp" if no handler is provided). This ensures TPU and CPU
         traces are co-located in the same directory.
+      rank: The rank of the TPU worker (used to suffix the saved profile
+        filename).
       experimental_options: Dictionary of experimental profiler options where
         supported value types are int, bool, and str. Strings will be
         automatically quoted and escaped, and keys must not contain colons or
@@ -122,6 +127,9 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
         backend.
     """
     run_dir_posix = os.fspath(run_dir) if run_dir is not None else None
+    if rank is not None:
+      if not isinstance(rank, int) or isinstance(rank, bool):
+        raise TypeError(f"rank must be an integer, got {type(rank)}")
     for key in experimental_options or {}:
       if key in _STABLE_KEYS:
         raise ValueError(
@@ -138,6 +146,8 @@ class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=
       yield f"{_PK_PYTHON_TRACER_LEVEL}:{python_tracer_level}"
       if run_dir_posix is not None:
         yield f"{_PK_RUN_DIR}:{run_dir_posix}"
+      if rank is not None:
+        yield f"{_PK_RANK}:{rank}"
       if experimental_options:
         for key, value in experimental_options.items():
           yield f"{key}:{_format_experimental_value(value)}"

@@ -85,17 +85,20 @@ class _ProfileState:
       active.
     log_dir: The directory to save the profiler trace to.
     lock: A lock to protect access to the profile state.
+    rank: The rank of the current process, if available.
   """
 
   def __init__(self):
     self.profile_session = None
     self.log_dir = None
     self.lock = threading.Lock()
+    self.rank = None
 
   def reset(self):
     """Resets the profiler state."""
     self.profile_session = None
     self.log_dir = None
+    self.rank = None
 
 
 _profile_state = _ProfileState()
@@ -104,6 +107,7 @@ _profile_state = _ProfileState()
 def start_trace(
     log_dir: os.PathLike[str] | str,
     profiler_options: ProfileOptions | None = None,
+    rank: int | None = None,
 ) -> None:
   """Starts a profiler trace.
 
@@ -122,6 +126,8 @@ def start_trace(
     log_dir: The directory to save the profiler trace to (usually the
       TensorBoard log directory).
     profiler_options: Profiler options to configure the profiler for collection.
+    rank: An optional worker rank identifier to append as a suffix to the saved
+      xplane file name.
 
   Raises:
     RuntimeError: If a profile has already been started.
@@ -142,6 +148,7 @@ def start_trace(
     start_trace_backend(str(log_dir), options)
     _profile_state.profile_session = True
     _profile_state.log_dir = str(log_dir)
+    _profile_state.rank = rank
 
 
 def stop_trace() -> None:
@@ -162,7 +169,10 @@ def stop_trace() -> None:
         _profile_state.log_dir, 'plugins', 'profile', timestamp
     )
     hostname = socket.gethostname() or 'localhost'
-    final_file = os.path.join(plugin_dir, f'{hostname}.xplane.pb')
+    rank_suffix = (
+        f'_{_profile_state.rank}' if _profile_state.rank is not None else ''
+    )
+    final_file = os.path.join(plugin_dir, f'{hostname}{rank_suffix}.xplane.pb')
 
     try:
       stop_trace_backend(final_file)

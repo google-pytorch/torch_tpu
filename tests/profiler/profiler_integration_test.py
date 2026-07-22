@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import shutil
+import socket
 import threading
 import time
 import unittest
@@ -484,6 +485,88 @@ class ProfilerIntegrationTest(parameterized.TestCase):
     self.assertNotEmpty(
         xplane_files, "Should have a .xplane.pb file in fallback directory"
     )
+
+  def test_tpu_profiler_config_rank(self):
+    device = torch.device("tpu")
+    custom_run_dir = self.create_tempdir("custom_run_dir_rank").full_path
+
+    _cleanup_profile_dir()
+
+    config = TpuProfilerConfig(run_dir=pathlib.Path(custom_run_dir), rank=3)
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(custom_run_dir),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    expected_profile_dir = pathlib.Path(custom_run_dir) / "plugins" / "profile"
+    self.assertTrue(
+        expected_profile_dir.exists(),
+        "plugins/profile directory should exist under the configured run_dir",
+    )
+
+    timestamp_dirs = list(expected_profile_dir.glob("*"))
+    self.assertLen(timestamp_dirs, 1)
+
+    (timestamp_dir,) = timestamp_dirs
+    xplane_files = list(timestamp_dir.glob("*.xplane.pb"))
+    self.assertLen(xplane_files, 1)
+    (xplane_file,) = xplane_files
+
+    hostname = socket.gethostname() or "localhost"
+    expected_name = f"{hostname.replace(':', '_')}_3.xplane.pb"
+    self.assertEqual(xplane_file.name, expected_name)
+
+  def test_tpu_profiler_config_rank_none(self):
+    device = torch.device("tpu")
+    custom_run_dir = self.create_tempdir("custom_run_dir_rank_none").full_path
+
+    _cleanup_profile_dir()
+
+    config = TpuProfilerConfig(run_dir=pathlib.Path(custom_run_dir), rank=None)
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.TPU,  # type: ignore
+        ],
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(custom_run_dir),
+        experimental_config=config,
+    ):
+      a = torch.ones((16, 16)).to(device)
+      b = torch.ones((16, 16)).to(device)
+      c = a @ b
+      tpu_sync.synchronize(c)
+
+    expected_profile_dir = pathlib.Path(custom_run_dir) / "plugins" / "profile"
+    self.assertTrue(
+        expected_profile_dir.exists(),
+        "plugins/profile directory should exist under the configured run_dir",
+    )
+
+    timestamp_dirs = list(expected_profile_dir.glob("*"))
+    self.assertLen(timestamp_dirs, 1)
+
+    (timestamp_dir,) = timestamp_dirs
+    xplane_files = list(timestamp_dir.glob("*.xplane.pb"))
+    self.assertLen(xplane_files, 1)
+    (xplane_file,) = xplane_files
+
+    hostname = socket.gethostname() or "localhost"
+    expected_name = f"{hostname.replace(':', '_')}.xplane.pb"
+    self.assertEqual(xplane_file.name, expected_name)
+
+  def test_tpu_profiler_config_invalid_rank_type(self):
+    with self.assertRaisesRegex(TypeError, "rank must be an integer, got"):
+      TpuProfilerConfig(rank="not-an-int")
 
   def test_invalid_profiler_config(self):
     """Tests that invalid profiler configuration raises a Python exception."""

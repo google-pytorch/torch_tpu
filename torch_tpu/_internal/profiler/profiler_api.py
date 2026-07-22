@@ -112,6 +112,7 @@ def _get_profile_options(
 def profile(
     activities: list[ProfilerActivity] | None = None,
     on_trace_ready: Callable[[Any], str] | None = None,
+    rank: int | None = None,
 ):
   """Context manager to take a profiler trace, compatible with torch.profiler.
 
@@ -150,7 +151,7 @@ def profile(
   # For now, we call it without a profiler object.
   log_dir = on_trace_ready(None)
 
-  profiler.start_trace(log_dir, profiler_options=options)
+  profiler.start_trace(log_dir, profiler_options=options, rank=rank)
   # pylint: disable-next=protected-access
   _profiler_backend._push_enable_profiler()
 

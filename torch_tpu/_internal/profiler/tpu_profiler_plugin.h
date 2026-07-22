@@ -21,6 +21,7 @@
 #include <kineto/IActivityProfiler.h>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -73,6 +74,7 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   std::set<libkineto::ActivityType> activity_types_;
   std::unique_ptr<XProfCallbackHandler> callback_handler_;
   std::string run_dir_ ABSL_GUARDED_BY(mutex_);
+  std::optional<int> rank_ ABSL_GUARDED_BY(mutex_);
   uint64_t start_time_ns_ = 0;
   std::vector<libkineto::ResourceInfo> resource_infos_;
 };

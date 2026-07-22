@@ -21,6 +21,7 @@
 #include <kineto/IActivityProfiler.h>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -34,7 +35,16 @@ namespace torch_tpu {
 
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
-                                  std::string& out_run_dir);
+                                  std::string& out_run_dir,
+                                  std::optional<int>& out_rank);
+
+// Helper wrapper to avoid changing existing test cases.
+absl::Status UpdateProfileOptions(std::string_view custom_config,
+                                  tensorflow::ProfileOptions& opts,
+                                  std::string& out_run_dir) {
+  std::optional<int> dummy_rank;
+  return UpdateProfileOptions(custom_config, opts, out_run_dir, dummy_rank);
+}
 
 namespace {
 
@@ -321,6 +331,31 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsTrailingBackslash) {
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), error::kInvalidArgument);
   EXPECT_EQ(status.message(), "Trailing backslash in string");
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsRankValid) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+  std::optional<int> rank;
+
+  EXPECT_TRUE(
+      UpdateProfileOptions("device_tracer_level:3,rank:12", opts, run_dir, rank)
+          .ok());
+  EXPECT_EQ(opts.device_tracer_level(), 3);
+  EXPECT_TRUE(rank.has_value());
+  EXPECT_EQ(*rank, 12);
+}
+
+TEST(TpuProfilerPluginTest, UpdateProfileOptionsRankInvalid) {
+  tensorflow::ProfileOptions opts;
+  std::string run_dir;
+  std::optional<int> rank;
+
+  absl::Status status = UpdateProfileOptions("rank:abc", opts, run_dir, rank);
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), error::kInvalidArgument);
+  EXPECT_EQ(status.message(),
+            "expected the value of parameter rank to be an integer, got 'abc'");
 }
 
 }  // namespace

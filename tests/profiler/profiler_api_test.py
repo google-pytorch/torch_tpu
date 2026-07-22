@@ -69,6 +69,39 @@ class ProfilerApiTest(absltest.TestCase):
         ),
     )
 
+  def test_profile_api_with_rank(self):
+    output_dir = self.create_tempdir('profile_api_with_rank').full_path
+    handler = profiler.xprof_trace_handler(dir_name=output_dir)
+    rank = 42
+    with profiler.profile(
+        activities=[profiler.ProfilerActivity.CPU],
+        on_trace_ready=handler,
+        rank=rank,
+    ):
+      # Simulate some work
+      a = torch.randn(10, 10)
+      b = torch.randn(10, 10)
+      _ = a + b
+
+    # Check if trace files are created with rank suffix
+    plugins_dir = os.path.join(output_dir, 'plugins', 'profile')
+    self.assertTrue(
+        os.path.isdir(plugins_dir), msg=f'Plugins dir not found: {plugins_dir}'
+    )
+    trace_dirs = os.listdir(plugins_dir)
+    self.assertLen(
+        trace_dirs, 1, msg=f'Expected 1 trace dir, found: {trace_dirs}'
+    )
+    trace_dir = os.path.join(plugins_dir, trace_dirs[0])
+    found_files = os.listdir(trace_dir)
+    self.assertTrue(
+        any(f.endswith(f'_{rank}.xplane.pb') for f in found_files),
+        msg=(
+            f'No _{rank}.xplane.pb file found in {trace_dir}. Files found:'
+            f' {found_files}'
+        ),
+    )
+
   def test_profile_api_tpu(self):
     """Tests the profile context manager with TPU operations."""
     try:

@@ -1,3 +1,4 @@
+// Dummy comment to force rebuild
 /*
  * Copyright 2026 Google LLC
  *
@@ -86,6 +87,7 @@ namespace torch_tpu {
 constexpr std::string_view kDeviceTracerLevel = "device_tracer_level";
 constexpr std::string_view kHostTracerLevel = "host_tracer_level";
 constexpr std::string_view kPythonTracerLevel = "python_tracer_level";
+constexpr std::string_view kRank = "rank";
 constexpr std::string_view kRunDir = "run_dir";
 
 // Represents a parsed custom configuration option.
@@ -275,7 +277,9 @@ absl::StatusOr<ProfilerOption> SplitConfigItem(std::string_view item) {
 // options update the ProfileOptions object in place.
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
-                                  std::string& out_run_dir) {
+                                  std::string& out_run_dir,
+                                  std::optional<int>& out_rank) {
+  out_rank = std::nullopt;
   if (!std::all_of(custom_config.begin(), custom_config.end(), [](char c) {
         return absl::ascii_isascii(static_cast<unsigned char>(c));
       })) {
@@ -293,6 +297,16 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
 
     if (name == kRunDir) {
       out_run_dir = std::string(val);
+      continue;
+    }
+    if (name == kRank) {
+      int rank_val;
+      if (!absl::SimpleAtoi(val, &rank_val)) {
+        return TT_ERROR(error::kInvalidArgument)
+               << "expected the value of parameter " << name
+               << " to be an integer, got '" << val << "'";
+      }
+      out_rank = rank_val;
       continue;
     }
     TT_RETURN_IF_ERROR(UpdateProfileOption(opts, name, val));
@@ -339,8 +353,12 @@ std::string GetBaseOutputDir(std::string_view run_dir) {
 // 3. TEST_TMPDIR environment variable (if set).
 // 4. TMPDIR environment variable (if set).
 // 5. Default to "/tmp".
-absl::StatusOr<std::string> GetXPlaneOutputPath(std::string_view run_dir) {
+absl::StatusOr<std::string> GetXPlaneOutputPath(std::string_view run_dir,
+                                                std::optional<int> rank) {
   std::string base_dir = GetBaseOutputDir(run_dir);
+
+  // Force linker to keep absl::RFC3339_full
+  ABSL_LOG(INFO) << "Forcing RFC3339 reference: " << absl::RFC3339_full;
 
   absl::Time now = absl::Now();
   // Match %E4Y format used in
@@ -365,7 +383,12 @@ absl::StatusOr<std::string> GetXPlaneOutputPath(std::string_view run_dir) {
     return status;
   }
 
-  std::string file_name = absl::StrCat(hostname, ".xplane.pb");
+  std::string file_name;
+  if (rank.has_value()) {
+    file_name = absl::StrCat(hostname, "_", *rank, ".xplane.pb");
+  } else {
+    file_name = absl::StrCat(hostname, ".xplane.pb");
+  }
   // Windows file names do not support colons.
   absl::StrReplaceAll({{":", "_"}}, &file_name);
 
@@ -398,8 +421,10 @@ void TpuKinetoProfilerSession::start() {
     opts.set_python_tracer_level(1);
   }
 
+  std::optional<int> rank;
   TT_THROW_IF_ERROR(
-      UpdateProfileOptions(config_.getCustomConfig(), opts, run_dir_));
+      UpdateProfileOptions(config_.getCustomConfig(), opts, run_dir_, rank));
+  rank_ = rank;
 
   start_time_ns_ = absl::GetCurrentTimeNanos();
 
@@ -449,7 +474,8 @@ void TpuKinetoProfilerSession::stop() {
             ? run_dir_
             : std::string(tsl::io::Dirname(config_.activitiesLogFile()));
 
-    absl::StatusOr<std::string> resolved_path = GetXPlaneOutputPath(run_dir);
+    absl::StatusOr<std::string> resolved_path =
+        GetXPlaneOutputPath(run_dir, rank_);
     if (!resolved_path.ok()) {
       errors_.push_back(absl::StrCat("Failed to get XPlane output path: ",
                                      resolved_path.status().ToString()));
