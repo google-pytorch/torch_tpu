@@ -27,8 +27,6 @@ UNREGISTERED_OPS = frozenset([
     # go/keep-sorted start
     '_aminmax',
     '_aminmax.dim',
-    '_amp_foreach_non_finite_check_and_unscale_',
-    '_amp_update_scale_',
     '_batch_norm_with_update',
     '_batch_norm_with_update.out',
     '_cholesky_solve_helper',

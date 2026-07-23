@@ -3714,6 +3714,54 @@ class TestOps(TorchTpuTestBase):
   def test_thnn_fused_lstm_cell(self):
     self.do_test_op("_thnn_fused_lstm_cell", check_dynamism=False)
 
+  def test_amp_foreach_non_finite_check_and_unscale(self):
+    device = self.device
+    for has_inf in [False, True]:
+      for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+        g1_cpu = torch.tensor([1.0, 2.0, 3.0], dtype=dtype)
+        g2_cpu = torch.tensor(
+            [4.0, float("inf") if has_inf else 5.0, 6.0], dtype=dtype
+        )
+        found_inf_cpu = torch.tensor([0.0], dtype=torch.float32)
+        inv_scale_cpu = torch.tensor([0.5], dtype=torch.float32)
+
+        g1_tpu = g1_cpu.clone().to(device)
+        g2_tpu = g2_cpu.clone().to(device)
+        found_inf_tpu = found_inf_cpu.clone().to(device)
+        inv_scale_tpu = inv_scale_cpu.clone().to(device)
+
+        torch._amp_foreach_non_finite_check_and_unscale_(
+            [g1_cpu, g2_cpu], found_inf_cpu, inv_scale_cpu
+        )
+        torch._amp_foreach_non_finite_check_and_unscale_(
+            [g1_tpu, g2_tpu], found_inf_tpu, inv_scale_tpu
+        )
+
+        self.assertEqual(found_inf_tpu.cpu(), found_inf_cpu)
+        self.assertEqual(g1_tpu.cpu(), g1_cpu)
+        self.assertEqual(g2_tpu.cpu(), g2_cpu)
+
+  def test_amp_update_scale(self):
+    device = self.device
+    for found_inf_val in [0.0, 1.0]:
+      scale_cpu = torch.tensor([4.0], dtype=torch.float32)
+      growth_tracker_cpu = torch.tensor([1], dtype=torch.int32)
+      found_inf_cpu = torch.tensor([found_inf_val], dtype=torch.float32)
+
+      scale_tpu = scale_cpu.clone().to(device)
+      growth_tracker_tpu = growth_tracker_cpu.clone().to(device)
+      found_inf_tpu = found_inf_cpu.clone().to(device)
+
+      torch._amp_update_scale_(
+          scale_cpu, growth_tracker_cpu, found_inf_cpu, 2.0, 0.5, 2
+      )
+      torch._amp_update_scale_(
+          scale_tpu, growth_tracker_tpu, found_inf_tpu, 2.0, 0.5, 2
+      )
+
+      self.assertEqual(scale_tpu.cpu(), scale_cpu)
+      self.assertEqual(growth_tracker_tpu.cpu(), growth_tracker_cpu)
+
 
 def setUpModule() -> None:
   """Called by absltest.main() after flags are parsed but before tests are run."""

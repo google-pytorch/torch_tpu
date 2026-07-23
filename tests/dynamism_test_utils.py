@@ -142,6 +142,8 @@ def verify_op_supports_dynamism(
   """
 
   untriaged_ops_deny_list = [
+      "_amp_foreach_non_finite_check_and_unscale_",  # dynamic triage
+      "_amp_update_scale_",  # dynamic triage
       "addcdiv",  # dynamic triage (invalid result)
       "bincount",  # MLIR assertion failure (bounds length vs rank)
       "clamp_min",  # dynamic triage (invalid result)

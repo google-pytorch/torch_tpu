@@ -62,6 +62,8 @@ enum class OpName {
   kAmin,
   kAminOut,
   kAminmaxOut,
+  kAmpForeachNonFiniteCheckAndUnscale_,
+  kAmpUpdateScale_,
   kAngle,
   kAngleOut,
   kAnyAllOut,

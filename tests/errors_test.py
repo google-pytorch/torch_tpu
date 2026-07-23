@@ -7329,6 +7329,223 @@ Device-side assertion tracking was not enabled by user.""",
           False,
       )
 
+  def test_amp_foreach_non_finite_check_and_unscale_inv_scale_dtype(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    inv_scale = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected inv_scale dtype to be float, got int32""",
+        gpu="""inv_scale must be a float tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_inv_scale_device(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    inv_scale = torch.tensor([1.0], device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected inv_scale to be on tpu device, got cpu""",
+        gpu="""inv_scale must be a CUDA tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_found_inf_device(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor([0.0], device="cpu", dtype=torch.float32)
+    inv_scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected found_inf to be on tpu device, got cpu""",
+        gpu="""found_inf must be a CUDA tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_inv_scale_numel(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    inv_scale = torch.tensor(
+        [1.0, 2.0], device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected inv_scale to have 1 element, got 2""",
+        gpu="""inv_scale must be a 1-element tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_found_inf_numel(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor(
+        [0.0, 1.0], device=et.device(), dtype=torch.float32
+    )
+    inv_scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected found_inf to have 1 element, got 2""",
+        gpu="""found_inf must be a 1-element tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_found_inf_dtype(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    found_inf = torch.tensor([0], device=et.device(), dtype=torch.int32)
+    inv_scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected found_inf dtype to be float, got int32""",
+        gpu="""found_inf must be a float tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_self_tensor_device(self):
+    g1 = torch.ones(3, device=et.device(), dtype=torch.float32)
+    g2 = torch.ones(3, device="cpu", dtype=torch.float32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    inv_scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected self tensor to be on tpu device, got cpu""",
+        gpu="""one of scaled_grads was not a CUDA tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1, g2], found_inf, inv_scale
+      )
+
+  def test_amp_foreach_non_finite_check_and_unscale_self_layout(self):
+    g1 = torch.sparse_coo_tensor(
+        torch.tensor([[0, 1], [1, 2]]),
+        torch.tensor([1.0, 2.0]),
+        (3, 3),
+        device=et.device(),
+    )
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    inv_scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_foreach_non_finite_check_and_unscale_(): expected self tensor layout to be strided, got Sparse""",
+        gpu="""one of scaled_grads was not a strided tensor.""",
+    ):
+      torch._amp_foreach_non_finite_check_and_unscale_(
+          [g1], found_inf, inv_scale
+      )
+
+  def test_amp_update_scale_growth_tracker_dtype(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor(
+        [1.0], device=et.device(), dtype=torch.float32
+    )
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected growth_tracker dtype to be int32, got float32""",
+        gpu="""growth_tracker must be an int tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_self_device(self):
+    scale = torch.tensor([1.0], device="cpu", dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected self to be on tpu device, got cpu""",
+        gpu="""current_scale must be a CUDA tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_growth_tracker_device(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device="cpu", dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected growth_tracker to be on tpu device, got cpu""",
+        gpu="""growth_tracker must be a CUDA tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_found_inf_device(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device="cpu", dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected found_inf to be on tpu device, got cpu""",
+        gpu="""found_inf must be a CUDA tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_self_numel(self):
+    scale = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected self to have 1 element, got 2""",
+        gpu="""current_scale must be a 1-element tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_growth_tracker_numel(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected growth_tracker to have 1 element, got 2""",
+        gpu="""growth_tracker must be a 1-element tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_found_inf_numel(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor(
+        [0.0, 1.0], device=et.device(), dtype=torch.float32
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected found_inf to have 1 element, got 2""",
+        gpu="""found_inf must be a 1-element tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_self_dtype(self):
+    scale = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected self dtype to be float, got int32""",
+        gpu="""current_scale must be a float tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
+  def test_amp_update_scale_found_inf_dtype(self):
+    scale = torch.tensor([1.0], device=et.device(), dtype=torch.float32)
+    growth_tracker = torch.tensor([1], device=et.device(), dtype=torch.int32)
+    found_inf = torch.tensor([0], device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""amp_update_scale_(): expected found_inf dtype to be float, got int32""",
+        gpu="""found_inf must be a float tensor.""",
+    ):
+      torch._amp_update_scale_(scale, growth_tracker, found_inf, 2.0, 0.5, 2)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase, parameterized.TestCase):
 

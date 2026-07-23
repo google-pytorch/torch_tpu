@@ -45,6 +45,7 @@
 #include "torch_tpu/ops/addmm/addmm_aten_kernels.h"
 #include "torch_tpu/ops/addmv/addmv_aten_kernels.h"
 #include "torch_tpu/ops/all_any/all_any_aten_kernels.h"
+#include "torch_tpu/ops/amp/amp_aten_kernels.h"
 #include "torch_tpu/ops/angle/angle_aten_kernels.h"
 #include "torch_tpu/ops/arange/arange_aten_kernels.h"
 #include "torch_tpu/ops/as_strided/as_strided_aten_kernels.h"
@@ -338,6 +339,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kAmaxOut>(m, AtenAmaxOut);
   ImplStable<OpName::kAminOut>(m, AtenAminOut);
   ImplStable<OpName::kAminmaxOut>(m, AtenAminmaxOut);
+  ImplStable<OpName::kAmpForeachNonFiniteCheckAndUnscale_>(
+      m, AtenAmpForeachNonFiniteCheckAndUnscale_);
+  ImplStable<OpName::kAmpUpdateScale_>(m, AtenAmpUpdateScale_);
   ImplStable<OpName::kAngle>(m, AtenAngle);
   ImplStable<OpName::kAngleOut>(m, AtenAngleOut);
   ImplStable<OpName::kAnyAllOut>(m, AtenAnyAllOut);
