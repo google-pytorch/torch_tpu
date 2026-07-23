@@ -177,7 +177,10 @@ jobs:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
-          extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
+          extra_bazel_flags: >-
+            ${{ matrix.extra_flags }}
+            --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
+            --define PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
   test_wheels_tpu:
@@ -248,5 +251,8 @@ jobs:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
-          extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
+          extra_bazel_flags: >-
+            ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }}
+            --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
+            --define PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

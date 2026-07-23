@@ -15,6 +15,9 @@
 name: CI - Postsubmit
 
 on:
+  schedule:
+    # Run periodic heavy evaluations every 4 hours
+    - cron: '0 */4 * * *'
   # Enable remote connections. Add a workflow dispatch to enable halting.
   # See go/ml-github-actions:connect#enable-workflow-dispatch.
   workflow_dispatch:
@@ -51,8 +54,9 @@ jobs:
   run_tests:
     name: "Postsubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:postsubmit')
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:postsubmit'))
     strategy:
       fail-fast: false
       matrix:
@@ -91,20 +95,79 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@v5
+      # Skip execution on outdated intermediate push events if a newer commit has landed on main.
+      - name: Check if superseded by newer main HEAD
+        id: check_superseded
+        if: github.event_name == 'push'
+        run: |
+          git fetch origin main --quiet
+          LATEST_SHA=$(git rev-parse origin/main)
+          if [ "$GITHUB_SHA" != "$LATEST_SHA" ]; then
+            echo "::warning::Commit $GITHUB_SHA is superseded by latest main HEAD ($LATEST_SHA). Skipping test execution on ${{ matrix.job_info.runner }} to process latest HEAD."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Restore the last successful postsubmit commit SHA from cache to enable incremental bazel-diff runs
+      - name: Restore last successful commit SHA
+        if: github.event_name == 'push'
+        uses: actions/cache/restore@v4
+        id: restore-last-success
+        with:
+          path: last_success_sha.txt
+          key: postsubmit-last-success-${{ matrix.job_info.bazel_config }}-${{ github.sha }}
+          restore-keys: |
+            postsubmit-last-success-${{ matrix.job_info.bazel_config }}-
+
+      - name: Determine BASE_SHA for bazel-diff
+        id: bazel-diff-base
+        if: github.event_name == 'push'
+        run: |
+          if [ -f last_success_sha.txt ]; then
+            BASE_SHA=$(cat last_success_sha.txt)
+            echo "Last successful postsubmit commit: $BASE_SHA"
+            echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "No previous successful commit recorded. bazel-diff will fallback to full run."
+            echo "base_sha=" >> "$GITHUB_OUTPUT"
+          fi
+
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
       - name: Wait For Connection
+        if: steps.check_superseded.outputs.skip != 'true'
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      # We don't need a separate step for bazel build as bazel test will also build the code before
-      # running the tests. This allows test building and test running to overlap and reduce total
-      # build time.
-      - name: Run Bazel Test
-        run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
+      # Use bazel-diff for incremental test execution based on [HEAD - LAST_SUCCESSFUL_COMMIT]
+      - name: Run Impacted Tests via bazel-diff
+        if: steps.check_superseded.outputs.skip != 'true'
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ steps.bazel-diff-base.outputs.base_sha }}
+          current_sha: ${{ github.sha }}
+          bazel_config: ${{ matrix.job_info.bazel_config }}
+          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+          disable_bazel_diff: ${{ contains(github.event.head_commit.message, 'ci:disable-bazel-diff') || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+      - name: Record successful commit SHA
+        if: success() && github.event_name == 'push' && steps.check_superseded.outputs.skip != 'true'
+        run: echo "$GITHUB_SHA" > last_success_sha.txt
+
+      - name: Save last successful commit SHA
+        if: success() && github.event_name == 'push' && steps.check_superseded.outputs.skip != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: last_success_sha.txt
+          key: postsubmit-last-success-${{ matrix.job_info.bazel_config }}-${{ github.sha }}
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() && steps.check_superseded.outputs.skip != 'true'
         with:
           name: bazel-testlogs-${{ matrix.job_info.runner }}
           path: bazel-testlogs/
@@ -131,7 +194,7 @@ jobs:
   vllm_perf_eval:
     name: "vLLM Perf Eval"
     needs: [build_wheels]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: linux-x86-tpu7x-224-4tpu
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"

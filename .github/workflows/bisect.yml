@@ -1,0 +1,173 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI - Automated Bisection
+
+on:
+  workflow_run:
+    workflows: ["CI - Postsubmit"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      good_sha:
+        description: 'Last known good commit SHA (last successful postsubmit)'
+        required: false
+        default: ''
+        type: string
+      bad_sha:
+        description: 'First known bad commit SHA (failed postsubmit)'
+        required: false
+        default: ''
+        type: string
+      bazel_config:
+        description: 'Bazel config (e.g., ci_tpu_v5, ci_tpu_v6, ci_tpu_v7, ci_cpu)'
+        required: false
+        default: 'ci_tpu_v7'
+        type: string
+      runner:
+        description: 'Runner label (e.g., linux-x86-tpu7x-224-4tpu)'
+        required: false
+        default: 'linux-x86-tpu7x-224-4tpu'
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+# Guardrail 1: Global Concurrency Lock to limit simultaneous bisection runs on TPU runners
+concurrency:
+  group: postsubmit-bisect
+  cancel-in-progress: false
+
+jobs:
+  bisect:
+    name: "Bisect Postsubmit Breakage"
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ${{ inputs.runner || 'linux-x86-tpu7x-224-4tpu' }}
+    # Guardrail 3: Hard job timeout limit
+    timeout-minutes: 45
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Guardrail 2: Only auto-bisect on GREEN -> RED transitions to prevent re-bisecting broken main
+      - name: Check if main was already failing
+        id: check_prior_run
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_RUN_ID="${{ github.event.workflow_run.id }}"
+          PREV_CONCLUSION=$(gh run list \
+            --workflow="CI - Postsubmit" \
+            --branch=main \
+            --limit=5 \
+            --json databaseId,conclusion \
+            --jq "[.[] | select(.databaseId != $CURRENT_RUN_ID)][0].conclusion" 2>/dev/null || echo "unknown")
+
+          if [ "$PREV_CONCLUSION" == "failure" ]; then
+            echo "::notice::Main branch was already failing in prior postsubmit run. Skipping duplicate bisection to conserve TPU resources."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Perform Automated Bisection
+        id: bisect_step
+        if: steps.check_prior_run.outputs.skip != 'true'
+        env:
+          INPUT_GOOD_SHA: ${{ inputs.good_sha }}
+          INPUT_BAD_SHA: ${{ inputs.bad_sha }}
+          BAZEL_CONFIG: ${{ inputs.bazel_config || 'ci_tpu_v7' }}
+          EVENT_BAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git fetch origin main --quiet
+
+          BAD_SHA="${INPUT_BAD_SHA:-$EVENT_BAD_SHA}"
+          if [ -z "$BAD_SHA" ]; then
+            BAD_SHA=$(git rev-parse HEAD)
+          fi
+
+          GOOD_SHA="$INPUT_GOOD_SHA"
+          if [ -z "$GOOD_SHA" ]; then
+            # Find the last green commit SHA (or default to 5 commits prior)
+            GOOD_SHA=$(git rev-parse "${BAD_SHA}~5" 2>/dev/null || git rev-parse origin/main~5)
+          fi
+
+          echo "Starting automated bisection for commit range: $GOOD_SHA .. $BAD_SHA"
+
+          # Start git bisect
+          git bisect start "$BAD_SHA" "$GOOD_SHA"
+
+          # Guardrail 3: Maximum iteration cap to protect TPU runners
+          MAX_ITERATIONS=5
+          ITERATION=0
+
+          while true; do
+            ITERATION=$((ITERATION + 1))
+            CURRENT_SHA=$(git rev-parse HEAD)
+            echo "=========================================================="
+            echo "Testing bisect candidate commit [$ITERATION/$MAX_ITERATIONS]: $CURRENT_SHA"
+            echo "=========================================================="
+
+            set +e
+            bazel test --config="$BAZEL_CONFIG" //...
+            TEST_STATUS=$?
+            set -e
+
+            if [ $TEST_STATUS -eq 0 ]; then
+              echo "Commit $CURRENT_SHA passed tests. Marking as GOOD."
+              BISECT_OUTPUT=$(git bisect good)
+            else
+              echo "Commit $CURRENT_SHA failed tests with code $TEST_STATUS. Marking as BAD."
+              BISECT_OUTPUT=$(git bisect bad)
+            fi
+
+            echo "$BISECT_OUTPUT"
+
+            # Check if bisection is finished
+            if echo "$BISECT_OUTPUT" | grep -q "is the first bad commit"; then
+              CULPRIT_SHA=$(echo "$BISECT_OUTPUT" | head -n 1 | awk '{print $1}')
+              echo "CULPRIT_SHA=$CULPRIT_SHA" >> "$GITHUB_OUTPUT"
+              echo "Culprit commit identified: $CULPRIT_SHA"
+              break
+            fi
+
+            if [ $ITERATION -ge $MAX_ITERATIONS ]; then
+              echo "::warning::Reached maximum bisection iterations ($MAX_ITERATIONS). Stopping bisection to conserve TPU runner capacity."
+              echo "CULPRIT_SHA=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+
+      - name: Report Culprit Commit
+        if: steps.bisect_step.outputs.CULPRIT_SHA != ''
+        run: |
+          CULPRIT="${{ steps.bisect_step.outputs.CULPRIT_SHA }}"
+          echo "=========================================================="
+          echo "Bisection Complete! Culprit Commit: $CULPRIT"
+          git log -1 "$CULPRIT"
+          echo "=========================================================="
