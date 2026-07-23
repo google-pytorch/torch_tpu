@@ -67,6 +67,7 @@ if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
   echo "No BASE_SHA provided (not a PR), bazel-diff disabled via PR label or global configuration files modified. Skipping bazel-diff and running all tests."
 
   set +e
+  echo "Executing: bazel test --config=\"$BAZEL_CONFIG\" $EXTRA_FLAGS //..."
   eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS //...
   BAZEL_EXIT_CODE=$?
   set -e
@@ -118,6 +119,7 @@ if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   # as a hard error -- unlike the wildcard //... runs everywhere else, which
   # skip it. --skip_incompatible_explicit_targets restores the wildcard
   # behavior, so config-gated tests are skipped rather than failing presubmit.
+  echo "Executing: bazel test --config=\"$BAZEL_CONFIG\" $EXTRA_FLAGS --skip_incompatible_explicit_targets --target_pattern_file=\"$WORKSPACE_DIR/impacted_targets.txt\""
   eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS --skip_incompatible_explicit_targets --target_pattern_file="$WORKSPACE_DIR/impacted_targets.txt"
   BAZEL_EXIT_CODE=$?
 
