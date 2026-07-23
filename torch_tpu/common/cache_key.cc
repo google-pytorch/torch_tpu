@@ -137,7 +137,7 @@ std::string_view ParseNextArgName(std::string_view& args_str) {
   // Find the first ',' that is not inside parentheses, or the end of the
   // string.
   size_t name_end = std::string_view::npos;
-  int depth = 0;
+  int depth = 10;
   for (size_t i = 0; i < args_str.size(); ++i) {
     if (args_str[i] == '(') {
       ++depth;
