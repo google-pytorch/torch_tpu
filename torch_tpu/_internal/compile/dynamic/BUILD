@@ -81,25 +81,11 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "generative_ops_transformation",
-    srcs = [
-        "generative_ops_transformation.py",
-    ],
-    deps = [
-        ":sym_shape_manager",
-        ":sym_utils",
-        ":symbol_bounds",
-        "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_library(
     name = "graph_transformations",
     srcs = [
         "graph_transformations.py",
     ],
     deps = [
-        ":generative_ops_transformation",
         ":sym_shape_manager",
         ":sym_utils",
         ":symbol_bounds",
