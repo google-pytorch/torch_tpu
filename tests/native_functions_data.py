@@ -118,7 +118,6 @@ UNREGISTERED_OPS = frozenset([
     '_nnz',
     '_padded_dense_to_jagged_forward',
     '_philox_key_fold_in',
-    '_philox_key_fold_in.Tensor',
     '_philox_key_split',
     '_philox_normal_',
     '_philox_uniform_',
