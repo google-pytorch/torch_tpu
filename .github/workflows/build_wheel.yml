@@ -118,18 +118,17 @@ jobs:
             wheel_version: "cuda"
             custom_name: "CPU (CUDA wheel)"
             runner: linux-x86-n4-16
-            config: "wheel_test_cpu"
-            extra_flags: '--define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
-            allowed_to_fail: true
-            expected_failure: true
+            nox_smoke_test: "cpu-cuda"
+            allowed_to_fail: false
           - python_version: ${{ needs.setup.outputs.default_python_version }}
             wheel_version: "nightly"
             custom_name: "CPU (PyTorch Nightly)"
             runner: linux-x86-n4-16
-            config: "wheel_test_cpu"
-            extra_flags: '--define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
+            nox_smoke_test: "cpu-nightly"
+            # Nightly torch is typically ahead of every glue the wheel ships,
+            # so this cannot gate PRs yet; it goes green (and can be promoted
+            # to a hard gate) once nightly-compatible glue lands.
             allowed_to_fail: true
-            expected_failure: true
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.allowed_to_fail }}
     container:
@@ -152,33 +151,67 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${{ matrix.python_version }}" | tr -d '.')
           gcloud storage cp "${{ needs.build_wheels.outputs.gcs_wheel_dir }}*cp${PYTHON_VER_CLEAN}*.whl" dist/
-      - name: Download a specific CUDA-enabled torch wheel to verify the override mechanism
-        if: matrix.wheel_version == 'cuda'
-        run: |
-          pip download dist/*.whl -d dist/
-          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
-          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
-          echo "Exported TORCH_SOURCE=$WHEEL_PATH"
-      - name: Download PyTorch Nightly Wheel to verify the override mechanism
-        if: matrix.wheel_version == 'nightly'
-        run: |
-          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
-          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
-          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
-          echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      # For the alternate-torch wheel variants (CUDA, nightly), run a trimmed-
+      # down smoke test instead of the bazel test suite: nox installs the built
+      # wheel and the torch variant in a single uv resolution, then checks that
+      # the backend autoloads. Soft-fail variants swallow the failure at the
+      # step level (a job-level continue-on-error still shows a red X on the
+      # PR) and surface it as a warning annotation instead.
+      - name: Run smoke tests via nox
+        id: nox_smoke
+        if: matrix.nox_smoke_test
+        continue-on-error: ${{ matrix.allowed_to_fail == true }}
+        run: uvx nox --force-python ${{ matrix.python_version }} -s "smoke_test(${{ matrix.nox_smoke_test }})"
+      - name: Surface soft-failed smoke tests as a warning
+        if: matrix.nox_smoke_test && steps.nox_smoke.outcome == 'failure'
+        run: echo "::warning title=${{ matrix.custom_name }} smoke test failed (allowed)::The ${{ matrix.wheel_version }} torch smoke test failed; this variant is allowed to fail until compatible glue ships."
       - name: Run Impacted Tests via bazel-diff
+        if: ${{ !matrix.nox_smoke_test }}
         uses: ./.github/actions/bazel-diff
-        continue-on-error: ${{ matrix.expected_failure == true }}
         with:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  # Confirm each intermediate PyTorch patch (one we ship no exact glue for) is
+  # served by its same-minor glue: the nox session runs the CPU smoke tests
+  # once per entry in INTERMEDIATE_PATCH_VERSIONS (bazel/pytorch_versions.bzl),
+  # all within this single job. The glue is linked with `-z now`, so an
+  # ABI-incompatible glue fails the autoload import outright. Nothing here is
+  # TPU-specific, so it runs on a CPU runner against the default Python.
+  test_wheel_intermediate_patches:
+    name: "Test wheel on intermediate PyTorch patches (Python ${{ needs.setup.outputs.default_python_version }})"
+    needs: [build_wheels, setup]
+    runs-on: linux-x86-n4-16
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
+      # container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${{ needs.setup.outputs.default_python_version }}" | tr -d '.')
+          gcloud storage cp "${{ needs.build_wheels.outputs.gcs_wheel_dir }}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Run smoke tests against intermediate patches via nox
+        run: uvx nox --force-python ${{ needs.setup.outputs.default_python_version }} -s intermediate_patch_abi
 
   test_wheels_tpu:
     name: Test wheel on ${{ matrix.custom_name || 'TPU' }} (Python ${{ matrix.python_version }})
@@ -203,11 +236,12 @@ jobs:
           - python_version: ${{ needs.setup.outputs.default_python_version }}
             wheel_version: "nightly"
             runner: linux-x86-ct5lp-224-8tpu
-            config: "wheel_test_tpu_v5"
             custom_name: "TPU v5 (PyTorch Nightly)"
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --define TORCH_SOURCE=local --repo_env=TORCH_SOURCE=$TORCH_SOURCE'
+            nox_smoke_test: "tpu-nightly"
+            # Nightly torch is typically ahead of every glue the wheel ships,
+            # so this cannot gate PRs yet; it goes green (and can be promoted
+            # to a hard gate) once nightly-compatible glue lands.
             allowed_to_fail: true
-            expected_failure: true
     runs-on: ${{ matrix.runner || 'linux-x86-ct5lp-224-8tpu' }}
     continue-on-error: ${{ matrix.allowed_to_fail }}
     container:
@@ -230,23 +264,30 @@ jobs:
           mkdir dist
           PYTHON_VER_CLEAN=$(echo "${{ matrix.python_version }}" | tr -d '.')
           gcloud storage cp "${{ needs.build_wheels.outputs.gcs_wheel_dir }}*cp${PYTHON_VER_CLEAN}*.whl" dist/
-      - name: Download PyTorch Nightly Wheel to verify the override mechanism
-        if: matrix.wheel_version == 'nightly'
-        run: |
-          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
-          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
-          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
-          echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Wait For Connection
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      # For the alternate-torch wheel variants (nightly), run a trimmed-down
+      # smoke test instead of the bazel test suite: nox installs the built
+      # wheel and the torch variant in a single uv resolution, then checks that
+      # the backend autoloads. Soft-fail variants swallow the failure at the
+      # step level (a job-level continue-on-error still shows a red X on the
+      # PR) and surface it as a warning annotation instead.
+      - name: Run smoke tests via nox
+        id: nox_smoke
+        if: matrix.nox_smoke_test
+        continue-on-error: ${{ matrix.allowed_to_fail == true }}
+        run: uvx nox --force-python ${{ matrix.python_version }} -s "smoke_test(${{ matrix.nox_smoke_test }})"
+      - name: Surface soft-failed smoke tests as a warning
+        if: matrix.nox_smoke_test && steps.nox_smoke.outcome == 'failure'
+        run: echo "::warning title=${{ matrix.custom_name }} smoke test failed (allowed)::The ${{ matrix.wheel_version }} torch smoke test failed; this variant is allowed to fail until compatible glue ships."
       - name: Run Impacted Tests via bazel-diff
+        if: ${{ !matrix.nox_smoke_test }}
         uses: ./.github/actions/bazel-diff
-        continue-on-error: ${{ matrix.expected_failure == true }}
         with:
           base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
-          disable_bazel_diff: ${{ matrix.allowed_to_fail || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

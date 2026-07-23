@@ -17,10 +17,12 @@ load("@rules_python//python:py_test.bzl", "py_test")
 load("@torch_tpu_deps//:dependencies.bzl", "WHEEL_REQUIRES")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//bazel:pytorch_versions.bzl", "WHEEL_TORCH_VERSIONS")
 load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 load("//build_files:build_defs.bzl", "torch_tpu_py_test")
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//ci/wheel:pywrap_mapper.bzl", "remap_pywrap_binaries")
+load("//shims/build_files:torch_version.bzl", "version_suffix")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_library")
 
 package(
@@ -60,9 +62,18 @@ pytype_strict_binary(
     visibility = ["//visibility:public"],
 )
 
+# The pip wheel is always the versioned, separated layout: one thin glue `.so`
+# per supported PyTorch version, all sharing a single XLA/MLIR base library
+# (libxla_base.so), with runtime dispatch (torch_tpu/_versioned_so_loader.py)
+# selecting the glue for the installed torch. Each per-version pywrap_library
+# lives in its own package, generated into @torch_tpu_glues from
+# WHEEL_TORCH_VERSIONS (see //bazel:glue_packages.bzl).
 remap_pywrap_binaries(
     name = "remapped_pywrap_binaries",
-    srcs = "//torch_tpu/common:pywrap_torch_tpu_binaries",
+    srcs = [
+        "@torch_tpu_glues//torch_tpu/common/glue_{}:binaries".format(version_suffix(v))
+        for v in WHEEL_TORCH_VERSIONS
+    ],
 )
 
 pytype_strict_library(
@@ -173,6 +184,21 @@ py_test(
         "//conditions:default": _COMMON_ENV,
     }),
     python_version = "PY3",
+    deps = [
+        "//shims/absl_py/testing:absltest",
+    ],
+)
+
+# Structural checks on the multi-ABI wheel: one shared libxla_base.so, a glue +
+# torch common per built version, the shared base is XLA-only, and no libtorch
+# is bundled. Needs nm/readelf/c++filt (binutils), which the image provides.
+py_test(
+    name = "wheel_structure_test",
+    srcs = ["wheel_structure_test.py"],
+    data = [":torch_tpu_wheel"],
+    env = {"WHEEL_PATH": "$(location :torch_tpu_wheel)"},
+    python_version = "PY3",
+    tags = ["manual"],
     deps = [
         "//shims/absl_py/testing:absltest",
     ],

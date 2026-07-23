@@ -20,6 +20,7 @@ load(
     "pywrap_binaries",
     "pywrap_library",
 )
+load("//bazel:pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 load(
     "//build_files:build_defs.bzl",
     "torch_tpu_cc_library",
@@ -31,10 +32,13 @@ load(
     "add_internal_filesystem_dependencies",
 )
 load(
+    "//shims/build_files:torch_version.bzl",
+    "xla_base_filter",
+)
+load(
     "//shims/pybind11:pybind.bzl",
     "backend_probe_labels",
 )
-load(":pywrap_extensions.bzl", "PYWRAP_EXTENSIONS")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -798,37 +802,29 @@ torch_tpu_cc_library(
 
 # NOTE: Configures RPATH for C++ extensions in the standalone pip wheel.
 # This ensures the dynamic linker can locate libtorch.so in site-packages/torch/
-# at runtime.
+# at runtime. Two entries cover the two depths at which a torch-linking artifact
+# lands in the wheel: the glues and the single-version common at
+# site-packages/torch_tpu/{_internal,common} (../../), and the per-version torch
+# commons at site-packages/torch_tpu/common/glue_<suffix> (../../../).
 torch_tpu_cc_library(
     name = "torch_rpath_flags",
     linkopts = [
         "-Wl,-rpath='$$ORIGIN/../../torch/lib'",
+        "-Wl,-rpath='$$ORIGIN/../../../torch/lib'",
     ],
-    visibility = ["//visibility:private"],
+    # The per-version wheel glues in //torch_tpu/common/glue_<suffix> pull this
+    # in through their pywrap_library (extra_deps), so it must be visible to
+    # this package's subpackages, not just this package.
+    visibility = ["//torch_tpu/common:__subpackages__"],
 )
 
-# Aggregate of every extension's `_backend_probe` (a plain mirror of its
-# external backend deps -- XLA, MLIR, absl, ..., everything but PyTorch). As a
-# `common_lib_filters` entry its transitive linker inputs tell pywrap which of
-# the extensions' inputs to factor into the shared libxla_base.so; everything
-# else (torch_tpu's own PyTorch-touching code) stays in the default common
-# library. The split keeps the massive PyTorch-free backend in a library that
-# never depends on libtorch, the prerequisite for shipping one thin glue per
-# PyTorch version later without duplicating it.
-cc_library(
-    name = "_xla_base_agg",
-    visibility = ["//visibility:private"],
-    deps = backend_probe_labels(PYWRAP_EXTENSIONS),
-)
-
-# NOTE: Central aggregator for all C++ Python extensions in torch_tpu.
-# Any new pybind_extension target created in the codebase MUST be added to
-# pywrap_extensions.bzl to ensure it is packaged into the standalone pip wheel.
+# Single-version aggregator used by bazel-only builds and tests (injected into
+# every torch_tpu_py_test via extra_pywrap_deps). Built against the default
+# PyTorch; not the wheel layout. (The extension list lives in
+# pywrap_extensions.bzl so the per-version wheel pywrap_library targets under
+# //torch_tpu/common/glue_<suffix> can share it.)
 pywrap_library(
     name = "pywrap_torch_tpu",
-    common_lib_filters = {
-        "torch_tpu/common/xla_base": ":_xla_base_agg",
-    },
     extra_deps = [
         ":torch_rpath_flags",
         "//shims/torch:torch_python",
@@ -840,6 +836,22 @@ pywrap_library(
 pywrap_binaries(
     name = "pywrap_torch_tpu_binaries",
     dep = ":pywrap_torch_tpu",
+    visibility = ["//:__subpackages__"],
+)
+
+# Aggregate of every extension's `_backend_probe` (a plain mirror of its deps).
+# Fed to `xla_base_filter`, which re-exports it under the sentinel config so the
+# per-version wheel pywrap_library targets can factor the shared, torch-free
+# XLA/MLIR/absl backend into a single libxla_base.so.
+cc_library(
+    name = "_xla_base_agg",
+    visibility = ["//visibility:private"],
+    deps = backend_probe_labels(PYWRAP_EXTENSIONS),
+)
+
+xla_base_filter(
+    name = "xla_base_filter",
+    dep = ":_xla_base_agg",
     visibility = ["//:__subpackages__"],
 )
 

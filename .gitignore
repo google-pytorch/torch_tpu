@@ -11,6 +11,8 @@ user.bazelrc
 
 # Generated Python artifacts.
 *.pyc
+# Built wheels, consumed by the nox smoke-test sessions.
+dist/
 */**/__pycache__
 # Virtual environments
 .venv/

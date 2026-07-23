@@ -10,6 +10,12 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.14",
 ]
 
+# The Python version the standard build defaults to. Like the list above, the
+# single source of truth is //bazel:supported_python_versions.bzl -- this copy
+# exists because MODULE.bazel cannot load() Starlark, and is kept in sync by
+# hand.
+DEFAULT_PYTHON_VERSION = "3.12"
+
 # BCR dependencies
 bazel_dep(name = "abseil-cpp", version = "20260526.0", repo_name = "com_google_absl")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
@@ -119,7 +125,7 @@ use_repo(
 # Python extension
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.defaults(
-    python_version = "3.12",
+    python_version = DEFAULT_PYTHON_VERSION,
     python_version_env = "HERMETIC_PYTHON_VERSION",
 )
 
@@ -135,32 +141,68 @@ python.defaults(
 # Pip extension
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 
-[pip.parse(
-    extra_hub_aliases = {
-        "torch": [
-            "torch_headers",
-            "torch_libs",
-            "libc10",
-            "libtorch_cpu",
-            "libtorch_python",
-            "libtorch",
-            "libshm",
-            "libtorch_global_deps",
-        ],
-    },
-    extra_pip_args = [
-        "--index-url",
-        "https://pypi.org/simple",
-        "--extra-index-url",
-        "https://download.pytorch.org/whl/cpu",
+# Shared torch pip-hub configuration, factored out so the default hub and the
+# per-version hubs below cannot drift. Every torch hub exposes the same split
+# libtorch aliases, fetches from the same indexes, and applies the same wheel
+# modifications; only hub_name and requirements_lock differ.
+_TORCH_HUB_ALIASES = {
+    "torch": [
+        "torch_headers",
+        "torch_libs",
+        "libc10",
+        "libtorch_cpu",
+        "libtorch_python",
+        "libtorch",
+        "libshm",
+        "libtorch_global_deps",
     ],
+}
+_TORCH_EXTRA_PIP_ARGS = [
+    "--index-url",
+    "https://pypi.org/simple",
+    "--extra-index-url",
+    "https://download.pytorch.org/whl/cpu",
+]
+_TORCH_WHL_MODIFICATIONS = {
+    "//bazel:torch_wheel.json": "torch",
+}
+
+[pip.parse(
+    extra_hub_aliases = _TORCH_HUB_ALIASES,
+    extra_pip_args = _TORCH_EXTRA_PIP_ARGS,
     hub_name = "torch_tpu_pypi",
     python_version = python_version,
     requirements_lock = "//requirements:requirements_{}.txt".format(python_version.replace(".", "_")),
-    whl_modifications = {
-        "//bazel:torch_wheel.json": "torch",
-    },
+    whl_modifications = _TORCH_WHL_MODIFICATIONS,
 ) for python_version in SUPPORTED_PYTHON_VERSIONS]
+
+# Additional PyTorch versions for the multi-ABI wheel. The default hub above
+# provides the default torch version (via requirements_{py}.txt) plus the whole
+# runtime environment. A per-version glue is only *compiled and linked* against
+# PyTorch itself -- the rest of the environment is ABI-independent and shared --
+# so each extra version only needs the torch wheel, locked on its own in a small
+# torch-only requirements file.
+#
+# Single source of truth: //bazel:pytorch_versions.bzl (EXTRA_PYTORCH_VERSIONS).
+# MODULE.bazel cannot load() Starlark, so -- exactly like SUPPORTED_PYTHON_VERSIONS
+# above -- this list is kept in sync by hand. requirements/lock_environments.sh
+# reads the same .bzl to regenerate the torch-only locks.
+EXTRA_PYTORCH_VERSIONS = [
+    "2.12.0",
+]
+
+[pip.parse(
+    extra_hub_aliases = _TORCH_HUB_ALIASES,
+    extra_pip_args = _TORCH_EXTRA_PIP_ARGS,
+    hub_name = "torch_tpu_pypi_" + torch_version.replace(".", "_"),
+    python_version = python_version,
+    # A single torch-only lock lists every wheel for the version; pip selects the
+    # one matching each Python version at fetch time.
+    requirements_lock = "//requirements:requirements_torch_{}.txt".format(
+        torch_version.replace(".", "_"),
+    ),
+    whl_modifications = _TORCH_WHL_MODIFICATIONS,
+) for torch_version in EXTRA_PYTORCH_VERSIONS for python_version in SUPPORTED_PYTHON_VERSIONS]
 
 # Expose the pip repositories using the names your BUILD files expect
 use_repo(pip, pypi = "torch_tpu_pypi")
@@ -172,6 +214,23 @@ use_repo(pip, pypi = "torch_tpu_pypi")
         "pypi_torch_" + v.replace(".", ""): "torch_tpu_pypi_" + v.replace(".", "") + "_torch",
     }
 ) for v in SUPPORTED_PYTHON_VERSIONS]
+
+# Only each extra hub's default-Python spoke is referenced from the main repo:
+# every extra torch version currently resolves to the default Python's wheel
+# (see _EXTRA_TORCH_PY in //shims/torch:torch_wheel_select.bzl), so only those
+# repositories need importing.
+[use_repo(
+    pip,
+    **{
+        "pypi_torch_{}_{}".format(
+            tv.replace(".", "_"),
+            DEFAULT_PYTHON_VERSION.replace(".", ""),
+        ): "torch_tpu_pypi_{}_{}_torch".format(
+            tv.replace(".", "_"),
+            DEFAULT_PYTHON_VERSION.replace(".", ""),
+        ),
+    }
+) for tv in EXTRA_PYTORCH_VERSIONS]
 
 # Custom repository rules
 torch_local_repo = use_repo_rule("//bazel:torch_local_repo.bzl", "torch_local_repo")
@@ -185,6 +244,15 @@ torch_tpu_version_repo = use_repo_rule("//bazel:wheel_version.bzl", "torch_tpu_v
 torch_tpu_version_repo(
     name = "torch_tpu_version",
     pyproject_toml = "//:pyproject.toml",
+)
+
+# The per-version glue pywrap packages for the multi-ABI wheel, generated from
+# WHEEL_TORCH_VERSIONS so adding a PyTorch version needs no new checked-in
+# packages. See //bazel:glue_packages.bzl.
+glue_packages = use_repo_rule("//bazel:glue_packages.bzl", "glue_packages")
+
+glue_packages(
+    name = "torch_tpu_glues",
 )
 
 # Load and run the custom extension

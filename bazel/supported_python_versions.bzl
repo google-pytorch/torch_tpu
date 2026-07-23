@@ -20,3 +20,10 @@ SUPPORTED_PYTHON_VERSIONS = [
     "3.13",
     "3.14",
 ]
+
+# The Python version the standard build defaults to (python.defaults in
+# MODULE.bazel). The extra PyTorch versions' torch wheels currently resolve
+# only for this version (see //shims/torch:torch_wheel_select.bzl).
+# MODULE.bazel cannot load() this file, so its copy of this constant is kept
+# in sync by hand, checked by ci/tools/sync_module_bazel_versions.py.
+DEFAULT_PYTHON_VERSION = "3.12"

@@ -26,7 +26,12 @@ def main():
   parser.add_argument(
       "--manifest",
       required=True,
-      help="Path to .json containing the mapping of pywrap binaries.",
+      action="append",
+      help=(
+          "Path to a .json mapping of pywrap binaries. May be repeated (one per"
+          " pywrap_library) for the multi-version wheel; the per-version common"
+          " libraries share the single libxla_base.so."
+      ),
   )
   parser.add_argument("--out_dir", required=True)
   parser.add_argument("binaries", nargs="+")
@@ -34,8 +39,10 @@ def main():
 
   binary_map = {os.path.basename(p): p for p in args.binaries}
 
-  with open(args.manifest, "r") as f:
-    mapping = json.load(f)
+  mapping = {}
+  for manifest_path in args.manifest:
+    with open(manifest_path, "r") as f:
+      mapping.update(json.load(f))
 
   for original_path, dest_full_path in mapping.items():
     if not dest_full_path:
@@ -46,13 +53,19 @@ def main():
       continue
 
     src = binary_map[basename]
-    clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
-
-    # If the regex didn't match (e.g. no /bin/), fallback to original
-    if clean_dest_path == dest_full_path:
-      # Fallback logic: Assume the first directory component is the start
-      # This handles cases where the path might be different
-      pass
+    if dest_full_path.startswith(original_path) and len(dest_full_path) > len(
+        original_path
+    ):
+      # pywrap_binaries derives each destination as "<root><pkg>/<basename>",
+      # where <root> comes from splitting the binary's path on its short_path.
+      # For a binary built in an external repository (our generated glue
+      # packages) the short_path spells the repo "../<repo>/" while the path
+      # spells it "external/<repo>/", so the split never matches and the "root"
+      # degenerates to the binary's entire path -- which is also this mapping's
+      # key. The intended "<package>/<basename>" tail survives after it.
+      clean_dest_path = dest_full_path[len(original_path) :].lstrip("/")
+    else:
+      clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
 
     dest = os.path.join(args.out_dir, clean_dest_path)
 

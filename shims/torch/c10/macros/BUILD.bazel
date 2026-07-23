@@ -14,13 +14,17 @@
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//shims/torch:torch_wheel_select.bzl", "torch_headers_select")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
 cc_library(
     name = "macros",
-    deps = select({
+    # torch_headers_select adds the per-version wheel-glue rows (matching
+    # //shims/torch:torch_headers) so this header set follows the //:_torch_version
+    # transition instead of pinning the default torch's ABI.
+    deps = select(torch_headers_select({
         "//shims/torch:use_local_torch": ["@local_torch//:torch_headers"],
         "//conditions:default": ["@pypi//torch:torch_headers"],
-    }),
+    })),
 )

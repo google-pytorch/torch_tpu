@@ -21,15 +21,15 @@ load(
 load("//build_files:build_defs_test.bzl", "build_defs_test_suite")
 load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 
-exports_files([
-    "lsan_suppressions.txt",
-    "tsan_suppressions.txt",
-])
-
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
+
+exports_files([
+    "lsan_suppressions.txt",
+    "tsan_suppressions.txt",
+])
 
 bzl_library(
     name = "build_defs_bzl",
@@ -38,6 +38,7 @@ bzl_library(
         "//bazel:supported_python_versions_bzl",
         "//shims/build_cleaner:build_defs_lib",
         "//shims/build_files:build_defs_bzl",
+        "//shims/build_files:torch_version_bzl",
         "//shims/py_platform_test:py_platform_test_bzl",
         "//shims/py_rules:pytype_bzl",
         "@bazel_skylib//rules:build_test",

@@ -14,6 +14,15 @@
 
 """TorchTPU library."""
 
+import pathlib
+
+# Install the version-dispatch import hook before any torch_tpu._internal C++
+# extension is imported, so imports resolve to the glue built for the installed
+# PyTorch. This is a no-op for an unversioned build, which has no bundled glue.
+from torch_tpu import _versioned_so_loader
+
+_versioned_so_loader.install_hook(pathlib.Path(__file__).parent)
+
 try:
   import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
 

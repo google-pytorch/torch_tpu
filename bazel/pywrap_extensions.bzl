@@ -14,10 +14,9 @@
 
 """Central list of every C++ Python extension in torch_tpu.
 
-Any new pybind_extension target created in the codebase MUST be added here so
-it is linked into the aggregating pywrap_library
-(//torch_tpu/common:pywrap_torch_tpu) and its backend probe feeds the shared
-XLA base filter (//torch_tpu/common:_xla_base_agg).
+Any new pybind_extension target created in the codebase MUST be added here so it
+is linked into both the bazel-only aggregator (//torch_tpu/common:pywrap_torch_tpu)
+and every per-version wheel pywrap_library (//torch_tpu/common/glue_<suffix>).
 """
 
 PYWRAP_EXTENSIONS = [

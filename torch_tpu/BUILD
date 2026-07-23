@@ -65,13 +65,17 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/device:_tpu_backend_config",
         "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/optim",
         "//torch_tpu/_internal/precision",
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/sync",
         "//torch_tpu/_internal/tracing",
         "//torch_tpu/_internal/utils:hardware",
     ],
+)
+
+torch_tpu_py_library(
+    name = "_versioned_so_loader",
+    srcs = ["_versioned_so_loader.py"],
 )
 
 py_library_providing_imports_info(
@@ -97,6 +101,7 @@ py_library_providing_imports_info(
         [],
     ) + [
         ":_loader",
+        ":_versioned_so_loader",
         "//torch_tpu/_internal:testing",  # buildcleaner: keep
     ],
 )
