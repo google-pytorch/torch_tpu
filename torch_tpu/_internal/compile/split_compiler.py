@@ -52,6 +52,8 @@ _COLLECTIVE_OPS = (
     torch.ops._c10d_functional.broadcast,
     torch.ops._c10d_functional.broadcast_,
 )
+# Integrations can register custom ops whose opaque implementations perform a
+# collective, allowing the split compiler to preserve their ordering boundary.
 _REGISTERED_COLLECTIVE_OPS = set()
 # pylint: enable=protected-access
 
@@ -68,6 +70,8 @@ def _get_collective_target(node: torch.fx.Node) -> Any | None:
   collective_ops = _COLLECTIVE_OPS + tuple(_REGISTERED_COLLECTIVE_OPS)
   if target in collective_ops:
     return target
+  # Functionalization represents mutable custom ops through this wrapper; its
+  # first positional argument is the underlying operator being functionalized.
   if (
       getattr(node.target, "__name__", "") == "auto_functionalized_v2"
       and node.args
@@ -84,6 +88,8 @@ def _concretize_fake_tensor(
 ) -> torch._subclasses.FakeTensor:  # pylint: disable=protected-access
   if tensor.layout != torch.strided:
     return tensor
+  # Downstream partitions need concrete input metadata, but recreating the view
+  # on a meta tensor keeps this propagation allocation-free.
   sizes = tuple(size_hint(size) for size in tensor.shape)
   strides = tuple(size_hint(stride) for stride in tensor.stride())
   storage_offset = size_hint(
