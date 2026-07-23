@@ -161,6 +161,7 @@ class BazelDiffOptions:
   workflow_ref: str
   mode: Mode = Mode.ALL
   impacted_targets_file: pathlib.Path | None = None
+  filter_ops_tests: bool = True
 
 
 def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
@@ -198,6 +199,14 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
       help=(
           "Set to 'true' to bypass bazel-diff target selection and run all"
           " tests."
+      ),
+  )
+  parser.add_argument(
+      "--filter-ops-tests",
+      default="true",
+      help=(
+          "Set to 'false' to retain impacted ops-test targets even when no"
+          " files in OPS_TEST_PATHS changed (e.g. in postsubmit)."
       ),
   )
   parser.add_argument(
@@ -244,6 +253,7 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
           if ns.impacted_targets_file
           else None
       ),
+      filter_ops_tests=(str(ns.filter_ops_tests).lower() != "false"),
   )
 
 
@@ -322,16 +332,38 @@ def list_files_at_commit(sha: str) -> Sequence[str]:
   return out.splitlines()
 
 
+def filter_targets(
+    impacted_targets: Sequence[str],
+    excluded_targets: Sequence[str],
+) -> Sequence[str]:
+  """Subtracts excluded_targets from impacted_targets, preserving order."""
+  # bazel-diff under Bzlmod outputs canonical labels prefixed with "@@//"
+  # (e.g. "@@//tests:ops_test"), whereas `bazel query` outputs apparent labels
+  # starting with "//" (e.g. "//tests:ops_test"). Normalize both before
+  # matching.
+  excluded_set = {t.removeprefix("@@") for t in excluded_targets}
+  return [
+      t for t in impacted_targets if t.removeprefix("@@") not in excluded_set
+  ]
+
+
 def filter_ops_test_targets(
     impacted_targets: Sequence[str],
     ops_test_targets: Sequence[str],
 ) -> Sequence[str]:
   """Subtracts ops-test targets from impacted_targets, preserving order."""
-  # bazel-diff under Bzlmod outputs canonical labels prefixed with "@@//"
-  # (e.g. "@@//tests:ops_test"), whereas `bazel query` outputs apparent labels
-  # starting with "//" (e.g. "//tests:ops_test"). Normalize both before matching.
-  ops_set = {t.removeprefix("@@") for t in ops_test_targets}
-  return [t for t in impacted_targets if t.removeprefix("@@") not in ops_set]
+  return filter_targets(impacted_targets, ops_test_targets)
+
+
+def _query_targets(query: str) -> Sequence[str]:
+  """Runs `bazel query` and returns non-empty stripped target labels."""
+  query_res = subprocess.run(
+      ["bazel", "query", query],
+      capture_output=True,
+      text=True,
+      check=True,
+  )
+  return list(filter(None, map(str.strip, query_res.stdout.splitlines())))
 
 
 def read_targets_file(path: pathlib.Path) -> Sequence[str]:
@@ -820,9 +852,10 @@ def main(argv: Sequence[str]) -> int:
   test_all = opts.test_all
   run_ops_tests = True
 
-  # Ensure that OPS_TEST_PATHS patterns are keep-to-date with file names in the
-  # repository. Postsubmits (without a base SHA) do not select tests so ignored.
-  if base_sha:
+  # Ensure that OPS_TEST_PATHS patterns are up-to-date with file names in the
+  # repository. Ignored when ops-test filtering is disabled or no base SHA is
+  # present.
+  if base_sha and opts.filter_ops_tests:
     repo_files = list_files_at_commit(current_sha)
     unmatched = [
         pattern
@@ -874,9 +907,12 @@ def main(argv: Sequence[str]) -> int:
         write_github_output(has_impacted_targets=False, is_full_run=False)
       return 0
 
-    run_ops_tests = should_run_ops_tests(changed_files)
-    if run_ops_tests:
-      print("Operator lowering or OpInfo harness modified; keeping ops-test.")
+    if opts.filter_ops_tests:
+      run_ops_tests = should_run_ops_tests(changed_files)
+      if run_ops_tests:
+        print("Operator lowering or OpInfo harness modified; keeping ops-test.")
+    else:
+      print("ops-test filtering disabled; keeping impacted ops-test targets.")
 
   # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main)
   # or label "ci:disable-bazel-diff" is applied, diff-based testing is invalid.
@@ -939,6 +975,16 @@ def main(argv: Sequence[str]) -> int:
   )
 
   impacted_targets = read_targets_file(impacted_targets_file)
+  targets_filtered = False
+
+  # Wildcard `//...` skips `manual` targets, while `--target_pattern_file`
+  # passes explicit labels that bypass wildcard exclusion. Subtract all
+  # `manual` targets so incremental runs match `//...` semantics.
+  if impacted_targets:
+    manual_targets = _query_targets(r'attr(tags, "\bmanual\b", //...)')
+    if manual_targets:
+      impacted_targets = filter_targets(impacted_targets, manual_targets)
+      targets_filtered = True
 
   # When no files under OPS_TEST_PATHS were modified, query Bazel for all
   # targets tagged "ops-test" and subtract them from the impacted target list.
@@ -949,23 +995,20 @@ def main(argv: Sequence[str]) -> int:
         "No operator lowering or OpInfo harness changes; dropping ops-test"
         " targets."
     )
-    query_res = subprocess.run(
-        ["bazel", "query", r'attr(tags, "\bops-test\b", //tests/...)'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    ops_test_targets = list(
-        filter(None, map(str.strip, query_res.stdout.splitlines()))
+    ops_test_targets = _query_targets(
+        r'attr(tags, "\bops-test\b", //tests/...)'
     )
     if ops_test_targets:
       impacted_targets = filter_ops_test_targets(
           impacted_targets, ops_test_targets
       )
-      impacted_targets_file.write_text(
-          "\n".join(impacted_targets) + ("\n" if impacted_targets else ""),
-          encoding="utf-8",
-      )
+      targets_filtered = True
+
+  if targets_filtered:
+    impacted_targets_file.write_text(
+        "\n".join(impacted_targets) + ("\n" if impacted_targets else ""),
+        encoding="utf-8",
+    )
 
   if impacted_targets:
     print(f"Found {len(impacted_targets)} impacted target(s).")

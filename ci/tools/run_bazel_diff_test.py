@@ -78,10 +78,26 @@ class RunBazelDiffTest(unittest.TestCase):
         "extra_bazel_flags": "",
         "test_all": False,
         "workflow_ref": "",
+        "filter_ops_tests": True,
     }
     for field, expected_val in expected.items():
       with self.subTest(field=field):
         self.assertEqual(getattr(opts, field), expected_val)
+
+  def test_parse_args_filter_ops_tests(self):
+    cases = [
+        ([], True),
+        (["--filter-ops-tests=true"], True),
+        (["--filter-ops-tests=True"], True),
+        (["--filter-ops-tests="], True),
+        (["--filter-ops-tests=false"], False),
+        (["--filter-ops-tests=False"], False),
+    ]
+    for argv, expected in cases:
+      with self.subTest(argv=argv):
+        self.assertIs(
+            run_bazel_diff.parse_args(argv).filter_ops_tests, expected
+        )
 
   def test_is_global_bazel_config_modified(self):
     cases = [
@@ -1309,9 +1325,21 @@ class MainTest(unittest.TestCase):
         "@@//tests:ops_test_tpu-v5lite",
         "@@//tests:ops_test_tpu-v5lite_build_test",
     ])
-    self.mock_subprocess_run.return_value = mock.Mock(
-        returncode=0, stdout="//tests:ops_test_tpu-v5lite\n", stderr=""
-    )
+    queries: list[str] = []
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"]:
+        queries.append(args[2])
+        if "ops-test" in args[2]:
+          return subprocess.CompletedProcess(
+              args, 0, stdout="//tests:ops_test_tpu-v5lite\n", stderr=""
+          )
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
 
     with mock.patch.object(
         run_bazel_diff,
@@ -1324,6 +1352,13 @@ class MainTest(unittest.TestCase):
       )
 
     self.assertEqual(exit_code, 0)
+    self.assertEqual(
+        queries,
+        [
+            r'attr(tags, "\bmanual\b", //...)',
+            r'attr(tags, "\bops-test\b", //tests/...)',
+        ],
+    )
     self.mock_bazel_test.assert_not_called()
     self.assertEqual(
         (self.workspace / "impacted_targets.txt").read_text(encoding="utf-8"),
@@ -1333,6 +1368,179 @@ class MainTest(unittest.TestCase):
         self._github_output(),
         {"has_impacted_targets": "true", "is_full_run": "false"},
     )
+
+  def test_all_mode_drops_manual_targets_before_testing(self):
+    self._set_impacted_targets([
+        "@@//tests:eager_test_tpu-v5lite",
+        "@@//tests:ops_test_perf",
+        "@@//tests/torch:test_torch_tpu-v5lite",
+    ])
+    queries: list[str] = []
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"]:
+        queries.append(args[2])
+        if "manual" in args[2]:
+          return subprocess.CompletedProcess(
+              args,
+              0,
+              stdout=(
+                  "//tests:ops_test_perf\n//tests/torch:test_torch_tpu-v5lite\n"
+              ),
+              stderr="",
+          )
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
+
+    exit_code = self._run_main(bazel_config="ci_tpu_v5")
+
+    self.assertEqual(exit_code, 0)
+    self.assertIn(r'attr(tags, "\bmanual\b", //...)', queries)
+    self.assertEqual(
+        (self.workspace / "impacted_targets.txt").read_text(encoding="utf-8"),
+        "@@//tests:eager_test_tpu-v5lite\n",
+    )
+    self.mock_bazel_test.assert_called_once()
+
+  def test_all_mode_skips_bazel_when_only_manual_targets_impacted(self):
+    self._set_impacted_targets(["@@//tests/torch:test_torch_tpu-v5lite"])
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"] and "manual" in args[2]:
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="//tests/torch:test_torch_tpu-v5lite\n",
+            stderr="",
+        )
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
+
+    exit_code = self._run_main(bazel_config="ci_tpu_v5")
+
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(
+        (self.workspace / "impacted_targets.txt").read_text(encoding="utf-8"),
+        "",
+    )
+    self.mock_bazel_test.assert_not_called()
+
+  def test_calculate_mode_reports_no_work_when_only_manual_targets_impacted(
+      self,
+  ):
+    self._set_impacted_targets(["@@//tests:ops_test_perf"])
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"] and "manual" in args[2]:
+        return subprocess.CompletedProcess(
+            args, 0, stdout="//tests:ops_test_perf\n", stderr=""
+        )
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
+
+    with mock.patch.object(
+        run_bazel_diff, "config_selects_tests", autospec=True
+    ) as mock_selects:
+      exit_code = self._run_main("--mode=calculate", bazel_config="ci_tpu_v5")
+
+    self.assertEqual(exit_code, 0)
+    mock_selects.assert_not_called()
+    self.assertEqual(
+        self._github_output(),
+        {"has_impacted_targets": "false", "is_full_run": "false"},
+    )
+
+  def test_calculate_mode_fails_when_manual_target_query_fails(self):
+    self._set_impacted_targets(["@@//tests:cpu_test"])
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"] and "manual" in args[2]:
+        raise subprocess.CalledProcessError(1, list(args))
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
+
+    with (
+        mock.patch.object(
+            run_bazel_diff, "config_selects_tests", autospec=True
+        ) as mock_selects,
+        self.assertRaises(subprocess.CalledProcessError),
+    ):
+      self._run_main("--mode=calculate", bazel_config="ci_cpu")
+
+    mock_selects.assert_not_called()
+    self.assertEqual(self._github_output(), {})
+
+  def test_all_mode_keeps_ops_tests_when_filter_ops_tests_disabled(self):
+    """Postsubmit retains impacted ops-test targets for non-ops changes."""
+    self._set_impacted_targets([
+        "@@//tests:ops_test_compiled",
+        "@@//tests:eager_test_tpu-v5lite",
+        "@@//tests:ops_test_perf",
+    ])
+    queries: list[str] = []
+
+    def fake_run(
+        args: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+      del kwargs
+      if list(args[:2]) == ["bazel", "query"]:
+        queries.append(args[2])
+        if "manual" in args[2]:
+          return subprocess.CompletedProcess(
+              args, 0, stdout="//tests:ops_test_perf\n", stderr=""
+          )
+        if "ops-test" in args[2]:
+          return subprocess.CompletedProcess(
+              args, 0, stdout="//tests:ops_test_compiled\n", stderr=""
+          )
+      return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    self.mock_subprocess_run.side_effect = fake_run
+
+    exit_code = self._run_main(
+        "--filter-ops-tests=false",
+        changed_files=["csrc/eager/runtime.cc"],
+        bazel_config="ci_tpu_v5",
+    )
+
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(queries, [r'attr(tags, "\bmanual\b", //...)'])
+    self.assertEqual(
+        (self.workspace / "impacted_targets.txt").read_text(encoding="utf-8"),
+        "@@//tests:ops_test_compiled\n@@//tests:eager_test_tpu-v5lite\n",
+    )
+    self.mock_bazel_test.assert_called_once()
+
+  def test_all_mode_skips_ops_test_paths_validation_when_filter_disabled(self):
+    self._set_impacted_targets(["@@//tests:eager_test_tpu-v5lite"])
+    with mock.patch.object(
+        run_bazel_diff, "OPS_TEST_PATHS", (r"nonexistent/path\.cc",)
+    ):
+      exit_code = self._run_main(
+          "--filter-ops-tests=false",
+          changed_files=["csrc/eager/runtime.cc"],
+          bazel_config="ci_tpu_v5",
+      )
+
+    self.assertEqual(exit_code, 0)
+    run_bazel_diff.list_files_at_commit.assert_not_called()
+    self.mock_bazel_test.assert_called_once()
 
   def test_test_mode_uses_precomputed_targets_without_recomputing(self):
     self._set_impacted_targets(["//tests:foo_test"])
