@@ -1062,6 +1062,7 @@ torch_tpu_cc_test(
     srcs = ["compilation_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
+    requires_libtpu = True,
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -1154,6 +1155,7 @@ torch_tpu_cc_test(
     srcs = ["compilation_parse_xla_options_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
+    requires_libtpu = True,
     tags = [
         "requires-tpu-v5lite",
     ],
@@ -1177,6 +1179,7 @@ torch_tpu_cc_test(
     srcs = ["compile_options_key_test.cc"],
     # go/cppdebugflags#increasing-your-size-limits
     exec_properties = {"cpp_link.mem": "16g"},  # multiline select
+    requires_libtpu = True,
     tags = [
         "requires-tpu-v5lite",
     ],

@@ -574,6 +574,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "20g",
     },
+    requires_libtpu = True,
     tags = [
         "requires-tpu-v5lite",
     ],
