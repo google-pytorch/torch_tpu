@@ -109,6 +109,7 @@
 #include "torch_tpu/ops/hardswish/hardswish_aten_kernels.h"
 #include "torch_tpu/ops/hardtanh/hardtanh_aten_kernels.h"
 #include "torch_tpu/ops/histc/histc_aten_kernels.h"
+#include "torch_tpu/ops/huber_loss/huber_loss_aten_kernels.h"
 #include "torch_tpu/ops/im2col/im2col_aten_kernels.h"
 #include "torch_tpu/ops/index/index_aten_kernels.h"
 #include "torch_tpu/ops/index_add/index_add_aten_kernels.h"
@@ -670,6 +671,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kHardtanh_>(m, AtenHardtanh_);
   ImplStable<OpName::kHistc>(m, AtenHistc);
   ImplStable<OpName::kHistcOut>(m, AtenHistcOut);
+  ImplStable<OpName::kHuberLoss>(m, AtenHuberLoss);
+  ImplStable<OpName::kHuberLossBackward>(m, AtenHuberLossBackward);
+  ImplStable<OpName::kHuberLossBackwardOut>(m, AtenHuberLossBackwardOut);
+  ImplStable<OpName::kHuberLossOut>(m, AtenHuberLossOut);
   ImplStable<OpName::kIlshiftScalar>(m, AtenIlshiftScalar);
   ImplStable<OpName::kIlshiftTensor>(m, AtenIlshiftTensor);
   ImplStable<OpName::kIm2Col>(m, AtenIm2Col);

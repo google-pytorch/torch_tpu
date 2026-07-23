@@ -121,6 +121,156 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
     self.assert_close_tpu_vs_cpu(compute, rtol=rtol, atol=atol)
 
+  @parameterized.parameters(
+      ("none", 1.0),
+      ("mean", 1.0),
+      ("sum", 1.0),
+      ("none", 0.5),
+      ("mean", 2.0),
+  )
+  def test_huber_loss_unit(self, reduction, delta):
+    for dtype in [torch.float32, torch.bfloat16, torch.float16]:
+      shape = (3, 4)
+      x_cpu = torch.tensor(
+          [
+              [-2.0, -1.0, 0.0, 0.5],
+              [1.0, 1.5, 2.0, 3.0],
+              [0.1, -0.5, 1.2, -2.5],
+          ],
+          dtype=dtype,
+          requires_grad=True,
+      )
+      y_cpu = torch.tensor(
+          [[0.0, 0.0, 0.0, 0.0], [0.5, 1.0, 0.5, 1.0], [0.0, 0.0, 0.0, 0.0]],
+          dtype=dtype,
+      )
+
+      x_tpu = x_cpu.detach().clone().to("tpu").requires_grad_(True)
+      y_tpu = y_cpu.detach().clone().to("tpu")
+
+      # Test functional huber_loss
+      loss_cpu = torch.nn.functional.huber_loss(
+          x_cpu, y_cpu, reduction=reduction, delta=delta
+      )
+      loss_tpu = torch.nn.functional.huber_loss(
+          x_tpu, y_tpu, reduction=reduction, delta=delta
+      )
+      self.assertEqual(loss_cpu, loss_tpu)
+
+      # Test out= variant
+      red_enum = {"none": 0, "mean": 1, "sum": 2}[reduction]
+      if reduction == "none":
+        out_cpu = torch.empty(shape, dtype=dtype)
+        out_tpu = torch.empty(shape, dtype=dtype, device="tpu")
+      else:
+        out_cpu = torch.empty((), dtype=dtype)
+        out_tpu = torch.empty((), dtype=dtype, device="tpu")
+
+      torch.ops.aten.huber_loss.out(
+          x_cpu.detach(), y_cpu, red_enum, delta, out=out_cpu
+      )
+      torch.ops.aten.huber_loss.out(
+          x_tpu.detach(), y_tpu, red_enum, delta, out=out_tpu
+      )
+      self.assertEqual(out_cpu, out_tpu)
+
+      # Test out= with uninitialized 0-size tensor (testing resizing)
+      out_uninit_cpu = torch.empty(0, dtype=dtype)
+      out_uninit_tpu = torch.empty(0, dtype=dtype, device="tpu")
+      torch.ops.aten.huber_loss.out(
+          x_cpu.detach(), y_cpu, red_enum, delta, out=out_uninit_cpu
+      )
+      torch.ops.aten.huber_loss.out(
+          x_tpu.detach(), y_tpu, red_enum, delta, out=out_uninit_tpu
+      )
+      self.assertEqual(out_uninit_cpu, out_uninit_tpu)
+
+      # Test backward
+      if reduction == "none":
+        grad_out_cpu = torch.ones_like(loss_cpu)
+        grad_out_tpu = torch.ones_like(loss_tpu)
+      else:
+        grad_out_cpu = torch.tensor(2.0, dtype=dtype)
+        grad_out_tpu = torch.tensor(2.0, dtype=dtype, device="tpu")
+
+      loss_cpu.backward(grad_out_cpu)
+      loss_tpu.backward(grad_out_tpu)
+      self.assertEqual(x_cpu.grad, x_tpu.grad)
+
+      # Test huber_loss_backward.out variant
+      grad_in_cpu = torch.empty_like(x_cpu)
+      grad_in_tpu = torch.empty_like(x_tpu)
+      torch.ops.aten.huber_loss_backward.out(
+          grad_out_cpu,
+          x_cpu.detach(),
+          y_cpu,
+          red_enum,
+          delta,
+          grad_input=grad_in_cpu,
+      )
+      torch.ops.aten.huber_loss_backward.out(
+          grad_out_tpu,
+          x_tpu.detach(),
+          y_tpu,
+          red_enum,
+          delta,
+          grad_input=grad_in_tpu,
+      )
+      self.assertEqual(grad_in_cpu, grad_in_tpu)
+
+      # Test broadcasting (x: (1, 4), y: (3, 4))
+      x_bcast_cpu = torch.tensor(
+          [[-2.0, -1.0, 0.0, 0.5]], dtype=dtype, requires_grad=True
+      )
+      y_bcast_cpu = torch.tensor(
+          [[0.0, 0.0, 0.0, 0.0], [0.5, 1.0, 0.5, 1.0], [0.0, 0.0, 0.0, 0.0]],
+          dtype=dtype,
+      )
+      x_bcast_tpu = x_bcast_cpu.detach().clone().to("tpu").requires_grad_(True)
+      y_bcast_tpu = y_bcast_cpu.detach().clone().to("tpu")
+
+      loss_bcast_cpu = torch.nn.functional.huber_loss(
+          x_bcast_cpu, y_bcast_cpu, reduction=reduction, delta=delta
+      )
+      loss_bcast_tpu = torch.nn.functional.huber_loss(
+          x_bcast_tpu, y_bcast_tpu, reduction=reduction, delta=delta
+      )
+      self.assertEqual(loss_bcast_cpu, loss_bcast_tpu)
+
+      if reduction == "none":
+        g_out_cpu = torch.ones_like(loss_bcast_cpu)
+        g_out_tpu = torch.ones_like(loss_bcast_tpu)
+      else:
+        g_out_cpu = torch.tensor(2.0, dtype=dtype)
+        g_out_tpu = torch.tensor(2.0, dtype=dtype, device="tpu")
+
+      loss_bcast_cpu.backward(g_out_cpu)
+      loss_bcast_tpu.backward(g_out_tpu)
+      self.assertEqual(x_bcast_cpu.grad, x_bcast_tpu.grad)
+
+      # Test huber_loss_backward.out with uninitialized 0-size tensor
+      # (testing resizing)
+      grad_in_uninit_cpu = torch.empty(0, dtype=dtype)
+      grad_in_uninit_tpu = torch.empty(0, dtype=dtype, device="tpu")
+      torch.ops.aten.huber_loss_backward.out(
+          grad_out_cpu,
+          x_cpu.detach(),
+          y_cpu,
+          red_enum,
+          delta,
+          grad_input=grad_in_uninit_cpu,
+      )
+      torch.ops.aten.huber_loss_backward.out(
+          grad_out_tpu,
+          x_tpu.detach(),
+          y_tpu,
+          red_enum,
+          delta,
+          grad_input=grad_in_uninit_tpu,
+      )
+      self.assertEqual(grad_in_uninit_cpu, grad_in_uninit_tpu)
+      self.assertEqual(grad_in_cpu, grad_in_tpu)
+
   def _run_addmm_activation_out_test(
       self,
       self_shape,

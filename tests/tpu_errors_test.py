@@ -98,6 +98,19 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase, parameterized.TestCase):
       t = torch.empty((2, 2), dtype=torch.complex128, device=et.device())
       t.fill_(1.0)
 
+  @et.why_tpu_only("Testing TPU aten kernel grad_output dtype check.")
+  def test_huber_loss_backward_grad_output_dtype_mismatch(self):
+    self_tpu = torch.ones(2, 2, device=et.device(), dtype=torch.bfloat16)
+    target_tpu = torch.zeros(2, 2, device=et.device(), dtype=torch.bfloat16)
+    grad_output_tpu = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss_backward(): expected grad_output and self to have the same dtype, got float32 and bfloat16""",
+    ):
+      torch.ops.aten.huber_loss_backward(
+          grad_output_tpu, self_tpu, target_tpu, 1, 1.0
+      )
+
   @et.why_tpu_only("For testing TPU op dispatching.")
   def test_prod_with_op_dispatch_failure(self):
     """Tests that prod() bubbles up errors in op dispatching."""
@@ -1347,6 +1360,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
         tpu="""mse_loss(): input and target must have the same dtype""",
     ):
       torch.nn.functional.mse_loss(inp, target)
+
+  @et.why_tpu_only("Test huber_loss error formatting on TPU.")
+  def test_huber_loss_errors(self):
+    inp = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+    target = torch.ones(2, 2, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected delta > 0, got 0""",
+    ):
+      torch.nn.functional.huber_loss(inp, target, delta=0.0)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected delta > 0, got -1""",
+    ):
+      torch.nn.functional.huber_loss(inp, target, delta=-1.0)
+
+    target_dbl = torch.ones(2, 2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected self and target to have the same dtype, got float32 and float64""",
+    ):
+      torch.nn.functional.huber_loss(inp, target_dbl)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected reduction to be None (0), Mean (1), or Sum (2), got 99""",
+    ):
+      torch.ops.aten.huber_loss(inp, target, reduction=99, delta=1.0)
+
+    inp_int = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
+    target_int = torch.ones(2, 2, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected floating point dtype, got int32""",
+    ):
+      torch.nn.functional.huber_loss(inp_int, target_int)
 
   @et.why_tpu_only("TODO: support more memory formats in resize_() on TPU.")
   def test_resize_unsupported_memory_format(self):

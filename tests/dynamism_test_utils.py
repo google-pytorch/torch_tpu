@@ -176,6 +176,7 @@ def verify_op_supports_dynamism(
       "nn.functional.embedding_bag",  # invalid gather
       "nn.functional.grid_sample",  #
       "nn.functional.hardswish",  # dynamic triage (adjust tolerance)
+      "nn.functional.huber_loss",  # dynamic triage
       "nn.functional.interpolate",  # gather with dynamic slice size
       "nn.functional.leaky_relu",  # dynamic triage (invalid result)
       "nn.functional.max_pool3d",  # crash (Aborted)

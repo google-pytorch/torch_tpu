@@ -245,9 +245,6 @@ UNREGISTERED_OPS = frozenset([
     'histogram.bins_tensor_out',
     'hspmm',
     'hspmm.out',
-    'huber_loss',
-    'huber_loss.out',
-    'huber_loss_backward.out',
     'hypot.out',
     'i0.out',
     'igamma.out',
@@ -475,6 +472,7 @@ REGISTRATION_OVERRIDES = frozenset([
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.
     'gelu',
+    'huber_loss_backward',
     # TODO(b/525550199): Remove ldexp overrides once we upgrade to PyTorch
     # v2.13.
     'ldexp.Tensor',

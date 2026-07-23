@@ -797,6 +797,14 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "histc";
     case OpName::kHistcOut:
       return "histc.out";
+    case OpName::kHuberLoss:
+      return "huber_loss";
+    case OpName::kHuberLossBackward:
+      return "huber_loss_backward";
+    case OpName::kHuberLossBackwardOut:
+      return "huber_loss_backward.out";
+    case OpName::kHuberLossOut:
+      return "huber_loss.out";
     case OpName::kIlshiftScalar:
       return "__ilshift__.Scalar";
     case OpName::kIlshiftTensor:

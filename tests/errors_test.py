@@ -7329,6 +7329,28 @@ Device-side assertion tracking was not enabled by user.""",
           False,
       )
 
+  def test_huber_loss_invalid_delta(self):
+    dev = et.device()
+    x = torch.randn(3, 3, device=dev)
+    y = torch.randn(3, 3, device=dev)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""huber_loss(): expected delta > 0, got -1""",
+        gpu="""huber_loss does not support non-positive values for delta.""",
+    ):
+      torch.ops.aten.huber_loss(x, y, reduction=1, delta=-1.0)
+
+  def test_huber_loss_non_floating_dtype(self):
+    dev = et.device()
+    x = torch.randint(0, 5, (3, 3), dtype=torch.int32, device=dev)
+    y = torch.randint(0, 5, (3, 3), dtype=torch.int32, device=dev)
+    with et.assert_raises_message(
+        Exception,
+        tpu="""huber_loss(): expected floating point dtype, got int32""",
+        gpu=""""huber_cuda" not implemented for 'Int'""",
+    ):
+      torch.ops.aten.huber_loss(x, y, reduction=1, delta=1.0)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase, parameterized.TestCase):
 

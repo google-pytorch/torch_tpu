@@ -613,6 +613,11 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
     "nn.functional.hardswish": {
         torch.bfloat16: {"rtol": 3e-2, "atol": 3.2e-2},
     },
+    "nn.functional.huber_loss": {
+        torch.bfloat16: {"rtol": 1e-2, "atol": 1e-2},
+        torch.float16: {"rtol": 2e-3, "atol": 1e-3},
+        torch.float32: {"rtol": 1e-5, "atol": 1e-5},
+    },
     "nn.functional.interpolate": {
         torch.bfloat16: {"rtol": 5e-2, "atol": 2e-2},
         torch.float16: {"rtol": 2e-2, "atol": 5e-3},
@@ -3369,6 +3374,9 @@ class TestOps(TorchTpuTestBase):
 
   def test_nn_functional_mse_loss(self):
     self.do_test_op("nn.functional.mse_loss")
+
+  def test_nn_functional_huber_loss(self):
+    self.do_test_op("nn.functional.huber_loss")
 
   def test_pdist_forward(self):
     self.do_test_op("nn.functional.pdist")
