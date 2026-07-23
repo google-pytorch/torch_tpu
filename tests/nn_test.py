@@ -234,6 +234,7 @@ class TestNn(TestCase):
     tolerance = tolerance_dict.get(dtype, {})
     tpu_result_to_cpu = None
     tpu_result_to_cpu_i = None
+    cpu_result_i = None
 
     print(
         f">>> Testing {model_name}, dtype: {dtype}, args={args},"

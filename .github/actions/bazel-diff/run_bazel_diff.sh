@@ -88,12 +88,16 @@ echo "--- Generating Base Hashes ---"
 echo "PR detected. Fetching exact base SHA: $BASE_SHA"
 git fetch --depth=1 origin "$BASE_SHA"
 git checkout "$BASE_SHA"
-java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/base_hashes.json"
+java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/base_hashes.json" \
+  --useCquery \
+  --cqueryCommandOptions="--config=$BAZEL_CONFIG"
 
 echo "--- Generating PR Hashes ---"
 echo "Checking out current SHA: $CURRENT_SHA"
 git checkout "$CURRENT_SHA"
-java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/pr_hashes.json"
+java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/pr_hashes.json" \
+  --useCquery \
+  --cqueryCommandOptions="--config=$BAZEL_CONFIG"
 
 echo "--- Determining Impacted Targets ---"
 java -jar /tmp/bazel-diff.jar get-impacted-targets \
