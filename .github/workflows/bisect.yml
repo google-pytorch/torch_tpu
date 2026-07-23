@@ -1,0 +1,144 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI - Automated Bisection
+
+on:
+  workflow_run:
+    workflows: ["CI - Postsubmit"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      good_sha:
+        description: 'Last known good commit SHA (last successful postsubmit)'
+        required: false
+        default: ''
+        type: string
+      bad_sha:
+        description: 'First known bad commit SHA (failed postsubmit)'
+        required: false
+        default: ''
+        type: string
+      test_targets:
+        description: >-
+          Space-separated list of failing test targets to bisect
+          (e.g. //tests:ops_test //tests:conv_test). Default: //...
+        required: false
+        default: '//...'
+        type: string
+      fail_fast:
+        description: >-
+          Stop test execution on first failure (--nokeep_going,
+          --test_runner_fail_fast)
+        required: false
+        default: true
+        type: boolean
+      seed:
+        description: >-
+          Random seed for reproducible test execution (sets
+          --test_arg=--test_random_seed and PYTHONHASHSEED)
+        required: false
+        default: ''
+        type: string
+      bazel_config:
+        description: >-
+          Bazel config (e.g., ci_tpu_v5, ci_tpu_v6, ci_tpu_v7, ci_cpu)
+        required: false
+        default: 'ci_tpu_v7'
+        type: string
+      runner:
+        description: 'Runner label (e.g., linux-x86-tpu7x-224-4tpu)'
+        required: false
+        default: 'linux-x86-tpu7x-224-4tpu'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Guardrail 1: Global Concurrency Lock to limit simultaneous bisection runs
+concurrency:
+  group: postsubmit-bisect
+  cancel-in-progress: false
+
+jobs:
+  bisect:
+    name: "Bisect Postsubmit Breakage"
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ${{ inputs.runner || 'linux-x86-tpu7x-224-4tpu' }}
+    # Guardrail 3: Hard job timeout limit
+    timeout-minutes: 45
+    container:
+      # Tag infrastructure-public-image-083516c6af6a (built 2026-10-13)
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:dddf008479144c57182b56a6d00bfc1f38f8f2ef206e2bc26ff6c0a401ded47e"
+      options: --ipc=host
+    steps:
+      - name: Checkout repository
+        # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Perform Automated Bisection
+        id: bisect_step
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_GOOD_SHA: ${{ inputs.good_sha }}
+          INPUT_BAD_SHA: ${{ inputs.bad_sha }}
+          INPUT_TEST_TARGETS: ${{ inputs.test_targets }}
+          INPUT_FAIL_FAST: ${{ inputs.fail_fast }}
+          INPUT_SEED: ${{ inputs.seed }}
+          BAZEL_CONFIG: ${{ inputs.bazel_config || 'ci_tpu_v7' }}
+          RUNNER: ${{ inputs.runner || 'linux-x86-tpu7x-224-4tpu' }}
+          EVENT_BAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CURRENT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          git fetch origin main --quiet
+          python3 ci/tools/bisect_postsubmit.py \
+            --bazel-config "$BAZEL_CONFIG" \
+            --runner "$RUNNER" \
+            --good-sha "$INPUT_GOOD_SHA" \
+            --bad-sha "$INPUT_BAD_SHA" \
+            --event-bad-sha "$EVENT_BAD_SHA" \
+            --test-targets "$INPUT_TEST_TARGETS" \
+            --fail-fast "$INPUT_FAIL_FAST" \
+            --seed "$INPUT_SEED" \
+            --current-run-id "$CURRENT_RUN_ID"
+
+      - name: Report Culprit Commit
+        if: steps.bisect_step.outputs.CULPRIT_SHA != ''
+        run: |
+          CULPRIT="${{ steps.bisect_step.outputs.CULPRIT_SHA }}"
+          echo "=========================================================="
+          echo "Bisection Complete! Culprit Commit: $CULPRIT"
+          git log -1 "$CULPRIT"
+          echo "=========================================================="
+
+      - name: Upload Test Logs
+        if: always() && steps.bisect_step.outputs.skip != 'true'
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bazel-testlogs-bisect
+          path: bazel-testlogs/
+          retention-days: 7
+          if-no-files-found: ignore

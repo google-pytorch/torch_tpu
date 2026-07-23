@@ -121,3 +121,18 @@ py_test(
         ":run_bazel_diff",
     ],
 )
+
+py_binary(
+    name = "bisect_postsubmit",
+    srcs = ["bisect_postsubmit.py"],
+)
+
+py_test(
+    # PY_TEST_OK=Standalone CI tooling test without torch_tpu dependency
+    name = "bisect_postsubmit_test",
+    size = "small",
+    srcs = ["bisect_postsubmit_test.py"],
+    deps = [
+        ":bisect_postsubmit",
+    ],
+)
