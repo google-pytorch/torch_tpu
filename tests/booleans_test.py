@@ -14,7 +14,6 @@
 
 """Tests on boolean-valued tensors, not suitable for fuzzing."""
 
-import functools
 
 from absl.testing import absltest
 import torch

@@ -15,7 +15,6 @@
 from absl import logging
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 

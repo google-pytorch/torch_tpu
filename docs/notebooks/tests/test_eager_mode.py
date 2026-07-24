@@ -13,7 +13,6 @@
 # limitations under the License.
 # pylint: skip-file
 
-import pytest
 
 
 def test_factory_demo():

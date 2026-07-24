@@ -173,7 +173,6 @@ def _(mo):
 
 @app.cell
 def _(jax, pallas, pl, torch):
-  from torch_tpu._internal import compile
 
   # 1. Define the Pallas kernel and its JAX wrapper
   def mul_kernel_fn(x_ref, y_ref, o_ref):

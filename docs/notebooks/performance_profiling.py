@@ -204,7 +204,7 @@ def _(log_dir):
     print(f"  {f} ({size_kb:.1f} KB)")
 
   if trace_files:
-    print(f"\n✅ Traces ready. View with:")
+    print("\n✅ Traces ready. View with:")
     print(f"   tensorboard --logdir={log_dir}")
   else:
     print("\n❌ No trace files found. Check profiler configuration.")

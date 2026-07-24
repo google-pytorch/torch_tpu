@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 import marimo
 
 __generated_with = "0.21.1"

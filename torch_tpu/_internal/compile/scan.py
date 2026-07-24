@@ -15,7 +15,6 @@
 """TPU implementation for torch.ops.higher_order.scan."""
 
 import torch
-import torch._higher_order_ops.scan
 import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal.compile import tpu_torch_compile

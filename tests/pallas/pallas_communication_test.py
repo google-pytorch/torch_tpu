@@ -21,7 +21,6 @@ from absl.testing import absltest
 import jax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
-import jax.export
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp

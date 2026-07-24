@@ -37,7 +37,7 @@ from torch_tpu._internal.compile.fx_passes import force_collectives_output
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 
 # Required to register the SPMD safe region ops.
-from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import
+from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import  # noqa: F401
 
 
 def _get_unique_wait_tensor_producer(

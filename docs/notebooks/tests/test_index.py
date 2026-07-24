@@ -14,7 +14,7 @@
 
 """Tests for index.py — all cells are markdown-only."""
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 import importlib
 
 

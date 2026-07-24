@@ -18,7 +18,6 @@ from typing import Any, Callable
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-import torch.testing
 from torch.utils import _pytree
 from torch.utils import checkpoint
 from torch_tpu._internal import env

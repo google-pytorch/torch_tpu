@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 
 import marimo
 
@@ -82,7 +82,7 @@ def _(mo):
 def _():
   import os
   import sys
-  from typing import Final, Tuple
+  from typing import Final
 
   LLO_DUMP_TO: Final[str] = "/tmp/llo_dump"
   sys.argv.extend(

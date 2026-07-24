@@ -310,7 +310,7 @@ def _(dequantize, pack32, quantize, torch, unpack32):
 
   # 4. Pack to a single uint32 integer directly
   packed_val = pack32(signs)
-  print(f"\n4. Packed uint32 representation (32 signs -> 1 integer):")
+  print("\n4. Packed uint32 representation (32 signs -> 1 integer):")
   print(
       f"Integer value: {packed_val.item()} | Hex: {packed_val.item():#010x} |"
       f" Binary: {packed_val.item():032b}"

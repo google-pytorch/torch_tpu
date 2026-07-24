@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 
 import marimo
 
@@ -21,10 +21,9 @@ app = marimo.App(width="medium")
 
 @app.cell(hide_code=True)
 def _():
-  import marimo as mo
   import os
   import shutil
-  import time
+  import marimo as mo
 
   # Pre-set environment variables globally for HTML export so that all examples have output
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"

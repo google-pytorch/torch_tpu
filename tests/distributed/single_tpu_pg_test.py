@@ -20,7 +20,6 @@ from absl import logging
 from absl.testing import absltest
 import portpicker
 import torch
-import torch.accelerator
 from torch_tpu._internal.distributed import tpu_distributed
 
 

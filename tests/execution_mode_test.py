@@ -20,8 +20,8 @@ import threading
 from typing import TypeAlias
 
 from absl.testing import absltest
-# pylint: disable-next=unused-import - avoid libtorch.so link error in OSS build.
-import torch
+#  Keep import to avoid libtorch.so link error in OSS build.
+import torch  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import execution_mode
 
 EagerMode: TypeAlias = execution_mode.EagerMode
