@@ -172,6 +172,20 @@ class StaticCompiler(Compiler):
   programs with dynamic shapes by raising an exception.
   """
 
+  def __init__(self, *args, build_executable: bool = True, **kwargs):
+    """See Compiler.__init__.
+
+    Args:
+      build_executable: When False, lower the graph to an MLIR module but do
+        not compile it; the module is stashed on the returned artifact as
+        ``pending_mlir_module`` and the caller is responsible for compiling
+        it (``tpu_torch_compile.compile_mlir``, possibly on another thread)
+        and assigning the result to ``_executable`` before the artifact is
+        executed.
+    """
+    super().__init__(*args, **kwargs)
+    self._build_executable = build_executable
+
   def __call__(
       self,
       graph_module: torch.fx.GraphModule,
@@ -279,6 +293,7 @@ class StaticCompiler(Compiler):
             build_mlir_module=(tracing_enabled or self._debug),
             use_stablehlo_bounds=self._use_stablehlo_bounds,
             argument_layouts=argument_layouts,
+            build_executable=self._build_executable,
         )
 
     if exported_mlir.is_noop:
@@ -311,6 +326,8 @@ class StaticCompiler(Compiler):
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
         updates_default_generator_state=exported_mlir.updates_default_generator_state,
     )
+    if not self._build_executable:
+      executable.pending_mlir_module = exported_mlir.module
 
     if self._debug and mlir_module is not None:
       # Avoid print_readable() as it includes verbose original code lines.

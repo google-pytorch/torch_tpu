@@ -382,6 +382,11 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
   // it can generate readable Mlir module names.
   ScopedPythonContextProvider provider(
       ScopedPythonContextCapturer::GetContext());
+  // Everything below is pure C++ (per-module MLIRContext, thread-safe PjRt
+  // CompileAndLoad); release the GIL so multiple modules can compile
+  // concurrently from Python threads. Declared after the context scopes so
+  // the GIL is re-acquired before their destructors run.
+  pybind11::gil_scoped_release release;
 
   const auto compilation_mode = fast_compile ? CompilationMode::kFastCompile
                                              : CompilationMode::kFastRuntime;

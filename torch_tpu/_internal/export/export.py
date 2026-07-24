@@ -448,6 +448,7 @@ def fx_to_mlir(
     build_mlir_module: bool = True,
     use_stablehlo_bounds: bool = False,
     argument_layouts: list[list[int]] | None = None,
+    build_executable: bool = True,
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's defer mode.
 
@@ -465,6 +466,12 @@ def fx_to_mlir(
       result.
     use_stablehlo_bounds: Whether to use StableHLO bounds.
     argument_layouts: A list of forced layouts for input arguments.
+    build_executable: Whether to compile the graph to a PjRt executable. When
+      False, only the MLIR module is built (`module` is always set in the
+      result and `executable` is None); the caller compiles it later with
+      `tpu_torch_compile.compile_mlir`, including from a different thread.
+      `argument_layouts` are not supported in this mode — pass them to
+      `compile_mlir` instead.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -555,21 +562,36 @@ def fx_to_mlir(
             is_noop=True,
         )
 
-    compile_result = tpu_torch_compile.traverse_and_compile(
-        result_tensors=result_tensors,
-        argument_tensors=argument_tensors,
-        build_mlir_module=build_mlir_module,
-        use_stablehlo_bounds=use_stablehlo_bounds,
-        argument_layouts=internal_layouts,
-    )
+    if build_executable:
+      compile_result = tpu_torch_compile.traverse_and_compile(
+          result_tensors=result_tensors,
+          argument_tensors=argument_tensors,
+          build_mlir_module=build_mlir_module,
+          use_stablehlo_bounds=use_stablehlo_bounds,
+          argument_layouts=internal_layouts,
+      )
+      exported_module = compile_result.module
+      exported_executable = compile_result.executable
+    else:
+      if internal_layouts:
+        raise ValueError(
+            "argument_layouts require build_executable=True; pass them to"
+            " compile_mlir instead."
+        )
+      exported_module = tpu_torch_compile.build_mlir(
+          result_tensors=result_tensors,
+          argument_tensors=argument_tensors,
+          use_stablehlo_bounds=use_stablehlo_bounds,
+      )
+      exported_executable = None
   finally:
     # Restore original generator states.
     for gen in argument_generators:
       gen.graphsafe_set_state(orig_generator_states[gen])
 
   return ExportedMlir(
-      module=compile_result.module,
-      executable=compile_result.executable,
+      module=exported_module,
+      executable=exported_executable,
       mlir_result_tensors=result_tensors,
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
       updates_default_generator_state=updates_default_generator_state,
