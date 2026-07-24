@@ -26,6 +26,7 @@ import torch
 import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
+from torch_tpu._internal import precision as precision_pkg
 from torch_tpu._internal.compile import tpu_torch_compile
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -154,13 +155,17 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
     Overwrite the function's code locations to the node's source locations
     so that this node original source info appears on the python stack,
     making compiled/exported source locations resemble eager's source locations.
+
+    Args:
+      func: The target function whose code locations will be updated.
+      node: The FX node containing source location metadata.
     """
     if not node.stack_trace:
       return
 
     # Note: This uses internal APIs and may break in the future.
     try:
-      pt_trace = torch.fx.graph._parse_stack_trace(node.stack_trace)
+      pt_trace = torch.fx.graph._parse_stack_trace(node.stack_trace)  # pylint: disable=protected-access
       if pt_trace is None:
         # We will catch if something changes and this fails with unittests
         return
@@ -174,7 +179,7 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
           co_firstlineno=int(pt_trace.lineno),
           co_name=pt_trace.name,
       )
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
       logging.warning("Failed to set func code to node source locations: %s", e)
     return
 
@@ -185,7 +190,11 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
       return super(EagerLikeFxInterpreter, self).run_node(node)
 
     self._set_func_code_to_node_source_locations(dispatch_fx_node, node)
-    return dispatch_fx_node(node)
+    # Honor any `with precision(...)` region that stamped this node during
+    # tracing: re-establish the precision thread-local state so the lowering
+    # kernels observe it, mirroring eager execution.
+    with precision_pkg.precision_from_node_meta(node):
+      return dispatch_fx_node(node)
 
 
 def exported_to_mlir(

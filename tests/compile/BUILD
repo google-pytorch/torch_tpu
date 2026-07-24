@@ -259,6 +259,22 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "context_manager_graph_break_test",
+    srcs = ["context_manager_graph_break_test.py"],
+    env = {
+        "TORCH_LOGS": "graph_breaks",  # For human-facing diagnostics only.
+        "TORCH_LOGS_FORMAT": "%(message)s",
+    },
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/precision",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "model_coverage_hf_test",
     timeout = "long",
     srcs = ["model_coverage_hf_test.py"],

@@ -18,5 +18,12 @@ from torch_tpu._internal.precision import precision as _precision
 
 precision = _precision.precision
 Precision = _precision.Precision
+precision_from_node_meta = _precision.precision_from_node_meta
+TPU_PRECISION_META_KEY = _precision.TPU_PRECISION_META_KEY
 
-__all__ = ["precision", "Precision"]
+__all__ = [
+    "precision",
+    "Precision",
+    "precision_from_node_meta",
+    "TPU_PRECISION_META_KEY",
+]

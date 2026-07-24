@@ -65,6 +65,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":precision_impl",
+        "//shims/torch:pytorch",
     ],
 )
 
