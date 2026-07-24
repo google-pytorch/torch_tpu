@@ -100,4 +100,12 @@ pybind_extension(
     ],
 )
 
+torch_tpu_py_library(
+    name = "tpu_rng_state_helper",
+    srcs = ["tpu_rng_state_helper.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()

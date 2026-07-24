@@ -234,6 +234,14 @@ def _init_device_impl(device: str) -> torch.device:
   # TODO(b/492505722): Update internal usage of torch.compile.
   torch.compile = _default_tpu_compile
 
+  if device == "tpu":
+    # TODO(b/534790498): This is a temporary workaround to be removed once
+    # native PyTorch core changes land.
+    # For patching CUDARngStateHelper to support TPU.
+    from torch_tpu._internal import tpu_rng_state_helper  # pylint: disable=g-import-not-at-top
+
+    tpu_rng_state_helper.enable_tpu_rng_functionalization()
+
   return device_d
 
 

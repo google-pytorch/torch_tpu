@@ -14,6 +14,7 @@
 
 from absl.testing import absltest
 import torch
+import torch._functorch.config as functorch_config
 from torch_tpu._internal import compile as compile_lib
 
 
@@ -66,6 +67,22 @@ class ActivationCheckpointingTest(absltest.TestCase):
         bwd_mlir,
         "Expected to find stablehlo.optimization_barrier in backward pass MLIR",
     )
+
+  def test_functionalize_rng_ops(self):
+    device = torch.device("tpu")
+    q = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
+    k = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
+    v = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
+
+    def fn(q, k, v):
+      return torch.nn.functional.scaled_dot_product_attention(
+          q, k, v, is_causal=True
+      )
+
+    tpu_backend = compile_lib.TpuBackend()
+    compiled = torch.compile(fn, backend=tpu_backend)
+    with functorch_config.patch(functionalize_rng_ops=True):
+      compiled(q, k, v).sum().backward()
 
 
 if __name__ == "__main__":
