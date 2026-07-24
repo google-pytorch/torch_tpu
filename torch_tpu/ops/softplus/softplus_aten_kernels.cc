@@ -39,6 +39,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
 
 namespace torch_tpu {
@@ -113,6 +114,7 @@ at::Tensor& AtenSoftplusOut(const at::Tensor& self, const at::Scalar& beta,
           return BuildSoftplusShlo(self, beta, threshold);
         };
 
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
         TT_ASSIGN_OR_THROW(
             auto result_buf,
             DispatchOp<3>(std::move(op_builder),

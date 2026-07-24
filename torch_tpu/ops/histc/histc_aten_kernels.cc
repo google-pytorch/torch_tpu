@@ -45,6 +45,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 
 namespace torch_tpu {
 
@@ -140,6 +141,7 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
                             PromotedScalar& promoted_min,
                             PromotedScalar& promoted_max, at::Tensor& out,
                             OpParamCacheKeys param_keys) {
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(out, {bins}));
   const c10::ScalarType out_dtype = self.scalar_type();
   TT_ASSIGN_OR_RETURN(at::Tensor min_val, promoted_min.GetTensor(out_dtype));
   TT_ASSIGN_OR_RETURN(at::Tensor max_val, promoted_max.GetTensor(out_dtype));

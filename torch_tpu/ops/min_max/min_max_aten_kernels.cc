@@ -113,6 +113,8 @@ absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> AtenMinMaxDim(
               .op_param_cache_keys = std::move(op_param_cache_keys),
           })));
 
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(value, tensor_shape));
+  TT_RETURN_IF_ERROR(ResizeTensorIfShapeDiffers(indices, tensor_shape));
   TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(values_buf), value));
   TT_RETURN_IF_ERROR(AssignBufferToAtTensor(std::move(indices_buf), indices));
   return {{value, indices}};

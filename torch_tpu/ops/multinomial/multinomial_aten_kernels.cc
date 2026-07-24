@@ -36,6 +36,7 @@
 #include "torch_tpu/ops/multinomial/multinomial.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 
 namespace torch_tpu {
 namespace {
@@ -114,7 +115,8 @@ at::Tensor& AtenMultinomialOut(const at::Tensor& self, int64_t num_samples,
                            Multinomial(self, num_samples, replacement,
                                        generator, std::move(param_keys)));
 
-        at::native::resize_output(out, result_buf.dimensions());
+        TT_THROW_IF_ERROR(
+            ResizeTensorIfShapeDiffers(out, result_buf.dimensions()));
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
         return out;
       });

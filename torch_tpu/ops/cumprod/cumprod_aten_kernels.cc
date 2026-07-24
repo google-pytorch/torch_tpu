@@ -32,6 +32,7 @@
 #include "torch_tpu/ops/cumprod/cumprod.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
 
 namespace torch_tpu {
@@ -40,6 +41,7 @@ at::Tensor& AtenCumprodOut(const at::Tensor& self, int64_t dim,
                            std::optional<at::ScalarType> dtype,
                            at::Tensor& out) {
   TT_KERNEL(OpName::kCumprodOut, param_keys, (self, dim, dtype, out), {
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     if (out.numel() == 0) {
       return out;
     }
@@ -51,8 +53,9 @@ at::Tensor& AtenCumprodOut(const at::Tensor& self, int64_t dim,
     if (dtype.has_value()) {
       TT_CHECK_THROW(dtype.value() != at::kBool,
                      error::kPythonNotImplementedError)
-          << "the dtype argument cannot be bool";
+          << "the dtype argument cannot be " << ToString(at::kBool);
     }
+
     TT_CHECK_THROW(out.scalar_type() != at::kBool,
                    error::kPythonNotImplementedError)
         << "cumprod not implemented for " << ToString(at::kBool);

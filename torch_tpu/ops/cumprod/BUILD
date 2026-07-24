@@ -35,6 +35,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops:unary_aten_kernels",
         "//torch_tpu/ops/macros:kernel",
+        "//torch_tpu/ops/resize:resize_aten_kernels",
         "@com_google_absl//absl/functional:bind_front",
         "@stablehlo//:attr_type_builder_util",
     ],

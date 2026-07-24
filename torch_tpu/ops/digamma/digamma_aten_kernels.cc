@@ -36,6 +36,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 
 namespace torch_tpu {
 absl::StatusOr<mlir::MlirOp> BuildDigammaShlo(mlir::MlirOp input_op,
@@ -67,6 +68,7 @@ at::Tensor& AtenDigammaOut(const at::Tensor& self, at::Tensor& out) {
         [out_dtype](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildDigammaShlo(input, out_dtype);
     };
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     TT_ASSIGN_OR_THROW(
         auto result_buf,
         DispatchOp<1>(std::move(op_builder), self,

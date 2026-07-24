@@ -30,6 +30,7 @@
 #include "torch_tpu/ops/cumsum/cumsum.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "torch_tpu/ops/unary_aten_kernels.h"
 
 namespace torch_tpu {
@@ -38,6 +39,7 @@ at::Tensor& AtenCumsumOut(const at::Tensor& self, int64_t dim,
                           std::optional<at::ScalarType> dtype,
                           at::Tensor& out) {
   TT_KERNEL(OpName::kCumsumOut, param_keys, (self, dim, dtype, out), {
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     if (self.dim() == 0) {
       out.copy_(self);
       return out;

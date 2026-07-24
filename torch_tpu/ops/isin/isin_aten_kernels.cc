@@ -150,6 +150,7 @@ at::Tensor& AtenIsInTensorTensorOut(const at::Tensor& elements,
   TT_KERNEL(
       OpName::kIsInTensorTensorOut, param_keys,
       (elements, test_elements, assume_unique, invert, out), {
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, elements.sizes()));
         TT_ASSIGN_OR_THROW(
             auto result_buf,
             AtenIsInHelper(elements, test_elements, ToIsUnique(assume_unique),
@@ -170,6 +171,7 @@ at::Tensor& AtenIsInTensorScalarOut(const at::Tensor& elements,
         TT_ASSIGN_OR_THROW(at::Tensor test_element_tensor,
                            promoted_test_element.GetTensor());
 
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, elements.sizes()));
         TT_ASSIGN_OR_THROW(auto result_buf,
                            AtenIsInHelper(elements, test_element_tensor,
                                           ToIsUnique(assume_unique),

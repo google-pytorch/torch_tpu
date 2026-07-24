@@ -465,6 +465,13 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
         TT_THROW_IF_ERROR(FFTCheckStaticShape(self, "input"));
 
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        auto out_sizes = CopyIntVector(self.sizes());
+        if (onesided) {
+          const int64_t last_dim = normalized_dims.back();
+          out_sizes[last_dim] = self.size(last_dim) / 2 + 1;
+        }
+
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_sizes));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -479,7 +486,7 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
             auto result,
             DispatchOp<1>(std::move(op_builder), self,
                           {.out_dtype = output_dtype,
-                           .out_dims = CopyIntVector(out.sizes()),
+                           .out_dims = std::move(out_sizes),
                            .op_param_cache_keys = std::move(param_keys)}));
 
         TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
@@ -540,7 +547,7 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
         // supports bounded dynamic values.
         TT_THROW_IF_ERROR(FFTCheckStaticShape(self, "input"));
 
-        TT_THROW_IF_ERROR(ResizeTensor(out, self.sizes()));
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
 
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
 
@@ -632,7 +639,7 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         const int64_t last_dim = normalized_dims.back();
         out_sizes[last_dim] = last_dim_size;
 
-        TT_THROW_IF_ERROR(ResizeTensor(out, out_sizes));
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_sizes));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));

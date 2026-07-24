@@ -311,6 +311,7 @@ at::Tensor& AtenSignOut(const at::Tensor& self, at::Tensor& out) {
         << ToString(self.scalar_type())
         << "; use torch.sgn() instead if you intend to normalize a complex "
            "tensor to each complex element having magnitude 1";
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     TT_ASSIGN_OR_THROW(auto out_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
     TT_ASSIGN_OR_THROW(
@@ -348,6 +349,7 @@ at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
       }
     };
 
+    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, self.sizes()));
     TT_ASSIGN_OR_THROW(
         auto result_buf,
         DispatchOp<1>(std::move(op_builder), self,
