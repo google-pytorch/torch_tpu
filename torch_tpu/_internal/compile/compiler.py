@@ -33,6 +33,7 @@ from torch._inductor.utils import InputType
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
 from torch._subclasses.fake_tensor import unset_fake_temporarily
+from torch.distributed.tensor import Shard
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
@@ -42,6 +43,7 @@ from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
+import torch_xla.distributed.spmd as xs  # pytype: disable=import-error
 
 
 @dataclasses.dataclass
@@ -266,9 +268,29 @@ class StaticCompiler(Compiler):
                 arg_bounds,
                 arg.requires_grad,
             )
-            placeholder_args.append(ph)
           else:
-            placeholder_args.append(tpu_torch_compile.placeholder_like(arg))
+            ph = tpu_torch_compile.placeholder_like(arg)
+
+          # If the argument is a DTensor, mark its sharding on the placeholder
+          # tensor.
+          if hasattr(arg, "placements") and hasattr(arg, "device_mesh"):
+            # Construct PyTorch-XLA Mesh from DTensor's DeviceMesh
+            mesh = xs.Mesh(
+                device_ids=arg.device_mesh.mesh.flatten().tolist(),
+                mesh_shape=arg.device_mesh.shape,
+                axis_names=arg.device_mesh.mesh_dim_names,
+            )
+            # Map DTensor placements to PyTorch-XLA sharding spec
+            sharding_spec = [None] * arg.ndim
+            for mesh_dim, placement in enumerate(arg.placements):
+              if isinstance(placement, Shard):
+                sharding_spec[placement.dim] = arg.device_mesh.mesh_dim_names[
+                    mesh_dim
+                ]
+
+            xs.mark_sharding(ph, mesh, tuple(sharding_spec))
+
+          placeholder_args.append(ph)
         else:
           placeholder_args.append(arg)
 

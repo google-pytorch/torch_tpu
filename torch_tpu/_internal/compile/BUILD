@@ -40,24 +40,13 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "collective_ops",
-    srcs = ["collective_ops.py"],
-    deps = [
-        "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_library(
     name = "split_compiler",
     srcs = ["split_compiler.py"],
     deps = [
-        ":collective_ops",
         ":compiler",
         ":torch_tpu_compiled_executable",
-        ":tpu_torch_compile",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile/fx_passes:force_collectives_output",
         "//torch_tpu/_internal/distributed:spmd_util",
     ],
 )
@@ -82,10 +71,19 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":dtensor_rules",
         ":scan",
         ":tpu_backend",
         ":tpu_torch_compile",
         "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "dtensor_rules",
+    srcs = ["dtensor_rules.py"],
+    deps = [
         "//shims/torch:pytorch",
     ],
 )
@@ -339,7 +337,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    requires_libtpu = True,
+    notest_oss = "Requires TPU PJRT plugin (transitively via eager:tensor_to_buffer -> pjrt:pjrt_state), which fails due to missing TPU_LIBRARY_PATH.",
     deps = [
         ":dispatch_scan",
         "//shims/torch",

@@ -66,6 +66,15 @@ def _register_scan_operator() -> None:
 
 _register_scan_operator()
 
+
+def _register_dtensor_rules() -> None:
+  """Registers DTensor sharding rules for TorchTPU custom ops."""
+  from torch_tpu._internal.compile import dtensor_rules as _  # pylint: disable=g-import-not-at-top
+
+
+_register_dtensor_rules()
+
+
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
