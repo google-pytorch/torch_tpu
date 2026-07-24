@@ -54,7 +54,9 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
                  std::string_view stacked_tables_config_proto,
                  int64_t local_device_count, int64_t global_device_count,
                  int64_t num_sc_per_device, bool allow_id_dropping)
-      -> c10::Dict<std::string, c10::Dict<std::string, at::Tensor>> {
+      -> std::tuple<
+          c10::Dict<std::string, c10::Dict<std::string, at::Tensor>>,
+          c10::Dict<std::string, c10::Dict<std::string, at::Tensor>>> {
     torch_tpu::sparse_dense_matmul::StackedTablesConfig config_proto;
     TT_CHECK_THROW(config_proto.ParseFromString(stacked_tables_config_proto),
                    error::kInvalidArgument)
@@ -148,6 +150,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
         .num_sc_per_device = static_cast<int>(num_sc_per_device),
         .sharding_strategy = jax_sc_embedding::ShardingStrategy::kMod,
         .allow_id_dropping = allow_id_dropping,
+        .enable_minibatching = false,
     };
     const int row_pointers_size_per_device =
         jax_options.GetRowPointersSizePerDevice();
@@ -206,7 +209,37 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
     TT_CHECK_THROW(result.ok(), result.status().code())
         << result.status().message();
 
-    return outputs;
+    const auto& stats = result->stats;
+
+    c10::Dict<std::string, c10::Dict<std::string, at::Tensor>> stats_dict;
+
+    auto map_to_tensor_dict = [](const auto& map) {
+      c10::Dict<std::string, at::Tensor> dict;
+      for (const auto& [table_name, vec] : map) {
+        at::Tensor t = at::empty({static_cast<int64_t>(vec.size())}, at::kInt);
+        std::memcpy(t.data_ptr<int32_t>(), vec.data(),
+                    vec.size() * sizeof(int32_t));
+        dict.insert(table_name, t);
+      }
+      return dict;
+    };
+
+    stats_dict.insert("max_ids_per_partition",
+                      map_to_tensor_dict(stats.max_ids_per_partition));
+    stats_dict.insert("max_unique_ids_per_partition",
+                      map_to_tensor_dict(stats.max_unique_ids_per_partition));
+    stats_dict.insert("required_buffer_sizes",
+                      map_to_tensor_dict(stats.required_buffer_sizes));
+
+    c10::Dict<std::string, at::Tensor> dropped_id_count_dict;
+    for (const auto& [table_name, count] : stats.dropped_id_count) {
+      at::Tensor t = at::zeros({1}, at::kInt);
+      t.data_ptr<int32_t>()[0] = count;
+      dropped_id_count_dict.insert(table_name, t);
+    }
+    stats_dict.insert("dropped_id_count", dropped_id_count_dict);
+
+    return std::make_tuple(outputs, stats_dict);
   };
 
   m.def(
@@ -218,7 +251,7 @@ TORCH_LIBRARY_FRAGMENT(tpu, m) {
       "    int global_device_count, "
       "    int num_sc_per_device, "
       "    bool allow_id_dropping"
-      ") -> Dict(str, Dict(str, Tensor))",
+      ") -> (Dict(str, Dict(str, Tensor)), Dict(str, Dict(str, Tensor)))",
       func);
 }
 
