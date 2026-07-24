@@ -94,6 +94,10 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@v5
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # Skip execution on outdated intermediate push events if a newer commit has landed on main.
       - name: Cancel if superseded by newer main HEAD
         if: github.event_name == 'push'
@@ -105,8 +109,9 @@ jobs:
           if [ "$GITHUB_SHA" != "$LATEST_SHA" ]; then
             echo "::warning::Commit $GITHUB_SHA is superseded by latest main HEAD ($LATEST_SHA). Cancelling run on ${{ matrix.job_info.runner }} to process latest HEAD."
             gh run cancel ${{ github.run_id }} || true
-            # Allow 5s for GHA server-side cancel signal to propagate so status is logged as 'cancelled' (not 'failed')
-            sleep 5
+            # Pause 10s to allow GitHub's server to process gh run cancel and terminate the job as 'cancelled'.
+            # If the cancel signal doesn't arrive within 10s, exit 1 acts as a fail-safe fallback to halt downstream steps.
+            sleep 10
             exit 1
           fi
       # Enable remote connections. Add a waiting step.
