@@ -15,9 +15,13 @@
 """Small graph test for TPU backend."""
 
 import os
+from unittest import mock
+
 from absl.testing import absltest
 import torch
 import torch.export
+import torch.utils._pytree as pytree
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export as torch_tpu_export
 
 
@@ -226,6 +230,88 @@ class ExportTest(absltest.TestCase):
     # StableHLO.
     self.assertIn(b"ML\xefR", mlir_portable_artifact)
     self.assertIn(b"StableHLO_v1.", mlir_portable_artifact)
+
+
+class ReconstructFxOutputsTest(absltest.TestCase):
+  """Guards the hot path in `_reconstruct_fx_outputs`.
+
+  `is_device_shape_dynamic()` is a synchronous device shape-query (a device
+  round-trip). It must only be consulted when the cheap host-side
+  `matches_tensor()` check fails, so that fully-static graphs -- whose outputs
+  already have the expected layout -- never pay for a per-output device
+  round-trip. Regression guard for the ordering of the `or` in
+  `_reconstruct_fx_outputs` (see cl/945793476).
+  """
+
+  def _layout_for(self, tensor: torch.Tensor) -> torch_tpu_export._TensorLayout:
+    return torch_tpu_export._TensorLayout(
+        dtype=tensor.dtype,
+        shape=tensor.shape,
+        stride=tensor.stride(),
+        storage_offset=tensor.storage_offset(),
+    )
+
+  def test_static_outputs_do_not_query_device_shape(self):
+    # Static-shape outputs whose layout already matches the expected layout:
+    # the common case for a static-shape training/inference graph.
+    outputs = [torch.randn(4, 5), torch.randn(3)]
+    expected_layouts = [self._layout_for(t) for t in outputs]
+    output_map = [
+        torch_tpu_export._DedupedTensorOutput(0),
+        torch_tpu_export._DedupedTensorOutput(1),
+    ]
+    _, spec = pytree.tree_flatten(tuple(outputs))
+
+    with mock.patch.object(
+        tpu_torch_compile,
+        "is_device_shape_dynamic",
+        return_value=False,
+    ) as is_dynamic_spy:
+      reconstructed = torch_tpu_export._reconstruct_fx_outputs(
+          inputs=[],
+          deduped_outputs=outputs,
+          expected_layouts=expected_layouts,
+          output_map=output_map,
+          spec=spec,
+      )
+
+    # The device shape-query must be entirely short-circuited by the host-side
+    # matches_tensor() check for static, already-matching outputs.
+    self.assertEqual(is_dynamic_spy.call_count, 0)
+    self.assertEqual(len(reconstructed), len(outputs))
+    for got, want in zip(reconstructed, outputs):
+      self.assertIs(got, want)
+
+  def test_mismatched_output_falls_through_to_device_query(self):
+    # A layout mismatch (here: wrong stride) must still consult
+    # is_device_shape_dynamic() so dynamic-shaped outputs are handled.
+    output = torch.randn(4, 5)
+    mismatched_layout = torch_tpu_export._TensorLayout(
+        dtype=output.dtype,
+        shape=output.shape,
+        stride=(1, 4),  # transposed stride: does not match the contiguous tensor
+        storage_offset=output.storage_offset(),
+    )
+    output_map = [torch_tpu_export._DedupedTensorOutput(0)]
+    _, spec = pytree.tree_flatten((output,))
+
+    with mock.patch.object(
+        tpu_torch_compile,
+        "is_device_shape_dynamic",
+        return_value=True,
+    ) as is_dynamic_spy:
+      reconstructed = torch_tpu_export._reconstruct_fx_outputs(
+          inputs=[],
+          deduped_outputs=[output],
+          expected_layouts=[mismatched_layout],
+          output_map=output_map,
+          spec=spec,
+      )
+
+    self.assertEqual(is_dynamic_spy.call_count, 1)
+    # is_device_shape_dynamic() returned True, so the output is returned as-is
+    # (the dynamic-shape path), not forced to the mismatched static layout.
+    self.assertIs(reconstructed[0], output)
 
 
 if __name__ == "__main__":

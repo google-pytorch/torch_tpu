@@ -275,10 +275,18 @@ def _reconstruct_fx_outputs(
 
       # Force the contiguous output to have the expected layout.
       # b/514662948: avoid the copy/slice for broadcasted return values
-      is_dynamic = tpu_torch_compile.is_device_shape_dynamic(
+      #
+      # matches_tensor() is a cheap host-side metadata comparison; evaluate it
+      # FIRST so that when the compiled output already has the expected static
+      # layout (the common case for a static-shape graph) we short-circuit and
+      # never call is_device_shape_dynamic(). is_device_shape_dynamic() is a
+      # synchronous device shape-query (a device round-trip); running it
+      # unconditionally per output serializes the host on every graph call
+      # (O(#outputs) device round-trips per step), which fully exposes
+      # host/TPU-overlap latency on large static-shape graphs.
+      if expected_layout.matches_tensor(
           contiguous_output_tensor
-      )
-      if is_dynamic or expected_layout.matches_tensor(contiguous_output_tensor):
+      ) or tpu_torch_compile.is_device_shape_dynamic(contiguous_output_tensor):
         reconstructed_flat.append(contiguous_output_tensor)
       else:
         reconstructed_flat.append(
