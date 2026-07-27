@@ -110,7 +110,11 @@ class ExportedMlir:
   """
 
   module: tpu_torch_compile.ContextedModule | None
-  executable: tpu_torch_compile.LoadedExecutableWithMetadata
+  executable: (
+      tpu_torch_compile.LoadedExecutableWithMetadata
+      | tpu_torch_compile.CompilationFuture
+      | None
+  )
   mlir_result_tensors: list[torch.Tensor]
   reconstruct_fx_outputs_fn: Callable[
       [Sequence[Any], Sequence[torch.Tensor]], Any
@@ -445,6 +449,7 @@ def fx_to_mlir(
     build_mlir_module: bool = True,
     use_stablehlo_bounds: bool = False,
     argument_layouts: list[list[int]] | None = None,
+    compile_async: bool = False,
 ) -> ExportedMlir:
   """Converts an FX graph module to MLIR using TorchTPU's defer mode.
 
@@ -462,6 +467,8 @@ def fx_to_mlir(
       result.
     use_stablehlo_bounds: Whether to use StableHLO bounds.
     argument_layouts: A list of forced layouts for input arguments.
+    compile_async: Enqueue compilation through TorchTPU's shared compilation
+      cache and return a future-backed executable handle without waiting.
 
   Returns:
     An `ExportedMlir` object containing the MLIR representation of the graph and
@@ -552,7 +559,12 @@ def fx_to_mlir(
             is_noop=True,
         )
 
-    compile_result = tpu_torch_compile.traverse_and_compile(
+    compile_fn = (
+        tpu_torch_compile.traverse_and_compile_async
+        if compile_async
+        else tpu_torch_compile.traverse_and_compile
+    )
+    compile_result = compile_fn(
         result_tensors=result_tensors,
         argument_tensors=argument_tensors,
         build_mlir_module=build_mlir_module,

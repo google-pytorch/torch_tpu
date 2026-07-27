@@ -15,8 +15,10 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -436,6 +438,36 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
   return executable;
 }
 
+class CompilationFuture {
+ public:
+  explicit CompilationFuture(
+      SharedLoadedExecutableWithMetadataFuture executable)
+      : executable_(std::move(executable)) {}
+
+  bool Done() const {
+    return executable_.wait_for(std::chrono::seconds(0)) ==
+           std::future_status::ready;
+  }
+
+  SharedLoadedExecutableWithMetadata Wait() const {
+    {
+      py::gil_scoped_release release;
+      executable_.wait();
+    }
+    const auto& executable = executable_.get();
+    TT_THROW_IF_ERROR(executable.status());
+    return executable.value();
+  }
+
+ private:
+  SharedLoadedExecutableWithMetadataFuture executable_;
+};
+
+struct PyAsyncCompileResult {
+  absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
+  std::shared_ptr<CompilationFuture> executable;
+};
+
 CompileResult PyTraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
@@ -479,6 +511,55 @@ CompileResult PyTraverseAndCompile(
           }),
       _.SetPrepend() << "Failed to traverse and compile: ");
   return result;
+}
+
+PyAsyncCompileResult PyTraverseAndCompileAsync(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
+    bool build_mlir_module, bool use_stablehlo_bounds,
+    const std::vector<std::vector<int64_t>>& argument_layouts) {  // INT_VEC_OK
+  if (!argument_layouts.empty()) {
+    TT_CHECK_THROW(argument_layouts.size() == argument_tensors.size(),
+                   error::kInvalidArgument)
+        << "number of argument_layouts must match with the number of "
+           "argument_tensors, got number of argument_layouts "
+        << argument_layouts.size() << " and number of argument_tensors "
+        << argument_tensors.size();
+
+    for (size_t i = 0; i < argument_layouts.size(); ++i) {
+      const auto& layout = argument_layouts[i];
+      if (!layout.empty()) {
+        int64_t rank = argument_tensors[i].dim();
+        TT_CHECK_THROW(IsValidLayout(layout, rank), error::kInvalidArgument)
+            << "invalid layout for argument " << i << ", got layout "
+            << ToString(layout) << " for shape "
+            << ToString(argument_tensors[i].sizes());
+      }
+    }
+  }
+  std::vector<Indices> converted_layouts;
+  converted_layouts.reserve(argument_layouts.size());
+  for (const auto& layout : argument_layouts) {
+    converted_layouts.push_back(Indices(layout.begin(), layout.end()));
+  }
+
+  TT_ASSIGN_OR_THROW(
+      AsyncCompileResult result,
+      TraverseAndCompileAsync(
+          result_tensors, argument_tensors,
+          TraverseAndCompileOptions{
+              .compilation_mode = fast_compile ? CompilationMode::kFastCompile
+                                               : CompilationMode::kFastRuntime,
+              .build_mlir_module = build_mlir_module,
+              .use_stablehlo_bounds = use_stablehlo_bounds,
+              .argument_layouts = converted_layouts,
+          }),
+      _.SetPrepend() << "Failed to traverse and enqueue compilation: ");
+  return PyAsyncCompileResult{
+      .module = std::move(result.module),
+      .executable =
+          std::make_shared<CompilationFuture>(std::move(result.executable)),
+  };
 }
 
 // Executes a compiled PJRT executable with the given arguments.
@@ -1143,6 +1224,15 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
       .def("get_parameter_layouts", &PyGetParameterLayouts)
       .def("get_output_layouts", &PyGetOutputLayouts);
 
+  py::class_<CompilationFuture, std::shared_ptr<CompilationFuture>>(
+      m, "CompilationFuture")
+      .def("done", &CompilationFuture::Done)
+      .def("wait", &CompilationFuture::Wait);
+
+  py::class_<PyAsyncCompileResult>(m, "AsyncCompileResult")
+      .def_readonly("module", &PyAsyncCompileResult::module)
+      .def_readonly("executable", &PyAsyncCompileResult::executable);
+
   pybind11::class_<MultiGeneratorLocker>(
       m, "MultiGeneratorLocker",
       "A context manager for locking multiple generators' mutexes.\n\n"
@@ -1197,6 +1287,14 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         "    empty, the size must match the number of arguments.\n"
         "Returns:\n"
         "  CompileResult: The compiled module and executable.");
+  m.def("traverse_and_compile_async", PyTraverseAndCompileAsync,
+        py::arg("result_tensors"), py::arg("argument_tensors"),
+        py::arg("fast_compile") = false, py::arg("build_mlir_module") = false,
+        py::arg("use_stablehlo_bounds") = false,
+        py::arg("argument_layouts") =
+            std::vector<std::vector<int64_t>>{},  // INT_VEC_OK
+        "Traverses the graph, enqueues compilation through the shared cache, "
+        "and returns its future without waiting.");
 
   m.def("build_mlir", PyBuildMlir, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("use_stablehlo_bounds") = false,

@@ -89,6 +89,13 @@ struct CompileResult {
   SharedLoadedExecutableWithMetadata executable;
 };
 
+// Result of an enqueued or cached compilation. The shared future may be pending
+// or already completed.
+struct AsyncCompileResult {
+  absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
+  SharedLoadedExecutableWithMetadataFuture executable;
+};
+
 struct TraverseAndCompileOptions {
   // The compilation mode to use.
   CompilationMode compilation_mode = CompilationMode::kFastRuntime;
@@ -104,6 +111,13 @@ struct TraverseAndCompileOptions {
 // Traverses the graph from outputs to arguments and compiles it.
 // Hides the traversal logic within its implementation.
 absl::StatusOr<CompileResult> TraverseAndCompile(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors,
+    const TraverseAndCompileOptions& options = {});
+
+// Submits compilation through the compilation cache and returns the cache
+// entry's shared future. A cache hit reuses the existing compilation or result.
+absl::StatusOr<AsyncCompileResult> TraverseAndCompileAsync(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     const TraverseAndCompileOptions& options = {});

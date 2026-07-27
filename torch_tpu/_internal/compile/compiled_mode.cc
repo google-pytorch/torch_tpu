@@ -210,7 +210,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
   return mlir_module;
 }
 
-absl::StatusOr<CompileResult> TraverseAndCompile(
+absl::StatusOr<AsyncCompileResult> TraverseAndCompileAsync(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     const TraverseAndCompileOptions& options) {
@@ -261,6 +261,8 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
       << "failed to validate and reorder traversal inputs";
 
   // 2. Compile Traversal and get exec
+  // Building StableHLO is synchronous; executable compilation is enqueued in
+  // the shared compilation pool.
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
@@ -269,9 +271,6 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
                          options.use_stablehlo_bounds,
                          options.argument_layouts),
       _ << "failed to compile traversal");
-
-  TT_ASSIGN_OR_RETURN(auto executable, compiled_kernel.fixed_shape_kernel.get(),
-                      _.SetPrepend() << "failed to get fixed shape kernel: ");
 
   std::shared_ptr<ContextedModule> module = nullptr;
   if (options.build_mlir_module) {
@@ -290,8 +289,23 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     module = std::make_shared<ContextedModule>(std::move(contexted_module));
   }
 
-  return CompileResult{
+  return AsyncCompileResult{
       .module = std::move(module),
+      .executable = std::move(compiled_kernel.fixed_shape_kernel),
+  };
+}
+
+absl::StatusOr<CompileResult> TraverseAndCompile(
+    const std::vector<at::Tensor>& result_tensors,
+    const std::vector<at::Tensor>& argument_tensors,
+    const TraverseAndCompileOptions& options) {
+  TT_ASSIGN_OR_RETURN(
+      AsyncCompileResult result,
+      TraverseAndCompileAsync(result_tensors, argument_tensors, options));
+  TT_ASSIGN_OR_RETURN(auto executable, result.executable.get(),
+                      _.SetPrepend() << "failed to get fixed shape kernel: ");
+  return CompileResult{
+      .module = std::move(result.module),
       .executable = std::move(executable),
   };
 }

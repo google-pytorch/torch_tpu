@@ -56,6 +56,40 @@ def eager_mode_defer_all():
 # TODO: add more test coverage for the direct compile API.
 class CompileApiTest(absltest.TestCase):
 
+  def test_traverse_and_compile_async_uses_compilation_cache(self):
+    torch.tpu._set_allow_cache(True)
+    torch.tpu._clear_cache()
+
+    with eager_mode_defer_all():
+      placeholder = torch.ones(13, 17, device='cpu').to(
+          device=torch.device('tpu')
+      )
+      result = placeholder + 1
+
+    initial_hits = torch.tpu._get_cache_hits()
+    initial_misses = torch.tpu._get_cache_misses()
+    compile_result = tpu_torch_compile.traverse_and_compile_async(
+        [result], [placeholder]
+    )
+    handle = compile_result.executable
+    executable = handle.wait()
+
+    self.assertTrue(handle.done())
+    self.assertEqual(torch.tpu._get_cache_hits(), initial_hits)
+    self.assertEqual(torch.tpu._get_cache_misses(), initial_misses + 1)
+
+    cached_result = tpu_torch_compile.traverse_and_compile_async(
+        [result], [placeholder]
+    )
+    self.assertTrue(cached_result.executable.done())
+    cached_result.executable.wait()
+    self.assertEqual(torch.tpu._get_cache_hits(), initial_hits + 1)
+    self.assertEqual(torch.tpu._get_cache_misses(), initial_misses + 1)
+
+    value = torch.ones(13, 17, device=torch.device('tpu'))
+    outputs = tpu_torch_compile.execute(executable, [value])
+    utils.assert_close(outputs[0].cpu(), torch.full((13, 17), 2.0))
+
   def test_traverse_and_compile_with_forced_layout(self):
     # Case 1: Force default layout [1, 0]. Execution should PASS.
     with eager_mode_defer_all():

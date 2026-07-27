@@ -23,7 +23,7 @@ artifacts produced during compilation.
 import abc
 from collections.abc import Sequence
 import dataclasses
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch._dynamo.utils import dynamo_timed
@@ -39,8 +39,11 @@ from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompilationHandle
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompletedCompilation
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import PendingTorchTpuCompilation
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
 
 
@@ -131,6 +134,17 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
     """
     pass
 
+  def compile_async(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool = True,
+  ) -> CompilationHandle:
+    """Compiles a graph without waiting for executable compilation."""
+    raise NotImplementedError(
+        f"{type(self).__name__} does not support asynchronous compilation"
+    )
+
 
 def has_dynamic_symints(args: Any) -> bool:
   """Checks whether truly dynamic SymInt inputs or shapes exist.
@@ -170,6 +184,10 @@ class StaticCompiler(Compiler):
   This compiler assumes that the input graph and the provided example_inputs
   will result in static shapes throughout the computation. It refuses to compile
   programs with dynamic shapes by raising an exception.
+
+  ``compile_async`` returns a non-serializable handle backed by a future from
+  TorchTPU's shared compilation cache. Graph conversion and cache submission
+  remain synchronous.
   """
 
   def __call__(
@@ -180,6 +198,49 @@ class StaticCompiler(Compiler):
       bounds: Sequence[Any] | None = None,
       argument_layouts: Sequence[Sequence[int]] | None = None,
   ) -> CompiledArtifact:
+    return cast(
+        CompiledArtifact,
+        self._compile(
+            graph_module,
+            example_inputs,
+            is_fwd,
+            bounds,
+            argument_layouts,
+            asynchronous=False,
+        ),
+    )
+
+  def compile_async(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool = True,
+      bounds: Sequence[Any] | None = None,
+      argument_layouts: Sequence[Sequence[int]] | None = None,
+  ) -> CompilationHandle:
+    """Compiles a graph and returns before executable compilation finishes."""
+    return cast(
+        CompilationHandle,
+        self._compile(
+            graph_module,
+            example_inputs,
+            is_fwd,
+            bounds,
+            argument_layouts,
+            asynchronous=True,
+        ),
+    )
+
+  def _compile(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool,
+      bounds: Sequence[Any] | None,
+      argument_layouts: Sequence[Sequence[int]] | None,
+      *,
+      asynchronous: bool,
+  ) -> CompiledArtifact | CompilationHandle:
     """Compiles the FX graph module for static shapes.
 
     This method performs the following steps:
@@ -193,9 +254,13 @@ class StaticCompiler(Compiler):
         unset_fake_temporarily context to ensure tensor storage.
     5.  Emits MLIR artifacts if tracing is enabled.
     6.  Compiles the MLIR module into a PjRtLoadedExecutable.
-    7.  Wraps the executable in a TorchTpuCompiledExecutable.
+    7.  Returns a compilation handle or wraps the loaded executable in a
+        TorchTpuCompiledExecutable.
     8.  Stores debug information (graph code, MLIR text) in the
         executable if debug mode is enabled.
+
+    In asynchronous mode, step 6 enqueues compilation and returns a handle whose
+    wait() method constructs the loaded executable artifact.
 
     Args:
       graph_module: The FX graph module to compile.
@@ -204,6 +269,7 @@ class StaticCompiler(Compiler):
       is_fwd: Indicates whether the forward or backward pass is being compiled.
       bounds: Optional sequence of TensorBounds for dynamic inputs.
       argument_layouts: Optional sequence of argument layouts for inputs.
+      asynchronous: Whether to return before executable compilation finishes.
 
     Returns:
       A _TorchTpuCompiledExecutable object, which can be called to execute
@@ -279,6 +345,7 @@ class StaticCompiler(Compiler):
             build_mlir_module=(tracing_enabled or self._debug),
             use_stablehlo_bounds=self._use_stablehlo_bounds,
             argument_layouts=argument_layouts,
+            compile_async=asynchronous,
         )
 
     if exported_mlir.is_noop:
@@ -287,7 +354,8 @@ class StaticCompiler(Compiler):
       # compile; return a callable that reconstructs the graph's (all-None /
       # passthrough) output and runs nothing on device, rather than compiling a
       # trivial executable.
-      return NoOpCompiledArtifact(exported_mlir.reconstruct_fx_outputs_fn)
+      artifact = NoOpCompiledArtifact(exported_mlir.reconstruct_fx_outputs_fn)
+      return CompletedCompilation(artifact) if asynchronous else artifact
 
     mlir_module = exported_mlir.module
 
@@ -306,17 +374,31 @@ class StaticCompiler(Compiler):
           expect_trace_id=True,
       )
 
+    graph_module_debug_str = None
+    debug_mlir_text = None
+    if self._debug and mlir_module is not None:
+      # Avoid print_readable() as it includes verbose original code lines.
+      graph_module_debug_str = str(graph_module.code)
+      debug_mlir_text = tpu_torch_compile.serialize_mlir_text(
+          mlir_module, enable_debug_info=True
+      )
+
+    if asynchronous:
+      return PendingTorchTpuCompilation(
+          future=exported_mlir.executable,
+          reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
+          updates_default_generator_state=exported_mlir.updates_default_generator_state,
+          graph_module_debug_str=graph_module_debug_str,
+          mlir_text=debug_mlir_text,
+      )
+
     executable = TorchTpuCompiledExecutable(
         executable=exported_mlir.executable,
         reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
         updates_default_generator_state=exported_mlir.updates_default_generator_state,
     )
-
-    if self._debug and mlir_module is not None:
-      # Avoid print_readable() as it includes verbose original code lines.
-      executable.graph_module_debug_str = str(graph_module.code)
-      executable.mlir_text = tpu_torch_compile.serialize_mlir_text(
-          mlir_module, enable_debug_info=True
-      )
-
+    if graph_module_debug_str is not None:
+      executable.graph_module_debug_str = graph_module_debug_str
+    if debug_mlir_text is not None:
+      executable.mlir_text = debug_mlir_text
     return executable

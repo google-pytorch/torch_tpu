@@ -22,7 +22,8 @@ from collections.abc import Callable, Sequence
 import copy
 import functools
 import operator
-from typing import Any
+import threading
+from typing import Any, cast
 
 from absl import logging
 import torch
@@ -34,7 +35,9 @@ from torch_tpu._internal.compile import collective_ops
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import force_collectives_output
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompilationHandle
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import wait_for_compilations
 
 # Required to register the SPMD safe region ops.
 from torch_tpu._internal.distributed import spmd_util as _spmd_util  # pylint: disable=unused-import
@@ -163,7 +166,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   def __init__(
       self,
       module: torch.fx.GraphModule,
-      compiler_fn: Callable[..., CompiledArtifact],
+      compiler_fn: Callable[..., Any],
       fake_mode: torch._subclasses.fake_tensor.FakeTensorMode,
   ):
     super().__init__(module)
@@ -284,6 +287,42 @@ def _unpickle_split_compiled_executable(
   return _SplitCompiledExecutable(split_gm)
 
 
+class _PendingSplitCompilation(CompilationHandle):
+  """Pending leaf compilations for a split graph."""
+
+  def __init__(self, split_gm: torch.fx.GraphModule):
+    self._split_gm = split_gm
+    self._children = [
+        (module, module.submod)
+        for module in split_gm.modules()
+        if isinstance(module, _WrapperModule)
+    ]
+    if not all(
+        isinstance(compilation, CompilationHandle)
+        for _, compilation in self._children
+    ):
+      raise TypeError("asynchronous split submodules must return compilation handles")
+    self._artifact: _SplitCompiledExecutable | None = None
+    self._lock = threading.Lock()
+
+  def done(self) -> bool:
+    return self._artifact is not None or all(
+        compilation.done() for _, compilation in self._children
+    )
+
+  def wait(self) -> _SplitCompiledExecutable:
+    with self._lock:
+      if self._artifact is None:
+        artifacts = wait_for_compilations(
+            [compilation for _, compilation in self._children]
+        )
+        for (wrapper, _), artifact in zip(self._children, artifacts):
+          wrapper.submod = artifact
+        self._artifact = _SplitCompiledExecutable(self._split_gm)
+      assert self._artifact is not None
+      return self._artifact
+
+
 class SplitCompiler(compiler.Compiler):
   """Compiler that splits the graph on collectives and compiles submodules."""
 
@@ -305,7 +344,39 @@ class SplitCompiler(compiler.Compiler):
       example_inputs: Sequence[InputType],
       is_fwd: bool = True,
   ) -> CompiledArtifact:
+    return cast(
+        CompiledArtifact,
+        self._compile(
+            graph_module, example_inputs, is_fwd, asynchronous=False
+        ),
+    )
+
+  def compile_async(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool = True,
+  ) -> CompilationHandle:
+    return cast(
+        CompilationHandle,
+        self._compile(graph_module, example_inputs, is_fwd, asynchronous=True),
+    )
+
+  def _compile(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool,
+      *,
+      asynchronous: bool,
+  ) -> CompiledArtifact | CompilationHandle:
     """Splits the graph on collectives and compiles the submodules."""
+
+    compiler_fn = (
+        self.base_compiler.compile_async
+        if asynchronous
+        else self.base_compiler.__call__
+    )
 
     enter_target = torch.ops.torch_tpu.enter_spmd_safe_region.default
     exit_target = torch.ops.torch_tpu.exit_spmd_safe_region.default
@@ -376,7 +447,7 @@ class SplitCompiler(compiler.Compiler):
       logging.info(
           "Skipping split because there is only %d partition", num_partitions
       )
-      return self.base_compiler(graph_module, example_inputs, is_fwd)
+      return compiler_fn(graph_module, example_inputs, is_fwd)
 
     logging.info(
         "Split graph into %d partitions",
@@ -396,11 +467,13 @@ class SplitCompiler(compiler.Compiler):
     if fake_mode is None:
       fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()  # pylint: disable=protected-access
 
-    compiler_fn = functools.partial(self.base_compiler.__call__, is_fwd=is_fwd)
-    submod_compiler = _SubmodCompiler(split_gm, compiler_fn, fake_mode)
+    compile_submod = functools.partial(compiler_fn, is_fwd=is_fwd)
+    submod_compiler = _SubmodCompiler(split_gm, compile_submod, fake_mode)
 
     # See NOTE: [Deferring tensor pack/unpack hooks until runtime]
     with torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing():  # pylint: disable=protected-access
       submod_compiler.run(*example_inputs)
     split_gm.recompile()
+    if asynchronous:
+      return _PendingSplitCompilation(split_gm)
     return _SplitCompiledExecutable(split_gm)

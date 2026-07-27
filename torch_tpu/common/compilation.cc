@@ -49,6 +49,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -136,8 +137,11 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
     xla::PjRtClient& client, LoadedExecutableBuilder executable_builder,
     UniqueCompileOptions compile_options) {
   TT_ASSIGN_OR_RETURN(
-      std::unique_ptr<xla::PjRtLoadedExecutable> executable,
-      std::move(executable_builder)(client, std::move(compile_options)));
+      std::unique_ptr<xla::PjRtLoadedExecutable> executable, [&]() {
+        tsl::profiler::TraceMe trace_me("torchtpu_pjrt_compile_and_load");
+        return std::move(executable_builder)(client,
+                                             std::move(compile_options));
+      }());
   return LoadedExecutableWithMetadata::MakeShared(std::move(executable));
 }
 

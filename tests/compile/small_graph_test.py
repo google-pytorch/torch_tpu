@@ -27,6 +27,7 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import wait_for_compilations
 from torch_tpu._internal.utils import utils
 
 
@@ -629,6 +630,35 @@ class FunctionTest(absltest.TestCase):
 
     result = executable([x])
     utils.assert_close(result[0].cpu(), expected)
+
+  def test_async_static_compiler_returns_compilation_handles(self):
+    class ScaleModel(torch.nn.Module):
+
+      def forward(self, x):
+        return (x * 3 + 1,)
+
+    torch.tpu._set_allow_cache(True)
+    torch.tpu._clear_cache()
+    graph_module2 = torch.fx.symbolic_trace(
+        ScaleModel().to(torch.device("tpu"))
+    )
+    graph_module4 = torch.fx.symbolic_trace(
+        ScaleModel().to(torch.device("tpu"))
+    )
+    compiler_instance = compiler.StaticCompiler()
+
+    x2 = torch.randn(2, 8).to(torch.device("tpu"))
+    x4 = torch.randn(4, 8).to(torch.device("tpu"))
+    compilation2 = compiler_instance.compile_async(graph_module2, [x2])
+    compilation4 = compiler_instance.compile_async(graph_module4, [x4])
+    with self.assertRaisesRegex(TypeError, "cannot be serialized"):
+      pickle.dumps(compilation2)
+    executable2, executable4 = wait_for_compilations(
+        [compilation2, compilation4]
+    )
+
+    utils.assert_close(executable2([x2])[0].cpu(), (x2 * 3 + 1).cpu())
+    utils.assert_close(executable4([x4])[0].cpu(), (x4 * 3 + 1).cpu())
 
   def test_input_is_view(self):
     """Test that compile works even when an argument is a view."""

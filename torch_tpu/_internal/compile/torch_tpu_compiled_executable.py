@@ -17,6 +17,7 @@
 import abc
 from collections.abc import Callable, Sequence
 import operator
+import threading
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -81,6 +82,55 @@ class CompiledArtifact(abc.ABC, OutputCode):
     pass
 
 
+class CompilationHandle(abc.ABC):
+  """A non-serializable handle for a pending or completed compilation."""
+
+  @abc.abstractmethod
+  def done(self) -> bool:
+    """Returns whether compilation has completed."""
+
+  @abc.abstractmethod
+  def wait(self) -> CompiledArtifact:
+    """Waits for compilation and returns the loaded artifact."""
+
+  def __reduce__(self) -> Any:
+    raise TypeError(
+        "compilation handles cannot be serialized; serialize the artifact "
+        "returned by wait()"
+    )
+
+
+class CompletedCompilation(CompilationHandle):
+  """A compilation handle whose artifact is already available."""
+
+  def __init__(self, artifact: CompiledArtifact):
+    self._artifact = artifact
+
+  def done(self) -> bool:
+    return True
+
+  def wait(self) -> CompiledArtifact:
+    return self._artifact
+
+
+def wait_for_compilations(
+    compilations: Sequence[CompilationHandle],
+) -> list[CompiledArtifact]:
+  """Waits for every compilation before raising the first error."""
+  artifacts: list[CompiledArtifact | None] = [None] * len(compilations)
+  first_error: Exception | None = None
+  for index, compilation in enumerate(compilations):
+    try:
+      artifacts[index] = compilation.wait()
+    except Exception as error:  # pylint: disable=broad-exception-caught
+      if first_error is None:
+        first_error = error
+
+  if first_error is not None:
+    raise first_error
+  return [artifact for artifact in artifacts if artifact is not None]
+
+
 def _unpickle_compiled_executable(
     serialized_bytes: bytes,
     reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
@@ -119,6 +169,9 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
   This class is returned to dynamo and stored in the dynamo cache. Any time an
   FX graph being traced by dynamo satisfies the guards set up to produce this
   executable, a call to the __call__ method is made.
+
+  The wrapped PJRT executable is fully loaded. Asynchronous compilation returns
+  a separate ``CompilationHandle`` that constructs this artifact from wait().
   """
 
   def __init__(
@@ -378,6 +431,47 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
 
   def set_triton_bundle(self, triton_bundle: Any) -> None:
     pass
+
+
+class PendingTorchTpuCompilation(CompilationHandle):
+  """A pending native compilation that resolves to a loaded TPU artifact."""
+
+  def __init__(
+      self,
+      future: tpu_torch_compile.CompilationFuture,
+      reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
+      updates_default_generator_state: bool,
+      graph_module_debug_str: str | None = None,
+      mlir_text: str | None = None,
+  ) -> None:
+    if not isinstance(future, tpu_torch_compile.CompilationFuture):
+      raise TypeError("PendingTorchTpuCompilation requires a CompilationFuture")
+    self._future = future
+    self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
+    self._updates_default_generator_state = updates_default_generator_state
+    self._graph_module_debug_str = graph_module_debug_str
+    self._mlir_text = mlir_text
+    self._artifact: TorchTpuCompiledExecutable | None = None
+    self._lock = threading.Lock()
+
+  def done(self) -> bool:
+    return self._artifact is not None or self._future.done()
+
+  def wait(self) -> TorchTpuCompiledExecutable:
+    with self._lock:
+      if self._artifact is None:
+        artifact = TorchTpuCompiledExecutable(
+            executable=self._future.wait(),
+            reconstruct_fx_outputs_fn=self._reconstruct_fx_outputs_fn,
+            updates_default_generator_state=self._updates_default_generator_state,
+        )
+        if self._graph_module_debug_str is not None:
+          artifact.graph_module_debug_str = self._graph_module_debug_str
+        if self._mlir_text is not None:
+          artifact.mlir_text = self._mlir_text
+        self._artifact = artifact
+      assert self._artifact is not None
+      return self._artifact
 
 
 def _unpickle_noop_compiled_artifact(

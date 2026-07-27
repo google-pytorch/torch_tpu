@@ -271,6 +271,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@llvm-project//mlir:IR",
+        "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:shape_util",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/client:executable_build_options",
