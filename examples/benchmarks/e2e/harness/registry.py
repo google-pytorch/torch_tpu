@@ -17,7 +17,7 @@
 A benchmark wrapped in a @register_benchmark decorator is added to a global
 dictionary. The spec holds only properties of a benchmark:
 
-    factory, step_fn (+ kwargs), topology, requires_kind
+    factory, step (+ kwargs), topology, requires_kind
 
 Things that are properties of the run like target/platform, run scope, eager
 mode vs compiled, profiling are chosen per invocation. This lets one
@@ -33,7 +33,7 @@ import dataclasses
 from typing import Any, Callable, Dict, Mapping, Sequence, Tuple
 
 from examples.benchmarks.e2e.harness import compile as compile_lib
-from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+from examples.benchmarks.e2e.harness import step_lib
 from examples.benchmarks.e2e.harness import target as target_lib
 
 # factory returns (model, input_args, input_kwargs, optimizer | None)
@@ -51,49 +51,92 @@ class BenchmarkSpec:
 
   name: str
   factory: Factory
-  step_fn: step_fn_lib.StepFn
-  step_fn_kwargs: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+  step: step_lib.StepperType
+  step_kwargs: Mapping[str, Any] = dataclasses.field(default_factory=dict)
   dtype: target_lib.DType = target_lib.DType.BF16
   compile_config: compile_lib.CompileConfig | None = None
+  skipped_run_modes: frozenset[str] = dataclasses.field(
+      default_factory=frozenset
+  )
 
 
 REGISTRY: Dict[str, BenchmarkSpec] = {}
 
 
-def register_benchmark(
-    step_fn: step_fn_lib.StepFn,
-    step_fn_kwargs: Mapping[str, Any] | None = None,
+def add_benchmark(
+    factory: Factory,
+    step: step_lib.StepperType,
+    step_kwargs: Mapping[str, Any] | None = None,
     dtype: target_lib.DType = target_lib.DType.BF16,
     compile_config: compile_lib.CompileConfig | None = None,
+    name: str | None = None,
+    skipped_run_modes: frozenset[str] | set[str] | None = None,
+) -> None:
+  """Adds a benchmark spec to REGISTRY.
+
+  Args:
+    factory: The factory function for the benchmark.
+    step: The step function type to use for this benchmark.
+    step_kwargs: Optional keyword arguments to pass when resolving step.
+    dtype: The data type for running the benchmark (defaults to BF16).
+    compile_config: Optional compile configuration (defaults to None).
+    name: Optional explicit name for the benchmark. If not provided, the
+      factory's name is used.
+  """
+  if step_kwargs is None:
+    step_kwargs = {}
+
+  if skipped_run_modes is None:
+    skipped_run_modes = frozenset()
+  elif not isinstance(skipped_run_modes, frozenset):
+    skipped_run_modes = frozenset(skipped_run_modes)
+
+  key = name if name is not None else getattr(factory, "__name__", str(factory))
+  if key in REGISTRY:
+    raise ValueError(
+        f"duplicate benchmark name {key!r} (already registered from "
+        f"{REGISTRY[key].factory.__module__})"
+    )
+  REGISTRY[key] = BenchmarkSpec(
+      name=key,
+      factory=factory,
+      step=step,
+      step_kwargs=dict(step_kwargs),
+      dtype=dtype,
+      compile_config=compile_config,
+      skipped_run_modes=skipped_run_modes,
+  )
+
+
+def register_benchmark(
+    step: step_lib.StepperType,
+    step_kwargs: Mapping[str, Any] | None = None,
+    dtype: target_lib.DType = target_lib.DType.BF16,
+    compile_config: compile_lib.CompileConfig | None = None,
+    skipped_run_modes: frozenset[str] | set[str] | None = None,
 ) -> Callable[[Factory], Factory]:
   """Decorator to wrap a benchmark factory and add its spec to REGISTRY.
 
   Args:
-    step_fn: The step function type to use for this benchmark.
-    step_fn_kwargs: Optional keyword arguments to pass when resolving step_fn.
+    step: The step function type to use for this benchmark.
+    step_kwargs: Optional keyword arguments to pass when resolving step.
     dtype: The data type for running the benchmark (defaults to BF16).
     compile_config: Optional compile configuration (defaults to None).
 
   Returns:
     A decorator that registers the factory function and returns it unchanged.
   """
-  if step_fn_kwargs is None:
-    step_fn_kwargs = {}
+  if step_kwargs is None:
+    step_kwargs = {}
 
   def deco(factory: Factory) -> Factory:
-    key = getattr(factory, "__name__", str(factory))
-    if key in REGISTRY:
-      raise ValueError(
-          f"duplicate benchmark name {key!r} (already registered from "
-          f"{REGISTRY[key].factory.__module__})"
-      )
-    REGISTRY[key] = BenchmarkSpec(
-        name=key,
+    add_benchmark(
         factory=factory,
-        step_fn=step_fn,
-        step_fn_kwargs=dict(step_fn_kwargs),
+        step=step,
+        step_kwargs=dict(step_kwargs),
         dtype=dtype,
         compile_config=compile_config,
+        skipped_run_modes=skipped_run_modes,
     )
     return factory
 

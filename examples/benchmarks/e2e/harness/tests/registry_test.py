@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence, Tuple
 from absl.testing import absltest
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import registry as registry_lib
-from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+from examples.benchmarks.e2e.harness import step_lib
 
 
 def _factory() -> Tuple[str, Sequence[Any], Mapping[str, Any], Any | None]:
@@ -40,7 +40,8 @@ class RegisterTest(absltest.TestCase):
     registry_lib.REGISTRY.update(self._saved)
 
   def test_register_with_function_name(self):
-    @registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)
+
+    @registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)
     def llama_1b_inference():
       return ("m", (), {}, None)
 
@@ -49,7 +50,7 @@ class RegisterTest(absltest.TestCase):
   def test_decorator_returns_factory_unchanged(self):
     """Standalone tests import factories directly, so decorator must preserve them."""
 
-    @registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)
+    @registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)
     def sample_benchmark():
       return ("dummy_model", ("input_args",), {"kw": "input_kwargs"}, None)
 
@@ -62,31 +63,27 @@ class RegisterTest(absltest.TestCase):
     )
 
   def test_duplicate_name_raises(self):
-    registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)(
-        _factory
-    )
+    registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)(_factory)
     with self.assertRaises(ValueError):
-      registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)(
+      registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)(
           _factory
       )
 
-  def test_step_fn_kwargs_not_aliased(self):
+  def test_step_kwargs_not_aliased(self):
     """A shared mutable default would let one benchmark's kwargs leak into another."""
     kwargs = {"accum_steps": 4}
     registry_lib.register_benchmark(
-        step_fn=step_fn_lib.StepFn.TRAINING, step_fn_kwargs=kwargs
+        step=step_lib.StepperType.TRAINING, step_kwargs=kwargs
     )(_factory)
     kwargs["accum_steps"] = 999
     self.assertEqual(
-        registry_lib.REGISTRY["_factory"].step_fn_kwargs["accum_steps"], 4
+        registry_lib.REGISTRY["_factory"].step_kwargs["accum_steps"], 4
     )
 
   def test_registered_specs_defaults(self):
-    registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)(
-        _factory
-    )
+    registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)(_factory)
     spec = registry_lib.REGISTRY["_factory"]
-    self.assertEqual(spec.step_fn_kwargs, {})
+    self.assertEqual(spec.step_kwargs, {})
     self.assertIsNone(spec.compile_config)
 
   def test_register_with_compile_config(self):
@@ -94,15 +91,13 @@ class RegisterTest(absltest.TestCase):
         scope=compile_lib.Scope.STEP, dynamic=True, fullgraph=True
     )
     registry_lib.register_benchmark(
-        step_fn=step_fn_lib.StepFn.FORWARD, compile_config=cfg
+        step=step_lib.StepperType.FORWARD, compile_config=cfg
     )(_factory)
     spec = registry_lib.REGISTRY["_factory"]
     self.assertEqual(spec.compile_config, cfg)
 
   def test_registered_entry_frozen(self):
-    registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)(
-        _factory
-    )
+    registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)(_factory)
     with self.assertRaises(dataclasses.FrozenInstanceError):
       registry_lib.REGISTRY["_factory"].name = "other"
 

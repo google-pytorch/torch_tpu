@@ -33,7 +33,7 @@ torch_tpu_py_library(
     deps = [
         "//examples/benchmarks/e2e/harness:context",
         "//examples/benchmarks/e2e/harness:registry",
-        "//examples/benchmarks/e2e/harness:step_fn",
+        "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:torch_device_ops",
         "//shims/torch:pytorch",
         "//tests:module_registry",

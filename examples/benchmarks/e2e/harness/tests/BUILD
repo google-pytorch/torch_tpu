@@ -54,21 +54,23 @@ torch_tpu_py_test(
     deps = [
         "//examples/benchmarks/e2e/harness:compile",
         "//examples/benchmarks/e2e/harness:registry",
-        "//examples/benchmarks/e2e/harness:step_fn",
+        "//examples/benchmarks/e2e/harness:step_lib",
         "//shims/absl_py/testing:absltest",
         "//torch_tpu",
     ],
 )
 
 torch_tpu_py_test(
-    name = "step_fn_test",
-    srcs = ["step_fn_test.py"],
+    name = "step_test",
+    srcs = ["step_test.py"],
     tags = ["requires-tpu-v5lite"],
     deps = [
+        "//examples/benchmarks/e2e/harness:discovery",
         "//examples/benchmarks/e2e/harness:measure",
-        "//examples/benchmarks/e2e/harness:step_fn",
+        "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:target",
         "//examples/benchmarks/e2e/harness:torch_device_ops",
+        "//examples/benchmarks/e2e/harness/steps",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
@@ -131,6 +133,17 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:discovery",
         "//examples/benchmarks/e2e/harness:registry",
         "//shims/absl_py/testing:absltest",
+        "//torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "loss_test",
+    srcs = ["loss_test.py"],
+    deps = [
+        "//examples/benchmarks/e2e/harness:loss",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
         "//torch_tpu",
     ],
 )

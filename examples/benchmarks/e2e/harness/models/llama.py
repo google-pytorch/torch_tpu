@@ -17,7 +17,7 @@
 import torch
 from examples.benchmarks.e2e.harness import context as context_lib
 from examples.benchmarks.e2e.harness import registry as registry_lib
-from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+from examples.benchmarks.e2e.harness import step_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
 from tests import module_registry
 
@@ -85,16 +85,16 @@ def _load_llama(ctx: context_lib.Context, model_name: str, is_training: bool):
   return model, inputs
 
 
-@registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)
+@registry_lib.register_benchmark(step=step_lib.StepperType.FORWARD)
 def llama_1b_inference(ctx):
   """Benchmark factory for Llama 3.2 1B inference."""
   model, inputs = _load_llama(ctx, "meta-llama/Llama-3.2-1B", is_training=False)
-  return model, (), inputs, None
+  return model, (), inputs
 
 
 @registry_lib.register_benchmark(
-    step_fn=step_fn_lib.StepFn.TRAINING,
-    step_fn_kwargs={"accum_steps": 8},
+    step=step_lib.StepperType.TRAINING,
+    step_kwargs={"accum_steps": 8},
 )
 def llama_1b_train_accum8(ctx):
   """Benchmark factory for Llama 3.2 1B training with 8 accumulation steps."""

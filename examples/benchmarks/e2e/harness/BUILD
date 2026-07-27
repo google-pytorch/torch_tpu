@@ -45,6 +45,7 @@ torch_tpu_py_library(
     deps = [
         ":device_ops",
         ":metrics",
+        ":step_lib",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "@pypi//numpy",
@@ -63,21 +64,26 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "registry",
-    srcs = ["registry.py"],
+    name = "step_lib",
+    srcs = ["step_lib.py"],
+)
+
+torch_tpu_py_library(
+    name = "loss",
+    srcs = ["loss.py"],
     deps = [
-        ":compile",
-        ":step_fn",
-        ":target",
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
     ],
 )
 
 torch_tpu_py_library(
-    name = "step_fn",
-    srcs = ["step_fn.py"],
+    name = "registry",
+    srcs = ["registry.py"],
     deps = [
-        "//shims/absl_py/logging",
-        "//shims/torch:pytorch",
+        ":compile",
+        ":step_lib",
+        ":target",
     ],
 )
 
@@ -115,6 +121,17 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "cases",
+    srcs = ["cases.py"],
+    deps = [
+        ":mode",
+        ":registry",
+        ":target",
+        "//examples/benchmarks/e2e:common",
+    ],
+)
+
 torch_tpu_py_test(
     name = "torch_benchmark_test",
     timeout = "long",
@@ -128,12 +145,15 @@ torch_tpu_py_test(
     env = {
         "BENCHMARK_PLATFORM": "v5e_1x1",
     },
+    nolocal = "user requested to run this manually",
     notest_oss = "requires huggingface configs from internal infra",
+    shard_count = 50,
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
     deps = [
+        ":cases",
         ":compile",
         ":context",
         ":discovery",
@@ -141,11 +161,13 @@ torch_tpu_py_test(
         ":metrics",
         ":mode",
         ":registry",
-        ":step_fn",
+        ":step_lib",
         ":target",
         ":torch_device_ops",
         "//examples/benchmarks/e2e:common",
         "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
