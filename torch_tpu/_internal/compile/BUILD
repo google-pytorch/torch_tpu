@@ -84,8 +84,18 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":experimental",
         ":scan",
         ":tpu_backend",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "experimental",
+    srcs = ["experimental.py"],
+    deps = [
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
 )
@@ -101,6 +111,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":experimental",
         ":split_compiler",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -128,6 +139,7 @@ torch_tpu_cc_library(
         "compiled_mode.h",
     ],
     deps = [
+        "//shims/pybind11",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
@@ -166,6 +178,7 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:stablehlo_serialization",
         "@tsl//tsl/platform:path",
+        "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",

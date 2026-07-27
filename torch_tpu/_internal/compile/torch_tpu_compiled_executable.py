@@ -16,7 +16,9 @@
 
 import abc
 from collections.abc import Callable, Sequence
+import concurrent.futures
 import operator
+import threading
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -52,6 +54,8 @@ class CompiledArtifact(abc.ABC, OutputCode):
   mechanisms at the Dynamo/AOT Autograd layers.
   """
 
+  _boxed_call: bool = True
+
   @abc.abstractmethod
   def __call__(self, inputs: Sequence[InputType]) -> Any:
     """Executes the compiled artifact.
@@ -79,6 +83,15 @@ class CompiledArtifact(abc.ABC, OutputCode):
       serialize the object.
     """
     pass
+
+  def resolve(self) -> None:
+    """Waits for any pending background compilation to complete."""
+    pass
+
+  @property
+  def is_resolved(self) -> bool:
+    """Returns True if the compilation is complete and resolved."""
+    return True
 
 
 def _unpickle_compiled_executable(
@@ -380,6 +393,78 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     pass
 
 
+class AsyncCompiledArtifact(CompiledArtifact):
+  """A proxy for TorchTpuCompiledExecutable that compiles asynchronously.
+
+  This class allows MLIR compilation to happen concurrently in the background.
+  It transparently blocks to resolve the compilation when missing attributes
+  or execution methods are accessed.
+  """
+
+  _boxed_call: bool = True
+  _fx_graph_cache_key: Any = None
+  _is_fallback: bool = False
+
+  def __init__(self, future: concurrent.futures.Future[CompiledArtifact]):
+    super().__init__()
+    self._future = future
+    self._resolved = False
+    self._lock = threading.Lock()
+
+  def prepare_for_serialization(self) -> None:
+    pass
+
+  def post_compile(self, *args: Any, **kwargs: Any) -> None:
+    pass
+
+  def set_triton_bundle(self, triton_bundle: Any) -> None:
+    pass
+
+  def _resolve(self) -> None:
+    """Blocks on the future and swaps the dict with the compiled executable."""
+    if not self._resolved:
+      with self._lock:
+        if not self._resolved:
+          real_artifact = self._future.result()
+          self.__dict__.update(real_artifact.__dict__)
+          self.__class__ = real_artifact.__class__  # pyrefly: ignore[bad-argument-type]
+          self._resolved = True
+
+  def resolve(self) -> None:
+    """Waits for any pending background compilation to complete."""
+    self._resolve()
+
+  @property
+  def is_resolved(self) -> bool:
+    """Returns True if the background compilation has finished and resolved."""
+    return self._resolved
+
+  @property
+  def future(self) -> concurrent.futures.Future[CompiledArtifact]:
+    """Returns the underlying compilation future."""
+    return self._future
+
+  def __getattr__(self, name: str) -> Any:
+    """Resolves the background compilation when an unknown attribute is accessed."""
+    # Do not resolve on Python introspection / magic attributes or common framework checks
+    if name.startswith("__") or name in ("_fx_graph_cache_key", "_is_fallback"):
+      raise AttributeError(
+          f"{type(self).__name__!s} object has no attribute {name!r}"
+      )
+    self._resolve()
+    return getattr(self, name)
+
+  def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    """Resolves the background compilation and executes the real callable."""
+    self._resolve()
+    return self(*args, **kwargs)
+
+  def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
+    """Resolves the background compilation and serializes the real executable."""
+    self._resolve()
+    return self.__reduce__()
+
+
 def _unpickle_noop_compiled_artifact(
     reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
 ) -> "NoOpCompiledArtifact":
@@ -410,7 +495,7 @@ class NoOpCompiledArtifact(CompiledArtifact):
   ) -> Any:
     del output_shapes  # Unused
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
-      args = args[0]
+      args = args[0]  # pyrefly: ignore[bad-assignment]
     if self._reconstruct_fx_outputs_fn is None:
       return ()
     # No compiled result tensors: reconstruct the FX output structure (Nones

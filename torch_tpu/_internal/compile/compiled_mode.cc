@@ -38,6 +38,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Support/LLVM.h"
+#include "pybind11/pybind11.h"
 #include "stablehlo/dialect/Serialization.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -62,6 +63,7 @@
 #include "torch_tpu/ops/view_decomposition/decomposition.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -215,6 +217,8 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors,
     const TraverseAndCompileOptions& options) {
+  tsl::profiler::TraceMe trace_await("TraverseAndCompile");
+
   ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
   ScopedPythonContextProvider provider(
       ScopedPythonContextCapturer::GetContext());
@@ -260,6 +264,10 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
       << "failed to validate and reorder traversal inputs";
+
+  // Release the Python GIL before XLA compilation to allow multi-threaded
+  // compilation.
+  pybind11::gil_scoped_release release;
 
   // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
