@@ -27,7 +27,6 @@ first device load.
 import atexit
 from collections.abc import Callable, Mapping
 import threading
-import traceback as _tb_mod
 from typing import Any
 
 from absl import logging

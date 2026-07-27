@@ -21,7 +21,7 @@ import os
 def running_in_cloud() -> bool:
   """Returns True if the codebase is running in GCP."""
   try:
-    import libtpu  # pylint: disable=g-import-not-at-top,unused-import # pytype: disable=import-error
+    import libtpu  # pylint: disable=g-import-not-at-top,unused-import # pytype: disable=import-error # noqa: F401
 
     return True
   except ImportError:

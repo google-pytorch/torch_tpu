@@ -32,8 +32,8 @@ from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import performance_utils as pt_performance_utils
 import torchax
-from torchax import interop  # pylint: disable=unused-import
-from torchax import train  # pylint: disable=unused-import
+from torchax import interop  # pylint: disable=unused-import  # noqa: F401
+from torchax import train  # pylint: disable=unused-import  # noqa: F401
 
 from torch_tpu._internal.shims.xprof import traceme
 

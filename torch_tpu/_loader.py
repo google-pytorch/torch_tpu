@@ -132,10 +132,10 @@ def _init_device_impl(device: str) -> torch.device:
   # make sure they are imported at load time.
   # pylint: disable=unused-import,g-import-not-at-top
   # For torch.compile() "tpu" backend registration.
-  import torch_tpu._internal.compile  # pylint: disable=unused-import
+  import torch_tpu._internal.compile  # pylint: disable=unused-import  # noqa: F401
 
   # For monkeypatching torch.autograd.Variable._execution_engine.
-  import torch_tpu._internal.sync  # pylint: disable=unused-import
+  import torch_tpu._internal.sync  # pylint: disable=unused-import  # noqa: F401
   # pylint: enable=unused-import,g-import-not-at-top
 
   # Only "tpu / xla_cuda / xla_cpu" are supported.

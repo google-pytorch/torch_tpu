@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from absl import flags  # pylint: disable=unused-import  # required for VLOG
+from absl import flags  # pylint: disable=unused-import  # required for VLOG  # noqa: F401
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch

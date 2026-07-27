@@ -14,7 +14,7 @@
 
 """Tests for get_started_tpu.py — verifies each executable cell runs without error."""
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 import torch
 
 

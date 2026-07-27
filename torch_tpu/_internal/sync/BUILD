@@ -88,7 +88,6 @@ py_library_providing_imports_info(
     ],
     deps = [
         ":sync_lib",
-        "//shims/torch:pytorch",
     ],
 )
 

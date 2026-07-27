@@ -14,7 +14,7 @@
 
 """Tests for porting_vit_mnist.py — verifies each executable cell runs without error."""
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 import math
 import torch
 import torch.nn as nn

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: skip-file
+# pylint: skip-file  # ruff: noqa
 """Tests for compilation_cache.py — verifies each executable cell runs without error."""
 
 import torch
