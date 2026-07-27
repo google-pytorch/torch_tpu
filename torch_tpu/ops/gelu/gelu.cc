@@ -177,13 +177,10 @@ absl::StatusOr<mlir::MlirOp> BuildGeluShlo(mlir::MlirOp input_op,
   ABSL_VLOG(1) << "[BuildGeluShlo] input_op: "
                << mlir::debugString(input_op.getValue().getLoc());
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      InferComputationDtype(output_dtype));
-
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_dtype));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_dtype);
+                      ConvertIfInteger(input_op, output_dtype));
+  computation_input_op =
+      mlir::stablehlo::ConvertElementType(computation_input_op, output_dtype);
 
   absl::StatusOr<mlir::MlirOp> result_op;
   if (approximation_type == "none") {
@@ -199,16 +196,13 @@ absl::StatusOr<mlir::MlirOp> BuildGeluShlo(mlir::MlirOp input_op,
 absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op,
     std::string_view approximation_type, mlir::ElementType output_dtype) {
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
-                      InferComputationDtype(output_dtype));
-
   TT_ASSIGN_OR_RETURN(
       (auto [computation_grad_output_op, computation_input_op]),
-      ConvertIfIntegers(grad_output_op, input_op, computation_dtype));
+      ConvertIfIntegers(grad_output_op, input_op, output_dtype));
   computation_grad_output_op = mlir::stablehlo::ConvertElementType(
-      computation_grad_output_op, computation_dtype);
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_dtype);
+      computation_grad_output_op, output_dtype);
+  computation_input_op =
+      mlir::stablehlo::ConvertElementType(computation_input_op, output_dtype);
 
   mlir::MlirOp result_op_val;
   if (approximation_type == "none") {

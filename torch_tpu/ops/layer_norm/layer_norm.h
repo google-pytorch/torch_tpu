@@ -42,11 +42,6 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
     mlir::MlirOp input_op, std::optional<mlir::MlirOp> weight_op,
     std::optional<mlir::MlirOp> bias_op, int normalized_num_dims, double eps);
 
-// Two-pass direct moment calculation implementation.
-absl::StatusOr<LayerNormShloResults> BuildLayerNormMomentsShlo(
-    mlir::MlirOp input_op, std::optional<mlir::MlirOp> weight_op,
-    std::optional<mlir::MlirOp> bias_op, int normalized_num_dims, double eps);
-
 absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
     mlir::MlirOp dy, mlir::MlirOp x, mlir::MlirOp mean, mlir::MlirOp rstd,
     std::optional<mlir::MlirOp> weight_op, at::IntArrayRef normalized_shape,

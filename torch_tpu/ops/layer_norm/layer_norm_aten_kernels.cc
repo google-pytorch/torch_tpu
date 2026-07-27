@@ -104,8 +104,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> AtenNativeLayerNorm(
             bias_op = inputs[1];
           }
           auto input_op = inputs[0];
-          TT_ASSIGN_OR_RETURN(
-              results, BuildLayerNormMomentsShlo(input_op, weight_op, bias_op,
+          TT_ASSIGN_OR_RETURN(results,
+                              BuildLayerNormShlo(input_op, weight_op, bias_op,
                                                  normalized_shape_dims, eps));
 
           return {{results.normalized_values, results.mean,
