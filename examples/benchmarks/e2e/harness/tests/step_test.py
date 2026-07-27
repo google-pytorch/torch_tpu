@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for step_fn."""
+"""Tests for step."""
 
 from unittest import mock
 
@@ -20,8 +20,10 @@ from absl.testing import absltest
 from absl.testing import flagsaver
 import torch
 import torch.nn as nn
+from examples.benchmarks.e2e.harness import discovery as discovery_lib
 from examples.benchmarks.e2e.harness import measure as measure_lib
-from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+from examples.benchmarks.e2e.harness import step_lib
+from examples.benchmarks.e2e.harness import steps
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
 
@@ -37,53 +39,35 @@ def _mlp(in_dim=4, hidden=8, out_dim=3, seed=0):
   )
 
 
-class _LossModel(nn.Module):
-  """Returns a scalar loss directly."""
-
-  def __init__(self):
-    super().__init__()
-    self.lin = nn.Linear(4, 3)
-
-  def forward(self, x, labels=None):
-    logits = self.lin(x)
-    if labels is None:
-      return logits
-    return nn.functional.cross_entropy(logits, labels)
+discovery_lib.import_submodules(steps)
 
 
-class _ModelOutput:
-  """Stand-in for an HF ModelOutput with a .loss attribute."""
+class StepperTypeTest(absltest.TestCase):
 
-  def __init__(self, loss, logits):
-    self.loss = loss
-    self.logits = logits
-
-
-class StepFnTest(absltest.TestCase):
-
-  def test_all_step_fns_registered(self):
+  def test_all_steps_registered(self):
     self.assertEqual(
-        set(step_fn_lib.STEP_FNS),
+        set(step_lib.STEPPERS),
         {
-            step_fn_lib.StepFn.FORWARD,
-            step_fn_lib.StepFn.TRAINING,
+            step_lib.StepperType.FORWARD,
+            step_lib.StepperType.TRAINING,
+            step_lib.StepperType.DECODER_ONLY_DECODE,
         },
     )
 
   def test_uniform_factory_shape(self):
     """Every entry is a factory that returns a callable."""
-    for name in step_fn_lib.StepFn:
-      self.assertTrue(callable(step_fn_lib.STEP_FNS[name]))
+    for name in step_lib.StepperType:
+      self.assertTrue(callable(step_lib.STEPPERS[name]))
 
   def test_training_bad_accum_steps_rejected(self):
     with self.assertRaises(ValueError):
-      step_fn_lib.resolve_step_fn(step_fn_lib.StepFn.TRAINING, accum_steps=0)
+      step_lib.resolve_stepper(step_lib.StepperType.TRAINING, accum_steps=0)
 
   def test_forward_runs_under_no_grad(self):
-    model, step = _mlp(), step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.FORWARD
-    )
-    out = step(model, (torch.randn(2, 4),), {}, None)
+    model = _mlp()
+    step_factory = step_lib.resolve_stepper(step_lib.StepperType.FORWARD)
+    stepper = step_factory(model, (torch.randn(2, 4),), {})
+    out = stepper.get_step_fn()()
     self.assertFalse(
         out.requires_grad, "Expected forward to run under inference_mode"
     )
@@ -91,18 +75,19 @@ class StepFnTest(absltest.TestCase):
   def test_forward_splats_args_and_kwargs(self):
     model = mock.MagicMock()
     model.return_value = torch.tensor(1.0)
-    step = step_fn_lib.resolve_step_fn(step_fn_lib.StepFn.FORWARD)
+    step_factory = step_lib.resolve_stepper(step_lib.StepperType.FORWARD)
     x, y = torch.randn(2, 4), torch.tensor([0, 1])
-    out = step(model, (x,), {"labels": y}, None)
+    stepper = step_factory(model, (x,), {"labels": y})
+    out = stepper.get_step_fn()()
     self.assertEqual(out, torch.tensor(1.0))
     model.assert_called_once_with(x, labels=y)
 
   def test_forward_leaves_params_unchanged(self):
-    model, step = _mlp(), step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.FORWARD
-    )
+    model = _mlp()
+    step_factory = step_lib.resolve_stepper(step_lib.StepperType.FORWARD)
     before = [p.clone() for p in model.parameters()]
-    step(model, (torch.randn(2, 4),), {}, None)
+    stepper = step_factory(model, (torch.randn(2, 4),), {})
+    stepper.get_step_fn()()
     for b, p in zip(before, model.parameters()):
       self.assertTrue(torch.equal(b, p))
 
@@ -116,12 +101,13 @@ class StepFnTest(absltest.TestCase):
       inputs, labels = kwargs["batches"].pop(0)
       return nn.functional.cross_entropy(m(inputs), labels)
 
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING,
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING,
         accum_steps=accum_steps,
         compute_loss=compute_loss,
     )
-    step(model, (), {"batches": list(batches)}, opt)
+    stepper = step_factory(model, (), {"batches": list(batches)}, opt)
+    stepper.get_step_fn()()
     return [p.grad.clone() for p in model.parameters()]
 
   def test_accum_b_matches_accum_1_on_full_batch(self):
@@ -148,11 +134,12 @@ class StepFnTest(absltest.TestCase):
     """Catches when the optimizer is bound to stale tensors."""
     model = _mlp(seed=99)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING, compute_loss=mock_grad_probe
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
     )
     before = [p.clone() for p in model.parameters()]
-    step(model, (torch.randn(4, 4),), {}, opt)
+    stepper = step_factory(model, (torch.randn(4, 4),), {}, opt)
+    stepper.get_step_fn()()
     changed = [
         not torch.equal(b, p) for b, p in zip(before, model.parameters())
     ]
@@ -162,8 +149,8 @@ class StepFnTest(absltest.TestCase):
 
   def test_training_one_step_is_one_optimizer_update(self):
     model = _mlp()
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING,
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING,
         accum_steps=3,
         compute_loss=mock_grad_probe,
     )
@@ -176,7 +163,8 @@ class StepFnTest(absltest.TestCase):
         return super().step(*a, **kw)
 
     opt = CountingSGD(model.parameters(), lr=0.01)
-    step(model, (torch.randn(2, 4),), {}, opt)
+    stepper = step_factory(model, (torch.randn(2, 4),), {}, opt)
+    stepper.get_step_fn()()
     self.assertEqual(
         CountingSGD.steps,
         1,
@@ -191,89 +179,35 @@ class StepFnTest(absltest.TestCase):
     model = _mlp()
     # Learning rate is set to 0.0 to prevent the model parameters from updating.
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING, compute_loss=mock_grad_probe
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=mock_grad_probe
     )
     x = torch.randn(4, 4)
-    step(model, (x,), {}, opt)
+    stepper = step_factory(model, (x,), {}, opt)
+    stepper.get_step_fn()()
     first = [p.grad.clone() for p in model.parameters()]
-    step(model, (x,), {}, opt)
+    stepper.get_step_fn()()
     second = [p.grad.clone() for p in model.parameters()]
     for a, b in zip(first, second):
       torch.testing.assert_close(a, b, rtol=1e-5, atol=1e-6)
 
   def test_training_requires_optimizer(self):
-    step = step_fn_lib.resolve_step_fn(step_fn_lib.StepFn.TRAINING)
-    with self.assertRaises(ValueError):
-      step(_mlp(), (torch.randn(2, 4),), {}, None)
-
-  def test_real_loss_scalar_tensor_output(self):
-    model = _LossModel()
-    loss = step_fn_lib.real_loss(
-        model, (torch.randn(2, 4),), {"labels": torch.tensor([0, 1])}
-    )
-    self.assertEqual(loss.ndim, 0)
-
-  def test_real_loss_model_output_with_loss_attr(self):
-    class M(nn.Module):
-
-      def forward(self, x):
-        return _ModelOutput(loss=x.sum(), logits=x)
-
-    self.assertEqual(
-        step_fn_lib.real_loss(M(), (torch.ones(2, 2),), {}).item(), 4.0
-    )
-
-  def test_real_loss_dict_with_loss_key(self):
-    class M(nn.Module):
-
-      def forward(self, x):
-        return {"loss": x.sum(), "logits": x}
-
-    self.assertEqual(
-        step_fn_lib.real_loss(M(), (torch.ones(2, 2),), {}).item(), 4.0
-    )
-
-  def test_real_loss_tuple_loss_first(self):
-    class M(nn.Module):
-
-      def forward(self, x):
-        return (x.sum(), x)
-
-    self.assertEqual(
-        step_fn_lib.real_loss(M(), (torch.ones(2, 2),), {}).item(), 4.0
-    )
-
-  def test_real_loss_per_token_loss_is_meaned(self):
-    class M(nn.Module):
-
-      def forward(self, x):
-        return {"loss": torch.tensor([1.0, 3.0])}
-
-    self.assertAlmostEqual(
-        step_fn_lib.real_loss(M(), (torch.ones(1),), {}).item(), 2.0
-    )
-
-  def test_real_loss_raises_when_no_loss_found(self):
-    class M(nn.Module):
-
-      def forward(self, x):
-        return {"logits": x}
-
+    step_factory = step_lib.resolve_stepper(step_lib.StepperType.TRAINING)
     with self.assertRaises(TypeError):
-      step_fn_lib.real_loss(M(), (torch.ones(2, 2),), {})
+      step_factory(_mlp(), (torch.randn(2, 4),), {})
 
   def test_compute_loss_override_is_used(self):
     my_loss = mock.MagicMock(return_value=torch.tensor(1.0, requires_grad=True))
 
     model = _mlp()
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING, compute_loss=my_loss
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING, compute_loss=my_loss
     )
     args = (torch.randn(2, 4),)
     kwargs = {}
-    step(model, args, kwargs, opt)
+    stepper = step_factory(model, args, kwargs, opt)
+    stepper.get_step_fn()()
     my_loss.assert_called_once_with(model, args, kwargs)
 
   def _ops(self):
@@ -284,12 +218,13 @@ class StepFnTest(absltest.TestCase):
   def test_inference_through_measure(self):
     ops = self._ops()
     model, x = _mlp().to(ops.device), torch.randn(4, 4, device=ops.device)
-    step = step_fn_lib.resolve_step_fn(step_fn_lib.StepFn.FORWARD)
+    step_factory = step_lib.resolve_stepper(step_lib.StepperType.FORWARD)
+    stepper = step_factory(model, (x,), {})
     with flagsaver.flagsaver(
         min_warmup_steps=1, max_warmup_steps=5, post_warmup_steps=3
     ):
       m = measure_lib.measure(
-          lambda: step(model, (x,), {}, None),
+          stepper,
           ops,
           name="mlp_inference",
       )
@@ -300,14 +235,17 @@ class StepFnTest(absltest.TestCase):
     model = _mlp().to(ops.device)
     opt = torch.optim.SGD(model.parameters(), lr=1e-3)
     x = torch.randn(4, 4, device=ops.device)
-    step = step_fn_lib.resolve_step_fn(
-        step_fn_lib.StepFn.TRAINING, accum_steps=2, compute_loss=mock_grad_probe
+    step_factory = step_lib.resolve_stepper(
+        step_lib.StepperType.TRAINING,
+        accum_steps=2,
+        compute_loss=mock_grad_probe,
     )
+    stepper = step_factory(model, (x,), {}, opt)
     with flagsaver.flagsaver(
         min_warmup_steps=1, max_warmup_steps=5, post_warmup_steps=3
     ):
       m = measure_lib.measure(
-          lambda: step(model, (x,), {}, opt),
+          stepper,
           ops,
           name="mlp_training",
       )

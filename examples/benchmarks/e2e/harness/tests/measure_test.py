@@ -35,6 +35,12 @@ class CountingStep:
       raise RuntimeError("failure")
     return f"out-{self.calls}"
 
+  def get_step_fn(self):
+    return self
+
+  def compile(self, **kwargs):
+    pass
+
 
 class RecordingOps:
 
@@ -113,11 +119,19 @@ class MeasureGcTest(absltest.TestCase):
     ops = RecordingOps()
     seen = []
 
-    def step():
-      seen.append(gc.isenabled())
-      return "out"
+    class GcTestStep:
 
-    _run_measure(step, ops, steps=3, min_warmup=2)
+      def get_step_fn(self):
+        def step():
+          seen.append(gc.isenabled())
+          return "out"
+
+        return step
+
+      def compile(self, **kwargs):
+        pass
+
+    _run_measure(GcTestStep(), ops, steps=3, min_warmup=2)
     # GC is off during both warmup and post warmup loops.
     self.assertEqual(seen[:2], [False, False])
     self.assertEqual(seen[2:], [False, False, False])

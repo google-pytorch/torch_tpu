@@ -18,15 +18,14 @@ import contextlib
 import dataclasses
 import gc
 import time
-from typing import Any, Callable, Iterator
+from typing import Iterator
 
 from absl import flags
 from absl import logging
 import numpy as np
 from examples.benchmarks.e2e.harness import device_ops as device_ops_lib
 from examples.benchmarks.e2e.harness import metrics
-
-RunStep = Callable[[], Any]
+from examples.benchmarks.e2e.harness import step_lib
 
 MAX_WARMUP_STEPS = flags.DEFINE_integer(
     "max_warmup_steps", 20, "Maximum number of warmup steps.", lower_bound=0
@@ -115,7 +114,7 @@ def _get_warmup_overhead(timings: np.ndarray, num_warmup_steps: int) -> float:
 
 
 def _warmup_run(
-    run_step: RunStep,
+    step_fn: step_lib.StepFn,
     device_ops: device_ops_lib.DeviceOps,
     *,
     name: str,
@@ -150,7 +149,7 @@ def _warmup_run(
   with gc_disabled():
     for step in range(MAX_WARMUP_STEPS.value):
       start_time = time.perf_counter()
-      out = run_step()
+      out = step_fn()
       device_ops.await_result(out)
       timings[step] = time.perf_counter() - start_time
       compile_count[step] = device_ops.compile_count()
@@ -174,7 +173,7 @@ def _warmup_run(
 
 
 def _post_warmup_run(
-    run_step: RunStep,
+    step_fn: step_lib.StepFn,
     device_ops: device_ops_lib.DeviceOps,
     *,
     name: str,
@@ -203,7 +202,7 @@ def _post_warmup_run(
   with gc_disabled():
     for step in range(POST_WARMUP_STEPS.value):
       start_time = time.perf_counter()
-      out = run_step()
+      out = step_fn()
       device_ops.await_result(out)
       elapsed = time.perf_counter() - start_time
       timings[step] = elapsed
@@ -225,18 +224,18 @@ def _post_warmup_run(
   )
 
 
-def measure(
-    run_step: RunStep,
+def _measure_stepper(
+    stepper: step_lib.Stepper,
     device_ops: device_ops_lib.DeviceOps,
     *,
     name: str,
 ) -> metrics.PerformanceMetrics:
-
   result_kwargs = {}
   start_time = time.perf_counter()
+
   result_kwargs |= dataclasses.asdict(
       _warmup_run(
-          run_step,
+          stepper.get_step_fn(),
           device_ops,
           name=name,
       )
@@ -245,7 +244,7 @@ def measure(
   if _do_post_warmup():
     result_kwargs |= dataclasses.asdict(
         _post_warmup_run(
-            run_step,
+            stepper.get_step_fn(),
             device_ops,
             name=name,
         )
@@ -255,3 +254,26 @@ def measure(
       e2e_wall_time_seconds=time.perf_counter() - start_time,
       **result_kwargs,
   )
+
+
+def _measure_decode_only_decode_stepper(
+    stepper: step_lib.DecoderOnlyDecodeStepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+) -> metrics.PerformanceMetrics:
+  del stepper, device_ops, name
+  # TODO(lukeboyer): implement.
+  raise NotImplementedError()
+
+
+def measure(
+    stepper: step_lib.Stepper,
+    device_ops: device_ops_lib.DeviceOps,
+    *,
+    name: str,
+) -> metrics.PerformanceMetrics:
+  if isinstance(stepper, step_lib.DecoderOnlyDecodeStepper):
+    return _measure_decode_only_decode_stepper(stepper, device_ops, name=name)
+  else:
+    return _measure_stepper(stepper, device_ops, name=name)

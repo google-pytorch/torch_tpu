@@ -46,7 +46,7 @@ class DeviceOps(Protocol):
     of value-level futures.
 
     await_result is explicitly defined instead of being
-    embedded in step_fn to allow flexibility in device time measurement using
+    embedded in step to allow flexibility in device time measurement using
     events API in future.
     """
     ...

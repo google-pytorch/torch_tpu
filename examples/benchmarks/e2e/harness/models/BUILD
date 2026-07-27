@@ -27,14 +27,16 @@ torch_tpu_py_library(
     name = "models",
     srcs = [
         "__init__.py",
+        "gen_benchmarks.py",
         "llama.py",
     ],
     allow_multiple_srcs = True,
     deps = [
         "//examples/benchmarks/e2e/harness:context",
         "//examples/benchmarks/e2e/harness:registry",
-        "//examples/benchmarks/e2e/harness:step_fn",
+        "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:torch_device_ops",
+        "//examples/benchmarks/e2e/harness/gen_utils",
         "//shims/torch:pytorch",
         "//tests:module_registry",
     ],

@@ -80,10 +80,10 @@ class DiscoveryTest(absltest.TestCase):
           "m": (
               """
               from examples.benchmarks.e2e.harness import registry as registry_lib
-              from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+              from examples.benchmarks.e2e.harness import step_lib
 
               @registry_lib.register_benchmark(
-                  step_fn=step_fn_lib.StepFn.FORWARD
+                  step=step_lib.StepperType.FORWARD
               )
               def discovered_probe():
                 return ("m", (), {}, None)
