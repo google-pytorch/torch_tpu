@@ -56,8 +56,20 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
 
   // Though XLA can perform an allgather along any dimension, using the 0th
   // dimension is sufficient for all PyTorch use cases.
-  Dimensions output_shape = CopyIntVector(input_shape);
-  output_shape[0] *= group_size;
+  Dimensions original_output_shape = CopyIntVector(input_shape);
+  original_output_shape[0] *= group_size;
+
+  Dimensions output_shape = original_output_shape;
+  // Flatten zero-volume tensors to 1D [0] so XLA preserves the 0-byte
+  // collective across ranks.
+  const bool is_zero_volume = input_type.getNumElements() == 0;
+  if (is_zero_volume) {
+    Dimensions zero_dim_storage = {0};
+    input = mlir::stablehlo::Reshape(input,
+                                     llvm::ArrayRef<int64_t>(zero_dim_storage));
+    output_shape = {0};
+  }
+
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
 
@@ -72,6 +84,11 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
       /*use_global_device_ids=*/true);
   ABSL_CHECK_EQ(gather_outputs.size(), 1);  // CRASH_OK
   auto gather_output = gather_outputs[0];
+
+  if (is_zero_volume) {
+    gather_output = mlir::stablehlo::Reshape(
+        gather_output, llvm::ArrayRef<int64_t>(original_output_shape));
+  }
 
   switch (output_mode) {
     case AllGatherOutputMode::kConcat:

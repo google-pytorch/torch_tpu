@@ -49,6 +49,18 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseShlo(
   const int64_t concat_dimension = 0;
   const int64_t split_count = device_groups[0].size();
 
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const Dimensions original_output_shape = CopyIntVector(input_type.getShape());
+
+  // Flatten zero-volume tensors to 1D [0] so XLA preserves the 0-byte
+  // collective across ranks.
+  const bool is_zero_volume = input_type.getNumElements() == 0;
+  if (is_zero_volume) {
+    Dimensions zero_dim_storage = {0};
+    input =
+        stablehlo::Reshape(input, llvm::ArrayRef<int64_t>(zero_dim_storage));
+  }
+
   auto replica_groups_attr = BuildReplicaGroupsAttr(builder, device_groups);
 
   auto all_to_all_results = stablehlo::AllToAll(
@@ -61,6 +73,11 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseShlo(
 
   ABSL_CHECK_EQ(all_to_all_results.size(), 1);  // CRASH_OK
   mlir::MlirOp result = all_to_all_results[0];
+
+  if (is_zero_volume) {
+    result = stablehlo::Reshape(result,
+                                llvm::ArrayRef<int64_t>(original_output_shape));
+  }
 
   ABSL_VLOG(3) << "BuildDistributedAllToAllBaseShlo: output: "
                << result.ToString();

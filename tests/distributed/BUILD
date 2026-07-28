@@ -490,7 +490,7 @@ torch_tpu_py_test(
         "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
     ],
     notest_oss = "XLA timeout flags not available.",
-    shard_count = 4,
+    shard_count = 8,
     tags = [
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.

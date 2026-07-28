@@ -49,6 +49,17 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllReduceShlo(
       reduce_op_type == c10d::ReduceOp::AVG ? c10d::ReduceOp::SUM
                                             : reduce_op_type;
 
+  const Dimensions original_output_shape = CopyIntVector(input_type.getShape());
+
+  // Flatten zero-volume tensors to 1D [0] so XLA preserves the 0-byte
+  // collective across ranks.
+  const bool is_zero_volume = input_type.getNumElements() == 0;
+  if (is_zero_volume) {
+    Dimensions zero_dim_storage = {0};
+    input =
+        stablehlo::Reshape(input, llvm::ArrayRef<int64_t>(zero_dim_storage));
+  }
+
   auto& builder = input.getBuilder();
   auto all_reduce_results = stablehlo::AllReduce(
       builder, input,
@@ -74,8 +85,14 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllReduceShlo(
     ABSL_CHECK(!device_groups.empty())  // CRASH_OK
         << "[BuildDistributedAllReduceShlo]: device_groups is empty";
     const int64_t group_size = device_groups[0].size();
-    mlir::MlirOp divisor = MakeConstant(builder, group_size, input_type);
+    mlir::MlirOp divisor =
+        MakeConstant(builder, group_size, GetTensorTypeOrDie(result));
     result = stablehlo::Div(result, divisor);
+  }
+
+  if (is_zero_volume) {
+    result = stablehlo::Reshape(result,
+                                llvm::ArrayRef<int64_t>(original_output_shape));
   }
 
   ABSL_VLOG(3) << "BuildDistributedAllReduceShlo: output: "

@@ -65,6 +65,20 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
     }
   };
 
+  const Dimensions original_output_shape = output_shape;
+
+  // Flatten zero-volume tensors to 1D [0] so XLA preserves the 0-byte
+  // collective across ranks.
+  const bool is_zero_volume = input_type.getNumElements() == 0;
+  if (is_zero_volume) {
+    Dimensions zero_dim_storage = {0};
+    input = mlir::stablehlo::Reshape(input,
+                                     llvm::ArrayRef<int64_t>(zero_dim_storage));
+    output_shape = {0};
+    output_type =
+        mlir::RankedTensorType::get(output_shape, input_type.getElementType());
+  }
+
   auto& builder = input.getBuilder();
   auto output = mlir::stablehlo::ReduceScatter(
       output_type, input, reduction_computation,
@@ -77,6 +91,11 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedReduceScatterShlo(
     const mlir::RankedTensorType output_type = GetTensorTypeOrDie(output);
     mlir::MlirOp divisor = MakeConstant(builder, group_size, output_type);
     output = mlir::stablehlo::Div(output, divisor);
+  }
+
+  if (is_zero_volume) {
+    output = mlir::stablehlo::Reshape(
+        output, llvm::ArrayRef<int64_t>(original_output_shape));
   }
 
   return output;
