@@ -122,6 +122,7 @@
 #include "torch_tpu/ops/layer_norm/layer_norm_aten_kernels.h"
 #include "torch_tpu/ops/leaky_relu/leaky_relu_aten_kernels.h"
 #include "torch_tpu/ops/lerp/lerp_aten_kernels.h"
+#include "torch_tpu/ops/linalg/cholesky/linalg_cholesky_kernels.h"
 #include "torch_tpu/ops/linalg/linalg_kernels.h"
 #include "torch_tpu/ops/linalg/lu/linalg_lu_kernels.h"
 #include "torch_tpu/ops/linalg/qr/linalg_qr_kernels.h"
@@ -384,6 +385,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kCdistBackward>(m, AtenCdistBackward);
   ImplStable<OpName::kCdistForward>(m, AtenCdistForward);
   ImplStable<OpName::kCeilOut>(m, AtenCeilOut);
+  ImplStable<OpName::kCholesky>(m, AtenCholesky);
+  ImplStable<OpName::kCholeskyOut>(m, AtenCholeskyOut);
   ImplStable<OpName::kClampMaxOut>(m, AtenClampMaxOut);
   ImplStable<OpName::kClampMaxTensorOut>(m, AtenClampMaxTensorOut);
   ImplStable<OpName::kClampMinOut>(m, AtenClampMinOut);
@@ -700,6 +703,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kLerpScalarOut>(m, AtenLerpScalarOut);
   ImplStable<OpName::kLerpTensorOut>(m, AtenLerpTensorOut);
   ImplStable<OpName::kLgammaOut>(m, AtenLgammaOut);
+  ImplStable<OpName::kLinalgCholesky>(m, AtenLinalgCholesky);
+  ImplStable<OpName::kLinalgCholeskyEx>(m, AtenLinalgCholeskyEx);
+  ImplStable<OpName::kLinalgCholeskyExL>(m, AtenLinalgCholeskyExL);
+  ImplStable<OpName::kLinalgCholeskyOut>(m, AtenLinalgCholeskyOut);
   ImplStable<OpName::kLinalgInvExInverse>(m, AtenLinalgInvExInverse);
   ImplStable<OpName::kLinalgLuFactorExOut>(m, AtenLinalgLuFactorExOut);
   ImplStable<OpName::kLinalgLuOut>(m, AtenLinalgLuOut);

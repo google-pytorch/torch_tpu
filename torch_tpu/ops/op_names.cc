@@ -197,6 +197,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_cdist_forward";
     case OpName::kCeilOut:
       return "ceil.out";
+    case OpName::kCholesky:
+      return "cholesky";
+    case OpName::kCholeskyOut:
+      return "cholesky.out";
     case OpName::kClampMaxOut:
       return "clamp_max.out";
     case OpName::kClampMaxTensorOut:
@@ -867,6 +871,14 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "lgamma.out";
     case OpName::kLiftFreshOut:
       return "liftfresh.out";
+    case OpName::kLinalgCholesky:
+      return "linalg_cholesky";
+    case OpName::kLinalgCholeskyEx:
+      return "linalg_cholesky_ex";
+    case OpName::kLinalgCholeskyExL:
+      return "linalg_cholesky_ex.L";
+    case OpName::kLinalgCholeskyOut:
+      return "linalg_cholesky.out";
     case OpName::kLinalgInvExInverse:
       return "linalg_inv_ex.inverse";
     case OpName::kLinalgLuFactorExOut:

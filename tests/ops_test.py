@@ -3836,6 +3836,15 @@ class TestOps(TorchTpuTestBase):
   def test_linalg_qr(self):
     self.do_test_op("linalg.qr")
 
+  def test_cholesky(self):
+    self.do_test_op("cholesky")
+
+  def test_linalg_cholesky(self):
+    self.do_test_op("linalg.cholesky")
+
+  def test_linalg_cholesky_ex(self):
+    self.do_test_op("linalg.cholesky_ex")
+
   def test_thnn_fused_gru_cell(self):
     self.do_test_op("_thnn_fused_gru_cell", check_dynamism=False)
 

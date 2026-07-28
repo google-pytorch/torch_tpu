@@ -7846,6 +7846,33 @@ Device-side assertion tracking was not enabled by user.""",
           False,
       )
 
+  def test_linalg_cholesky_insufficient_dims(self):
+    t = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""linalg.cholesky: The input tensor A must have at least 2 dimensions.""",
+        tpu="""input must have at least 2 dimensions, got 1""",
+    ):
+      torch.linalg.cholesky(t)
+
+  def test_linalg_cholesky_ex_insufficient_dims(self):
+    t = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""linalg.cholesky: The input tensor A must have at least 2 dimensions.""",
+        tpu="""input must have at least 2 dimensions, got 1""",
+    ):
+      torch.linalg.cholesky_ex(t)
+
+  def test_cholesky_insufficient_dims(self):
+    t = torch.ones(2, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""cholesky: The input tensor self must have at least 2 dimensions.""",
+        tpu="""input must have at least 2 dimensions, got 1""",
+    ):
+      torch.cholesky(t)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase, parameterized.TestCase):
 
