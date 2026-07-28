@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Gazelle Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  gazelle-check:
+    runs-on: linux-x86-n4-16
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazelbuild/setup-bazelisk@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Run Gazelle
+        run: |
+          echo "Running Bazel Gazelle..."
+          # The local PyTorch ML Toolchain extraction is broken on these runners.
+          # Since you have a perfectly working generic compiler on the OSS container, we dynamically 
+          # strip out PyTorch's custom toolchain overrides right before we run Gazelle.
+          # This forces Bazel to cleanly fall back to @local_config_cc using your native container compiler!
+          sed -i -e '/register_toolchains("\/\/:cc_toolchain_k8")/d' MODULE.bazel
+          sed -i -e '/register_toolchains("\/\/:cc_toolchain_aarch64")/d' MODULE.bazel
+          sed -i -e '/register_toolchains("@rules_ml_toolchain\/\/cc:linux_x86_64_linux_x86_64")/d' WORKSPACE
+          
+          bazel run //:gazelle --spawn_strategy=local
+          
+          # Restore the files to keep the git diff clean
+          git checkout MODULE.bazel WORKSPACE
+          
+      - name: Check for uncommitted BUILD file changes
+        run: |
+          # If Gazelle modified BUILD files, git diff will return a non-zero exit code
+          # which fails the workflow, meaning the user needs to run Gazelle locally and commit.
+          git diff --exit-code || (echo "ERROR: BUILD files are out of sync. Please run 'bazel run //:gazelle' locally and commit the changes." && exit 1)

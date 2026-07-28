@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
@@ -25,6 +26,18 @@ load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
 
 package(
     default_visibility = PACKAGE_DEFAULT_VISIBILITY,
+)
+
+gazelle_binary(
+    name = "gazelle_bin",
+    languages = [
+        "@rules_python_gazelle_plugin//python",
+    ],
+)
+
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_bin",
 )
 
 exports_files(["README.md"])
