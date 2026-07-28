@@ -331,7 +331,9 @@ class FunctionTest(absltest.TestCase):
 
     def simple(x):
       c = torch.tensor([1, 2, 3, 4, 5], device=x.device)
-      c_copy: "f32[64]" = torch.ops.aten._to_copy.default(c, device=x.device)
+      c_copy: "f32[64]" = torch.ops.aten._to_copy.default(  # noqa: F821
+          c, device=x.device
+      )
       return c_copy + x
 
     x = torch.tensor([1, 2, 3, 4, 5], device=torch.device("tpu"))

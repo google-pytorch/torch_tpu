@@ -92,3 +92,115 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
+
+[tool.ruff]
+preview = true
+force-exclude = true
+exclude = [
+    ".git",
+    "build/**",
+    "__pycache__",
+    "docs",
+    "examples",
+]
+extend-exclude = [
+    "**/docs/notebooks/**",
+    "**/docs/html/**",
+    "**/ops/scaled_dot_product_attention/kernels/flash_attention.py",
+    "**/examples/**",
+]
+line-length = 80
+indent-width = 2
+target-version = "py314"
+
+[tool.ruff.lint]
+ignore = [
+    # Unnecessary collection call
+    "C408",
+    # Unnecessary map usage
+    "C417",
+    # Unnecessary dict comprehension for iterable
+    "C420",
+    # Object names too complex
+    "C901",
+    # Using `yield` and `return {value}` in a generator function can lead to confusing behavior
+    "B901",
+    # Class could be dataclass or namedtuple
+    "B903",
+    # Raise with from clause inside except block
+    "B904",
+    # Zip without explicit strict parameter
+    "B905",
+    # Google style docstring exceptions: avoid demanding docstrings on __init__ / empty modules (handled by class/package docs)
+    "D100",
+    "D104",
+    "D105",
+    "D107",
+    # PyTorch subclassing exceptions: forward() or dummy helper methods frequently do not use `self`
+    "PLR6301",
+    # Magic numbers (batch sizes, dimensions, thresholds) are frequent in ML code outside strict constant declarations
+    "PLR2004",
+    # TorchTPU packaging structure: submodules and tests import routinely from `torch_tpu._internal` and `torch_tpu._loader`
+    "PLC2701",
+]
+# Selective rule set explicitly chosen to achieve parity with internal `gpylint` and Google Python Style Guide
+# without triggering noisy false positives on legacy formatting or long URL comments.
+select = [
+    # flake8-bugbear opinionated warnings: detects fragile patterns and common logical bugs.
+    "B9",
+    # flake8-comprehensions: catches inefficient or redundant dict/list/set comprehensions.
+    "C",
+    # Pyflakes: checks for undefined variables, syntax errors, and unused imports. Essential for parity with `gpylint`.
+    "F",
+    # pycodestyle warnings: enforces correct whitespace and indentation conventions.
+    "W",
+    # isort: strictly enforces Google-style categorical and alphabetical import ordering.
+    # "I",
+    # flake8-2020: prevents subtle bugs when checking `sys.version` across 3.11-3.14 targets.
+    "YTT",
+    # flake8-async: catches unsafe concurrency patterns when using asynchronous code.
+    "ASYNC",
+    # Selective pycodestyle errors (`E`): checks indentation without mixing tabs/spaces (`E101`, `E112/113`),
+    # proper comment layout (`E115/117`), and mandatory spaces around operators (`E225/227/228`).
+    "E101",
+    "E112",
+    "E113",
+    "E115",
+    "E117",
+    "E225",
+    "E227",
+    "E228",
+    # Pylint errors (`PLE`): enables real Pylint error detection (undefined variables, signature mismatches) without PLR refactor noise.
+    "PLE",
+]
+
+[tool.ruff.lint.isort]
+# Google Style Guide (Section 3.13) allows multiple `from module import x, y` imports on a single line.
+force-single-line = false
+# Google import style orders `from absl ...` before `import jax` strictly by module name inside each section.
+force-sort-within-sections = true
+order-by-type = false
+detect-same-package = false
+known-first-party = []
+known-third-party = ["torch_tpu"]
+known-local-folder = ["google3"]
+# Avoid inserting blank lines between separate import sections (standard-library, third-party, first-party, local-folder).
+no-lines-before = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 18
+
+# Pylint configuration (`gpylint` thresholds parity)
+[tool.ruff.lint.pylint]
+max-args = 5
+max-statements = 50
+max-returns = 6
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and examples rarely require full Google docstrings on every helper class/method/function.
+"**/tests/**" = ["D", "PLR0913", "PLR2004", "PLR6301"]
+"**/*_test.py" = ["D", "PLR0913", "PLR2004", "PLR6301"]
+"**/examples/**" = ["D", "PLR2004"]
