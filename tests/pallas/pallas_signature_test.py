@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import types
 from typing import Optional
+from unittest import mock
 
 from absl.testing import absltest
 import jax
+import jax.numpy as jnp
+import numpy as np
 import torch
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
@@ -55,6 +58,33 @@ class PallasSignatureTest(absltest.TestCase):
     self.assertEqual(sig.parameters["labels"].annotation, torch.Tensor)
     self.assertEqual(sig.parameters["reduction"].annotation, str)
     self.assertEqual(sig.return_annotation, tuple[torch.Tensor, torch.Tensor])
+
+  def test_output_partition_specs_drive_torch_placeholder_shape(self):
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices("cpu")[:1]), ("x",))
+    spec = jax.sharding.PartitionSpec("x", None)
+
+    def fn(x: jax.Array) -> jax.Array:
+      return x
+
+    op = pallas.jax_op(
+        "test::output_partition_specs",
+        fn,
+        mesh=mesh,
+        input_partition_specs=(spec,),
+        output_partition_specs=(spec,),
+    )
+    self.assertEqual(op._init_fn.output_partition_specs, (spec,))
+
+    aval = jax.core.ShapedArray((8, 4), jnp.float32)
+    shape_mesh = types.SimpleNamespace(
+        axis_names=("x",), devices=types.SimpleNamespace(shape=(2,))
+    )
+    with mock.patch.object(pallas.pallas.torch, "empty") as torch_empty:
+      pallas.pallas.torch_placeholder(
+          aval, mesh=shape_mesh, partition_spec=spec
+      )
+
+    torch_empty.assert_called_once_with((4, 4), dtype=torch.float32, device="tpu")
 
   def test_invalid_base_type_rejected(self):
 

@@ -44,6 +44,16 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "pallas_export_test",
+    srcs = ["pallas_export_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//torch_tpu/_internal/pallas",
+        "//torch_tpu/_internal/pallas:pallas_export",
+    ],
+)
+
+torch_tpu_py_test(
     name = "pallas_signature_test",
     srcs = ["pallas_signature_test.py"],
     env = {
@@ -57,6 +67,7 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/pallas",
         "@pypi//jax",
+        "@pypi//numpy",
     ],
 )
 

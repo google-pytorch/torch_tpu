@@ -6,5 +6,9 @@
   {
     "name": "torch_tpu._internal.pallas.pallas",
     "type": "MODULE"
+  },
+  {
+    "name": "torch_tpu._internal.pallas.export",
+    "type": "MODULE"
   }
 ]
