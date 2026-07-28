@@ -1299,6 +1299,12 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.bfloat16: {"atol": 3e-2},
         torch.float16: {"atol": 4e-3},
     },
+    "_thnn_fused_gru_cell": {
+        torch.float32: {"rtol": 1.0e-5, "atol": 2.5e-5},
+    },
+    "_thnn_fused_lstm_cell": {
+        torch.float32: {"rtol": 1.0e-5, "atol": 3.0e-5},
+    },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
     },
@@ -1450,6 +1456,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "nn.functional.nll_loss": {
         torch.bfloat16: {"rtol": 5e-2, "atol": 0},
         torch.float16: {"atol": 4.7e-2},
+    },
+    "norm": {
+        torch.complex64: {"rtol": 1e-5, "atol": 5e-5},
+        torch.float32: {"rtol": 1e-5, "atol": 5e-5},
     },
     "polygamma": {
         torch.float32: {"rtol": 8.6e-6, "atol": 1.1e-4},
@@ -1914,7 +1924,13 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_angle(self):
-    self.do_test_op("angle")
+    self.do_test_op(
+        "angle",
+        exclude_dtypes={  # EXCLUDE_DTYPES_OK=angle not implemented for
+            # Half/BFloat16 on GPU
+            "gpu": (torch.float16, torch.bfloat16)
+        },
+    )
 
   def test_arange(self):
     """Tests arange, arange.start, arange.out, arange.start_step, arange.start_out."""
@@ -3840,10 +3856,24 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("linalg.qr")
 
   def test_thnn_fused_gru_cell(self):
-    self.do_test_op("_thnn_fused_gru_cell", check_dynamism=False)
+    self.do_test_op(
+        "_thnn_fused_gru_cell",
+        exclude_dtypes={  # EXCLUDE_DTYPES_OK=_thnn_fused_gru_cell is not
+            # implemented for complex dtypes on GPU.
+            "gpu": (torch.complex64,)
+        },
+        check_dynamism=False,
+    )
 
   def test_thnn_fused_lstm_cell(self):
-    self.do_test_op("_thnn_fused_lstm_cell", check_dynamism=False)
+    self.do_test_op(
+        "_thnn_fused_lstm_cell",
+        exclude_dtypes={  # EXCLUDE_DTYPES_OK=_thnn_fused_lstm_cell is not
+            # implemented for complex dtypes on GPU.
+            "gpu": (torch.complex64,)
+        },
+        check_dynamism=False,
+    )
 
 
 def setUpModule() -> None:
