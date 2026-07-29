@@ -125,7 +125,7 @@ echo ""
 # pypi_torch path active and patched requirements.txt to ``torch==2.11.0+cpu``
 # so both the codegen and the wheel link against torch 2.11.
 # --disk_cache overrides .bazelrc to put cache on the mounted /data/ disk.
-if bazel --output_base="$BAZEL_OUTPUT_BASE" build //ci/wheel:torch_tpu_wheel --config=no_rbe --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
+if bazel --output_base="$BAZEL_OUTPUT_BASE" build -c opt //ci/wheel:torch_tpu_wheel --config=no_rbe --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
     print_success "Build completed!"
 
     # Find and copy wheel
