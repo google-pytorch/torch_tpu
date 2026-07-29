@@ -65,6 +65,55 @@ def exit_backward(ctx, grad_outputs: list[torch.Tensor]) -> list[torch.Tensor]:
 exit_spmd_safe_region.register_autograd(exit_backward)
 
 
+# TODO(basioli): We would ideally use the @register_sharding decorator here
+# but it is currently not working with ops that have a variadic number of tensor
+# arguments.
+def _register_dtensor_sharding_rules():
+  """Registers sharding rules for SPMD safe region ops."""
+  try:
+    # pylint: disable=g-import-not-at-top
+    # pylint: disable=g-importing-member
+    # pylint: disable=g-multiple-import
+    from torch.distributed.tensor._op_schema import (
+        OpSchema,
+        OpSpec,
+        OpStrategy,
+        RuntimeSchemaInfo,
+        StrategyType,
+        TupleStrategy,
+    )
+    from torch.distributed.tensor._ops.utils import register_op_strategy
+    # pylint: enable=g-multiple-import
+    # pylint: enable=g-importing-member
+    # pylint: enable=g-import-not-at-top
+  except ImportError:
+    return
+
+  def _spmd_safe_region_strategy(op_schema: OpSchema) -> StrategyType:
+    def _make_strategy(strat: OpStrategy) -> OpStrategy:
+      spec = strat.strategies[0].output_spec
+      return OpStrategy([OpSpec(output_specs=spec, input_specs=(spec,))])
+
+    input_specs = op_schema.args_schema[0]
+    if isinstance(input_specs, TupleStrategy):
+      return TupleStrategy(
+          tuple(_make_strategy(c) for c in input_specs.children)
+      )
+    return _make_strategy(input_specs)
+
+  schema_info = RuntimeSchemaInfo(needs_pytree=True)
+  register_op_strategy(
+      [
+          torch.ops.torch_tpu.enter_spmd_safe_region.default,
+          torch.ops.torch_tpu.exit_spmd_safe_region.default,
+      ],
+      schema_info=schema_info,
+  )(_spmd_safe_region_strategy)
+
+
+_register_dtensor_sharding_rules()
+
+
 def _prepare_tensors(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],

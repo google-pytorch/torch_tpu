@@ -115,6 +115,48 @@ def run_uncoordinated_op_stream_test():
     sync.synchronize(x, wait=True)
 
 
+def run_spmd_safe_dtensor_compile_test():
+  world_size = dist.get_world_size()
+  mesh = torch.distributed.tensor.DeviceMesh("tpu", torch.arange(world_size))
+
+  @spmd_util.spmd_safe
+  def my_func(x):
+    return x * 2
+
+  compiled_func = torch.compile(my_func)
+
+  param = torch.randn(4, 4, device="tpu")
+  dtensor = torch.distributed.tensor.DTensor.from_local(
+      param, mesh, [torch.distributed.tensor.Shard(0)], run_check=False
+  )
+
+  out = compiled_func(dtensor)
+  assert isinstance(out, torch.distributed.tensor.DTensor)
+
+
+def run_spmd_safe_multi_dtensor_compile_test():
+  world_size = dist.get_world_size()
+  mesh = torch.distributed.tensor.DeviceMesh("tpu", torch.arange(world_size))
+
+  @spmd_util.spmd_safe
+  def my_func(x, y):
+    return x + y
+
+  compiled_func = torch.compile(my_func)
+
+  param1 = torch.randn(4, 4, device="tpu")
+  dtensor1 = torch.distributed.tensor.DTensor.from_local(
+      param1, mesh, [torch.distributed.tensor.Shard(0)], run_check=False
+  )
+  param2 = torch.randn(4, 4, device="tpu")
+  dtensor2 = torch.distributed.tensor.DTensor.from_local(
+      param2, mesh, [torch.distributed.tensor.Shard(0)], run_check=False
+  )
+
+  out = compiled_func(dtensor1, dtensor2)
+  assert isinstance(out, torch.distributed.tensor.DTensor)
+
+
 class SpmdSafeDecoratorTest(absltest.TestCase):
   _world_size = 4
 
@@ -258,6 +300,24 @@ class SpmdSafeDecoratorTest(absltest.TestCase):
         dump_dir=dump_dir,
     )
     self._check_all_reduce_mlir_matching(dump_dir)
+
+  def test_spmd_safe_dtensor_compile(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_spmd_safe_dtensor_compile_test,
+    )
+
+  def test_spmd_safe_multi_dtensor_compile(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_spmd_safe_multi_dtensor_compile_test,
+    )
 
 
 if __name__ == "__main__":
