@@ -194,8 +194,20 @@ def _init_device_impl(device: str) -> torch.device:
     # register_backend string-handling bug fixed upstream in
     # pytorch/pytorch#187960; the list form is correct regardless.
     print("Initializing TPU distributed runtime")
+    def _create_pg_wrapper(*args, **kwargs):
+      print(
+          f"create_process_group wrapper called: args={args}, kwargs={kwargs}",
+          file=sys.stderr,
+          flush=True,
+      )
+      res = tpu_distributed.create_process_group(*args, **kwargs)
+      print(
+          f"create_process_group returned: {res}", file=sys.stderr, flush=True
+      )
+      return res
+
     torch.distributed.Backend.register_backend(
-        "tpu_dist", tpu_distributed.create_process_group, devices=["tpu"]
+        "tpu_dist", _create_pg_wrapper, devices=["tpu"]
     )
 
   # Register the Kineto backend.

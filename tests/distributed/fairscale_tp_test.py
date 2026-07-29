@@ -84,17 +84,18 @@ class FeedForwardTP(nn.Module):
 def _copy_weights_to_tp_model(
     reference_model: nn.Module,
     tp_model: nn.Module,
-    world_size: int,
-    rank: int,
 ) -> None:
   """Copies weights from a regular model to a fairscale tensor-parallel model."""
+  mp_world_size = initialize.get_model_parallel_world_size()
+  mp_rank = initialize.get_model_parallel_rank()
+
   for (_, ref_module), (_, tp_module) in zip(
       reference_model.named_modules(), tp_model.named_modules()
   ):
     if isinstance(tp_module, ColumnParallelLinear):
       # Sharded along dimension 0 for weights and bias.
-      chunk_size = ref_module.weight.shape[0] // world_size
-      start = rank * chunk_size
+      chunk_size = ref_module.weight.shape[0] // mp_world_size
+      start = mp_rank * chunk_size
       end = start + chunk_size
       tp_module.weight.data = ref_module.weight.data[start:end, :].to(
           tp_module.weight.data.device
@@ -105,8 +106,8 @@ def _copy_weights_to_tp_model(
         )
     elif isinstance(tp_module, RowParallelLinear):
       # Sharded along dimension 1 for weights. Bias is not sharded.
-      chunk_size = ref_module.weight.shape[1] // world_size
-      start = rank * chunk_size
+      chunk_size = ref_module.weight.shape[1] // mp_world_size
+      start = mp_rank * chunk_size
       end = start + chunk_size
       tp_module.weight.data = ref_module.weight.data[:, start:end].to(
           tp_module.weight.data.device
@@ -115,7 +116,10 @@ def _copy_weights_to_tp_model(
         tp_module.bias.data = ref_module.bias.data.to(
             tp_module.weight.data.device
         )
-  logging.info("Successfully copied weights to TP model on rank %d.", rank)
+  logging.info(
+      "Successfully copied weights to TP model on MP rank %d.",
+      mp_rank,
+  )
 
 
 def run_forward_tp(device="tpu") -> None:
@@ -148,14 +152,14 @@ def run_forward_tp(device="tpu") -> None:
 
   # Run on multiple devices using Tensor Parallelism.
   if not initialize.model_parallel_is_initialized():
-    initialize.initialize_model_parallel(world_size)
+    initialize.initialize_model_parallel(world_size // 2)
 
   torch.manual_seed(RANDOM_SEED)
   mymodel_tp = MyModel(dmodel=MODEL_DIM, use_tp=True)
   mymodel_tp.to(device=device)
 
   # Copy weights from reference_model to mymodel_tp, handling sharding.
-  _copy_weights_to_tp_model(model, mymodel_tp, world_size, rank)
+  _copy_weights_to_tp_model(model, mymodel_tp)
 
   mymodel_tp.eval()
   with torch.no_grad():
