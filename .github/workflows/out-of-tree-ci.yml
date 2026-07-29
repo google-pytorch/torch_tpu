@@ -60,8 +60,8 @@ run-name: >-
 
 concurrency:
   group: >-
-    oot-${{ github.event.client_payload.payload.repository.full_name }}-${{ github.event.client_payload.payload.ref || github.run_id }}
-  cancel-in-progress: true
+    oot-${{ github.event.client_payload.payload.repository.full_name }}-${{ github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
