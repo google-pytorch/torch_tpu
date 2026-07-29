@@ -339,6 +339,14 @@ void CompilationCache::EvictAll() {
     // Release the lock before destroying evicted_nodes to prevent lock
     // contention from slow Executable destructors, and to give in-flight
     // compilations a chance to complete.
+    for (auto& node : evicted_nodes) {
+      if (IsFutureReady(node.mapped().executable_future())) {
+        const auto& status_or_exec = node.mapped().executable_future().get();
+        if (status_or_exec.ok() && *status_or_exec != nullptr) {
+          (*status_or_exec)->Delete();
+        }
+      }
+    }
   }
   // Clear bounded dynamic cache entries after releasing the mutex.
   BoundedDynamicCache bounded_dynamic_cache_to_clear;

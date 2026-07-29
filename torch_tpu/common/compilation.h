@@ -62,6 +62,12 @@ class LoadedExecutableWithMetadata {
     return executable_.get();
   }
 
+  void Delete() const {
+    if (executable_) {
+      const_cast<xla::PjRtLoadedExecutable*>(executable_.get())->Delete();
+    }
+  }
+
   const std::vector<Shape>& output_shapes() const { return output_shapes_; }
 
  private:
