@@ -99,12 +99,31 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "torch_headers_only_enabled_local",
+    define_values = {
+        "TORCH_SOURCE": "local",
+    },
+    flag_values = {
+        ":_torch_headers_only": "True",
+        ":_torch_version": SENTINEL_TORCH_VERSION,
+    },
+    visibility = ["//visibility:public"],
+)
+
 # One per extra (non-default) PyTorch version. shims/torch keys its torch-wheel
 # selection on these; the default build falls through to the existing
 # python-version selection. Sourced from //bazel:pytorch_versions.bzl so the
 # built versions stay in step with the pip hubs and the wheel glues.
 [config_setting(
     name = "torch_" + tv.replace(".", "_"),
+    flag_values = {":_torch_version": tv},
+    visibility = ["//visibility:public"],
+) for tv in EXTRA_PYTORCH_VERSIONS]
+
+[config_setting(
+    name = "torch_" + tv.replace(".", "_") + "_local",
+    define_values = {"TORCH_SOURCE": "local"},
     flag_values = {":_torch_version": tv},
     visibility = ["//visibility:public"],
 ) for tv in EXTRA_PYTORCH_VERSIONS]
@@ -142,7 +161,10 @@ config_setting(
 config_setting(
     name = "wheel_test_with_local_torch",
     define_values = {"TORCH_SOURCE": "local"},
-    flag_values = {":test_wheel": "True"},
+    flag_values = {
+        ":test_wheel": "True",
+        ":_torch_version": SENTINEL_TORCH_VERSION,
+    },
 )
 
 [config_setting(
@@ -151,7 +173,10 @@ config_setting(
         "TORCH_SOURCE": "local",
         "PYTHON_VERSION": v,
     },
-    flag_values = {":test_wheel": "True"},
+    flag_values = {
+        ":test_wheel": "True",
+        ":_torch_version": SENTINEL_TORCH_VERSION,
+    },
     visibility = ["//visibility:public"],
 ) for v in SUPPORTED_PYTHON_VERSIONS]
 

@@ -15,6 +15,7 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//bazel:pytorch_versions.bzl", "SENTINEL_TORCH_VERSION")
 load("//shims/torch:torch_wheel_select.bzl", "torch_headers_select", "torch_lib_select")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
@@ -68,10 +69,15 @@ alias(
 # Config setting to toggle local torch mode.
 # Use by running: bazel build ... --define TORCH_SOURCE=local
 # Other packages refer to this as "//shims/torch:use_local_torch"
+# Pinning _torch_version to SENTINEL_TORCH_VERSION keeps this mutually exclusive
+# with extra PyTorch versions (//:torch_<v>) so select tables don't ambiguously match.
 config_setting(
     name = "use_local_torch",
     define_values = {
         "TORCH_SOURCE": "local",
+    },
+    flag_values = {
+        "//:_torch_version": SENTINEL_TORCH_VERSION,
     },
     visibility = ["//visibility:public"],
 )
@@ -117,6 +123,7 @@ cc_library(
     ] + select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [],
+        "//:torch_headers_only_enabled_local": [],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [
@@ -137,6 +144,7 @@ cc_library(
     deps = select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [":aten_headers"],
+        "//:torch_headers_only_enabled_local": [":aten_headers"],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [
@@ -180,6 +188,7 @@ cc_library(
     deps = select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [":torch_headers"],
+        "//:torch_headers_only_enabled_local": [":torch_headers"],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [
