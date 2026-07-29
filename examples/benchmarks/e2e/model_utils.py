@@ -481,12 +481,39 @@ def whisper_model_builder(
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 
+def _llama_forward_no_inference_mode(self, tokens, start_pos):
+  _bsz, seqlen = tokens.shape
+  h = self.tok_embeddings(tokens)
+  self.freqs_cis = self.freqs_cis.to(h.device)
+  freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+
+  mask = None
+  if seqlen > 1:
+    mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+
+    mask = torch.triu(mask, diagonal=1)
+
+    if mask.device.type == torch.device("mps").type:
+      mask = torch.nan_to_num(mask, nan=0.0)
+
+    mask = torch.hstack(
+        [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+    ).type_as(h)
+
+  for layer in self.layers:
+    h = layer(h, start_pos, freqs_cis, mask)
+  h = self.norm(h)
+  output = self.output(h).float()
+  return output
+
+
 def meta_llama_model_builder(
     model_and_input_args: Any,
     device: torch.device,
     weights_dtype: torch.dtype,
     is_training: bool,
 ) -> ModelAndInput:
+  m.Transformer.forward = _llama_forward_no_inference_mode
   """Returns a ModelAndInput for the specified Meta Llama model.
 
   This function loads or initializes a Meta Llama model with random weights
@@ -559,8 +586,12 @@ def meta_llama_model_builder(
   mp_size = math.gcd(world_size, args.n_kv_heads)  # pyrefly: ignore[bad-argument-type]
 
   # Ensure model parallel is initialized
+  from absl import logging
+
   if not fairscale_init.model_parallel_is_initialized():
+    logging.info("Initializing model parallel with size %s...", mp_size)
     fairscale_init.initialize_model_parallel(mp_size)
+    logging.info("Model parallel initialized.")
 
   prev_dtype = torch.get_default_dtype()
   torch.set_default_dtype(weights_dtype)
@@ -569,10 +600,13 @@ def meta_llama_model_builder(
     # We currently only support random weights for benchmarking
     # TODO(b/461516258): investigate need to initialize model with
     # inference_mode()
-    with torch.inference_mode():
-      model = m.Transformer(args)
+    logging.info("Creating Llama Transformer model...")
+    model = m.Transformer(args)
+    logging.info("Llama Transformer model created.")
 
+    logging.info("Applying model weights initialization...")
     model.apply(_init_model_weights)
+    logging.info("Model weights initialization applied.")
 
   input_ids = torch.randint(
       0, args.vocab_size, (batch_size, sequence_length), device=device
@@ -581,6 +615,7 @@ def meta_llama_model_builder(
   example_inputs = (input_ids, 0)
 
   torch.set_default_dtype(prev_dtype)
+  logging.info("meta_llama_model_builder returning ModelAndInput...")
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 

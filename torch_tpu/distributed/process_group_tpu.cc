@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <iostream>
 #include <memory>
 #include <numeric>
 #include <set>
@@ -464,8 +465,10 @@ ProcessGroupTpu::CrossHostReceiveBuffers(
 ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                                  int rank, int group_size)
     : c10d::Backend(rank, group_size), store_(std::move(store)) {
-  ABSL_VLOG(1) << "[ProcessGroupTpu] ctor: "
-               << "rank: " << rank << ", group size: " << group_size;
+  std::cerr << "[ProcessGroupTpu] ctor (std::cerr): rank: " << rank
+            << ", group size: " << group_size << ", pg_id: " << pg_id_ << "\n";
+  ABSL_LOG(INFO) << "[ProcessGroupTpu] ctor: "
+                 << "rank: " << rank << ", group size: " << group_size;
 
   const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
   TT_CHECK_THROW(pjrt_client != nullptr, error::kInternal)
@@ -1453,6 +1456,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::barrier(
 
 DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
   TT_KERNEL(OpName::kTorchTpuInternalGatherAllSubgroups, param_keys, (), {
+    std::cerr << "GatherAllSubgroups started (std::cerr): rank=" << getRank()
+              << ", size=" << getSize() << "\n";
     TT_SET_PROCESS_GROUP_ID(param_keys);
     TT_THROW_IF_ERROR(param_keys.SetParam("device_ids", device_ids_));
     int64_t world_size = device_ids_.size();  // All devices in the TPU slice
@@ -1506,9 +1511,11 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
         AssignBufferToAtTensor(std::move(result_buffer), subgroups));
     subgroups = subgroups.cpu();
 
-    ABSL_VLOG(1) << "[ProcessGroupTpu::GatherAllSubgroups] "
-                 << "rank: " << getRank() << ", size " << getSize()
-                 << ", subgroups: " << subgroups;
+    ABSL_LOG(INFO) << "[ProcessGroupTpu::GatherAllSubgroups] "
+                   << "rank: " << getRank() << ", size " << getSize()
+                   << ", subgroups: " << subgroups;
+    std::cerr << "GatherAllSubgroups collective finished (std::cerr): rank="
+              << getRank() << ", subgroups=" << subgroups << "\n";
 
     // Convert from at::Tensor to a non-pytorch type.
     auto result = DeviceGroupList(world_size, DeviceGroup(group_size));
@@ -1518,6 +1525,8 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
       }
     }
 
+    std::cerr << "GatherAllSubgroups finished (std::cerr): rank=" << getRank()
+              << "\n";
     // Sort (lexicographic order) and deduplicate the subgroups.
     std::set<DeviceGroup> subgroups_set(result.cbegin(), result.cend());
     return DeviceGroupList(subgroups_set.cbegin(), subgroups_set.cend());

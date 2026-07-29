@@ -30,6 +30,7 @@ from torch.utils import _pytree as pytree
 from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils
+from examples.benchmarks.e2e.harness import measure as measure_lib
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.ops.op_capture import OpCaptureMode
 from examples.benchmarks.quality_utils import quality_benchmark_model
@@ -41,15 +42,9 @@ from torch_tpu._internal.shims.xprof import xprof_session
 log_utils.log_to_stderr()
 
 
-MAX_WARMUP_STEPS = flags.DEFINE_integer(
-    "max_warmup_steps", 20, "Maximum number of warmup steps."
-)
-MIN_WARMUP_STEPS = flags.DEFINE_integer(
-    "min_warmup_steps", 10, "Minimum number of warmup steps."
-)
-POST_WARMUP_STEPS = flags.DEFINE_integer(
-    "post_warmup_steps", 10, "Number of post-warmup steps."
-)
+MAX_WARMUP_STEPS = measure_lib.MAX_WARMUP_STEPS
+MIN_WARMUP_STEPS = measure_lib.MIN_WARMUP_STEPS
+POST_WARMUP_STEPS = measure_lib.POST_WARMUP_STEPS
 XPROF_STEPS = flags.DEFINE_integer(
     "xprof_steps", 2, "Number of steps to collect xprof for."
 )

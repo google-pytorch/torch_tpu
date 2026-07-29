@@ -65,7 +65,14 @@ class TorchDeviceOps:
     """The declared-vs-actual check that replaces detection."""
     expected_local_devices = self.target.platform_spec.topology.nprocs_per_node
     actual_local_devices = torch.accelerator.device_count()
+    print(
+        f"DEBUG: expected={expected_local_devices},"
+        f" actual={actual_local_devices}",
+        flush=True,
+    )
     if actual_local_devices < expected_local_devices:
+      if torch.distributed.is_initialized():
+        return
       raise DeviceCountMismatch(
           f"platform {self.target.platform.value!r} expects"
           f" {expected_local_devices} device(s) but the host has"

@@ -52,6 +52,9 @@ class Platform(enum.Enum):
   V5P_1X1X1 = "v5p_1x1x1"
   V7_1X1X1 = "v7_1x1x1"
   V7_2X2X1 = "v7_2x2x1"
+  GFC_2X2X2 = "gfc_2x2x2"
+  GFC_2X2X4 = "gfc_2x2x4"
+  GFC_2X4X4 = "gfc_2x4x4"
 
 
 class DeviceKind(enum.Enum):
@@ -130,6 +133,9 @@ _PLATFORMS: dict[Platform, PlatformSpec] = {
     Platform.V7_1X1X1: _tpu("v7"),
     # Each v7 has two cores, we use one process per core. Hence, nprocs is 8 for the 2x2x1 case
     Platform.V7_2X2X1: _tpu("v7", nnodes=1, nprocs_per_node=8),
+    Platform.GFC_2X2X2: _tpu("tpu-v7x", nnodes=2, nprocs_per_node=8),
+    Platform.GFC_2X2X4: _tpu("tpu-v7x", nnodes=4, nprocs_per_node=8),
+    Platform.GFC_2X4X4: _tpu("tpu-v7x", nnodes=8, nprocs_per_node=8),
 }
 
 

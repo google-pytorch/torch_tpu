@@ -15,9 +15,11 @@
 """Llama model benchmark definition."""
 
 import torch
+from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e.harness import context as context_lib
 from examples.benchmarks.e2e.harness import registry as registry_lib
 from examples.benchmarks.e2e.harness import step_fn as step_fn_lib
+from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
 from tests import module_registry
 
@@ -106,3 +108,23 @@ def llama_1b_train_accum8(ctx):
       fused=True,
   )
   return model, (), inputs, opt
+
+
+@registry_lib.register_benchmark(step_fn=step_fn_lib.StepFn.FORWARD)
+def llama_8b_inference(ctx: context_lib.Context):
+  """Benchmark factory for Llama 3.1 8B inference."""
+  supported = [
+      target_lib.Platform.GFC_2X2X2,
+      target_lib.Platform.GFC_2X2X4,
+      target_lib.Platform.GFC_2X4X4,
+      target_lib.Platform.B200_4,
+      target_lib.Platform.B200_8,
+  ]
+  if ctx.target.platform not in supported:
+    raise target_lib.UnsupportedBenchmark(
+        f"Llama 8B is not supported on platform {ctx.target.platform}"
+    )
+
+  model, inputs = _load_llama(ctx, "meta-llama/Llama-3.1-8B", is_training=False)
+  return model, (), inputs, None
+

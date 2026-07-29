@@ -31,9 +31,11 @@ torch_tpu_py_library(
     ],
     allow_multiple_srcs = True,
     deps = [
+        "//examples/benchmarks/e2e:model_utils",
         "//examples/benchmarks/e2e/harness:context",
         "//examples/benchmarks/e2e/harness:registry",
         "//examples/benchmarks/e2e/harness:step_fn",
+        "//examples/benchmarks/e2e/harness:target",
         "//examples/benchmarks/e2e/harness:torch_device_ops",
         "//shims/torch:pytorch",
         "//tests:module_registry",

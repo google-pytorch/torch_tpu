@@ -15,6 +15,7 @@
  */
 
 #include <chrono>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,8 @@ namespace {
 c10::intrusive_ptr<c10d::Backend> MakeProcessGroup(
     c10::intrusive_ptr<c10d::Store> store, int rank, int size,
     std::chrono::duration<float>& timeout) {
+  std::cerr << "MakeProcessGroup called (std::cerr): rank=" << rank
+            << ", size=" << size << "\n";
   return c10::make_intrusive<ProcessGroupTpu>(store, rank, size);
 }
 

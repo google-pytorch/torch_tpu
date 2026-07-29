@@ -55,7 +55,8 @@ _HF_LLAMA_3_1_8B_BENCHMARK_NAME = "hf_llama_3_1_8b"
 _HF_LLAMA_3_2_3B_BENCHMARK_NAME = "hf_llama_3_2_3b"
 _HF_GPT2_BENCHMARK_NAME = "hf_gpt2"
 _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
-# Note: hf_resnet_50 is from Hugging Face transformers, which differs from timm_resnet_50.
+# Note: hf_resnet_50 is from Hugging Face transformers, which differs from
+# timm_resnet_50.
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
@@ -163,38 +164,6 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         ),
     )
     self.run_performance_benchmark_test(config, _HF_LLAMA_3_2_1B_BENCHMARK_NAME)
-
-  @parameterized.named_parameters(
-      test_utils.generate_run_mode_configs([
-          common.RunMode.EAGER_DEFAULT,
-          common.RunMode.EAGER_OPTIMIZED,
-          common.RunMode.COMPILED,
-      ])
-  )
-  def test_distributed_meta_llama_3_2_8b_forward(self, run_mode):
-    """Tests the forward pass of Meta Llama-3.2-8B."""
-    if self._is_torchax_backend():
-      self.skipTest("TorchAX does not support distributed tests yet.")
-    config = performance_utils.PerformanceBenchmarkConfig(
-        supported_platforms=[
-            common.Platform.GFC_2X2X1,
-            common.Platform.GFC_2X2X2,
-            common.Platform.B200_4,
-        ],
-        benchmark_category=benchmark_utils.BenchmarkCategory.META_LLAMA,
-        run_mode=run_mode,
-        is_training=False,
-        model_and_input_args=performance_utils.ModelAndInputArgs(
-            model_name="Llama-3.2-8B",
-            sequence_length=2048,
-            batch_size=1,
-        ),
-        model_and_input_factory=model_utils.meta_llama_model_builder,
-        eval_factory=benchmark_function_db.meta_llama_eval_factory,
-    )
-    self.run_performance_benchmark_test(
-        config, _META_LLAMA_3_2_8B_BENCHMARK_NAME
-    )
 
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_ddp_llama_3_2_1b_train_1_step(self, run_mode):
@@ -441,11 +410,11 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             batch_size=8,
             custom_kwargs={
                 "modify_config_hook": modify_config_hook,
-                # FIXME: Disable vision inputs under COMPILED mode because static
-                # XLA graph compilation (TpuBackend) does not yet support dynamic
-                # pre-patchified image grid slicing (pixel_values and
-                # image_position_ids). Re-enable once TpuBackend supports dynamic
-                # multimodal patch slicing.
+                # FIXME: Disable vision inputs under COMPILED mode because
+                # static XLA graph compilation (TpuBackend) does not yet
+                # support dynamic pre-patchified image grid slicing
+                # (pixel_values and image_position_ids). Re-enable once
+                # TpuBackend supports dynamic multimodal patch slicing.
                 "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
             },
         ),
@@ -645,7 +614,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_llava_7b_forward(self, run_mode):
     """Tests the forward pass of LLaVA-1.5-7B."""
-    # FIXME: LLaVA requires multi-modal input dictionary key mapping (pixel_values and image_position_ids).
+    # FIXME: LLaVA requires multi-modal input dictionary key mapping
+    # (pixel_values and image_position_ids).
     self.skipTest("LLaVA requires specialized multimodal input builder.")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
@@ -668,7 +638,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_clip_base_forward(self, run_mode):
     """Tests the forward pass of CLIP-ViT-Base."""
-    # FIXME: CLIP dual-encoder architecture requires both text (input_ids) and vision (pixel_values) inputs.
+    # FIXME: CLIP dual-encoder architecture requires both text (input_ids)
+    # and vision (pixel_values) inputs.
     self.skipTest("CLIP requires dual-modality (text+vision) input generator.")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[
@@ -844,7 +815,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
   @parameterized.named_parameters(test_utils.generate_run_mode_configs())
   def test_whisper_base_forward(self, run_mode):
     """Tests the forward pass of Whisper-Base."""
-    # FIXME: Whisper speech-to-text encoder requires input_features audio spectrogram input.
+    # FIXME: Whisper speech-to-text encoder requires input_features audio
+    # spectrogram input.
     self.skipTest("Whisper requires audio input_features generator.")
     config = performance_utils.PerformanceBenchmarkConfig(
         supported_platforms=[

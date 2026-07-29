@@ -43,6 +43,7 @@ torch_tpu_py_library(
     deps = [
         ":common",
         ":device_utils",
+        "//examples/benchmarks/e2e/harness:measure",
         "//examples/benchmarks/e2e/harness:metrics",
         "//examples/benchmarks/ops:op_capture",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
@@ -540,7 +541,10 @@ torch_tpu_py_library(
     deps = [
         ":benchmark_utils",
         ":ragged_moe",
+        "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:torch_device_ops",
         "//examples/deepseek",
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//tests:module_registry",
         "@pypi//fairscale",

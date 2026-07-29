@@ -45,7 +45,7 @@ class Scope(enum.Enum):
 class CompileConfig:
   """Settings for the compiled mode. Defaults to step-scope"""
 
-  scope: Scope = Scope.STEP
+  scope: Scope = Scope.MODEL
   dynamic: bool | None = None
   fullgraph: bool = False
 

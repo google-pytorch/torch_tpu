@@ -426,7 +426,7 @@ def run_single_process_benchmark(
           result.post_warmup_run_session_xprof_url,
           result.peak_host_compilation_memory_mb,
       )
-  except Exception as e:
+  except Exception as e:  # pylint: disable=broad-exception-caught
     logging.exception("Benchmark failed: %s", e)
     benchmark_succeeded = False
     benchmark_exception = e
@@ -486,6 +486,7 @@ def _run_cuda_task(
     worker_func: Callable[..., Any],
     extra_worker_func_args: Tuple[Any, ...],
 ) -> None:
+  """Worker function to run a benchmark task on a CUDA device."""
   rank = int(os.environ.get("RANK", "0"))
   world_size = int(os.environ.get("WORLD_SIZE", "1"))
   if not torch.cuda.is_available():
