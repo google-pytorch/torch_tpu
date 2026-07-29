@@ -18,7 +18,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -59,34 +58,6 @@ namespace {
 
 constexpr int kMaxDevices = 8;
 
-void ValidateDeviceIndex(c10::DeviceIndex device_index) {
-  // This error message should not be hit; it should be impossible for users to
-  // construct a torch.device with a negative device index, which will fail
-  // before this point.
-  TT_CHECK_THROW(device_index >= 0, error::kInvalidArgument)
-      << "Device index must be non-negative, got "
-      << static_cast<int>(device_index);
-
-  TT_CHECK_THROW(device_index < kMaxDevices, error::kInvalidArgument)
-      << "Device index " << static_cast<int>(device_index)
-      << " is out of bounds of the maximum device count " << kMaxDevices;
-
-  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
-  if (pjrt_client == nullptr) {
-    TORCH_WARN("PJRT client not available, using TPU device index ",
-               static_cast<int>(device_index), " unchecked");
-    return;
-  }
-
-  const int addressable_device_count = pjrt_client->addressable_device_count();
-  TT_CHECK_THROW(
-      device_index < static_cast<c10::DeviceIndex>(addressable_device_count),
-      error::kInvalidArgument)
-      << "Device index " << static_cast<int>(device_index)
-      << " is out of bounds of the number of addressable devices "
-      << addressable_device_count;
-}
-
 class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
  public:
   TpuDeviceGuardImpl() = default;
@@ -98,11 +69,8 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void setDevice(c10::Device d) const override;
   void uncheckedSetDevice(c10::Device d) const noexcept override;
   c10::Stream getStream(c10::Device d) const override;
-  c10::Stream getNewStream(c10::Device d, int priority) const override;
   c10::Stream getDefaultStream(c10::Device d) const override;
   c10::Stream exchangeStream(c10::Stream s) const override;
-  // All `void* event` values are actually `std::shared_ptr<EventSnapshot>*`;
-  // this is a pointer to a shared pointer to an EventSnapshot.
   void destroyEvent(void* event,
                     c10::DeviceIndex device_index) const noexcept override;
   void record(void** event, const c10::Stream& stream,
@@ -115,14 +83,6 @@ class TpuDeviceGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void synchronizeStream(const c10::Stream& stream) const override;
   void synchronizeDevice(c10::DeviceIndex device_index) const override;
   void synchronizeEvent(void* event) const override;
-  // Not implemented: getStreamFromGlobalPool
-  // Not implemented: getDeviceCapability
-  // Not implemented: getStreamNativeHandle
-  // Not implemented: isStreamCapturing
-  // Not implemented: recordDataPtrOnStream
-  // Not implemented: elapsedTime
- private:
-  void ValidateDevice(c10::Device d) const;
 };
 
 }  // namespace
@@ -131,17 +91,22 @@ c10::DeviceType TpuDeviceGuardImpl::type() const {
   return GetPrivateUse1DeviceType();
 }
 
-void TpuDeviceGuardImpl::ValidateDevice(c10::Device d) const {
-  // This error message should not be hit; if the device is not tpu, then it
-  // should fail before calling this DeviceGuardImpl (such as in the
-  // torch.accelerator submodule).
+c10::Device TpuDeviceGuardImpl::exchangeDevice(c10::Device d) const {
   TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
       << "TpuDeviceGuardImpl: invalid device type " << d.type();
-  ValidateDeviceIndex(d.index());
-}
-
-c10::Device TpuDeviceGuardImpl::exchangeDevice(c10::Device d) const {
-  ValidateDevice(d);
+  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
+  if (pjrt_client != nullptr) {
+    const int addressable_device_count =
+        pjrt_client->addressable_device_count();
+    TT_CHECK_THROW(d.index() >= 0 && d.index() < static_cast<c10::DeviceIndex>(
+                                                     addressable_device_count),
+                   error::kInvalidArgument)
+        << "Device index " << static_cast<int>(d.index())
+        << " out of bounds. Available: " << addressable_device_count;
+  } else if (d.index() != 0) {
+    TORCH_WARN("PJRT client not available, but setting TPU device index to ",
+               static_cast<int>(d.index()));
+  }
   c10::DeviceIndex old_device_index = ExchangeCurrentDeviceIndex(d.index());
   return c10::Device(type(), old_device_index);
 }
@@ -151,7 +116,21 @@ c10::Device TpuDeviceGuardImpl::getDevice() const {
 }
 
 void TpuDeviceGuardImpl::setDevice(c10::Device d) const {
-  ValidateDevice(d);
+  TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
+      << "TpuDeviceGuardImpl: invalid device type " << d.type();
+  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
+  if (pjrt_client != nullptr) {
+    const int addressable_device_count =
+        pjrt_client->addressable_device_count();
+    TT_CHECK_THROW(d.index() >= 0 && d.index() < static_cast<c10::DeviceIndex>(
+                                                     addressable_device_count),
+                   error::kInvalidArgument)
+        << "Device index " << static_cast<int>(d.index())
+        << " out of bounds. Available: " << addressable_device_count;
+  } else if (d.index() != 0) {
+    TORCH_WARN("PJRT client not available, but setting TPU device index to ",
+               static_cast<int>(d.index()));
+  }
   ExchangeCurrentDeviceIndex(d.index());
 }
 
@@ -162,22 +141,24 @@ void TpuDeviceGuardImpl::uncheckedSetDevice(c10::Device d) const noexcept {
 }
 
 c10::Stream TpuDeviceGuardImpl::getStream(c10::Device d) const {
-  ValidateDevice(d);
-  const c10::StreamId stream_id = GetCurrentStreamId(d.index());
-  return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
-}
-
-c10::Stream TpuDeviceGuardImpl::getNewStream(c10::Device d,
-                                             int priority) const {
-  ValidateDevice(d);
-  const c10::StreamId stream_id = NextStreamId(d.index());
+  TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
+      << "TpuDeviceGuardImpl: invalid device type for getStream " << d.type();
+  const c10::DeviceIndex index = d.index();
+  TT_CHECK_THROW(index >= 0 && index < kMaxDevices, error::kInvalidArgument)
+      << "device index out of bounds: " << index;
+  const c10::StreamId stream_id = GetCurrentStreamId(index);
   return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
 }
 
 c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
-  ValidateDevice(s.device());
-  c10::StreamId old_stream_id =
-      ExchangeCurrentStreamId(s.device_index(), s.id());
+  TT_CHECK_THROW(s.device_type() == type(), error::kInvalidArgument)
+      << "TpuDeviceGuardImpl: invalid stream device type for exchangeStream "
+      << s.device_type();
+  c10::DeviceIndex device_index = s.device_index();
+  TT_CHECK_THROW(device_index >= 0 && device_index < kMaxDevices,
+                 error::kInvalidArgument)
+      << "device index out of bounds: " << device_index;
+  c10::StreamId old_stream_id = ExchangeCurrentStreamId(device_index, s.id());
   return c10::Stream(c10::Stream::UNSAFE, s.device(), old_stream_id);
 }
 
@@ -191,55 +172,43 @@ c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
 }
 
 c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {
-  ValidateDevice(d);
+  TT_CHECK_THROW(d.type() == type(), error::kInvalidArgument)
+      << "TpuDeviceGuardImpl: invalid device type for getDefaultStream "
+      << d.type();
   return c10::Stream(c10::Stream::DEFAULT, d);
 }
 
 void TpuDeviceGuardImpl::record(void** event, const c10::Stream& stream,
                                 const c10::DeviceIndex device_index,
                                 const c10::EventFlag flag) const {
-  auto shared_event = EventSnapshot::Record(stream.device_index(), stream.id());
-  *event = new std::shared_ptr<EventSnapshot>(std::move(shared_event));
+  TORCH_WARN_ONCE("events (record) not yet implemented.");
 }
 void TpuDeviceGuardImpl::block(void* event, const c10::Stream& stream) const {
-  TORCH_WARN_ONCE("Asynchronous stream waiting is not yet implemented.");
+  TORCH_WARN_ONCE("events (block) not yet implemented.");
 }
 bool TpuDeviceGuardImpl::queryEvent(void* event) const {
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
-  TT_ASSIGN_OR_THROW(bool ready, (*snapshot)->Query());
-  return ready;
+  TORCH_WARN_ONCE("events (queryEvent) not yet implemented.");
+  return true;
 }
 bool TpuDeviceGuardImpl::queryStream(const c10::Stream& stream) const {
   TORCH_WARN_ONCE("queryStream not yet implemented.");
   return true;
 }
 void TpuDeviceGuardImpl::synchronizeStream(const c10::Stream& stream) const {
-  // TODO(bawilson): only synchronize DeferredOps on the specific stream, not
-  // all streams.
-  TT_THROW_IF_ERROR(SynchronizeAll(WaitOnExecution::kYes));
   SynchronizeStream(stream.device_index(), stream.id());
 }
 void TpuDeviceGuardImpl::synchronizeDevice(
     c10::DeviceIndex device_index) const {
-  // TODO(bawilson): only synchronize DeferredOps on the specific device, not
-  // all devices.
   TT_THROW_IF_ERROR(SynchronizeAll(WaitOnExecution::kYes));
   SynchronizeDevice(device_index);
 }
 void TpuDeviceGuardImpl::destroyEvent(
     void* event, const c10::DeviceIndex device_index) const noexcept {
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
-  snapshot->reset();
+  TORCH_WARN_ONCE("destroyEvent not yet implemented.");
 }
 
 void TpuDeviceGuardImpl::synchronizeEvent(void* event) const {
-  // TODO(bawilson): also materialize deferred ops before this event on the
-  // event's stream.
-  std::shared_ptr<EventSnapshot>* snapshot =
-      reinterpret_cast<std::shared_ptr<EventSnapshot>*>(event);
-  TT_THROW_IF_ERROR((*snapshot)->Wait());
+  TORCH_WARN_ONCE("TpuDeviceGuardImpl::synchronizeEvent not implemented.");
 }
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, TpuDeviceGuardImpl);

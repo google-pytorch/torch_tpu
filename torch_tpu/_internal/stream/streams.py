@@ -14,6 +14,7 @@
 
 """Python interface for streams and events on TPU."""
 
+import itertools
 from typing import Optional, Self
 
 import torch
@@ -25,29 +26,7 @@ _NOT_IMPLEMENTED_STREAMS_MSG = (
 )
 
 
-def _get_device_index(device=None) -> int:
-  """Returns the device index of the given, or current device."""
-  if device is None:
-    # pylint: disable=protected-access
-    return _device_ops_backend._get_current_device_id()
-
-  if isinstance(device, int):
-    return device
-
-  tpu_device = None
-  if isinstance(device, str):
-    tpu_device = torch.device(device)
-  elif isinstance(device, torch.device):
-    tpu_device = device
-
-  maybe_index = getattr(tpu_device, 'index', None)
-  if maybe_index is not None:
-    # A parsed string of "tpu" will not have an index, but a string like
-    # "tpu:0" will.
-    return maybe_index
-
-  # pylint: disable=protected-access
-  return _device_ops_backend._get_current_device_id()
+_STREAM_COUNTER = itertools.count(1)
 
 
 class TpuStream:
@@ -78,13 +57,21 @@ class TpuStream:
       **kwargs
   ):
     # pylint: disable=unused-argument
-    self.device_index = _get_device_index(device)
-
     if stream_id is not None:
       self.stream_id = stream_id
     else:
-      self.stream_id = _device_ops_backend._get_next_stream_id(
-          self.device_index
+      self.stream_id = next(_STREAM_COUNTER)
+
+    if device is not None:
+      if isinstance(device, int):
+        self.device = torch.device('tpu', device)
+      elif isinstance(device, str):
+        self.device = torch.device(device)
+      else:
+        self.device = device
+    else:
+      self.device = torch.device(
+          'tpu', _device_ops_backend._get_current_device_id()
       )
 
   def wait_event(self, event: 'TpuEvent') -> None:  # pylint: disable=unused-argument
@@ -108,8 +95,7 @@ class TpuStream:
 
   def synchronize(self) -> None:
     """Waits for all work submitted on this stream to complete."""
-    # pylint: disable=protected-access
-    _device_ops_backend._synchronize_stream(self.stream_id, self.device_index)
+    synchronize()
 
   def priority_range(self):
     raise NotImplementedError(_NOT_IMPLEMENTED_STREAMS_MSG)
@@ -168,7 +154,6 @@ class TpuEvent:
     Args:
       stream: Ignored. Present for CUDA API compatibility.
     """
-    # TODO(bawilson): actually support asynchronous waiting
     return
 
   def query(self) -> bool:
@@ -206,14 +191,13 @@ class TpuEvent:
     return '<torch.tpu.TpuEvent>'
 
 
-def synchronize(device: torch.device | str | int | None = None) -> None:
+def synchronize(device: Optional[int] = None) -> None:
   """Waits for all pending d2h copies on a TPU device to complete.
 
   This function implements `torch.tpu.synchronize()`.
 
   Args:
-    device (torch.device | str | int | None): device for which to wait. Uses the
-      current device if device is None (default).
+    device (int, optional): device for which to wait. Uses the current device if
+      device is None (default).
   """
-  device_idx = _get_device_index(device)
-  _device_ops_backend._synchronize_device(device_idx)  # pylint: disable=protected-access
+  _device_ops_backend._synchronize(device)  # pylint: disable=protected-access

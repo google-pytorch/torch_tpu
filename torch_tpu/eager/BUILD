@@ -902,7 +902,9 @@ torch_tpu_cc_library(
     name = "current_stream",
     srcs = ["current_stream.cc"],
     hdrs = ["current_stream.h"],
-    deps = ["@com_google_absl//absl/log:absl_check"],
+    deps = [
+        "@com_google_absl//absl/log:absl_check",
+    ],
 )
 
 torch_tpu_cc_test(

@@ -59,7 +59,6 @@ pybind_extension(
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:excess_precision",
         "//torch_tpu/distributed/slicebuilder:discovery",
-        "//torch_tpu/eager:current_stream",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:materialize",

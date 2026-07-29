@@ -35,12 +35,13 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, needed for at::Tensor mapping
+#include "torch_tpu/_internal/sync/sync.h"
+#include "torch_tpu/common/compilation.h"
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/discovery.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/excess_precision.h"
-#include "torch_tpu/eager/current_stream.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -77,13 +78,17 @@ class PyTpuEventBase {
   absl_nonnull std::shared_ptr<EventSnapshot> event_snapshot_;
 };
 
-void PySynchronizeDevice(int device_index) {
+void PySynchronize(std::optional<int> device_index) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
   TT_CHECK_THROW(impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
 
-  impl->synchronizeDevice(device_index);
+  c10::DeviceIndex index = device_index.has_value()
+                               ? static_cast<c10::DeviceIndex>(*device_index)
+                               : impl->getDevice().index();
+
+  impl->synchronizeDevice(index);
 }
 
 PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
@@ -135,23 +140,19 @@ int64_t PyGetCurrentStreamId(std::optional<int> device_index) {
   return current_stream.id();
 }
 
-c10::Stream MakeStream(const c10::impl::DeviceGuardImplInterface& impl,
-                       int64_t stream_id, std::optional<int> device_index) {
-  c10::DeviceIndex index = device_index.has_value()
-                               ? static_cast<c10::DeviceIndex>(*device_index)
-                               : impl.getDevice().index();
-  c10::Stream s =
-      c10::Stream(c10::Stream::UNSAFE,
-                  c10::Device(GetPrivateUse1DeviceType(), index), stream_id);
-  return s;
-}
-
 void PySetCurrentStreamId(int64_t stream_id, std::optional<int> device_index) {
   const c10::impl::DeviceGuardImplInterface* impl =
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
   TT_CHECK_THROW(impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
-  impl->exchangeStream(MakeStream(*impl, stream_id, device_index));
+
+  c10::DeviceIndex index = device_index.has_value()
+                               ? static_cast<c10::DeviceIndex>(*device_index)
+                               : impl->getDevice().index();
+  c10::Stream s =
+      c10::Stream(c10::Stream::UNSAFE,
+                  c10::Device(GetPrivateUse1DeviceType(), index), stream_id);
+  impl->exchangeStream(s);
 }
 
 void PySynchronizeStream(int64_t stream_id, std::optional<int> device_index) {
@@ -159,13 +160,14 @@ void PySynchronizeStream(int64_t stream_id, std::optional<int> device_index) {
       c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
   TT_CHECK_THROW(impl != nullptr, error::kInternal)
       << "TPU DeviceGuardImpl not found";
-  impl->synchronizeStream(MakeStream(*impl, stream_id, device_index));
-}
 
-int64_t PyNextStreamId(int64_t device_index) {
-  TT_CHECK_THROW(device_index >= 0 && device_index < 8, error::kInvalidArgument)
-      << "device index must be in the range [0, 8), but got: " << device_index;
-  return NextStreamId(device_index);
+  c10::DeviceIndex index = device_index.has_value()
+                               ? static_cast<c10::DeviceIndex>(*device_index)
+                               : impl->getDevice().index();
+
+  // TODO(bawilson): don't sync streams other than the requested one.
+  TT_THROW_IF_ERROR(SynchronizeAll(WaitOnExecution::kYes));
+  SynchronizeStream(index, stream_id);
 }
 
 }  // namespace
@@ -209,7 +211,7 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         py::call_guard<py::gil_scoped_release>(),
         "Blocks until all operations on the specified stream have completed.");
 
-  m.def("_synchronize_device", &PySynchronizeDevice, py::arg("device_index"),
+  m.def("_synchronize", &PySynchronize, py::arg("device_index") = py::none(),
         py::call_guard<py::gil_scoped_release>(),
         "Blocks until all async d2h copies and deferred operations on the "
         "specified device have completed.");
@@ -225,9 +227,6 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         py::arg("stream_id") = py::none(),
         "Records a fence over async d2h copies already enqueued on the "
         "specified device and stream.");
-
-  m.def("_get_next_stream_id", &PyNextStreamId, py::arg("device_index"),
-        "Returns the next available stream ID for the given device.");
 
   m.def(
       "_get_current_device_id",
