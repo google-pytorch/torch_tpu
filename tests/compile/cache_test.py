@@ -18,14 +18,19 @@ import enum
 import io
 import os
 import pathlib
+import pickle
 import queue
 import shutil
 import sys
+import time
 from absl import flags
 from absl import logging
 from absl.testing import absltest
 import torch
+from torch._dynamo.functional_export import dynamo_graph_capture_for_export
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
 
 
@@ -34,6 +39,7 @@ class TestMode(enum.Enum):
 
   TIER2 = "tier2"
   TIER3 = "tier3"
+  TIER3_PICKLE_BY_REF = "tier3_pickle_by_ref"
 
 
 _TEST_MODE = flags.DEFINE_enum_class(
@@ -149,6 +155,94 @@ class CacheTest(absltest.TestCase):
     empty_dir(cache_dir)
     self._run_persistent_cache_logic(cache_dir)
 
+  def test_persistent_cache_tier3_pickle_by_ref(self) -> None:
+    """Executables pickle as a cache-key reference when tier-3 is enabled.
+
+    With TORCH_TPU_INTERNAL_PICKLE_EXECUTABLES_BY_CACHE_KEY=1 and a tier-3
+    cache entry present, pickling a TorchTpuCompiledExecutable must embed only
+    the compact cache key (a "link") instead of a second copy of the
+    serialized executable bytes; unpickling must load the executable back from
+    the tiered cache, and must fail once the tiered caches are emptied.
+    """
+    self.assertEqual(_TEST_MODE.value, TestMode.TIER3_PICKLE_BY_REF)
+    tier3_dir = pathlib.Path(
+        os.environ.get("TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT")
+    )
+    tier2_dir = get_tier2_cache_dir(
+        os.environ.get("TORCH_TPU_INTERNAL_TIER2_COMPILATION_CACHE")
+    )
+    empty_dir(tier3_dir)
+    empty_dir(tier2_dir)
+
+    device = torch.accelerator.current_accelerator()
+    x = torch.ones((2, 2), device=device)
+    y = torch.ones((2, 2), device=device)
+    # Warmup/initialize so that device init compilations do not interfere.
+    _ = x.cpu()
+    _ = torch.tpu.get_rng_state().cpu()
+    clear_in_memory_caches()
+
+    def fn(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+      return torch.sin(a + b) * torch.cos(a - b)
+
+    gm = dynamo_graph_capture_for_export(fn)(x, y)
+    backend = _backend.TpuBackend()
+    compiled_fn = backend(gm, [x, y])
+    expected = compiled_fn(x, y)
+
+    executable = backend._compiled_executables[-1]
+    cache_key = tpu_torch_compile.find_executable_cache_key(
+        executable._executable
+    )
+    self.assertIsNotNone(
+        cache_key,
+        "compiled executable was not found in the in-memory compilation cache",
+    )
+
+    # The tier-2/tier-3 writes are best-effort and may complete slightly
+    # after the compile returns; wait for the entry to land so that
+    # __reduce__ takes the by-reference path.
+    deadline = time.monotonic() + 60
+    while (
+        not tpu_torch_compile.serialized_executable_exists_in_tiered_cache(
+            cache_key
+        )
+        and time.monotonic() < deadline
+    ):
+      time.sleep(0.5)
+    self.assertTrue(
+        tpu_torch_compile.serialized_executable_exists_in_tiered_cache(
+            cache_key
+        ),
+        "tiered cache entry never appeared for the compiled executable",
+    )
+
+    with self.subTest("PickleIsAReferenceNotACopy"):
+      pickled = pickle.dumps(executable)
+      full_bytes = tpu_torch_compile.serialize_executable(
+          executable._executable
+      )
+      self.assertLess(
+          len(pickled),
+          len(full_bytes) // 2,
+          "by-reference pickle is not substantially smaller than the "
+          "serialized executable; the serialized bytes were likely embedded",
+      )
+
+    with self.subTest("UnpickleLoadsFromTieredCache"):
+      restored = pickle.loads(pickled)
+      restored_out = restored(x, y)
+      torch.testing.assert_close(
+          _backend.to_device(restored_out, "cpu"),
+          _backend.to_device(expected, "cpu"),
+      )
+
+    with self.subTest("UnpickleFailsAfterCacheEviction"):
+      empty_dir(tier3_dir)
+      empty_dir(tier2_dir)
+      with self.assertRaises(Exception):
+        pickle.loads(pickled)
+
 
 def sub_test_worker_entry(
     q: queue.Queue[str],
@@ -248,6 +342,20 @@ class MasterCacheTest(absltest.TestCase):
             "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT": str(
                 self.create_tempdir().full_path
             ),
+        },
+    )
+
+  def test_cache_tier3_pickle_by_ref(self) -> None:
+    self._run_sub_test(
+        TestMode.TIER3_PICKLE_BY_REF,
+        {
+            "TORCH_TPU_INTERNAL_TIER2_COMPILATION_CACHE": (
+                "compile_cache_test_pickle_by_ref"
+            ),
+            "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT": str(
+                self.create_tempdir().full_path
+            ),
+            "TORCH_TPU_INTERNAL_PICKLE_EXECUTABLES_BY_CACHE_KEY": "1",
         },
     )
 

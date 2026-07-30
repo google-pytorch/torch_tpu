@@ -62,6 +62,7 @@
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/common/tier3_compilation_cache.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -975,6 +976,22 @@ py::bytes PySerializeExecutable(
   return py::bytes(serialized);
 }
 
+SharedLoadedExecutableWithMetadata PyLoadExecutableByCacheKey(
+    const std::string& cache_key) {
+  TT_ASSIGN_OR_THROW(
+      SharedLoadedExecutableWithMetadata executable,
+      LoadExecutableByCacheKey(cache_key),
+      _.SetPrepend()
+          << "Failed to load executable from the tiered compilation cache: ");
+  return executable;
+}
+
+std::optional<std::string> PyFindExecutableCacheKey(
+    const SharedLoadedExecutableWithMetadata& executable) {
+  return CompilationCache::GetInstance().FindCacheKeyForExecutable(
+      executable->GetLoadedExecutable());
+}
+
 SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
     py::bytes& serialized_bytes) {
   const auto data = py::cast<std::string_view>(serialized_bytes);
@@ -1275,6 +1292,23 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("load_serialized_executable", PyLoadSerializedExecutable,
         py::arg("serialized_bytes"),
         "Loads a PjRtLoadedExecutable from serialized bytes.");
+  m.def("load_executable_by_cache_key", PyLoadExecutableByCacheKey,
+        py::arg("cache_key"),
+        "Loads a PjRtLoadedExecutable by its compact-format compilation cache "
+        "key, trying the tier-2 cache first and falling back to the tier-3 "
+        "cache. Raises if neither cache has an entry for the key.");
+  m.def("find_executable_cache_key", PyFindExecutableCacheKey,
+        py::arg("executable"),
+        "Returns the compact-format compilation cache key of the executable "
+        "if it is present in the in-memory (tier-1) compilation cache, else "
+        "None.");
+  m.def("serialized_executable_exists_in_tiered_cache",
+        &SerializedExecutableExistsInTieredCache, py::arg("cache_key"),
+        "Returns True if a serialized executable for the given compact-format "
+        "cache key exists in the tier-2 or tier-3 compilation cache.");
+  m.def("uses_tier3_compilation_cache", &UsesTier3CompilationCache,
+        "Returns True if the tier-3 compilation cache is enabled for this "
+        "process.");
   m.def("make_constant_tensor", PyMakeConstantTensor, py::arg("cpu_tensor"),
         "Creates a TPU tensor that represents the constant value of the CPU "
         "tensor.");

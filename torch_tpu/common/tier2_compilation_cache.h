@@ -102,6 +102,10 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier2Cache(
 // Returns the path to the tier-2 cache file for the given key.
 [[nodiscard]] std::string GetTier2CacheEntryPath(CompilationCacheKey key);
 
+// Returns the path to the tier-2 cache file for the given compact-format key
+// (as produced by CompilationCacheKey::CompactFormat()).
+[[nodiscard]] std::string GetTier2CacheEntryPath(std::string_view compact_key);
+
 // Creates the directory recursively as needed, and sets the permissions to
 // 0777 (rwxrwxrwx).
 absl::Status EnsureDirExistsRecursively(const std::string& path);
@@ -109,6 +113,11 @@ absl::Status EnsureDirExistsRecursively(const std::string& path);
 // Loads a serialized executable read from the given cache.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
     CacheTier tier, CompilationCacheKey key, std::string_view data);
+
+// Same as above, with the key given as an opaque string (e.g. a compact-format
+// cache key); the key is only used in error messages.
+absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
+    CacheTier tier, std::string_view key_str, std::string_view data);
 
 // Writes a compiled executable to the given tier-2 or tier-3 cache file. This
 // is best effort.

@@ -191,7 +191,11 @@ const std::string& GetTier2CompilationCachePath() {
 }
 
 std::string GetTier2CacheEntryPath(CompilationCacheKey key) {
-  return absl::StrCat(GetTier2CompilationCachePath(), "/", key.CompactFormat(),
+  return GetTier2CacheEntryPath(key.CompactFormat());
+}
+
+std::string GetTier2CacheEntryPath(const std::string_view compact_key) {
+  return absl::StrCat(GetTier2CompilationCachePath(), "/", compact_key,
                       kTier2CacheFileExtension);
 }
 
@@ -274,6 +278,12 @@ class MappedCacheEntry {
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
     CacheTier tier, CompilationCacheKey key, const std::string_view data) {
+  return LoadSerializedExecutable(tier, absl::StrCat(key), data);
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
+    CacheTier tier, const std::string_view key_str,
+    const std::string_view data) {
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
   TT_RET_CHECK(client, error::kFailedPrecondition)
       << "PjRtClient must be initialized before accessing the " << tier
@@ -286,7 +296,7 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutable(
                                            xla::LoadOptions()),
           /* context =*/absl::StrCat(
               "failed to load serialized executable from the ", tier,
-              " cache for key ", key, ", where the serialized data has ",
+              " cache for key ", key_str, ", where the serialized data has ",
               data.size(), " bytes")));
   return LoadedExecutableWithMetadata::MakeShared(std::move(pjrt_executable));
 }

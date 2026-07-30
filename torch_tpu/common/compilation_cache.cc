@@ -1171,4 +1171,22 @@ std::string CompilationCache::HbmUsageSummary() const {
                       " for ", num_executables, " executables.");
 }
 
+std::optional<std::string> CompilationCache::FindCacheKeyForExecutable(
+    const xla::PjRtLoadedExecutable* absl_nonnull const executable) const {
+  absl::MutexLock lock(cache_mutex_);
+  for (const auto& [key, cache_entry] : executable_cache_) {
+    if (!IsFutureReady(cache_entry.executable_future())) {
+      continue;
+    }
+    const auto& executable_or = cache_entry.executable_future().get();
+    if (!executable_or.ok() || *executable_or == nullptr) {
+      continue;
+    }
+    if ((*executable_or)->GetLoadedExecutable() == executable) {
+      return key.CompactFormat();
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace torch_tpu

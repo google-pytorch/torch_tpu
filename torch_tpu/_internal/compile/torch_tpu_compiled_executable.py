@@ -17,6 +17,7 @@
 import abc
 from collections.abc import Callable, Sequence
 import operator
+import os
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -41,6 +42,24 @@ _UNSET_GRAPH_HELPER_STR = (
 _ReconstructFxOutputsFn: TypeAlias = Callable[
     [Sequence[Any], Sequence[torch.Tensor]], Sequence[Any]
 ]
+
+# When set to "1", TorchTpuCompiledExecutable pickles as a reference (the
+# compact-format compilation cache key) instead of embedding the serialized
+# executable bytes, provided the corresponding entry exists in the tier-2 or
+# tier-3 compilation cache. This avoids storing a second copy of every
+# compiled executable when a consumer (e.g. vLLM's compilation cache) pickles
+# executables to disk alongside the tier-3 cache.
+#
+# Off by default: unpickling a by-reference executable requires the tiered
+# cache entry to still exist, so consumers must be prepared to recompile when
+# the entry has been evicted. Consumers that handle that failure (and only
+# those) should set this variable.
+_PICKLE_BY_CACHE_KEY_ENV_VAR = "TORCH_TPU_INTERNAL_PICKLE_EXECUTABLES_BY_CACHE_KEY"
+
+
+def _pickle_executables_by_cache_key() -> bool:
+  """Returns True if executables should be pickled by cache key reference."""
+  return os.environ.get(_PICKLE_BY_CACHE_KEY_ENV_VAR, "0") == "1"
 
 
 class CompiledArtifact(abc.ABC, OutputCode):
@@ -108,6 +127,44 @@ def _unpickle_compiled_executable(
   """
   return TorchTpuCompiledExecutable(
       executable=tpu_torch_compile.load_serialized_executable(serialized_bytes),
+      reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
+      updates_default_generator_state=updates_default_generator_state,
+  )
+
+
+def _unpickle_compiled_executable_by_cache_key(
+    cache_key: str,
+    reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
+    updates_default_generator_state: bool,
+) -> "TorchTpuCompiledExecutable":
+  """Reconstructs a TorchTpuCompiledExecutable from a tiered cache entry.
+
+  This is the by-reference counterpart of _unpickle_compiled_executable: the
+  pickle carries only the compact-format compilation cache key, and the
+  serialized executable bytes are read from the tier-2 or tier-3 compilation
+  cache at unpickle time.
+
+  The restored executable is not registered in the in-memory compilation
+  cache, so re-pickling it falls back to embedding the serialized bytes.
+
+  Args:
+    cache_key: The compact-format compilation cache key identifying the
+      executable's entry in the tiered compilation caches.
+    reconstruct_fx_outputs_fn: Same as in _unpickle_compiled_executable.
+    updates_default_generator_state: Whether the executable updates the default
+      generator state.
+
+  Returns:
+    A TorchTpuCompiledExecutable loaded from the tiered cache.
+
+  Raises:
+    RuntimeError: If no tiered cache holds an entry for the key (e.g. the
+      tier-3 cache was evicted, or the pickle was produced by a different
+      torch_tpu/libtpu build). Callers holding the original graph should
+      recompile in that case.
+  """
+  return TorchTpuCompiledExecutable(
+      executable=tpu_torch_compile.load_executable_by_cache_key(cache_key),
       reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
       updates_default_generator_state=updates_default_generator_state,
   )
@@ -351,10 +408,39 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     Serialization of the executable is necessary for caching compiled
     artifacts within Dynamo.
 
+    When TORCH_TPU_INTERNAL_PICKLE_EXECUTABLES_BY_CACHE_KEY is set to "1",
+    the executable is looked up in the in-memory compilation cache at pickle
+    time; if it is found there and its entry exists in the tier-2 or tier-3
+    cache, the pickle instead carries only the compact-format cache key (a
+    by-reference pickle), avoiding a second on-disk copy of the serialized
+    executable. Unpickling then reads the bytes back from the tiered cache;
+    see _unpickle_compiled_executable_by_cache_key for the failure mode.
+
     Returns:
       A tuple (callable, args_tuple) used by the pickle module to
       serialize the object.
     """  # fmt: skip
+    if _pickle_executables_by_cache_key():
+      cache_key = tpu_torch_compile.find_executable_cache_key(self._executable)
+      if (
+          cache_key is not None
+          and tpu_torch_compile.serialized_executable_exists_in_tiered_cache(
+              cache_key
+          )
+      ):
+        logging.info(
+            "Pickling compiled executable by cache key %s (tiered cache entry"
+            " exists; not embedding serialized bytes).",
+            cache_key,
+        )
+        return (
+            _unpickle_compiled_executable_by_cache_key,
+            (
+                cache_key,
+                self._reconstruct_fx_outputs_fn,
+                self._updates_default_generator_state,
+            ),
+        )
     serialized = tpu_torch_compile.serialize_executable(self._executable)
     return (
         _unpickle_compiled_executable,

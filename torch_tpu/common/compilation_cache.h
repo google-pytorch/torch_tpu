@@ -284,6 +284,15 @@ class CompilationCache {
   // executables in HBM.
   std::string HbmUsageSummary() const ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
+  // Returns the compact-format cache key of the tier-1 cache entry whose
+  // compiled executable is `executable`, or nullopt if the executable is not
+  // (or no longer) in the tier-1 cache. This lets consumers serialize an
+  // executable as a reference into the tiered (tier-2/tier-3) caches without
+  // having to thread the key through the compilation call chain.
+  [[nodiscard]] std::optional<std::string> FindCacheKeyForExecutable(
+      const xla::PjRtLoadedExecutable* absl_nonnull executable) const
+      ABSL_LOCKS_EXCLUDED(cache_mutex_);
+
  private:
   friend class CompilationCacheTestHelper;
 

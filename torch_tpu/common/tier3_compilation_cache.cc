@@ -118,8 +118,12 @@ static void EnsureTier3CacheDirExistsOnceOrDie() {
 }
 
 std::string GetTier3CacheEntryPath(CompilationCacheKey key) {
+  return GetTier3CacheEntryPath(key.CompactFormat());
+}
+
+std::string GetTier3CacheEntryPath(const std::string_view compact_key) {
   EnsureTier3CacheDirExistsOnceOrDie();
-  return absl::StrCat(GetTier3CompilationCachePath(), "/", key.CompactFormat(),
+  return absl::StrCat(GetTier3CompilationCachePath(), "/", compact_key,
                       kTier3CacheFileExtension);
 }
 
@@ -140,6 +144,54 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
 
   // Load the executable from the char buffer.
   return LoadSerializedExecutable(CacheTier::kTier3, key, data);
+}
+
+bool SerializedExecutableExistsInTieredCache(
+    const std::string_view compact_key) {
+  tsl::Env* const env = tsl::Env::Default();
+  if (UsesTier2CompilationCache() &&
+      env->FileExists(GetTier2CacheEntryPath(compact_key)).ok()) {
+    return true;
+  }
+  return UsesTier3CompilationCache() &&
+         env->FileExists(GetTier3CacheEntryPath(compact_key)).ok();
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadExecutableByCacheKey(
+    const std::string_view compact_key) {
+  tsl::Env* const env = tsl::Env::Default();
+
+  // Try the tier-2 cache first: it is node-local (tmpfs), so a hit avoids a
+  // potentially remote tier-3 read.
+  if (UsesTier2CompilationCache()) {
+    const std::string tier2_entry_path = GetTier2CacheEntryPath(compact_key);
+    std::string data;
+    if (tsl::ReadFileToString(env, tier2_entry_path, &data).ok()) {
+      auto executable_or =
+          LoadSerializedExecutable(CacheTier::kTier2, compact_key, data);
+      if (executable_or.ok()) {
+        return executable_or;
+      }
+      ABSL_LOG(WARNING) << "Failed to load executable for key " << compact_key
+                        << " from tier-2 cache file " << tier2_entry_path
+                        << ": " << executable_or.status()
+                        << "; falling back to the tier-3 cache.";
+    }
+  }
+
+  if (!UsesTier3CompilationCache()) {
+    return TT_ERROR(error::kNotFound)
+           << "no tiered compilation cache entry for key " << compact_key
+           << ": the tier-3 cache is disabled and the tier-2 cache "
+           << (UsesTier2CompilationCache() ? "has no entry for this key"
+                                           : "is disabled");
+  }
+
+  const std::string tier3_entry_path = GetTier3CacheEntryPath(compact_key);
+  std::string data;
+  TT_RETURN_IF_ERROR(tsl::ReadFileToString(env, tier3_entry_path, &data))
+      << "cannot read tier-3 cache file " << tier3_entry_path;
+  return LoadSerializedExecutable(CacheTier::kTier3, compact_key, data);
 }
 
 }  // namespace torch_tpu

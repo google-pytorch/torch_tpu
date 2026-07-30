@@ -18,6 +18,7 @@
 #define TORCH_TPU_COMMON_TIER3_COMPILATION_CACHE_H_
 
 #include <string>
+#include <string_view>
 
 #include "absl/status/statusor.h"
 #include "torch_tpu/common/cache_key.h"
@@ -37,9 +38,25 @@ namespace torch_tpu {
 // Returns the path to the tier-3 cache file for the given key.
 [[nodiscard]] std::string GetTier3CacheEntryPath(CompilationCacheKey key);
 
+// Returns the path to the tier-3 cache file for the given compact-format key
+// (as produced by CompilationCacheKey::CompactFormat()).
+[[nodiscard]] std::string GetTier3CacheEntryPath(std::string_view compact_key);
+
 // Tries to get a loaded executable from the tier-3 compilation cache.
 absl::StatusOr<SharedLoadedExecutableWithMetadata> GetFromTier3Cache(
     CompilationCacheKey key);
+
+// Returns true if a serialized executable for the given compact-format cache
+// key exists in the tier-2 or tier-3 compilation cache. Returns false when
+// both caches are disabled.
+[[nodiscard]] bool SerializedExecutableExistsInTieredCache(
+    std::string_view compact_key);
+
+// Loads a serialized executable by its compact-format cache key, trying the
+// tier-2 cache (fast, node-local) first and falling back to the tier-3 cache.
+// Returns kNotFound if neither cache has an entry for the key.
+absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadExecutableByCacheKey(
+    std::string_view compact_key);
 
 }  // namespace torch_tpu
 

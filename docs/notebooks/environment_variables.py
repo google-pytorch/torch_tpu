@@ -294,6 +294,7 @@ def _(mo):
     | `TORCH_TPU_INTERNAL_TIER2_COMPILATION_CACHE` | Path to the tier-2 cache (local within the host). |
     | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_ROOT` | Path to the tier-3 (shared/persistent) cache. |
     | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Enables local task to back up cache entries to Tier 3. |
+    | `TORCH_TPU_INTERNAL_PICKLE_EXECUTABLES_BY_CACHE_KEY` | When `1`, pickled executables carry only their compilation cache key (resolved from the tier-2/tier-3 cache at unpickle time) instead of a second copy of the serialized bytes. Consumers must recompile if the entry was evicted. |
 
     ### **Snippet: Multi-tiered Caching (Tier-2 and Tier-3)**
     By pointing to specific directories, compiled binary artifacts are saved to disk and reused in future sessions, dramatically reducing JIT latency on subsequent runs.
