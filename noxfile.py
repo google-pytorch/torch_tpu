@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 import pathlib
 from typing import Final
 
-import nox
+import nox  # gazelle:ignore nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.sessions = ["lint"]
@@ -76,6 +76,18 @@ def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "format", external=True)
   session.run("ci/tools/ruff_lint.sh", "fix", external=True)
+
+
+@nox.session(venv_backend="none")
+def build_cleaner_check(session: nox.Session) -> None:
+  """Check BUILD.bazel files for missing/unused dependencies and formatting."""
+  session.run("ci/tools/build_cleaner.sh", "check", external=True)
+
+
+@nox.session(venv_backend="none")
+def build_cleaner(session: nox.Session) -> None:
+  """Automatically generate and format BUILD.bazel files (Gazelle + Buildifier)."""
+  session.run("ci/tools/build_cleaner.sh", "fix", external=True)
 
 
 # Use venv_backend="none" to allow running the script directly in the host.

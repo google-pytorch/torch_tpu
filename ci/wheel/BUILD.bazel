@@ -246,6 +246,7 @@ py_test(
 # artifact we actually ship, so run it with `--config wheel_test_cpu`, under
 # which torch_tpu_py_test installs the wheel into a venv (via
 # //:torch_tpu_py_import) and makes `import torch_tpu` resolve to it.
+# gazelle:exclude pywrap_split_test.py
 torch_tpu_py_test(
     name = "pywrap_split_test",
     srcs = ["pywrap_split_test.py"],

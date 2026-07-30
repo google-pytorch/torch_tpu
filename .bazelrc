@@ -108,6 +108,12 @@ build --repo_env=LLVM_VERSION=20
 build --repo_env=SYSROOT_DIST=linux_glibc_2_31
 build --action_env=BAZEL_CXXOPTS="-std=c++20"
 
+# By default, rules_go CGO actions fail with rules_ml_toolchain because the wrappers
+# compute relative paths from the execroot, but CGO shifts the working directory.
+# Use --config=go_tools to bypass hermetic CC and use the host compiler for Go/CGO.
+build:go_tools --@rules_ml_toolchain//common:enable_hermetic_cc=False
+build:go_tools --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0
+build:go_tools --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0
 # The disk cache uses local disk as a "remote" cache backend, which can
 # significantly speed up builds across server restarts and analysis cache
 # wipes.

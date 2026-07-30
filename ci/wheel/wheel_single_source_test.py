@@ -16,7 +16,7 @@ import os
 import tomllib
 import zipfile
 
-from absl.testing import absltest
+from absl.testing import absltest  # gazelle:ignore absl.testing
 
 
 def normalize_req(req_string):

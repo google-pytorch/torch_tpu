@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# This workflow enforces clean BUILD.bazel files and correct dependencies using Gazelle and Buildifier.
+# It ensures that unformatted or out-of-sync BUILD files cannot be merged into the main branch.
+
+name: Build Cleaner (Gazelle)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Cancel old jobs when a contributor pushes new commits to their PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'main' }}
+
+jobs:
+  run_build_cleaner:
+    name: BUILD.bazel cleaner check
+    # Use self-hosted runners and pre-cached ml-build container image to avoid running out
+    # of disk space when Bazel fetches LLVM toolchains and external dependencies.
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"  # Tag infrastructure-public-image-2c74567ee8e0
+
+    steps:
+      - name: Check out PR HEAD
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # uv is a blazing-fast, single-binary replacement for pip, pipx, and virtualenv written in
+      # Rust.
+      # Modern Linux runners (Ubuntu 23.04+) enforce PEP 668 ("Externally Managed Environments").
+      # This blocks standard 'pip install' commands from modifying the global system Python
+      # interpreter to prevent OS instability. 'uv' natively works around this safely and cleanly by
+      # utilizing fully isolated virtual environments under the hood.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      # Instead of installing 'nox' system-wide (which violates PEP 668), we use 'uvx' (uv's fast
+      # tool-runner equivalent to pipx) to run it in a temporary, isolated sandbox environment
+      # without touching or dirtying the host runner's global python paths.
+      - name: Run Build Cleaner Check via Nox
+        env:
+          BAZEL_FLAGS: "--config=helion_public_caching_readonly"
+        run: uvx nox -s build_cleaner_check

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
@@ -256,4 +257,125 @@ genrule(
         ":wheel_test_enabled": "echo 'WHEEL_TEST IS ENABLED (Matched)' > $@",
         "//conditions:default": "echo 'WHEEL_TEST IS NOT ENABLED (Did not match)' > $@",
     }),
+)
+
+# gazelle:python_root
+# gazelle:python_generation_mode file
+# gazelle:python_test_naming_convention *_test
+# gazelle:map_kind py_library torch_tpu_py_library //build_files:build_defs.bzl
+# gazelle:map_kind py_test torch_tpu_py_test //build_files:build_defs.bzl
+# gazelle:map_kind py_binary torch_tpu_py_binary //build_files:build_defs.bzl
+# gazelle:resolve py torch //shims/torch:pytorch
+# gazelle:resolve py pytest @pypi//pytest
+# gazelle:resolve py sympy @pypi//sympy
+# gazelle:resolve py numpy @pypi//numpy
+# gazelle:resolve py expecttest @pypi//expecttest
+# gazelle:resolve py safetensors @pypi//safetensors
+# gazelle:resolve py filelock @pypi//filelock
+# gazelle:resolve py typing_extensions @pypi//typing_extensions
+# gazelle:resolve py fsspec @pypi//fsspec
+# gazelle:resolve py networkx @pypi//networkx
+# gazelle:resolve py scipy @pypi//scipy
+# gazelle:resolve py tqdm @pypi//tqdm
+# gazelle:resolve py PIL @pypi//pillow
+# gazelle:resolve py PIL.Image @pypi//pillow
+# gazelle:resolve py libtpu @pypi//libtpu
+# gazelle:resolve py portpicker @pypi//portpicker
+# gazelle:resolve py tensorboard @pypi//tensorboard
+# gazelle:resolve py frozendict @pypi//frozendict
+# gazelle:resolve py immutabledict @pypi//immutabledict
+# gazelle:resolve py accelerate @pypi//accelerate
+# gazelle:resolve py etils //shims/etils/epath
+# gazelle:resolve py etils.epath //shims/etils/epath
+# gazelle:resolve py minipyspy //shims/minipyspy:minipyspy_enable
+# gazelle:resolve py jax @pypi//jax
+# gazelle:resolve py transformers @pypi//transformers
+# gazelle:resolve py timm @pypi//timm
+# gazelle:resolve py torchvision @pypi//torchvision
+# gazelle:resolve py fairscale @pypi//fairscale
+# gazelle:resolve py flax @pypi//flax
+# gazelle:resolve py grain @pypi//grain
+# gazelle:resolve py llama_models @pypi//llama_models
+# gazelle:resolve py tensorflow_datasets @pypi//tensorflow_datasets
+# gazelle:resolve py tensorboardX @pypi//tensorboardx
+# gazelle:resolve py torchax @pypi//torchax
+# gazelle:resolve py tree @pypi//dm_tree
+# gazelle:resolve py datasets @pypi//datasets
+# gazelle:resolve py huggingface_hub @pypi//huggingface_hub
+# gazelle:resolve py diffusers @pypi//diffusers
+# gazelle:resolve py peft @pypi//peft
+# gazelle:resolve py matplotlib @pypi//matplotlib
+# gazelle:resolve py yaml @pypi//pyyaml
+# gazelle:resolve py psutil @pypi//psutil
+# gazelle:resolve py packaging @pypi//packaging
+# gazelle:resolve py packaging.version @pypi//packaging
+# gazelle:resolve py torch.testing //shims/torch:pytorch
+# gazelle:resolve py torch.testing._internal //shims/torch:pytorch
+# gazelle:resolve py torch.utils //shims/torch:pytorch
+# gazelle:resolve py torch.utils.data //shims/torch:pytorch
+# gazelle:resolve py torch.distributed //shims/torch:pytorch
+# gazelle:resolve py torch.multiprocessing //shims/torch:pytorch
+# gazelle:resolve py tsl @pypi//tensorboard
+# gazelle:resolve py tsl.profiler @pypi//tensorboard
+# gazelle:resolve py tsl.profiler.protobuf @pypi//tensorboard
+# gazelle:resolve py tsl.profiler.protobuf.profiler_options_pb2 @pypi//tensorboard
+# gazelle:resolve py tsl.profiler.protobuf.xplane_pb2 @pypi//tensorboard
+# gazelle:resolve py rules_python @rules_python//python/runfiles
+# gazelle:resolve py rules_python.python @rules_python//python/runfiles
+# gazelle:resolve py rules_python.python.runfiles @rules_python//python/runfiles
+# gazelle:resolve py rules_python.python.runfiles.runfiles @rules_python//python/runfiles
+# gazelle:resolve py absl //shims/absl_py/testing:absltest
+# gazelle:resolve py absl.testing //shims/absl_py/testing:absltest
+# gazelle:resolve py absl.testing.absltest //shims/absl_py/testing:absltest
+# gazelle:resolve py absl.testing.parameterized //shims/absl_py/testing:parameterized
+# gazelle:resolve py absl.flags //shims/absl_py/flags
+# gazelle:resolve py absl.logging //shims/absl_py/logging
+# gazelle:resolve py torch_tpu //:torch_tpu
+# gazelle:resolve py tests //tests:tests
+# gazelle:resolve py tests.oss_utils //tests:oss_utils
+# gazelle:resolve py tests.module_registry //tests:module_registry
+# gazelle:resolve py tests.op_testing //tests:op_testing
+# gazelle:resolve py tests.ops_test_data //tests:ops_test_data
+# gazelle:resolve py tests.dynamism_test_utils //tests:dynamism_test_utils
+# gazelle:resolve py tests.error_testing //tests:error_testing
+# gazelle:resolve py tests.native_functions_data //tests:native_functions_data
+# gazelle:resolve py tests.compile.stablehlo_compile_testing //tests/compile:stablehlo_compile_testing
+# gazelle:resolve py tests.distributed.distributed_utils //tests/distributed:distributed_utils
+# gazelle:resolve py tests.device.device_module_testing //tests/device:device_module_testing
+# gazelle:exclude bazel
+# gazelle:exclude ci
+# gazelle:exclude shims
+# gazelle:exclude noxfile.py
+# gazelle:exclude setup_clangd.py
+# gazelle:exclude examples
+# gazelle:exclude docs
+# gazelle:exclude torch_tpu/_internal/export
+# gazelle:exclude torch_tpu/_internal/pallas
+# gazelle:exclude torch_tpu/_internal/profiler
+# gazelle:exclude torch_tpu/_internal/sync
+# gazelle:exclude torch_tpu/_internal/precision
+# gazelle:python_ignore_files device_module_testing.py
+# gazelle:python_ignore_files multihost_wrapper.py
+# gazelle:python_ignore_files singlehost_wrapper.py
+# gazelle:python_ignore_files export.py
+# gazelle:python_ignore_files qwen3_explore.py
+# gazelle:python_ignore_files test_fixtures.py
+# gazelle:python_ignore_files test_utils.py
+# gazelle:python_ignore_files strictly_ordering.py
+# gazelle:python_ignore_files scaled_dot_product_attention_generate.py
+gazelle_binary(
+    name = "gazelle_python",
+    languages = [
+        "@rules_python_gazelle_plugin//python",
+    ],
+)
+
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_python",
+)
+
+alias(
+    name = "buildifier",
+    actual = "@buildifier_prebuilt//:buildifier",
 )

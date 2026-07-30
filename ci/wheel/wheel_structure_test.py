@@ -36,7 +36,7 @@ import tempfile
 from typing import Final
 import zipfile
 
-from absl.testing import absltest
+from absl.testing import absltest  # gazelle:ignore absl.testing
 
 # The single shared, version-independent XLA/MLIR base library.
 _XLA_BASE: Final[str] = "torch_tpu/common/libxla_base.so"
