@@ -67,6 +67,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/ops:splash_attention",
         "@pypi//transformers",
     ],
 )

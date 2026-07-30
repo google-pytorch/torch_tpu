@@ -1053,8 +1053,8 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
             model_name="gemma-4-custom-standalone",
-            sequence_length=256,
-            batch_size=2,
+            sequence_length=4096,
+            batch_size=1,
             custom_kwargs={
                 "preset": "e2b",
                 "num_layers": 35,

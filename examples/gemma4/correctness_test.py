@@ -16,11 +16,17 @@
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.utils import test_utils as utils
+import torch_tpu
 from examples.gemma4 import model
 from transformers.models.gemma4.configuration_gemma4 import Gemma4Config
 from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
 from transformers.models.gemma4.modeling_gemma4 import Gemma4Model
+
+
+try:
+  from torch_tpu.ops import splash_attention
+except (ImportError, ModuleNotFoundError):
+  splash_attention = None
 
 
 class Gemma4CorrectnessTest(absltest.TestCase):
@@ -91,7 +97,43 @@ class Gemma4CorrectnessTest(absltest.TestCase):
     else:
       hf_hidden = hf_output
 
-    utils.assert_close(hf_hidden, custom_output)
+    torch.testing.assert_close(hf_hidden, custom_output)
+
+  def test_splash_mqa_output_layout_specification(self):
+    """Verify splash_mqa / splash_sdpa output layout matches HEAD_DIM_MINOR (B, S, H, D)."""
+    if splash_attention is None:
+      self.skipTest('splash_attention module not available')
+    try:
+      torch.tensor([1.0]).to('tpu')
+    except (RuntimeError, AttributeError):
+      self.skipTest('TPU device not available in CPU test environment')
+
+    bsz, seq_len, num_heads, head_dim = 2, 512, 4, 32
+    # Input in HEAD_DIM_MINOR / (B, S, H, D) format
+    q = torch.randn(bsz, seq_len, num_heads, head_dim)
+    k = torch.randn(bsz, seq_len, 1, head_dim)
+    v = torch.randn(bsz, seq_len, 1, head_dim)
+
+    # splash_sdpa with QKVLayout.HEAD_DIM_MINOR (B, S, H, D)
+    out = splash_attention.splash_sdpa(
+        q,
+        k,
+        v,
+        scale=1.0,
+        is_causal=True,
+        local_window_size=16,
+        enable_gqa=True,
+        q_layout='HEAD_DIM_MINOR',
+        k_layout='HEAD_DIM_MINOR',
+        v_layout='HEAD_DIM_MINOR',
+    )
+    # Expected output layout is (B, S, H, D) directly matching downstream o_proj input format
+    self.assertEqual(
+        out.shape,
+        (bsz, seq_len, num_heads, head_dim),
+        f'Expected output shape (B, S, H, D) = ({bsz}, {seq_len}, {num_heads},'
+        f' {head_dim}), got {out.shape}',
+    )
 
 
 if __name__ == '__main__':

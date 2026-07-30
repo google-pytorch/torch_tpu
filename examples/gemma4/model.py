@@ -321,10 +321,13 @@ class Gemma4Attention(nn.Module):
     # Use TPU Splash attention SWA kernel on TPU/XLA devices.
     if use_splash and splash_attention is not None:
       enable_gqa = self.num_heads != self.current_kv_heads
+      q_bshd = query_states.transpose(1, 2).contiguous()
+      k_bshd = key_states.transpose(1, 2).contiguous()
+      v_bshd = value_states.transpose(1, 2).contiguous()
       attn_output = splash_attention.splash_sdpa(
-          query_states,
-          key_states,
-          value_states,
+          q_bshd,
+          k_bshd,
+          v_bshd,
           scale=1.0,
           is_causal=True,
           local_window_size=self.config.sliding_window - 1,
@@ -336,10 +339,11 @@ class Gemma4Attention(nn.Module):
           block_q_dkv=1024,
           block_kv_dkv=1024,
           block_kv_dkv_compute=1024,
+          q_layout='HEAD_DIM_MINOR',
+          k_layout='HEAD_DIM_MINOR',
+          v_layout='HEAD_DIM_MINOR',
       )
-      attn_output = (
-          attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
-      )
+      attn_output = attn_output.reshape(bsz, seq_len, -1)
       attn_output = self.o_proj(attn_output)
       return attn_output, None
     else:

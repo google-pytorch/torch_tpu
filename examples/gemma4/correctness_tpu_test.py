@@ -254,7 +254,14 @@ class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
     v = torch.randn(2, 4, 128, 32, device=device, requires_grad=True)
 
     out = splash_attention.splash_sdpa(
-        q, k, v, local_window_size=16, use_fused_bwd_kernel=False
+        q,
+        k,
+        v,
+        local_window_size=16,
+        use_fused_bwd_kernel=False,
+        q_layout='SEQ_MINOR',
+        k_layout='SEQ_MINOR',
+        v_layout='SEQ_MINOR',
     )
     loss = out.mean()
     loss.backward()
@@ -263,6 +270,35 @@ class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
     self.assertIsNotNone(q.grad)
     self.assertIsNotNone(k.grad)
     self.assertIsNotNone(v.grad)
+
+  def test_splash_mqa_output_layout_specification(self):
+    bsz, seq_len, num_heads, head_dim = 2, 512, 4, 32
+    device = torch.device('tpu')
+    # Input in HEAD_DIM_MINOR / (B, S, H, D) format
+    q = torch.randn(bsz, seq_len, num_heads, head_dim, device=device)
+    k = torch.randn(bsz, seq_len, 1, head_dim, device=device)
+    v = torch.randn(bsz, seq_len, 1, head_dim, device=device)
+
+    # splash_sdpa with QKVLayout.HEAD_DIM_MINOR (B, S, H, D)
+    out = splash_attention.splash_sdpa(
+        q,
+        k,
+        v,
+        scale=1.0,
+        is_causal=True,
+        local_window_size=16,
+        enable_gqa=True,
+        q_layout='HEAD_DIM_MINOR',
+        k_layout='HEAD_DIM_MINOR',
+        v_layout='HEAD_DIM_MINOR',
+    )
+    # Expected output layout is (B, S, H, D) directly matching downstream o_proj input format
+    self.assertEqual(
+        out.shape,
+        (bsz, seq_len, num_heads, head_dim),
+        f'Expected output shape (B, S, H, D) = ({bsz}, {seq_len}, {num_heads},'
+        f' {head_dim}), got {out.shape}',
+    )
 
 
 if __name__ == '__main__':

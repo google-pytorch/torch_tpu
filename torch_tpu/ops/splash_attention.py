@@ -63,7 +63,7 @@ def _make_splash_attention_fn(
     q_layout: str = "HEAD_DIM_MINOR",
     k_layout: str = "HEAD_DIM_MINOR",
     v_layout: str = "HEAD_DIM_MINOR",
-    use_vmap_bwd: bool = False,
+    use_vmap_bwd: bool = True,
 ):
   """Create JAX splash attention forward and backward functions.
 
@@ -356,19 +356,19 @@ def _get_splash_op_names(**splash_kwargs):
       mutates_args=(),
       schema="(Tensor q, Tensor k, Tensor v) -> (Tensor, Tensor)",
   )
-  torch_fwd_fn.register_fake(
-      # lse: (batch, num_q_heads, q_seq_len, ??)
-      lambda q, k, v: (
-          torch.empty_like(q),
-          torch.empty(
-              q.shape[0],
-              q.shape[1],
-              q.shape[2],
-              dtype=torch.float32,
-              device=q.device,
-          ),
-      )
-  )
+  q_layout = splash_kwargs.get("q_layout", "HEAD_DIM_MINOR")
+
+  def _fwd_fake(q, k, v):
+    if q_layout == "HEAD_DIM_MINOR" and q.ndim == 4:
+      lse_shape = (q.shape[0], q.shape[2], q.shape[1])
+    else:
+      lse_shape = (q.shape[0], q.shape[1], q.shape[2])
+    return (
+        torch.empty_like(q),
+        torch.empty(*lse_shape, dtype=torch.float32, device=q.device),
+    )
+
+  torch_fwd_fn.register_fake(_fwd_fake)
 
   torch_bwd_fn = torch.library.custom_op(
       f"pallas::{op_bwd_name}",
@@ -378,6 +378,13 @@ def _get_splash_op_names(**splash_kwargs):
           "(Tensor q, Tensor k, Tensor v, Tensor out, Tensor lse, Tensor"
           " grad_out) -> (Tensor, Tensor, Tensor)"
       ),
+  )
+  torch_bwd_fn.register_fake(
+      lambda q, k, v, out, lse, grad_out: (
+          torch.empty_like(q),
+          torch.empty_like(k),
+          torch.empty_like(v),
+      )
   )
 
   # Register with TorchAX if active
@@ -464,7 +471,7 @@ def splash_sdpa(
     block_q_dq: Optional[int] = None,
     block_kv_dq: Optional[int] = None,
     use_fused_bwd_kernel: bool = True,
-    use_vmap_bwd: bool = False,
+    use_vmap_bwd: bool = True,
     q_layout: str = "HEAD_DIM_MINOR",
     k_layout: str = "HEAD_DIM_MINOR",
     v_layout: str = "HEAD_DIM_MINOR",
@@ -514,8 +521,18 @@ def splash_sdpa(
     block_q_dkv = int(os.environ["SPLASH_BLOCK_DKV"])
     block_kv_dkv = int(os.environ["SPLASH_BLOCK_DKV"])
 
-  _, n_heads, seq_len, _ = q.shape
-  n_kv_heads = k.shape[1]
+  if q_layout == "HEAD_DIM_MINOR" and q.ndim == 4:
+    _, seq_len, n_heads, _ = q.shape
+    if k.ndim == 4:
+      n_kv_heads = k.shape[2] if k_layout == "HEAD_DIM_MINOR" else k.shape[1]
+    else:
+      n_kv_heads = 1
+  else:
+    _, n_heads, seq_len, _ = q.shape
+    if k.ndim == 4:
+      n_kv_heads = k.shape[2] if k_layout == "HEAD_DIM_MINOR" else k.shape[1]
+    else:
+      n_kv_heads = 1
 
   if enable_gqa != (n_heads != n_kv_heads):
     raise ValueError(
@@ -526,13 +543,18 @@ def splash_sdpa(
   if n_kv_heads == 1:
     # For MQA (1 kv head) the splash attention kernel expects the kv
     # head dimension to be squeezed.
-    k = torch.squeeze(k, dim=1)
-    v = torch.squeeze(v, dim=1)
+    if k.ndim == 4:
+      dim_to_squeeze = (
+          2 if (k_layout == "HEAD_DIM_MINOR" and k.shape[2] == 1) else 1
+      )
+      k = torch.squeeze(k, dim=dim_to_squeeze)
+      v = torch.squeeze(v, dim=dim_to_squeeze)
   elif n_heads != n_kv_heads:
     # For GQA (1 < n_kv_heads < n_heads), expand KV heads to match Q heads.
     group = n_heads // n_kv_heads
-    k = k.repeat_interleave(group, dim=1)
-    v = v.repeat_interleave(group, dim=1)
+    dim_to_repeat = 2 if (k_layout == "HEAD_DIM_MINOR" and k.ndim == 4) else 1
+    k = k.repeat_interleave(group, dim=dim_to_repeat)
+    v = v.repeat_interleave(group, dim=dim_to_repeat)
     n_kv_heads = n_heads
 
   splash_args = dict(
