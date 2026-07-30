@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterator
+import contextlib
 import os
 import re
+import tempfile
+import textwrap
 from typing import TypeAlias
 
 from absl.testing import absltest
@@ -36,6 +40,27 @@ class InternalSyncTest(absltest.TestCase):
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
+
+  @contextlib.contextmanager
+  def undeclared_outputs_dir(self) -> Iterator[str]:
+
+    if "TEST_UNDECLARED_OUTPUTS_DIR" in os.environ:
+      context = contextlib.nullcontext(None)
+    else:
+      context = tempfile.TemporaryDirectory()
+
+    with context as possible_temp_dir:
+      if possible_temp_dir is not None:
+        os.environ["TEST_UNDECLARED_OUTPUTS_DIR"] = possible_temp_dir
+        dir_set = True
+      else:
+        dir_set = False
+
+      try:
+        yield os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]
+      finally:
+        if dir_set:
+          del os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]
 
   def test_sync_no_wait_tensor(self):
     x = torch.ones(10, device=torch.device("tpu"))
@@ -251,28 +276,29 @@ class InternalSyncTest(absltest.TestCase):
     x = torch.rand(2, 3, device=torch.device("tpu"))
     y = x**2
     z = x.sum()
-    expected_graphviz_string = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
-digraph {
-  // Vertices:
-  0 [shape="box", label=" uint64[2] (materialized)"];
-  1 [shape="box", label=" float32[] (materialized)"];
-  2 [label="uniform_"];
-  3 [shape="box", label="x: float32[2, 3]"];
-  4 [label="sum.IntList_out"];
-  5 [shape="box", label="z: float32[]"];
-  6 [label="pow.out"];
-  7 [shape="box", label="y: float32[2, 3]"];
+    expected_graphviz_string = textwrap.dedent("""\
+        Graphviz string: (try pasting in http://graphviz/ to see the graph)
+        digraph {
+          // Vertices:
+          0 [shape="box", label=" uint64[2] (materialized)"];
+          1 [shape="box", label=" float32[] (materialized)"];
+          2 [label="uniform_"];
+          3 [shape="box", label="x: float32[2, 3]"];
+          4 [label="sum.IntList_out"];
+          5 [shape="box", label="z: float32[]"];
+          6 [label="pow.out"];
+          7 [shape="box", label="y: float32[2, 3]"];
 
-  // Edges:
-  0 -> 2
-  2 -> 3
-  3 -> 4
-  4 -> 5
-  3 -> 6
-  1 -> 6
-  6 -> 7
-}
-"""
+          // Edges:
+          0 -> 2
+          2 -> 3
+          3 -> 4
+          4 -> 5
+          3 -> 6
+          1 -> 6
+          6 -> 7
+        }
+        """)
 
     node_params, num_lines = self.extract_graphviz_invariants(
         expected_graphviz_string
@@ -285,60 +311,62 @@ digraph {
   # TODO(bawilson): remove leaf node materialization
   @absltest.skip("Safe rule with leaf nodes forces everything to materialize")
   def test_computation_graphviz_partially_materialized(self):
-    expected_before = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
-digraph {
-  // Vertices:
-  0 [shape="box", label="z_ones: float32[2, 4] (materialized)"];
-  1 [shape="box", label="four: int64[] (materialized)"];
-  2 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
-  3 [shape="box", label="three: int64[] (materialized)"];
-  4 [shape="box", label="x_ones: float32[2, 3] (materialized)"];
-  5 [shape="box", label="two: int64[] (materialized)"];
-  6 [label="mul"];
-  7 [shape="box", label="z: float32[2, 4]"];
-  8 [label="mul"];
-  9 [shape="box", label="y: float32[3, 4]"];
-  10 [label="mul"];
-  11 [shape="box", label="x: float32[2, 3]"];
-  12 [label="mm.out"];
-  13 [shape="box", label="x_times_y: float32[2, 4]"];
-  14 [label="add.out"];
-  15 [shape="box", label="w: float32[2, 4]"];
+    expected_before = textwrap.dedent("""\
+        Graphviz string: (try pasting in http://graphviz/ to see the graph)
+        digraph {
+          // Vertices:
+          0 [shape="box", label="z_ones: float32[2, 4] (materialized)"];
+          1 [shape="box", label="four: int64[] (materialized)"];
+          2 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
+          3 [shape="box", label="three: int64[] (materialized)"];
+          4 [shape="box", label="x_ones: float32[2, 3] (materialized)"];
+          5 [shape="box", label="two: int64[] (materialized)"];
+          6 [label="mul"];
+          7 [shape="box", label="z: float32[2, 4]"];
+          8 [label="mul"];
+          9 [shape="box", label="y: float32[3, 4]"];
+          10 [label="mul"];
+          11 [shape="box", label="x: float32[2, 3]"];
+          12 [label="mm.out"];
+          13 [shape="box", label="x_times_y: float32[2, 4]"];
+          14 [label="add.out"];
+          15 [shape="box", label="w: float32[2, 4]"];
 
-  // Edges:
-  0 -> 6
-  1 -> 6
-  6 -> 7
-  2 -> 8
-  3 -> 8
-  8 -> 9
-  4 -> 10
-  5 -> 10
-  10 -> 11
-  11 -> 12
-  9 -> 12
-  12 -> 13
-  13 -> 14
-  7 -> 14
-  14 -> 15
-}
-"""
+          // Edges:
+          0 -> 6
+          1 -> 6
+          6 -> 7
+          2 -> 8
+          3 -> 8
+          8 -> 9
+          4 -> 10
+          5 -> 10
+          10 -> 11
+          11 -> 12
+          9 -> 12
+          12 -> 13
+          13 -> 14
+          7 -> 14
+          14 -> 15
+        }
+        """)
 
-    expected_after = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
-digraph {
-  // Vertices:
-  0 [shape="box", label="w: float32[2, 4] (materialized)"];
-  1 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
-  2 [shape="box", label="three: int64[] (materialized)"];
-  3 [label="mul"];
-  4 [shape="box", label="y: float32[3, 4]"];
+    expected_after = textwrap.dedent("""\
+        Graphviz string: (try pasting in http://graphviz/ to see the graph)
+        digraph {
+          // Vertices:
+          0 [shape="box", label="w: float32[2, 4] (materialized)"];
+          1 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
+          2 [shape="box", label="three: int64[] (materialized)"];
+          3 [label="mul"];
+          4 [shape="box", label="y: float32[3, 4]"];
 
-  // Edges:
-  1 -> 3
-  2 -> 3
-  3 -> 4
-}
-"""
+          // Edges:
+          1 -> 3
+          2 -> 3
+          3 -> 4
+        }
+        """)
     # Create materialized leaf inputs by doing a host to device copy.
     x_ones = torch.ones(2, 3, device="cpu").to(torch.device("tpu"))
     y_ones = torch.ones(3, 4, device="cpu").to(torch.device("tpu"))
@@ -372,34 +400,35 @@ digraph {
     x = torch.ones(2, 3, device=torch.device("tpu"))
     y = torch.ones(2, 3, device=torch.device("tpu"))
     z = x + y
-    expected_graphviz_string = """Graphviz string: (try pasting in http://graphviz/ to see the graph)
-digraph {
-  // Vertices:
-  0 [shape="box", label=" float32[] (materialized)"];
-  1 [label="fill_.Scalar"];
-  2 [shape="box", label=" float32[2, 3]"];
-  3 [label="fill_.Scalar"];
-  4 [shape="box", label=" float32[2, 3]"];
-  5 [label="add.out"];
-  6 [shape="box", label=" float32[2, 3]"];
+    expected_graphviz_string = textwrap.dedent("""\
+        Graphviz string: (try pasting in http://graphviz/ to see the graph)
+        digraph {
+          // Vertices:
+          0 [shape="box", label=" float32[] (materialized)"];
+          1 [label="fill_.Scalar"];
+          2 [shape="box", label=" float32[2, 3]"];
+          3 [label="fill_.Scalar"];
+          4 [shape="box", label=" float32[2, 3]"];
+          5 [label="add.out"];
+          6 [shape="box", label=" float32[2, 3]"];
 
-  // Edges:
-  0 -> 1
-  1 -> 2
-  0 -> 3
-  3 -> 4
-  4 -> 5
-  2 -> 5
-  5 -> 6
-}
-"""
-    output_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "")
-    self.assertNotEmpty(output_dir)
-    file_path = os.path.join(output_dir, "graphviz_dump.txt")
-    sync.dump_computation_graphviz([y, z], file_path)
+          // Edges:
+          0 -> 1
+          1 -> 2
+          0 -> 3
+          3 -> 4
+          4 -> 5
+          2 -> 5
+          5 -> 6
+        }
+        """)
+    with self.undeclared_outputs_dir() as output_dir:
+      self.assertNotEmpty(output_dir)
+      file_path = os.path.join(output_dir, "graphviz_dump.txt")
+      sync.dump_computation_graphviz([y, z], file_path)
 
-    with open(file_path, "r") as f:
-      s = f.read()
+      with open(file_path, "r") as f:
+        s = f.read()
 
     node_params, num_lines = self.extract_graphviz_invariants(
         expected_graphviz_string
