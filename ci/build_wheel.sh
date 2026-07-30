@@ -46,7 +46,15 @@ docker run --rm \
   bash -c "set -ex
     for py_ver in 3.11 3.12 3.13 3.14; do
       echo '===> Building wheel for Python' \$py_ver
-      bazel build -c opt --config=no_rbe //ci/wheel:torch_tpu_wheel \
+      # --config=wheel_common is REQUIRED for a working wheel: it sets
+      # --//:wheel_build=True, which routes the shared XLA/MLIR backend
+      # through the torch_version-reset transition so pywrap factors it into
+      # the single libxla_base.so. Without it every per-version common
+      # carries a full backend copy and the wheel aborts on import with
+      # duplicate static registrations. --config=no_rbe must come after it:
+      # it strips the RBE remote-cache/execution flags wheel_common pulls
+      # in, which need credentials Kokoro does not have.
+      bazel build -c opt --config=wheel_common --config=no_rbe //ci/wheel:torch_tpu_wheel \
         --repo_env=WHEEL_VERSION_EXTRAS=\$WHEEL_VERSION_EXTRAS \
         --repo_env=HERMETIC_PYTHON_VERSION=\$py_ver \
         --define PYTHON_VERSION=\$py_ver && \
