@@ -3346,9 +3346,12 @@ module {
   @et.why_tpu_only("PjRt addressable devices are TPU specific")
   def test_current_stream_device_index_above_actual_devices(self):
     actual_device_count = torch.accelerator.device_count()
-    expected_message = (
+    expected_message = re.compile(
+        # Depending on the hardware, we may hit one of two checks.
         f"Device index {actual_device_count} is out of bounds of the number of"
-        f" addressable devices {actual_device_count}"
+        f" addressable devices {actual_device_count}|"
+        f"Device index {actual_device_count} is out of bounds of the maximum"
+        f" device count {actual_device_count}"
     )
     with et.assert_raises_message(
         RuntimeError,
