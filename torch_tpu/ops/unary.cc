@@ -72,10 +72,10 @@ absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
 
 absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   // Unfortunately shlo.abs() works only on signed ints and floats; hence, this
-  // shortcut for unsigned ints.
+  // shortcut for unsigned ints and booleans.
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   mlir::Type element_type = input_type.getElementType();
-  if (element_type.isUnsignedInteger()) {
+  if (element_type.isUnsignedInteger() || element_type.isInteger(/*width=*/1)) {
     return input;
   }
 

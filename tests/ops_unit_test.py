@@ -737,6 +737,25 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
 
         self.assert_close_tpu_vs_cpu(run, atol=0.0)
 
+  def test_bool_abs(self):
+    device = torch.device("tpu")
+    x = torch.tensor(
+        [[True, False], [False, True]], dtype=torch.bool, device=device
+    )
+    utils.assert_close(torch.abs(x), x.cpu())
+
+    out = torch.empty_like(x)
+    torch.abs(x, out=out)
+    # torch.abs() on booleans is an identity function.
+    utils.assert_close(out, x.cpu())
+
+    y = torch.tensor(
+        [[False, True], [True, False]], dtype=torch.bool, device=device
+    )
+    res = torch._foreach_abs([x, y])
+    utils.assert_close(res[0], x.cpu())
+    utils.assert_close(res[1], y.cpu())
+
   def test_gather_scalar_grad(self):
     del self  # self is unused in this test.
     device = torch.device("tpu")
