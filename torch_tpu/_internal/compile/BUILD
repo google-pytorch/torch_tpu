@@ -84,6 +84,7 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":cond",
         ":scan",
         ":tpu_backend",
         ":tpu_torch_compile",
@@ -108,6 +109,16 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile/dynamic:compiler",
         "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "cond",
+    srcs = ["cond.py"],
+    deps = [
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/export",
     ],
 )
 
@@ -183,6 +194,7 @@ torch_tpu_cc_library(
     srcs = ["tpu_torch_compile.cc"],
     deps = [
         ":compiled_mode",
+        ":dispatch_cond",
         ":dispatch_scan",
         "//shims/pybind11",
         "//shims/torch",
@@ -246,6 +258,7 @@ pybind_extension(
     wrap_py_init = True,
     deps = [
         ":compiled_mode",
+        ":dispatch_cond",
         ":dispatch_scan",
         "//shims/torch",
         "//shims/torch:aten",
@@ -299,6 +312,82 @@ pybind_extension(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt:pjrt_layout",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "dispatch_cond",
+    srcs = ["dispatch_cond.cc"],
+    hdrs = ["dispatch_cond.h"],
+    deps = [
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:compilation",
+        "//torch_tpu/common:dtype",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/common:to_string",
+        "//torch_tpu/common:utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "dispatch_cond_test",
+    srcs = ["dispatch_cond_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":dispatch_cond",
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:compilation",
+        "//torch_tpu/common:context_states",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:fingerprint_utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:eager_mode",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_ops",
+        "@xla//xla/mlir/utils:error_util",
+        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

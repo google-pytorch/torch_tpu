@@ -49,6 +49,7 @@
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch_tpu/_internal/compile/compiled_mode.h"
+#include "torch_tpu/_internal/compile/dispatch_cond.h"
 #include "torch_tpu/_internal/compile/dispatch_scan.h"
 #include "torch_tpu/_internal/dynamism/dynamism_ops.h"
 #include "torch_tpu/common/cache_key.h"
@@ -1304,6 +1305,10 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("body_module"), py::arg("scan_direction"), py::arg("dummy_ys"),
         py::arg("num_scan_inputs"),
         "Creates a deferred scan operation and returns the output tensors.");
+  m.def("create_cond_op", &PyCreateCondOp, py::arg("pred"),
+        py::arg("operands"), py::arg("true_module"), py::arg("false_module"),
+        py::arg("dummy_outputs"),
+        "Creates a deferred cond operation and returns the output tensors.");
 }
 
 }  // namespace torch_tpu

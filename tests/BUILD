@@ -2411,6 +2411,21 @@ oss_target(
 )
 
 torch_tpu_py_test(
+    name = "cond_test",
+    srcs = ["cond_test.py"],
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:compiler",
+        "//torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "scan_test",
     srcs = ["scan_test.py"],
     tags = ["requires-tpu-v5lite"],
