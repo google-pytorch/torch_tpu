@@ -62,6 +62,15 @@ load("//bazel:xla_repo.bzl", "xla_repo")
 
 xla_repo()
 
+http_archive(
+    name = "jax",
+    sha256 = "9e67faaa74be4539e397fe61317568545f9ea325ddf1f7f534929d508786f29e",
+    strip_prefix = "jax-jax-v0.9.2",
+    urls = [
+        "https://github.com/jax-ml/jax/archive/refs/tags/jax-v0.9.2.tar.gz",
+    ],
+)
+
 # Fetch jax_tpu_embedding dependency
 load("//bazel:jax_tpu_embedding_repo.bzl", "jax_tpu_embedding_repo")
 

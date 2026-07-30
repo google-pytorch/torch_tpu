@@ -105,7 +105,10 @@ torch_tpu_cc_library(
     name = "torch_tpu_mosaic_ops",
     srcs = ["dialect/torch_tpu_mosaic_ops.cc"],
     hdrs = ["dialect/torch_tpu_mosaic_ops.h"],
-    deps = [":torch_tpu_mosaic_ops_inc_gen"],
+    deps = [
+        ":torch_tpu_mosaic_ops_inc_gen",
+        "@jax//jaxlib/mosaic:tpu_dialect",
+    ],
 )
 
 torch_tpu_package_end()

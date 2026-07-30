@@ -14,5 +14,7 @@
 
 #include "torch_tpu/_internal/mosaic/dialect/torch_tpu_mosaic_ops.h"
 
+#include "jaxlib/mosaic/dialect/tpu/tpu_dialect.h"  // IWYU pragma: keep
+
 #define GET_OP_CLASSES  // NON_TT_MACRO_OK=MLIR gen
 #include "torch_tpu/_internal/mosaic/dialect/torch_tpu_mosaic_ops.cc.inc"

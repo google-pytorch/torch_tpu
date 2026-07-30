@@ -69,15 +69,23 @@ single_version_override(
 
 # Non-BCR or specific commit modules
 bazel_dep(name = "xla")
+bazel_dep(name = "jax")
 bazel_dep(name = "rules_ml_toolchain")
 
 archive_override(
     module_name = "xla",
-    integrity = "sha256-ZxwHh0fhzk+anNYo8TRKSjtznK238GcYq0L01SS4uWw=",
+    integrity = "sha256-dT3zjqsNQw2iDmFDFkAWY7z8pDOQW5dnRablmZhjXOg=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:remove_stablehlo_source_location.patch"],
-    strip_prefix = "xla-cdbd8b766ff6992238c1127b58e61dbb3e56a5f3",
-    urls = ["https://github.com/openxla/xla/archive/cdbd8b766ff6992238c1127b58e61dbb3e56a5f3.tar.gz"],
+    strip_prefix = "xla-187a5eb58277a85847d1516bd1e20b7faf03d5ef",
+    urls = ["https://github.com/openxla/xla/archive/187a5eb58277a85847d1516bd1e20b7faf03d5ef.tar.gz"],
+)
+
+archive_override(
+    module_name = "jax",
+    integrity = "sha256-nmf6qnS+RTnjl/5hMXVoVF+eoyXd8ff1NJKdUIeG8p4=",
+    strip_prefix = "jax-jax-v0.9.2",
+    urls = ["https://github.com/jax-ml/jax/archive/refs/tags/jax-v0.9.2.tar.gz"],
 )
 
 archive_override(
