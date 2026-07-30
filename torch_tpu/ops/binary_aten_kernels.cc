@@ -116,6 +116,15 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
   }
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
                       ToElementType(promoted_scalar_type));
+  if (opts.output_dtype_override.has_value()) {
+    const at::ScalarType target_dtype =
+        ConvertTo<at::ScalarType>(*opts.output_dtype_override);
+    TT_RET_CHECK(at::canCast(promoted_scalar_type, target_dtype),
+                 error::kInvalidArgument)
+        << "result type " << ToString(promoted_scalar_type)
+        << " can't be cast to the desired output type "
+        << ToString(target_dtype);
+  }
   mlir::ElementType output_dtype = opts.output_dtype_override
                                        ? *opts.output_dtype_override
                                        : computation_dtype;
@@ -161,6 +170,15 @@ absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
   }
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
                       ToElementType(promoted_scalar_type));
+  if (opts.output_dtype_override.has_value()) {
+    const at::ScalarType target_dtype =
+        ConvertTo<at::ScalarType>(*opts.output_dtype_override);
+    TT_RET_CHECK(at::canCast(promoted_scalar_type, target_dtype),
+                 error::kInvalidArgument)
+        << "result type " << ToString(promoted_scalar_type)
+        << " can't be cast to the desired output type "
+        << ToString(target_dtype);
+  }
   mlir::ElementType output_dtype = opts.output_dtype_override
                                        ? *opts.output_dtype_override
                                        : computation_dtype;

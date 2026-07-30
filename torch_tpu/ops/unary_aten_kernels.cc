@@ -25,6 +25,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -184,6 +185,15 @@ absl::Status UnaryOpOut(const at::Tensor& self, at::Tensor& out,
   TT_RET_CHECK(out.scalar_type() == expected_dtype, error::kInvalidArgument)
       << "expected the output dtype to be " << ToString(expected_dtype)
       << ", got " << ToString(out.scalar_type());
+  const at::ScalarType computation_dtype =
+      options.computation_dtype.has_value()
+          ? ConvertTo<at::ScalarType>(*options.computation_dtype)
+          : InferOutputDtype(self);
+  TT_RET_CHECK(at::canCast(computation_dtype, expected_dtype),
+               error::kInvalidArgument)
+      << "result type " << ToString(computation_dtype)
+      << " can't be cast to the desired output type "
+      << ToString(expected_dtype);
 
   TT_ASSIGN_OR_RETURN(
       auto result_buf,
