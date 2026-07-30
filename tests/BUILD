@@ -1201,7 +1201,9 @@ torch_tpu_py_test(
     notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 3,
     tags = [
-        "requires-gpu-sm80",
+        # For a smoke test, we don't care about the specific GPU architecture.
+        # Request any Nvidia GPU to maximize the chance of available resources.
+        "requires-gpu-nvidia",
     ],
     deps = [
         ":dynamism_test_utils",
