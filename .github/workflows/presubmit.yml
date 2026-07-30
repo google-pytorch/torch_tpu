@@ -35,8 +35,7 @@ on:
         required: false
         type: string
   pull_request:
-    branches:
-      - main
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -50,7 +49,19 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'main' }}
 
 jobs:
+  check-stack:
+    name: "Check Stack Target"
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.stack-check.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - id: stack-check
+        uses: ./.github/actions/check-stack-target
+
   run_tests:
+    needs: check-stack
+    if: needs.check-stack.outputs.should_run == 'true'
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     # Available self-hosted runners.
     strategy:

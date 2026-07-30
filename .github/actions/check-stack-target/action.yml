@@ -1,0 +1,72 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Check Stack Target'
+description: 'Determines if a PR or PR stack bottoms out at a target branch (defaults to main).'
+
+inputs:
+  target-branch:
+    description: 'The root target branch to check against'
+    required: false
+    default: 'main'
+
+outputs:
+  should_run:
+    description: 'Set to "true" if the stack/PR targets the specified main branch'
+    value: ${{ steps.check.outputs.should_run }}
+  trunk:
+    description: 'The resolved root trunk branch'
+    value: ${{ steps.check.outputs.trunk }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: install-extension
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Ensure gh stack CLI extension is installed if not natively available
+        if command -v gh >/dev/null 2>&1 && ! gh stack --help >/dev/null 2>&1; then
+          gh extension install github/gh-stack || true
+        fi
+
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        TARGET_BRANCH="${{ inputs.target-branch }}"
+
+        # 1. Attempt to get the root trunk from gh stack
+        TRUNK=$(gh stack view --json 2>/dev/null | jq -r '.trunk // empty' || true)
+
+        # 2. Fallback if not in a stack or gh stack output is empty
+        if [ -z "$TRUNK" ]; then
+          if [ -n "${{ github.base_ref }}" ]; then
+            TRUNK="${{ github.base_ref }}"
+          else
+            # For non-PR events (e.g. workflow_dispatch), default to target branch
+            TRUNK="$TARGET_BRANCH"
+          fi
+        fi
+
+        echo "trunk=$TRUNK" >> "$GITHUB_OUTPUT"
+
+        # 3. Check if the root trunk matches target branch
+        if [ "$TRUNK" = "$TARGET_BRANCH" ]; then
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+        fi
