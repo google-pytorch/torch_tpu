@@ -57,7 +57,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   // Though XLA can perform an allgather along any dimension, using the 0th
   // dimension is sufficient for all PyTorch use cases.
   Dimensions output_shape = CopyIntVector(input_shape);
-  output_shape[0] *= group_size;
+  if (output_shape[0] != mlir::ShapedType::kDynamic) {
+    output_shape[0] *= group_size;
+  }
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
 

@@ -256,6 +256,22 @@ ReshapePrimitive Merge(ReshapePrimitive first, ReshapePrimitive second) {
   return second;
 }
 
+// Helper function to check shape compatibility while skipping dynamic / unpropagated (0) dimensions.
+static bool IsCompatibleReshapeShape(llvm::ArrayRef<int64_t> actual_shape,
+                                     llvm::ArrayRef<int64_t> expected_shape) {
+  for (int64_t d : actual_shape) {
+    if (d == 0 || d == mlir::ShapedType::kDynamic) return true;
+  }
+  for (int64_t d : expected_shape) {
+    if (d == mlir::ShapedType::kDynamic) return true;
+  }
+  if (actual_shape.size() != expected_shape.size()) return false;
+  for (size_t i = 0; i < actual_shape.size(); ++i) {
+    if (actual_shape[i] != expected_shape[i]) return false;
+  }
+  return true;
+}
+
 absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(
     mlir::MlirOp input, const ReshapePrimitive& reshape) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
@@ -265,9 +281,9 @@ absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(
   if (input_type.hasStaticShape()) {
     const mlir::RankedTensorType output_type = GetTensorTypeOrDie(result);
     // Verify that static shaped reshapes are exactly what PT dictates them to
-    // be.
+    // be, while allowing dynamic/unpropagated (0) dimensions when dynamic compilation is active.
     ABSL_CHECK(  // CRASH_OK=Internal error on view decomposition.
-        input_type.getShape().equals(reshape.base_sizes))
+        IsCompatibleReshapeShape(input_type.getShape(), reshape.base_sizes))
         << "expected the ReshapePrimitive input shape to be equal "
         << ToString(reshape.base_sizes)
         << ", which is the expected input shape by the primitive, got "
@@ -275,7 +291,7 @@ absl::StatusOr<mlir::MlirOp> ViewPrimitiveShlo(
         << GetViewPrimitiveShloErrorSuffix(reshape, input_type.getShape());
 
     ABSL_CHECK(  // CRASH_OK=Internal error on view decomposition.
-        output_type.getShape().equals(reshape.new_sizes))
+        IsCompatibleReshapeShape(output_type.getShape(), reshape.new_sizes))
         << "expected the ReshapePrimitive output shape to be equal "
         << ToString(reshape.new_sizes)
         << ", which is the expected output shape by the primitive, got "
