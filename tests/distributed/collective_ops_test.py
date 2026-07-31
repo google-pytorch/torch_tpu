@@ -52,6 +52,8 @@ import torch  # pylint: disable=g-import-not-at-top
 from torch import distributed as dist
 import torch.multiprocessing as mp
 
+from torch_tpu._internal import dynamism
+from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from tests.distributed import distributed_utils
@@ -226,6 +228,61 @@ def run_all_gather_tensor_stack() -> None:
   output_cpu = output.cpu()
 
   # expected = [[0, 0], [1, 1], ...]
+  iota = torch.arange(world_size, dtype=torch.float32)
+  expected = torch.stack([iota, iota]).T
+  utils.assert_close(output_cpu, expected)
+
+
+def run_all_gather_tensor_concat_dynamic() -> None:
+  """Tests all_gather_into_tensor with concatenation and bounded dynamism."""
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+
+  def fn(out_tensor, in_tensor):
+    handle = torch.distributed.all_gather_into_tensor(
+        out_tensor, in_tensor, async_op=True
+    )
+    handle.wait()
+    return out_tensor
+
+  compiled_fn = torch.compile(fn, backend=_backend.TpuBackend(dynamism=True))
+
+  x = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
+  output = torch.zeros(world_size * 2, device="tpu", dtype=torch.float32)
+  dynamism.mark_dynamic(x, 0, min_val=2, max_val=10)
+  dynamism.mark_dynamic(
+      output, 0, min_val=world_size * 2, max_val=world_size * 10
+  )
+
+  res = compiled_fn(output, x)
+  output_cpu = res.cpu()
+
+  iota = torch.arange(world_size, dtype=torch.float32)
+  expected = torch.stack([iota, iota]).T.flatten()
+  utils.assert_close(output_cpu, expected)
+
+
+def run_all_gather_tensor_stack_dynamic() -> None:
+  """Tests all_gather_into_tensor with stacking and bounded dynamism."""
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+
+  def fn(out_tensor, in_tensor):
+    torch.distributed.all_gather_into_tensor(
+        out_tensor, in_tensor, async_op=False
+    )
+    return out_tensor
+
+  compiled_fn = torch.compile(fn, backend=_backend.TpuBackend(dynamism=True))
+
+  x = torch.tensor([rank, rank], device="tpu", dtype=torch.float32)
+  output = torch.zeros((world_size, 2), device="tpu", dtype=torch.float32)
+  dynamism.mark_dynamic(x, 0, min_val=2, max_val=10)
+  dynamism.mark_dynamic(output, 1, min_val=2, max_val=10)
+
+  res = compiled_fn(output, x)
+  output_cpu = res.cpu()
+
   iota = torch.arange(world_size, dtype=torch.float32)
   expected = torch.stack([iota, iota]).T
   utils.assert_close(output_cpu, expected)
@@ -812,6 +869,24 @@ class CollectiveOpsTest(absltest.TestCase):
             _test_wrapper, world_size=self._world_size
         ),
         test_fn=run_all_gather_tensor_stack,
+    )
+
+  def test_all_gather_tensor_concat_dynamic(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_all_gather_tensor_concat_dynamic,
+    )
+
+  def test_all_gather_tensor_stack_dynamic(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_all_gather_tensor_stack_dynamic,
     )
 
   def test_gather_scalar(self):

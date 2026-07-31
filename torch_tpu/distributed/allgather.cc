@@ -20,12 +20,13 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/common/utils.h"
 #include "torch_tpu/distributed/types.h"
 #include "torch_tpu/distributed/utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
@@ -57,7 +58,9 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllGatherShlo(
   // Though XLA can perform an allgather along any dimension, using the 0th
   // dimension is sufficient for all PyTorch use cases.
   Dimensions output_shape = CopyIntVector(input_shape);
-  output_shape[0] *= group_size;
+  if (output_shape[0] != mlir::ShapedType::kDynamic) {
+    output_shape[0] *= group_size;
+  }
   auto output_type =
       mlir::RankedTensorType::get(output_shape, input_element_type);
 
