@@ -685,6 +685,14 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         << xla_argument_shapes.size() << " layouts and "
         << argument_layouts.size() << " arguments";
     for (size_t i = 0; i < xla_argument_shapes.size(); ++i) {
+      if (arguments_[i].is_materialized()) {
+        const auto buf_or = arguments_[i].AwaitBuffer();
+        if (buf_or.ok() && *buf_or && (*buf_or)->layout()) {
+          *xla_argument_shapes[i].mutable_layout() =
+              (*buf_or)->layout()->xla_layout();
+          continue;
+        }
+      }
       const auto& layout_indices = argument_layouts[i];
       if (!layout_indices.empty()) {
         xla_argument_shapes[i].clear_layout();

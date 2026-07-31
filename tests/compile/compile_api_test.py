@@ -1132,6 +1132,20 @@ class CompileApiTest(absltest.TestCase):
         self.assertIsInstance(element_size_in_bits, int)
         self.assertEqual(minor_to_major, [1, 0])
 
+  def test_traverse_and_compile_with_custom_tiles(self):
+    layout = annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8]])
+    with annotations.LayoutContext(layout):
+      x = torch.ones(2, 8, device='cpu').to(device=torch.device('tpu'))
+
+    # Force materialization
+    x.cpu()
+
+    # Query layout and assert tiles are preserved
+    tpu_layout = tpu_torch_compile.get_device_layout_if_materialized(x)
+    self.assertIsNotNone(tpu_layout)
+    self.assertEqual(tpu_layout[0], [1, 0])
+    self.assertEqual(tpu_layout[1], [[8]])
+
 
 if __name__ == '__main__':
   absltest.main()

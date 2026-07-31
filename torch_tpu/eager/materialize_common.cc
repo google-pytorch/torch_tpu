@@ -223,7 +223,17 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
         const auto default_layout,
         client->GetDefaultLayout(element_type, arg.dimensions()));
     if (minor_to_major == default_layout.minor_to_major()) {
-      continue;
+      bool has_custom_tiles = false;
+      if (arg.is_materialized()) {
+        const auto buf_or = arg.AwaitBuffer();
+        if (buf_or.ok() && *buf_or && (*buf_or)->layout() &&
+            !(*buf_or)->layout()->xla_layout().tiles().empty()) {
+          has_custom_tiles = true;
+        }
+      }
+      if (!has_custom_tiles) {
+        continue;
+      }
     }
     ABSL_VLOG(3)
         << "[ExtractArgumentLayoutsIfDifferentFromDefault] Argument layout "
