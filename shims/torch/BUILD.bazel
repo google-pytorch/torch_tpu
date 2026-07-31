@@ -15,6 +15,7 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
+load("//bazel:pytorch_versions.bzl", "EXTRA_PYTORCH_VERSIONS")
 load("//shims/torch:torch_wheel_select.bzl", "torch_headers_select", "torch_lib_select")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
@@ -76,6 +77,37 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# Local torch *and* one extra version's glue configuration. Constrains both the
+# define and //:_torch_version, so it is strictly more specialized than either
+# :use_local_torch or //:torch_<v> alone and wins over both. Without these rows
+# a glue transitioned to an extra version under --define TORCH_SOURCE=local
+# matches :use_local_torch and //:torch_<v> equally and the torch shim selects
+# fail with "Illegal ambiguous match". Local torch is the whole point of that
+# build, so it is what every glue must resolve to.
+[config_setting(
+    name = "use_local_torch_" + tv.replace(".", "_"),
+    define_values = {
+        "TORCH_SOURCE": "local",
+    },
+    flag_values = {"//:_torch_version": tv},
+    visibility = ["//visibility:public"],
+) for tv in EXTRA_PYTORCH_VERSIONS]
+
+# Local torch *and* the headers-only backend configuration. Same specialization
+# problem as :use_local_torch_<v>: --define TORCH_SOURCE=local is set for the
+# whole build, including the shared XLA base, where it matches alongside
+# //:torch_headers_only_enabled. Headers-only wins on the merits -- the shared
+# base must never link real torch, whatever torch it would have been -- so the
+# rows keyed on this mirror the headers-only row.
+config_setting(
+    name = "use_local_torch_headers_only",
+    define_values = {
+        "TORCH_SOURCE": "local",
+    },
+    flag_values = {"//:_torch_headers_only": "True"},
+    visibility = ["//visibility:public"],
+)
+
 # TODO: b/457858115 - Bazel likely enforces strict dependencies and requires optional dependencies
 # to be explicitly listed in deps if they are used.
 # Python Rules: Depend on PyPI torch by default, but skip it for local builds
@@ -117,6 +149,7 @@ cc_library(
     ] + select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [],
+        ":use_local_torch_headers_only": [],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [
@@ -137,6 +170,7 @@ cc_library(
     deps = select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [":aten_headers"],
+        ":use_local_torch_headers_only": [":aten_headers"],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [
@@ -180,6 +214,7 @@ cc_library(
     deps = select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": [":torch_headers"],
+        ":use_local_torch_headers_only": [":torch_headers"],
         # NOTE: Keep this list in sync with the default case one for local_torch and pypi_torch.
         # Any target-specific dependencies should be declared with the specific target/binary
         ":use_local_torch": [

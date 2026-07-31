@@ -22,6 +22,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/macro_utils.h"
 #include "torch_tpu/common/utils.h"
 
 namespace torch_tpu {
@@ -41,7 +42,7 @@ at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
                             std::optional<at::ScalarType> out_dtype,
                             bool use_fast_accum, at::Tensor& out);
 
-#if TT_IS_INTERNAL_TORCH_TPU
+#if TT_TORCH_VERSION_GE(2, 14)
 at::Tensor AtenScaledMmV2(const at::Tensor& self, const at::Tensor& mat2,
                           const at::ITensorListRef& scale_a,
                           at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a,

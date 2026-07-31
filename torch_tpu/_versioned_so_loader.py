@@ -34,9 +34,10 @@ When no versioned glues are present at all (e.g. an unversioned developer
 build) the hook is not installed and imports resolve normally.
 
 A dev build's version compares by the release triple it leads up to
-(`2.14.0.dev20260711` -> `2.14.0`), so the glue the nightly-channel wheel
-bundles -- built against a pinned dev snapshot and named by that snapshot's
-release triple, like any other glue -- serves it whenever present.
+(`2.14.0.dev20260711` and `2.14.0a0` -> `2.14.0`), so the glue the
+nightly-channel wheel bundles -- built against a pinned dev snapshot and named
+by that snapshot's release triple, like any other glue -- serves it whenever
+present.
 """
 
 from collections.abc import Collection
@@ -45,6 +46,7 @@ import importlib.machinery
 import importlib.metadata
 import importlib.util
 import pathlib
+import re
 import sys
 from typing import Final
 
@@ -78,15 +80,20 @@ def installed_torch_version() -> str | None:
     return None
 
 
+# The leading release triple of a PEP 440 version. Everything after it is
+# ignored: a local tag ("2.13.0+cpu"), a dot-separated dev tag
+# ("2.14.0.dev20260711"), and a pre/post marker attached straight to the patch
+# component ("2.14.0a0", which is what a from-source build of PyTorch main
+# reports).
+_RELEASE_TRIPLE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
 def version_suffix(version: str) -> str | None:
   """Turns a torch version into a glue suffix ("2.13.0+cpu" -> "2_13_0")."""
-  # Cut any local tag first so it cannot ride on the patch component
-  # ("2.13.0+cpu" would otherwise split into ("2", "13", "0+cpu")); a ".dev"
-  # tag is a component of its own and falls off the triple.
-  parts = version.split("+")[0].split(".")[:3]
-  if len(parts) < 3 or not all(part.isdigit() for part in parts):
+  match = _RELEASE_TRIPLE.match(version)
+  if match is None:
     return None
-  return "_".join(parts)
+  return "_".join(match.groups())
 
 
 def torch_version_suffix() -> str | None:

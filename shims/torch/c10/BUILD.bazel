@@ -22,6 +22,7 @@ cc_library(
     deps = select({
         # Per-version wheel glues: headers only, torch symbols resolved at runtime.
         "//:torch_headers_only_enabled": ["//shims/torch:torch_headers"],
+        "//shims/torch:use_local_torch_headers_only": ["//shims/torch:torch_headers"],
         "//shims/torch:use_local_torch": [
             "@local_torch//:libc10",
             "@local_torch//:torch_headers",

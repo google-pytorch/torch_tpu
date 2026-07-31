@@ -43,6 +43,7 @@
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/common/macro_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
@@ -192,7 +193,7 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   return scaled_result;
 }
 
-#if TT_IS_INTERNAL_TORCH_TPU
+#if TT_TORCH_VERSION_GE(2, 14)
 absl::Status CheckScaledMmV2Inputs(
     const at::Tensor& self, const at::Tensor& mat2,
     const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
@@ -703,7 +704,7 @@ at::Tensor& AtenScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
       });
 }
 
-#if TT_IS_INTERNAL_TORCH_TPU
+#if TT_TORCH_VERSION_GE(2, 14)
 absl::StatusOr<DeviceBufferRef> ScaledMmV2(
     const at::Tensor& self, const at::Tensor& mat2,
     const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
@@ -797,7 +798,7 @@ absl::StatusOr<DeviceBufferRef> ScaledMmV2(
   return result_buf;
 }
 
-#if TT_IS_INTERNAL_TORCH_TPU
+#if TT_TORCH_VERSION_GE(2, 14)
 at::Tensor AtenScaledMmV2(const at::Tensor& self, const at::Tensor& mat2,
                           const at::ITensorListRef& scale_a,
                           at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a,
@@ -837,7 +838,7 @@ at::Tensor AtenScaledMmV2(const at::Tensor& self, const at::Tensor& mat2,
       });
 }
 
-#if TT_IS_INTERNAL_TORCH_TPU
+#if TT_TORCH_VERSION_GE(2, 14)
 at::Tensor& AtenScaledMmV2Out(
     const at::Tensor& self, const at::Tensor& mat2,
     const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
