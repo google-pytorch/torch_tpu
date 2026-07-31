@@ -1,41 +1,7 @@
 # DeepSeek Inference
 
 This folder contains a lightly adapted version of the official DeepSeek v3
-inference code, and decomposition tests. The tests exercise each of the basic
-layers separately, as well as some of the intermediate composite layers. It also
-exercises the Transformer layer, which is the full DeepSeek v3 model (configured
-much smaller to fit on a single accelerator).
-
-The tests ensure numerical closeness between CPU and an accelerator. The
-accelerator type is passed via the `-acc` flag to the script. Passing this flag
-is already configured in the bazel BUILD file.
-
-All tests pass for GPU. Some tests pass and some fail on TPU. The failing TPU
-tests identify functionality in torch_tpu that needs to be implemented.
-
-## Running Tests
-
-Run the GPU tests as:
-
-```sh
-blaze test -c opt --config cuda :deepseek_decomposition_one_acc_test__GPU
-```
-
-[Results](http://sponge2/76b62652-6c36-4d8f-ae29-73d69c262ebf)
-
-Run the TPU tests as:
-
-```sh
-blaze test :deepseek_decomposition_one_acc_test__TPU
-```
-
-[Results](http://sponge2/ab797162-f0f9-44a4-93c2-5e4fcd98c116)
-
-Useful flags:
-
-*   `--runs_per_test 10`: Automatically re-runs the tests with different seeds.
-*   `--test_filter SingleAcceleratorTest.test_XYZ`: Only runs the test_XYZ
-    method.
+inference code.
 
 ## Running aten ops tracer
 
@@ -96,12 +62,7 @@ I0805 03:13:24.519075 1267057 trace.py:65] Ops for aten namespace(45 ops):
 
 *   `model.py`: a very lightly adapted version from the official version from
     [DeepSeek](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/model.py)
-
-*   `deepseek_decomposition_one_acc_test.py`: A breakdown of the layers in
-    model.py to run on a single accelerator, either tpu or gpu.
-
-*   `BUILD`: configured with two py_test targets with setup for running forge on
-    a TPU or GPU machine.
+*   `trace.py`: traces aten ops in the forward pass of the DeepSeek model.
 
 ## Inference only
 

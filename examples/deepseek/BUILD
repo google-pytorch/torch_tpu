@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("@rules_license//rules:license.bzl", "license")
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
 
 package(
@@ -21,6 +21,7 @@ package(
     default_visibility = [
         "//examples/benchmarks/e2e:__subpackages__",
         "//examples/deepseek:__subpackages__",
+        "//experimental/users/yho/torch_tpu_deepseek:__subpackages__",
         "//torch_tpu/google/tools:__subpackages__",
     ],
 )
@@ -39,53 +40,6 @@ torch_tpu_py_library(
     ],
     deps = [
         "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "deepseek_decomposition_one_acc_test__TPU",
-    srcs = ["deepseek_decomposition_one_acc_test.py"],
-    args = ["--acc=tpu"],
-    main = "deepseek_decomposition_one_acc_test.py",
-    notap = "Currently broken. Meant to be used for finding missing pieces.",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
-    tags = [
-        "requires-tpu-v5lite",
-    ],
-    deps = [
-        ":deepseek",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/logging",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils",
-        "//torch_tpu/_internal/utils:log_utils",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "deepseek_decomposition_one_acc_test__GPU",
-    srcs = ["deepseek_decomposition_one_acc_test.py"],
-    args = ["--acc=gpu"],
-    main = "deepseek_decomposition_one_acc_test.py",
-    notap = "slow test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
-    tags = [
-        "ignore_for_dep=third_party.torch_tpu.api",
-        "requires-gpu-nvidia",
-    ],
-    deps = [
-        ":deepseek",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/logging",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils",
-        "//torch_tpu/_internal/utils:log_utils",
     ],
 )
 
