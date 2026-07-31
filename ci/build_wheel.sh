@@ -27,6 +27,21 @@ set -exu -o history -o allexport
 
 echo "===> Starting Python wheel build in Kokoro..."
 
+# Target Python version for this fanned-out job (default 3.11)
+PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+export PYTHON_VERSION
+echo "PYTHON_VERSION: ${PYTHON_VERSION}"
+
+# Bazel flags (default to --config=wheel_common)
+BAZEL_FLAGS="${BAZEL_FLAGS:---config=wheel_common}"
+export BAZEL_FLAGS
+echo "BAZEL_FLAGS: ${BAZEL_FLAGS}"
+
+# Prepare wheel version string with metadata date suffix (similar to GitHub)
+WHEEL_VERSION_EXTRAS=".dev$(date +%Y%m%d%H%M%S)"
+export WHEEL_VERSION_EXTRAS
+echo "WHEEL_VERSION_EXTRAS: ${WHEEL_VERSION_EXTRAS}"
+
 # Define target wheel dir inside Kokoro artifacts folder
 KOKORO_ARTIFACTS_DIR="${KOKORO_ARTIFACTS_DIR:-$(pwd)/../../artifacts}"
 WHEEL_DIR="${KOKORO_ARTIFACTS_DIR}/dist"
@@ -39,14 +54,15 @@ echo "===> Pulling ml-build container: ${CONTAINER_IMAGE}..."
 docker pull "${CONTAINER_IMAGE}"
 
 echo "===> Compiling wheel via Bazel inside ml-build container..."
-# We map the checked out directory into /workspace and run the shared build
-# script for every supported Python version.
+# We map the checked out directory into /workspace and run the single-sourced build script
 mkdir -p dist
 docker run --rm \
   -v "$(pwd):/workspace" \
   -w "/workspace" \
+  -e WHEEL_VERSION_EXTRAS="${WHEEL_VERSION_EXTRAS}" \
   "${CONTAINER_IMAGE}" \
-  ci/build_wheels.sh --output-dir /workspace/dist 3.11 3.12 3.13 3.14 -- --config=no_rbe
+  ci/build_wheels.sh --output-dir /workspace/dist "${PYTHON_VERSION}" -- ${BAZEL_FLAGS}
+
 
 # Move the built wheels from local dist back to Kokoro artifacts directory
 if [[ -d dist && -n "$(ls -A dist/*.whl 2>/dev/null)" ]]; then

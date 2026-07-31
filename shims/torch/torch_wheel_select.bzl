@@ -52,10 +52,11 @@ def torch_lib_select(target, base):
       target: the wheel target name to pick, e.g. "libc10".
       base: the select() dict for the default torch version.
     """
-    rows = {
-        _torch_version_setting(v): _extra_wheel(v, target)
-        for v in EXTRA_PYTORCH_VERSIONS
-    }
+    rows = {}
+    for v in EXTRA_PYTORCH_VERSIONS:
+        wheel = _extra_wheel(v, target)
+        rows[_torch_version_setting(v)] = wheel
+        rows[_torch_version_setting(v) + "_local"] = wheel
     rows.update(base)
     return rows
 
@@ -71,9 +72,10 @@ def torch_headers_select(base, extra = []):
       extra: labels appended to every extra-version row (e.g. the Python C
         headers that accompany torch_headers).
     """
-    rows = {
-        _torch_version_setting(v): [_extra_wheel(v, "torch_headers")] + extra
-        for v in EXTRA_PYTORCH_VERSIONS
-    }
+    rows = {}
+    for v in EXTRA_PYTORCH_VERSIONS:
+        val = [_extra_wheel(v, "torch_headers")] + extra
+        rows[_torch_version_setting(v)] = val
+        rows[_torch_version_setting(v) + "_local"] = val
     rows.update(base)
     return rows

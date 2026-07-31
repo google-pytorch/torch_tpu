@@ -109,6 +109,13 @@ config_setting(
     visibility = ["//visibility:public"],
 ) for tv in EXTRA_PYTORCH_VERSIONS]
 
+[config_setting(
+    name = "torch_" + tv.replace(".", "_") + "_local",
+    define_values = {"TORCH_SOURCE": "local"},
+    flag_values = {":_torch_version": tv},
+    visibility = ["//visibility:public"],
+) for tv in EXTRA_PYTORCH_VERSIONS]
+
 # The Python-version rows only apply to the default torch version (which
 # builds at the sentinel); the extra versions are selected on //:_torch_version
 # alone (see //shims/torch). Pinning the torch version here keeps these

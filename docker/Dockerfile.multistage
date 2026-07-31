@@ -66,27 +66,19 @@ COPY . /workspace/torch_tpu_src
 
 # Build the wheel using bazel.
 # Preserving cache mounts and flags from Dockerfile.from_src
-# We download the wheel for the installed torch version to avoid symlink issues with Bazel cache.
-# TODO(jparkerh): Remove this once the underlying ABI issue is resolved.
 RUN --mount=type=cache,id=torch-tpu-bazelisk,target=/root/.cache/bazelisk \
     --mount=type=cache,id=torch-tpu-bazel-repo,target=/root/.cache/bazel,sharing=locked \
     --mount=type=cache,target=/root/.cache/uv \
-    TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)") && \
-    echo "Installed torch version: $TORCH_VERSION" && \
-    pip download torch==$TORCH_VERSION \
-        --index-url https://download.pytorch.org/whl/cpu \
-        --dest /tmp/torch_wheel && \
-    TORCH_WHEEL=$(ls /tmp/torch_wheel/torch-*.whl) && \
-    echo "Using wheel: $TORCH_WHEEL" && \
     cd /workspace/torch_tpu_src && \
     rm -rf bazel-* && \
-    TORCH_SOURCE=$TORCH_WHEEL bazel build -c opt \
+    bazel build -c opt \
     --config=wheel_common \
-    --define TORCH_SOURCE=local \
     --repository_cache=/root/.cache/bazel/repository_cache \
     --disk_cache=/root/.cache/bazel/disk_cache \
     //ci/wheel:torch_tpu_wheel --config=no_rbe && \
     mkdir -p dist && mv bazel-bin/ci/wheel/* dist/
+
+
 
 # =====================================================================
 # Stage 2: Final Image (torchtpu)
