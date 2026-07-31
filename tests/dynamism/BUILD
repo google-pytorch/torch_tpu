@@ -22,7 +22,6 @@ package(
 torch_tpu_py_test(
     name = "compile_test",
     srcs = ["compile_test.py"],
-    notest_oss = "OSS needs to be updated with the latest libtpu release that contains cl/904008746.",
     tags = [
         "requires-tpu-v5lite",
     ],
