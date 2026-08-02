@@ -503,7 +503,6 @@ torch_tpu_py_test(
         "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
-    nopresubmit = "Long run time. Run in postsubmit only.",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 50,
     tags = [
