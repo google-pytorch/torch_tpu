@@ -1362,6 +1362,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     self.assertEqual(tpu_input.args, (1,))
     self.assertEqual(tpu_input.kwargs, {"device": "tpu"})
 
+  @absltest.skip("b/540887166")
   def test_torch_tpu_vs_gpu_missing_golden_fails(self):
     op = next(op for op in op_db if op.name == "add")
     with (

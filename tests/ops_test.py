@@ -1312,9 +1312,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.bfloat16: {"atol": 3e-2},
         torch.float16: {"atol": 4e-3},
     },
-    "_thnn_fused_gru_cell": {
-        torch.float32: {"rtol": 1e-5, "atol": 3e-5},
-    },
     "acos": {
         torch.complex64: {"atol": 6.5e-5},
     },
@@ -1427,17 +1424,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float16: {"rtol": 0.058, "atol": 1.9e-5},
         torch.float32: {"rtol": 0.039, "atol": 6.9e-5},
     },
-    "logit": {
-        torch.bfloat16: {"rtol": 1.5e-2, "atol": 1e-2},
-        torch.bool: {"rtol": 1e-3, "atol": 1e-3},
-        torch.float16: {"rtol": 2e-3, "atol": 1e-3},
-        torch.float32: {"rtol": 5e-4, "atol": 2e-4},
-        torch.int16: {"rtol": 1e-3, "atol": 1e-3},
-        torch.int32: {"rtol": 1e-3, "atol": 1e-3},
-        torch.int64: {"rtol": 1e-3, "atol": 1e-3},
-        torch.int8: {"rtol": 1e-3, "atol": 1e-3},
-        torch.uint8: {"rtol": 1e-3, "atol": 1e-3},
-    },
     "matmul": {
         torch.complex64: {"atol": 1.2},
     },
@@ -1477,12 +1463,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "nn.functional.nll_loss": {
         torch.bfloat16: {"rtol": 5e-2, "atol": 0},
         torch.float16: {"atol": 4.7e-2},
-    },
-    "norm": {
-        torch.bfloat16: {"rtol": 3e-2, "atol": 5e-3},
-        torch.complex64: {"rtol": 5e-5, "atol": 3e-4},
-        torch.float16: {"rtol": 5e-3, "atol": 1e-3},
-        torch.float32: {"rtol": 2e-5, "atol": 2e-4},
     },
     "polygamma": {
         torch.float32: {"rtol": 8.6e-6, "atol": 1.1e-4},
@@ -1774,11 +1754,6 @@ def _batch_norm_complex64_compiled_gpu(
   )
 
 
-def _if_tpu_vs_gpu_compiled(true_value: Any, false_value: Any) -> Any:
-  """Returns true_value if the test is TPU vs GPU compiled, false_value otherwise."""
-  return true_value if op_testing.is_tpu_vs_gpu_compiled() else false_value
-
-
 class TestOps(TorchTpuTestBase):
   """Tests for ops using randomly generated inputs."""
 
@@ -1953,18 +1928,7 @@ class TestOps(TorchTpuTestBase):
     )
 
   def test_angle(self):
-    self.do_test_op(
-        "angle",
-        exclude_dtypes=(  # EXCLUDE_DTYPES_OK=Not working for GPU compiled.
-            _if_tpu_vs_gpu_compiled(
-                (
-                    torch.bfloat16,
-                    torch.float16,
-                ),
-                (),
-            )
-        ),
-    )
+    self.do_test_op("angle")
 
   def test_arange(self):
     """Tests arange, arange.start, arange.out, arange.start_step, arange.start_out."""
@@ -2208,18 +2172,13 @@ class TestOps(TorchTpuTestBase):
         # Excluded because PyTorch's sample generation (via log_softmax on CPU)
         # does not support integral, bfloat16, float16, and complex dtypes.
         # Additionally, CPU does not support bfloat16 and float16.
-        exclude_dtypes={  # EXCLUDE_DTYPES_OK=Not working for GPU compiled.
+        exclude_dtypes={
             "cpu": (
                 INTEGRAL_DTYPES
                 + COMPLEX_DTYPES
                 + (torch.bfloat16, torch.float16)
             ),
-            "gpu": (
-                INTEGRAL_DTYPES
-                + COMPLEX_DTYPES
-                + (torch.float16,)
-                + _if_tpu_vs_gpu_compiled((torch.bfloat16,), ())
-            ),
+            "gpu": INTEGRAL_DTYPES + COMPLEX_DTYPES + (torch.float16,),
         },
     )
 
@@ -3235,16 +3194,8 @@ class TestOps(TorchTpuTestBase):
         check_dtype=self.golden_device_type == "gpu",
         # TODO: fix _native_batch_norm_legit(out=...) failing.
         check_out_variant=False,
-        exclude_dtypes={  # EXCLUDE_DTYPES_OK=Not working for GPU compiled.
-            "gpu": _if_tpu_vs_gpu_compiled(
-                (
-                    torch.bfloat16,
-                    torch.float16,
-                    torch.float32,
-                    torch.float64,
-                ),
-                (torch.float64,),
-            ),
+        exclude_dtypes={
+            "gpu": (torch.float64,),
         },
         skip_if=_batch_norm_complex64_compiled_gpu,
     )
@@ -3937,31 +3888,10 @@ class TestOps(TorchTpuTestBase):
     self.do_test_op("linalg.qr")
 
   def test_thnn_fused_gru_cell(self):
-    self.do_test_op(
-        "_thnn_fused_gru_cell",
-        exclude_dtypes=(  # EXCLUDE_DTYPES_OK=Not working for GPU compiled.
-            _if_tpu_vs_gpu_compiled((torch.complex64,), ())
-        ),
-        check_dynamism=False,
-    )
+    self.do_test_op("_thnn_fused_gru_cell", check_dynamism=False)
 
   def test_thnn_fused_lstm_cell(self):
-    self.do_test_op(
-        "_thnn_fused_lstm_cell",
-        exclude_dtypes=(  # EXCLUDE_DTYPES_OK=Not working for GPU compiled.
-            _if_tpu_vs_gpu_compiled(
-                (
-                    torch.complex64,
-                    torch.float64,
-                    torch.float32,
-                    torch.float16,
-                    torch.bfloat16,
-                ),
-                (),
-            )
-        ),
-        check_dynamism=False,
-    )
+    self.do_test_op("_thnn_fused_lstm_cell", check_dynamism=False)
 
 
 def setUpModule() -> None:
