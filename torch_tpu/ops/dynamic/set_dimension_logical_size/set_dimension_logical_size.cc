@@ -55,9 +55,32 @@ at::Tensor SetDimensionLogicalSize(const at::Tensor& input, int64_t dim,
                        ConvertTo<mlir::ElementType>(input.scalar_type()));
     const auto out_dims = CopyIntVector(input.sizes());
 
-    auto builder = [dim](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+    auto builder = [dim, out_dims](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {
-      return mlir::stablehlo::SetDimensionSize(inputs[0], inputs[1], dim);
+      Dimensions mlir_out_dims;
+      mlir_out_dims.reserve(out_dims.size());
+      Dimensions bounds;
+      bounds.reserve(out_dims.size());
+
+      for (size_t i = 0; i < out_dims.size(); ++i) {
+        if (static_cast<int64_t>(i) == dim) {
+          mlir_out_dims.push_back(mlir::ShapedType::kDynamic);
+          bounds.push_back(out_dims[i]);
+        } else {
+          mlir_out_dims.push_back(out_dims[i]);
+          bounds.push_back(mlir::ShapedType::kDynamic);
+        }
+      }
+
+      auto bounds_attr = mlir::stablehlo::TypeExtensionsAttr::get(
+          &inputs[0].getContext(), bounds);
+
+      auto result_type = mlir::RankedTensorType::get(
+          mlir_out_dims, GetTensorTypeOrDie(inputs[0]).getElementType(),
+          bounds_attr);
+
+      return inputs[0].getBuilder().create<mlir::stablehlo::SetDimensionSizeOp>(
+          result_type, inputs[0].getValue(), inputs[1].getValue(), dim);
     };
 
     TT_ASSIGN_OR_THROW(

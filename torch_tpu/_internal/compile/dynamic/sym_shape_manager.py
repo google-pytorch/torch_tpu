@@ -546,8 +546,25 @@ class SymShapeManager:
       expr = symint_val.node.expr
 
     if expr is not None:
+      symbol_map = {**self.symint_to_placeholder, **self._sym_str_to_tensor_node}
+
+      # Resolve any missing free symbols in expr by searching graph_module nodes
+      for sym in expr.free_symbols:
+        sym_name = str(sym)
+        if sym_name not in symbol_map:
+          for n in self._graph_module.graph.nodes:
+            if sym_utils.is_symint_node(n) and (
+                str(n.meta.get("val")) == sym_name or n.name == sym_name
+            ):
+              resolved_tensor = self.ensure_tensor(
+                  self._graph_module, n, consumer_node
+              )
+              if resolved_tensor is not None:
+                symbol_map[sym_name] = resolved_tensor
+                break
+
       aten_node = sym_utils.symexpr_to_aten(
-          self._graph_module, consumer_node, expr, self.symint_to_placeholder
+          self._graph_module, consumer_node, expr, symbol_map
       )
       if aten_node is not None:
         if isinstance(scalar_node, torch.fx.Node):
@@ -585,7 +602,23 @@ class SymShapeManager:
         return val
       if sym_utils.is_symint_node(val):
         tensor_node = self._get_or_create_tensor_node(val, consumer_node)
-        assert tensor_node is not None, f"tensor node for {val} not found"
+        if tensor_node is None:
+          symint_val = val.meta.get("val")
+          expr = getattr(getattr(symint_val, "node", None), "expr", None)
+          free_syms = list(expr.free_symbols) if expr is not None else []
+          logging.error(
+              "[ensure_tensor FAIL] Node=%s (op=%s, target=%s), symint_val=%s, expr=%s, free_symbols=%s, mapped_keys=%s",
+              val.name,
+              val.op,
+              val.target,
+              symint_val,
+              expr,
+              free_syms,
+              list(self.symint_to_placeholder.keys()),
+          )
+          raise AssertionError(
+              f"tensor node for {val} (meta_val={symint_val}, expr={expr}) not found"
+          )
         return tensor_node
       if "val" in val.meta and isinstance(val.meta["val"], (int, float, bool)):
         val = val.meta["val"]

@@ -124,8 +124,11 @@ class HandleGenerativeOpsPass:
         torch.ops.aten.arange.start: self._process_arange_op,
         torch.ops.aten.arange.start_step: self._process_arange_op,
         torch.ops.aten.ones.default: self._process_ones_op,
-        # TODO (mkkhanna): Add support for other generative ops.
+        torch.ops.aten.zeros.default: self._process_ones_op,
+        torch.ops.aten.empty.memory_format: self._process_ones_op,
     }
+    if hasattr(torch.ops.aten.empty, "default"):
+      self._op_handlers[torch.ops.aten.empty.default] = self._process_ones_op
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
     """Runs the op insertion pass."""
@@ -323,6 +326,8 @@ class HandleGenerativeOpsPass:
     if has_symint:
       new_size_arg = type(sizes)(new_sizes) if is_container else new_sizes[0]
       node.args = (new_size_arg, *node.args[1:])
+      if "empty" in str(node.target):
+        node.target = torch.ops.aten.zeros.default
 
     if current_node != node:
       node.replace_all_uses_with(

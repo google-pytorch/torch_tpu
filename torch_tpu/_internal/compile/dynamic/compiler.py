@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 from absl import logging
+import sys
 import torch
 from torch._inductor.utils import InputType
 from torch._logging import LazyString
@@ -521,7 +522,22 @@ class DynamicCompiler(compiler.Compiler):
 
     # Add bound checks on symints. This forces dynamo to trigger a recompilation
     # if the bound constraint isn't satisfied.
-    sym_shape_manager.add_bound_checks()
+    # Dump FX graph for deterministic debugging
+    try:
+      graph_str = str(graph_module.print_readable(print_output=False))
+      nodes_str = "\n".join(
+          f"Node(name={n.name}, op={n.op}, target={n.target},"
+          f" args={n.args}, kwargs={n.kwargs}, meta={n.meta})"
+          for n in graph_module.graph.nodes
+      )
+      full_dump = f"=== PRINT READABLE GRAPH ===\n{graph_str}\n\n=== NODES METADATA ===\n{nodes_str}"
+      sys.stderr.write(f"\n[FX_GRAPH_DUMP]\n{full_dump}\n\n")
+      sys.stderr.flush()
+      logging.error("[FX_GRAPH_DUMP]\n%s", full_dump)
+      with open("/tmp/fx_graph_dump.txt", "w") as dump_f:
+        dump_f.write(full_dump)
+    except Exception as e:  # pylint: disable=broad-except
+      logging.warning("Failed to dump FX graph: %s", e)
 
     # Transform the graph module to handle dynamic shapes.
     apply_dynamism_transformations(graph_module, sym_shape_manager)

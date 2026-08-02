@@ -23,7 +23,15 @@ import torch
 
 CUSTOM_SYMPY_FUNCS = {
     "FloorDiv": operator.floordiv,
+    "TruncDiv": operator.floordiv,
     "CeilDiv": lambda a, b: -(-a // b),
+    "Mul": operator.mul,
+    "Add": operator.add,
+    "Sub": operator.sub,
+    "Mod": operator.mod,
+    "Abs": abs,
+    "Max": max,
+    "Min": min,
 }
 
 
@@ -133,12 +141,45 @@ def symexpr_to_aten(
   with graph_module.graph.inserting_before(consumer_node):
     try:
       result_proxy = f(*proxies)
-      # the result should be always be of int32 type as that is the data
-      # type for dynamic dimension in stablehlo.
-      result_proxy = result_proxy.to(dtype=torch.int32)
-      return result_proxy.node
-    except (TypeError, AttributeError, ValueError) as e:
-      logging.exception(
-          "Failed to create ops for expression %s: %s", expr, repr(e)
+      if isinstance(result_proxy, torch.fx.Proxy):
+        try:
+          if (
+              hasattr(result_proxy, "dtype")
+              and result_proxy.dtype != torch.int32
+          ):
+            result_proxy = result_proxy.to(dtype=torch.int32)
+        except Exception:  # pylint: disable=broad-except
+          pass
+        return result_proxy.node
+      elif isinstance(result_proxy, torch.fx.Node):
+        return result_proxy
+      elif isinstance(result_proxy, (int, float, bool)):
+        const_node = graph_module.graph.call_function(
+            torch.ops.aten.scalar_tensor,
+            args=(int(result_proxy),),
+            kwargs={
+                "dtype": torch.int32,
+                "device": get_target_device(consumer_node),
+            },
+        )
+        return const_node
+      else:
+        logging.error(
+            "[symexpr_to_aten FAIL] Unknown result_proxy type for expr %s: %s"
+            " (%s)",
+            expr,
+            result_proxy,
+            type(result_proxy),
+        )
+        return None
+    except Exception as e:  # pylint: disable=broad-except
+      logging.error(
+          "[symexpr_to_aten EXCEPTION] Failed for expr %s (symbols=%s,"
+          " proxies=%s): %s",
+          expr,
+          symbols,
+          proxies,
+          e,
+          exc_info=True,
       )
       return None

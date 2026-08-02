@@ -65,6 +65,40 @@ def _extract_shape_tensors_and_bounds(
   return shape_tensors, static_shape, is_dynamic
 
 
+def _ensure_input_dynamic_sizes(
+    graph_module: torch.fx.GraphModule,
+    inp: torch.fx.Node,
+    sym_shape_manager: SymShapeManager,
+    insert_node: torch.fx.Node,
+) -> torch.fx.Node:
+  """Ensures all dynamic dimensions of input tensor node have explicit set_dimension_logical_size calls."""
+  if not isinstance(inp, torch.fx.Node) or "val" not in inp.meta:
+    return inp
+  if (
+      inp.op == "call_function"
+      and inp.target == torch.ops.tpu.set_dimension_logical_size
+  ):
+    return inp
+  val = inp.meta["val"]
+  if not hasattr(val, "shape"):
+    return inp
+
+  current_inp = inp
+  for dim, size_dim in enumerate(val.shape):
+    if sym_utils.is_symint_node(size_dim) or isinstance(size_dim, torch.SymInt):
+      size_tensor_node = sym_shape_manager.ensure_tensor(
+          graph_module, size_dim, insert_node, dtype=torch.int32
+      )
+      with graph_module.graph.inserting_before(insert_node):
+        current_inp = graph_module.graph.call_function(
+            torch.ops.tpu.set_dimension_logical_size,
+            args=(current_inp, dim, size_tensor_node),
+        )
+        current_inp.meta = inp.meta.copy()
+
+  return current_inp
+
+
 class HandleReshapeLikeOpsPass:
   """Reshape-like ops transformation pass.
 
@@ -113,6 +147,36 @@ class HandleReshapeLikeOpsPass:
     )
     if num_dynamic_dims == 0:
       return
+
+    # Skip dynamic_reshape if dynamic dimensions are in identical positions and expressions
+    if (
+        isinstance(inp, torch.fx.Node)
+        and "val" in inp.meta
+        and hasattr(inp.meta["val"], "shape")
+    ):
+      inp_shape = inp.meta["val"].shape
+      inp_dyn_dims = [
+          (i, s)
+          for i, s in enumerate(inp_shape)
+          if sym_utils.is_symint_node(s) or isinstance(s, torch.SymInt)
+      ]
+      target_dyn_dims = [
+          (i, s)
+          for i, s in enumerate(target_shape)
+          if sym_utils.is_symint_node(s) or isinstance(s, torch.SymInt)
+      ]
+      if (
+          len(inp_dyn_dims) == len(target_dyn_dims)
+          and all(
+              i_idx == t_idx and str(i_s) == str(t_s)
+              for (i_idx, i_s), (t_idx, t_s) in zip(inp_dyn_dims, target_dyn_dims)
+          )
+      ):
+        return
+
+    inp = _ensure_input_dynamic_sizes(
+        graph_module, inp, self._sym_shape_manager, node
+    )
 
     shape_tensors, static_shape, is_dynamic = _extract_shape_tensors_and_bounds(
         graph_module, node, target_shape, self._sym_shape_manager
@@ -177,6 +241,10 @@ class HandleBroadcastLikeOpsPass:
     )
     if num_dynamic_dims == 0:
       return
+
+    inp = _ensure_input_dynamic_sizes(
+        graph_module, inp, self._sym_shape_manager, node
+    )
 
     if (
         isinstance(inp, torch.fx.Node)
