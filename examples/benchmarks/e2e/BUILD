@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load(
     "//build_files:build_defs.bzl",
     "if_cuda_dep",
@@ -619,6 +620,14 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",
+    ],
+)
+
+build_test(
+    name = "build_test",
+    targets = [
+        ":_layer_performance_benchmarks_cuda_for_build_cleaner",
+        ":_model_benchmark_cuda_tests_for_build_cleaner",
     ],
 )
 

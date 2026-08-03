@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
 
 package(
@@ -92,6 +93,13 @@ torch_tpu_py_test(
 torch_tpu_py_library(
     name = "init",
     srcs = ["__init__.py"],
+)
+
+build_test(
+    name = "build_test",
+    targets = [
+        ":_sched_overhead_test_cuda_for_build_cleaner",
+    ],
 )
 
 torch_tpu_package_end()

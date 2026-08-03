@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load(
     "//build_files:build_defs.bzl",
     "if_oss",
@@ -444,6 +445,13 @@ ipynb_deps(
     deps = [
         "//shims/torch:pytorch",
         "@pypi//transformers",
+    ],
+)
+
+build_test(
+    name = "build_test",
+    targets = [
+        ":_qwen3_kv_cache_bd_b200_for_build_cleaner",
     ],
 )
 
