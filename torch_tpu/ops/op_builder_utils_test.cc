@@ -736,7 +736,14 @@ INSTANTIATE_TEST_SUITE_P(
           /*static_output_shape=*/{4, 6, 6, 5, 1, 1},
           /*expected_bounded_output_shape=*/{10, 10, 6, 5, 1, 1},
           /*expected_output_bounded=*/
-          {true, true, false, false, false, false}}}),
+          {true, true, false, false, false, false}},
+         {"UnflattenMultipleNonOneOutputDims",
+          /*bounded_input_shape=*/{10, 6},
+          /*bound_dims=*/{0},
+          /*static_input_shape=*/{4, 6},
+          /*static_output_shape=*/{2, 2, 6},
+          /*expected_bounded_output_shape=*/{5, 2, 6},
+          /*expected_output_bounded=*/{true, false, false}}}),
     [](const testing::TestParamInfo<
         DynamicReshapeFromStaticDimensionsTest::ParamType>& info) {
       return info.param.test_name;
@@ -760,8 +767,8 @@ TEST(DynamicReshapeFromStaticDimensions, ErrorReassociationNotFound) {
 TEST(DynamicReshapeFromStaticDimensions, ErrorExpandDynamicToMultiple) {
   Dimensions bounded_input_shape = {10, 6};
   int64_t bound_dim = 0;
-  Dimensions static_input_shape = {4, 6};
-  Dimensions static_output_shape = {2, 2, 6};
+  Dimensions static_input_shape = {6, 6};
+  Dimensions static_output_shape = {2, 3, 6};
   OpBuilderUtilsBuilder op_builder_utils_builder;
   ReshapeTestResult result =
       BuildReshapeGraph(bounded_input_shape, {bound_dim}, static_input_shape,

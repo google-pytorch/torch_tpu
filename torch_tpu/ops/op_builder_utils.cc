@@ -1184,13 +1184,26 @@ absl::Status HandleExpandReshape(
         output_dyn_bound =
             op_dims[inputIdx].size;  // Bound is directly transferred
       } else {
-        return TT_ERROR(error::kInvalidArgument)
-               << "unflatten ambiguous as input bound dim " << inputIdx
-               << " expands to multiple non one output dims "
-               << absl::StrJoin(non_one_output_dims, ",")
-               << " for reassociation "
-               << ShapeTransitionToString(static_shape_before,
-                                          static_shape_after);
+        // If there are multiple non-one output dimensions, assign the bound
+        // to the first non-one output dimension and divide the bound by the
+        // static product of the remaining output dimensions.
+        output_bound_dim = non_one_output_dims[0];
+        int64_t remaining_prod = 1;
+        for (size_t i = 1; i < non_one_output_dims.size(); ++i) {
+          remaining_prod *= static_shape_after[non_one_output_dims[i]];
+        }
+        if (remaining_prod > 0 &&
+            op_dims[inputIdx].size % remaining_prod == 0) {
+          output_dyn_bound = op_dims[inputIdx].size / remaining_prod;
+        } else {
+          return TT_ERROR(error::kInvalidArgument)
+                 << "unflatten ambiguous as input bound dim " << inputIdx
+                 << " expands to multiple non one output dims "
+                 << absl::StrJoin(non_one_output_dims, ",")
+                 << " for reassociation "
+                 << ShapeTransitionToString(static_shape_before,
+                                            static_shape_after);
+        }
       }
     }
     ABSL_CHECK(  // CRASH_OK=should not happen, would imply a bug in the code
