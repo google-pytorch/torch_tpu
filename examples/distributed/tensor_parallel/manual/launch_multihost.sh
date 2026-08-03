@@ -18,15 +18,6 @@
 echo "TPU_VISIBLE_CHIPS: $TPU_VISIBLE_CHIPS"
 echo "HOSTNAME: $HOSTNAME"
 
-# Standardized dual-container suppression: only even IDs run, odd IDs sleep.
-if [ $((TPU_WORKER_ID % 2)) -ne 0 ]; then
-  echo "TPU_WORKER_ID ${TPU_WORKER_ID} is odd. Sleeping."
-  sleep infinity
-fi
-
-export TORCH_TPU_TOPOLOGY=4,4,8,2
-export WORLD_SIZE=256
-
 # Detect and export TPU configuration dynamically.
 echo "Running multihost_wrapper to detect topology..."
 eval $(python3 -m torch_tpu._internal.distributed.launchers.multihost_wrapper)

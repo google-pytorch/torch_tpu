@@ -15,7 +15,7 @@
 
 # A script to run the hf_llama3 worker using standard torchrun.
 
-# Ensure TPU isolation on GKE if run via XPK.
+# Ensure TPU isolation on GKE.
 if [ -z "${TPU_VISIBLE_DEVICES}" ] && [ ! -z "${TPU_VISIBLE_CHIPS}" ]; then
   export TPU_VISIBLE_DEVICES="${TPU_VISIBLE_CHIPS}"
 fi
