@@ -172,6 +172,20 @@ class HandleReshapeLikeOpsPass:
               for (i_idx, i_s), (t_idx, t_s) in zip(inp_dyn_dims, target_dyn_dims)
           )
       ):
+        # Replace SymInt arguments in shape list with static upper bound integers
+        new_shape_args = []
+        for arg in target_shape:
+          if sym_utils.is_symint_node(arg) or isinstance(arg, torch.SymInt):
+            symint = arg.meta["val"] if sym_utils.is_symint_node(arg) else arg
+            _, upper = symbol_bounds.get_symint_bounds(symint)
+            new_shape_args.append(upper)
+          elif isinstance(arg, torch.fx.Node) and "val" in arg.meta:
+            new_shape_args.append(int(arg.meta["val"]))
+          else:
+            new_shape_args.append(int(arg))
+
+        if len(node.args) > 1:
+          node.args = (node.args[0], new_shape_args) + node.args[2:]
         return
 
     inp = _ensure_input_dynamic_sizes(
