@@ -15,6 +15,7 @@
  */
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
@@ -85,13 +86,20 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
     // complete.
 
     py::gil_scoped_release release;
-    // SynchronizeTensors is MaterializeAndReturn + wait
+    // SynchronizeTensors is Materialize(base buffer refs) + wait
     TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span));
   } else {
-    // MaterializeAndReturn returns DeviceBufferRefs for the views, but we don't
-    // return them to Python.
-    TT_THROW_IF_ERROR(MaterializeAndReturn(
-        tensors_span, MaterializationReason::kExplicitSync));
+    // Don't materialize views--they are ephemeral and re-materialized every
+    // time, so there's no point in materializing a copy only to discard it.
+    std::vector<DeviceBufferRef> buffer_refs;
+    buffer_refs.reserve(tensors_span.size());
+    for (const at::Tensor& tensor : tensors_span) {
+      TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+      buffer_refs.push_back(std::move(buffer_ref));
+    }
+
+    TT_THROW_IF_ERROR(
+        Materialize(buffer_refs, MaterializationReason::kExplicitSync));
   }
 }
 

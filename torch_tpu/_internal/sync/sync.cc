@@ -45,11 +45,18 @@ namespace torch_tpu {
 using BufferRefToVarMap = absl::flat_hash_map<DeviceBufferRef, std::string>;
 
 absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
-  // Materialize the tensors and get their DeviceBufferRefs.
-  // MaterializeAndReturn() will materialize each base tensor and each view.
-  TT_ASSIGN_OR_RETURN(
-      std::vector<DeviceBufferRef> buffer_refs,
-      MaterializeAndReturn(tensors, MaterializationReason::kExplicitSync));
+  // Materialize the tensors and get their base DeviceBufferRefs.
+  // Don't materialize views--they are ephemeral and re-materialized every time,
+  // so there's no point in materializing a copy only to discard it.
+  std::vector<DeviceBufferRef> buffer_refs;
+  buffer_refs.reserve(tensors.size());
+  for (const at::Tensor& tensor : tensors) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+    buffer_refs.push_back(std::move(buffer_ref));
+  }
+
+  TT_RETURN_IF_ERROR(
+      Materialize(buffer_refs, MaterializationReason::kExplicitSync));
 
   // Wait for all of the PjRtBuffers to be ready.
   for (const DeviceBufferRef& buffer_ref : buffer_refs) {

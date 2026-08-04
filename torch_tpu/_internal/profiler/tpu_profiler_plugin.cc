@@ -53,7 +53,6 @@
 #include "c10/core/impl/DeviceGuardImplInterface.h"
 #include "torch/csrc/profiler/api.h"
 #include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
-#include "torch_tpu/_internal/sync/sync.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
@@ -473,7 +472,6 @@ namespace {
 // completeness for asynchronous operations without requiring pjrt_state.
 absl::Status SynchronizeTpuDevicesBeforeStop() {
   ABSL_VLOG(1) << "Synchronizing TPU devices before stopping profiler.";
-  TT_RETURN_IF_ERROR(torch_tpu::MaterializeAll());
 
   if (c10::impl::hasDeviceGuardImpl(torch_tpu::GetPrivateUse1DeviceType())) {
     const auto* guard =

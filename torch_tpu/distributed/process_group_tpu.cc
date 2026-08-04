@@ -75,6 +75,7 @@
 #include "torch_tpu/distributed/types.h"
 #include "torch_tpu/distributed/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
@@ -643,13 +644,6 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::broadcast(
                                                     opts.timeout, opts.asyncOp};
               auto work_ptr = allreduce(tensors, allreduce_opts);
 
-              // TODO(b/495494333): Remove the need for this forced
-              // materialization. It exists because dist.broadcast_object_list
-              // dispatches broadcast() operations from the source rank that are
-              // not materialized, so it hangs.
-              TT_THROW_IF_ERROR(MaterializeAndReturn(
-                  tensors, MaterializationReason::kDistributedOp));
-
               if (work_ptr != nullptr) {
                 dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =
                     c10d::OpType::BROADCAST;
@@ -1001,16 +995,18 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
         } else {
           allgather_outputs.reserve(getSize());
           for (int i = 0; i < getSize(); ++i) {
-            allgather_outputs.push_back(at::empty_like(input));
+            auto tensor = at::empty_like(input);
+            // Materialize the outputs before the collective to ensure symmetry.
+            // This is needed because on the root rank, output_tensors[0] might
+            // have deferred ops. On non-root ranks, the temporary tensors are
+            // fresh, which can result in an asymmetry.
+            TT_ASSIGN_OR_THROW(auto empty_buffer, GetBaseBuffer(tensor));
+            TT_THROW_IF_ERROR(Materialize(
+                empty_buffer, MaterializationReason::kDistributedOp));
+
+            allgather_outputs.push_back(std::move(tensor));
           }
         }
-
-        // Materialize the outputs before the collective to ensure symmetry.
-        // This is needed because on the root rank, output_tensors[0] might have
-        // deferred ops. On non-root ranks, the temporary tensors are fresh,
-        // which can result in an asymmetry.
-        TT_THROW_IF_ERROR(MaterializeAndReturn(
-            allgather_outputs, MaterializationReason::kDistributedOp));
 
         c10d::AllgatherOptions allgather_opts;
         allgather_opts.timeout = opts.timeout;
@@ -1020,20 +1016,6 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::gather(
             std::move(allgather_outputs)};
         auto work_ptr =
             allgather(allgather_output_tensors, input_tensors, allgather_opts);
-
-        // TODO(b/495494333): Remove the need for this forced materialization.
-        // On non-root ranks, the all-gather outputs are local temporaries and
-        // never materialized if unused, e.g. if the root rank does not use all
-        // the gathered outputs.
-        // Therefore, we need to force materialization on at least all non-root
-        // ranks. If we do not materialize all ranks synchronously, it can cause
-        // a stutter where non-root ranks block early while waiting for the root
-        // rank to reach a graph break and then need to catch up. Materializing
-        // on all ranks synchronously is safer and keeps all devices moving
-        // forward smoothly.
-        TT_THROW_IF_ERROR(
-            MaterializeAndReturn(allgather_output_tensors[0],
-                                 MaterializationReason::kDistributedOp));
 
         if (work_ptr != nullptr) {
           dynamic_cast<TpuWork* absl_nonnull>(work_ptr.get())->opType_ =
