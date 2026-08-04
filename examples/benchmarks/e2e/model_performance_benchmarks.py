@@ -61,6 +61,7 @@ _HF_PHI_3_MINI_4K_INSTRUCT_BENCHMARK_NAME = "hf_phi_3_mini_4k_instruct"
 _HF_RESNET_50_BENCHMARK_NAME = "hf_resnet_50"
 _TIMM_VIT_SMALL_DINO_BENCHMARK_NAME = "timm_vit_small_dino"
 _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME = "hf_nemotron_3_nano_30b"
+_HF_NEMOTRON_3_SUPER_120B_BENCHMARK_NAME = "hf_nemotron_3_super_120b"
 _HF_MLLAMA_11B_BENCHMARK_NAME = "hf_mllama_11b"
 _HF_LLAVA_7B_BENCHMARK_NAME = "hf_llava_7b"
 _HF_CLIP_BASE_BENCHMARK_NAME = "hf_clip_base"
@@ -1873,6 +1874,35 @@ class BenchmarkTest(test_utils.BenchmarkTest):
     )
     self.run_performance_benchmark_test(
         config, _HF_NEMOTRON_3_NANO_30B_BENCHMARK_NAME
+    )
+
+  @parameterized.named_parameters(test_utils.generate_run_mode_configs())
+  def test_fsdp_nemotron_3_super_120b_8_layers_forward(self, run_mode):
+    """Tests the forward pass of NVIDIA-Nemotron-3-Super-120B-A12B-BF16."""
+    if self._is_torchax_backend():
+      self.skipTest("Not supported on TorchAX")
+
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_2X2X1,
+            common.Platform.B200_4,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.HUGGINGFACE_LLM,
+        run_mode=run_mode,
+        is_training=False,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+            sequence_length=2048,
+            batch_size=1,
+            custom_kwargs={
+                "num_layers": 8,
+            },
+        ),
+        model_and_input_factory=model_utils.nemotron3_fsdp_model_builder,
+        eval_factory=benchmark_function_db.huggingface_eval_factory,
+    )
+    self.run_performance_benchmark_test(
+        config, _HF_NEMOTRON_3_SUPER_120B_BENCHMARK_NAME
     )
 
 

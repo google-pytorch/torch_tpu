@@ -2193,3 +2193,201 @@ def gemma4_custom_standalone_model_builder(
 
   example_inputs = _generate_inputs(bs, seq_len, _create_input)
   return ModelAndInput(model=model, example_inputs=example_inputs)
+
+
+def nemotron3_fsdp_model_builder(
+    model_and_input_args: Any,
+    device: torch.device,
+    weights_dtype: torch.dtype,
+    is_training: bool,
+) -> ModelAndInput:
+  """Returns the huggingface nemotron FSDP model."""
+  del is_training  # unused
+
+  model_name = model_and_input_args.model_name
+  sequence_length = model_and_input_args.sequence_length
+  batch_size = model_and_input_args.batch_size
+  num_layers = model_and_input_args.custom_kwargs.get("num_layers", 8)
+
+  def modify_config_hook(config):
+    if num_layers > 0:
+      if hasattr(config, "layers_block_type"):
+        config.layers_block_type = config.layers_block_type[:num_layers]
+      if hasattr(config, "num_hidden_layers"):
+        config.num_hidden_layers = num_layers
+    return config
+
+  registry = get_module_registry()
+  module_spec = registry.get_module_spec(
+      "transformers",
+      model_name,
+      load_weights=False,
+      modify_config_hook=modify_config_hook,
+  )
+
+  with torch.device("meta"):
+    model = module_spec.module_factory().to(weights_dtype)
+
+  model.gradient_checkpointing_enable(
+      gradient_checkpointing_kwargs={"use_reentrant": False}
+  )
+
+  device_mesh = None
+  reshard_after_forward = True
+
+  layers = getattr(model, "layers", None)
+  if layers is None and hasattr(model, "model"):
+    layers = getattr(model.model, "layers", None)
+
+  if layers is not None:
+    for layer in layers:
+      # fully_shard causes a 32-bit index overflow in XLA when parameter buffers
+      # exceed 2^31 elements. The MoE layer for Nemotron-3 120B triggers this.
+      is_massive_moe = getattr(layer, "block_type", None) == "moe" and sum(
+          p.numel() for p in layer.parameters()
+      ) > (2**31 - 1)
+
+      if is_massive_moe:
+        mixer = layer.mixer
+
+        class ParamWrapper(torch.nn.Module):
+
+          def __init__(self, tensor):
+            super().__init__()
+            self.weight = torch.nn.Parameter(tensor)
+
+          def forward(self, original_tensor):
+            return self.weight
+
+        # Wrap parameter tensors in dummy modules using native PyTorch
+        # parametrizations so FSDP can shard them independently
+        torch.nn.utils.parametrize.register_parametrization(
+            mixer.experts, "up_proj", ParamWrapper(mixer.experts.up_proj)
+        )
+        torch.nn.utils.parametrize.register_parametrization(
+            mixer.experts, "down_proj", ParamWrapper(mixer.experts.down_proj)
+        )
+
+        fsdp.fully_shard(
+            mixer.gate,
+            mesh=device_mesh,
+            reshard_after_forward=reshard_after_forward,
+        )
+        fsdp.fully_shard(
+            mixer.fc1_latent_proj,
+            mesh=device_mesh,
+            reshard_after_forward=reshard_after_forward,
+        )
+        fsdp.fully_shard(
+            mixer.fc2_latent_proj,
+            mesh=device_mesh,
+            reshard_after_forward=reshard_after_forward,
+        )
+        fsdp.fully_shard(
+            mixer.shared_experts,
+            mesh=device_mesh,
+            reshard_after_forward=reshard_after_forward,
+        )
+
+        # Parametrizations retain the original tensor as `original` in the
+        # ParametrizationList _parameters. We explicitly hide them from
+        # nn.Module._parameters so FSDP ignores them.
+        mixer.experts.parametrizations.up_proj._parameters.pop("original", None)  # pylint: disable=protected-access
+        mixer.experts.parametrizations.up_proj.original = [None]
+        mixer.experts.parametrizations.down_proj._parameters.pop("original", None)  # pylint: disable=protected-access
+        mixer.experts.parametrizations.down_proj.original = [None]
+
+        fsdp.fully_shard(
+            mixer.experts.parametrizations.up_proj,
+            mesh=device_mesh,
+            reshard_after_forward=False,  # Defer resharding to hook
+        )
+        fsdp.fully_shard(
+            mixer.experts.parametrizations.down_proj,
+            mesh=device_mesh,
+            reshard_after_forward=False,  # Defer resharding to hook
+        )
+
+        def reshard_hook(module, inputs, output):  # pylint: disable=unused-argument
+          module.parametrizations.up_proj.reshard()
+          module.parametrizations.down_proj.reshard()
+
+        mixer.experts.register_forward_hook(reshard_hook)
+
+        fsdp.fully_shard(
+            mixer.experts,
+            mesh=device_mesh,
+            reshard_after_forward=reshard_after_forward,
+        )
+
+      fsdp.fully_shard(
+          layer.mixer,
+          mesh=device_mesh,
+          reshard_after_forward=reshard_after_forward,
+      )
+
+      fsdp.fully_shard(
+          layer.norm,
+          mesh=device_mesh,
+          reshard_after_forward=reshard_after_forward,
+      )
+
+      fsdp.fully_shard(
+          layer,
+          mesh=device_mesh,
+          reshard_after_forward=reshard_after_forward,
+      )
+
+  embeddings = getattr(model, "embeddings", None)
+  if embeddings is None and hasattr(model, "model"):
+    embeddings = getattr(model.model, "embeddings", None)
+  if embeddings is not None:
+    fsdp.fully_shard(
+        embeddings,
+        mesh=device_mesh,
+        reshard_after_forward=reshard_after_forward,
+    )
+
+  norm_f = getattr(model, "norm_f", None)
+  if norm_f is None and hasattr(model, "model"):
+    norm_f = getattr(model.model, "norm_f", None)
+  if norm_f is not None:
+    fsdp.fully_shard(
+        norm_f,
+        mesh=device_mesh,
+        reshard_after_forward=reshard_after_forward,
+    )
+
+  lm_head = getattr(model, "lm_head", None)
+  if lm_head is None and hasattr(model, "model"):
+    lm_head = getattr(model.model, "lm_head", None)
+  if lm_head is not None:
+    fsdp.fully_shard(
+        lm_head,
+        mesh=device_mesh,
+        reshard_after_forward=reshard_after_forward,
+    )
+
+  fsdp.fully_shard(
+      model,
+      mesh=device_mesh,
+      reshard_after_forward=reshard_after_forward,
+  )
+
+  model.to_empty(device=device)
+  model.apply(_init_model_weights)
+  model.eval()
+
+  _, example_inputs = module_spec.sample_inputs_factory(
+      (batch_size, sequence_length), str(device)
+  )
+  example_inputs.pop("attention_mask", None)
+  if model_and_input_args.custom_kwargs.get("disable_vision_inputs", False):
+    example_inputs.pop("pixel_values", None)
+    example_inputs.pop("image_position_ids", None)
+
+  for k, v in example_inputs.items():
+    if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
+      example_inputs[k] = v.to(weights_dtype)
+
+  return ModelAndInput(model=model, example_inputs=example_inputs)
