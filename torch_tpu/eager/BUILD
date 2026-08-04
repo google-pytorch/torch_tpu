@@ -13,10 +13,13 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end")
+load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = [
+        "//:__subpackages__",
+    ] + TT_FRIENDS,
 )
 
 torch_tpu_cc_test(
