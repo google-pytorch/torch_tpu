@@ -1425,6 +1425,17 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
 
+# The GPU gradient tolerances are based on the TPU vs GPU forward pass tolerances.
+ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
+    str, dict[torch.dtype, dict[str, float]]
+] = update_dict(
+    copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
+    {
+        # go/keep-sorted start
+        # go/keep-sorted end
+    },
+)
+
 # The gradient tolerances are based on the forward pass tolerances.
 ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
     update_dict(
@@ -1767,6 +1778,7 @@ class TestOps(op_testing.OpInfoTestBase):
         if op_testing.is_compiled_mode()
         else ACCURACY_OVERRIDES_VS_GPU,
         grad_overrides=ACCURACY_OVERRIDES_GRAD,
+        grad_gpu_overrides=ACCURACY_OVERRIDES_GRAD_VS_GPU,
     )
     self.set_dynamism_handlers(
         dynamism_test_utils.verify_op_supports_dynamism,

@@ -2837,6 +2837,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   tpu_cpu_accuracy_overrides: AccuracyOverrides
   tpu_gpu_accuracy_overrides: AccuracyOverrides
   grad_accuracy_overrides: AccuracyOverrides
+  grad_gpu_accuracy_overrides: AccuracyOverrides
 
   def setUp(self) -> None:
     super().setUp()
@@ -2884,22 +2885,28 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
       grad_overrides: Mapping[
           str, Mapping[torch.dtype, Mapping[str, Tolerance]]
       ],
+      grad_gpu_overrides: Mapping[
+          str, Mapping[torch.dtype, Mapping[str, Tolerance]]
+      ],
   ) -> None:
     """Sets the accuracy overrides for the test.
 
     Args:
       tpu_cpu_overrides: Accuracy overrides for TorchTPU vs CPU.
       tpu_gpu_overrides: Accuracy overrides for TorchTPU vs GPU.
-      grad_overrides: Accuracy overrides for gradients.
+      grad_overrides: Accuracy overrides for gradients vs CPU.
+      grad_gpu_overrides: Accuracy overrides for gradients vs GPU.
 
     To be called by a subclass's setUp() method.
     """
     _validate_accuracy_overrides(tpu_cpu_overrides)
     _validate_accuracy_overrides(tpu_gpu_overrides)
     _validate_accuracy_overrides(grad_overrides)
+    _validate_accuracy_overrides(grad_gpu_overrides)
     self.tpu_cpu_accuracy_overrides = tpu_cpu_overrides
     self.tpu_gpu_accuracy_overrides = tpu_gpu_overrides
     self.grad_accuracy_overrides = grad_overrides
+    self.grad_gpu_accuracy_overrides = grad_gpu_overrides
 
   def set_dynamism_handlers(
       self,
@@ -3724,7 +3731,11 @@ class OpInfoTestBase(
     if _IGNORE_ACCURACY_OVERRIDES.value:
       accuracy_overrides = {}
     elif compute_grad:
-      accuracy_overrides = self.grad_accuracy_overrides
+      accuracy_overrides = (
+          self.grad_gpu_accuracy_overrides
+          if _torch_tpu_vs_gpu_mode()
+          else self.grad_accuracy_overrides
+      )
     elif _torch_tpu_vs_cpu_mode():
       accuracy_overrides = self.tpu_cpu_accuracy_overrides
     else:
@@ -4239,9 +4250,15 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
 
 def _golden_file_prefix() -> str:
   """Returns the prefix for the golden file name."""
+  if is_compiled_mode():
+    return (
+        "ops_test_gpu_golden_grad_compiled"
+        if _COMPUTE_GRAD.value
+        else "ops_test_gpu_golden_compiled"
+    )
   return (
-      "ops_test_gpu_golden_compiled"
-      if is_compiled_mode()
+      "ops_test_gpu_golden_grad"
+      if _COMPUTE_GRAD.value
       else "ops_test_gpu_golden"
   )
 

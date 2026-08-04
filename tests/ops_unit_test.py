@@ -1049,12 +1049,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           tpu_cpu_overrides={"op": {torch.float32: {"rtol": 0}}},
           tpu_gpu_overrides={},
           grad_overrides={},
+          grad_gpu_overrides={},
       )
     with self.assertRaisesRegex(ValueError, "atol must be > 0"):
       self.set_accuracy_overrides(
           tpu_cpu_overrides={"op": {torch.float32: {"atol": 0}}},
           tpu_gpu_overrides={},
           grad_overrides={},
+          grad_gpu_overrides={},
       )
 
   def test_topk_sorted_false(self):
