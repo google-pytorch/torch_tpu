@@ -205,6 +205,8 @@ class ScanOpTest(parameterized.TestCase):
     utils.assert_close(out_outputs.cpu(), expected_outputs.cpu())
 
   def test_scan_with_seq_len_0(self):
+    """This test fails in OSS postsubmit."""
+
     def fn(carry, x):
       return carry + x, carry + x
 
