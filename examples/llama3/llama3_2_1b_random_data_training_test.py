@@ -30,6 +30,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.profiler import xprof_adapter
+from tests import seed_test_utils
 import transformers
 
 from rules_python.python.runfiles import runfiles
@@ -283,7 +284,7 @@ def _make_jax_style_training_step(
   return _jax_style_training_step
 
 
-class Llama321BRandomDataTrainingTest(absltest.TestCase):
+class Llama321BRandomDataTrainingTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

@@ -75,6 +75,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//torch_tpu/_internal/execution_mode",
@@ -130,6 +131,7 @@ torch_tpu_py_test(
         ":shape_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

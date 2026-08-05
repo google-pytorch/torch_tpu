@@ -29,6 +29,7 @@ from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -142,7 +143,9 @@ def _run(do_compile):
   utils.assert_close(y, y_expected)
 
 
-class TestPallasCommunicationKernels(absltest.TestCase):
+class TestPallasCommunicationKernels(
+    seed_test_utils.MultiProcessRepeatableTest
+):
   _world_size = 8
 
   def test_kernel_communication(self):

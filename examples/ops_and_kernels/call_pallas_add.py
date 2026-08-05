@@ -17,9 +17,10 @@
 from absl.testing import absltest
 import torch
 from examples.ops_and_kernels import torch_pallas_add
+from tests import seed_test_utils
 
 
-class CallPallasAddTest(absltest.TestCase):
+class CallPallasAddTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

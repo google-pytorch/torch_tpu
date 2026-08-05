@@ -172,6 +172,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -195,6 +196,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -218,6 +220,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -242,6 +245,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -308,6 +312,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/quality_utils/models:qwen3_1_7b_quality_benchmark",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -429,6 +434,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -491,6 +497,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -517,6 +524,7 @@ torch_tpu_py_test(
     ],
     deps = [
         ":model_performance_benchmarks_lib",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -583,6 +591,7 @@ torch_tpu_py_test(
         ":device_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/profiler:xprof_adapter",
     ],

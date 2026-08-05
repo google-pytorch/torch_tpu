@@ -65,11 +65,12 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check, Python lint (ruff), and Bazel formatting (buildifier) on target branch modifications."""
+  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier) and custom convention on target branch modifications."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
+  session.run("ci/tools/custom_lint.sh", "lint", external=True)
 
 
 @nox.session
@@ -79,6 +80,7 @@ def format(session: nox.Session) -> None:  # pylint: disable=redefined-builtin
   session.run("ci/tools/clang_format.sh", "format", external=True)
   session.run("ci/tools/ruff_lint.sh", "fix", external=True)
   session.run("ci/tools/buildifier_lint.sh", "format", external=True)
+  session.run("ci/tools/custom_lint.sh", "fix", external=True)
 
 
 @nox.session(venv_backend="none")

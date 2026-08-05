@@ -18,6 +18,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_utils as utils
 from examples.gemma4 import model
+from tests import seed_test_utils
 
 try:
   from torch_tpu.ops import splash_attention
@@ -25,7 +26,7 @@ except (ImportError, ModuleNotFoundError):
   splash_attention = None
 
 
-class Gemma4SWACorrectnessTPUTest(absltest.TestCase):
+class Gemma4SWACorrectnessTPUTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

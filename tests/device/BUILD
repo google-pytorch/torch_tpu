@@ -27,6 +27,7 @@ torch_tpu_py_library(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:oss_utils",
+        "//tests:seed_test_utils",
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/device:_device_ops_backend",
     ],

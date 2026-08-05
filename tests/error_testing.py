@@ -30,6 +30,7 @@ from torch.distributed.elastic.multiprocessing import errors
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 
 ChildFailedError = errors.ChildFailedError
 
@@ -409,7 +410,9 @@ def why_tpu_only(reason: str):
   return decorator
 
 
-def _get_why_tpu_only_reason(test_case: absltest.TestCase) -> str | None:
+def _get_why_tpu_only_reason(
+    test_case: seed_test_utils.RepeatableTest,
+) -> str | None:
   """Retrieves the @why_tpu_only reason for the active test method.
 
   When test methods are wrapped by decorators or parameterized test runners
@@ -453,7 +456,7 @@ _OUTCOME_ERROR = "error"
 
 
 def _subprocess_test_worker(
-    cls: type[absltest.TestCase],
+    cls: type[absltest.TestCase],  # ABSLTEST_OK=Reference to absltest.TestCase
     method_name: str,
     conn: mp_connection.Connection,
 ) -> None:
@@ -468,8 +471,10 @@ def _subprocess_test_worker(
   """
   try:
     instance = cls(method_name)
-    res = unittest.TestResult()
-    absltest.TestCase.run(instance, res)
+    res = unittest.TestResult()  # UNITTEST_OK=TestResult object for subprocess
+    absltest.TestCase.run(  # ABSLTEST_OK=Subprocess runner execution
+        instance, res
+    )
     if res.failures:
       conn.send((_OUTCOME_FAILURE, res.failures[0][1]))
     elif res.errors:
@@ -484,7 +489,7 @@ def _subprocess_test_worker(
     conn.close()
 
 
-class ErrorTestBase(absltest.TestCase):
+class ErrorTestBase(seed_test_utils.RepeatableTest):
   """Base class for error tests."""
 
   def assertRaisesRegex(self, *args, **kwargs):
@@ -645,7 +650,7 @@ class TpuOnlyDistributedErrorTestBase(TpuOnlyErrorTestBaseNoCheckingWhy):
   This class does not enforce the @why_tpu_only decorator on test methods.
   """
 
-  pass
+  seed_in_setup = False
 
 
 def get_scaled_mm_v2_default_inputs():

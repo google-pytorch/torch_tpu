@@ -59,6 +59,7 @@ torch_tpu_py_test(
     deps = [
         ":native_scan",
         "//shims/absl_py/testing:absltest",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

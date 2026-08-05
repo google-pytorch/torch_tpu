@@ -68,6 +68,7 @@ torch_tpu_py_test(
         ":hardware",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -87,6 +88,7 @@ torch_tpu_py_test(
         ":utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/eager:tpu_aten_kernels",
@@ -121,6 +123,7 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -138,6 +141,7 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -150,6 +154,7 @@ torch_tpu_py_test(
         ":test_fixtures",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

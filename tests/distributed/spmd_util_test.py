@@ -18,9 +18,10 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.distributed import spmd_util
+from tests import seed_test_utils
 
 
-class SpmdSafeTest(absltest.TestCase):
+class SpmdSafeTest(seed_test_utils.MultiProcessRepeatableTest):
 
   @mock.patch("torch_tpu._internal.sync.sync.synchronize")
   def test_spmd_safe_decorator(self, mock_sync):

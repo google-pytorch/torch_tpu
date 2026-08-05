@@ -25,6 +25,7 @@ from torch_tpu._internal import sync
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -172,7 +173,7 @@ def run_dtensor_1d_partial_to_shard() -> None:
   _test_redistribute(dtensor, [dt.Shard(0)])
 
 
-class DTensor1DimTest(absltest.TestCase):
+class DTensor1DimTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_apply_op(self):
     distributed_utils.dist_run(
@@ -246,7 +247,7 @@ def run_dtensor_2d_shard_to_shard() -> None:
   _test_redistribute(dtensor, [dt.Shard(1), dt.Shard(0)])
 
 
-class DTensor2DimTest(absltest.TestCase):
+class DTensor2DimTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_shard_to_shard(self):
     distributed_utils.dist_run(
@@ -276,7 +277,7 @@ def run_sync_dtensor() -> None:
   utils.assert_close(updated_shard, shard_cpu + 1)
 
 
-class DTensorSyncTest(absltest.TestCase):
+class DTensorSyncTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_sync_dtensor(self):
     distributed_utils.dist_run(

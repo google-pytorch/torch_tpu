@@ -20,6 +20,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples.huggingface_transformers import model_configs
+from tests import seed_test_utils
 import transformers
 
 log_utils.log_to_stderr()
@@ -34,7 +35,7 @@ _DEVICE = flags.DEFINE_enum(
 )
 
 
-class SingleAcceleratorSmokeTest(absltest.TestCase):
+class SingleAcceleratorSmokeTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

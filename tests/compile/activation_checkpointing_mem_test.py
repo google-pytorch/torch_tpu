@@ -19,6 +19,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 
 
 class LargeCheckpointedModel(torch.nn.Module):
@@ -85,7 +86,9 @@ def _run_and_measure_worker(q: queue.Queue[int | Exception], use_ac: bool):
     q.put(e)
 
 
-class ActivationCheckpointingMemoryTest(absltest.TestCase):
+class ActivationCheckpointingMemoryTest(
+    seed_test_utils.MultiProcessRepeatableTest
+):
 
   def _run_sub_test(self, use_ac: bool) -> int:
     ctx = multiprocessing.get_context("spawn")

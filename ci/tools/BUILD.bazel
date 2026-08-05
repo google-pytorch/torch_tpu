@@ -13,6 +13,11 @@
 # limitations under the License.
 
 exports_files(
-    ["run_cc_tpu_test.sh"],
+    [
+        "custom_lint.py",
+        "custom_lint.sh",
+        "custom_lint_test.py",
+        "run_cc_tpu_test.sh",
+    ],
     visibility = ["//visibility:public"],
 )

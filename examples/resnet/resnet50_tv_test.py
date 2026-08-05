@@ -31,6 +31,7 @@ from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
 from examples import paths
+from tests import seed_test_utils
 import torchvision
 
 
@@ -48,7 +49,7 @@ _DEVICE = flags.DEFINE_enum(
 WEIGHT_PATH = f"{paths.XM_HOME}weights/torchvision/resnet50_imagenet1k_v1.pt"
 
 
-class ResNet50TVTest(absltest.TestCase):
+class ResNet50TVTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

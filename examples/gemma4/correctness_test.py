@@ -18,12 +18,13 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_utils as utils
 from examples.gemma4 import model
+from tests import seed_test_utils
 from transformers.models.gemma4.configuration_gemma4 import Gemma4Config
 from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
 from transformers.models.gemma4.modeling_gemma4 import Gemma4Model
 
 
-class Gemma4CorrectnessTest(absltest.TestCase):
+class Gemma4CorrectnessTest(seed_test_utils.RepeatableTest):
 
   def test_equivalence_dense_model(self):
     config_dict = {

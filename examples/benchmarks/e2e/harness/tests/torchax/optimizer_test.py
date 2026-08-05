@@ -21,9 +21,10 @@ import optax
 import torch
 import torch.nn as nn
 from examples.benchmarks.e2e.harness.torchax import optimizer
+from tests import seed_test_utils
 
 
-class OptimizerTest(absltest.TestCase):
+class OptimizerTest(seed_test_utils.RepeatableTest):
 
   @mock.patch.object(optax, "adam")
   def test_get_optax_optimizer_adam_params_match(self, mock_adam):

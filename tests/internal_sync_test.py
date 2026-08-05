@@ -29,7 +29,7 @@ from torch_tpu._internal import testing as tt_testing
 EagerMode: TypeAlias = execution_mode.EagerMode
 
 
-class InternalSyncTest(absltest.TestCase):
+class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
 
   def setUp(self):
     super().setUp()

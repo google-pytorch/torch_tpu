@@ -51,7 +51,9 @@ class OssUtilsTest(seed_test_utils.RepeatableTest):
       def dummy_test(test_class):  # pylint: disable=unused-argument
         pass
 
-      mock_self = mock.MagicMock(spec=absltest.TestCase)
+      mock_self = mock.MagicMock(
+          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
+      )
       dummy_test(mock_self)
       mock_self.skipTest.assert_called_once_with(
           'dummy_test requires libtpu >= 0.0.42 in cloud, but got 0.0.40'
@@ -66,7 +68,9 @@ class OssUtilsTest(seed_test_utils.RepeatableTest):
       def dummy_test(test_class):  # pylint: disable=unused-argument
         pass
 
-      mock_self = mock.MagicMock(spec=absltest.TestCase)
+      mock_self = mock.MagicMock(
+          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
+      )
       dummy_test(mock_self)
       mock_self.skipTest.assert_not_called()
 
@@ -77,7 +81,9 @@ class OssUtilsTest(seed_test_utils.RepeatableTest):
       def dummy_test(test_class):  # pylint: disable=unused-argument
         pass
 
-      mock_self = mock.MagicMock(spec=absltest.TestCase)
+      mock_self = mock.MagicMock(
+          spec=absltest.TestCase  # ABSLTEST_OK=Mock spec for absltest
+      )
       dummy_test(mock_self)
       mock_self.skipTest.assert_not_called()
 

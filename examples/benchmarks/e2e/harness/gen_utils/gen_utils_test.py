@@ -16,9 +16,10 @@
 
 from absl.testing import absltest
 from examples.benchmarks.e2e.harness.gen_utils import gen_utils
+from tests import seed_test_utils
 
 
-class GenUtilsTest(absltest.TestCase):
+class GenUtilsTest(seed_test_utils.RepeatableTest):
 
   def test_model_entry_benchmark_name(self):
     entry = gen_utils.ModelEntry(

@@ -19,9 +19,10 @@ from unittest import mock
 from absl.testing import absltest
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness.torchax import torchax_device_ops
+from tests import seed_test_utils
 
 
-class TorchaxDeviceOpsTest(absltest.TestCase):
+class TorchaxDeviceOpsTest(seed_test_utils.RepeatableTest):
 
   def test_init_success(self):
     target = target_lib.make_target(platform=target_lib.Platform.CPU)

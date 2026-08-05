@@ -29,12 +29,13 @@ from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from examples.gemma3 import model
+from tests import seed_test_utils
 import transformers
 
 log_utils.log_to_stderr()
 
 
-class TestModel(absltest.TestCase):
+class TestModel(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

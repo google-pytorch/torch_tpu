@@ -28,6 +28,7 @@ from examples.benchmarks.quality_utils.models import llama3_2_1b_quality_benchma
 from examples.benchmarks.quality_utils.models import meta_llama3_quality_benchmark
 from examples.benchmarks.quality_utils.models import qwen3_1_7b_quality_benchmark
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 
 
 _HF_LLAMA_3_2_1B_BENCHMARK_NAME = "hf_llama_3_2_1b"
@@ -218,7 +219,7 @@ def _qwen3_1_7b_benchmark_config(
   )
 
 
-class BenchmarkTest(absltest.TestCase):
+class BenchmarkTest(seed_test_utils.RepeatableTest):
   """Tests for end-to-end quality benchmarks."""
 
   def run_benchmark_test(

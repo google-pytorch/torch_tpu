@@ -19,7 +19,7 @@ import torch
 import torch.accelerator
 
 
-class AutoloadTpuTest(absltest.TestCase):
+class AutoloadTpuTest(absltest.TestCase):  # ABSLTEST_OK=Autoload test
 
   def test_current_accelerator(self):
     self.assertEqual(

@@ -49,6 +49,7 @@ torch_tpu_py_test(
         ":singlehost_wrapper",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -65,6 +66,7 @@ torch_tpu_py_test(
         ":singlehost_wrapper",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
     ],
@@ -77,6 +79,7 @@ torch_tpu_py_test(
     deps = [
         ":multihost_wrapper",
         "//shims/absl_py/testing:absltest",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

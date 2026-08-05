@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 from torch_tpu._internal.utils import log_utils
 from examples import paths
+from tests import seed_test_utils
 
 
 log_utils.log_to_stderr()
@@ -43,7 +44,7 @@ _DEVICE = flags.DEFINE_enum(
 )
 
 
-class Flux1SmokeTest(absltest.TestCase):
+class Flux1SmokeTest(seed_test_utils.RepeatableTest):
 
   MODEL_PATH = f"{XM_HOME}weights/huggingface/black-forest-labs/FLUX.1-schnell/"
   CODE_MODEL_PATH = "third_party/py/torch_tpu/examples/huggingface_diffusers/model_configs/black-forest-labs/FLUX.1-schnell"

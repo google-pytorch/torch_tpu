@@ -20,6 +20,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from examples.benchmarks.e2e.harness import context as context_lib
 from examples.benchmarks.e2e.harness import target as target_lib
+from tests import seed_test_utils
 
 
 class RunScopeTest(parameterized.TestCase):
@@ -88,7 +89,7 @@ class ContextTest(parameterized.TestCase):
     self.assertFalse(hasattr(context, "framework"))
 
 
-class ContextIsFrameworkAgnosticTest(absltest.TestCase):
+class ContextIsFrameworkAgnosticTest(seed_test_utils.RepeatableTest):
 
   def test_module_imports_no_framework(self):
     """Importing harness.context must not bind torch or jax into its namespace."""

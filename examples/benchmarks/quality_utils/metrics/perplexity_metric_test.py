@@ -27,12 +27,13 @@ import math
 from unittest import mock
 
 from absl.testing import absltest
+from tests import seed_test_utils
 import torch
 from examples.benchmarks.quality_utils import quality_benchmark_model
 from examples.benchmarks.quality_utils.metrics import perplexity_metric
 
 
-class PerplexityMetricTest(absltest.TestCase):
+class PerplexityMetricTest(seed_test_utils.RepeatableTest):
 
   def test_assess_short_sequence(self):
     metric = perplexity_metric.PerplexityMetric()

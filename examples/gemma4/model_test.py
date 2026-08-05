@@ -19,9 +19,10 @@ from absl.testing import absltest
 import torch
 import torch_tpu
 from examples.gemma4 import model
+from tests import seed_test_utils
 
 
-class Gemma4ModelTest(absltest.TestCase):
+class Gemma4ModelTest(seed_test_utils.RepeatableTest):
 
   def test_dense_model_forward(self):
     config = model.Gemma4Config(

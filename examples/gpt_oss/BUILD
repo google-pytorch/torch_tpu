@@ -62,6 +62,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/execution_mode",

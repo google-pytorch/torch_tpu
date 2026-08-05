@@ -23,6 +23,7 @@ if sys.version_info >= (3, 14):
 from unittest import mock
 
 from absl.testing import absltest
+from tests import seed_test_utils
 import torch
 import torch.nn as nn
 from examples.benchmarks.e2e.harness import compile as compile_lib
@@ -55,7 +56,7 @@ class DummyModule(nn.Module):
     return self.linear(x)
 
 
-class TorchaxStepTest(absltest.TestCase):
+class TorchaxStepTest(seed_test_utils.RepeatableTest):
 
   @classmethod
   def setUpClass(cls):

@@ -31,6 +31,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -180,7 +181,7 @@ def run_manual_2d_all_gather_reduce_scatter() -> None:
   utils.assert_close(y.cpu(), expected)
 
 
-class SubgroupCollectivesTest(absltest.TestCase):
+class SubgroupCollectivesTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_manual_2d_mesh(self):
     distributed_utils.dist_run(

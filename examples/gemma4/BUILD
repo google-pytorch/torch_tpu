@@ -48,6 +48,7 @@ torch_tpu_py_test(
         ":model_baseline",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -62,6 +63,7 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -73,6 +75,7 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/utils:test_utils",
         "@pypi//transformers",
@@ -89,6 +92,7 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/utils:test_utils",
         "//torch_tpu/ops:splash_attention",

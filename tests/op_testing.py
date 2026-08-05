@@ -4419,7 +4419,11 @@ def skip_if_torch_tpu_vs_gpu_mode(
   """
 
   @functools.wraps(test_item)
-  def skip_wrapper(self: unittest.TestCase, *args, **kwargs) -> None:
+  def skip_wrapper(
+      self: unittest.TestCase,  # UNITTEST_OK=Type annotation
+      *args,
+      **kwargs,
+  ) -> None:
     if _torch_tpu_vs_gpu_mode():
       self.skipTest("Does not work on TORCH_TPU_VS_GPU mode.")
     return test_item(self, *args, **kwargs)
@@ -4433,7 +4437,11 @@ def skip_unless_torch_tpu_vs_gpu_mode(
   """Decorator that runs a test only if on `TORCH_TPU_VS_GPU` mode."""
 
   @functools.wraps(test_item)
-  def skip_wrapper(self: unittest.TestCase, *args, **kwargs) -> None:
+  def skip_wrapper(
+      self: unittest.TestCase,  # UNITTEST_OK=Type annotation
+      *args,
+      **kwargs,
+  ) -> None:
     if not _torch_tpu_vs_gpu_mode():
       self.skipTest("Does not work on non-TORCH_TPU_VS_GPU modes.")
     return test_item(self, *args, **kwargs)

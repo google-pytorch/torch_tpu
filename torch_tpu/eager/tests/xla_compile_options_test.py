@@ -18,6 +18,7 @@ import glob
 import os
 
 from absl.testing import absltest
+from tests import seed_test_utils
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import execution_mode
@@ -25,11 +26,10 @@ from torch_tpu._internal import execution_mode
 EagerMode = execution_mode.EagerMode
 
 
-class XlaCompileOptionsTest(absltest.TestCase):
+class XlaCompileOptionsTest(seed_test_utils.RepeatableTest):
   """Tests to ensure materialization worker threads use correct XLA compile options for specific eager modes."""
 
   def setUp(self):
-    super().setUp()
     # Pop any env vars that affect global eager mode default.
     # See go/tt-knobs#eager-mode.
     os.environ.pop("TPU_LAUNCH_BLOCKING", None)
@@ -45,6 +45,7 @@ class XlaCompileOptionsTest(absltest.TestCase):
     os.environ["XLA_FLAGS"] = (
         f"--xla_dump_to={self._dump_dir} --xla_dump_hlo_as_text"
     )
+    super().setUp()
 
   def _read_hlo_module_config(self, module_name: str) -> str:
     """Reads the generated hlo_module_config.txt for the given module name."""

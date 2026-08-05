@@ -24,6 +24,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch_tpu._internal.utils import log_utils
 from examples import paths
+from tests import seed_test_utils
 import transformers
 
 log_utils.log_to_stderr()
@@ -40,7 +41,7 @@ flags.DEFINE_integer("num_epochs", 1, "Number of training epochs.")
 flags.DEFINE_float("learning_rate", 1e-4, "Learning rate.")
 
 
-class PeftLoraTrainingTest(absltest.TestCase):
+class PeftLoraTrainingTest(seed_test_utils.RepeatableTest):
 
   def _create_training_setup(self):
     device = torch.device("tpu")

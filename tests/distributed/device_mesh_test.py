@@ -18,11 +18,12 @@ from absl.testing import absltest
 import torch
 from torch_tpu import _loader
 from torch_tpu._internal.distributed import device_mesh
+from tests import seed_test_utils
 
 _loader._init_device("tpu")
 
 
-class DeviceMeshTest(absltest.TestCase):
+class DeviceMeshTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_pre_initialization_errors(self):
     # If the process group is not initialized, topology_aware_mesh should raise a RuntimeError.

@@ -28,6 +28,7 @@ from torch_tpu._internal.device import _device_module as tpu_device
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 TorchTpuCompiledExecutable = (
@@ -377,7 +378,7 @@ def run_fake_tensor_side_effect_pruning_with_torch_compile() -> None:
   utils.assert_close(output.to("cpu"), expected)
 
 
-class MultiTpuTorchCompileTest(absltest.TestCase):
+class MultiTpuTorchCompileTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_fake_tensor_side_effect_pruning_with_torch_compile(self):
     distributed_utils.dist_run(

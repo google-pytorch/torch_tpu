@@ -19,6 +19,7 @@ import dataclasses
 from absl.testing import absltest
 from absl.testing import parameterized
 from examples.benchmarks.e2e.harness import target as target_lib
+from tests import seed_test_utils
 
 
 class PlatformFromEnvTest(parameterized.TestCase):
@@ -128,7 +129,7 @@ class MakeTargetTest(parameterized.TestCase):
       t.platform_spec.topology.nnodes = 8
 
 
-class TargetIsFrameworkAgnosticTest(absltest.TestCase):
+class TargetIsFrameworkAgnosticTest(seed_test_utils.RepeatableTest):
 
   def test_no_torch_or_jax_types(self):
     """Every field must be a plain/enum type -- no torch.device, no torch.dtype.

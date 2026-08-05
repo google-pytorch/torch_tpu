@@ -17,12 +17,11 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from tests import seed_test_utils
 
 
 class AutoloadDisabledBackendTest(
-    seed_test_utils.RepeatableTest, parameterized.TestCase
-):
+    parameterized.TestCase
+):  # ABSLTEST_OK=Autoload test
 
   @parameterized.parameters("xla_cuda", "xla_cpu")
   def test_backend_unavailable(self, module: str) -> None:

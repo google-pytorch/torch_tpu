@@ -18,9 +18,10 @@ import torch
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
+from tests import seed_test_utils
 
 
-class TpuTest(absltest.TestCase):
+class TpuTest(seed_test_utils.RepeatableTest):
   def setUp(self):
     super().setUp()
     seed = absltest.FLAGS.test_random_seed

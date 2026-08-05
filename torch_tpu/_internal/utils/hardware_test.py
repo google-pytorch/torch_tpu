@@ -18,9 +18,10 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 from torch_tpu._internal.utils import hardware
+from tests import seed_test_utils
 
 
-class TpuTopologyMockTest(absltest.TestCase):
+class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
 
   def test_v7_8_chips(self):
     tpus = []
@@ -128,7 +129,7 @@ class NvidiaGpuMockTest(parameterized.TestCase):
     self.assertFalse(hardware.has_nvidia_gpu())
 
 
-class DeviceCapabilityTest(absltest.TestCase):
+class DeviceCapabilityTest(seed_test_utils.RepeatableTest):
 
   @mock.patch.object(hardware, "get_tpu_device_name", return_value="TPU v7")
   def test_v7_name_flops_memory(self, mock_name):

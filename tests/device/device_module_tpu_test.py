@@ -22,7 +22,8 @@ from tests.device import device_module_testing
 
 # Test cases are defined in device_module_testing.DeviceModuleBase
 class TpuDeviceModuleTest(
-    device_module_testing.DeviceModuleBase, absltest.TestCase
+    device_module_testing.DeviceModuleBase,
+    absltest.TestCase,  # ABSLTEST_OK=Reference to absltest.TestCase
 ):
 
   @property

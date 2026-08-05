@@ -60,6 +60,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:mode",
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/execution_mode",
     ],
@@ -73,6 +74,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:registry",
         "//examples/benchmarks/e2e/harness:step_lib",
         "//shims/absl_py/testing:absltest",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -92,6 +94,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
         "@pypi//transformers",
     ],
@@ -104,6 +107,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -117,6 +121,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:torch_device_ops",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -129,6 +134,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -141,6 +147,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:target",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -152,6 +159,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:discovery",
         "//examples/benchmarks/e2e/harness:registry",
         "//shims/absl_py/testing:absltest",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )
@@ -163,6 +171,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:loss",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

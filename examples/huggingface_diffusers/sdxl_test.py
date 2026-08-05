@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 from torch_tpu._internal.utils import log_utils
 from examples import paths
+from tests import seed_test_utils
 
 
 log_utils.log_to_stderr()
@@ -42,7 +43,7 @@ _DEVICE = flags.DEFINE_enum(
 )
 
 
-class SDXLSmokeTest(absltest.TestCase):
+class SDXLSmokeTest(seed_test_utils.RepeatableTest):
   """Tests for SDXL inference and training using HuggingFace."""
 
   # Model path with weights

@@ -171,6 +171,7 @@ torch_tpu_py_test(
         ":torch_pallas_add",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

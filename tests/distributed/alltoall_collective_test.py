@@ -35,6 +35,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -178,7 +179,8 @@ def run_all_to_all_single(
   )
 
 
-class AllToAllSingleCollectiveTest(absltest.TestCase):
+class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 8
 
   def test_no_split_sizes_1d(self):
@@ -320,7 +322,8 @@ def run_all_to_all(
     )
 
 
-class AllToAllCollectiveTest(absltest.TestCase):
+class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 8
 
   def test_uniform_tensors_1d(self):

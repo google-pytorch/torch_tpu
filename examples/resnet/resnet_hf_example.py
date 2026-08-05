@@ -30,6 +30,7 @@ from torch_tpu._internal import sync
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 from torch_tpu._internal.profiler import xprof_adapter
+from tests import seed_test_utils
 import transformers
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -157,7 +158,7 @@ def _create_model_and_config(device):
   return model, config
 
 
-class Resnet50RandomDataTrainingTest(absltest.TestCase):
+class Resnet50RandomDataTrainingTest(seed_test_utils.RepeatableTest):
   """Tests ResNet50 model training with random data."""
 
   def setUp(self):

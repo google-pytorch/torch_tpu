@@ -57,6 +57,7 @@ torch_tpu_py_test(
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//torch_tpu",
     ],
 )

@@ -32,6 +32,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 _IN_FEATURES = 64
@@ -192,7 +193,8 @@ def run_dtensor_dcp_state_dict_optimizer(checkpoint_dir: str) -> None:
   _cleanup_test_env()
 
 
-class DCPTest(absltest.TestCase):
+class DCPTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 8
 
   def test_dtensor_dcp_load_save(self):

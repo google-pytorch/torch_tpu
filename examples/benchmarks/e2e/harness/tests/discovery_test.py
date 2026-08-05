@@ -23,9 +23,10 @@ import textwrap
 from absl.testing import absltest
 from examples.benchmarks.e2e.harness import discovery as discovery_lib
 from examples.benchmarks.e2e.harness import registry as registry_lib
+from tests import seed_test_utils
 
 
-class DiscoveryTest(absltest.TestCase):
+class DiscoveryTest(seed_test_utils.RepeatableTest):
 
   def _make_pkg(self, modules: dict[str, str]):
     """Makes a throwaway python package for testing import side-effects."""

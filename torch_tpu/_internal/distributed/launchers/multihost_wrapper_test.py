@@ -19,9 +19,10 @@ from unittest import mock
 
 from absl.testing import absltest
 from torch_tpu._internal.distributed.launchers import multihost_wrapper
+from tests import seed_test_utils
 
 
-class MultiHostTestLauncherTest(absltest.TestCase):
+class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
 
   def test_prepare_tpu_environment_multihost(self):
     with mock.patch.dict(

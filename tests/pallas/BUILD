@@ -103,6 +103,7 @@ torch_tpu_py_test(
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
         "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",

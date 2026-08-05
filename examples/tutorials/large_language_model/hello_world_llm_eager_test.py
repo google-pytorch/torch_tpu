@@ -17,6 +17,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths
+from tests import seed_test_utils
 import transformers
 
 
@@ -27,7 +28,7 @@ MODEL_PATH = f"{paths.XM_HOME}weights/huggingface/Qwen/Qwen3-0.6B"
 INPUT_TEXT = "Hello, I am a"
 
 
-class HelloWorldLlmEagerTest(absltest.TestCase):
+class HelloWorldLlmEagerTest(seed_test_utils.RepeatableTest):
 
   def test_hello_world_llm_eager(self):
     device = torch.accelerator.current_accelerator()

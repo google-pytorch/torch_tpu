@@ -19,9 +19,10 @@ from unittest import mock
 
 from absl.testing import absltest
 from torch_tpu._internal import native_scan
+from tests import seed_test_utils
 
 
-class NativeScanTest(absltest.TestCase):
+class NativeScanTest(seed_test_utils.RepeatableTest):
 
   def test_parse_version_plain(self):
     self.assertEqual(native_scan._parse_version("0.0.41"), (0, 0, 41))

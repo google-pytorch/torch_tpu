@@ -32,6 +32,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal.utils import log_utils
 from examples import paths
 from torch_tpu._internal.profiler import xprof_adapter
+from tests import seed_test_utils
 import tqdm
 import transformers
 
@@ -347,7 +348,7 @@ def _plot_stats(stats: Dict[str, Any]):
 
 
 # %%
-class Llama31BTrainingTest(absltest.TestCase):
+class Llama31BTrainingTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

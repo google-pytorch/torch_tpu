@@ -20,6 +20,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -62,7 +63,7 @@ def run_scatter_scalar() -> None:
   utils.assert_close(output.cpu(), expected)
 
 
-class ScatterTest(absltest.TestCase):
+class ScatterTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_scatter_tensor(self):
     distributed_utils.dist_run(

@@ -16,9 +16,10 @@
 
 from absl.testing import absltest
 from examples.huggingface_transformers import model_configs
+from tests import seed_test_utils
 
 
-class ModelConfigsTest(absltest.TestCase):
+class ModelConfigsTest(seed_test_utils.RepeatableTest):
 
   def test_invalid_model_id(self):
     # Arrange

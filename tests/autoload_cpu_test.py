@@ -18,7 +18,7 @@ from absl.testing import absltest
 import torch
 
 
-class AutoloadCPUTest(absltest.TestCase):
+class AutoloadCPUTest(absltest.TestCase):  # ABSLTEST_OK=Autoload test
 
   def test_torch_dot_xla_cpu(self):
     import torch.xla_cpu as module  # pylint: disable=g-import-not-at-top

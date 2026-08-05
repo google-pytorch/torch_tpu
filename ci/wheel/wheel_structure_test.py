@@ -107,7 +107,7 @@ def _dt_needed(so: pathlib.Path) -> Sequence[str]:
   return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out)
 
 
-class WheelStructureTest(absltest.TestCase):
+class WheelStructureTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
 
   @classmethod
   def setUpClass(cls):

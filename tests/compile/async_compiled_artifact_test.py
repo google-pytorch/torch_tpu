@@ -22,6 +22,7 @@ from typing import Any
 from absl.testing import absltest
 from torch._inductor.utils import InputType
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
+from tests import seed_test_utils
 
 AsyncCompiledArtifact = torch_tpu_compiled_executable.AsyncCompiledArtifact
 CompiledArtifact = torch_tpu_compiled_executable.CompiledArtifact
@@ -48,7 +49,7 @@ class DummyConcreteArtifact(CompiledArtifact):
     return self.value * multiplier
 
 
-class AsyncCompiledArtifactTest(absltest.TestCase):
+class AsyncCompiledArtifactTest(seed_test_utils.RepeatableTest):
 
   def test_initial_state_unresolved(self):
     future = concurrent.futures.Future()

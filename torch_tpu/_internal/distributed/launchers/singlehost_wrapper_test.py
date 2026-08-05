@@ -21,6 +21,7 @@ from torch.google import distributed as g3_distributed
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 
 
 WORLD_SIZE = 8
@@ -80,7 +81,7 @@ def dummy_worker_func_with_arg(arg1):  # pylint: disable=unused-argument
   pass
 
 
-class SingleHostTestLauncherTest(absltest.TestCase):
+class SingleHostTestLauncherTest(seed_test_utils.RepeatableTest):
 
   def test_mandatory_variables(self):
     if "TEST_UNDECLARED_OUTPUTS_DIR" not in os.environ:

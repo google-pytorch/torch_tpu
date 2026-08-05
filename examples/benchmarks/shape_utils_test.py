@@ -15,6 +15,7 @@
 """Unit tests for MLIR tensor shape and signature formatting utilities."""
 
 from absl.testing import absltest
+from tests import seed_test_utils
 import torch
 import torch_tpu  # pylint: disable=unused-import
 from examples.benchmarks.shape_utils import format_shape_signature
@@ -23,7 +24,7 @@ from examples.benchmarks.shape_utils import format_tensor_spec
 from examples.benchmarks.shape_utils import shorten_dtype_name
 
 
-class ShapeUtilsTest(absltest.TestCase):
+class ShapeUtilsTest(seed_test_utils.RepeatableTest):
 
   def test_shorten_dtype_name(self):
     self.assertEqual(shorten_dtype_name(torch.float32), "f32")

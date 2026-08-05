@@ -14,13 +14,13 @@
 
 """Unit tests verifying eager mode SetDefaultDeviceAssignment multi-replica config."""
 
-import unittest
 from absl.testing import absltest
 import torch
 import torch_tpu
+from tests import seed_test_utils
 
 
-class EagerDeviceAssignmentTest(unittest.TestCase):
+class EagerDeviceAssignmentTest(seed_test_utils.RepeatableTest):
 
   def test_eager_fast_compile_multi_replica(self):
     """Verify that in fast compile (eager) mode with multiple devices, num_replicas equals num_devices."""

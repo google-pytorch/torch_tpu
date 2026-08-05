@@ -20,9 +20,10 @@ from absl.testing import absltest
 import torch
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
+from tests import seed_test_utils
 
 
-class TorchDeviceOpsTest(absltest.TestCase):
+class TorchDeviceOpsTest(seed_test_utils.RepeatableTest):
 
   def test_init_success(self):
     target = target_lib.make_target(

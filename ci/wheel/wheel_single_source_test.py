@@ -67,7 +67,7 @@ def get_wheel_dependencies(wheel_path, pyproject_path, is_local_torch):
   return expected_deps, actual_deps
 
 
-class WheelSingleSourceTest(absltest.TestCase):
+class WheelSingleSourceTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
 
   def test_dependencies_match(self):
     expected_deps, actual_deps = get_wheel_dependencies(

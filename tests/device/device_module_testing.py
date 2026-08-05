@@ -26,12 +26,13 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _device_ops_backend
 from tests import oss_utils
+from tests import seed_test_utils
 
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()
 
 
 # pylint: disable=protected-access
-class DeviceModuleBase(absltest.TestCase, metaclass=abc.ABCMeta):
+class DeviceModuleBase(seed_test_utils.RepeatableTest, metaclass=abc.ABCMeta):
   """Abstract base class containing tests for the device module."""
 
   @property

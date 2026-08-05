@@ -24,6 +24,7 @@ from PIL import Image
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths
+from tests import seed_test_utils
 
 log_utils.log_to_stderr()
 
@@ -46,7 +47,7 @@ _MODEL_PATH = str(
 _D_TYPE = torch.bfloat16
 
 
-class Wan2_2_TI2V_5B_SmokeTest(absltest.TestCase):
+class Wan2_2_TI2V_5B_SmokeTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

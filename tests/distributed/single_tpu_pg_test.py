@@ -21,9 +21,10 @@ from absl.testing import absltest
 import portpicker
 import torch
 from torch_tpu._internal.distributed import tpu_distributed
+from tests import seed_test_utils
 
 
-class SingleTpuPGTest(absltest.TestCase):
+class SingleTpuPGTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_init_pg(self):
     """Test registration and initialization call from PyTorch."""

@@ -18,9 +18,10 @@ from absl.testing import absltest
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import mode as mode_lib
 from examples.benchmarks.e2e.harness import target as target_lib
+from tests import seed_test_utils
 
 
-class ModeEnumTest(absltest.TestCase):
+class ModeEnumTest(seed_test_utils.RepeatableTest):
 
   def test_run_mode_values(self):
     self.assertEqual(common.RunMode.EAGER_DEFAULT.value, "eager_default")
@@ -110,7 +111,7 @@ class ModeEnumTest(absltest.TestCase):
     self.assertEqual(mode_lib.Framework.TORCHAX.value, "torchax")
 
 
-class RunModeContextTest(absltest.TestCase):
+class RunModeContextTest(seed_test_utils.RepeatableTest):
 
   def test_non_tpu_target_is_noop(self):
     target = target_lib.make_target(target_lib.Platform.CPU)

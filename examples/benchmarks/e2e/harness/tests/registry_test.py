@@ -21,13 +21,14 @@ from absl.testing import absltest
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import registry as registry_lib
 from examples.benchmarks.e2e.harness import step_lib
+from tests import seed_test_utils
 
 
 def _factory() -> Tuple[str, Sequence[Any], Mapping[str, Any], Any | None]:
   return ("model", (), {}, None)
 
 
-class RegisterTest(absltest.TestCase):
+class RegisterTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

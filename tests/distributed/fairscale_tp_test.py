@@ -29,6 +29,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 RowParallelLinear = layers.RowParallelLinear
@@ -169,7 +170,7 @@ def run_forward_tp(device="tpu") -> None:
     utils.assert_close(tp_output, reference_output, atol=1e-4, rtol=1e-4)
 
 
-class FairscaleTest(absltest.TestCase):
+class FairscaleTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_forward_fairscale_tp_against_non_tp(self):
     logging.info("Running test on %d TPUs.", WORLD_SIZE)

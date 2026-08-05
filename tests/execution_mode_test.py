@@ -33,7 +33,7 @@ _EAGER_MODES = [
 ]
 
 
-class ExecutionModeTest(absltest.TestCase):
+class ExecutionModeTest(absltest.TestCase):  # ABSLTEST_OK=Execution mode test
   """Unit tests for setting compiler options."""
 
   def test_eager_mode_nested_context(self):

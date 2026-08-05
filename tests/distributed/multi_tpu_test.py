@@ -23,6 +23,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -51,7 +52,7 @@ def run_global_device_count() -> None:
   )
 
 
-class MultiTpuTest(absltest.TestCase):
+class MultiTpuTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_global_device_count(self):
     distributed_utils.dist_run(

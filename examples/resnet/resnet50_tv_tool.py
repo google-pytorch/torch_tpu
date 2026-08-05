@@ -25,6 +25,7 @@ import torch
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
+from tests import seed_test_utils
 import torchvision
 
 
@@ -40,7 +41,7 @@ _DEVICE = flags.DEFINE_enum(
 )
 
 
-class Resnet50TVToolTest(absltest.TestCase):
+class Resnet50TVToolTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

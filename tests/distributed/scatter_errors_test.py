@@ -20,6 +20,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -82,7 +83,8 @@ def run_scatter_mismatch_input_shapes(
   torch.distributed.scatter(output, inputs, src=src_rank)
 
 
-class ScatterErrorsTest(absltest.TestCase):
+class ScatterErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
+
   # We check the error in the parent process as opposed to each worker because
   # only some of the workers will raise the error.
 

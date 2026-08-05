@@ -20,6 +20,7 @@ from absl.testing import absltest
 import torch
 from examples.tpu_visualizer import tpu_visualizer
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 
 
 def _cell_string(expected_rank: int, my_rank: int) -> str:
@@ -28,7 +29,7 @@ def _cell_string(expected_rank: int, my_rank: int) -> str:
   return f" {expected_rank} "
 
 
-class TpuVisualizerTest(absltest.TestCase):
+class TpuVisualizerTest(seed_test_utils.MultiProcessRepeatableTest):
   """Tests TPU Visualizer tool on an 8-chip v5e slice."""
 
   def test_visualize_topology_on_8_chips(self):

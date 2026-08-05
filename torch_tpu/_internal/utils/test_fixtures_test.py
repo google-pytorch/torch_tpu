@@ -17,9 +17,10 @@ import collections.abc
 from absl.testing import absltest
 import torch
 from torch_tpu._internal.utils import test_fixtures
+from tests import seed_test_utils
 
 
-class TestFixturesTest(absltest.TestCase):
+class TestFixturesTest(seed_test_utils.RepeatableTest):
   """Tests for modules in test_fixtures.py."""
 
   def _assert_linear_has_int_weights(self, linear: torch.nn.Linear) -> None:

@@ -588,9 +588,9 @@ class SliceTest(LayoutTest):
     )
 
 
-class SelectTest(LayoutTest, absltest.TestCase):
-
+class SelectTest(LayoutTest, seed_test_utils.RepeatableTest):
   # Slice performs a select in cases where it changes the number of dimensions.
+
   def test_select_as_slice(self):
     self._assert_same_layout_tpu_vs_cpu(
         lambda device: torch.randn((10, 10), device=device)[:, 1]

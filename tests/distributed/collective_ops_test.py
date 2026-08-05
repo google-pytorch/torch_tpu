@@ -32,6 +32,7 @@ from typing import Any, Callable, List, Union
 
 from absl import logging
 from absl.testing import absltest
+from tests import seed_test_utils
 
 if __name__ == "__main__":  # We are in the parent process.
   # Pick a likely unique cache root for this run. This makes it less likely for
@@ -645,7 +646,8 @@ def run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
   utils.assert_close(result, expected)
 
 
-class CollectiveOpsTest(absltest.TestCase):
+class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 8
 
   def test_all_reduce_sum(self):

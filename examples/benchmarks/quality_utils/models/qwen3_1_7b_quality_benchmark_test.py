@@ -25,13 +25,14 @@ if 'google3' not in __file__ and _REPO_ROOT not in sys.path:
 from unittest import mock
 
 from absl.testing import absltest
+from tests import seed_test_utils
 import torch
 from examples.benchmarks.quality_utils import quality_benchmark_model
 from examples.benchmarks.quality_utils.models import qwen3_1_7b_quality_benchmark
 import transformers
 
 
-class Qwen317BQualityBenchmarkModelTest(absltest.TestCase):
+class Qwen317BQualityBenchmarkModelTest(seed_test_utils.RepeatableTest):
 
   def test_format_padding(self):
     model = qwen3_1_7b_quality_benchmark.Qwen317BQualityBenchmarkModel(

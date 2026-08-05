@@ -18,6 +18,7 @@ from absl.testing import absltest
 import torch
 import torch.nn as nn
 from examples.benchmarks.e2e.harness import loss as loss_lib
+from tests import seed_test_utils
 
 
 class _LossModel(nn.Module):
@@ -42,7 +43,7 @@ class _ModelOutput:
     self.logits = logits
 
 
-class LossTest(absltest.TestCase):
+class LossTest(seed_test_utils.RepeatableTest):
 
   def test_real_loss_scalar_tensor_output(self):
     model = _LossModel()

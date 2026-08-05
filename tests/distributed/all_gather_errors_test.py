@@ -75,6 +75,7 @@ def run_all_gather_dispatch_failure() -> None:
 
 
 class AllGatherErrorsTest(et.TpuOnlyDistributedErrorTestBase):
+
   _world_size = 8
 
   def test_invalid_dtype(self):

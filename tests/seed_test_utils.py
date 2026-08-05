@@ -32,7 +32,7 @@ def seed_rngs(seed: int) -> None:
   torch.manual_seed(seed)
 
 
-class SeededTest(absltest.TestCase):
+class SeededTest(absltest.TestCase):  # ABSLTEST_OK=Base test class
   """Abstract base class that fixes RNG seeds to make tests reproducible.
 
   This class picks a random seed in setUpClass() and sets it in setUp().
@@ -40,6 +40,7 @@ class SeededTest(absltest.TestCase):
   """
 
   test_random_seed: int = DEFAULT_RANDOM_SEED
+  seed_in_setup: bool = True
 
   @classmethod
   def setUpClass(cls) -> None:
@@ -52,8 +53,9 @@ class SeededTest(absltest.TestCase):
 
   def setUp(self) -> None:
     super().setUp()
-    # Set the random seed for Python and Torch.
-    seed_rngs(self.test_random_seed)
+    if self.seed_in_setup:
+      # Set the random seed for Python and Torch.
+      seed_rngs(self.test_random_seed)
 
 
 class RepeatableTest(SeededTest):
@@ -66,11 +68,12 @@ class RepeatableTest(SeededTest):
   When combining RepeatableTest with another TestCase class:
   e.g., class MyTest(RepeatableTest, parameterized.TestCase):
   where:
-    class RepeatableTest(absltest.TestCase)
-    class parameterized.TestCase(absltest.TestCase)
+    class RepeatableTest(seed_test_utils.RepeatableTest)
+    class parameterized.TestCase(seed_test_utils.RepeatableTest)
 
   Through Python MRO, super().setUp() propagates through all base classes:
   MyTest -> RepeatableTest -> parameterized.TestCase -> absltest.TestCase
+  # ABSLTEST_OK=Reference to absltest.TestCase
   """
 
   @classmethod
@@ -84,6 +87,17 @@ class RepeatableTest(SeededTest):
       # The user explicitly passed --test_random_seed=N, so we use that value.
       return absltest.FLAGS.test_random_seed
     return DEFAULT_RANDOM_SEED
+
+
+class MultiProcessRepeatableTest(RepeatableTest):
+  """Base class for multi-process TPU tests that launch processes via mp.spawn.
+
+  Disables seeding in setUp() in the main process to prevent torch.manual_seed
+  from initializing and locking the TPU device before child processes are
+  spawned.
+  """
+
+  seed_in_setup = False
 
 
 class VaryingSeedInPostsubmitTest(SeededTest):

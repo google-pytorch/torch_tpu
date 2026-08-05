@@ -22,6 +22,7 @@ from torch import distributed as dist
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -64,7 +65,7 @@ def run_ragged_all_to_all_test() -> None:
   dist.destroy_process_group()
 
 
-class RaggedAllToAllTest(absltest.TestCase):
+class RaggedAllToAllTest(seed_test_utils.MultiProcessRepeatableTest):
   """Tests the ragged_all_to_all TPU collective operation.
 
   This test initializes a distributed environment and performs a

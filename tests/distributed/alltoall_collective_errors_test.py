@@ -24,6 +24,7 @@ import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -84,7 +85,10 @@ def run_all_to_all_single_invalid_split_sizes_sum_error() -> None:
     )
 
 
-class AllToAllSingleCollectiveErrorsTest(absltest.TestCase):
+class AllToAllSingleCollectiveErrorsTest(
+    seed_test_utils.MultiProcessRepeatableTest
+):
+
   _world_size = 8
 
   def test_invalid_dtype(self):
@@ -202,7 +206,8 @@ def run_all_to_all_unequal_input_output_tensor_shape_error() -> None:
     torch.distributed.all_to_all(output_tensors, input_tensors)
 
 
-class AllToAllCollectiveErrorsTest(absltest.TestCase):
+class AllToAllCollectiveErrorsTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 8
 
   def test_unequal_tensor_list_size(self):

@@ -24,6 +24,7 @@ from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.utils import test_utils as utils
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 
@@ -85,7 +86,7 @@ def run_ragged_dot_local_test(compile_test: bool = False) -> None:
     dist.destroy_process_group()
 
 
-class RaggedDotDistributedTest(absltest.TestCase):
+class RaggedDotDistributedTest(seed_test_utils.MultiProcessRepeatableTest):
   """Tests for ragged_dot in a distributed environment on TPU.
 
   Note that this test is not testing the distributed version of ragged_dot.

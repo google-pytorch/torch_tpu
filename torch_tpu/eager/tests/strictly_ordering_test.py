@@ -23,9 +23,10 @@ following that mechanism can lead to large memory explosions.
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import sync
+from tests import seed_test_utils
 
 
-class StrictlyOrderingTest(absltest.TestCase):
+class StrictlyOrderingTest(seed_test_utils.RepeatableTest):
 
   def test_strictly_ordering(self):
     device = torch.device("tpu")

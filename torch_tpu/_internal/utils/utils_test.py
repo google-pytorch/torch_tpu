@@ -22,6 +22,7 @@ from torch_tpu._internal import dynamism
 from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
+from tests import seed_test_utils
 
 
 def fwd(
@@ -80,7 +81,7 @@ def bwd(
   )
 
 
-class AllTest(absltest.TestCase):
+class AllTest(seed_test_utils.RepeatableTest):
   """Tests various functions in utils.py."""
 
   def setUp(self):
@@ -471,6 +472,7 @@ class AllTest(absltest.TestCase):
 
     Raises:
       absl.testing.absltest.TestCase.failureException: If the logs differ.
+      # ABSLTEST_OK=Reference to absltest.TestCase
     """
     self.assertEqual(len(actual), len(expected))
     for actual_event, expected_event in zip(actual, expected):
@@ -490,6 +492,7 @@ class AllTest(absltest.TestCase):
 
     Raises:
       absl.testing.absltest.TestCase.failureException: If the events differ.
+      # ABSLTEST_OK=Reference to absltest.TestCase
     """
     # Ignore "time" and handle "kwargs" specially.
     self.assertEqual(

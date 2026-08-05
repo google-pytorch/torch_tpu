@@ -17,9 +17,10 @@
 import random
 from absl.testing import absltest
 import torch
+from tests import seed_test_utils
 
 
-class LargeInvertNonStridedSliceTest(absltest.TestCase):
+class LargeInvertNonStridedSliceTest(seed_test_utils.RepeatableTest):
   """Verifies that >INT_MAX 1D views compile via static HLO Slice/Concat ops.
 
   This bypasses DynamicUpdateSlice to prevent an XLA >32-bit dynamic index

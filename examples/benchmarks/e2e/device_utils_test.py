@@ -20,9 +20,10 @@ from absl.testing import absltest
 import torch
 from examples.benchmarks.e2e import device_utils
 from torch_tpu._internal.profiler import xprof_adapter
+from tests import seed_test_utils
 
 
-class DeviceUtilsTest(absltest.TestCase):
+class DeviceUtilsTest(seed_test_utils.RepeatableTest):
 
   def test_get_peak_host_compilation_memory_mb(self):
     class SimpleModel(torch.nn.Module):

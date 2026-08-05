@@ -30,9 +30,10 @@ from absl.testing import absltest
 import torch.nn as nn
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import target as target_lib
+from tests import seed_test_utils
 
 
-class CompileConfigTest(absltest.TestCase):
+class CompileConfigTest(seed_test_utils.RepeatableTest):
 
   def test_default_is_step_scope(self):
     cfg = compile_lib.CompileConfig()

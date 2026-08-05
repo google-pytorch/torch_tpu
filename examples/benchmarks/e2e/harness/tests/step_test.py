@@ -28,6 +28,7 @@ from examples.benchmarks.e2e.harness import steps
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness import torch_device_ops
 from examples.benchmarks.e2e.harness.steps import decode
+from tests import seed_test_utils
 import transformers
 
 
@@ -45,7 +46,7 @@ def _mlp(in_dim=4, hidden=8, out_dim=3, seed=0):
 discovery_lib.import_submodules(steps)
 
 
-class StepperTypeTest(absltest.TestCase):
+class StepperTypeTest(seed_test_utils.RepeatableTest):
 
   def test_all_steps_registered(self):
     self.assertEqual(

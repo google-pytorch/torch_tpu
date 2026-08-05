@@ -19,9 +19,10 @@ from torch_tpu._internal.utils import test_fixtures
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
+from tests import seed_test_utils
 
 
-class AllTest(absltest.TestCase):
+class AllTest(seed_test_utils.RepeatableTest):
   """Tests the OpTracer and ActivationTracer functions."""
 
   def test_pformat_op_tracer(self):

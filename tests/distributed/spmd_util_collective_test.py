@@ -26,6 +26,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal.distributed import spmd_util
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
+from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -156,7 +157,8 @@ def run_spmd_safe_multi_dtensor_compile_test():
   assert isinstance(out, torch.distributed.tensor.DTensor)
 
 
-class SpmdSafeDecoratorTest(absltest.TestCase):
+class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
+
   _world_size = 4
 
   def _check_fused_mlir(self, dump_dir, expected_count=1):
