@@ -31,9 +31,11 @@ The `torch.compile()` function has the following relevant arguments:
 """
 
 from collections.abc import Callable, Iterator, Sequence
+import concurrent.futures
 import contextlib
 import functools
 import hashlib
+import threading
 from typing import Any, TypeAlias
 
 from absl import logging
@@ -48,6 +50,7 @@ from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile.dynamic import compiler as dynamic_compiler
+from torch_tpu._internal.compile.experimental import AsyncCompilationSubmitted
 from torch_tpu._internal.utils import utils
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
@@ -254,6 +257,35 @@ def _log_gm_and_inputs(
     logging.debug(c)
 
 
+_cache_save_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="aot_cache_saver"
+)
+_cache_save_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _async_aot_cache_saves() -> Iterator[None]:
+  """Offloads AOTAutogradCache.save to a background thread during async compile."""
+  cache_type = _autograd_cache.AOTAutogradCache
+  with _cache_save_lock:
+    original_save = cache_type.save
+
+    def async_save(*args: Any, **kwargs: Any) -> None:
+      def _safe_save() -> None:
+        try:
+          original_save(*args, **kwargs)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+          logging.error("Error saving AOTAutograd cache asynchronously: %s", e)
+
+      _cache_save_executor.submit(_safe_save)
+
+    cache_type.save = staticmethod(async_save)
+    try:
+      yield
+    finally:
+      cache_type.save = staticmethod(original_save)
+
+
 class TpuBackend:
   """TPU backend for torch.compile() integration."""
 
@@ -290,6 +322,9 @@ class TpuBackend:
   ) -> Callable[
       [torch.fx.GraphModule, Sequence[torch.Tensor]], Callable[..., Any]
   ]:
+    options = kwargs.get("options") or {}
+    async_compile = options.get("experimental_async_compile", False)
+
     # Dynamism support is currently experimental.
     if not self._dynamism:
       _raise_on_symint(example_inputs)
@@ -306,7 +341,9 @@ class TpuBackend:
     if has_dynamic_symints:
       base_compiler = dynamic_compiler.DynamicCompiler(debug=self._debug)
     else:
-      base_compiler = compiler.StaticCompiler(debug=self._debug)
+      base_compiler = compiler.StaticCompiler(
+          async_compile=async_compile, debug=self._debug
+      )
 
     compiler_instance = split_compiler.SplitCompiler(base_compiler)
     compiler_instance.execute_pre_grad_passes(graph_module)
@@ -333,20 +370,46 @@ class TpuBackend:
         self._compile_graph_module, compiler_instance, False
     )
 
+    save_context = (
+        _async_aot_cache_saves() if async_compile else contextlib.nullcontext()
+    )
     with _serialization_context(enable_serialization) as captured_entry:
-      result = aot_autograd(
-          fw_compiler=fw_compiler,
-          bw_compiler=bw_compiler,
-          keep_inference_input_mutations=False,
-      )(
-          graph_module, example_inputs
-      )  # pytype: disable=wrong-arg-types
+      with save_context:
+        result = aot_autograd(
+            fw_compiler=fw_compiler,
+            bw_compiler=bw_compiler,
+            keep_inference_input_mutations=False,
+        )(
+            graph_module, example_inputs
+        )  # pytype: disable=wrong-arg-types
 
       if captured_entry is not None and captured_entry[0] is not None:
         entry = captured_entry[0]
         result.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
 
-      return result
+      # The following section allows us to avoid blocking within Dynamo on
+      # first execution following compilation when `async_compile=True`. This
+      # effectively makes the first execution turn into a compile warmup.
+      first_call = True
+
+      def skip_first_execution_if_async(*args: Any, **kwargs: Any) -> Any:
+        nonlocal first_call
+        if async_compile and first_call:
+          first_call = False
+          artifact = (
+              self._compiled_executables[-1]
+              if self._compiled_executables
+              else None
+          )
+          raise AsyncCompilationSubmitted(artifact)
+        return result(*args, **kwargs)
+
+      if captured_entry is not None and captured_entry[0] is not None:
+        entry = captured_entry[0]
+        result.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
+        skip_first_execution_if_async.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
+
+      return skip_first_execution_if_async
 
   def _compile_graph_module(
       self,

@@ -23,6 +23,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <pybind11/pybind11.h>
 
 #include "ATen/core/ATen_fwd.h"
 #include "absl/log/absl_check.h"
@@ -260,6 +261,10 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
       << "failed to validate and reorder traversal inputs";
+
+  // Release the Python GIL before XLA compilation to allow multi-threaded
+  // compilation.
+  pybind11::gil_scoped_release release;
 
   // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);

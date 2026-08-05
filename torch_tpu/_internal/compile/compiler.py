@@ -22,6 +22,7 @@ artifacts produced during compilation.
 
 import abc
 from collections.abc import Sequence
+import concurrent.futures
 import dataclasses
 from typing import Any
 
@@ -32,7 +33,6 @@ from torch._inductor.fx_passes import post_grad
 from torch._inductor.utils import InputType
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
-from torch._subclasses.fake_tensor import FakeTensor
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
@@ -40,6 +40,7 @@ from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
@@ -161,6 +162,20 @@ def has_dynamic_symints(args: Any) -> bool:
   return False
 
 
+def _is_tracing_enabled() -> bool:
+  """Returns whether structured trace logging handlers are enabled.
+
+  When enabled, FX graph and MLIR artifact representations are logged
+  for debugging and structured trace visualization.
+  """
+  return bool(trace_log.handlers)
+
+
+_async_compile_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="tpu_async_compile"
+)
+
+
 class StaticCompiler(Compiler):
   """Compiler for static shapes.
 
@@ -173,7 +188,19 @@ class StaticCompiler(Compiler):
   programs with dynamic shapes by raising an exception.
   """
 
-  def __call__(
+  def __init__(self, *args, async_compile: bool = False, **kwargs):
+    """Initializes a StaticCompiler instance.
+
+    Args:
+      *args: Positional arguments forwarded to the base Compiler class.
+      async_compile: Whether to offload MLIR lowering and PjRt compilation to a
+        background thread pool, returning an AsyncCompiledArtifact proxy.
+      **kwargs: Keyword arguments forwarded to the base Compiler class.
+    """
+    super().__init__(*args, **kwargs)
+    self._async_compile = async_compile
+
+  def _compile(
       self,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
@@ -182,68 +209,7 @@ class StaticCompiler(Compiler):
       argument_layouts: Sequence[Sequence[int]] | None = None,
       dynamic_outputs: Sequence[bool] | None = None,
   ) -> CompiledArtifact:
-    """Compiles the FX graph module for static shapes.
-
-    This method performs the following steps:
-    1.  Applies pre-compilation graph transformations:
-        -   Decomposes auto functionalized operations.
-        -   Marks embedded constants.
-    2.  Lints and recompiles the graph module.
-    3.  Emits FX graph artifacts if tracing is enabled.
-    4.  Converts the FX graph to MLIR StableHLO, using placeholder tensors
-        derived from example_inputs. This step is done under an
-        unset_fake_temporarily context to ensure tensor storage.
-    5.  Emits MLIR artifacts if tracing is enabled.
-    6.  Compiles the MLIR module into a PjRtLoadedExecutable.
-    7.  Wraps the executable in a TorchTpuCompiledExecutable.
-    8.  Stores debug information (graph code, MLIR text) in the
-        executable if debug mode is enabled.
-
-    Args:
-      graph_module: The FX graph module to compile.
-      example_inputs: A sequence of example input tensors used to guide the
-        conversion to MLIR, particularly for determining input specifications.
-      is_fwd: Indicates whether the forward or backward pass is being compiled.
-      bounds: Optional sequence of TensorBounds for dynamic inputs.
-      argument_layouts: Optional sequence of argument layouts for inputs.
-      dynamic_outputs: Optional sequence of booleans indicating dynamic outputs.
-
-    Returns:
-      A _TorchTpuCompiledExecutable object, which can be called to execute
-      the compiled graph on TPU.
-    """  # fmt: skip
-
-    # Decompose auto functionalized ops, we need to explicitly do this because
-    # the default behaviour inserts flatten and unflatten ops at the boundaries
-    # which then blocks buffer donation.
-    # TODO(b/491716758): Replace with our own fork.
-    graph_transform_observer.GraphTransformObserver(
-        graph_module, "decompose_auto_functionalized"
-    ).apply_graph_pass(post_grad.decompose_auto_functionalized)
-    graph_transform_observer.GraphTransformObserver(
-        graph_module, "mark_embedded_constants"
-    ).apply_graph_pass(mark_embedded_constants.apply)
-    if not is_fwd:
-      graph_transform_observer.GraphTransformObserver(
-          graph_module, "mark_activation_checkpoints"
-      ).apply_graph_pass(mark_activation_checkpoints.apply)
-
-    graph_module.graph.lint()
-    graph_module.recompile()
-
-    # Emit FX graph artifact for tlparse when TORCH_TRACE is set.
-    tracing_enabled = bool(trace_log.handlers)
-    if tracing_enabled:
-      trace_structured(
-          "artifact",
-          metadata_fn=lambda: {
-              "name": "torchtpu_fx_graph",
-              "encoding": "string",
-          },
-          payload_fn=lambda: graph_module.print_readable(print_output=False),
-          expect_trace_id=True,
-      )
-
+    tracing_enabled = _is_tracing_enabled()
     # AOT autograd will trace the model with FakeTensorMode enabled. This
     # converts all tensors to FakeTensors which do not have valid storage to
     # avoid computation.
@@ -269,29 +235,11 @@ class StaticCompiler(Compiler):
                 arg_bounds,
                 arg.requires_grad,
             )
+            placeholder_args.append(ph)
           else:
-            ph = tpu_torch_compile.placeholder_like(arg)
-          placeholder_args.append(ph)
+            placeholder_args.append(tpu_torch_compile.placeholder_like(arg))
         else:
           placeholder_args.append(arg)
-
-      if argument_layouts is None:
-        extracted_layouts = []
-        for val in example_inputs:
-          if (
-              isinstance(val, torch.Tensor)
-              and val.device.type == "tpu"
-              and not isinstance(val, FakeTensor)
-          ):
-            layout = tpu_torch_compile.get_device_layout_if_materialized(val)
-            if layout is not None:
-              extracted_layouts.append(layout[0])
-            else:
-              extracted_layouts.append([])
-          else:
-            extracted_layouts.append([])
-        if any(extracted_layouts):
-          argument_layouts = extracted_layouts
 
       with dynamo_timed("torchtpu_fx_to_mlir"):
         exported_mlir = torch_tpu_export.fx_to_mlir(
@@ -299,7 +247,7 @@ class StaticCompiler(Compiler):
             placeholder_args,
             build_mlir_module=(tracing_enabled or self._debug),
             use_stablehlo_bounds=self._use_stablehlo_bounds,
-            argument_layouts=argument_layouts,
+            argument_layouts=argument_layouts,  # pyrefly: ignore[bad-argument-type]
             dynamic_outputs=dynamic_outputs,
         )
 
@@ -342,3 +290,94 @@ class StaticCompiler(Compiler):
       )
 
     return executable
+
+  def __call__(
+      self,
+      graph_module: torch.fx.GraphModule,
+      example_inputs: Sequence[InputType],
+      is_fwd: bool = True,
+      bounds: Sequence[Any] | None = None,
+      argument_layouts: Sequence[Sequence[int]] | None = None,
+      dynamic_outputs: Sequence[bool] | None = None,
+  ) -> CompiledArtifact:
+    """Compiles the FX graph module for static shapes.
+
+    This method performs the following steps:
+    1.  Applies pre-compilation graph transformations:
+        -   Decomposes auto functionalized operations.
+        -   Marks embedded constants.
+    2.  Lints and recompiles the graph module.
+    3.  Emits FX graph artifacts if tracing is enabled.
+    4.  Converts the FX graph to MLIR StableHLO, using placeholder tensors
+        derived from example_inputs. This step is done under an
+        unset_fake_temporarily context to ensure tensor storage.
+    5.  Emits MLIR artifacts if tracing is enabled.
+    6.  Compiles the MLIR module into a PjRtLoadedExecutable.
+    7.  Wraps the executable in a TorchTpuCompiledExecutable.
+    8.  Stores debug information (graph code, MLIR text) in the
+        executable if debug mode is enabled.
+
+    Args:
+      graph_module: The FX graph module to compile.
+      example_inputs: A sequence of example input tensors used to guide the
+        conversion to MLIR, particularly for determining input specifications.
+      is_fwd: Indicates whether the forward or backward pass is being compiled.
+      bounds: Optional sequence of TensorBounds for dynamic inputs.
+      argument_layouts: Optional sequence of argument layouts for inputs.
+      dynamic_outputs: Optional sequence of booleans indicating dynamic outputs.
+
+    Returns:
+      A _TorchTpuCompiledExecutable object, which can be called to execute
+      the compiled graph on TPU.
+    """  # fmt: skip
+    # Decompose auto functionalized ops, we need to explicitly do this because
+    # the default behaviour inserts flatten and unflatten ops at the boundaries
+    # which then blocks buffer donation.
+    # TODO(b/491716758): Replace with our own fork.
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "decompose_auto_functionalized"
+    ).apply_graph_pass(post_grad.decompose_auto_functionalized)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "mark_embedded_constants"
+    ).apply_graph_pass(mark_embedded_constants.apply)
+    if not is_fwd:
+      graph_transform_observer.GraphTransformObserver(
+          graph_module, "mark_activation_checkpoints"
+      ).apply_graph_pass(mark_activation_checkpoints.apply)
+
+    graph_module.graph.lint()
+    graph_module.recompile()
+
+    # Emit FX graph artifact for tlparse when TORCH_TRACE is set.
+    tracing_enabled = _is_tracing_enabled()
+    if tracing_enabled:
+      trace_structured(
+          "artifact",
+          metadata_fn=lambda: {
+              "name": "torchtpu_fx_graph",
+              "encoding": "string",
+          },
+          payload_fn=lambda: graph_module.print_readable(print_output=False),
+          expect_trace_id=True,
+      )
+
+    if self._async_compile:
+      future = _async_compile_executor.submit(
+          self._compile,
+          graph_module,
+          example_inputs,
+          is_fwd,
+          bounds,
+          argument_layouts,
+          dynamic_outputs,
+      )
+      return AsyncCompiledArtifact(future)
+    else:
+      return self._compile(
+          graph_module,
+          example_inputs,
+          is_fwd,
+          bounds,
+          argument_layouts,
+          dynamic_outputs,
+      )

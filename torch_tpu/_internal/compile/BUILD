@@ -84,8 +84,18 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":experimental",
         ":scan",
         ":tpu_backend",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "experimental",
+    srcs = ["experimental.py"],
+    deps = [
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
     ],
 )
@@ -101,6 +111,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":compiler",
+        ":experimental",
         ":split_compiler",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
