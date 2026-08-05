@@ -161,12 +161,15 @@ class InternalSyncTest(absltest.TestCase):
     self.assertFalse(sync.is_materializing(z))
     self.assertFalse(sync.is_materialized(z))
 
-    sync.synchronize(wait=False)
-
-    # Everything is materialized, but may or may not be ready.
-    self.assertTrue(sync.is_materializing(x))
-    self.assertTrue(sync.is_materializing(y))
-    self.assertTrue(sync.is_materializing(z))
+    with self.assertRaisesRegex(
+        NotImplementedError,
+        re.escape(
+            "torch_tpu._internal.sync.synchronize(None, wait=False) is"
+            " deprecated. Please migrate your code to use"
+            " torch.tpu.synchronize()"
+        ),
+    ):
+      sync.synchronize(wait=False)
 
   def test_sync_and_wait_all_materialized(self):
     x = torch.ones(10, device=torch.device("tpu"))

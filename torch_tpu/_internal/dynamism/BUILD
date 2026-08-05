@@ -118,10 +118,10 @@ torch_tpu_cc_test(
     deps = [
         ":dynamism_ops",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/common:shape",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",

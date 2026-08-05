@@ -95,16 +95,6 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
   }
 }
 
-void PySyncAll(bool wait) {
-  std::optional<py::gil_scoped_release> release;
-  if (wait) {
-    // See the comments in PySync for why we need to release the GIL.
-    release.emplace();
-  }
-  TT_THROW_IF_ERROR(
-      SynchronizeAll(wait ? WaitOnExecution::kYes : WaitOnExecution::kNo));
-}
-
 bool PyIsMaterializing(const at::Tensor& tensor) {
   TT_CHECK_THROW(tensor.device().type() == GetPrivateUse1DeviceType(),
                  error::kInvalidArgument)
@@ -187,9 +177,6 @@ PYBIND11_MODULE(_tpu_torch_sync, m) {
       py::arg("tensor"), py::arg("wait") = false,
       py::doc("Forces a materialization of single TPU tensor, optionally "
               "waiting for it to be ready."));
-  m.def("_synchronize_all", &PySyncAll, py::arg("wait") = false,
-        py::doc("Forces a materialization of all TPU tensors, optionally "
-                "waiting for them to be ready."));
 
   m.def("_is_materializing", &PyIsMaterializing, py::arg("tensor"),
         py::doc(

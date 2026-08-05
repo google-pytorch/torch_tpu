@@ -131,7 +131,7 @@ torch_tpu_cc_test(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
         "@stablehlo//:attr_type_builder_util",
     ],
 )
@@ -227,6 +227,7 @@ torch_tpu_cc_test(
         ":error_utils",
         ":utils",
         "//shims/torch/c10/util:base_headers",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/eager:eager_mode",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
@@ -236,7 +237,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/log:log_sink_registry",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -331,7 +331,7 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":cache_key",
         ":compilation",
@@ -341,13 +341,13 @@ torch_tpu_cc_test(
         ":error_utils",
         ":tier2_compilation_cache",
         ":unique_file_descriptor",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -362,14 +362,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -388,14 +388,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -414,14 +414,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -438,14 +438,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -464,14 +464,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -488,14 +488,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -514,14 +514,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "Disabled during switch from opt-in to opt-out",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -538,14 +538,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "TODO(wan): make this work in OSS",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -563,14 +563,14 @@ torch_tpu_cc_test(
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
-    notest_oss = "TODO(wan): make this work in OSS",
+    requires_libtpu = True,
     deps = [
         ":flags",
         ":tier2_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -631,12 +631,12 @@ torch_tpu_cc_test(
         ":macro_utils",
         ":status_builder",
         ":utils",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/types:optional",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -658,9 +658,9 @@ torch_tpu_cc_test(
     deps = [
         ":dtype",
         ":fingerprint_utils",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_names",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt:pjrt_executable",
@@ -733,7 +733,7 @@ torch_tpu_cc_test(
     srcs = ["utils_test.cc"],
     deps = [
         ":utils",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -757,7 +757,7 @@ torch_tpu_cc_test(
         ":env_vars",
         "//shims/torch",  # build_cleaner: keep for c10::WarningUtils
         "//shims/torch/c10/util:base",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -776,8 +776,20 @@ torch_tpu_cc_test(
     srcs = ["flags_test.cc"],
     deps = [
         ":flags",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/flags:flag",
-        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Custom test main runner for OSS exported C++ unit tests to ensure absl
+# flags are parsed.
+torch_tpu_cc_library(
+    name = "oss_test_main",
+    testonly = True,
+    srcs = ["oss_test_main.cc"],
+    deps = [
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -821,9 +833,9 @@ torch_tpu_cc_test(
         ":discovery",
         ":env_vars",
         ":error_utils",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -848,9 +860,9 @@ torch_tpu_cc_test(
     deps = [
         ":env_vars",
         ":environment",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/distributed/slicebuilder:discovery",
         "@com_google_absl//absl/status",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -997,10 +1009,10 @@ torch_tpu_cc_test(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_names",
         "//torch_tpu/ops/macros:kernel",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla:xla_data_proto_cc",
@@ -1012,8 +1024,8 @@ torch_tpu_cc_test(
     srcs = ["op_name_stack_test.cc"],
     deps = [
         ":op_name_stack",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_names",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -1103,7 +1115,7 @@ torch_tpu_cc_test(
     env = {"EXPECTED_VALUE": "false"},
     deps = [
         ":excess_precision",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -1117,7 +1129,7 @@ torch_tpu_cc_test(
     },
     deps = [
         ":excess_precision",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -1131,7 +1143,7 @@ torch_tpu_cc_test(
     },
     deps = [
         ":excess_precision",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -1148,9 +1160,9 @@ torch_tpu_cc_test(
         ":compilation_spec",
         ":compilation_test_helper",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
@@ -1175,6 +1187,7 @@ torch_tpu_cc_test(
         ":utils",
         "//shims/torch:torch_headers",
         "//torch_tpu/common:contain",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/base:log_severity",
@@ -1188,7 +1201,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/time",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
@@ -1213,10 +1225,10 @@ torch_tpu_cc_test(
         ":compilation_cache",
         ":flags",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_googletest//:gtest_main",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
@@ -1239,10 +1251,10 @@ torch_tpu_cc_test(
         ":compilation_spec",
         ":compilation_test_helper",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
-        "@com_google_googletest//:gtest_main",
         "@xla//xla:xla_proto_cc",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
@@ -1263,9 +1275,9 @@ torch_tpu_cc_test(
         ":compilation_test_helper",
         ":compile_options_key",
         ":fingerprint_utils",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -1291,11 +1303,11 @@ torch_tpu_cc_test(
         ":error_utils",
         ":tier2_compilation_cache",
         ":tier3_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -1326,11 +1338,11 @@ torch_tpu_cc_test(
         ":error_utils",
         ":tier2_compilation_cache",
         ":tier3_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -1358,12 +1370,12 @@ torch_tpu_cc_test(
         ":env_vars",
         ":tier2_compilation_cache",  # buildcleaner: keep
         ":tier3_compilation_cache",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
         "@tsl//tsl/platform:path",
         "@xla//xla/tsl/platform:env",
     ],
@@ -1402,6 +1414,7 @@ torch_tpu_cc_test(
         ":dynamism_utils",
         ":error_utils",
         ":shape",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:traversal",
         "//torch_tpu/ops:binary",
@@ -1411,7 +1424,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
@@ -1440,8 +1452,8 @@ torch_tpu_cc_test(
         ":context_manager",
         ":context_states",
         "//shims/torch",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/cleanup",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 

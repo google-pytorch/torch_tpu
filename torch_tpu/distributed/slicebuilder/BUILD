@@ -47,11 +47,11 @@ torch_tpu_cc_test(
         ":discovery",
         "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 

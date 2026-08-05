@@ -604,11 +604,13 @@ def torch_tpu_cc_test(
     args = args or []
     if shuffle_tests:
         # Shuffle tests to avoid test ordering dependencies.
-        args = args + ["--gunit_shuffle"]
+        args = args + ["--gtest_shuffle" if is_oss() else "--gunit_shuffle"]
     if fail_if_no_test_linked:
         # Fail if no tests are linked. This is to avoid having a test target that does not run any
         # tests. This can happen if the test's link options are not set correctly.
-        args = args + ["--gunit_fail_if_no_test_linked"]
+        args = args + [
+            "--gtest_fail_if_no_test_linked" if is_oss() else "--gunit_fail_if_no_test_linked",
+        ]
 
     # Prevent the massive output of per-thread stack traces when a test
     # crashes. Such logs are usually more painful than useful. One can
@@ -618,7 +620,8 @@ def torch_tpu_cc_test(
     #
     # Note that we add this arg before the user-provided args so that the
     # user can override it in the `args` field (the last arg wins).
-    args = ["--suppress_failure_output"] + args
+    if not is_oss():
+        args = ["--suppress_failure_output"] + args
     tags = tags or []
     data = kwargs.pop("data", [])
     if is_oss():

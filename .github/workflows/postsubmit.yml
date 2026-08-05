@@ -102,7 +102,8 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # Skip execution on outdated intermediate push events if a newer commit has landed on main.
-      - name: Cancel if superseded by newer main HEAD
+      - name: Skip if superseded by newer main HEAD
+        id: check_superseded
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,15 +111,13 @@ jobs:
           git fetch origin main --quiet
           LATEST_SHA=$(git rev-parse origin/main)
           if [ "$GITHUB_SHA" != "$LATEST_SHA" ]; then
-            echo "::warning::Commit $GITHUB_SHA is superseded by latest main HEAD ($LATEST_SHA). Cancelling run on ${{ matrix.job_info.runner }} to process latest HEAD."
-            gh run cancel ${{ github.run_id }} || true
-            # Allow 5s for GHA server-side cancel signal to propagate so status is logged as 'cancelled' (not 'failed')
-            sleep 5
-            exit 1
+            echo "::notice::Commit $GITHUB_SHA is superseded by latest main HEAD ($LATEST_SHA). Exiting early to process latest HEAD."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
       - name: Wait For Connection
+        if: steps.check_superseded.outputs.skip != 'true'
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
@@ -126,6 +125,7 @@ jobs:
       # running the tests. This allows test building and test running to overlap and reduce total
       # build time.
       - name: Run Bazel Test
+        if: steps.check_superseded.outputs.skip != 'true'
         run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
       - name: Upload Test Logs on Failure
         uses: actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392  # v4.0.0

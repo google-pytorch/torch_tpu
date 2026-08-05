@@ -913,6 +913,9 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 2.7e-3, "atol": 8.5e-3},
         torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
     },
+    "_native_batch_norm_legit": {
+        torch.float32: {"rtol": 1e-5, "atol": 2.1e-5},
+    },
     "_softmax_backward_data": {
         torch.bfloat16: {"rtol": 1.9e-2, "atol": 4.6e-2},
         torch.float16: {"rtol": 1.5e-3, "atol": 4.7e-3},
@@ -1067,9 +1070,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 2.5e-6, "atol": 2.4e-5},
     },
     "linalg.vector_norm": {
-        torch.bfloat16: {"atol": 1e-2},
-        torch.complex64: {"atol": 1.3e-4},
-        torch.float32: {"atol": 2.9e-4},
+        torch.complex64: {"rtol": 4.8e-6},
+        torch.float32: {"rtol": 4.8e-6},
     },
     "linspace": {
         torch.int16: {"rtol": 4.1e-1, "atol": 1.3},
@@ -1146,16 +1148,16 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 5.2e-2},
     },
     "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"atol": 1.6e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"atol": 1.9e-2},
+        torch.float16: {"rtol": 1.8e-3, "atol": 3.6e-3},
     },
     "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"atol": 1.6e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"rtol": 1.9e-2, "atol": 1.9e-2},
+        torch.float16: {"rtol": 3.1e-3, "atol": 3.1e-3},
     },
     "nn.functional.avg_pool2d": {
-        torch.bfloat16: {"atol": 6.3e-2},
-        torch.float16: {"atol": 1.6e-2},
+        torch.bfloat16: {"rtol": 3.8e-2, "atol": 4.5e-2},
+        torch.float16: {"rtol": 3.5e-3, "atol": 7.1e-3},
     },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
@@ -1192,20 +1194,19 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 1.2e-3, "atol": 1.2e-3},
     },
     "nn.functional.group_norm": {
-        torch.bfloat16: {"rtol": 1, "atol": 4.7e-2},
-        torch.float32: {"rtol": 6.7e-4, "atol": 6.6e-4},
+        torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},
     },
     "nn.functional.hardsigmoid": {
         torch.bfloat16: {"atol": 4.7e-3},
     },
     "nn.functional.logsigmoid": {
-        torch.float32: {"atol": 3.3e-5},
+        torch.float32: {"rtol": 3.2e-5},
     },
     "nn.functional.mse_loss": {
         torch.float32: {"rtol": 2.3e-6},
     },
     "nn.functional.nll_loss": {
-        torch.float16: {"atol": 1e-1},
+        torch.float16: {"rtol": 3e-3, "atol": 2.4e-3},
     },
     "nn.functional.silu": {
         torch.bfloat16: {"atol": 7.4e-5},
@@ -1332,6 +1333,9 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float16: {"rtol": 1.8e-3, "atol": 2.4e-3},
         torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
     },
+    "_native_batch_norm_legit": {
+        torch.float32: {"rtol": 1e-5, "atol": 2.1e-5},
+    },
     "_softmax_backward_data": {
         torch.bfloat16: {"atol": 3.5e-2},
         torch.float16: {"atol": 4.6e-3},
@@ -1413,8 +1417,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"rtol": 5.4, "atol": 19},
     },
     "linalg.vector_norm": {
-        torch.complex64: {"atol": 1.3e-4},
-        torch.float32: {"atol": 2.9e-4},
+        torch.complex64: {"rtol": 4.8e-6},
+        torch.float32: {"rtol": 4.8e-6},
     },
     "linspace": {
         torch.bfloat16: {"atol": 9.4e-3},
@@ -1465,8 +1469,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"rtol": 3.8e-2},
     },
     "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"atol": 1.6e-2},
-        torch.float16: {"atol": 4e-3},
+        torch.bfloat16: {"rtol": 1.8e-2, "atol": 1.9e-2},
+        torch.float16: {"rtol": 1.8e-3, "atol": 1.8e-3},
     },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
@@ -1500,8 +1504,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 2.3e-6},
     },
     "nn.functional.nll_loss": {
-        torch.bfloat16: {"rtol": 5e-2},
-        torch.float16: {"atol": 4.7e-2},
+        torch.bfloat16: {"rtol": 2.3e-2, "atol": 5.9e-3},
+        torch.float16: {"rtol": 3e-3, "atol": 2.4e-3},
     },
     "norm": {
         torch.complex64: {"rtol": 5.7e-6},
@@ -1785,15 +1789,54 @@ def _linalg_lu_without_pivot_gpu(
   )
 
 
-# Returns true for batch norm op fail on complex64 in compiled mode.
-# TODO(b/521528968): transfer to 'cpu' device failed with StableHLO error.
-def _batch_norm_complex64_compiled_gpu(
+# Returns true for test cases with `training=False` when comparing against GPU.
+# TODO(b/541256155): fix outputs to match GPU behavior when `training=False`.
+def _native_batch_norm_legit_notrain_gpu(
     golden_device_type: str, unused_variant: OpVariant, op_input: OpInput
 ) -> bool:
   return (
       golden_device_type == "gpu"
-      and op_testing.is_compiled_mode()
-      and op_input.input_value.dtype == torch.complex64
+      # _native_batch_norm_legit() has 1 (input) + 7 parameters.
+      and len(op_input.args) == 7
+      # Excluding the input, `training` is the 5-th parameter.
+      and not op_input.args[4]
+  )
+
+
+# Returns true for test cases in eager mode, with 0-sized tensor input (trivial
+# case) whose dtype is not floating point.
+# TODO: support 0-sized tensor inputs whose dtype is not floating point in TPU
+# eager mode.
+def _native_layer_norm_0sized_nonfloat_eager_gpu(
+    golden_device_type: str, unused_variant: OpVariant, op_input: OpInput
+) -> bool:
+  return (
+      golden_device_type == "gpu"
+      and not op_testing.is_compiled_mode()
+      and not torch.is_floating_point(op_input.input_value)
+      # Trivial case: 0-sized tensors.
+      and op_input.input_value.numel() == 0
+  )
+
+
+# Returns true for test cases with, at least one of `row` (first argument) or
+# `col` (second argument) is 0, and `dtype=bool`.
+# TODO: support bool inputs.
+def _tril_indices_bool_zero_arg_eager_gpu(
+    golden_device_type: str, unused_variant: OpVariant, op_input: OpInput
+) -> bool:
+  return (
+      golden_device_type == "gpu"
+      and not op_testing.is_compiled_mode()
+      # The input is an integer.
+      and isinstance(op_input.input_value, int)
+      # The second argument (i.e. first is input) is an integer.
+      and len(op_input.args) > 0
+      and isinstance(op_input.args[0], int)
+      # One of them is 0.
+      and (op_input.input_value == 0 or op_input.args[0] == 0)
+      # The dtype kwarg is torch.bool.
+      and op_input.kwargs.get("dtype") == torch.bool
   )
 
 
@@ -1976,10 +2019,9 @@ class TestOps(TorchTpuTestBase):
   def test_angle(self):
     self.do_test_op(
         "angle",
-        exclude_dtypes=(
-            torch.bfloat16,
-            torch.float16,
-        ),
+        # TODO(b/540345849): succeeded on TPU but failed on GPU for bfloat16 and
+        # float16. CUDA kernel is not implemented for bfloat16 and float16.
+        exclude_dtypes={"gpu": (torch.bfloat16, torch.float16)},
     )
 
   def test_arange(self):
@@ -2233,7 +2275,7 @@ class TestOps(TorchTpuTestBase):
         "nn.functional.ctc_loss",
         # Excluded because PyTorch's sample generation (via log_softmax on CPU)
         # does not support integral, bfloat16, float16, and complex dtypes.
-        # Additionally, CPU does not support bfloat16 and float16.
+        # Additionally, CPU and GPU do not support bfloat16 and float16.
         exclude_dtypes={
             "cpu": (
                 INTEGRAL_DTYPES
@@ -3280,13 +3322,10 @@ class TestOps(TorchTpuTestBase):
         # TODO: fix _native_batch_norm_legit(out=...) failing.
         check_out_variant=False,
         exclude_dtypes={
-            "gpu": (
-                torch.bfloat16,
-                torch.float16,
-                torch.float32,
-                torch.float64,
-            ),
+            "gpu": (torch.float64,),
         },
+        # TODO(b/541256155): match GPU behavior when `training=False`.
+        skip_if=_native_batch_norm_legit_notrain_gpu,
     )
 
   def test_native_group_norm(self):
@@ -3322,9 +3361,6 @@ class TestOps(TorchTpuTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
-                    torch.int64,
-                    torch.bool,
                 )
                 + COMPLEX_DTYPES
             ),
@@ -3333,6 +3369,9 @@ class TestOps(TorchTpuTestBase):
         # on GPU for the last 2 tensors being compared, while TPU produces
         # tensors of the same dtype as the input.
         skip_output_indices=[1, 2],
+        # TODO(b/542277260): support 0-sized tensor inputs whose dtype is not
+        # floating point in TPU eager mode.
+        skip_if=_native_layer_norm_0sized_nonfloat_eager_gpu,
     )
 
   def test_ne(self):
@@ -3825,19 +3864,14 @@ class TestOps(TorchTpuTestBase):
         # integers other than int32 and int64, floats and complex.
         exclude_dtypes={
             "gpu": (
-                (
-                    torch.uint8,
-                    torch.int8,
-                    torch.int16,
-                    torch.float16,
-                    torch.bfloat16,
-                    torch.float32,
-                    torch.float64,
-                    torch.bool,
-                )
+                (torch.uint8, torch.int8, torch.int16)
+                + FLOAT_DTYPES
                 + COMPLEX_DTYPES
             ),
         },
+        # TODO(b/542277009): add support for bool dtype when either `row` or
+        # `col` is 0 (trivial case).
+        skip_if=_tril_indices_bool_zero_arg_eager_gpu,
     )
 
   def test_triu(self):
@@ -4011,22 +4045,22 @@ class TestOps(TorchTpuTestBase):
   def test_thnn_fused_gru_cell(self):
     self.do_test_op(
         "_thnn_fused_gru_cell",
-        exclude_dtypes=(torch.complex64,),
+        # TODO(b/540346402): succeeded on TPU but failed on GPU for complex64.
+        # CUDA kernel is not implemented for this dtype.
+        exclude_dtypes={
+            "gpu": (torch.complex64,),
+        },
         check_dynamism=False,
     )
 
   def test_thnn_fused_lstm_cell(self):
     self.do_test_op(
         "_thnn_fused_lstm_cell",
+        # TODO(b/540345869): succeeded on TPU but failed on GPU for complex64.
+        # CUDA kernel is not implemented for this dtype.
         exclude_dtypes=(
             _if_tpu_vs_gpu_compiled(
-                (
-                    torch.complex64,
-                    torch.float64,
-                    torch.float32,
-                    torch.float16,
-                    torch.bfloat16,
-                ),
+                (torch.complex64,) + FLOAT_DTYPES,
                 (torch.complex64,),
             )
         ),

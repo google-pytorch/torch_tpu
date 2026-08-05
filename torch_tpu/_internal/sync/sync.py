@@ -19,6 +19,7 @@ import os
 import torch
 import torch.distributed.tensor as dt
 from torch.utils import _pytree
+from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.sync import _tpu_torch_sync
 
 
@@ -31,6 +32,8 @@ def _maybe_unwrap(tensor: torch.Tensor) -> torch.Tensor:
   return tensor
 
 
+# TODO: deprecate this in favor of standard torch.tpu.synchronize()
+# or torch.tpu.Stream.synchronize()
 def synchronize(
     tensors: torch.Tensor | list[torch.Tensor] | None = None, wait: bool = False
 ) -> None:
@@ -46,7 +49,13 @@ def synchronize(
       function will also wait for the results to be ready.
   """
   if tensors is None:
-    _tpu_torch_sync._synchronize_all(wait)  # pylint: disable=protected-access
+    if not wait:
+      raise NotImplementedError(
+          "torch_tpu._internal.sync.synchronize(None, wait=False) is"
+          " deprecated. Please migrate your code to use torch.tpu.synchronize()"
+      )
+    current_device_id = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
+    _device_ops_backend._synchronize_device(current_device_id)  # pylint: disable=protected-access
   elif isinstance(tensors, list):
     _tpu_torch_sync._synchronize_list(  # pylint: disable=protected-access
         [_maybe_unwrap(t) for t in tensors], wait

@@ -47,7 +47,7 @@ class SynchronizeTest(absltest.TestCase):
 
     # torch.tpu.synchronize() maps to _device_ops_backend._synchronize(None)
     # which maps to TpuDeviceGuardImpl::synchronizeDevice()
-    # which calls SynchronizeAll(true) and SynchronizeStream()
+    # which calls MaterializeAll(true) and SynchronizeStream()
     torch.tpu.synchronize()
 
     self.assertTrue(sync.is_materializing(x))

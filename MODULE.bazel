@@ -73,11 +73,11 @@ bazel_dep(name = "rules_ml_toolchain")
 
 archive_override(
     module_name = "xla",
-    integrity = "sha256-ZxwHh0fhzk+anNYo8TRKSjtznK238GcYq0L01SS4uWw=",
+    integrity = "sha256-gpA9Xz+1UIRUaQ8Hfdx1QoIViuXjCjkLqEgr8J+jOyk=",
     patch_strip = 1,
     patches = ["//bazel/patches/xla:remove_stablehlo_source_location.patch"],
-    strip_prefix = "xla-cdbd8b766ff6992238c1127b58e61dbb3e56a5f3",
-    urls = ["https://github.com/openxla/xla/archive/cdbd8b766ff6992238c1127b58e61dbb3e56a5f3.tar.gz"],
+    strip_prefix = "xla-6ca7e1eed83adad68f40b707a7400364be924112",
+    urls = ["https://github.com/openxla/xla/archive/6ca7e1eed83adad68f40b707a7400364be924112.tar.gz"],
 )
 
 archive_override(
@@ -157,12 +157,14 @@ _TORCH_HUB_ALIASES = {
         "libtorch_global_deps",
     ],
 }
+
 _TORCH_EXTRA_PIP_ARGS = [
     "--index-url",
     "https://pypi.org/simple",
     "--extra-index-url",
     "https://download.pytorch.org/whl/cpu",
 ]
+
 _TORCH_WHL_MODIFICATIONS = {
     "//bazel:torch_wheel.json": "torch",
 }

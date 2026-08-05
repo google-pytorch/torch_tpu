@@ -58,14 +58,11 @@ enum class WaitOnExecution {
   kYes,
 };
 
-// Materializes all deferred operations across all subgraphs and optionally
-// waits for their execution to complete on the device.
+// Materializes all deferred operations across all subgraphs.
 //
 // This function is thread-safe and can be called from multiple threads
-// concurrently. It snapshots the current state of all subgraphs at the time of
-// the call; any operations dispatched to the execution engine after this
-// function begins may not be included in the synchronization barrier.
-absl::Status SynchronizeAll(WaitOnExecution wait = WaitOnExecution::kNo);
+// concurrently.
+absl::Status MaterializeAll();
 
 // Checks if the tensor is materialized; that is, if it has a PjRtBuffer
 // associated with it.

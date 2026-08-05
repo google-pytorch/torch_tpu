@@ -44,8 +44,8 @@ torch_tpu_cc_test(
     deps = [
         ":strided_layout",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -75,8 +75,8 @@ torch_tpu_cc_test(
         ":view_primitive_error_utils",
         ":view_sequence",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:IR",
     ],
 )
@@ -108,9 +108,9 @@ torch_tpu_cc_test(
         ":reshape_primitive",
         ":strided_layout",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -136,7 +136,7 @@ torch_tpu_cc_test(
     deps = [
         ":strided_layout",
         ":transpose_primitive",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -166,8 +166,8 @@ torch_tpu_cc_test(
     deps = [
         ":broadcast_primitive",
         ":strided_layout",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -203,8 +203,8 @@ torch_tpu_cc_test(
         ":slice_primitive",
         ":strided_layout",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -232,8 +232,8 @@ torch_tpu_cc_test(
     deps = [
         ":pad_primitive",
         ":strided_layout",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -281,9 +281,9 @@ torch_tpu_cc_test(
     deps = [
         ":bitcast_primitive",
         ":strided_layout",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
@@ -319,7 +319,7 @@ torch_tpu_cc_test(
     deps = [
         ":strided_layout",
         ":unfold_primitive",
-        "@com_google_googletest//:gtest_main",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
@@ -379,9 +379,9 @@ torch_tpu_cc_test(
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:fingerprint_utils",
+        "//torch_tpu/common:oss_test_main",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
         "@xla//xla/tsl/platform:statusor",
     ],
@@ -430,11 +430,11 @@ torch_tpu_cc_test(
         ":view_sequence",
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/common:to_string",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
     ],
 )
@@ -492,11 +492,11 @@ torch_tpu_cc_test(
         ":transpose_primitive",
         ":view_sequence",
         "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/common:shape",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@stablehlo//:attr_type_builder_util",
     ],
 )

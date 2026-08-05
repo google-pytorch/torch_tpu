@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -41,7 +42,6 @@ from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
-from examples.benchmarks.e2e.performance_utils import _run_mode_context
 from examples.benchmarks.ops.op_input_loader import deserialize_args
 
 DEVICE = flags.DEFINE_string("device", "tpu", "Device to run benchmarks on.")
@@ -179,6 +179,39 @@ def get_test_cases() -> (
   return cases
 
 
+@contextlib.contextmanager
+def _aten_run_mode_context(run_mode_str: str):
+  """Self-contained context manager to configure execution mode for ATen op benchmarks."""
+  if run_mode_str == "compiled":
+    try:
+      yield
+    finally:
+      if hasattr(torch, "_dynamo"):
+        # pylint: disable=protected-access
+        torch._dynamo.reset()
+    return
+
+  original_eager_mode = None
+  execution_mode = None
+  # torch_tpu._internal.execution_mode is only available when torch_tpu is
+  # installed. When benchmarking on non-TPU backends (e.g., CPU or CUDA with
+  # vanilla PyTorch), execution_mode is not importable; ignoring ImportError
+  # is acceptable because there is no TPU eager mode to configure.
+  try:
+    from torch_tpu._internal import execution_mode  # pylint: disable=g-import-not-at-top
+  except ImportError:
+    pass
+  else:
+    original_eager_mode = execution_mode.eager_mode
+    execution_mode.eager_mode = execution_mode.EagerMode.DEFER_NEVER
+
+  try:
+    yield
+  finally:
+    if original_eager_mode is not None and execution_mode is not None:
+      execution_mode.eager_mode = original_eager_mode
+
+
 class AtenOpBenchmarkBase(parameterized.TestCase):
 
   def _resolve_op(self, op_name: str) -> Callable | None:
@@ -259,13 +292,7 @@ class AtenOpBenchmarkBase(parameterized.TestCase):
     )
 
     compile_time_s = 0.0
-    # Wrap in run mode context for isolation and setup
-    from types import SimpleNamespace
-    # Use 'cpu' type for jax device to skip clear_cache which fails on 'tpu' and 'jax'
-    dummy_device = (
-        SimpleNamespace(type="cpu") if device.type == "jax" else device
-    )
-    with _run_mode_context(run_mode, dummy_device, clear_device_cache=False):
+    with _aten_run_mode_context(run_mode_str):
       target_op = op_callable
       if run_mode_str == "compiled":
         start_compile = time.perf_counter()
@@ -289,8 +316,13 @@ class AtenOpBenchmarkBase(parameterized.TestCase):
           device_utils.synchronize(device.type, res)
         return res
 
-      # Warmup
-      for _ in range(20):
+      # Warmup: run only 2 warmup iterations during fast CI/unit-test mode
+      # (min_run_time < 0.2s) to conserve runner execution time, while running
+      # 20 warmup iterations during precision benchmark mode to ensure PjRt
+      # cache and memory allocator stabilization prior to recording measurement
+      # times.
+      warmup_runs = 2 if MIN_RUN_TIME.value < 0.2 else 20
+      for _ in range(warmup_runs):
         timed_op(*args, **kwargs)
 
       # Timing

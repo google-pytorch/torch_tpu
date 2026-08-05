@@ -99,6 +99,7 @@ torch_tpu_py_library(
     deps = [
         ":_tpu_torch_sync",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/device:_device_ops_backend",
     ],
 )
 

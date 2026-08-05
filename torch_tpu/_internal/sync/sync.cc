@@ -59,23 +59,14 @@ absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
   return absl::OkStatus();
 }
 
-absl::Status SynchronizeAll(const WaitOnExecution wait) {
+absl::Status MaterializeAll() {
   const std::vector<SharedDeviceBufferList> needs_sync =
       GetAllLiveUnsyncedDataPtrs();
   if (needs_sync.empty()) {
     return absl::OkStatus();
   }
 
-  TT_RETURN_IF_ERROR(
-      Materialize(needs_sync, MaterializationReason::kExplicitSync));
-
-  if (wait == WaitOnExecution::kYes) {
-    for (const auto& node : needs_sync) {
-      TT_RETURN_IF_ERROR(node->Synchronize());
-    }
-  }
-
-  return absl::OkStatus();
+  return Materialize(needs_sync, MaterializationReason::kExplicitSync);
 }
 
 absl::StatusOr<bool> IsMaterializing(const at::Tensor& tensor) {

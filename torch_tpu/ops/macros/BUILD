@@ -65,9 +65,9 @@ torch_tpu_cc_test(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/ops:op_names",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -107,10 +107,10 @@ torch_tpu_cc_test(
         "//torch_tpu/common:cache_key",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:fingerprint_utils",
+        "//torch_tpu/common:oss_test_main",
         "//torch_tpu/eager:op_dispatcher",
         "//torch_tpu/ops:op_names",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
