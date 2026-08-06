@@ -1850,14 +1850,23 @@ def huggingface_diffuser_model_builder(
     model = model_cpu.to(weights_dtype).to(device)
     model.apply(_init_model_weights)
 
-    # Dimensions derived from pipeline settings (height=704, width=1280, num_frames=5):
-    text_seq_len = 512
-    batch_size = 1
+    # Dimensions derived from pipeline settings (default: height=704, width=1280, num_frames=5):
+    text_seq_len = model_and_input_args.custom_kwargs.get("text_seq_len", 512)
+    batch_size = model_and_input_args.custom_kwargs.get("batch_size", 1)
     #   (VAE temporal downscale factor is 4)
-    latent_frames = 2  # (num_frames - 1) // 4 + 1 = (5 - 1) // 4 + 1 = 2
+    num_frames = model_and_input_args.custom_kwargs.get("num_frames", 5)
+    latent_frames = model_and_input_args.custom_kwargs.get(
+        "latent_frames", (num_frames - 1) // 4 + 1
+    )
     #   (VAE spatial downscale factor is 16 for Wan2.2)
-    latent_height = 44  # height // 16 = 704 // 16 = 44
-    latent_width = 80  # width // 16 = 1280 // 16 = 80
+    height = model_and_input_args.custom_kwargs.get("height", 704)
+    width = model_and_input_args.custom_kwargs.get("width", 1280)
+    latent_height = model_and_input_args.custom_kwargs.get(
+        "latent_height", height // 16
+    )
+    latent_width = model_and_input_args.custom_kwargs.get(
+        "latent_width", width // 16
+    )
     _, example_inputs = module_spec.sample_inputs_factory(
         (batch_size, text_seq_len, latent_frames, latent_height, latent_width),
         str(device),

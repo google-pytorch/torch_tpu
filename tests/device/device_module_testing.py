@@ -24,6 +24,7 @@ from absl.testing import absltest
 import torch
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.device import _device_module
+from torch_tpu._internal.device import _device_ops_backend
 from tests import oss_utils
 
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()
@@ -249,6 +250,23 @@ class DeviceModuleBase(absltest.TestCase, metaclass=abc.ABCMeta):
     with self.patch_current_device():
       with self.assertRaisesRegex(TypeError, "Got unrecognized device type"):
         self.device_module.set_device(1.0)
+
+  def test_get_local_device_attributes(self):
+    """Tests the local device attributes dictionary contains correct keys."""
+    tensor = torch.zeros(1, device=torch.accelerator.current_accelerator())
+    _ = tensor.item()  # Materialize to trigger initialization
+
+    attrs = _device_ops_backend._get_local_device_attributes()
+    self.assertIsInstance(attrs, dict)
+    self.assertIn("id", attrs)
+    self.assertIn("process_index", attrs)
+    self.assertIn("device_kind", attrs)
+    if "coords" in attrs:
+      self.assertIsInstance(attrs["coords"], (list, tuple))
+    if "core_on_chip" in attrs:
+      self.assertIsInstance(attrs["core_on_chip"], int)
+    if "slice_index" in attrs:
+      self.assertIsInstance(attrs["slice_index"], int)
 
 
 # pylint: enable=protected-access

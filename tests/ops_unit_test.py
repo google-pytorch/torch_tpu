@@ -9856,6 +9856,20 @@ class OpTestingFrameworkTest(TorchTpuVsCpuTestBase):
     for golden_input, _ in pairs:
       self.assertEqual(golden_input.input_value.dtype, torch.float4_e2m1fn_x2)
 
+  def test_perf_mode_skips_cpu_golden_execution(self):
+    abs_op = next(op for op in op_db if op.name == "abs")
+    with flagsaver.flagsaver(test_mode=op_testing.TestMode.PERF):
+      pairs = self._get_golden_input_output_pairs(
+          op=abs_op,
+          dtype=torch.float32,
+          variant=op_testing.OpVariant.BASE,
+          max_samples=2,
+          verbose=False,
+      )
+      self.assertGreater(len(pairs), 0)
+      for _, golden_output in pairs:
+        self.assertIsNone(golden_output.output_value)
+
   def test_plistlib_enum_serialization(self):
     enum_val = getattr(
         torch.nn.functional,

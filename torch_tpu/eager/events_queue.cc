@@ -605,16 +605,11 @@ PrepareMaterializationTraversals(
 
 namespace {
 struct StreamState {
-  using SharedFuture = std::shared_ptr<xla::Future<void>>;
-
   absl::Mutex mutex;
   absl::flat_hash_map<std::pair<  // STD_PAIR_OK=use default absl::Hash impl
                           c10::DeviceIndex, int64_t>,
-                      std::vector<SharedFuture>>
+                      std::vector<xla::Future<void>>>
       pending_futures ABSL_GUARDED_BY(mutex);
-  absl::flat_hash_map<int64_t, std::vector<SharedFuture>> event_snapshots
-      ABSL_GUARDED_BY(mutex);
-  int64_t next_snapshot_id ABSL_GUARDED_BY(mutex) = 1;
 };
 
 StreamState& GetStreamState() {
@@ -622,20 +617,19 @@ StreamState& GetStreamState() {
   return *state;
 }
 
-void PruneCompletedFutures(std::vector<StreamState::SharedFuture>& futures) {
+void PruneCompletedFutures(std::vector<xla::Future<void>>& futures) {
   futures.erase(std::remove_if(futures.begin(), futures.end(),
-                               [](const StreamState::SharedFuture& future) {
-                                 return future == nullptr ||
-                                        !future->IsValid() || future->IsReady();
+                               [](const xla::Future<void>& future) {
+                                 return !future.IsValid() || future.IsReady();
                                }),
                 futures.end());
 }
 
 void WaitForFutures(c10::DeviceIndex dev_idx, int64_t stream_id,
-                    const std::vector<StreamState::SharedFuture>& futures) {
+                    const std::vector<xla::Future<void>>& futures) {
   for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      absl::Status s = future->Await();
+    if (future.IsValid()) {
+      absl::Status s = future.Await();
       if (!s.ok()) {
         ABSL_LOG(ERROR) << "Stream synchronization failed for device "
                         << static_cast<int>(dev_idx) << " stream " << stream_id
@@ -647,11 +641,11 @@ void WaitForFutures(c10::DeviceIndex dev_idx, int64_t stream_id,
 
 struct StreamFutures {
   c10::StreamId stream_id;
-  std::vector<StreamState::SharedFuture> futures;
+  std::vector<xla::Future<void>> futures;
 };
 
 void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
-                      std::vector<StreamState::SharedFuture>&& new_futures) {
+                      std::vector<xla::Future<void>>&& new_futures) {
   if (new_futures.empty()) {
     return;
   }
@@ -665,14 +659,15 @@ void MarkStreamActive(c10::DeviceIndex device_index, int64_t stream_id,
                  std::make_move_iterator(new_futures.end()));
 }
 
-void MarkStreamActive(std::vector<StreamState::SharedFuture>&& new_futures) {
+void MarkStreamActive(std::vector<xla::Future<void>>&& new_futures) {
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   MarkStreamActive(device_index, stream_id, std::move(new_futures));
 }
 
 void MarkStreamActive(xla::Future<void> future) {
-  std::vector<StreamState::SharedFuture> futures;
-  futures.push_back(std::make_shared<xla::Future<void>>(std::move(future)));
+  std::vector<xla::Future<void>> futures;
+  futures.reserve(1);
+  futures.push_back(std::move(future));
   MarkStreamActive(std::move(futures));
 }
 
@@ -680,11 +675,10 @@ void MarkStreamActive(xla::Future<void> future) {
 
 void RecordBackgroundMaterialization(
     absl::Span<const DeviceBufferRef> outputs) {
-  std::vector<StreamState::SharedFuture> new_futures;
+  std::vector<xla::Future<void>> new_futures;
   new_futures.reserve(outputs.size());
   for (const auto& output : outputs) {
-    new_futures.push_back(
-        std::make_shared<xla::Future<void>>(output.GetReadyFuture()));
+    new_futures.push_back(output.GetReadyFuture());
   }
   MarkStreamActive(std::move(new_futures));
 }
@@ -706,7 +700,7 @@ void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id) {
   ABSL_VLOG(1) << "SynchronizeStream: device=" << static_cast<int>(device_index)
                << ", stream=" << stream_id;
   StreamState& state = GetStreamState();
-  std::vector<StreamState::SharedFuture> futures;
+  std::vector<xla::Future<void>> futures;
   {
     absl::MutexLock lock(state.mutex);
     auto it = state.pending_futures.find({device_index, stream_id});
@@ -717,8 +711,8 @@ void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id) {
     futures = it->second;
   }
   for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      absl::Status s = future->Await();
+    if (future.IsValid()) {
+      absl::Status s = future.Await();
       if (!s.ok()) {
         ABSL_LOG(ERROR) << "Stream synchronization failed for device "
                         << static_cast<int>(device_index) << " stream "
@@ -763,66 +757,31 @@ void SynchronizeDevice(c10::DeviceIndex device_index) {
   }
 }
 
-EventSnapshot::~EventSnapshot() {
-  StreamState& state = GetStreamState();
-  absl::MutexLock lock(state.mutex);
-  state.event_snapshots.erase(event_id_);
-}
-
 std::shared_ptr<EventSnapshot> EventSnapshot::Record(
     c10::DeviceIndex device_index, int64_t stream_id) {
   StreamState& state = GetStreamState();
   absl::MutexLock lock(state.mutex);
-  const int64_t event_id = state.next_snapshot_id++;
   auto it = state.pending_futures.find({device_index, stream_id});
-  std::vector<StreamState::SharedFuture> futures =
-      it != state.pending_futures.end()
-          ? it->second
-          : std::vector<StreamState::SharedFuture>{};
-  state.event_snapshots.emplace(event_id, std::move(futures));
+  if (it == state.pending_futures.end()) {
+    return std::shared_ptr<EventSnapshot>(
+        new EventSnapshot(xla::Future<void>(absl::OkStatus())));
+  }
+  PruneCompletedFutures(it->second);
+  if (it->second.empty()) {
+    return std::shared_ptr<EventSnapshot>(
+        new EventSnapshot(xla::Future<void>(absl::OkStatus())));
+  }
+  auto join_future = JoinFutures(it->second);
+  it->second.clear();
+  it->second.push_back(join_future);  // intentional copy
+
   // Can't use make_shared because the constructor is private.
-  return std::shared_ptr<EventSnapshot>(new EventSnapshot(event_id));
+  return std::shared_ptr<EventSnapshot>(
+      new EventSnapshot(std::move(join_future)));
 }
 
-absl::Status EventSnapshot::Wait() const {
-  std::vector<StreamState::SharedFuture> futures;
-  {
-    StreamState& state = GetStreamState();
-    absl::MutexLock lock(state.mutex);
-    auto it = state.event_snapshots.find(event_id_);
-    if (it == state.event_snapshots.end()) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "unknown event snapshot id: " << event_id_;
-    }
-    futures = it->second;
-  }
+absl::Status EventSnapshot::Wait() const { return future_.Await(); }
 
-  for (auto& future : futures) {
-    if (future != nullptr && future->IsValid()) {
-      TT_RETURN_IF_ERROR(future->Await());
-    }
-  }
-  return absl::OkStatus();
-}
-
-absl::StatusOr<bool> EventSnapshot::Query() const {
-  std::vector<StreamState::SharedFuture> futures;
-  {
-    StreamState& state = GetStreamState();
-    absl::MutexLock lock(state.mutex);
-    auto it = state.event_snapshots.find(event_id_);
-    if (it == state.event_snapshots.end()) {
-      return TT_ERROR(error::kInvalidArgument)
-             << "unknown event snapshot id: " << event_id_;
-    }
-    futures = it->second;
-  }
-  for (const auto& future : futures) {
-    if (future != nullptr && future->IsValid() && !future->IsReady()) {
-      return false;
-    }
-  }
-  return true;
-}
+absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }
 
 }  // namespace torch_tpu

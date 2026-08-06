@@ -42,6 +42,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -203,25 +204,25 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
              << "num_head_q must be divisible by num_head_kv";
     }
     head_count_ratio = num_head_q / num_head_kv;
-    auto replicate = [&](mlir::MlirOp input) {
-      auto broadcast_type = mlir::RankedTensorType::get(
-          {batch_size, num_head_kv, head_count_ratio, seq_len_kv, head_dim},
-          GetTensorTypeOrDie(input).getElementType());
-      mlir::MlirOp broadcasted_input =
-          mlir::stablehlo::BroadcastInDim(broadcast_type, input, {0, 1, 3, 4});
+    auto replicate = [&](mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
+      mlir::stablehlo::Dimensions target_shape = GetDimensions(input);
+      target_shape.insert(target_shape.begin() + 2,
+                          mlir::stablehlo::DimensionInfo{head_count_ratio});
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_input,
+                          BroadcastIfNeeded(input, target_shape, {0, 1, 3, 4}));
       return mlir::stablehlo::Reshape(
           broadcasted_input, {batch_size, num_head_q, seq_len_kv, head_dim});
     };
-    key_4d = replicate(key_4d);
-    value_4d = replicate(value_4d);
+    TT_ASSIGN_OR_RETURN(key_4d, replicate(key_4d));
+    TT_ASSIGN_OR_RETURN(value_4d, replicate(value_4d));
   }
 
   // Scale Q before Dot product - matches pytorch attention implementation and
   // improves stability https://tinyurl.com/sudb9s96
   mlir::MlirOp scale_value =
       GetScaleDefaulted(builder, scale, head_dim, element_type);
-  mlir::MlirOp broadcasted_scale_value = mlir::stablehlo::Broadcast(
-      scale_value, GetTensorTypeOrDie(query_4d).getShape());
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_scale_value,
+                      BroadcastIfNeeded(scale_value, query_4d));
   mlir::MlirOp scaled_query_4d =
       mlir::stablehlo::Mul(query_4d, broadcasted_scale_value);
 
@@ -281,8 +282,9 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
       mlir::stablehlo::Reduce(builder, {masked_attn_logits},
                               /*init_value=*/{minus_inf}, max_reduce_builder,
                               /*dimensions=*/{3})[0];
-  mlir::MlirOp max_logits_broadcasted = mlir::stablehlo::BroadcastInDim(
-      masked_attn_logits.getType(), max_logits, {0, 1, 2});
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_logits_broadcasted,
+                      BroadcastIfNeeded(max_logits, masked_attn_logits,
+                                        /*broadcast_dimensions=*/{0, 1, 2}));
   mlir::MlirOp shifted_attn_logits =
       mlir::stablehlo::Subtract(masked_attn_logits, max_logits_broadcasted);
 
@@ -393,8 +395,8 @@ ScaledDotProductFusedAttentionShlo(const at::Tensor& query,
     // Softmax along the last dimension (Lk)
     mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
     mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
-    mlir::MlirOp sum_exp_broadcasted =
-        mlir::stablehlo::BroadcastInDim(exp_val.getType(), sum_exp, {0, 1, 2});
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
+                        BroadcastIfNeeded(sum_exp, exp_val, {0, 1, 2}));
     mlir::MlirOp softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
 
     if (promotion_type == SdpaPromotionType::kSoftmaxOnly &&
@@ -557,8 +559,10 @@ ScaledDotProductFusedAttentionShloBackward(
     // shifted_attn_logits has shape [B, H, Lq, Lk].
     mlir::MlirOp sum_exp_converted =
         mlir::stablehlo::ConvertElementType(sum_exp_3d, element_type);
-    mlir::MlirOp sum_exp_broadcasted = mlir::stablehlo::BroadcastInDim(
-        shifted_attn_logits.getType(), sum_exp_converted, {0, 1, 2});
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp sum_exp_broadcasted,
+        BroadcastIfNeeded(sum_exp_converted, shifted_attn_logits,
+                          /*broadcast_dimensions=*/{0, 1, 2}));
 
     // Softmax along the last dimension (Lk)
     mlir::MlirOp exp_val = mlir::stablehlo::Exp(shifted_attn_logits);
@@ -586,8 +590,9 @@ ScaledDotProductFusedAttentionShloBackward(
     mlir::MlirOp s_mul_ds = mlir::stablehlo::Mul(softmax, grad_softmax);
     mlir::MlirOp rowsum_s_mul_ds =
         SumReduce(builder, s_mul_ds, /*dimension=*/3);
-    mlir::MlirOp rowsum_broadcasted = mlir::stablehlo::BroadcastInDim(
-        softmax.getType(), rowsum_s_mul_ds, {0, 1, 2});
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp rowsum_broadcasted,
+                        BroadcastIfNeeded(rowsum_s_mul_ds, softmax,
+                                          /*broadcast_dimensions=*/{0, 1, 2}));
     mlir::MlirOp shifted_ds =
         mlir::stablehlo::Subtract(grad_softmax, rowsum_broadcasted);
     mlir::MlirOp grad_p = mlir::stablehlo::Mul(softmax, shifted_ds);

@@ -66,7 +66,18 @@ pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-acc
 Wheels can be built via:
 
 ```bash
-bazel build -c opt --config=wheel_common //ci/wheel:torch_tpu_wheel
+bazel build --config=wheel_common //ci/wheel:torch_tpu_wheel
+```
+
+All OSS Bazel builds default to optimized mode (`-c opt`) automatically via
+`.bazelrc`. Unoptimized builds (`-c fastbuild`, `-c dbg`) can degrade
+performance and are not used for wheel builds. If you are developing or
+debugging C++ code and explicitly want an unoptimized wheel, pass
+`--//:allow_unoptimized_wheel=True`:
+
+```bash
+bazel build -c dbg --config=wheel_common //ci/wheel:torch_tpu_wheel \
+    --//:allow_unoptimized_wheel=True
 ```
 
 `--config=wheel_common` is required, and the build fails at build time without
@@ -81,7 +92,7 @@ remote executor. If you do not have RBE credentials, append `--config=no_rbe` to
 strip those flags back out:
 
 ```bash
-bazel build -c opt --config=wheel_common //ci/wheel:torch_tpu_wheel --config=no_rbe
+bazel build --config=wheel_common //ci/wheel:torch_tpu_wheel --config=no_rbe
 ```
 
 The order matters here: `--config=no_rbe` has to come after

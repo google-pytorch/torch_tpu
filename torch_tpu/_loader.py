@@ -109,6 +109,22 @@ def _configure_native_scan_gate() -> None:
   )
 
 
+def _warn_if_unoptimized() -> None:
+  """Warns if TorchTPU is running in OSS with an unoptimized build."""
+  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
+
+  if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
+    import warnings  # pylint: disable=g-import-not-at-top
+
+    warnings.warn(
+        "[UNOPTIMIZED BUILD] TorchTPU was compiled in an unoptimized mode."
+        " Performance will be degraded. For production workloads, compile with"
+        " '-c opt' (default).",
+        RuntimeWarning,
+        stacklevel=7,
+    )
+
+
 def _init_device_impl(device: str) -> torch.device:
   """Initializes a lazy pytorch device.
 
@@ -205,6 +221,9 @@ def _init_device_impl(device: str) -> torch.device:
 
   # Configure native scan gate for cumulative ops.
   _configure_native_scan_gate()
+
+  # Warn if running with an unoptimized build.
+  _warn_if_unoptimized()
 
   # Monkey patch torch.set_float32_matmul_precision and
   # torch.get_float32_matmul_precision to maintain global precision state.

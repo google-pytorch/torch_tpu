@@ -40,6 +40,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -473,6 +474,143 @@ TEST(BroadcastIfNeeded, Failure) {
   EXPECT_EQ(result.status().code(), error::kInvalidArgument);
   EXPECT_THAT(result.status().message(),
               testing::HasSubstr("failed to broadcast tensor: "));
+}
+
+TEST(BroadcastIfNeeded, ExplicitBroadcastDims) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  mlir::MlirOp op =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {2, 3});
+  mlir::MlirOp target =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {2, 5, 3});
+  auto result = BroadcastIfNeeded(op, target, {0, 2});
+  ASSERT_TRUE(result.ok());
+  auto result_type = mlir::dyn_cast<mlir::RankedTensorType>(result->getType());
+  ASSERT_TRUE(result_type);
+  EXPECT_THAT(result_type.getShape(), ElementsAre(2, 5, 3));
+}
+
+TEST(BroadcastIfNeeded, ExplicitBroadcastDimsBothDynamic) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+
+  mlir::MlirOp bound_op = MakeConstant(builder, 5, op_builder.getI32Type(), {});
+
+  mlir::MlirOp base_input =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 3});
+  mlir::Value input_val = mlir::stablehlo::SetDimensionSizeOp::create(
+      op_builder, op_builder.getUnknownLoc(), base_input.getValue(),
+      bound_op.getValue(), 0);
+  mlir::MlirOp input_op(builder, input_val);
+
+  mlir::MlirOp base_target =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 4, 3});
+  mlir::Value target_val = mlir::stablehlo::SetDimensionSizeOp::create(
+      op_builder, op_builder.getUnknownLoc(), base_target.getValue(),
+      bound_op.getValue(), 0);
+  mlir::MlirOp target_op(builder, target_val);
+
+  auto result = BroadcastIfNeeded(input_op, target_op, {0, 2});
+  ASSERT_TRUE(result.ok());
+
+  auto result_type = mlir::dyn_cast<mlir::RankedTensorType>(result->getType());
+  ASSERT_TRUE(result_type);
+  EXPECT_EQ(result_type.getRank(), 3);
+  EXPECT_TRUE(result_type.isDynamicDim(0));
+  EXPECT_FALSE(result_type.isDynamicDim(1));
+  EXPECT_FALSE(result_type.isDynamicDim(2));
+  EXPECT_EQ(result_type.getDimSize(1), 4);
+  EXPECT_EQ(result_type.getDimSize(2), 3);
+
+  auto dims = GetDimensions(*result);
+  EXPECT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 10);
+  EXPECT_TRUE(dims[0].boundOp.has_value());
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_EQ(dims[2].size, 3);
+}
+
+TEST(BroadcastIfNeeded, ExplicitBroadcastDimsFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+  mlir::MlirOp op =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {2, 3});
+  mlir::MlirOp target =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {2, 5, 3});
+  // Mismatched rank size for broadcast_dimensions.
+  auto result = BroadcastIfNeeded(op, target, {0});
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
+}
+
+TEST(BroadcastIfNeeded,
+     ExplicitBroadcastDimsBoundedInputToStaticTargetFailure) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+
+  mlir::MlirOp bound_op = MakeConstant(builder, 5, op_builder.getI32Type(), {});
+
+  mlir::MlirOp base_input =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 3});
+  mlir::Value input_val = mlir::stablehlo::SetDimensionSizeOp::create(
+      op_builder, op_builder.getUnknownLoc(), base_input.getValue(),
+      bound_op.getValue(), 0);
+  mlir::MlirOp input_op(builder, input_val);
+
+  // Target is static shape [10, 4, 3]
+  mlir::MlirOp target_op =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {10, 4, 3});
+
+  auto result = BroadcastIfNeeded(input_op, target_op, {0, 2});
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), error::kInvalidArgument);
+  EXPECT_THAT(result.status().message(),
+              testing::HasSubstr("cannot mix bounded and static dimensions"));
+}
+
+TEST(BroadcastIfNeeded, ExplicitBroadcastDimsStaticInputToDynamicTarget) {
+  OpBuilderUtilsBuilder op_builder_utils_builder;
+  mlir::MlirBuilder& builder = op_builder_utils_builder.get();
+  mlir::OpBuilder& op_builder = builder.getOpBuilder();
+
+  mlir::MlirOp bound_op = MakeConstant(builder, 5, op_builder.getI32Type(), {});
+
+  // Input is static shape [3, 1]
+  mlir::MlirOp input_op =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {3, 1});
+
+  // Target shape: [3, 4, ?] with bound 10 on dim 2 (last dim)
+  mlir::MlirOp base_target =
+      MakeConstant(builder, 1.0f, op_builder.getF32Type(), {3, 4, 10});
+  mlir::Value target_val = mlir::stablehlo::SetDimensionSizeOp::create(
+      op_builder, op_builder.getUnknownLoc(), base_target.getValue(),
+      bound_op.getValue(), 2);
+  mlir::MlirOp target_op(builder, target_val);
+
+  // Map input dim 0 -> target dim 0, input dim 1 -> target dim 1 (non-numpy
+  // alignment)
+  auto result = BroadcastIfNeeded(input_op, target_op, {0, 1});
+  ASSERT_TRUE(result.ok());
+
+  auto result_type = mlir::dyn_cast<mlir::RankedTensorType>(result->getType());
+  ASSERT_TRUE(result_type);
+  EXPECT_EQ(result_type.getRank(), 3);
+  EXPECT_FALSE(result_type.isDynamicDim(0));
+  EXPECT_FALSE(result_type.isDynamicDim(1));
+  EXPECT_TRUE(result_type.isDynamicDim(2));
+  EXPECT_EQ(result_type.getDimSize(0), 3);
+  EXPECT_EQ(result_type.getDimSize(1), 4);
+
+  auto dims = GetDimensions(*result);
+  EXPECT_EQ(dims.size(), 3);
+  EXPECT_EQ(dims[0].size, 3);
+  EXPECT_EQ(dims[1].size, 4);
+  EXPECT_EQ(dims[2].size, 10);
+  EXPECT_TRUE(dims[2].boundOp.has_value());
 }
 
 TEST(CastIfNeeded, I32ToF32) {

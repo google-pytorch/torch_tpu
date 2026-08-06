@@ -1770,7 +1770,9 @@ class OpOutput:
       output_value: The output of the op, or an Exception if the op failed.
     """
 
-    if isinstance(output_value, Exception):
+    # In perf mode, golden result computation on CPU is skipped to avoid
+    # executing the CPU code path, resulting in output_value being None.
+    if output_value is None or isinstance(output_value, Exception):
       self.output_value = output_value
       return
 
@@ -2389,23 +2391,29 @@ class TorchTpuTestBase(TestCase):
         golden_sample.kwargs.update({"dropout_p": 0.0})
 
       golden_input = OpInput(golden_sample)
-      golden_result = self._run_op(
-          op=op,
-          variant=variant,
-          dtype=dtype,
-          op_input=golden_input,
-          compute_grad=compute_grad,
-          use_compiled=use_compiled,
-          device=self.golden_device,
-          subtest_name="golden",
-          # When generating golden results, we should trust the op's output
-          # to be correct and not check the device. E.g. even in the
-          # gen_gpu_golden mode, torch.arange(5) should return a tensor on
-          # CPU instead of GPU.
-          check_device=False,
-          # No need to mark inputs as dynamic when computing golden results.
-          check_dynamism=False,
-      )
+      if _perf_mode():
+        # In perf mode, our sole purpose is to measure execution performance on
+        # TPU. Skip generating golden results on CPU to avoid running the CPU
+        # code path of the operator.
+        golden_result = None
+      else:
+        golden_result = self._run_op(
+            op=op,
+            variant=variant,
+            dtype=dtype,
+            op_input=golden_input,
+            compute_grad=compute_grad,
+            use_compiled=use_compiled,
+            device=self.golden_device,
+            subtest_name="golden",
+            # When generating golden results, we should trust the op's output
+            # to be correct and not check the device. E.g. even in the
+            # gen_gpu_golden mode, torch.arange(5) should return a tensor on
+            # CPU instead of GPU.
+            check_device=False,
+            # No need to mark inputs as dynamic when computing golden results.
+            check_dynamism=False,
+        )
       golden_output = OpOutput(golden_result)
       pairs.append((golden_input, golden_output))
       if _gen_gpu_golden_mode():
@@ -2896,6 +2904,11 @@ class TorchTpuTestBase(TestCase):
           check_device=check_device,
           check_dynamism=check_dynamism,
       )
+    if _perf_mode():
+      # In perf mode, performance measurement is completed during self._run_op
+      # on TPU above. Return early to avoid running behavioral and failure
+      # consistency comparisons against CPU.
+      return
     golden_thrown = isinstance(golden_result, Exception)
     torch_tpu_thrown = isinstance(torch_tpu_result, Exception)
 

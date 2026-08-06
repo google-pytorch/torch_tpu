@@ -169,6 +169,31 @@ int64_t PyNextStreamId(int64_t device_index) {
   return NextStreamId(device_index);
 }
 
+py::dict PyGetLocalDeviceAttributes() {
+  absl::StatusOr<PjRtDeviceAttributes> attrs_or =
+      PjrtBackend::GetInstance().GetDeviceAttributes();
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PjrtBackend is always initialized in
+                   // Python test environment.
+      attrs_or.ok(), error::kInternal)
+      << attrs_or.status().message();
+
+  py::dict attrs;
+  attrs["id"] = attrs_or->id;
+  attrs["process_index"] = attrs_or->process_index;
+  attrs["device_kind"] = attrs_or->device_kind;
+  if (attrs_or->coords.has_value()) {
+    attrs["coords"] = *attrs_or->coords;
+  }
+  if (attrs_or->core_on_chip.has_value()) {
+    attrs["core_on_chip"] = *attrs_or->core_on_chip;
+  }
+  if (attrs_or->slice_index.has_value()) {
+    attrs["slice_index"] = *attrs_or->slice_index;
+  }
+
+  return attrs;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_device_ops_backend, m) {
@@ -262,6 +287,11 @@ PYBIND11_MODULE(_device_ops_backend, m) {
       },
       "Returns the number of devices visible to the PJRT client. This count "
       "is equivalent to the addressable device count.");
+
+  m.def(
+      "_get_local_device_attributes", &PyGetLocalDeviceAttributes,
+      "Returns explicitly needed attributes and properties of the current PJRT "
+      "device.");
 
   m.def(
       "_set_allow_cache",

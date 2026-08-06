@@ -43,7 +43,6 @@ import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal import tracing
-from torch_tpu._internal.sync import sync
 
 
 def _trace_dir() -> str:
@@ -113,7 +112,7 @@ class TracingTest(absltest.TestCase):
     # the user's API call, not kDebugMode.
     self._old_mode = execution_mode.eager_mode
     self.addCleanup(setattr, execution_mode, "eager_mode", self._old_mode)
-    execution_mode.eager_mode = execution_mode.EagerMode.INTERNAL_DEFER_ALL
+    execution_mode.eager_mode = execution_mode.EagerMode.DEFER_AND_FUSE
     self._dev = torch.accelerator.current_accelerator()
 
   def test_daemon_started(self):
@@ -122,8 +121,9 @@ class TracingTest(absltest.TestCase):
   def test_fx_format_with_source_location(self):
     a = torch.randn(4, 8, device=self._dev, dtype=torch.bfloat16)
     b = torch.randn(8, 16, device=self._dev, dtype=torch.bfloat16)
-    out = torch.mm(a, b)
-    sync.synchronize(out, wait=True)
+    # Keep referenced: synchronize() only materializes live tensors.
+    _out = torch.mm(a, b)
+    torch.accelerator.synchronize()
     tracing._flush()
 
     artifacts = _parse_artifacts(_read_latest_log())
@@ -160,8 +160,9 @@ class TracingTest(absltest.TestCase):
     # topk() returns (values, indices).
     # Renders as "%a, %b: ..., ... = topk(...)".
     a = torch.randn(64, 64, device=self._dev, dtype=torch.bfloat16)
-    out, _ = torch.topk(a, k=5)
-    sync.synchronize(out, wait=True)
+    # Keep referenced: synchronize() only materializes live tensors.
+    _out = torch.topk(a, k=5)
+    torch.accelerator.synchronize()
     tracing._flush()
 
     artifacts = _parse_artifacts(_read_latest_log())
@@ -177,7 +178,9 @@ class TracingTest(absltest.TestCase):
     a = torch.ones(64, 64, device=self._dev)
     b = torch.ones(64, 64, device=self._dev)
     (a + b).cpu()  # should tag .cpu()
-    sync.synchronize(a + b, wait=True)  # should tag synchronize()
+    # Keep referenced: synchronize() only materializes live tensors.
+    _out = a + b
+    torch.accelerator.synchronize()  # should tag synchronize()
     tracing._flush()
 
     reasons = {
@@ -194,7 +197,9 @@ class TracingTest(absltest.TestCase):
   def test_chromium_event_emitted(self):
     a = torch.ones(32, 32, device=self._dev)
     b = torch.ones(32, 32, device=self._dev)
-    sync.synchronize(a + b, wait=True)
+    # Keep referenced: synchronize() only materializes live tensors.
+    _out = a + b
+    torch.accelerator.synchronize()
     tracing._flush()
 
     content = _read_latest_log()

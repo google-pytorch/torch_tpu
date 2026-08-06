@@ -48,6 +48,30 @@ differently-laid-out one, which is why this is refused rather than warned about.
 ================================================================================
 """
 
+_WHEEL_OPT_GUARD_MESSAGE = """
+================================================================================
+The torch_tpu wheel must be built with compilation mode "-c opt".
+
+Unoptimized builds (-c fastbuild, -c dbg, etc.) can degrade performance and are
+not intended for distribution wheels.
+
+If you are developing or debugging and explicitly want an unoptimized wheel,
+pass --//:allow_unoptimized_wheel=True on your command line:
+
+    bazel build -c dbg --config=wheel_common //ci/wheel:torch_tpu_wheel \\
+        --//:allow_unoptimized_wheel=True
+================================================================================
+"""
+
+def _fail_action(ctx, out_dir, message, mnemonic, progress_message):
+    ctx.actions.run_shell(
+        outputs = [out_dir],
+        command = "cat >&2 <<'_GUARD_EOF_'{}_GUARD_EOF_\nexit 1\n".format(message),
+        mnemonic = mnemonic,
+        progress_message = progress_message,
+    )
+    return [DefaultInfo(files = depset([out_dir]))]
+
 def _remapper_impl(ctx):
     manifests = []
     binaries = []
@@ -67,15 +91,22 @@ def _remapper_impl(ctx):
     # produces out_dir makes a mis-factored wheel unbuildable no matter which
     # wheel target was requested.
     if not ctx.attr._wheel_build[BuildSettingInfo].value:
-        ctx.actions.run_shell(
-            outputs = [out_dir],
-            command = "cat >&2 <<'_GUARD_EOF_'{}_GUARD_EOF_\nexit 1\n".format(
-                _WHEEL_BUILD_GUARD_MESSAGE,
-            ),
+        return _fail_action(
+            ctx,
+            out_dir,
+            _WHEEL_BUILD_GUARD_MESSAGE,
             mnemonic = "PywrapWheelBuildGuard",
             progress_message = "Checking the torch_tpu wheel build configuration",
         )
-        return [DefaultInfo(files = depset([out_dir]))]
+
+    if ctx.var.get("COMPILATION_MODE") != "opt" and not ctx.attr._allow_unoptimized_wheel[BuildSettingInfo].value:
+        return _fail_action(
+            ctx,
+            out_dir,
+            _WHEEL_OPT_GUARD_MESSAGE,
+            mnemonic = "PywrapWheelOptGuard",
+            progress_message = "Checking the torch_tpu compilation mode configuration",
+        )
 
     # 3. Construct arguments for the python script. Multiple pywrap_binaries
     # (one per PyTorch version) each contribute a manifest; the per-version
@@ -102,6 +133,9 @@ remap_pywrap_binaries = rule(
     attrs = {
         "srcs": attr.label_list(mandatory = True, allow_files = True),
         "_wheel_build": attr.label(default = Label("//:wheel_build")),
+        "_allow_unoptimized_wheel": attr.label(
+            default = Label("//:allow_unoptimized_wheel"),
+        ),
         "_mapper_script": attr.label(
             default = Label("//ci/wheel:wheel_mapper_bin"),
             executable = True,

@@ -16,9 +16,14 @@
 
 #include "torch_tpu/pjrt/pjrt_state.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
@@ -118,6 +123,31 @@ void MaybeRegisterProfiler(std::string_view plugin_name) {
     return true;
   }();
   static_cast<void>(factory_registered);  // VOID_CAST_OK=dummy result.
+}
+
+std::optional<int64_t> GetIntAttribute(const xla::PjRtDevice* device,
+                                       std::string_view key) {
+  const auto& attributes = device->Attributes();
+  auto it = attributes.find(key);
+  if (it != attributes.end()) {
+    if (const auto* val = std::get_if<int64_t>(&it->second)) {
+      return *val;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::vector<int64_t>> GetIntVecAttribute(  // INT_VEC_OK
+    const xla::PjRtDevice* device, std::string_view key) {
+  const auto& attributes = device->Attributes();
+  auto it = attributes.find(key);
+  if (it != attributes.end()) {
+    if (const auto* val =
+            std::get_if<std::vector<int64_t>>(&it->second)) {  // INT_VEC_OK
+      return *val;
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -283,6 +313,25 @@ absl::StatusOr<int> PjrtBackend::GetGlobalDeviceId() {
 PjRtDeviceType PjrtBackend::GetDeviceType() {
   absl::ReaderMutexLock lock(mutex_);
   return device_type_;
+}
+
+absl::StatusOr<PjRtDeviceAttributes> PjrtBackend::GetDeviceAttributes() {
+  TT_RETURN_IF_ERROR(EnsureInitialized());
+  absl::ReaderMutexLock lock(mutex_);
+  if (device_ == nullptr) {
+    return TT_ERROR(error::kInternal) << "PjRt device is not initialized";
+  }
+
+  const xla::PjRtDevice* const device = device_;
+  PjRtDeviceAttributes attrs;
+  attrs.id = static_cast<int64_t>(device->global_device_id().value());
+  attrs.process_index = static_cast<int64_t>(device->process_index());
+  attrs.device_kind = std::string(device->device_kind());
+
+  attrs.coords = GetIntVecAttribute(device, "coords");
+  attrs.core_on_chip = GetIntAttribute(device, "core_on_chip");
+  attrs.slice_index = GetIntAttribute(device, "slice_index");
+  return attrs;
 }
 
 absl::StatusOr<tsl::AllocatorStats> PjrtBackend::GetAllocatorStats() {

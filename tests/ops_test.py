@@ -3426,7 +3426,7 @@ class TestOps(TorchTpuTestBase):
         #    to not contain X64 element types, XLA encountered an HLO for which
         #    this rewriting is not implemented: %convolution [...]"
         exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32),
+        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
     )
 
   def test_nn_functional_conv2d(self):
@@ -3435,7 +3435,7 @@ class TestOps(TorchTpuTestBase):
         # TODO: fix nn.functional.conv*d() failing with integral and complex
         # dtypes. See comments in test_nn_functional_conv1d.
         exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32),
+        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
     )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
@@ -3467,7 +3467,7 @@ class TestOps(TorchTpuTestBase):
         #    to not contain X64 element types, XLA encountered an HLO for which
         #    this rewriting is not implemented: %convolution [...]"
         exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32),
+        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
     )
 
   # TODO(gleasonk): why does compilation time out on this input?

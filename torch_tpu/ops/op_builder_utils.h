@@ -425,13 +425,21 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
 // also made bounded.
 // If the target shape is unbounded, input is broadcasted to the target shape
 // without any bounds.
+//
+// If broadcast_dimensions is non-empty, broadcasting maps input dimensions
+// accordingly instead of NumPy-style broadcasting.
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
-    mlir::MlirOp input, mlir::stablehlo::Dimensions shape);
+    mlir::MlirOp input, mlir::stablehlo::Dimensions shape,
+    absl::Span<const int64_t> broadcast_dimensions = {});
 
 // Broadcasts input to target shape, returning an error if the shapes are
 // incompatible.
-absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
-                                               mlir::MlirOp target);
+//
+// If broadcast_dimensions is non-empty, broadcasting maps input dimensions
+// accordingly instead of NumPy-style broadcasting.
+absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
+    mlir::MlirOp input, mlir::MlirOp target,
+    absl::Span<const int64_t> broadcast_dimensions = {});
 
 // Unsqueezes the input tensor by inserting a dimension of size 1 at the
 // given dimension.

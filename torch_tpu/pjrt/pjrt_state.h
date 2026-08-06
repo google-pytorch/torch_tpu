@@ -19,7 +19,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
@@ -38,6 +40,16 @@ namespace torch_tpu {
 struct PjRtInitializationOptions {
   std::string device_type = "tpu";
   int64_t premapped_buffer_size_bytes = 0;
+};
+
+// PJRT device attributes populated from the PJRT runtime.
+struct PjRtDeviceAttributes {
+  int64_t id;
+  int64_t process_index;
+  std::string device_kind;
+  std::optional<std::vector<int64_t>> coords;  // INT_VEC_OK
+  std::optional<int64_t> core_on_chip;
+  std::optional<int64_t> slice_index;
 };
 
 // PjrtBackend manages the lifecycle and state of the PjRt runtime.
@@ -90,6 +102,11 @@ class PjrtBackend {
 
   // Returns the PjRt device type.
   [[nodiscard]] PjRtDeviceType GetDeviceType() ABSL_LOCKS_EXCLUDED(mutex_);
+
+  // Returns explicitly needed attributes and properties of the current PJRT
+  // device.
+  absl::StatusOr<PjRtDeviceAttributes> GetDeviceAttributes()
+      ABSL_LOCKS_EXCLUDED(mutex_);
 
   // Returns allocator stats for the current PjRt device.
   absl::StatusOr<tsl::AllocatorStats> GetAllocatorStats()

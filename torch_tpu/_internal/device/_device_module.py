@@ -261,6 +261,12 @@ class _DeviceModule(abc.ABC):
     _device_ops_backend.manual_seed_all(seed)
 
   @classmethod
+  def get_local_device_attributes(cls) -> Mapping[str, Any]:
+    """Returns attributes of the local PJRT device, initializing options if needed."""
+    cls._init_runtime_options()
+    return _device_ops_backend._get_local_device_attributes()  # pylint: disable=protected-access
+
+  @classmethod
   def get_rng_state(
       cls, device: int | str | torch.device = "tpu"
   ) -> torch.Tensor:

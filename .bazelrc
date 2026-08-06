@@ -50,6 +50,9 @@ common --per_file_copt=external/.*(onednn|llvm-project).*[.](cc|cpp|hpp)$@-std=c
 # Treat warnings as errors.
 build --copt=-Werror
 
+# Default to optimized (-c opt) builds in OSS.
+build --compilation_mode=opt
+
 # ===== Start spammy C++ compile warning disables =====
 # Some low-level legacy glibc macros are used in lots of
 # places, which very spammy, so silence this one.

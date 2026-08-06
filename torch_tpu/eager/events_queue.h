@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "absl/base/nullability.h"
@@ -87,12 +88,10 @@ void SynchronizeStream(c10::DeviceIndex device_index, int64_t stream_id);
 // completed.
 void SynchronizeDevice(c10::DeviceIndex device_index);
 
-// An EventSnapshot is a collection of XLA futures that represents the state of
+// An EventSnapshot is a joined XLA future that represents the state of
 // a stream at a particular point in time.
 class EventSnapshot {
  public:
-  ~EventSnapshot();
-
   // Records a fence over the async d2h copies already enqueued on the device
   // and stream.
   static std::shared_ptr<EventSnapshot> Record(c10::DeviceIndex device_index,
@@ -105,12 +104,12 @@ class EventSnapshot {
   absl::StatusOr<bool> Query() const;
 
  private:
-  // The event ID of the event snapshot.
+  // The future backing the event snapshot.
   // Private; must use Record() so that the snapshot is tracked on the stream.
-  explicit EventSnapshot(int64_t event_id) : event_id_(event_id) {}
+  explicit EventSnapshot(xla::Future<void> future)
+      : future_(std::move(future)) {}
 
-  // The event ID of the event snapshot.
-  const int64_t event_id_;
+  xla::Future<void> future_;
 };
 
 }  // namespace torch_tpu

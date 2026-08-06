@@ -67,6 +67,12 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# True when explicitly requesting an unoptimized wheel build (-c dbg, -c fastbuild, etc.).
+bool_flag(
+    name = "allow_unoptimized_wheel",
+    build_setting_default = False,
+)
+
 # The PyTorch version a C++ extension is compiled/linked against. The pybind
 # transition (//shims/pybind11:pybind.bzl) sets this to build one glue per
 # supported PyTorch version; shims/torch selects the matching torch wheel on it.

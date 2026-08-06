@@ -465,12 +465,18 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
 }
 
 absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
-    mlir::MlirOp input, mlir::stablehlo::Dimensions shape) {
+    mlir::MlirOp input, mlir::stablehlo::Dimensions shape,
+    absl::Span<const int64_t> broadcast_dimensions) {
   mlir::BaseScopedDiagnosticHandler diag_handler(input.getValue().getContext());
-  auto broadcasted_value_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
-      input.getBuilder().getOpBuilder(), input.getValue(), shape);
-  // TODO(mkkhanna): Add a python level test for error when this API is used
-  // by some op.
+  mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
+  if (!broadcast_dimensions.empty()) {
+    broadcasted_value_or_fail = mlir::stablehlo::broadcastIfNeeded(
+        input.getBuilder().getOpBuilder(), input.getValue(), shape,
+        AsArrayRef(broadcast_dimensions));
+  } else {
+    broadcasted_value_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
+        input.getBuilder().getOpBuilder(), input.getValue(), shape);
+  }
   TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
                error::kInvalidArgument)
       << "failed to broadcast tensor: "
@@ -478,22 +484,28 @@ absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
   return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
-absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(mlir::MlirOp input,
-                                               mlir::MlirOp target) {
-  TT_ASSIGN_OR_RETURN(auto broadcasted_ops,
-                      ApplyBroadcastIfNeeded(input, target));
-  auto input_bcast = broadcasted_ops[0];
-  mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  mlir::RankedTensorType input_bcast_type = GetTensorTypeOrDie(input_bcast);
-  mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
-  TT_RET_CHECK(
-      (input_bcast_type.getShape() == target_type.getShape()) &&
-          (input_bcast_type.getEncoding() == target_type.getEncoding()),
-      error::kInvalidArgument)
-      << "failed to broadcast tensor of shape " << mlir::debugString(input_type)
-      << " to target shape " << mlir::debugString(target_type);
+absl::StatusOr<mlir::MlirOp> BroadcastIfNeeded(
+    mlir::MlirOp input, mlir::MlirOp target,
+    absl::Span<const int64_t> broadcast_dimensions) {
+  mlir::BaseScopedDiagnosticHandler diag_handler(
+      target.getValue().getContext());
+  mlir::stablehlo::Dimensions target_dims = GetDimensions(target);
 
-  return input_bcast;
+  mlir::FailureOr<mlir::Value> broadcasted_value_or_fail;
+  if (!broadcast_dimensions.empty()) {
+    broadcasted_value_or_fail = mlir::stablehlo::broadcastIfNeeded(
+        input.getBuilder().getOpBuilder(), input.getValue(), target_dims,
+        AsArrayRef(broadcast_dimensions));
+  } else {
+    broadcasted_value_or_fail = mlir::stablehlo::numpyBroadcastIfNeeded(
+        input.getBuilder().getOpBuilder(), input.getValue(), target_dims);
+  }
+
+  TT_RET_CHECK(mlir::succeeded(broadcasted_value_or_fail),
+               error::kInvalidArgument)
+      << "failed to broadcast tensor: "
+      << diag_handler.ConsumeStatus().message();
+  return mlir::MlirOp(input.getBuilder(), *broadcasted_value_or_fail);
 }
 
 absl::StatusOr<Dimensions> GetBroadcastShape(
