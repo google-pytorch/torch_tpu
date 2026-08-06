@@ -469,7 +469,6 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_compiled2.gz",
     ],
     main = "ops_test.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 40,
     tags = [
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
@@ -854,7 +853,6 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
     main = "ops_test.py",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     shard_count = 32,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
