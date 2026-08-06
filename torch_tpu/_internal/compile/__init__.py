@@ -18,8 +18,8 @@ import torch
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
 from torch_tpu._internal.compile._backend import TpuBackend
-from torch_tpu._internal.compile.experimental import AsyncCompilationSubmitted
 from torch_tpu._internal.compile.experimental import async_compile
+from torch_tpu._internal.compile.experimental import AsyncCompilationSubmitted
 from torch_tpu._internal.compile.experimental import resolve_compilations
 
 # Register "tpu" backend

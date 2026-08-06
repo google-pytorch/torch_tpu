@@ -54,6 +54,8 @@ class CompiledArtifact(abc.ABC, OutputCode):
   mechanisms at the Dynamo/AOT Autograd layers.
   """
 
+  _boxed_call: bool = True
+
   @abc.abstractmethod
   def __call__(self, inputs: Sequence[InputType]) -> Any:
     """Executes the compiled artifact.
@@ -390,9 +392,13 @@ class AsyncCompiledArtifact(CompiledArtifact):
   """A proxy for TorchTpuCompiledExecutable that compiles asynchronously.
 
   This class allows MLIR compilation to happen concurrently in the background.
-  It transparently blocks to resolve the compilation when any attribute or
-  method is accessed.
+  It transparently blocks to resolve the compilation when missing attributes
+  or execution methods are accessed.
   """
+
+  _boxed_call: bool = True
+  _fx_graph_cache_key: Any = None
+  _is_fallback: bool = False
 
   def __init__(self, future: concurrent.futures.Future[CompiledArtifact]):
     super().__init__()
@@ -423,19 +429,13 @@ class AsyncCompiledArtifact(CompiledArtifact):
     """Waits for any pending background compilation to complete."""
     self._resolve()
 
-  def __getattribute__(self, name: str) -> Any:
-    # Avoid infinite recursion when accessing attributes needed for resolution
-    if name in (
-        "_future",
-        "_resolved",
-        "_lock",
-        "_resolve",
-        "resolve",
-        "__dict__",
-        "__class__",
-    ):
-      return object.__getattribute__(self, name)
-
+  def __getattr__(self, name: str) -> Any:
+    """Resolves the background compilation when an unknown attribute is accessed."""
+    # Do not resolve on Python introspection / magic attributes or common framework checks
+    if name.startswith("__") or name in ("_fx_graph_cache_key", "_is_fallback"):
+      raise AttributeError(
+          f"{type(self).__name__!s} object has no attribute {name!r}"
+      )
     self._resolve()
     return getattr(self, name)
 

@@ -33,6 +33,7 @@ from torch._inductor.fx_passes import post_grad
 from torch._inductor.utils import InputType
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
+from torch._subclasses.fake_tensor import FakeTensor
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
@@ -235,11 +236,29 @@ class StaticCompiler(Compiler):
                 arg_bounds,
                 arg.requires_grad,
             )
-            placeholder_args.append(ph)
           else:
-            placeholder_args.append(tpu_torch_compile.placeholder_like(arg))
+            ph = tpu_torch_compile.placeholder_like(arg)
+          placeholder_args.append(ph)
         else:
           placeholder_args.append(arg)
+
+      if argument_layouts is None:
+        extracted_layouts = []
+        for val in example_inputs:
+          if (
+              isinstance(val, torch.Tensor)
+              and val.device.type == "tpu"
+              and not isinstance(val, FakeTensor)
+          ):
+            layout = tpu_torch_compile.get_device_layout_if_materialized(val)
+            if layout is not None:
+              extracted_layouts.append(layout[0])
+            else:
+              extracted_layouts.append([])
+          else:
+            extracted_layouts.append([])
+        if any(extracted_layouts):
+          argument_layouts = extracted_layouts
 
       with dynamo_timed("torchtpu_fx_to_mlir"):
         exported_mlir = torch_tpu_export.fx_to_mlir(

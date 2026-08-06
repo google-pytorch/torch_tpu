@@ -113,9 +113,8 @@ def async_compile(
   Returns:
     The compiled callable ready for execution.
   """
-  target_fn = torch.no_grad()(fn) if no_grad else fn
   compiled = torch.compile(
-      target_fn,
+      fn,
       backend="tpu",
       fullgraph=True,
       dynamic=False,
@@ -124,20 +123,20 @@ def async_compile(
           **backend_kwargs,
       },
   )
+  if no_grad:
+    compiled = torch.no_grad()(compiled)
 
   warmup_calls = 0
   warmup_start = time.perf_counter()
   artifacts = []
-  grad_ctx = torch.no_grad() if no_grad else contextlib.nullcontext()
-  with grad_ctx:
-    for args in warmup_inputs:
-      pos_args, kw_args = _unpack_warmup_args(args)
-      try:
-        compiled(*pos_args, **kw_args)
-      except AsyncCompilationSubmitted as e:
-        if e.artifact is not None:
-          artifacts.append(e.artifact)
-        warmup_calls += 1
+  for args in warmup_inputs:
+    pos_args, kw_args = _unpack_warmup_args(args)
+    try:
+      compiled(*pos_args, **kw_args)
+    except AsyncCompilationSubmitted as e:
+      if e.artifact is not None:
+        artifacts.append(e.artifact)
+      warmup_calls += 1
 
   lowering_seconds = time.perf_counter() - warmup_start
   logging.info(
@@ -156,4 +155,3 @@ def async_compile(
   )
 
   return compiled
-  

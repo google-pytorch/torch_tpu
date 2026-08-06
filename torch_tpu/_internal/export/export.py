@@ -576,24 +576,23 @@ def fx_to_mlir(
               updates_default_generator_state=False,
               is_noop=True,
           )
-
-      compile_result = tpu_torch_compile.traverse_and_compile(
-          result_tensors=result_tensors,
-          argument_tensors=argument_tensors,
-          build_mlir_module=build_mlir_module,
-          use_stablehlo_bounds=use_stablehlo_bounds,
-          argument_layouts=internal_layouts,
-      )
     finally:
       # Restore original generator states.
       for gen in argument_generators:
         gen.graphsafe_set_state(orig_generator_states[gen])
 
-    return ExportedMlir(
-        module=compile_result.module,
-        executable=compile_result.executable,
-        mlir_result_tensors=result_tensors,
-        reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
-        updates_default_generator_state=updates_default_generator_state,
-    )
-  
+  compile_result = tpu_torch_compile.traverse_and_compile(
+      result_tensors=result_tensors,
+      argument_tensors=argument_tensors,
+      build_mlir_module=build_mlir_module,
+      use_stablehlo_bounds=use_stablehlo_bounds,
+      argument_layouts=internal_layouts,
+  )
+
+  return ExportedMlir(
+      module=compile_result.module,
+      executable=compile_result.executable,
+      mlir_result_tensors=result_tensors,
+      reconstruct_fx_outputs_fn=reconstruct_fx_outputs_fn,
+      updates_default_generator_state=updates_default_generator_state,
+  )
