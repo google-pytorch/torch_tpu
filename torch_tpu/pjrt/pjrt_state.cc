@@ -174,6 +174,11 @@ void PjrtBackend::SetPjRtInitializationOptions(
   options_ = options;
 }
 
+PjRtInitializationOptions PjrtBackend::GetPjRtInitializationOptions() const {
+  absl::ReaderMutexLock lock(mutex_);
+  return options_;
+}
+
 absl::Status PjrtBackend::EnsureInitialized() {
   {
     absl::ReaderMutexLock lock(mutex_);

@@ -72,6 +72,10 @@ class PjrtBackend {
   void SetPjRtInitializationOptions(const PjRtInitializationOptions& options)
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  // Returns the global PjRt initialization options.
+  [[nodiscard]] PjRtInitializationOptions GetPjRtInitializationOptions() const
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Ensures that the PjRt singleton state is initialized. This method is
   // idempotent and is triggered by any operation that requires the PjRt
   // infrastructure (e.g., GetClient, GetDevice).

@@ -276,6 +276,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@xla//xla:shape_util",
         "@xla//xla:xla_proto_cc",
@@ -285,6 +286,8 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_compiler",
         "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/python/ifrt",
+        "@xla//xla/python/pjrt_ifrt",
         "@xla//xla/service:computation_placer_hdr",
     ],
 )

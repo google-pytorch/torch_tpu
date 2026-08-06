@@ -24,6 +24,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/base/nullability.h"
@@ -40,6 +41,8 @@
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/python/ifrt/executable.h"
+#include "xla/python/pjrt_ifrt/pjrt_executable.h"
 
 namespace torch_tpu {
 
@@ -51,27 +54,31 @@ using SharedLoadedExecutableWithMetadata =
 
 class LoadedExecutableWithMetadata {
  public:
+  using ExecutableVariant =
+      std::variant<std::shared_ptr<const xla::PjRtLoadedExecutable>,
+                   std::shared_ptr<const xla::ifrt::LoadedExecutable>>;
+
   static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(
       std::unique_ptr<xla::PjRtLoadedExecutable> executable);
 
-  const xla::PjRtExecutable* GetExecutable() const {
-    return executable_->GetExecutable();
-  }
+  static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(
+      std::shared_ptr<xla::ifrt::LoadedExecutable> executable);
 
-  const xla::PjRtLoadedExecutable* GetLoadedExecutable() const {
-    return executable_.get();
-  }
+  const xla::PjRtExecutable* GetExecutable() const;
+
+  const xla::PjRtLoadedExecutable* GetLoadedExecutable() const;
+
+  const xla::ifrt::LoadedExecutable* GetIfrtLoadedExecutable() const;
 
   const std::vector<Shape>& output_shapes() const { return output_shapes_; }
 
  private:
-  LoadedExecutableWithMetadata(
-      absl_nonnull std::unique_ptr<const xla::PjRtLoadedExecutable> executable,
-      std::vector<Shape> output_shapes)
+  LoadedExecutableWithMetadata(ExecutableVariant executable,
+                               std::vector<Shape> output_shapes)
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)) {}
 
-  absl_nonnull std::unique_ptr<const xla::PjRtLoadedExecutable> executable_;
+  ExecutableVariant executable_;
   // Cached output shapes for the executable.
   std::vector<Shape> output_shapes_;
 };

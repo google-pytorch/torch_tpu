@@ -24,6 +24,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
@@ -34,6 +35,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_split.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -53,6 +55,9 @@
 #include "xla/hlo/translate/register.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/python/ifrt/executable.h"
+#include "xla/python/pjrt_ifrt/pjrt_executable.h"
 #include "xla/service/computation_placer.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -127,9 +132,95 @@ LoadedExecutableWithMetadata::MakeShared(
     output_shapes.push_back(std::move(shape));
   }
 
+  std::shared_ptr<const xla::PjRtLoadedExecutable> shared_exec =
+      std::move(executable);
+
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
-      new LoadedExecutableWithMetadata(std::move(executable),
+      new LoadedExecutableWithMetadata(
+          ExecutableVariant(std::move(shared_exec)), std::move(output_shapes)));
+}
+
+absl::StatusOr<SharedLoadedExecutableWithMetadata>
+LoadedExecutableWithMetadata::MakeShared(
+    std::shared_ptr<xla::ifrt::LoadedExecutable> executable) {
+  TT_RET_CHECK(executable, error::kInternal)
+      << "cannot create SharedLoadedExecutableWithMetadata from null "
+         "IFRT executable.";
+
+  std::vector<Shape> output_shapes;
+  if (auto* pjrt_compat = xla::ifrt::dyn_cast_or_null<
+          xla::ifrt::PjRtCompatibleLoadedExecutable>(executable.get())) {
+    xla::PjRtLoadedExecutable* pjrt_exec =
+        pjrt_compat->pjrt_loaded_executable();
+    if (pjrt_exec != nullptr) {
+      TT_ASSIGN_OR_RETURN(std::vector<xla::Shape> output_shapes_vec,
+                          pjrt_exec->GetOutputShapes());
+      std::vector<const xla::Shape*> output_shapes_flat_vec;
+      for (const auto& output_shape : output_shapes_vec) {
+        xla::ShapeUtil::FlattenTupleShape(output_shape, output_shapes_flat_vec);
+      }
+      output_shapes.reserve(output_shapes_flat_vec.size());
+      for (const auto* xla_shape : output_shapes_flat_vec) {
+        TT_ASSIGN_OR_RETURN(Shape shape, MakeShape(*xla_shape));
+        output_shapes.push_back(std::move(shape));
+      }
+    }
+  }
+
+  return std::shared_ptr<const LoadedExecutableWithMetadata>(
+      new LoadedExecutableWithMetadata(ExecutableVariant(std::move(executable)),
                                        std::move(output_shapes)));
+}
+
+const xla::PjRtExecutable* LoadedExecutableWithMetadata::GetExecutable() const {
+  if (const auto* pjrt =
+          std::get_if<std::shared_ptr<const xla::PjRtLoadedExecutable>>(
+              &executable_)) {
+    return (*pjrt)->GetExecutable();
+  }
+  if (const auto* ifrt =
+          std::get_if<std::shared_ptr<const xla::ifrt::LoadedExecutable>>(
+              &executable_)) {
+    if (auto* pjrt_compat = xla::ifrt::dyn_cast_or_null<
+            xla::ifrt::PjRtCompatibleLoadedExecutable>(ifrt->get())) {
+      if (auto* pjrt_exec =
+              const_cast<xla::ifrt::PjRtCompatibleLoadedExecutable*>(
+                  pjrt_compat)
+                  ->pjrt_loaded_executable()) {
+        return pjrt_exec->GetExecutable();
+      }
+    }
+  }
+  return nullptr;
+}
+
+const xla::PjRtLoadedExecutable*
+LoadedExecutableWithMetadata::GetLoadedExecutable() const {
+  if (const auto* pjrt =
+          std::get_if<std::shared_ptr<const xla::PjRtLoadedExecutable>>(
+              &executable_)) {
+    return pjrt->get();
+  }
+  if (const auto* ifrt =
+          std::get_if<std::shared_ptr<const xla::ifrt::LoadedExecutable>>(
+              &executable_)) {
+    if (auto* pjrt_compat = xla::ifrt::dyn_cast_or_null<
+            xla::ifrt::PjRtCompatibleLoadedExecutable>(ifrt->get())) {
+      return const_cast<xla::ifrt::PjRtCompatibleLoadedExecutable*>(pjrt_compat)
+          ->pjrt_loaded_executable();
+    }
+  }
+  return nullptr;
+}
+
+const xla::ifrt::LoadedExecutable*
+LoadedExecutableWithMetadata::GetIfrtLoadedExecutable() const {
+  if (const auto* ifrt =
+          std::get_if<std::shared_ptr<const xla::ifrt::LoadedExecutable>>(
+              &executable_)) {
+    return ifrt->get();
+  }
+  return nullptr;
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(

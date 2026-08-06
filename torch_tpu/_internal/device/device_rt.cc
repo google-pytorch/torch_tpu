@@ -19,12 +19,16 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ATen/core/Generator.h"
+#include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/strings/ascii.h"
+#include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
@@ -47,6 +51,7 @@
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/tpu_hooks.h"
+#include "torch_tpu/ifrt/ifrt_state.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "xla/pjrt/pjrt_client.h"
 
@@ -55,6 +60,105 @@ namespace torch_tpu {
 namespace py = pybind11;
 
 namespace {
+
+// Abstract polymorphic interface for device runtime queries.
+class DeviceRuntimeBackend {
+ public:
+  virtual ~DeviceRuntimeBackend() = default;
+  virtual bool IsInitialized() const = 0;
+  virtual void Shutdown() = 0;
+  virtual int GetCurrentAddressableDeviceId() const = 0;
+  virtual int GetAddressableDeviceCount() const = 0;
+};
+
+class IfrtDeviceRuntimeBackend final : public DeviceRuntimeBackend {
+ public:
+  bool IsInitialized() const override {
+    return IfrtBackend::GetInstance().IsInitialized();
+  }
+
+  void Shutdown() override { IfrtBackend::GetInstance().Shutdown(); }
+
+  int GetCurrentAddressableDeviceId() const override {
+    xla::ifrt::Client* client = IfrtBackend::GetInstance().GetClient();
+    ABSL_CHECK(client != nullptr)  // CRASH_OK
+        << "IFRT Client is null after initialization.";
+    xla::ifrt::Device* device = IfrtBackend::GetInstance().GetDevice();
+    ABSL_CHECK(device != nullptr)  // CRASH_OK
+        << "IFRT Device is null after initialization.";
+
+    const auto& addressable_devices = client->addressable_devices();
+    for (size_t i = 0; i < addressable_devices.size(); ++i) {
+      if (addressable_devices[i] == device) {
+        return static_cast<int>(i);
+      }
+    }
+    ABSL_LOG(FATAL)  // CRASH_OK
+        << "Current device is not addressable: global_device_id="
+        << device->Id();
+  }
+
+  int GetAddressableDeviceCount() const override {
+    xla::ifrt::Client* client = IfrtBackend::GetInstance().GetClient();
+    TT_CHECK_THROW(client != nullptr, error::kInternal)
+        << "IFRT Client is null after initialization.";
+    return client->addressable_device_count();
+  }
+};
+
+class PjrtDeviceRuntimeBackend final : public DeviceRuntimeBackend {
+ public:
+  bool IsInitialized() const override {
+    return PjrtBackend::GetInstance().IsInitialized();
+  }
+
+  void Shutdown() override { PjrtBackend::GetInstance().Shutdown(); }
+
+  int GetCurrentAddressableDeviceId() const override {
+    xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
+    ABSL_CHECK(client != nullptr)  // CRASH_OK
+        << "PjRtClient is null after initialization.";
+    xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
+    ABSL_CHECK(device != nullptr)  // CRASH_OK
+        << "PjRtDevice is null after initialization.";
+
+    const auto& addressable_devices = client->addressable_devices();
+    for (size_t i = 0; i < addressable_devices.size(); ++i) {
+      if (addressable_devices[i] == device) {
+        return static_cast<int>(i);
+      }
+    }
+    ABSL_LOG(FATAL)  // CRASH_OK
+        << "Current device is not addressable: global_device_id="
+        << device->global_device_id();
+  }
+
+  int GetAddressableDeviceCount() const override {
+    xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
+    TT_CHECK_THROW(client != nullptr, error::kInternal)
+        << "PjRtClient is null after initialization.";
+    return client->addressable_device_count();
+  }
+};
+
+DeviceRuntimeBackend& GetDeviceRuntimeBackend() {
+  static const bool use_ifrt = []() {
+    const char* env =
+        std::getenv("TORCH_TPU_USE_IFRT");  // GETENV_OK=torch_tpu_use_ifrt
+    if (env == nullptr) {
+      return false;
+    }
+    std::string env_lower = absl::AsciiStrToLower(env);
+    return env_lower == "true" || env_lower == "1";
+  }();
+
+  if (use_ifrt) {
+    static absl::NoDestructor<IfrtDeviceRuntimeBackend> ifrt_backend;
+    return *ifrt_backend;
+  }
+  static absl::NoDestructor<PjrtDeviceRuntimeBackend> pjrt_backend;
+  return *pjrt_backend;
+}
 
 // A wrapper around a TPU event snapshot to be returned to Python.
 // This mostly exists so that the methods can throw errors, rather than return
@@ -217,17 +321,17 @@ PYBIND11_MODULE(_device_ops_backend, m) {
 
   m.def(
       "_is_initialized",
-      []() -> bool { return PjrtBackend::GetInstance().IsInitialized(); },
-      "Returns whether the PjRt runtime is initialized.");
+      []() -> bool { return GetDeviceRuntimeBackend().IsInitialized(); },
+      "Returns whether the PjRt/IFRT runtime is initialized.");
 
   m.def(
       "_shutdown_runtime",
       []() {
         ShutDownMaterializationState();
         CompilationCache::ShutDown();
-        PjrtBackend::GetInstance().Shutdown();
+        GetDeviceRuntimeBackend().Shutdown();
       },
-      "Shuts down the PjRt runtime.");
+      "Shuts down the PjRt/IFRT runtime.");
 
   m.def("_get_current_stream_id", &PyGetCurrentStreamId,
         py::arg("device_index") = py::none(),
@@ -266,34 +370,16 @@ PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_current_device_id",
       []() -> int {
-        xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-        ABSL_CHECK(client != nullptr)  // CRASH_OK
-            << "PjRtClient is null after initialization.";
-        xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
-        ABSL_CHECK(device != nullptr)  // CRASH_OK
-            << "PjRtDevice is null after initialization.";
-
-        const auto& addressable_devices = client->addressable_devices();
-        for (size_t i = 0; i < addressable_devices.size(); ++i) {
-          if (addressable_devices[i] == device) {
-            return i;
-          }
-        }
-        ABSL_LOG(FATAL)  // CRASH_OK
-            << "Current device is not addressable: global_device_id="
-            << device->global_device_id();
+        return GetDeviceRuntimeBackend().GetCurrentAddressableDeviceId();
       },
-      "Returns the local addressable ID of the current PJRT device.");
+      "Returns the local addressable ID of the current PJRT/IFRT device.");
 
   m.def(
       "_get_device_count",
       []() -> int {
-        xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
-        TT_CHECK_THROW(client != nullptr, error::kInternal)
-            << "PjRtClient is null after initialization.";
-        return client->addressable_device_count();
+        return GetDeviceRuntimeBackend().GetAddressableDeviceCount();
       },
-      "Returns the number of devices visible to the PJRT client. This count "
+      "Returns the number of devices visible to the client. This count "
       "is equivalent to the addressable device count.");
 
   m.def(
