@@ -16,7 +16,6 @@
 
 #include "torch_tpu/eager/traversal.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -65,7 +64,6 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -77,7 +75,6 @@
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/service/computation_placer.h"
 #include "xla/shape.h"
@@ -636,21 +633,10 @@ bool Traversal::HasSparseCoreOp() const {
   return false;
 }
 
-static xla::Layout ToXlaLayout(const LayoutAnnotation& annotation) {
-  std::vector<xla::Tile> xla_tiles(annotation.tiles.size());
-  std::transform(annotation.tiles.begin(), annotation.tiles.end(),
-                 xla_tiles.begin(),
-                 [](const std::vector<int64_t>& tile_dims) {  // INT_VEC_OK
-                   return xla::Tile(tile_dims);
-                 });
-  return xla::Layout(annotation.minor_to_major, xla_tiles,
-                     annotation.element_size_in_bits);
-}
-
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     CompilationSpec spec, std::string* absl_nullable out_mlir_text,
     bool use_stablehlo_bounds,
-    absl::Span<const std::optional<LayoutAnnotation>> argument_layouts) const {
+    absl::Span<const Indices> argument_layouts) const {
   if (HasSparseCoreOp()) {
     absl::StatusOr<int> status =
         PjrtBackend::GetInstance().GetGlobalDeviceCount();
@@ -699,11 +685,11 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
         << xla_argument_shapes.size() << " layouts and "
         << argument_layouts.size() << " arguments";
     for (size_t i = 0; i < xla_argument_shapes.size(); ++i) {
-      const std::optional<LayoutAnnotation>& annotation_opt =
-          argument_layouts[i];
-      if (annotation_opt.has_value()) {
+      const auto& layout_indices = argument_layouts[i];
+      if (!layout_indices.empty()) {
         xla_argument_shapes[i].clear_layout();
-        *xla_argument_shapes[i].mutable_layout() = ToXlaLayout(*annotation_opt);
+        *xla_argument_shapes[i].mutable_layout() =
+            xla::LayoutUtil::MakeLayout(layout_indices);
       }
     }
     spec.xla_compile_options->argument_layouts = std::move(xla_argument_shapes);

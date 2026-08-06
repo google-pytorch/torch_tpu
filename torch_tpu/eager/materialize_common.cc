@@ -52,7 +52,6 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/dynamism_utils.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -285,23 +284,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   TT_RETURN_IF_ERROR(VerifyPerNodeOutputs(traversal->outputs()));
 #endif  // NDEBUG
 
-  TT_ASSIGN_OR_RETURN(const std::vector<Indices> xla_argument_layouts,
+  TT_ASSIGN_OR_RETURN(const std::vector<Indices> argument_layouts,
                       ExtractArgumentLayoutsIfDifferentFromDefault(*traversal));
-
-  std::vector<std::optional<LayoutAnnotation>> argument_layouts;
-  if (!xla_argument_layouts.empty()) {
-    argument_layouts.reserve(xla_argument_layouts.size());
-    for (const auto& indices : xla_argument_layouts) {
-      if (indices.empty()) {
-        argument_layouts.push_back(std::nullopt);
-      } else {
-        std::vector<int64_t> minor_to_major(  // INT_VEC_OK
-            indices.begin(), indices.end());
-        argument_layouts.push_back(LayoutAnnotation{
-            minor_to_major, /*tiles=*/{}, /*element_size_in_bits=*/0});
-      }
-    }
-  }
 
   // Start compiling the traversal.
   ABSL_VLOG(1) << "[ExecutionTask] Compiling traversal";

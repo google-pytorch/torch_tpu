@@ -64,7 +64,6 @@
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
@@ -105,9 +104,13 @@ struct TensorBounds {
   std::vector<int64_t> upper_bounds;  // INT_VEC_OK
 };
 
-using PyLayout = LayoutAnnotation;
+using PyLayout =
+    std::tuple<std::vector<int64_t>,               // minor_to_major, INT_VEC_OK
+               std::vector<std::vector<int64_t>>,  // tiles, INT_VEC_OK
+               int64_t>;                           // element_size_in_bits
 
-bool IsValidLayout(absl::Span<const int64_t> layout, int64_t rank) {
+bool IsValidLayout(const std::vector<int64_t>& layout,  // INT_VEC_OK
+                   int64_t rank) {
   if (layout.size() != rank) {
     return false;
   }
@@ -202,52 +205,19 @@ PyLayout ToPyLayout(const xla::Layout& layout) {
     tiles.push_back(std::vector<int64_t>  // INT_VEC_OK
                     (tile.dimensions().begin(), tile.dimensions().end()));
   }
-  return LayoutAnnotation{minor_to_major, tiles, layout.element_size_in_bits()};
+  return std::make_tuple(minor_to_major, tiles, layout.element_size_in_bits());
 }
 
 std::vector<std::optional<PyLayout>> ToPyLayouts(
     const std::vector<std::shared_ptr<const xla::PjRtLayout>>& layouts) {
-  std::vector<std::optional<PyLayout>> result(layouts.size());
-  std::transform(layouts.begin(), layouts.end(), result.begin(),
-                 [](const std::shared_ptr<const xla::PjRtLayout>& pjrt_layout)
-                     -> std::optional<PyLayout> {
-                   if (pjrt_layout == nullptr) {
-                     return std::nullopt;
-                   }
-                   return ToPyLayout(pjrt_layout->xla_layout());
-                 });
-  return result;
-}
-
-std::vector<std::optional<LayoutAnnotation>> ParseArgumentLayouts(
-    const py::object& argument_layouts_py) {
-  std::vector<std::optional<LayoutAnnotation>> result;
-  if (argument_layouts_py.is_none()) {
-    return result;
-  }
-  auto sequence = argument_layouts_py.cast<py::sequence>();
-  result.reserve(sequence.size());
-  for (const auto& item : sequence) {
-    if (item.is_none()) {
+  std::vector<std::optional<PyLayout>> result;
+  result.reserve(layouts.size());
+  for (const auto& pjrt_layout : layouts) {
+    if (pjrt_layout == nullptr) {
       result.push_back(std::nullopt);
       continue;
     }
-    if (py::isinstance<LayoutAnnotation>(item)) {
-      result.push_back(item.cast<LayoutAnnotation>());
-      continue;
-    }
-    if (py::isinstance<py::list>(item) || py::isinstance<py::tuple>(item)) {
-      auto seq = item.cast<std::vector<int64_t>>();  // INT_VEC_OK
-      if (seq.empty()) {
-        result.push_back(std::nullopt);
-      } else {
-        result.push_back(LayoutAnnotation{std::move(seq), {}, 0});
-      }
-      continue;
-    }
-    TT_CHECK_THROW(false, error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=type
-        << "invalid type for argument layout: expected TpuLayout, list, or "
-           "None";
+    result.push_back(ToPyLayout(pjrt_layout->xla_layout()));
   }
   return result;
 }
@@ -437,45 +407,6 @@ bool HasSparseCoreCustomCall(mlir::ModuleOp module) {
   return result.wasInterrupted();
 }
 
-absl::StatusOr<std::optional<xla::Layout>> ParseLayout(
-    const py::object& py_obj) {
-  if (py_obj.is_none()) {
-    return std::nullopt;
-  }
-  if (py::isinstance<py::tuple>(py_obj)) {
-    PyLayout py_layout;
-    try {
-      py_layout = py_obj.cast<PyLayout>();
-    } catch (const py::cast_error& e) {
-      return TT_ERROR(error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=cast
-             << "failed to cast tuple to PyLayout: " << e.what();
-    }
-    const auto& [minor_to_major, tiles, element_size_in_bits] = py_layout;
-    xla::Layout layout = xla::LayoutUtil::MakeLayout(minor_to_major);
-    for (const auto& tile_dims : tiles) {
-      *layout.add_tiles() = xla::Tile(tile_dims);
-    }
-    if (element_size_in_bits > 0) {
-      layout.set_element_size_in_bits(element_size_in_bits);
-    }
-    return layout;
-  } else if (py::isinstance<py::list>(py_obj)) {
-    std::vector<int64_t> minor_to_major;  // INT_VEC_OK
-    try {
-      minor_to_major = py_obj.cast<std::vector<int64_t>>();  // INT_VEC_OK
-    } catch (const py::cast_error& e) {
-      return TT_ERROR(error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=cast
-             << "failed to cast list to minor_to_major: " << e.what();
-    }
-    if (minor_to_major.empty()) {
-      return std::nullopt;
-    }
-    return xla::LayoutUtil::MakeLayout(minor_to_major);
-  }
-  return TT_ERROR(error::kInvalidArgument)  // ERROR_COV_INFEASIBLE=invalid type
-         << "invalid layout type, expected list or tuple";
-}
-
 // Compiles an MLIR module.
 // Args:
 //   module: The ContextedModule to compile.
@@ -487,9 +418,7 @@ absl::StatusOr<std::optional<xla::Layout>> ParseLayout(
 //   The compiled executable.
 SharedLoadedExecutableWithMetadata PyCompileMlir(
     std::shared_ptr<ContextedModule> module, const bool fast_compile,
-    const py::object& argument_layouts_py) {
-  const std::vector<std::optional<LayoutAnnotation>> argument_layouts =
-      ParseArgumentLayouts(argument_layouts_py);
+    const std::vector<std::vector<int64_t>>& argument_layouts) {  // INT_VEC_OK
   ScopedPythonContextCapturer capturer(OpName::kCompileMlir);
   // Provide the current python context to the compilation function so that
   // it can generate readable Mlir module names.
@@ -525,24 +454,16 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
     }
   }
 
-  if (!argument_layouts_py.is_none()) {
-    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=sequence check
-        py::isinstance<py::sequence>(argument_layouts_py),
-        error::kInvalidArgument)
-        << "argument_layouts must be a sequence";
-    py::sequence argument_layouts_seq =
-        argument_layouts_py.cast<py::sequence>();
-
+  if (!argument_layouts.empty()) {
     mlir::ModuleOp module_op = module->get();
     auto main_func = module_op.lookupSymbol<mlir::func::FuncOp>("main");
     TT_CHECK_THROW(main_func, error::kInvalidArgument)
         << "could not find 'main' function in MLIR module";
 
     auto arg_types = main_func.getArgumentTypes();
-    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=count match check
-        argument_layouts_seq.size() == arg_types.size(),
-        error::kInvalidArgument)
-        << "number of argument layouts (" << argument_layouts_seq.size()
+    TT_CHECK_THROW(arg_types.size() == argument_layouts.size(),
+                   error::kInvalidArgument)
+        << "number of argument layouts (" << argument_layouts.size()
         << ") does not match number of arguments in MLIR main function ("
         << arg_types.size() << ")";
 
@@ -557,26 +478,17 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
           error::kInvalidArgument)
           << "failed to convert MLIR type to XLA shape";
 
-      const std::optional<LayoutAnnotation>& layout_opt = argument_layouts[i];
-      if (layout_opt.has_value()) {
+      const std::vector<int64_t>& layout_indices =  // INT_VEC_OK
+          argument_layouts[i];
+      if (!layout_indices.empty()) {
         int64_t rank = shape.dimensions().size();
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=layout validity check
-            IsValidLayout(layout_opt->minor_to_major, rank),
-            error::kInvalidArgument)
+        TT_CHECK_THROW(IsValidLayout(layout_indices, rank),
+                       error::kInvalidArgument)
             << "invalid layout for argument " << i << ", got layout "
-            << ToString(layout_opt->minor_to_major) << " for shape "
+            << ToString(layout_indices) << " for shape "
             << ToString(shape.dimensions());
         shape.clear_layout();
-        std::vector<xla::Tile> xla_tiles(layout_opt->tiles.size());
-        std::transform(
-            layout_opt->tiles.begin(), layout_opt->tiles.end(),
-            xla_tiles.begin(),
-            [](const std::vector<int64_t>& tile_dims) {  // INT_VEC_OK
-              return xla::Tile(tile_dims);
-            });
-        xla::Layout layout(layout_opt->minor_to_major, xla_tiles,
-                           layout_opt->element_size_in_bits);
-        *shape.mutable_layout() = std::move(layout);
+        *shape.mutable_layout() = xla::LayoutUtil::MakeLayout(layout_indices);
       }
       xla_arg_layouts.push_back(shape);
     }
@@ -595,30 +507,30 @@ CompileResult PyTraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
     bool build_mlir_module, bool use_stablehlo_bounds,
-    const py::object& argument_layouts_py) {
-  const std::vector<std::optional<LayoutAnnotation>> argument_layouts =
-      ParseArgumentLayouts(argument_layouts_py);
+    const std::vector<std::vector<int64_t>>& argument_layouts) {  // INT_VEC_OK
   if (!argument_layouts.empty()) {
-    TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=count match check
-        argument_layouts.size() == argument_tensors.size(),
-        error::kInvalidArgument)
+    TT_CHECK_THROW(argument_layouts.size() == argument_tensors.size(),
+                   error::kInvalidArgument)
         << "number of argument_layouts must match with the number of "
            "argument_tensors, got number of argument_layouts "
         << argument_layouts.size() << " and number of argument_tensors "
         << argument_tensors.size();
 
     for (size_t i = 0; i < argument_layouts.size(); ++i) {
-      const std::optional<LayoutAnnotation>& layout_opt = argument_layouts[i];
-      if (layout_opt.has_value()) {
+      const auto& layout = argument_layouts[i];
+      if (!layout.empty()) {
         int64_t rank = argument_tensors[i].dim();
-        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=layout validity check
-            IsValidLayout(layout_opt->minor_to_major, rank),
-            error::kInvalidArgument)
+        TT_CHECK_THROW(IsValidLayout(layout, rank), error::kInvalidArgument)
             << "invalid layout for argument " << i << ", got layout "
-            << ToString(layout_opt->minor_to_major) << " for shape "
+            << ToString(layout) << " for shape "
             << ToString(argument_tensors[i].sizes());
       }
     }
+  }
+  std::vector<Indices> converted_layouts;
+  converted_layouts.reserve(argument_layouts.size());
+  for (const auto& layout : argument_layouts) {
+    converted_layouts.push_back(Indices(layout.begin(), layout.end()));
   }
 
   TT_ASSIGN_OR_THROW(
@@ -630,7 +542,7 @@ CompileResult PyTraverseAndCompile(
                                                : CompilationMode::kFastRuntime,
               .build_mlir_module = build_mlir_module,
               .use_stablehlo_bounds = use_stablehlo_bounds,
-              .argument_layouts = argument_layouts,
+              .argument_layouts = converted_layouts,
           }),
       _.SetPrepend() << "Failed to traverse and compile: ");
   return result;
@@ -1259,10 +1171,6 @@ class MultiGeneratorLocker {
 };
 
 PYBIND11_MODULE(tpu_torch_compile, m) {
-  // Ensure annotations python module is loaded so that its pybind11 bindings
-  // for LayoutAnnotation (TpuLayout) are registered.
-  py::module_::import("torch_tpu._internal.device_utils.annotations");
-
   py::class_<TensorInfo>(m, "TensorInfo")
       .def(py::init([](const py::tuple& t) {
         return TensorInfo{t[0].cast<std::vector<int64_t>>(),  // INT_VEC_OK
@@ -1342,7 +1250,8 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         py::arg("argument_tensors"), py::arg("fast_compile") = false,
         py::arg("build_mlir_module") = false,
         py::arg("use_stablehlo_bounds") = false,
-        py::arg("argument_layouts") = py::none(),
+        py::arg("argument_layouts") =
+            std::vector<std::vector<int64_t>>{},  // INT_VEC_OK
         "Traverses the graph from outputs to arguments and compiles it. \n\n"
         "Args:\n"
         "  result_tensors: The output tensors to compile.\n"
@@ -1362,7 +1271,8 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   // Returns: PjRtLoadedExecutable
   m.def("compile_mlir", PyCompileMlir, py::arg("module"),
         py::arg("fast_compile") = false,
-        py::arg("argument_layouts") = py::none(),
+        py::arg("argument_layouts") =
+            std::vector<std::vector<int64_t>>{},  // INT_VEC_OK
         "Compiles an MLIR module to a PjRtLoadedExecutable.");
   m.def("parse_mlir_text", PyParseMlirText, py::arg("mlir_text"),
         "Parses a StableHLO MLIR text string and returns a ContextedModule.");

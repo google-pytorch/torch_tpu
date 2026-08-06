@@ -1068,7 +1068,7 @@ class CompileApiTest(absltest.TestCase):
 
   def test_get_default_layout(self):
     layout = tpu_torch_compile.get_default_layout(torch.float32, [2, 3])
-    self.assertIsInstance(layout, annotations.TpuLayout)
+    self.assertIsInstance(layout, tuple)
     self.assertLen(layout, 3)
     minor_to_major, tiles, element_size_in_bits = layout
     self.assertIsInstance(minor_to_major, list)
@@ -1142,7 +1142,7 @@ class CompileApiTest(absltest.TestCase):
 
     for layout in param_layouts + output_layouts:
       if layout is not None:
-        self.assertIsInstance(layout, annotations.TpuLayout)
+        self.assertIsInstance(layout, tuple)
         self.assertLen(layout, 3)
         minor_to_major, tiles, element_size_in_bits = layout
         self.assertIsInstance(minor_to_major, list)

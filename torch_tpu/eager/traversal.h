@@ -39,11 +39,9 @@
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/layout_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/ops/python_context.h"
-#include "xla/layout.h"
 
 // Creates a core abstraction for the process of traversing a graph of deferred
 // ops, preparing them for compilation and execution.
@@ -195,8 +193,7 @@ class Traversal {
   absl::StatusOr<CompiledKernel> Compile(
       CompilationSpec spec, std::string* absl_nullable out_mlir_text = nullptr,
       bool use_stablehlo_bounds = false,
-      absl::Span<const std::optional<LayoutAnnotation>> argument_layouts = {})
-      const;
+      absl::Span<const Indices> argument_layouts = {}) const;
 
   // Returns true if any argument to the traversal has bounded dynamic
   // dimensions marked.

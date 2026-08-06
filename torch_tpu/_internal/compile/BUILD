@@ -137,7 +137,6 @@ torch_tpu_cc_library(
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",
@@ -201,7 +200,6 @@ torch_tpu_cc_library(
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",
@@ -245,7 +243,6 @@ pybind_extension(
     ],
     py_deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/device_utils:annotations",
     ],
     wrap_py_init = True,
     deps = [
@@ -268,7 +265,6 @@ pybind_extension(
         "//torch_tpu/common:dtype",
         "//torch_tpu/common:env_vars",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
         "//torch_tpu/common:shape",
         "//torch_tpu/common:to_string",
         "//torch_tpu/common:utils",

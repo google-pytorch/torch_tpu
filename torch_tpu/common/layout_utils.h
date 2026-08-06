@@ -18,7 +18,6 @@
 #define TORCH_TPU_COMMON_LAYOUT_UTILS_H_
 
 #include <cstdint>
-#include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
@@ -26,19 +25,6 @@
 #include "torch_tpu/common/dimension_types.h"
 
 namespace torch_tpu {
-
-// Represents a layout annotation (minor-to-major dimension order, tiles, and
-// sub-byte element size in bits) annotated on a PyTorch TPU tensor.
-struct LayoutAnnotation {
-  std::vector<int64_t> minor_to_major;      // INT_VEC_OK
-  std::vector<std::vector<int64_t>> tiles;  // INT_VEC_OK
-  int64_t element_size_in_bits = 0;
-
-  bool operator==(const LayoutAnnotation& other) const {
-    return minor_to_major == other.minor_to_major && tiles == other.tiles &&
-           element_size_in_bits == other.element_size_in_bits;
-  }
-};
 
 // Represents the layout metrics of a TPU tensor mapped from PyTorch.
 struct TpuLayout {

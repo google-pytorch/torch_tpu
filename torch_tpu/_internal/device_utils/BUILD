@@ -46,7 +46,6 @@ pybind_extension(
         "//torch_tpu/common:context_manager",
         "//torch_tpu/common:context_states",
         "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla:shape_util",
         "@xla//xla/hlo/parser:hlo_parser",

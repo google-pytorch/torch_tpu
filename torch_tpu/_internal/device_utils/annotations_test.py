@@ -85,18 +85,6 @@ class AnnotationsTest(absltest.TestCase):
     self.assertIsNotNone(z_layout_tuple)
     self.assertEqual(tpu_annotations.TpuLayout(*z_layout_tuple), layout1)
 
-  def test_layout_repr(self):
-    layout = tpu_annotations.TpuLayout(
-        minor_to_major=[1, 0],
-        tiles=[[16, 128], [2, 1]],
-        element_size_in_bits=16,
-    )
-    self.assertEqual(
-        repr(layout),
-        "TpuLayout(minor_to_major=[1, 0], tiles=[[16, 128], [2, 1]],"
-        " element_size_in_bits=16)",
-    )
-
 
 if __name__ == "__main__":
   absltest.main()
