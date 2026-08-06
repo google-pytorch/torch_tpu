@@ -1,0 +1,28 @@
+name: 'Check GitHub Actions connectivity'
+description: 'Composite action to verify reachability to GitHub Actions related endpoints. Fails the job early with diagnostics when endpoints are unreachable.'
+runs:
+  using: 'composite'
+  steps:
+    - name: Check endpoints
+      shell: bash
+      run: |
+        set -euo pipefail
+        urls=(
+          "https://api.github.com"
+          "https://actions.githubusercontent.com"
+          "https://codeload.github.com"
+          "https://raw.githubusercontent.com"
+        )
+        for u in "${urls[@]}"; do
+          echo "Checking $u"
+          if ! curl -fsS --max-time 10 -I "$u"; then
+            echo "ERROR: cannot reach $u"
+            echo "Hint: if you are behind a proxy, ensure HTTP_PROXY/HTTPS_PROXY are set for the runner process."
+            exit 1
+          fi
+        done
+    - name: Print proxy environment (diagnostic)
+      shell: bash
+      run: |
+        echo "--- Proxy environment variables ---"
+        env | egrep -i '(^|_)proxy=' || true
