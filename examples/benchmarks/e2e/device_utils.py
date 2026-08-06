@@ -207,6 +207,19 @@ def get_peak_memory_hbm(
     peak_memory_usage_mb = percentage / 100.0 * total / _BYTES_IN_MB
   elif device in ('tpu', 'xla_cuda', 'xla_cpu', 'jax'):
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
+    if peak_memory_usage_mb <= 0 and device == 'tpu':
+      # TODO(b/522681105): Currently, torch.accelerator.max_memory_allocated()
+      # only tracks user-allocated PyTorch tensors (peak_bytes_in_use) and misses
+      # memory reserved/allocated by XLA internally for intermediate HLO buffers.
+      # Once cl/921675454 lands to wire peak_allocated_bytes in PjRt Allocator,
+      # update this function to unconditionally use torch.accelerator for TPU
+      # and remove the _get_peak_hbm_memory_mb XProf fallback path entirely.
+      try:
+        peak_memory_usage_mb = (
+            torch.accelerator.max_memory_allocated() / _BYTES_IN_MB
+        )
+      except Exception:
+        peak_memory_usage_mb = -1.0
   else:
     raise ValueError(f'Unsupported device: {device}')
   return peak_memory_usage_mb
@@ -215,7 +228,12 @@ def get_peak_memory_hbm(
 def reset_peak_memory_stats(device):
   if device == 'cuda':
     torch.cuda.memory.reset_max_memory_allocated()
-  elif device in ('tpu', 'cpu', 'xla_cuda', 'xla_cpu', 'jax'):
+  elif device == 'tpu':
+    try:
+      torch.accelerator.reset_peak_memory_stats()
+    except Exception:
+      pass
+  elif device in ('cpu', 'xla_cuda', 'xla_cpu', 'jax'):
     pass
   else:
     raise ValueError(f'Unsupported device: {device}')

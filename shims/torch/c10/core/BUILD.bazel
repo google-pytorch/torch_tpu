@@ -25,6 +25,7 @@ cc_library(
     # transition instead of pinning the default torch's ABI.
     deps = select(torch_headers_select({
         "//shims/torch:use_local_torch": ["@local_torch//:torch_headers"],
+        "//shims/torch:use_cuda_torch": ["@pypi_cuda//torch:torch_headers"],
         "//conditions:default": ["@pypi//torch:torch_headers"],
     })),
 )

@@ -151,6 +151,22 @@ class DeviceUtilsTest(absltest.TestCase):
         -1.0,
     )
 
+  @mock.patch.object(
+      torch.accelerator, 'max_memory_allocated', return_value=5242880
+  )
+  def test_get_peak_memory_hbm_tpu_fallback(self, mock_max_mem):
+    # When no session_id/client is provided, TPU falls back to torch.accelerator
+    peak_mb = device_utils.get_peak_memory_hbm(
+        'tpu', session_id=None, xprof_client=None
+    )
+    self.assertEqual(peak_mb, 5.0)
+    mock_max_mem.assert_called_once()
+
+  @mock.patch.object(torch.accelerator, 'reset_peak_memory_stats')
+  def test_reset_peak_memory_stats_tpu(self, mock_reset_mem):
+    device_utils.reset_peak_memory_stats('tpu')
+    mock_reset_mem.assert_called_once()
+
 
 if __name__ == '__main__':
   absltest.main()

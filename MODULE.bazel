@@ -227,8 +227,25 @@ _TORCH_NIGHTLY_EXTRA_PIP_ARGS = [
     whl_modifications = _TORCH_WHL_MODIFICATIONS,
 ) for torch_version in EXTRA_GLUE_TORCH_VERSIONS for python_version in SUPPORTED_PYTHON_VERSIONS]
 
+_TORCH_CUDA_EXTRA_PIP_ARGS = [
+    "--index-url",
+    "https://pypi.org/simple",
+    "--extra-index-url",
+    "https://download.pytorch.org/whl/cu124",
+]
+
+[pip.parse(
+    extra_hub_aliases = _TORCH_HUB_ALIASES,
+    extra_pip_args = _TORCH_CUDA_EXTRA_PIP_ARGS,
+    hub_name = "torch_tpu_cuda_pypi",
+    python_version = python_version,
+    requirements_lock = "//requirements:requirements_torch_cuda_2_6_0.txt",
+    whl_modifications = _TORCH_WHL_MODIFICATIONS,
+) for python_version in SUPPORTED_PYTHON_VERSIONS]
+
 # Expose the pip repositories using the names your BUILD files expect
 use_repo(pip, pypi = "torch_tpu_pypi")
+use_repo(pip, pypi_cuda = "torch_tpu_cuda_pypi")
 
 [use_repo(
     pip,

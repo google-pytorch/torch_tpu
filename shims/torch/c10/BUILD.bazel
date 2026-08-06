@@ -28,6 +28,10 @@ cc_library(
             "@local_torch//:libc10",
             "@local_torch//:torch_headers",
         ],
+        "//shims/torch:use_cuda_torch": [
+            "@pypi_cuda//torch:libc10",
+            "@pypi_cuda//torch:torch_headers",
+        ],
         "//conditions:default": [
             "//shims/torch:libc10",
             "@pypi//torch:torch_headers",

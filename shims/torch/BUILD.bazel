@@ -88,6 +88,20 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+bool_flag(
+    name = "cuda_torch",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "use_cuda_torch",
+    flag_values = {
+        ":cuda_torch": "True",
+    },
+    visibility = ["//visibility:public"],
+)
+
 # TODO: b/457858115 - Bazel likely enforces strict dependencies and requires optional dependencies
 # to be explicitly listed in deps if they are used.
 # Python Rules: Depend on PyPI torch by default, but skip it for local builds
@@ -98,6 +112,7 @@ py_library(
         "@pypi//numpy",
     ] + select({
         ":use_local_torch": ["@local_torch//:torch"],
+        ":use_cuda_torch": ["@pypi_cuda//torch"],
         "//conditions:default": ["@pypi//torch"],
     }),
 )
@@ -109,6 +124,7 @@ py_library(
         "@pypi//numpy",
     ] + select({
         ":use_local_torch": ["@local_torch//:torch"],
+        ":use_cuda_torch": ["@pypi_cuda//torch"],
         "//conditions:default": ["@pypi//torch"],
     }),
 )
@@ -140,6 +156,10 @@ cc_library(
         ":use_local_torch": [
             "@local_torch//:libc10",
             "@local_torch//:libtorch_cpu",
+        ],
+        ":use_cuda_torch": [
+            "@pypi_cuda//torch:libc10",
+            "@pypi_cuda//torch:libtorch_cpu",
         ],
         # NOTE: All dependencies below will be added to the torch_tpu wheel.
         # If you are adding a new dependency that is not for the wheel, please make a new shim.
@@ -175,6 +195,7 @@ cc_library(
     name = "aten_headers",
     deps = select(torch_headers_select({
         ":use_local_torch": ["@local_torch//:torch_headers"],
+        ":use_cuda_torch": ["@pypi_cuda//torch:torch_headers"],
         "//conditions:default": ["@pypi//torch:torch_headers"],
     })),
 )
@@ -185,6 +206,10 @@ cc_library(
         {
             ":use_local_torch": [
                 "@local_torch//:torch_headers",
+                "@rules_python//python/cc:current_py_cc_headers",
+            ],
+            ":use_cuda_torch": [
+                "@pypi_cuda//torch:torch_headers",
                 "@rules_python//python/cc:current_py_cc_headers",
             ],
             "//conditions:default": [
@@ -203,6 +228,10 @@ cc_library(
         ":use_local_torch": [
             "@local_torch//:libtorch_python",
             "@local_torch//:torch_headers",
+        ],
+        ":use_cuda_torch": [
+            "@pypi_cuda//torch:libtorch_python",
+            "@pypi_cuda//torch:torch_headers",
         ],
         "//conditions:default": [
             ":libtorch_python",

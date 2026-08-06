@@ -395,6 +395,11 @@ build:wheel_release --//:include_nightly_glue=False
 # torch, so the per-version glue configurations never fork).
 build:local_torch --//shims/torch:local_torch=True
 
+# Config for running on CUDA GPUs
+common:cuda --//shims/torch:cuda_torch=True
+common:cuda --cxxopt=-std=c++17
+common:cuda --host_cxxopt=-std=c++17
+
 # Common config for testing the wheel
 test:wheel_common_test --config=wheel_common
 test:wheel_common_test --test_output=errors
@@ -426,3 +431,5 @@ test:wheel_test_tpu_v7 --spawn_strategy=local
 test:wheel_test_tpu_v5 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,presubmit-v5
 test:wheel_test_tpu_v6 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6
 test:wheel_test_tpu_v7 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7
+common:cuda --cxxopt=-std=c++17
+common:cuda --host_cxxopt=-std=c++17

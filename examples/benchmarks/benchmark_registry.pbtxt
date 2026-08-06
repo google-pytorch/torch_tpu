@@ -17,6 +17,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -66,6 +73,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -89,6 +103,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -138,6 +159,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -161,6 +189,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -210,6 +245,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -233,6 +275,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_train_1_step_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_train_1_step_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -284,6 +333,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -333,6 +389,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -356,6 +419,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -406,6 +476,13 @@ benchmarks {
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
   }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -413,7 +490,6 @@ benchmarks {
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
-
 
 benchmarks {
   name: "test_detr_resnet_50_forward_eager_default-detr_resnet_50"
@@ -431,6 +507,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
@@ -481,6 +564,13 @@ benchmarks {
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
     workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
     workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda12.8-cudnn9.8:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
