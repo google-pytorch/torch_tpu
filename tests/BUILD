@@ -24,13 +24,13 @@ load(
 
 package(
     default_applicable_licenses = ["//:license"],
+    default_visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_py_library(
     name = "oss_utils",
     testonly = True,
     srcs = ["oss_utils.py"],
-    visibility = ["//:__subpackages__"],
     deps = if_oss(
         ["//shims/libtpu"],
         [],
@@ -77,7 +77,6 @@ torch_tpu_py_library(
         "//examples/huggingface_diffusers:model_configs_data",
         "//examples/huggingface_transformers:model_configs_data",
     ],
-    visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
@@ -138,7 +137,6 @@ torch_tpu_py_library(
     name = "ops_test_data",
     testonly = True,
     srcs = ["ops_test_data.py"],
-    visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
@@ -1258,7 +1256,6 @@ torch_tpu_py_library(
     name = "error_testing",
     testonly = True,
     srcs = ["error_testing.py"],
-    visibility = ["//:__subpackages__"],
     deps = [
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -1370,7 +1367,6 @@ torch_tpu_py_test(
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
     ],
-    visibility = ["//:__subpackages__"],
     deps = [
         ":error_testing",
         "//shims/absl_py/testing:absltest",
@@ -1403,7 +1399,6 @@ torch_tpu_py_test(
         "nosan",  # *san builds are low-value for error tests.
         "requires-tpu-v5lite",
     ],
-    visibility = ["//:__subpackages__"],
     deps = [
         ":error_testing",
         "//shims/absl_py/testing:absltest",
@@ -1998,7 +1993,6 @@ torch_tpu_py_library(
     name = "native_functions_data",
     testonly = True,
     srcs = ["native_functions_data.py"],
-    visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_py_test(
