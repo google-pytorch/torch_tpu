@@ -80,6 +80,13 @@ def _format_experimental_value(value: _ExperimentalValue) -> str:
     return str(value)
 
 
+from torch_tpu._internal.utils import annotations
+
+
+@annotations.experimental(
+    "torch.tpu.profiler.TpuProfilerConfig is experimental and subject to"
+    " change."
+)
 class TpuProfilerConfig(torch.profiler._ExperimentalConfig):  # pylint: disable=protected-access
   """Configuration for TPU-specific profiler options with standard XLA defaults."""
 

@@ -173,7 +173,7 @@ def _init_device_impl(device: str) -> torch.device:
     get_interface_for_device(device)
   except NotImplementedError:
     pass
-  register_interface_for_device(device, device_module)
+  register_interface_for_device(device, device_module)  # pyrefly: ignore[bad-argument-type]
 
   torch.utils.rename_privateuse1_backend(device)
   # Generate `Tensor.is_{device}`, `Tensor.{device}()`, `Module.{device}()`,
@@ -194,6 +194,15 @@ def _init_device_impl(device: str) -> torch.device:
   # pylint: disable=protected-access
   torch._register_device_module(device, device_module)  # pyrefly: ignore[bad-argument-type]
   print(f"Registered Python module for '{device}'.", file=sys.stderr)
+
+  # Register the public torch.tpu.profiler proxy module.
+  # Dual mapping allows both standard PyTorch import styles:
+  # 1. sys.modules allows 'from torch.tpu.profiler import TpuProfilerConfig'
+  # 2. setattr(device_module) allows 'from torch.tpu import profiler'
+  import torch_tpu.profiler as _profiler_proxy  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.profiler"] = _profiler_proxy
+  setattr(device_module, "profiler", _profiler_proxy)
 
   print(
       f"Device type: {device_d.type}, Device index:"

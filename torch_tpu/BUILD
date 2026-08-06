@@ -57,6 +57,7 @@ torch_tpu_py_library(
         ":torch_tpu_dist_info",
     ],
     deps = [
+        ":profiler",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:native_scan",
@@ -76,6 +77,14 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "_versioned_so_loader",
     srcs = ["_versioned_so_loader.py"],
+)
+
+torch_tpu_py_library(
+    name = "profiler",
+    srcs = ["profiler.py"],
+    deps = [
+        "//torch_tpu/_internal/profiler:profiler_config",
+    ],
 )
 
 py_library_providing_imports_info(
