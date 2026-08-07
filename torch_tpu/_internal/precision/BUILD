@@ -65,6 +65,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":precision_impl",
+        "//torch_tpu/_internal/utils:annotations",
     ],
 )
 

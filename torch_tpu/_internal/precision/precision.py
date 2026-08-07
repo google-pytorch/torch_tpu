@@ -18,7 +18,9 @@ import contextlib
 from typing import Generator
 
 from torch_tpu._internal.precision import precision_impl
+from torch_tpu._internal.utils import annotations
 
+experimental = annotations.experimental
 __all__ = ["precision", "Precision"]
 
 
@@ -26,7 +28,13 @@ __all__ = ["precision", "Precision"]
 # For explicit definitions of 'DEFAULT', 'HIGH', and 'HIGHEST', please see the
 # StableHLO documentation for 'dot_general':
 # https://openxla.org/stablehlo/spec#dot_general
-Precision = precision_impl.Precision
+#
+# Note: Precision is a pybind11 C++ class imported from precision_impl.
+# Because Python syntax does not allow @decorator syntax on variable assignments,
+# we annotate it functionally via experimental(...)(precision_impl.Precision).
+Precision = experimental("StableHLO precision configuration.")(
+    precision_impl.Precision
+)
 
 _VALID_PRECISIONS = (
     Precision.DEFAULT,
