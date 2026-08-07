@@ -125,7 +125,15 @@ echo ""
 # pypi_torch path active and patched requirements.txt to ``torch==2.11.0+cpu``
 # so both the codegen and the wheel link against torch 2.11.
 # --disk_cache overrides .bazelrc to put cache on the mounted /data/ disk.
-if bazel --output_base="$BAZEL_OUTPUT_BASE" build -c opt //ci/wheel:torch_tpu_wheel --config=no_rbe --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
+#
+# --config=wheel_common sets --//:wheel_build=True, which is mandatory: it routes
+# the shared XLA/MLIR backend through the torch_version-reset transition so
+# pywrap factors it into a single libxla_base.so. Without it the per-version
+# commons each ship a full copy of the backend and the wheel aborts on
+# ``import torch`` with duplicate static registrations; //ci/wheel refuses to
+# build rather than emit that wheel. --config=no_rbe must come *after* it to
+# strip the remote cache/executor wheel_common turns on.
+if bazel --output_base="$BAZEL_OUTPUT_BASE" build -c opt //ci/wheel:torch_tpu_wheel --config=wheel_common --config=no_rbe --disk_cache="$BAZEL_CACHE_DIR/disk-cache"; then
     print_success "Build completed!"
 
     # Find and copy wheel
