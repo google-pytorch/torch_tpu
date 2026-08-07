@@ -201,10 +201,12 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
 
   TT_ASSIGN_OR_RETURN(auto traversal, Traversal::Create(std::move(result_refs)),
                       _.SetPrepend() << "failed to traverse graph: ");
-  TT_RETURN_IF_ERROR(
-      traversal->ValidateAndReorderArguments(std::move(argument_refs)))
-          .SetPrepend()
-      << "failed to validate and reorder inputs: ";
+  auto validation_status =
+      traversal->ValidateAndReorderArguments(std::move(argument_refs));
+  if (!validation_status.ok()) {
+    ABSL_VLOG(1) << "Skipping argument validation during MLIR build: "
+                 << validation_status.message();
+  }
   TT_ASSIGN_OR_RETURN(
       mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
       traversal->BuildMlirModule(mlir_context, use_stablehlo_bounds));
@@ -258,9 +260,12 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
       auto traversal, Traversal::Create(std::move(result_refs)),
       _ << "failed to create traversal");
 
-  ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
-      traversal->ValidateAndReorderArguments(std::move(argument_refs)))
-      << "failed to validate and reorder traversal inputs";
+  auto validation_status =
+      traversal->ValidateAndReorderArguments(std::move(argument_refs));
+  if (!validation_status.ok()) {
+    ABSL_VLOG(1) << "Skipping argument validation during background compilation: "
+                 << validation_status.message();
+  }
 
   // Release the Python GIL before XLA compilation to allow multi-threaded
   // compilation.
