@@ -72,11 +72,15 @@ torch_tpu_cc_library(
         "//shims/pybind11",
         "//shims/torch",
         "//shims/torch:aten",
+        "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:error_utils",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:op_dispatcher",
         "//torch_tpu/eager:repeated_ops_heuristic",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "@xla//xla/pjrt:pjrt_client",
     ],
 )
 
@@ -86,6 +90,9 @@ pybind_extension(
     srcs = ["testing.cc"],
     common_lib_packages = [
         "torch_tpu/common",
+    ],
+    py_deps = [
+        "//shims/torch:pytorch",
     ],
     wrap_py_init = True,
     deps = [

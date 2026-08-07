@@ -48,6 +48,7 @@
 #include "torch_tpu/ops/addmv/addmv_aten_kernels.h"
 #include "torch_tpu/ops/all_any/all_any_aten_kernels.h"
 #include "torch_tpu/ops/angle/angle_aten_kernels.h"
+#include "torch_tpu/ops/ao/ao_offload_kernels.h"
 #include "torch_tpu/ops/arange/arange_aten_kernels.h"
 #include "torch_tpu/ops/as_strided/as_strided_aten_kernels.h"
 #include "torch_tpu/ops/assertion_aten_kernels.h"
@@ -1356,6 +1357,12 @@ TORCH_LIBRARY_IMPL(tpu, CPU, m) {
   ImplExperimental<OpName::kRaggedDotOut>(m, AtenRaggedDotOut);
   ImplExperimental<OpName::kRaggedAllToAll>(m, AtenRaggedAllToAll);
   ImplExperimental<OpName::kRaggedAllToAllOut>(m, AtenRaggedAllToAllOut);
+}
+
+TORCH_LIBRARY_IMPL(ao, PrivateUse1, m) {
+  ImplStable<OpName::kAoOffload>(m, AtenAoOffload);
+  ImplStable<OpName::kAoReload>(m, AtenAoReload);
+  ImplStable<OpName::kAoWaitTensor>(m, AtenAoWaitTensor);
 }
 
 // Returns a mutable reference to the global CPU fallback mode (defaulted to

@@ -513,6 +513,7 @@ torch_tpu_cc_library(
         "//torch_tpu/ops/addmv:addmv_aten_kernels",
         "//torch_tpu/ops/all_any:all_any_aten_kernels",
         "//torch_tpu/ops/angle:angle_aten_kernels",
+        "//torch_tpu/ops/ao:ao_offload_kernels",
         "//torch_tpu/ops/arange:arange_aten_kernels",
         "//torch_tpu/ops/as_strided:as_strided_aten_kernels",
         "//torch_tpu/ops/baddbmm:baddbmm_aten_kernels",

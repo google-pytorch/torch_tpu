@@ -3597,6 +3597,29 @@ module {
     ):
       torch.ops.tpu.optimization_barrier([])
 
+  @et.why_tpu_only("ao.reload is implemented for device=tpu.")
+  def test_reload_unsupported_device(self):
+    try:
+      # pylint: disable=g-import-not-at-top
+      from torch._functorch._activation_offloading import offload_ops
+      # Reference offload_ops to prevent a lint warning. The import is required
+      # to register the offload custom ops.
+      _ = offload_ops
+    except ImportError:
+      self.skipTest(
+          "torch._functorch._activation_offloading.offload_ops is not available"
+          " in this PyTorch version"
+      )
+
+    x = torch.arange(5, device=et.device(), dtype=torch.float32)
+    y = torch.ops.ao.offload(x)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reload(): expected 'tpu' device, got 'cpu'""",
+    ):
+      torch.ops.ao.reload(y, torch.device("cpu"))
+
 
 if __name__ == "__main__":
   absltest.main()
