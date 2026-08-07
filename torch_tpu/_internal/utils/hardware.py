@@ -67,6 +67,8 @@ _V7_TOPOLOGY: Final[Mapping[int, str]] = immutabledict.immutabledict({
     8: "2,2,1,2",
 })
 
+# TPU_DEVICE_0083_TOPOLOGY
+
 # Verified IDs from util/platforminfo/pci_ids.h
 _TOPOLOGY_BY_TPU_PCI_DEVICE_ID: Final[Mapping[str, Mapping[int, str]]] = (
     immutabledict.immutabledict({
@@ -75,6 +77,7 @@ _TOPOLOGY_BY_TPU_PCI_DEVICE_ID: Final[Mapping[str, Mapping[int, str]]] = (
         "0x0063": _V5E_TOPOLOGY,  # TPU v5e
         "0x006f": _V6E_TOPOLOGY,  # TPU v6e
         "0x0076": _V7_TOPOLOGY,  # TPU v7
+        # TPU_DEVICE_0083_TOPOLOGY_BY_TPU_PCI_DEVICE_ID
     })
 )
 
@@ -84,6 +87,7 @@ _PCI_DEVICE_ID_TO_NAME: Final[Mapping[str, str]] = immutabledict.immutabledict({
     "0x0063": "TPU v5e",
     "0x006f": "TPU v6e",
     "0x0076": "TPU v7",
+    # TPU_DEVICE_0083_PCI_DEVICE_ID_TO_NAME,
 })
 
 # GPU device names
@@ -100,6 +104,7 @@ class TpuVersion(enum.Enum):
   V5E = "TPU v5e"
   V6E = "TPU v6e"
   V7 = "TPU v7"
+  # TPU_DEVICE_0083_TPU_VERSION_ENUM
   UNKNOWN = "TPU"
 
 
