@@ -33,6 +33,7 @@ torch_tpu_py_library(
         ":torch_tpu_compiled_executable",
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//torch_tpu/_internal/export",

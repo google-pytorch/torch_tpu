@@ -44,24 +44,6 @@ from rules_python.python.runfiles import runfiles
 log_utils.log_to_stderr()
 
 
-def patched_deepstack_process(
-    self, hidden_states, visual_pos_masks, visual_embeds
-):
-  """Uses masked_scatter to inject visual features without data-dependent nonzero."""
-  if visual_embeds is None or visual_pos_masks is None:
-    return hidden_states
-  zeros = torch.zeros_like(hidden_states)
-  visual_features = zeros.masked_scatter(
-      visual_pos_masks.unsqueeze(-1), visual_embeds
-  )
-  return hidden_states + visual_features
-
-
-from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
-
-Qwen3VLTextModel._deepstack_process = patched_deepstack_process
-
-
 _MODEL_NAME = flags.DEFINE_string(
     "model_name",
     "Qwen/Qwen3-VL-2B-Instruct",
@@ -450,6 +432,13 @@ def _run_with_random_weights(
     )
 
     if mode == Mode.COMPILED_DYNAMIC:
+      if "input_ids" in device_inputs and isinstance(
+          device_inputs["input_ids"], torch.Tensor
+      ):
+        # Mark sequence length dynamic to support variable prompt lengths.
+        torch._dynamo.mark_dynamic(
+            device_inputs["input_ids"], 1, min=16, max=4096
+        )
       if "pixel_values" in device_inputs and isinstance(
           device_inputs["pixel_values"], torch.Tensor
       ):

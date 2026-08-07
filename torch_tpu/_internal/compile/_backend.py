@@ -278,6 +278,15 @@ class TpuBackend:
     self._debug = debug
     self._dynamism = dynamism
     self._enable_serialization = False if debug else enable_serialization
+    if self._dynamism:
+      # Enable tracing dynamic output shape ops (e.g. data-dependent operations)
+      # for dynamic compilation. Combined with HandleBooleanIndexPutPass in
+      # DynamicCompiler, this allows tracing boolean index operations without
+      # Dynamo DynamicOutputShapeException.
+      # pylint: disable=protected-access
+      if hasattr(torch._dynamo.config, "capture_dynamic_output_shape_ops"):
+        torch._dynamo.config.capture_dynamic_output_shape_ops = True
+      # pylint: enable=protected-access
     # Stores information about each compiled executable.
     # Organized by order of compilation (index 0 is the first compilation, etc.)
     self._compiled_executables: list[compiler.CompiledArtifact] = []

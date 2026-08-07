@@ -307,6 +307,173 @@ class DetectSymIntUsagesPass:
     return unhandled_usages
 
 
+_INDEX_PUT_OPS = {
+    torch.ops.aten.index_put.default,
+    torch.ops.aten.index_put_.default,
+}
+
+_INDEX_OPS = {
+    torch.ops.aten.index.Tensor,
+}
+
+_ADD_OPS = {
+    torch.ops.aten.add.Tensor,
+}
+
+_VIEW_OR_SLICE_OPS = {
+    torch.ops.aten.slice.Tensor,
+    torch.ops.aten.view.default,
+    torch.ops.aten._unsafe_view.default,
+}
+
+
+class HandleBooleanIndexPutPass:
+  """Transforms boolean index_put operations to masked_scatter.
+
+  PyTorch's default lowering of boolean indexing (`tensor[mask] = values`) uses
+  `aten.index_put` / `aten.index_put_` with a boolean mask tensor. In ATen
+  runtime,
+  evaluating a boolean mask in `index_put` or `index` internally invokes
+  `aten.nonzero`,
+  which produces unbacked data-dependent dynamic output shapes and fails when
+  evaluated on symbolic placeholder tensors.
+
+  This pass detects `index_put` / `index_put_` operations where the index is a
+  boolean
+  tensor and rewrites them to:
+  - If direct assignment (`accumulate=False`):
+      `masked_scatter(self, broadcast_mask, values)`
+  - If accumulated update (`accumulate=True` or `local_this = x[mask] + embeds;
+  x[mask] = local_this`):
+      `self + masked_scatter(zeros_like(self), broadcast_mask, update_values)`
+  """
+
+  def __init__(self, sym_shape_manager: SymShapeManager | None = None):
+    self._sym_shape_manager = sym_shape_manager
+
+  def __call__(self, graph_module: torch.fx.GraphModule) -> None:
+    graph = graph_module.graph
+    nodes_to_process = []
+    for node in graph.nodes:
+      if node.op == "call_function" and node.target in _INDEX_PUT_OPS:
+        nodes_to_process.append(node)
+
+    for node in nodes_to_process:
+      self._transform_index_put_node(graph, node)
+
+  def _is_bool_tensor(self, node: Any) -> bool:
+    if not isinstance(node, torch.fx.Node):
+      return False
+    if "val" in node.meta and hasattr(node.meta["val"], "dtype"):
+      return node.meta["val"].dtype == torch.bool
+    if "tensor_meta" in node.meta and hasattr(
+        node.meta["tensor_meta"], "dtype"
+    ):
+      return node.meta["tensor_meta"].dtype == torch.bool
+    return False
+
+  def _get_tensor_dim(self, node: torch.fx.Node) -> int | None:
+    if "val" in node.meta and hasattr(node.meta["val"], "dim"):
+      return node.meta["val"].dim()
+    if "tensor_meta" in node.meta and hasattr(
+        node.meta["tensor_meta"], "shape"
+    ):
+      return len(node.meta["tensor_meta"].shape)
+    return None
+
+  def _get_underlying_tensor(self, node: Any) -> Any:
+    while (
+        isinstance(node, torch.fx.Node)
+        and node.op == "call_function"
+        and node.target in _VIEW_OR_SLICE_OPS
+    ):
+      node = node.args[0]
+    return node
+
+  def _transform_index_put_node(
+      self, graph: torch.fx.Graph, node: torch.fx.Node
+  ) -> None:
+    args = node.args
+    kwargs = node.kwargs
+    self_tensor = args[0]
+    indices = args[1]
+    values = args[2]
+    accumulate = kwargs.get("accumulate", False)
+    if len(args) > 3:
+      accumulate = args[3]
+
+    # Check if any index tensor is a boolean tensor
+    bool_mask_node = None
+    if isinstance(indices, (list, tuple)):
+      for idx in indices:
+        if idx is not None and self._is_bool_tensor(idx):
+          bool_mask_node = idx
+          break
+    elif self._is_bool_tensor(indices):
+      bool_mask_node = indices
+
+    if bool_mask_node is None:
+      return
+
+    # Broadcast mask to match self_tensor rank by unsqueezing trailing dimensions
+    mask_dim = self._get_tensor_dim(bool_mask_node)
+    self_dim = self._get_tensor_dim(self_tensor)
+    broadcast_mask = bool_mask_node
+    if mask_dim is not None and self_dim is not None:
+      while mask_dim < self_dim:
+        with graph.inserting_before(node):
+          broadcast_mask = graph.call_function(
+              torch.ops.aten.unsqueeze.default, (broadcast_mask, -1)
+          )
+        mask_dim += 1
+
+    # Check if values comes from an add(index(self_tensor, [mask]), update_values)
+    is_accumulate_from_add = False
+    update_values = values
+    if (
+        isinstance(values, torch.fx.Node)
+        and values.op == "call_function"
+        and values.target in _ADD_OPS
+    ):
+      add_left, add_right = values.args[0], values.args[1]
+      self_root = self._get_underlying_tensor(self_tensor)
+      for op1, op2 in ((add_left, add_right), (add_right, add_left)):
+        if (
+            isinstance(op1, torch.fx.Node)
+            and op1.op == "call_function"
+            and op1.target in _INDEX_OPS
+        ):
+          index_self_root = self._get_underlying_tensor(op1.args[0])
+          if index_self_root == self_root:
+            is_accumulate_from_add = True
+            update_values = op2
+            break
+
+    with graph.inserting_before(node):
+      if accumulate or is_accumulate_from_add:
+        zeros = graph.call_function(
+            torch.ops.aten.zeros_like.default, (self_tensor,)
+        )
+        scattered = graph.call_function(
+            torch.ops.aten.masked_scatter.default,
+            (zeros, broadcast_mask, update_values),
+        )
+        new_node = graph.call_function(
+            torch.ops.aten.add.Tensor, (self_tensor, scattered)
+        )
+      else:
+        new_node = graph.call_function(
+            torch.ops.aten.masked_scatter.default,
+            (self_tensor, broadcast_mask, update_values),
+        )
+
+    if "val" in node.meta:
+      new_node.meta["val"] = node.meta["val"]
+
+    node.replace_all_uses_with(new_node)
+    graph.erase_node(node)
+
+
 def apply_dynamism_transformations(
     graph_module: torch.fx.GraphModule, sym_shape_manager: SymShapeManager
 ) -> None:
@@ -328,6 +495,11 @@ def apply_dynamism_transformations(
   GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
       HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
   )
+
+  # Updates boolean index_put ops to masked_scatter to avoid data-dependent nonzero.
+  GraphTransformObserver(
+      graph_module, "handle_boolean_index_put"
+  ).apply_gm_pass(HandleBooleanIndexPutPass(sym_shape_manager))
 
   # Updates the generative ops that have dynamic scalar inputs.
   GraphTransformObserver(graph_module, "handle_generative_ops").apply_gm_pass(

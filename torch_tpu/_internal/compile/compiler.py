@@ -38,6 +38,7 @@ from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.dynamic.graph_transformations import HandleBooleanIndexPutPass
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
@@ -228,6 +229,10 @@ class StaticCompiler(Compiler):
           graph_module, "mark_activation_checkpoints"
       ).apply_graph_pass(mark_activation_checkpoints.apply)
 
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "handle_boolean_index_put"
+    ).apply_gm_pass(HandleBooleanIndexPutPass())
+    graph_module.graph.eliminate_dead_code()
     graph_module.graph.lint()
     graph_module.recompile()
 

@@ -340,6 +340,78 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(dynamic_reshape_nodes, 1)
 
+  def test_boolean_index_put_transformation(self):
+    captured_gm = None
+    captured_sm = None
+
+    def fw_compiler(graph_module, example_inputs):
+      nonlocal captured_gm, captured_sm
+      captured_gm = graph_module
+      captured_sm = sym_shape_manager.SymShapeManager(
+          graph_module, example_inputs
+      )
+      return graph_module
+
+    import torch._dynamo.config as dynamo_config
+
+    with dynamo_config.patch(capture_dynamic_output_shape_ops=True):
+
+      @torch.compile(
+          backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True
+      )
+      def f(hidden_states, mask, embeds):
+        hidden_states = hidden_states.clone()
+        local_this = hidden_states[mask, :] + embeds
+        hidden_states[mask, :] = local_this
+        return hidden_states
+
+      h = torch.randn(1, 89, 2048, dtype=torch.bfloat16)
+      mask = torch.zeros(1, 89, dtype=torch.bool)
+      mask[0, 10:74] = True
+      embeds = torch.randn(64, 2048, dtype=torch.bfloat16)
+
+      torch._dynamo.mark_dynamic(h, 1, min=16, max=128)
+      torch._dynamo.mark_dynamic(mask, 1, min=16, max=128)
+      torch._dynamo.mark_dynamic(embeds, 0, min=16, max=128)
+
+      f(h, mask, embeds)
+
+    self.assertIsNotNone(captured_gm)
+    print("=== GRAPH BEFORE TRANSFORMATIONS ===", flush=True)
+    captured_gm.print_readable()
+
+    graph_transformations.HandleBooleanIndexPutPass(captured_sm)(captured_gm)
+    captured_gm.graph.eliminate_dead_code()
+    captured_gm.recompile()
+
+    print("=== GRAPH AFTER TRANSFORMATIONS ===", flush=True)
+    captured_gm.print_readable()
+
+    # Verify no aten.index.Tensor or aten.index_put nodes remain
+    index_nodes = list(
+        captured_gm.graph.find_nodes(
+            op="call_function",
+            target=torch.ops.aten.index.Tensor,
+        )
+    )
+    self.assertEmpty(index_nodes)
+
+    index_put_nodes = list(
+        captured_gm.graph.find_nodes(
+            op="call_function",
+            target=torch.ops.aten.index_put.default,
+        )
+    )
+    self.assertEmpty(index_put_nodes)
+
+    scatter_nodes = list(
+        captured_gm.graph.find_nodes(
+            op="call_function",
+            target=torch.ops.aten.masked_scatter.default,
+        )
+    )
+    self.assertNotEmpty(scatter_nodes)
+
 
 if __name__ == "__main__":
   absltest.main()
