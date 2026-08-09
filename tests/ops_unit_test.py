@@ -10298,6 +10298,67 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertEqual(type(restored.output_value).__name__, "ValueError")
     self.assertEqual(str(restored.output_value), "bad value: 42")
 
+  def test_get_dtype_exclusions_with_iterable_returns_exclusions_tuple(self):
+    self.assertEqual(
+        op_testing._get_dtype_exclusions((torch.float32,), "gpu"),
+        (torch.float32,),
+    )
+
+  def test_get_dtype_exclusions_with_device_dict_returns_device_exclusions(
+      self,
+  ):
+    exclusions_by_device = {"cpu": (torch.float32,), "gpu": (torch.float64,)}
+    self.assertEqual(
+        op_testing._get_dtype_exclusions(exclusions_by_device, "gpu"),
+        (torch.float64,),
+    )
+
+  def test_get_dtype_exclusions_with_invalid_device_key_raises_value_error(
+      self,
+  ):
+    with self.assertRaisesRegex(ValueError, "Expected only 'cpu' and 'gpu'"):
+      op_testing._get_dtype_exclusions({"xpu": (torch.float32,)}, "xpu")
+
+  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
+  def test_record_gpu_dtype_exclusions_multiple_calls_intersects_exclusions(
+      self,
+  ):
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float32, torch.float64),
+        exclude_inplace_dtypes=(torch.int16,),
+    )
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float64, torch.bfloat16),
+        exclude_inplace_dtypes=(torch.int32,),
+    )
+    self.assertEqual(
+        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_dtypes"],
+        {"torch.float64"},
+    )
+    self.assertEqual(
+        op_testing._DTYPE_EXCLUSIONS["add"]["exclude_inplace_dtypes"],
+        set(),
+    )
+
+  @mock.patch.dict(op_testing._DTYPE_EXCLUSIONS, clear=True)
+  def test_build_dtype_exclusions_yaml_returns_sorted_formatted_yaml(self):
+    op_testing._record_gpu_dtype_exclusions(
+        "add",
+        exclude_dtypes=(torch.float64, torch.float32),
+        exclude_inplace_dtypes=(torch.int32,),
+    )
+    expected_yaml = (
+        "add:\n"
+        "  exclude_dtypes:\n"
+        "  - torch.float32\n"
+        "  - torch.float64\n"
+        "  exclude_inplace_dtypes:\n"
+        "  - torch.int32\n"
+    )
+    self.assertEqual(op_testing._build_dtype_exclusions_yaml(), expected_yaml)
+
 
 if __name__ == "__main__":
   absltest.main()

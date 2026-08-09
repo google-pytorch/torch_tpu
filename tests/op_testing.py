@@ -62,6 +62,7 @@ from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
+import yaml
 
 # In this file, we use the following naming convention for variables:
 # - golden_*: a value for the device used for computing the golden results
@@ -110,6 +111,9 @@ class TestMode(enum.Enum):
   )
   GEN_GPU_GOLDEN = "gen_gpu_golden"  # Generate GPU golden results.
   PERF = "perf"  # Measure op performance.
+  DUMP_DTYPE_EXCLUSIONS = (  # Dump dtype exclusions in `do_test_op`.
+      "dump_dtype_exclusions"
+  )
 
 
 _TEST_MODE: Final[flags.FlagHolder[TestMode]] = flags.DEFINE_enum_class(
@@ -194,6 +198,7 @@ _PERF_DIR: Final[flags.FlagHolder[str]] = flags.DEFINE_string(
     "Directory for storing the performance results. Must be a "
     "non-empty string in the perf mode.",
 )
+
 
 # Example of how to use --base_perf_dir to study the impact of a change on op
 # performance:
@@ -825,6 +830,16 @@ _GOLDEN_GPU_DATA: MutableMapping[
     ],
 ] = {}
 
+# Used in the dump_dtype_exclusions mode to collect GPU dtype exclusions of each
+# `do_test_op` call site. The key is op name, and the value is a mapping from
+# exclusion kinds (`exclude_dtypes` or `exclude_inplace_dtypes`) to a set of
+# dtype names.
+#
+# Ops with multiple `do_test_op` call sites are intersected. For instance, for
+# a given op O with exclude_dtypes = {a, b} in one call site and
+# exclude_dtypes = {b, c} in the other, the recorded exclusion will be {b}.
+_DTYPE_EXCLUSIONS: MutableMapping[str, dict[str, set[str]]] = {}
+
 # The full list of known ops. We will test a subset of these.
 _KNOWN_OPS: Final[Sequence[OpInfo]] = (
     _masked.op_db
@@ -1424,6 +1439,11 @@ def _make_tensors_zero_element(x: _pytree.PyTree) -> _pytree.PyTree:
 def _gen_gpu_golden_mode() -> bool:
   """Returns true if the test is running in gen_gpu_golden mode."""
   return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
+
+
+def _dump_dtype_exclusions_mode() -> bool:
+  """Returns true if the test is running in dump_dtype_exclusions mode."""
+  return _TEST_MODE.value == TestMode.DUMP_DTYPE_EXCLUSIONS
 
 
 def _torch_tpu_vs_cpu_mode() -> bool:
@@ -2052,6 +2072,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     # results are read from the golden file.
     self.golden_device = {
         # go/keep-sorted start
+        TestMode.DUMP_DTYPE_EXCLUSIONS: None,
         TestMode.GEN_GPU_GOLDEN: torch.device("cuda"),
         TestMode.PERF: torch.device("cpu"),
         TestMode.TORCH_TPU_VS_CPU: torch.device("cpu"),
@@ -2059,7 +2080,11 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
         # go/keep-sorted end
     }[_TEST_MODE.value]
 
-    if _TEST_MODE.value in (TestMode.TORCH_TPU_VS_CPU, TestMode.PERF):
+    if _TEST_MODE.value in (
+        TestMode.TORCH_TPU_VS_CPU,
+        TestMode.PERF,
+        TestMode.DUMP_DTYPE_EXCLUSIONS,
+    ):
       self.golden_device_type = "cpu"
     elif _TEST_MODE.value in (
         TestMode.GEN_GPU_GOLDEN,
@@ -2114,6 +2139,15 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
 
     self.dynamism_filter_fn = filter_fn
     self.dynamism_mark_dynamic_fn = mark_dynamic_fn
+
+  def skipTest(self, reason: str) -> None:  # pylint: disable=invalid-name
+    """Overrides TestCase.skipTest to bypass skips during dtype exclusion collection."""
+    # Never skip tests when dumping dtype exclusions. Every test must run so
+    # that its `do_test_op` calls can record its dtype exclusions, regardless of
+    # any mode-based or environment-based skip conditions.
+    if _dump_dtype_exclusions_mode():
+      return
+    super().skipTest(reason)
 
   def skip_unless_torch_tpu_vs_cpu(self) -> None:
     """Skips the test unless it is running in the TorchTPU vs CPU mode."""
@@ -3130,18 +3164,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       # exceptions during sample generation.
       return ()
 
-    exclude_dtypes = exclude_dtypes or ()
-    if isinstance(exclude_dtypes, dict):
-      # Ensure that only "cpu" and "gpu" are used as keys.
-      excessive_keys = set(exclude_dtypes.keys()) - {"cpu", "gpu"}
-      if excessive_keys:
-        raise ValueError(
-            "Expected only 'cpu' and 'gpu' keys in exclude_dtypes, got keys"
-            f" {excessive_keys}"
-        )
-
-      exclude_dtypes = exclude_dtypes.get(self.golden_device_type, ())
-    return tuple(exclude_dtypes)
+    return _get_dtype_exclusions(exclude_dtypes, self.golden_device_type)
 
   def do_test_op(
       self,
@@ -3226,6 +3249,14 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
           "Each test method must call do_test_op() at most once."
       )
     self._do_test_op_called = True
+
+    if _dump_dtype_exclusions_mode():
+      _record_gpu_dtype_exclusions(
+          op_name,
+          exclude_dtypes=exclude_dtypes,
+          exclude_inplace_dtypes=exclude_inplace_dtypes,
+      )
+      return
 
     if check_value == CheckValueMode.LOOSE:
       raise ValueError(
@@ -3465,6 +3496,120 @@ def _load_golden_files() -> None:
           _GOLDEN_GPU_DATA[test_case_name][variant_name][dtype] = samples
 
 
+def _get_dtype_exclusions(
+    exclude_dtypes: (
+        Iterable[torch.dtype] | Mapping[str, Iterable[torch.dtype]] | None
+    ),
+    device_type: str,
+) -> Sequence[torch.dtype]:
+  """Extracts dtype exclusions for a specific device type.
+
+  Args:
+    exclude_dtypes: Exclusions specified either directly as 1. an iterable of
+      dtypes, e.g. (torch.float32, torch.float64), or 2. a mapping from device
+      type to an iterable of dtypes, e.g. {"cpu": (torch.float32,), "gpu":
+      (torch.float64,)}, or 3. None.
+    device_type: The target device type string. Must be "cpu" or "gpu".
+
+  Returns:
+    A sequence of `torch.dtype` objects excluded for the given device type.
+
+  Raises:
+    ValueError: If `exclude_dtypes` is a dict containing keys other than
+      "cpu" and "gpu".
+  """
+  exclude_dtypes = exclude_dtypes or ()
+  if isinstance(exclude_dtypes, dict):
+    # Ensure that only "cpu" and "gpu" are used as keys.
+    excessive_keys = set(exclude_dtypes.keys()) - {"cpu", "gpu"}
+    if excessive_keys:
+      raise ValueError(
+          "Expected only 'cpu' and 'gpu' keys in exclude_dtypes, got keys"
+          f" {excessive_keys}"
+      )
+
+    exclude_dtypes = exclude_dtypes.get(device_type, ())
+  return tuple(exclude_dtypes)
+
+
+def _record_gpu_dtype_exclusions(
+    op_name: str,
+    *,
+    exclude_dtypes: (
+        Iterable[torch.dtype] | Mapping[str, Iterable[torch.dtype]] | None
+    ),
+    exclude_inplace_dtypes: (
+        Iterable[torch.dtype] | Mapping[str, Iterable[torch.dtype]] | None
+    ),
+) -> None:
+  """Records a do_test_op call's GPU dtype exclusions in _DTYPE_EXCLUSIONS.
+
+  Intersects new GPU exclusions with previously recorded exclusions for the
+  given
+  op across multiple call sites.
+
+  Args:
+    op_name: The name of the op being recorded.
+    exclude_dtypes: Out-of-place dtype exclusions for the op call site.
+    exclude_inplace_dtypes: In-place dtype exclusions for the op call site.
+  """
+  for kind, exclusions in (
+      ("exclude_dtypes", exclude_dtypes),
+      ("exclude_inplace_dtypes", exclude_inplace_dtypes),
+  ):
+    dtypes = {
+        str(dtype)
+        for dtype in _get_dtype_exclusions(exclusions, device_type="gpu")
+    }
+    op_exclusions = _DTYPE_EXCLUSIONS.setdefault(op_name, {})
+    if kind not in op_exclusions:
+      op_exclusions[kind] = dtypes
+    else:
+      op_exclusions[kind] &= dtypes
+
+
+def _build_dtype_exclusions_yaml() -> str:
+  """Builds a YAML document for collected GPU dtype exclusions."""
+  tier_of_dtype_name = {
+      str(dtype): tier for dtype, tier in TIER_OF_DTYPE.items()
+  }
+
+  # The dtypes of each exclusion kind are sorted by their tier in TIER_OF_DTYPE
+  # first and then alphabetically. In this way, the most important dtypes show up at the top of YAML.
+  def sort_key(dtype_name: str) -> tuple[int, str]:
+    return (tier_of_dtype_name.get(dtype_name, sys.maxsize), dtype_name)
+
+  data = {
+      op_name: {
+          kind: sorted(dtypes, key=sort_key)
+          for kind, dtypes in kinds.items()
+          if dtypes
+      }
+      for op_name, kinds in _DTYPE_EXCLUSIONS.items()
+      if any(kinds.values())
+  }
+  return yaml.safe_dump(data, sort_keys=True, default_flow_style=False)
+
+
+# YAML markers to facilitate parsing collected op dtype exclusions from test
+# stdout output.
+DTYPE_EXCLUSIONS_YAML_BEGIN: Final[str] = "BEGIN_DTYPE_EXCLUSIONS_YAML"
+DTYPE_EXCLUSIONS_YAML_END: Final[str] = "END_DTYPE_EXCLUSIONS_YAML"
+
+
+def _print_dtype_exclusions() -> None:
+  """Prints collected GPU dtype exclusions to stdout in YAML format.
+
+  The YAML is delimited by marker lines so that analysis tools can easily
+  extract it from the test output.
+  """
+  print(DTYPE_EXCLUSIONS_YAML_BEGIN, flush=True)
+  # `_build_dtype_exclusions_yaml` already ends with a newline, so suppress
+  # print function's own newline to avoid emitting a trailing blank line.
+  print(_build_dtype_exclusions_yaml(), end="", flush=True)
+  print(DTYPE_EXCLUSIONS_YAML_END, flush=True)
+
+
 def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
   """Generates a random permutation of unique numbers.
 
@@ -3530,6 +3675,11 @@ def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
 
 def set_up_test_module() -> None:
   """Sets up the entire test module."""
+  if _dump_dtype_exclusions_mode():
+    print(
+        "No test setup is required for dumping op dtype exclusions.", flush=True
+    )
+    return
 
   if _gen_gpu_golden_mode() and not torch.cuda.is_available():
     print(
@@ -3642,6 +3792,8 @@ def tear_down_test_module() -> None:
     _save_golden_file()
   elif _perf_mode() and _UPDATE_PERF_DATA.value:
     _save_perf_data()
+  elif _dump_dtype_exclusions_mode():
+    _print_dtype_exclusions()
 
 
 def skip_if_torch_tpu_vs_gpu_mode(
