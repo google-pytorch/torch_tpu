@@ -2632,7 +2632,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
 
     try:
       start_time = time.perf_counter()
-      result = op_func(  # pyrefly: ignore[not-callable]
+      result = op_func(
           input_value,
           *device_op_input.args,
           **device_op_input.kwargs,
@@ -2843,7 +2843,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
     golden_result_tuple = _to_tuple(golden_result)
     torch_tpu_result_tuple = _to_tuple(torch_tpu_result)
     if check_value is None or isinstance(check_value, CheckValueMode):
-      check_value = [check_value] * len(torch_tpu_result_tuple)  # pyrefly: ignore[bad-assignment]
+      check_value = [check_value] * len(torch_tpu_result_tuple)
 
     printable_input_str = str(torch_tpu_printable_input)
     for i, golden_result_i in enumerate(golden_result_tuple):
@@ -2860,7 +2860,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       self.assert_close(
           golden_result=golden_result_i,
           torch_tpu_result=torch_tpu_result_tuple[i],
-          check_value=check_value[i],  # pyrefly: ignore[bad-index, unsupported-operation]
+          check_value=check_value[i],  # pyrefly: ignore[bad-index]
           check_dtype=check_dtype,
           preamble=preamble,
           **accuracy_override,  # pyrefly: ignore[bad-argument-type]

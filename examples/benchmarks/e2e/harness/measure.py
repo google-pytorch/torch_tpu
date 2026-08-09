@@ -219,8 +219,8 @@ def _post_warmup_run(
   logging.info("Post Warmup Timings for %s: %s", name, timings)
 
   return metrics.PostWarmupRunResult(
-      post_warmup_step_time_seconds=np.mean(timings),  # pyrefly: ignore[bad-argument-type]
-      peak_device_memory_mb=memory_usage,  # pyrefly: ignore[bad-argument-type]
+      post_warmup_step_time_seconds=np.mean(timings),
+      peak_device_memory_mb=memory_usage,
   )
 
 

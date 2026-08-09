@@ -31,7 +31,7 @@ def _get_coords_from_debug_string(debug_str: str) -> tuple[int, int, int, int]:
   # Format: TPU_<id>(process=<proc>,(<x>,<y>,<z>,<core>))
   match = re.search(r"\((\d+),(\d+),(\d+),(\d+)\)", debug_str)
   if match:
-    return tuple(map(int, match.groups()))  # pyrefly: ignore[bad-return]
+    return tuple(map(int, match.groups()))
   raise ValueError(f"Failed to parse coords from debug string: {debug_str}")
 
 
@@ -152,7 +152,7 @@ def visualize_topology(world_size: int | None = None) -> list[str]:
   if world_size is None:
     world_size = hardware.get_tpu_device_count()
 
-  manager = mp.Manager()  # pyrefly: ignore[missing-attribute]
+  manager = mp.Manager()
   return_list = manager.list([None] * world_size)
 
   distributed_utils.dist_run(
