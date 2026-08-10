@@ -22,6 +22,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -46,7 +47,28 @@ absl::StatusOr<mlir::MlirOp> BuildAddcdivShlo(mlir::MlirOp self,
                                               mlir::MlirOp tensor1,
                                               mlir::MlirOp tensor2,
                                               mlir::MlirOp value) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp div, BuildDivShlo(tensor1, tensor2));
+  auto tensor2_zero = MakeConstantLike(tensor2, 0);
+  auto tensor2_one = MakeConstantLike(tensor2, 1);
+
+  // Mask where tensor2 is 0
+  auto is_zero = mlir::stablehlo::Compare(
+      tensor2, tensor2_zero, mlir::stablehlo::ComparisonDirection::EQ);
+
+  // Substitute 0 with 1 in denominator to prevent 0/0 NaN
+  auto safe_tensor2 = mlir::stablehlo::Select(is_zero, tensor2_one, tensor2);
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp safe_div,
+                      BuildDivShlo(tensor1, safe_tensor2));
+
+  // Broadcast is_zero to match safe_div's shape
+  TT_ASSIGN_OR_RETURN((auto [bcast_is_zero, _]),
+                      ApplyBroadcastIfNeeded(is_zero, safe_div));
+
+  // Create zero matching safe_div's promoted element type and shape
+  auto div_zero = MakeConstantLike(safe_div, 0);
+
+  auto div = mlir::stablehlo::Select(bcast_is_zero, div_zero, safe_div);
+
   const mlir::RankedTensorType div_type = GetTensorTypeOrDie(div);
   value = mlir::stablehlo::ConvertElementType(value, div_type.getElementType());
   TT_ASSIGN_OR_RETURN(mlir::MlirOp value_div, BuildMulShlo(value, div));
