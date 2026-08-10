@@ -241,12 +241,112 @@ absl::StatusOr<mlir::MlirOp> BuildGroupedMmShlo(
   }
 }
 
+// Expands a 1D per-group scale [g] to a ragged dimension [ragged_size] using
+// cumulative offsets. Each element in the output gets the scale value for its
+// group, determined by building a one-hot indicator matrix from offsets and
+// then multiplying by the scale vector via Dot.
+//
+// TODO: For Cases 1 & 2, pre-scaling the 3D input before RaggedDot avoids
+// this expansion. Deferring to a follow-up CL after benchmarking.
+absl::StatusOr<mlir::MlirOp> ExpandScaleToRaggedDim(mlir::MlirOp scale,
+                                                    mlir::MlirOp offs,
+                                                    int64_t ragged_size) {
+  mlir::MlirBuilder& builder = scale.getBuilder();
+  const auto scale_type = GetTensorTypeOrDie(scale);
+  const int64_t num_groups = scale_type.getShape()[0];
+
+  // Cast offs to F32 for comparison arithmetic with the iota.
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp offs_f32,
+                      CastIfNeeded(offs, mlir::ElementType::F32));
+
+  // Build iota [ragged_size] containing indices 0..ragged_size-1 as F32.
+  const auto iota_type = mlir::makeTensorType(
+      builder.getContext(), {ragged_size}, mlir::ElementType::F32);
+  mlir::MlirOp iota = mlir::stablehlo::Iota(builder, iota_type, 0);
+
+  // Build indicator matrix [ragged_size, num_groups] where each row has a 1.0
+  // in exactly the column corresponding to its group.
+  //
+  // For cumulative offsets [o0, o1, ..., o_{g-1}]:
+  //   ge_mask[i, g] = (i >= offs[g])
+  //   lt_mask[i, g] = (i < offs[g])
+  //
+  // The shifted masks give us:
+  //   ge_mask_shifted[i, g] = (i >= offs[g-1]) for g>0, true for g=0
+  //
+  // indicator[i, g] = ge_mask_shifted[i, g] AND lt_mask[i, g]
+  //
+  // Simpler approach: indicator = ge_mask_for_left_boundary AND NOT ge_mask.
+  // But the simplest is: indicator[i, g] = 1 iff g = argmax over g' of
+  // (offs[g'] <= i). We compute this as:
+  //   group_count[i] = sum_g (i >= offs[g])  (count of passed boundaries)
+  //   group_id[i] = group_count[i]  (since offs are cumulative and sorted)
+  //
+  // Then the expanded scale is just: scale[group_id[i]].
+  // We compute group_count via Dot: ones[1, g] summed by indicator.
+  // But actually, the simplest approach: just compute indicator and Dot with
+  // scale.
+
+  // Broadcasting: iota [ragged_size] -> [ragged_size, num_groups]
+  //               offs [num_groups]  -> [ragged_size, num_groups]
+  auto bcast_type = mlir::makeTensorType(
+      builder.getContext(), {ragged_size, num_groups}, mlir::ElementType::F32);
+  std::vector<int64_t> iota_bcast_dims = {0};  // INT_VEC_OK
+  mlir::MlirOp iota_2d =
+      mlir::stablehlo::BroadcastInDim(bcast_type, iota, iota_bcast_dims);
+
+  std::vector<int64_t> offs_bcast_dims = {1};  // INT_VEC_OK
+  mlir::MlirOp offs_2d =
+      mlir::stablehlo::BroadcastInDim(bcast_type, offs_f32, offs_bcast_dims);
+
+  // Build shifted offsets for left boundary: offs_shifted = [0, offs[0], ...,
+  // offs[g-2]]. This gives the left boundary for each group.
+  mlir::MlirOp zero_op =
+      MakeConstant(builder, 0.0f, mlir::ElementType::F32, {1});
+  const Strides strides(1, 1);
+  const Indices start_indices(1, 0);
+  const Indices limit_indices(1, std::max<int64_t>(0, num_groups - 1));
+  mlir::MlirOp offs_prefix =
+      mlir::stablehlo::Slice(offs_f32, start_indices, limit_indices, strides);
+  mlir::MlirOp offs_shifted =
+      mlir::stablehlo::Concatenate(builder, {zero_op, offs_prefix}, 0);
+
+  mlir::MlirOp offs_shifted_2d = mlir::stablehlo::BroadcastInDim(
+      bcast_type, offs_shifted, offs_bcast_dims);
+
+  // ge_shifted[i, g] = (i >= offs_shifted[g]): 1 if position i is at or past
+  // the left boundary of group g.
+  mlir::MlirOp ge_shifted = mlir::stablehlo::Compare(
+      iota_2d, offs_shifted_2d, mlir::stablehlo::ComparisonDirection::GE);
+
+  // lt_mask[i, g] = (i < offs[g]): 1 if position i has NOT passed boundary g.
+  mlir::MlirOp lt_mask = mlir::stablehlo::Compare(
+      iota_2d, offs_2d, mlir::stablehlo::ComparisonDirection::LT);
+
+  // indicator[i, g] = ge_shifted[i, g] AND lt_mask[i, g]
+  // This is 1 iff position i belongs to group g.
+  mlir::MlirOp indicator = mlir::stablehlo::And(ge_shifted, lt_mask);
+
+  // Convert indicator to F32 and multiply with scale via Dot:
+  // result[i] = sum_g indicator[i, g] * scale[g]
+  // This is a matrix-vector product: indicator [ragged_size, g] @ scale [g].
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp indicator_f32,
+                      CastIfNeeded(indicator, mlir::ElementType::F32));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_f32,
+                      CastIfNeeded(scale, mlir::ElementType::F32));
+
+  // Dot: indicator [ragged_size, num_groups] × scale [num_groups] →
+  //      result [ragged_size]
+  return mlir::stablehlo::Dot(indicator_f32, scale_f32);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat2_op, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> offs_op,
     std::optional<mlir::MlirOp> bias, std::optional<mlir::MlirOp> scale_result,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  auto self_type = GetTensorTypeOrDie(self_op);
+  const auto self_type = GetTensorTypeOrDie(self_op);
   TT_ASSIGN_OR_RETURN(mlir::ElementType self_elem_type,
                       ConvertTo<mlir::ElementType>(self_type.getElementType()));
 
@@ -266,20 +366,26 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
                       CastIfNeeded(scale_a, mlir::ElementType::F32));
   TT_ASSIGN_OR_RETURN(auto scale_b_f32,
                       CastIfNeeded(scale_b, mlir::ElementType::F32));
-  // ApplyBroadcastIfNeeded is a no-op for scalar scales but required for
-  // dynamism compliance and future per-group scale support.
   TT_ASSIGN_OR_RETURN(auto broadcasted_scales,
                       ApplyBroadcastIfNeeded<2>({scale_a_f32, scale_b_f32}));
   auto combined_scale =
       mlir::stablehlo::Mul(broadcasted_scales[0], broadcasted_scales[1]);
 
-  // Currently only scalar scales are supported (enforced by IsScalar checks
-  // in ScaledGroupedMm), so the scalar path always applies. The rank-3 and
-  // error paths are retained for future per-group scaling support.
+  const auto result_type = GetTensorTypeOrDie(mm_result);
+  const auto combined_scale_type = GetTensorTypeOrDie(combined_scale);
+  const bool is_scalar_scale = combined_scale_type.getRank() == 0 ||
+                               (combined_scale_type.getRank() == 1 &&
+                                combined_scale_type.getShape()[0] == 1);
+
+  // Broadcast combined scale to match the mm result shape.
+  // - Scalar scales: broadcast via ApplyBroadcastIfNeeded (all cases).
+  // - 1D per-group scales with rank-3 result (Cases 3 & 4): BroadcastInDim
+  //   along dim 0.
+  // - 1D per-group scales with rank-2 ragged result (Cases 1 & 2): expand
+  //   using gather-based indexing from offsets.
   auto broadcast_scale_to_result =
       [&](mlir::MlirOp scale) -> absl::StatusOr<mlir::MlirOp> {
-    auto result_type = GetTensorTypeOrDie(mm_result);
-    auto scale_type = GetTensorTypeOrDie(scale);
+    const auto scale_type = GetTensorTypeOrDie(scale);
     if (scale_type.getRank() == 0 ||
         (scale_type.getRank() == 1 && scale_type.getShape()[0] == 1)) {
       return scale;
@@ -291,14 +397,33 @@ absl::StatusOr<mlir::MlirOp> BuildScaledGroupedMmShlo(
       std::vector<int64_t> bcast_dims = {0};  // INT_VEC_OK
       return mlir::stablehlo::BroadcastInDim(bcast_type, scale, bcast_dims);
     }
-    return TT_ERROR(  // ERROR_COV_INFEASIBLE=IsScalar rejects non-scalar scales
-               absl::StatusCode::kUnimplemented)  // STATUS_CODE_OK
-           << "Per-group scaling for 2D ragged grouped_mm is mathematically "
-           << "unsupported without scatter/gather representation.";
+    // Rank-2 ragged result: expand per-group scale using offsets.
+    ABSL_CHECK(offs_op.has_value())  // CRASH_OK
+        << "Per-group scales require offsets for 2D ragged results. "
+        << "This is a TorchTPU bug.";
+    const bool a_is_2d = self_type.getRank() == 2;
+    const int64_t ragged_size =
+        a_is_2d ? result_type.getShape()[0] : result_type.getShape()[1];
+    return ExpandScaleToRaggedDim(scale, *offs_op, ragged_size);
   };
 
   TT_ASSIGN_OR_RETURN(auto rank_expanded_combined_scale,
                       broadcast_scale_to_result(combined_scale));
+
+  // For 2D ragged results with per-group scales, the expanded scale is 1D
+  // [ragged_size]. We need to broadcast it to [ragged_size, n] or [b,
+  // ragged_size] before element-wise multiplication with the 2D result.
+  if (!is_scalar_scale && result_type.getRank() == 2) {
+    const bool a_is_2d = self_type.getRank() == 2;
+    auto bcast_type = mlir::makeTensorType(
+        rank_expanded_combined_scale.getContext(), result_type.getShape(),
+        combined_scale_type.getElementType());
+    // Case 1 (2D×3D): scale is along dim 0 (ragged rows).
+    // Case 2 (3D×2D): scale is along dim 1 (ragged cols).
+    std::vector<int64_t> bcast_dims = {a_is_2d ? 0 : 1};  // INT_VEC_OK
+    rank_expanded_combined_scale = mlir::stablehlo::BroadcastInDim(
+        bcast_type, rank_expanded_combined_scale, bcast_dims);
+  }
 
   TT_ASSIGN_OR_RETURN(
       auto broadcasted_mm_scale,
@@ -439,18 +564,32 @@ absl::StatusOr<DeviceBufferRef> ScaledGroupedMm(
   const bool has_scale_result =
       scale_result.has_value() && scale_result->defined();
 
-  // Per-group scales not yet supported.
-  TT_RET_CHECK(IsScalar(scale_a), error::kPythonNotImplementedError)
-      << "scale_a must be 1D or scalar, but got " << scale_a.dim() << "D";
-  TT_RET_CHECK(IsScalar(scale_b), error::kPythonNotImplementedError)
-      << "scale_b must be 1D or scalar, but got " << scale_b.dim() << "D";
+  // Scales must be scalar (per-tensor) or 1D (per-group). 2D+ scales are not
+  // supported.
+  TT_RET_CHECK(scale_a.dim() <= 1, error::kPythonNotImplementedError)
+      << "expected scale_a to be 1D or scalar, got " << scale_a.dim() << "D";
+  TT_RET_CHECK(scale_b.dim() <= 1, error::kPythonNotImplementedError)
+      << "expected scale_b to be 1D or scalar, got " << scale_b.dim() << "D";
+  if (!IsScalar(scale_a) || !IsScalar(scale_b)) {
+    const int64_t num_groups = has_offs ? offs->size(0) : self.size(0);
+    if (!IsScalar(scale_a)) {
+      TT_RET_CHECK(scale_a.numel() == num_groups, error::kInvalidArgument)
+          << "expected per-group scale_a to have " << num_groups
+          << " elements, got " << scale_a.numel();
+    }
+    if (!IsScalar(scale_b)) {
+      TT_RET_CHECK(scale_b.numel() == num_groups, error::kInvalidArgument)
+          << "expected per-group scale_b to have " << num_groups
+          << " elements, got " << scale_b.numel();
+    }
+  }
   if (has_bias) {
     TT_RET_CHECK(IsScalar(*bias), error::kPythonNotImplementedError)
-        << "bias must be 1D or scalar, but got " << bias->dim() << "D";
+        << "expected bias to be scalar, got " << bias->dim() << "D";
   }
   if (has_scale_result) {
     TT_RET_CHECK(IsScalar(*scale_result), error::kPythonNotImplementedError)
-        << "scale_result must be 1D or scalar, but got " << scale_result->dim()
+        << "expected scale_result to be scalar, got " << scale_result->dim()
         << "D";
   }
 

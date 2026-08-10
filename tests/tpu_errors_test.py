@@ -3442,7 +3442,7 @@ module {
     offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_grouped_mm(): scale_a must be 1D or scalar, but got 2D""",
+        tpu="""scaled_grouped_mm(): expected scale_a to be 1D or scalar, got 2D""",
     ):
       torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
 
@@ -3455,7 +3455,7 @@ module {
     offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_grouped_mm(): scale_b must be 1D or scalar, but got 2D""",
+        tpu="""scaled_grouped_mm(): expected scale_b to be 1D or scalar, got 2D""",
     ):
       torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
 
@@ -3469,7 +3469,7 @@ module {
     offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_grouped_mm(): bias must be 1D or scalar, but got 2D""",
+        tpu="""scaled_grouped_mm(): expected bias to be scalar, got 2D""",
     ):
       torch._scaled_grouped_mm(a, b, scale_a, scale_b, bias=bias, offs=offs)
 
@@ -3483,11 +3483,24 @@ module {
     offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scaled_grouped_mm(): scale_result must be 1D or scalar, but got 2D""",
+        tpu="""scaled_grouped_mm(): expected scale_result to be scalar, got 2D""",
     ):
       torch._scaled_grouped_mm(
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
+
+  @et.why_tpu_only("torch._scaled_grouped_mm is not supported on GPU.")
+  def test_scaled_grouped_mm_invalid_scale_numel(self):
+    a = torch.randn(3, 4, device=et.device())
+    b = torch.randn(3, 4, 8, device=et.device())
+    scale_a = torch.randn(5, device=et.device())  # wrong: should be 3
+    scale_b = torch.tensor(1.0, device=et.device())
+    offs = torch.tensor([1, 2, 3], dtype=torch.int32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm(): expected per-group scale_a to have 3 elements, got 5""",
+    ):
+      torch._scaled_grouped_mm(a, b, scale_a, scale_b, offs=offs)
 
   @et.why_tpu_only("Verify mask dimension check on TPU.")
   def test_native_multi_head_attention_invalid_mask_dim(self):

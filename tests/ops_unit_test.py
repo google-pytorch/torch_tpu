@@ -8155,6 +8155,178 @@ module {
         atol=2e-1,
     )
 
+  @parameterized.product(
+      out_dtype=[torch.bfloat16, torch.float32],
+  )
+  def test_scaled_grouped_mm_per_group_2d_3d(self, out_dtype):
+    """Tests per-group 1D scales: Case 1 (2D x 3D with offs)."""
+    device = "tpu"
+    num_groups = 3
+    t1 = torch.randn(12, 8, dtype=torch.bfloat16).to(device)
+    t2 = torch.randn(num_groups, 8, 8, dtype=torch.bfloat16).to(device)
+    offs = torch.tensor([4, 8, 12], dtype=torch.int32).to(device)
+
+    scale_a = torch.rand(num_groups, dtype=torch.float32).to(device)
+    scale_b = torch.rand(num_groups, dtype=torch.float32).to(device)
+
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32), offs=offs
+    )
+    expected = self._apply_group_scales(golden, scale_a, scale_b, offs)
+
+    out = torch._scaled_grouped_mm(
+        t1,
+        t2,
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=out_dtype,
+    )
+
+    utils.assert_close(
+        out.to(torch.float32),
+        expected.to(torch.float32),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.product(
+      out_dtype=[torch.bfloat16, torch.float32],
+  )
+  def test_scaled_grouped_mm_per_group_3d_2d(self, out_dtype):
+    """Tests per-group 1D scales: Case 2 (3D x 2D with offs)."""
+    device = "tpu"
+    num_groups = 2
+    t1 = torch.randn(num_groups, 4, 8, dtype=torch.bfloat16).to(device)
+    t2 = torch.randn(8, 10, dtype=torch.bfloat16).to(device)
+    offs = torch.tensor([6, 10], dtype=torch.int32).to(device)
+
+    scale_a = torch.rand(num_groups, dtype=torch.float32).to(device)
+    scale_b = torch.rand(num_groups, dtype=torch.float32).to(device)
+
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32), offs=offs
+    )
+    expected = self._apply_group_scales(
+        golden, scale_a, scale_b, offs, is_3d_2d=True
+    )
+
+    out = torch._scaled_grouped_mm(
+        t1,
+        t2,
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=out_dtype,
+    )
+
+    utils.assert_close(
+        out.to(torch.float32),
+        expected.to(torch.float32),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.product(
+      out_dtype=[torch.bfloat16, torch.float32],
+  )
+  def test_scaled_grouped_mm_per_group_2d_2d(self, out_dtype):
+    """Tests per-group 1D scales: Case 3 (2D x 2D with offs)."""
+    device = "tpu"
+    num_groups = 2
+    t1 = torch.randn(4, 16, dtype=torch.bfloat16).to(device)
+    t2 = torch.randn(16, 8, dtype=torch.bfloat16).to(device)
+    offs = torch.tensor([8, 16], dtype=torch.int32).to(device)
+
+    scale_a = torch.rand(num_groups, dtype=torch.float32).to(device)
+    scale_b = torch.rand(num_groups, dtype=torch.float32).to(device)
+
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32), offs=offs
+    )
+    expected = self._apply_group_scales(golden, scale_a, scale_b, offs)
+
+    out = torch._scaled_grouped_mm(
+        t1,
+        t2,
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=out_dtype,
+    )
+
+    utils.assert_close(
+        out.to(torch.float32),
+        expected.to(torch.float32),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  @parameterized.product(
+      out_dtype=[torch.bfloat16, torch.float32],
+  )
+  def test_scaled_grouped_mm_per_group_3d_3d(self, out_dtype):
+    """Tests per-group 1D scales: Case 4 (3D x 3D without offs)."""
+    device = "tpu"
+    batch = 3
+    t1 = torch.randn(batch, 4, 8, dtype=torch.bfloat16).to(device)
+    t2 = torch.randn(batch, 8, 6, dtype=torch.bfloat16).to(device)
+
+    scale_a = torch.rand(batch, dtype=torch.float32).to(device)
+    scale_b = torch.rand(batch, dtype=torch.float32).to(device)
+
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32)
+    )
+    expected = self._apply_group_scales(golden, scale_a, scale_b)
+
+    out = torch._scaled_grouped_mm(
+        t1,
+        t2,
+        scale_a,
+        scale_b,
+        out_dtype=out_dtype,
+    )
+
+    utils.assert_close(
+        out.to(torch.float32),
+        expected.to(torch.float32),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+  def test_scaled_grouped_mm_mixed_scales(self):
+    """Tests mixed scalar/1D scales: scalar scale_a, per-group scale_b."""
+    device = "tpu"
+    num_groups = 2
+    t1 = torch.randn(8, 8, dtype=torch.bfloat16).to(device)
+    t2 = torch.randn(num_groups, 8, 6, dtype=torch.bfloat16).to(device)
+    offs = torch.tensor([4, 8], dtype=torch.int32).to(device)
+
+    scale_a = torch.rand(1, dtype=torch.float32).to(device)
+    scale_b = torch.rand(num_groups, dtype=torch.float32).to(device)
+
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32), offs=offs
+    )
+    expected = self._apply_group_scales(golden, scale_a, scale_b, offs)
+
+    out = torch._scaled_grouped_mm(
+        t1,
+        t2,
+        scale_a,
+        scale_b,
+        offs=offs,
+        out_dtype=torch.float32,
+    )
+
+    utils.assert_close(
+        out.to(torch.float32),
+        expected.to(torch.float32),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
 
 class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   """Tests for backward ops."""
