@@ -83,6 +83,8 @@
 
 namespace torch_tpu {
 
+  inline constexpr char kRankStr[] = "RANK";
+
 absl::StatusOr<absl_nonnull std::unique_ptr<Traversal>> Traversal::Create(
     std::vector<DeviceBufferRef> outputs,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
@@ -285,12 +287,28 @@ GraphKey Traversal::BuildGraphKey() const {
     tensor_index_map[argument] =
         graph.AddInput(argument.dimensions(), argument.element_type());
   }
+
+  int op_idx = 0;
   for (const SharedDeviceBufferList& node : execution_order()) {
     const auto maybe_deferred_op = node->deferred_op();
-    ABSL_VLOG(1) << "[Traversal::BuildGraphKey] node: " << node.get()
-                 << " maybe_deferred_op: " << maybe_deferred_op;
+    // ABSL_VLOG(1) << "[Traversal::BuildGraphKey] node: " << node.get()
+    //              << " maybe_deferred_op: " << maybe_deferred_op;
     ABSL_CHECK(maybe_deferred_op != nullptr);  // CRASH_OK
     const DeferredOp& deferred_op = *maybe_deferred_op;
+
+    ABSL_VLOG(3) << "[Traversal::BuildGraphKey] Rank "
+                 << GetEnvOnce<kRankStr>().value_or("")
+                 << " Op #" << op_idx++ << " ("
+                 << ToString(deferred_op.op_name()) << ") | inputs: ["
+                 << absl::StrJoin(
+                   deferred_op.inputs(), ", ",
+                   [&](std::string* out, const DeviceBufferRef& op_input) {
+                     absl::StrAppend(out, tensor_index_map.at(op_input));
+                   })
+                 << "] | params: {"
+                 << absl::StrJoin(deferred_op.op_param_cache_keys(), ", ",
+                                  absl::PairFormatter("="))
+                 << "}";
 
     graph.AddOp(deferred_op.op_name(), deferred_op.op_param_cache_keys(),
                 deferred_op.donated_indices(),

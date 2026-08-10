@@ -45,6 +45,10 @@
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/unique_file_descriptor.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "absl/strings/str_format.h"
+
+#include <iostream>
+#include <thread>
 
 namespace torch_tpu {
 
@@ -262,9 +266,25 @@ static void EnsureTier2CacheDirExistsOnceOrDie() {
   static_cast<void>(dir_exists);  // VOID_CAST_OK=dummy result.
 }
 
+  void CdkTraceEvent(bool start, const std::string& msg) {
+    // Get current time
+    auto now = std::chrono::system_clock::now();
+
+    // Extract microseconds since epoch
+    auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+      now.time_since_epoch()
+    ).count();
+
+    auto current_id = std::this_thread::get_id();
+
+    LOG(INFO) << absl::StrFormat("trace-%s-event: name=%s ts=%f pid=torchtpu tid=%s", start ? "start" : "end", msg, microseconds * 0.000001, absl::FormatStreamed(current_id));
+  }
+
 Tier2CacheEntryLock::Tier2CacheEntryLock(CompilationCacheKey key)
     : key_(std::move(key)) {
   ABSL_VLOG(1) << "Acquiring tier-2 cache lock for key: " << key_;
+
+  CdkTraceEvent(true, absl::StrFormat("accquiring-tier2-lock-%s", key_.CompactFormat()));
 
   EnsureTier2CacheDirExistsOnceOrDie();
   const std::string lock_path = GetTier2CacheEntryLockPath(key_);
@@ -287,9 +307,17 @@ Tier2CacheEntryLock::Tier2CacheEntryLock(CompilationCacheKey key)
   // Acquire an exclusive lock on the file. This is a blocking call.
   flock(lock_fd_.get(), LOCK_EX);
   ABSL_VLOG(1) << "Acquired tier-2 cache entry lock: " << lock_path;
+
+  CdkTraceEvent(true, absl::StrFormat("tier2-lock-%s", key_.CompactFormat()));
 }
 
-Tier2CacheEntryLock::~Tier2CacheEntryLock() { Release(); }
+Tier2CacheEntryLock::~Tier2CacheEntryLock() {
+  Release();
+
+  CdkTraceEvent(false, absl::StrFormat("tier2-lock-%s", key_.CompactFormat()));
+
+  CdkTraceEvent(false, absl::StrFormat("accquiring-tier2-lock-%s", key_.CompactFormat()));
+}
 
 void Tier2CacheEntryLock::Release() {
   if (lock_fd_.valid()) {
