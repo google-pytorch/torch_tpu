@@ -3088,6 +3088,7 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.bool,  # Cannot generate GPU sample for this dtype.
                 torch.bfloat16,  # Cannot generate GPU sample for this dtype.
                 torch.half,
+                torch.float64,
             ),
         },
         # TODO(b/495521055): linalg.inv fails with complex64 with compile.
