@@ -25,6 +25,7 @@
 #include "ATen/BlasBackend.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -261,11 +262,14 @@ absl::Status CheckScaledMmV2Inputs(
       case at::blas::ScalingType::TensorWise:
       case at::blas::ScalingType::RowWise:
       case at::blas::ScalingType::BlockWise1x32:
+      case at::blas::ScalingType::BlockWise1x128:
+      case at::blas::ScalingType::BlockWise128x128:
         return absl::OkStatus();
       default:
         return TT_ERROR(error::kPythonNotImplementedError)
                << "expected scaling recipe for " << name
-               << " to be TensorWise, RowWise, or BlockWise1x32, got "
+               << " to be TensorWise, RowWise, BlockWise1x32, "
+                  "BlockWise1x128, or BlockWise128x128, got "
                << static_cast<int>(recipe);
     }
   };
@@ -382,9 +386,23 @@ absl::StatusOr<mlir::MlirOp> BuildUnswizzle(mlir::MlirOp scale,
   return unswizzled;
 }
 
-absl::StatusOr<mlir::MlirOp> BuildDequantizeBlockWise32(mlir::MlirOp input,
-                                                        mlir::MlirOp scale,
-                                                        Operand operand) {
+bool IsBlockScaling(at::blas::ScalingType s) {
+  return s == at::blas::ScalingType::BlockWise1x32 ||
+         s == at::blas::ScalingType::BlockWise1x128 ||
+         s == at::blas::ScalingType::BlockWise128x128;
+}
+
+// Dequantizes a 1D-blocked input by grouping along the K dimension.
+// block_k=32 → MXFP8, block_k=128 → DeepSeek 1x128.
+//
+// LHS [M, K]: reshape → [M, K/block_k, block_k]
+//             scale [M, K/block_k] → [M, K/block_k, 1]
+// RHS [K, N]: reshape → [K/block_k, block_k, N]
+//             scale [K/block_k, N] → [K/block_k, 1, N]
+absl::StatusOr<mlir::MlirOp> BuildDequantizeBlockWise(mlir::MlirOp input,
+                                                      mlir::MlirOp scale,
+                                                      Operand operand,
+                                                      int64_t block_k) {
   const auto input_type = GetTensorTypeOrDie(input);
   const auto scale_type = GetTensorTypeOrDie(scale);
 
@@ -394,6 +412,10 @@ absl::StatusOr<mlir::MlirOp> BuildDequantizeBlockWise32(mlir::MlirOp input,
   const int64_t k =
       is_lhs ? input_type.getShape()[1] : input_type.getShape()[0];
 
+  ABSL_CHECK(k % block_k == 0)  // CRASH_OK
+      << "K dimension (" << k << ") must be divisible by block_k (" << block_k
+      << ")";
+
   TT_ASSIGN_OR_RETURN(mlir::MlirOp input_f32,
                       CastIfNeeded(input, mlir::ElementType::F32));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_f32,
@@ -402,11 +424,84 @@ absl::StatusOr<mlir::MlirOp> BuildDequantizeBlockWise32(mlir::MlirOp input,
   Dimensions reshape_in_dims;
   Dimensions reshape_scale_dims;
   if (is_lhs) {
-    reshape_in_dims = {m_or_n, k / 32, 32};
-    reshape_scale_dims = {m_or_n, k / 32, 1};
+    reshape_in_dims = {m_or_n, k / block_k, block_k};
+    reshape_scale_dims = {m_or_n, k / block_k, 1};
   } else {
-    reshape_in_dims = {k / 32, 32, m_or_n};
-    reshape_scale_dims = {k / 32, 1, m_or_n};
+    reshape_in_dims = {k / block_k, block_k, m_or_n};
+    reshape_scale_dims = {k / block_k, 1, m_or_n};
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp input_reshaped,
+      ReshapeFromStaticDimensions(input_f32,
+                                  Dimensions(input_type.getShape().begin(),
+                                             input_type.getShape().end()),
+                                  reshape_in_dims));
+
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp scale_reshaped,
+      ReshapeFromStaticDimensions(scale_f32,
+                                  Dimensions(scale_type.getShape().begin(),
+                                             scale_type.getShape().end()),
+                                  reshape_scale_dims));
+
+  TT_ASSIGN_OR_RETURN(
+      auto bcast, ApplyBroadcastIfNeeded<2>({input_reshaped, scale_reshaped}));
+  mlir::MlirOp dequantized = mlir::stablehlo::Mul(bcast[0], bcast[1]);
+
+  return ReshapeFromStaticDimensions(
+      dequantized, reshape_in_dims,
+      Dimensions(input_type.getShape().begin(), input_type.getShape().end()));
+}
+
+// Dequantizes a 2D-blocked input by grouping along both outer and K dimensions.
+// Used for BlockWise128x128 (DeepSeek 2D block scaling).
+//
+// LHS [M, K]: reshape → [M/block_m, block_m, K/block_k, block_k]
+//             scale [M/block_m, K/block_k] → [M/block_m, 1, K/block_k, 1]
+// RHS [K, N]: reshape → [K/block_k, block_k, N/block_n, block_n]
+//             scale [K/block_k, N/block_n] → [K/block_k, 1, N/block_n, 1]
+absl::StatusOr<mlir::MlirOp> BuildDequantizeBlockWise2D(mlir::MlirOp input,
+                                                        mlir::MlirOp scale,
+                                                        Operand operand,
+                                                        int64_t block_m,
+                                                        int64_t block_k) {
+  const auto input_type = GetTensorTypeOrDie(input);
+  const auto scale_type = GetTensorTypeOrDie(scale);
+
+  const bool is_lhs = (operand == Operand::kLhs);
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_f32,
+                      CastIfNeeded(input, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp scale_f32,
+                      CastIfNeeded(scale, mlir::ElementType::F32));
+
+  Dimensions reshape_in_dims;
+  Dimensions reshape_scale_dims;
+  if (is_lhs) {
+    // LHS [M, K] → [M/block_m, block_m, K/block_k, block_k]
+    const int64_t m = input_type.getShape()[0];
+    const int64_t k = input_type.getShape()[1];
+    ABSL_CHECK(m % block_m == 0)  // CRASH_OK
+        << "M dimension (" << m << ") must be divisible by block_m (" << block_m
+        << ")";
+    ABSL_CHECK(k % block_k == 0)  // CRASH_OK
+        << "K dimension (" << k << ") must be divisible by block_k (" << block_k
+        << ")";
+    reshape_in_dims = {m / block_m, block_m, k / block_k, block_k};
+    reshape_scale_dims = {m / block_m, 1, k / block_k, 1};
+  } else {
+    // RHS [K, N] → [K/block_k, block_k, N/block_m, block_m]
+    const int64_t k = input_type.getShape()[0];
+    const int64_t n = input_type.getShape()[1];
+    ABSL_CHECK(k % block_k == 0)  // CRASH_OK
+        << "K dimension (" << k << ") must be divisible by block_k (" << block_k
+        << ")";
+    ABSL_CHECK(n % block_m == 0)  // CRASH_OK
+        << "N dimension (" << n << ") must be divisible by block_n (" << block_m
+        << ")";
+    reshape_in_dims = {k / block_k, block_k, n / block_m, block_m};
+    reshape_scale_dims = {k / block_k, 1, n / block_m, 1};
   }
 
   TT_ASSIGN_OR_RETURN(
@@ -478,6 +573,25 @@ absl::StatusOr<mlir::MlirOp> ApplyScalesAndBias(
   return scaled_result;
 }
 
+// Dispatches block dequantization based on the scaling recipe.
+absl::StatusOr<mlir::MlirOp> DequantizeBlock(mlir::MlirOp input,
+                                             mlir::MlirOp scale,
+                                             Operand operand,
+                                             at::blas::ScalingType recipe) {
+  switch (recipe) {
+    case at::blas::ScalingType::BlockWise1x32:
+      return BuildDequantizeBlockWise(input, scale, operand, /*block_k=*/32);
+    case at::blas::ScalingType::BlockWise1x128:
+      return BuildDequantizeBlockWise(input, scale, operand, /*block_k=*/128);
+    case at::blas::ScalingType::BlockWise128x128:
+      return BuildDequantizeBlockWise2D(input, scale, operand,
+                                        /*block_m=*/128, /*block_k=*/128);
+    default:
+      return TT_ERROR(error::kInternal)
+             << "unexpected block scaling recipe: " << static_cast<int>(recipe);
+  }
+}
+
 absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
@@ -493,16 +607,16 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
 
   mlir::MlirOp lhs_deq = lhs;
   mlir::MlirOp rhs_deq = rhs;
-  const bool is_lhs_block = (scaling_a == at::blas::ScalingType::BlockWise1x32);
-  const bool is_rhs_block = (scaling_b == at::blas::ScalingType::BlockWise1x32);
+  const bool is_lhs_block = IsBlockScaling(scaling_a);
+  const bool is_rhs_block = IsBlockScaling(scaling_b);
 
   if (is_lhs_block) {
     TT_ASSIGN_OR_RETURN(
-        lhs_deq, BuildDequantizeBlockWise32(lhs, scale_a, Operand::kLhs));
+        lhs_deq, DequantizeBlock(lhs, scale_a, Operand::kLhs, scaling_a));
   }
   if (is_rhs_block) {
     TT_ASSIGN_OR_RETURN(
-        rhs_deq, BuildDequantizeBlockWise32(rhs, scale_b, Operand::kRhs));
+        rhs_deq, DequantizeBlock(rhs, scale_b, Operand::kRhs, scaling_b));
   }
 
   if (is_lhs_block || is_rhs_block) {

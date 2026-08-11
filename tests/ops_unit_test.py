@@ -2218,6 +2218,242 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     )
     self.assertEqual(out.shape, (16, 16))
 
+  @parameterized.product(
+      fp8_dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
+  )
+  def test_scaled_mm_v2_block_1x128_1x128(self, fp8_dtype):
+    """Tests Block1x128 × Block1x128 (DeepSeek-style 1D block scaling)."""
+    m, k, n = 256, 256, 128
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      self_float = torch.randn(m, k, dtype=torch.float32)
+      self_fp8 = self_float.to(fp8_dtype)
+      mat2_float = torch.randn(k, n, dtype=torch.float32)
+      mat2_fp8 = mat2_float.to(fp8_dtype)
+
+      scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+      scale_b = torch.randn(k // 128, n, dtype=torch.float32).abs() + 0.1
+
+      def compute(device):
+        if device == "cpu":
+          s_f32 = self_fp8.float()
+          m_f32 = mat2_fp8.float()
+          sa_exp = scale_a.unsqueeze(-1).expand(m, k // 128, 128).reshape(m, k)
+          sb_exp = scale_b.unsqueeze(1).expand(k // 128, 128, n).reshape(k, n)
+          return torch.mm(s_f32 * sa_exp, m_f32 * sb_exp)
+        else:
+          return torch._scaled_mm_v2(
+              self_fp8.to(device),
+              mat2_fp8.to(device),
+              [scale_a.to(device)],
+              [4],  # BlockWise1x128
+              [0],  # NO_SWIZZLE
+              [scale_b.to(device)],
+              [4],  # BlockWise1x128
+              [0],  # NO_SWIZZLE
+              None,
+              torch.float32,
+          )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1.001e-2)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.product(
+      fp8_dtype=[torch.float8_e4m3fn],
+  )
+  def test_scaled_mm_v2_block_1x128_128x128(self, fp8_dtype):
+    """Tests Block1x128 × Block128x128 (DeepSeek cross-combo)."""
+    m, k, n = 256, 256, 128
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      self_float = torch.randn(m, k, dtype=torch.float32)
+      self_fp8 = self_float.to(fp8_dtype)
+      mat2_float = torch.randn(k, n, dtype=torch.float32)
+      mat2_fp8 = mat2_float.to(fp8_dtype)
+
+      # Block1x128 for A: [M, K/128]
+      scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+      # Block128x128 for B: [K/128, N/128]
+      scale_b = torch.randn(k // 128, n // 128, dtype=torch.float32).abs() + 0.1
+
+      def compute(device):
+        if device == "cpu":
+          s_f32 = self_fp8.float()
+          m_f32 = mat2_fp8.float()
+          # 1D dequant for A
+          sa_exp = scale_a.unsqueeze(-1).expand(m, k // 128, 128).reshape(m, k)
+          s_deq = s_f32 * sa_exp
+          # 2D dequant for B: [K, N] -> [K/128, 128, N/128, 128]
+          sb_exp = (
+              scale_b.reshape(k // 128, 1, n // 128, 1)
+              .expand(k // 128, 128, n // 128, 128)
+              .reshape(k, n)
+          )
+          m_deq = m_f32 * sb_exp
+          return torch.mm(s_deq, m_deq)
+        else:
+          return torch._scaled_mm_v2(
+              self_fp8.to(device),
+              mat2_fp8.to(device),
+              [scale_a.to(device)],
+              [4],  # BlockWise1x128
+              [0],
+              [scale_b.to(device)],
+              [5],  # BlockWise128x128
+              [0],
+              None,
+              torch.float32,
+          )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1.001e-2)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.product(
+      fp8_dtype=[torch.float8_e4m3fn],
+  )
+  def test_scaled_mm_v2_block_128x128_1x128(self, fp8_dtype):
+    """Tests Block128x128 × Block1x128 (DeepSeek cross-combo)."""
+    m, k, n = 256, 256, 128
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      self_float = torch.randn(m, k, dtype=torch.float32)
+      self_fp8 = self_float.to(fp8_dtype)
+      mat2_float = torch.randn(k, n, dtype=torch.float32)
+      mat2_fp8 = mat2_float.to(fp8_dtype)
+
+      # Block128x128 for A: [M/128, K/128]
+      scale_a = torch.randn(m // 128, k // 128, dtype=torch.float32).abs() + 0.1
+      # Block1x128 for B: [K/128, N]
+      scale_b = torch.randn(k // 128, n, dtype=torch.float32).abs() + 0.1
+
+      def compute(device):
+        if device == "cpu":
+          s_f32 = self_fp8.float()
+          m_f32 = mat2_fp8.float()
+          # 2D dequant for A: [M, K] -> [M/128, 128, K/128, 128]
+          sa_exp = (
+              scale_a.reshape(m // 128, 1, k // 128, 1)
+              .expand(m // 128, 128, k // 128, 128)
+              .reshape(m, k)
+          )
+          s_deq = s_f32 * sa_exp
+          # 1D dequant for B
+          sb_exp = scale_b.unsqueeze(1).expand(k // 128, 128, n).reshape(k, n)
+          m_deq = m_f32 * sb_exp
+          return torch.mm(s_deq, m_deq)
+        else:
+          return torch._scaled_mm_v2(
+              self_fp8.to(device),
+              mat2_fp8.to(device),
+              [scale_a.to(device)],
+              [5],  # BlockWise128x128
+              [0],
+              [scale_b.to(device)],
+              [4],  # BlockWise1x128
+              [0],
+              None,
+              torch.float32,
+          )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1.001e-2)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.product(
+      fp8_dtype=[torch.float8_e4m3fn],
+  )
+  def test_scaled_mm_v2_block_1x128_tensorwise(self, fp8_dtype):
+    """Tests Block1x128 × TensorWise (mixed block + scalar)."""
+    m, k, n = 256, 256, 128
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      self_float = torch.randn(m, k, dtype=torch.float32)
+      self_fp8 = self_float.to(fp8_dtype)
+      mat2_float = torch.randn(k, n, dtype=torch.float32)
+      mat2_fp8 = mat2_float.to(fp8_dtype)
+
+      scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+      scale_b = torch.tensor([2.0], dtype=torch.float32)
+
+      def compute(device):
+        if device == "cpu":
+          s_f32 = self_fp8.float()
+          m_f32 = mat2_fp8.float()
+          sa_exp = scale_a.unsqueeze(-1).expand(m, k // 128, 128).reshape(m, k)
+          s_deq = s_f32 * sa_exp
+          return torch.mm(s_deq, m_f32) * scale_b
+        else:
+          return torch._scaled_mm_v2(
+              self_fp8.to(device),
+              mat2_fp8.to(device),
+              [scale_a.to(device)],
+              [4],  # BlockWise1x128
+              [0],
+              [scale_b.to(device)],
+              [0],  # TensorWise
+              [0],
+              None,
+              torch.float32,
+          )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1.001e-2)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  @parameterized.product(
+      fp8_dtype=[torch.float8_e4m3fn],
+  )
+  def test_scaled_mm_v2_block_128x128_rowwise(self, fp8_dtype):
+    """Tests Block128x128 × RowWise (mixed block + row)."""
+    m, k, n = 256, 256, 128
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      self_float = torch.randn(m, k, dtype=torch.float32)
+      self_fp8 = self_float.to(fp8_dtype)
+      mat2_float = torch.randn(k, n, dtype=torch.float32)
+      mat2_fp8 = mat2_float.to(fp8_dtype)
+
+      # Block128x128 for A: [M/128, K/128]
+      scale_a = torch.randn(m // 128, k // 128, dtype=torch.float32).abs() + 0.1
+      # RowWise for B: [1, N]
+      scale_b = torch.randn(1, n, dtype=torch.float32).abs() + 0.1
+
+      def compute(device):
+        if device == "cpu":
+          s_f32 = self_fp8.float()
+          m_f32 = mat2_fp8.float()
+          sa_exp = (
+              scale_a.reshape(m // 128, 1, k // 128, 1)
+              .expand(m // 128, 128, k // 128, 128)
+              .reshape(m, k)
+          )
+          s_deq = s_f32 * sa_exp
+          return torch.mm(s_deq, m_f32) * scale_b
+        else:
+          return torch._scaled_mm_v2(
+              self_fp8.to(device),
+              mat2_fp8.to(device),
+              [scale_a.to(device)],
+              [5],  # BlockWise128x128
+              [0],
+              [scale_b.to(device)],
+              [1],  # RowWise
+              [0],
+              None,
+              torch.float32,
+          )
+
+      self.assert_close_tpu_vs_cpu(compute, rtol=1e-2, atol=1.001e-2)
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
   def test_swizzle_math(self):
     # Test LHS
     logical_lhs = torch.randn(128, 8)

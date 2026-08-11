@@ -7378,7 +7378,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): expected scaling recipe for scale_a to be TensorWise, RowWise, or BlockWise1x32, got 2""",
+        tpu="""scaled_mm_v2(): expected scaling recipe for scale_a to be TensorWise, RowWise, BlockWise1x32, BlockWise1x128, or BlockWise128x128, got 2""",
         gpu=re.compile(
             r".*(Invalid scaling configuration for _scaled_mm_v2: unsupported"
             r" recipe|torch\._scaled_mm is only supported on CUDA"
@@ -7560,7 +7560,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): expected scaling recipe for scale_b to be TensorWise, RowWise, or BlockWise1x32, got 2""",
+        tpu="""scaled_mm_v2(): expected scaling recipe for scale_b to be TensorWise, RowWise, BlockWise1x32, BlockWise1x128, or BlockWise128x128, got 2""",
         gpu=re.compile(
             r".*(Invalid scaling configuration for _scaled_mm_v2: unsupported"
             r" recipe|torch\._scaled_mm is only supported on CUDA"
