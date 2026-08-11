@@ -443,12 +443,10 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             batch_size=8,
             custom_kwargs={
                 "modify_config_hook": modify_config_hook,
-                # FIXME: Disable vision inputs under COMPILED mode because static
-                # XLA graph compilation (TpuBackend) does not yet support dynamic
-                # pre-patchified image grid slicing (pixel_values and
-                # image_position_ids). Re-enable once TpuBackend supports dynamic
-                # multimodal patch slicing.
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                # Disable vision inputs because LLM benchmarks evaluate text
+                # generation/training throughput and multimodal image patch
+                # slicing is not needed for these language model benchmarks.
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.gemma_ragged_moe_model_builder,
@@ -525,7 +523,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             batch_size=8,
             custom_kwargs={
                 "modify_config_hook": _modify_gemma4_config_to_small,
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
@@ -555,7 +553,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             batch_size=4,
             custom_kwargs={
                 "modify_config_hook": _modify_gemma4_config_to_small,
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
@@ -588,7 +586,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             batch_size=1,
             custom_kwargs={
                 "modify_config_hook": _modify_gemma4_config_to_small,
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
@@ -615,7 +613,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             sequence_length=2048,
             batch_size=8,
             custom_kwargs={
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
@@ -997,7 +995,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             sequence_length=1024,
             batch_size=4,
             custom_kwargs={
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
@@ -1026,7 +1024,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
             sequence_length=512,
             batch_size=1,
             custom_kwargs={
-                "disable_vision_inputs": run_mode == common.RunMode.COMPILED,
+                "disable_vision_inputs": True,
             },
         ),
         model_and_input_factory=model_utils.huggingface_llm_model_builder,
