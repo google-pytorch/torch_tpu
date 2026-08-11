@@ -33,6 +33,7 @@ _T = TypeVar("_T")
 TT_API_STAGE = "__tt_api_stage__"
 TT_API_STAGE_REASON = "__tt_api_stage_reason__"
 TT_API_DEPRECATED_VERSION = "__tt_api_deprecated_version__"
+TT_API_STAGES_MAP = "__tt_api_stages__"
 
 
 class Stage(str, enum.Enum):
@@ -190,10 +191,8 @@ def _annotate_target(
   # Always attach stage metadata to the target itself
   _attach_stage_metadata(target, stage.value, reason, version)
 
-  # Handle Class / Enum Class
+  # 1. Handle Class
   if isinstance(target, type):
-    # TODO(yilingyuan): Introduce _EnumProxy to trigger warnings for Enum
-    # members and corresponding tests.
     # Attach warning wrapper to the `__init__` method
     if stage.warning_category:
       target.__init__ = _create_warning_wrapper(
@@ -201,7 +200,7 @@ def _annotate_target(
       )  # pylint: disable=protected-access
     return target
 
-  # Handle Function / Callable
+  # 2. Handle Function / Callable
   if stage.warning_category:
     wrapper = _create_warning_wrapper(
         target, target, stage, reason, version  # type: ignore[arg-type]
@@ -316,6 +315,12 @@ def _resolve_module_attribute(
         f"'{name}'", info.reason, info.version
     )
     warnings.warn(msg, category=cat, stacklevel=3)
+
+  # Dynamically attach stage metadata to map-registered objects upon resolution.
+  if info.value is not None:
+    _attach_stage_metadata(
+        info.value, info.stage.value, info.reason, info.version
+    )
 
   if tt_api_globals is not None:
     tt_api_globals[name] = info.value

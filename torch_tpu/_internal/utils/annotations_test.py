@@ -24,6 +24,7 @@ import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations
+from tests import seed_test_utils
 
 
 experimental = annotations.experimental
@@ -31,7 +32,7 @@ stable = annotations.stable
 deprecated = annotations.deprecated
 
 
-class AnnotationsTest(absltest.TestCase):
+class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   # ---------------------------------------------------------------------------
   # 1. Infrastructure Tests
@@ -385,18 +386,26 @@ class AnnotationsTest(absltest.TestCase):
       self.assertTrue(issubclass(w[0].category, UserWarning))
       self.assertIn("'Precision' is experimental", str(w[0].message))
 
-      # Verify metadata tags on Enum class and its members
+      # Verify metadata tags on Enum class and its members (DEFAULT, HIGH, HIGHEST)
       self.assertEqual(
           getattr(prec1, annotations.TT_API_STAGE, None),
           annotations.Stage.EXPERIMENTAL.value,
       )
 
       # 2nd access: accessing an Enum member off `Precision` hits the class cache, emitting 0 additional warnings
-      prec2 = torch.tpu.Precision.DEFAULT
       self.assertEqual(
-          getattr(prec2, annotations.TT_API_STAGE, None),
+          getattr(Precision.DEFAULT, annotations.TT_API_STAGE, None),
           annotations.Stage.EXPERIMENTAL.value,
       )
+      self.assertEqual(
+          getattr(Precision.HIGH, annotations.TT_API_STAGE, None),
+          annotations.Stage.EXPERIMENTAL.value,
+      )
+      self.assertEqual(
+          getattr(Precision.HIGHEST, annotations.TT_API_STAGE, None),
+          annotations.Stage.EXPERIMENTAL.value,
+      )
+
       self.assertLen(w, 1)
 
   def test_annotated_real_api_property_allow_excess_precision(self):
