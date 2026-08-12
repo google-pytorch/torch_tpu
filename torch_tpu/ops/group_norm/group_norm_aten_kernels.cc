@@ -31,6 +31,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -92,20 +93,48 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
     int64_t c, int64_t h_w, int64_t group, std::array<bool, 3> output_mask) {
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  auto elem_type = input_type.getElementType();
+  const mlir::Type elem_type = input_type.getElementType();
+  const mlir::Type weight_type =
+      weight_op.has_value()
+          ? GetTensorTypeOrDie(weight_op.value()).getElementType()
+          : elem_type;
 
-  auto zeros = MakeScalarConstant(builder, 0.0, elem_type);
-  auto sum_reduce_builder = [elem_type](mlir::RegionBuilder& rb) {
+  const mlir::ElementType input_elem_type = GetElementTypeOrDie(input_op);
+  const mlir::ElementType weight_elem_type =
+      weight_op.has_value() ? GetElementTypeOrDie(weight_op.value())
+                            : input_elem_type;
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_elem_type,
+                      InferComputationDtype(input_elem_type));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp grad_output_comp,
+                      CastIfNeeded(grad_output_op, comp_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp input_comp,
+                      CastIfNeeded(input_op, comp_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mean_comp,
+                      CastIfNeeded(mean_op, comp_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rstd_comp,
+                      CastIfNeeded(rstd_op, comp_elem_type));
+  std::optional<mlir::MlirOp> weight_comp;
+  if (weight_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(weight_comp,
+                        CastIfNeeded(weight_op.value(), comp_elem_type));
+  }
+
+  const mlir::Type comp_type = GetTensorTypeOrDie(input_comp).getElementType();
+
+  const auto zeros = MakeScalarConstant(builder, 0.0, comp_type);
+  const auto sum_reduce_builder = [comp_type](mlir::RegionBuilder& rb) {
     mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-        elem_type, rb.getRegion(), rb.getOpBuilder());
+        comp_type, rb.getRegion(), rb.getOpBuilder());
   };
 
   // 0. Reshape Inputs to [N, C, HxW]
   int64_t cpg = c / group;
   Dimensions n_c_hxw_shape = {n, c, h_w};
   auto grad_output_reshaped =
-      mlir::stablehlo::Reshape(grad_output_op, n_c_hxw_shape);
-  auto input_reshaped = mlir::stablehlo::Reshape(input_op, n_c_hxw_shape);
+      mlir::stablehlo::Reshape(grad_output_comp, n_c_hxw_shape);
+  auto input_reshaped = mlir::stablehlo::Reshape(input_comp, n_c_hxw_shape);
 
   // 1. Compute Common Terms. ds and db are [N, C]
   auto mul_in_grad = mlir::stablehlo::Mul(grad_output_reshaped, input_reshaped);
@@ -121,21 +150,21 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
   // Else, Dispatcher expects a Scalar, but the shape is not important.
   mlir::MlirOp d_weight_op;
   if (weight_op.has_value()) {
-    d_weight_op = MakeConstant(builder, 0.0, elem_type, {c});
+    d_weight_op = MakeConstant(builder, 0.0, weight_type, {c});
   } else {
-    d_weight_op = MakeScalarConstant(builder, 0.0, elem_type);
+    d_weight_op = MakeScalarConstant(builder, 0.0, weight_type);
   }
 
   // 2. Compute d_input_op
   if (output_mask[0]) {
     mlir::MlirOp ds_val, db_val, c1;
     Dimensions n_g_cpg_shape = {n, group, cpg};
-    auto type_ngc = mlir::RankedTensorType::get(n_g_cpg_shape, elem_type);
+    auto type_ngc = mlir::RankedTensorType::get(n_g_cpg_shape, comp_type);
 
-    if (weight_op.has_value()) {
+    if (weight_comp.has_value()) {
       // weight: [C] -> Broadcast to [N, C] to multiply with ds/db
       auto weight_broadcast_nc = mlir::stablehlo::BroadcastInDim(
-          GetTensorTypeOrDie(ds), weight_op.value(),
+          GetTensorTypeOrDie(ds), weight_comp.value(),
           /*broadcast_dimensions=*/{1});
 
       auto ds_weighted = mlir::stablehlo::Mul(ds, weight_broadcast_nc);
@@ -155,12 +184,12 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
 
       // rstd: [N, G] -> Broadcast to [N, G, CPG] (dims 0, 1)
       auto rstd_bcast_ngc =
-          mlir::stablehlo::BroadcastInDim(type_ngc, rstd_op,
+          mlir::stablehlo::BroadcastInDim(type_ngc, rstd_comp,
                                           /*broadcast_dimensions=*/{0, 1});
 
       // weight: [C] -> Reshape [G, CPG] -> Broadcast to [N, G, CPG] (dims 1, 2)
       auto weight_reshaped_gc =
-          mlir::stablehlo::Reshape(weight_op.value(), {group, cpg});
+          mlir::stablehlo::Reshape(weight_comp.value(), {group, cpg});
       auto weight_bcast_ngc =
           mlir::stablehlo::BroadcastInDim(type_ngc, weight_reshaped_gc,
                                           /*broadcast_dimensions=*/{1, 2});
@@ -178,29 +207,29 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
 
       // c1 = rstd.unsqueeze(-1) * 1
       // Effectively just broadcasting rstd [N, G] -> [N, G, CPG]
-      c1 = mlir::stablehlo::BroadcastInDim(type_ngc, rstd_op,
+      c1 = mlir::stablehlo::BroadcastInDim(type_ngc, rstd_comp,
                                            /*broadcast_dimensions=*/{0, 1});
     }
 
     auto s_val = 1.0 / (h_w * cpg);
-    auto s = MakeScalarConstant(builder, s_val, elem_type);
+    auto s = MakeScalarConstant(builder, s_val, comp_type);
     auto s_broadcast =
         mlir::stablehlo::BroadcastInDim(GetTensorTypeOrDie(ds_val), s,
                                         /*broadcast_dimensions=*/{});
 
     // All ops here are [N, G]
     // c2 = (db_val * mean - ds_val) * rstd * rstd * rstd * s
-    auto db_val_mean = mlir::stablehlo::Mul(db_val, mean_op);
+    auto db_val_mean = mlir::stablehlo::Mul(db_val, mean_comp);
     auto mean_sub_ds = mlir::stablehlo::Subtract(db_val_mean, ds_val);
-    auto rstd_pow2 = mlir::stablehlo::Mul(rstd_op, rstd_op);
-    auto rstd_pow3 = mlir::stablehlo::Mul(rstd_pow2, rstd_op);
+    auto rstd_pow2 = mlir::stablehlo::Mul(rstd_comp, rstd_comp);
+    auto rstd_pow3 = mlir::stablehlo::Mul(rstd_pow2, rstd_comp);
     auto c2_term = mlir::stablehlo::Mul(mean_sub_ds, rstd_pow3);
     auto c2 = mlir::stablehlo::Mul(c2_term, s_broadcast);
 
     // c3 = -c2 * mean - db_val * rstd * s
     auto neg_c2 = mlir::stablehlo::Neg(c2);
-    auto neg_c2_mean = mlir::stablehlo::Mul(neg_c2, mean_op);
-    auto db_val_rstd = mlir::stablehlo::Mul(db_val, rstd_op);
+    auto neg_c2_mean = mlir::stablehlo::Mul(neg_c2, mean_comp);
+    auto db_val_rstd = mlir::stablehlo::Mul(db_val, rstd_comp);
     auto db_val_rstd_s = mlir::stablehlo::Mul(db_val_rstd, s_broadcast);
     auto c3 = mlir::stablehlo::Subtract(neg_c2_mean, db_val_rstd_s);
 
@@ -208,7 +237,7 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
     // Need to broadcast c1, c2, c3 to [N, G, CPG, HxW]
     Dimensions n_g_cpg_hxw_shape = {n, group, cpg, h_w};
     auto target_type =
-        mlir::RankedTensorType::get(n_g_cpg_hxw_shape, elem_type);
+        mlir::RankedTensorType::get(n_g_cpg_hxw_shape, comp_type);
 
     // c1 [N, G, CPG] -> [N, G, CPG, HxW] (dims 0, 1, 2)
     auto c1_final =
@@ -225,9 +254,9 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
 
     // Reshape grad_output/input to [N, G, CPG, HxW]
     auto grad_reshaped_full =
-        mlir::stablehlo::Reshape(grad_output_op, n_g_cpg_hxw_shape);
+        mlir::stablehlo::Reshape(grad_output_comp, n_g_cpg_hxw_shape);
     auto input_reshaped_full =
-        mlir::stablehlo::Reshape(input_op, n_g_cpg_hxw_shape);
+        mlir::stablehlo::Reshape(input_comp, n_g_cpg_hxw_shape);
 
     auto term1 = mlir::stablehlo::Mul(grad_reshaped_full, c1_final);
     auto term2 = mlir::stablehlo::Mul(input_reshaped_full, c2_final);
@@ -236,25 +265,26 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
     dx_full = mlir::stablehlo::Add(dx_full, c3_final);
 
     // Reshape back to [N, C, HxW]
-    d_input_op = mlir::stablehlo::Reshape(dx_full, input_type.getShape());
+    auto dx_reshaped = mlir::stablehlo::Reshape(dx_full, input_type.getShape());
+    TT_ASSIGN_OR_RETURN(d_input_op, CastIfNeeded(dx_reshaped, input_elem_type));
   }
 
   // 3. Compute d_weight_op
-  if (output_mask[1] && weight_op.has_value()) {
+  if (output_mask[1] && weight_comp.has_value()) {
     // All views are [N, G, CPG]
     // (ds.view - db.view * mean.unsqueeze) * rstd.unsqueeze
     Dimensions n_g_cpg_shape = {n, group, cpg};
-    auto type_ngc = mlir::RankedTensorType::get(n_g_cpg_shape, elem_type);
+    auto type_ngc = mlir::RankedTensorType::get(n_g_cpg_shape, comp_type);
 
     auto ds_view = mlir::stablehlo::Reshape(ds, n_g_cpg_shape);
     auto db_view = mlir::stablehlo::Reshape(db, n_g_cpg_shape);
 
     // mean/rstd [N, G] -> [N, G, CPG] (dims 0, 1)
     auto mean_bcast =
-        mlir::stablehlo::BroadcastInDim(type_ngc, mean_op,
+        mlir::stablehlo::BroadcastInDim(type_ngc, mean_comp,
                                         /*broadcast_dimensions=*/{0, 1});
     auto rstd_bcast =
-        mlir::stablehlo::BroadcastInDim(type_ngc, rstd_op,
+        mlir::stablehlo::BroadcastInDim(type_ngc, rstd_comp,
                                         /*broadcast_dimensions=*/{0, 1});
 
     auto db_mean = mlir::stablehlo::Mul(db_view, mean_bcast);
@@ -262,17 +292,20 @@ absl::StatusOr<GroupNormBackwardShloResults> BuildGroupNormBackwardShlo(
     auto mul_rstd = mlir::stablehlo::Mul(diff, rstd_bcast);
 
     // sum(dim=0) -> [G, CPG]
-    auto sum_term = mlir::stablehlo::Reduce(builder, mul_rstd, zeros,
-                                            sum_reduce_builder, {0})[0];
+    const auto sum_term = mlir::stablehlo::Reduce(builder, mul_rstd, zeros,
+                                                  sum_reduce_builder, {0})[0];
 
     // Reshape [G, CPG] -> [C]
-    d_weight_op = mlir::stablehlo::Reshape(sum_term, {c});
+    const auto d_weight_comp = mlir::stablehlo::Reshape(sum_term, {c});
+    TT_ASSIGN_OR_RETURN(d_weight_op,
+                        CastIfNeeded(d_weight_comp, weight_elem_type));
   }
 
   // 4. Compute d_bias_op
   if (output_mask[2]) {
-    d_bias_op =
+    auto d_bias_comp =
         mlir::stablehlo::Reduce(builder, db, zeros, sum_reduce_builder, {0})[0];
+    TT_ASSIGN_OR_RETURN(d_bias_op, CastIfNeeded(d_bias_comp, input_elem_type));
   }
 
   return GroupNormBackwardShloResults{.grad_input = d_input_op,

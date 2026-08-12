@@ -329,6 +329,7 @@ common:ci_tpu_v5 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
 common:ci_tpu_v5_presubmit --config=remote_execution_readonly
 common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
+common:ci_tpu_v5_presubmit --local_test_jobs=8
 
 common:ci_tpu_v6 --config=ci_tpu_base
 common:ci_tpu_v6 --test_tag_filters=requires-tpu,-notest,-nobuild,-fails-on-tpu-v6

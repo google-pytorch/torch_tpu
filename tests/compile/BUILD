@@ -101,7 +101,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "activation_checkpointing_mem_test",
     srcs = ["activation_checkpointing_mem_test.py"],
-    nopresubmit = "Exhausts temporary disk space on shared presubmit test nodes during compilation",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",

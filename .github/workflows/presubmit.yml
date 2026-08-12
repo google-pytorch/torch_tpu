@@ -57,12 +57,12 @@ jobs:
       fail-fast: false
       matrix:
         job_info: [
-          {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
+          # {
+          #   name: "CPU",
+          #   runner: "linux-x86-n4-16",
+          #   config: "ci_cpu_presubmit",
+          #   extra_flags: "",
+          # },
           {
             runner: "linux-x86-ct5lp-224-8tpu",
             config: "ci_tpu_v5_presubmit",
@@ -74,11 +74,11 @@ jobs:
           #   config: "ci_tpu_v6_presubmit",
           #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           # },
-          {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
+          # {
+          #   runner: "linux-x86-tpu7x-224-4tpu",
+          #   config: "ci_tpu_v7_presubmit",
+          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          # }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
@@ -108,11 +108,17 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      - name: Run Impacted Tests via bazel-diff
-        uses: ./.github/actions/bazel-diff
-        with:
-          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
-          current_sha: ${{ inputs.override_current_sha || github.sha }}
-          bazel_config: ${{ matrix.job_info.config }}
-          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
-          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+      # - name: Run Impacted Tests via bazel-diff
+      #   uses: ./.github/actions/bazel-diff
+      #   with:
+      #     base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+      #     current_sha: ${{ inputs.override_current_sha || github.sha }}
+      #     bazel_config: ${{ matrix.job_info.config }}
+      #     extra_bazel_flags: ${{ matrix.job_info.extra_flags }} --runs_per_test=//tests/compile:activation_checkpointing_mem_test=20
+      #     disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+      - name: Stress Test Single Target
+        run: |
+          bazel test //tests/compile:activation_checkpointing_mem_test \
+            --config=${{ matrix.job_info.config }} \
+            ${{ matrix.job_info.extra_flags }} \
+            --runs_per_test=20

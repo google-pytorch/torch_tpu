@@ -1671,11 +1671,6 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
             "nn.functional.glu": {
                 torch.float32: {"rtol": 6.7e-5, "atol": 1.1e-5},
             },
-            "nn.functional.group_norm": {
-                torch.bfloat16: {"rtol": 6e-1, "atol": 3e-2},
-                torch.float32: {"rtol": 1.7, "atol": 3e-1},
-                torch.float64: {"rtol": 1.7, "atol": 5e-2},
-            },
             "nn.functional.hardswish": {
                 torch.bfloat16: {"rtol": 2.8e-2, "atol": 1e-2},
                 torch.float16: {"rtol": 6e-3, "atol": 1e-3},
