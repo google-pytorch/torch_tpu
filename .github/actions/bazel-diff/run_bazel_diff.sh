@@ -82,7 +82,8 @@ fi
 echo "Downloading bazel-diff..."
 # Pin to v16.0.0 because latest releases are missing bazel-diff_deploy.jar:
 # https://github.com/Tinder/bazel-diff/issues/320
-curl -fLo /tmp/bazel-diff.jar https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
+curl -fLo /tmp/bazel-diff.jar --retry 5 --retry-connrefused --retry-all-errors \
+  https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
 
 echo "--- Generating Base Hashes ---"
 echo "PR detected. Fetching exact base SHA: $BASE_SHA"

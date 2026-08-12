@@ -134,6 +134,15 @@ build --incompatible_disallow_empty_glob=false
 # glob check, hit the empty packages and instantly crash.
 query --incompatible_disallow_empty_glob=false
 
+# Use a downloader config to mirror GitHub and Python package downloads.
+# Use the experimental_ name for better compatibility with different Bazel versions.
+build --experimental_downloader_config=bazel_downloader.cfg
+test --experimental_downloader_config=bazel_downloader.cfg
+fetch --experimental_downloader_config=bazel_downloader.cfg
+sync --experimental_downloader_config=bazel_downloader.cfg
+query --experimental_downloader_config=bazel_downloader.cfg
+
+
 # Disable magic generation of `__init__.py` files. This avoids surprising
 # import behaviors that only happen under Bazel.
 build --incompatible_default_to_explicit_init_py=true
