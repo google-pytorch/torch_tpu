@@ -19,7 +19,9 @@
 
 #include <optional>
 
+#include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "csrc/common/macro_utils.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -37,6 +39,49 @@ at::Tensor AtenScaledGroupedMm(const at::Tensor& self, const at::Tensor& mat2,
                                const std::optional<at::Tensor>& scale_result,
                                std::optional<at::ScalarType> out_dtype,
                                bool use_fast_accum);
+
+// PyTorch 2.14 changed the C++ binding of `Tensor[]` arguments from
+// at::TensorList to at::ITensorListRef; the registered kernel's signature
+// must match the torch it runs under.
+#if TT_TORCH_VERSION_GE(2, 14)
+at::Tensor AtenScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum);
+
+at::Tensor& AtenScaledGroupedMmV2Out(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, at::Tensor& out);
+#else
+at::Tensor AtenScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum);
+
+at::Tensor& AtenScaledGroupedMmV2Out(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, at::Tensor& out);
+#endif
 
 }  // namespace torch_tpu
 

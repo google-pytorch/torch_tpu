@@ -12634,6 +12634,80 @@ module {{
         atol=2e-1,
     )
 
+  @parameterized.product(
+      layout=["2d_3d", "3d_2d", "2d_2d", "3d_3d"],
+      variant=["default", "out", "out_resize", "no_swizzle", "contraction_dim"],
+  )
+  def test_scaled_grouped_mm_v2_tensorwise(self, layout, variant):
+    """Tests torch.ops.aten._scaled_grouped_mm_v2 with FP8 TensorWise scales.
+
+    v2 delegates to the v1 lowering, so its result must equal v1's exactly.
+
+    Args:
+      layout: Operand ranks, e.g. "2d_3d" is a 2D self (ragged via offs) and a
+        3D mat2.
+      variant: "out" and "out_resize" call the `.out` overload with a correctly
+        sized or an empty `out`; "no_swizzle" passes empty swizzle lists (the
+        torch.nn.functional.scaled_grouped_mm default); "contraction_dim" passes
+        contraction_dim=[-1, -2].
+    """
+    self_shape, mat2_shape, offs = {
+        "2d_3d": ((16, 8), (2, 8, 8), [8, 16]),
+        "3d_2d": ((2, 8, 8), (8, 16), [8, 16]),
+        "2d_2d": ((8, 16), (16, 8), [8, 16]),
+        "3d_3d": ((2, 8, 8), (2, 8, 8), None),
+    }[layout]
+    t1 = torch.randn(self_shape).to(torch.float8_e4m3fn)
+    t2 = torch.randn(mat2_shape).to(torch.float8_e4m3fn)
+    offs = torch.tensor(offs, dtype=torch.int32) if offs else None
+    scale_a = torch.tensor([1.5])
+    scale_b = torch.tensor([0.5])
+    # at::blas::ScalingType::TensorWise and at::blas::SwizzleType::NO_SWIZZLE.
+    tensorwise = 0
+    swizzle = [] if variant == "no_swizzle" else [0]
+
+    device = "tpu"
+    t1_tpu, t2_tpu = t1.to(device), t2.to(device)
+    sa_tpu, sb_tpu = scale_a.to(device), scale_b.to(device)
+    offs_tpu = offs.to(device) if offs is not None else None
+    v2_args = (
+        t1_tpu,
+        t2_tpu,
+        [sa_tpu],
+        [tensorwise],
+        swizzle,
+        [sb_tpu],
+        [tensorwise],
+        swizzle,
+    )
+    v2_kwargs = dict(offs=offs_tpu, out_dtype=torch.bfloat16)
+    if variant == "contraction_dim":
+      v2_kwargs["contraction_dim"] = [-1, -2]
+    v1_out = torch._scaled_grouped_mm(
+        t1_tpu, t2_tpu, sa_tpu, sb_tpu, offs=offs_tpu, out_dtype=torch.bfloat16
+    )
+    if variant in ("out", "out_resize"):
+      out = (
+          torch.empty_like(v1_out)
+          if variant == "out"
+          else torch.empty(0, dtype=torch.bfloat16, device=device)
+      )
+      v2_out = torch.ops.aten._scaled_grouped_mm_v2.out(
+          *v2_args, **v2_kwargs, out=out
+      )
+      self.assertIs(v2_out, out)
+    else:
+      v2_out = torch.ops.aten._scaled_grouped_mm_v2(*v2_args, **v2_kwargs)
+
+    self.assertEqual(v2_out.dtype, torch.bfloat16)
+    self.assertTrue(torch.equal(v2_out.cpu(), v1_out.cpu()))
+    golden = torch.ops.aten._grouped_mm(
+        t1.to(torch.float32), t2.to(torch.float32), offs=offs
+    ) * (scale_a * scale_b)
+    utils.assert_close(
+        v2_out.cpu().to(torch.float32), golden, rtol=2e-1, atol=2e-1
+    )
+
   def test_optimization_barrier_meta_non_contiguous_eager(self):
     x = torch.empty((16, 2, 256, 256), device="meta")
     x1 = x[:, 0, :, :]

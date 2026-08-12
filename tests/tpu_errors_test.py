@@ -3789,6 +3789,109 @@ module {
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
 
+  @parameterized.named_parameters(
+      (
+          "contraction_dim_size",
+          {"contraction_dim": [1]},
+          "expected contraction_dim list to contain exactly 2 elements, got 1",
+      ),
+      (
+          "contraction_dim_value",
+          {"contraction_dim": [0, 1]},
+          "expected contraction_dim to be [-1, -2], got [0, 1]",
+      ),
+      (
+          "scale_a_size",
+          {"scale_a": []},
+          "expected scale_a list to contain exactly 1 tensor, got 0",
+      ),
+      (
+          "scale_b_size",
+          {"scale_b": []},
+          "expected scale_b list to contain exactly 1 tensor, got 0",
+      ),
+      (
+          "recipe_a_size",
+          {"recipe_a": [0, 0]},
+          "expected recipe_a list to contain exactly 1 recipe, got 2",
+      ),
+      (
+          "recipe_b_size",
+          {"recipe_b": [0, 0]},
+          "expected recipe_b list to contain exactly 1 recipe, got 2",
+      ),
+      (
+          "swizzle_a_size",
+          {"swizzle_a": [0, 0]},
+          "expected swizzle_a list to contain at most 1 swizzle mode, got 2",
+      ),
+      (
+          "swizzle_b_size",
+          {"swizzle_b": [0, 0]},
+          "expected swizzle_b list to contain at most 1 swizzle mode, got 2",
+      ),
+      (
+          "blockwise_recipe",
+          {"recipe_a": [2]},  # at::blas::ScalingType::BlockWise1x16.
+          "expected scaling recipe for scale_a to be TensorWise, got 2",
+      ),
+      (
+          "rowwise_recipe",
+          {"recipe_b": [1]},  # at::blas::ScalingType::RowWise.
+          "expected scaling recipe for scale_b to be TensorWise, got 1",
+      ),
+      (
+          "swizzle_a",
+          {"swizzle_a": [1]},  # at::blas::SwizzleType::SWIZZLE_32_4_4.
+          "expected swizzle_a to be NO_SWIZZLE, got 1",
+      ),
+      (
+          "swizzle_b",
+          {"swizzle_b": [1]},
+          "expected swizzle_b to be NO_SWIZZLE, got 1",
+      ),
+  )
+  @et.why_tpu_only(
+      "GPU _scaled_grouped_mm_v2 supports these recipes, swizzles and options."
+  )
+  def test_scaled_grouped_mm_v2_unsupported_args(
+      self, overrides: dict[str, Any], message: str
+  ):
+    a = torch.randn(16, 8, device=et.device())
+    b = torch.randn(2, 8, 8, device=et.device())
+    scale = torch.tensor(1.0, device=et.device())
+    offs = torch.tensor([8, 16], dtype=torch.int32, device=et.device())
+    # Valid TensorWise (0), NO_SWIZZLE (0) args; `overrides` breaks one.
+    kwargs = {
+        "scale_a": [scale],
+        "recipe_a": [0],
+        "swizzle_a": [0],
+        "scale_b": [scale],
+        "recipe_b": [0],
+        "swizzle_b": [0],
+        "offs": offs,
+    }
+    kwargs.update(overrides)
+    with et.assert_raises_message(
+        RuntimeError, tpu=f"scaled_grouped_mm_v2(): {message}"
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2(a, b, **kwargs)
+
+  @et.why_tpu_only("Checks the TPU _scaled_grouped_mm_v2.out dtype validation.")
+  def test_scaled_grouped_mm_v2_out_wrong_dtype(self):
+    a = torch.randn(16, 8, device=et.device())
+    b = torch.randn(2, 8, 8, device=et.device())
+    scale = torch.tensor(1.0, device=et.device())
+    offs = torch.tensor([8, 16], dtype=torch.int32, device=et.device())
+    out = torch.empty(0, dtype=torch.bfloat16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""scaled_grouped_mm_v2(): expected the output dtype to be float32, got bfloat16""",
+    ):
+      torch.ops.aten._scaled_grouped_mm_v2.out(
+          a, b, [scale], [0], [0], [scale], [0], [0], offs=offs, out=out
+      )
+
   @et.why_tpu_only("GPU linear allows broadcastable 2-D bias.")
   def test_native_multi_head_attention_invalid_proj_bias_dim(self):
     query = torch.ones(2, 4, 8, device=et.device())

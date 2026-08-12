@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/BlasBackend.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -42,6 +43,7 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/resize/resize_aten_kernels.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -611,6 +613,198 @@ at::Tensor AtenScaledGroupedMm(const at::Tensor& self, const at::Tensor& mat2,
                                   param_keys));
               return MakeTensor(result_buffer);
             });
+}
+
+namespace {
+
+#if TT_TORCH_VERSION_GE(2, 14)
+absl::Status ValidateScaledGroupedMmV2Inputs(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    at::IntArrayRef contraction_dim) {
+#else
+absl::Status ValidateScaledGroupedMmV2Inputs(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    at::IntArrayRef contraction_dim) {
+#endif
+  if (!contraction_dim.empty()) {
+    TT_RET_CHECK(contraction_dim.size() == 2, error::kInvalidArgument)
+        << "expected contraction_dim list to contain exactly 2 elements, got "
+        << contraction_dim.size();
+    // Like upstream, only (-1, -2) is supported: the last dim of self and the
+    // second-to-last dim of mat2.
+    const int64_t dim_a = contraction_dim[0] < 0
+                              ? contraction_dim[0] + self.dim()
+                              : contraction_dim[0];
+    const int64_t dim_b = contraction_dim[1] < 0
+                              ? contraction_dim[1] + mat2.dim()
+                              : contraction_dim[1];
+    TT_RET_CHECK(dim_a == self.dim() - 1 && dim_b == mat2.dim() - 2,
+                 error::kPythonNotImplementedError)
+        << "expected contraction_dim to be [-1, -2], got ["
+        << contraction_dim[0] << ", " << contraction_dim[1] << "]";
+  }
+
+  TT_RET_CHECK(scale_a.size() == 1, error::kInvalidArgument)
+      << "expected scale_a list to contain exactly 1 tensor, got "
+      << scale_a.size();
+  TT_RET_CHECK(scale_b.size() == 1, error::kInvalidArgument)
+      << "expected scale_b list to contain exactly 1 tensor, got "
+      << scale_b.size();
+
+  TT_RET_CHECK(recipe_a.size() == 1, error::kInvalidArgument)
+      << "expected recipe_a list to contain exactly 1 recipe, got "
+      << recipe_a.size();
+  TT_RET_CHECK(recipe_b.size() == 1, error::kInvalidArgument)
+      << "expected recipe_b list to contain exactly 1 recipe, got "
+      << recipe_b.size();
+
+  // Only TensorWise for now: ScaledGroupedMm requires scalar scales.
+  constexpr auto kTensorWise =
+      static_cast<int64_t>(at::blas::ScalingType::TensorWise);
+  TT_RET_CHECK(recipe_a[0] == kTensorWise, error::kPythonNotImplementedError)
+      << "expected scaling recipe for scale_a to be TensorWise, got "
+      << recipe_a[0];
+  TT_RET_CHECK(recipe_b[0] == kTensorWise, error::kPythonNotImplementedError)
+      << "expected scaling recipe for scale_b to be TensorWise, got "
+      << recipe_b[0];
+
+  // An empty swizzle list means NO_SWIZZLE (the
+  // torch.nn.functional.scaled_grouped_mm default).
+  TT_RET_CHECK(swizzle_a.size() <= 1, error::kInvalidArgument)
+      << "expected swizzle_a list to contain at most 1 swizzle mode, got "
+      << swizzle_a.size();
+  TT_RET_CHECK(swizzle_b.size() <= 1, error::kInvalidArgument)
+      << "expected swizzle_b list to contain at most 1 swizzle mode, got "
+      << swizzle_b.size();
+  constexpr auto kNoSwizzle =
+      static_cast<int64_t>(at::blas::SwizzleType::NO_SWIZZLE);
+  TT_RET_CHECK(swizzle_a.empty() || swizzle_a[0] == kNoSwizzle,
+               error::kPythonNotImplementedError)
+      << "expected swizzle_a to be NO_SWIZZLE, got " << swizzle_a[0];
+  TT_RET_CHECK(swizzle_b.empty() || swizzle_b[0] == kNoSwizzle,
+               error::kPythonNotImplementedError)
+      << "expected swizzle_b to be NO_SWIZZLE, got " << swizzle_b[0];
+
+  return absl::OkStatus();
+}
+
+// Unpacks v2 args and delegates to the existing v1 ScaledGroupedMm path.
+#if TT_TORCH_VERSION_GE(2, 14)
+absl::StatusOr<DeviceBufferRef> ScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, OpParamCacheKeys param_keys) {
+#else
+absl::StatusOr<DeviceBufferRef> ScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, OpParamCacheKeys param_keys) {
+#endif
+  TT_RETURN_IF_ERROR(ValidateScaledGroupedMmV2Inputs(
+      self, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b,
+      contraction_dim));
+
+  // Extract the single scale tensor from each list.
+  const at::Tensor& s_a = scale_a.front();
+  const at::Tensor& s_b = scale_b.front();
+
+  // Delegate to the v1 path. scale_result is not part of v2.
+  // use_fast_accum is forwarded; ScaledGroupedMm owns its handling.
+  return ScaledGroupedMm(self, mat2, s_a, s_b, offs, bias,
+                         /*scale_result=*/std::nullopt, out_dtype,
+                         use_fast_accum, param_keys);
+}
+
+}  // namespace
+
+#if TT_TORCH_VERSION_GE(2, 14)  // See grouped_mm_aten_kernels.h.
+at::Tensor AtenScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum) {
+#else
+at::Tensor AtenScaledGroupedMmV2(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum) {
+#endif
+  TT_KERNEL(OpName::kScaledGroupedMmV2, param_keys,
+            (self, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b,
+             swizzle_b, offs, bias, out_dtype, contraction_dim, use_fast_accum),
+            {
+              TT_ASSIGN_OR_THROW(
+                  auto result_buffer,
+                  ScaledGroupedMmV2(self, mat2, scale_a, recipe_a, swizzle_a,
+                                    scale_b, recipe_b, swizzle_b, offs, bias,
+                                    out_dtype, contraction_dim, use_fast_accum,
+                                    std::move(param_keys)));
+              return MakeTensor(result_buffer);
+            });
+}
+
+#if TT_TORCH_VERSION_GE(2, 14)  // See grouped_mm_aten_kernels.h.
+at::Tensor& AtenScaledGroupedMmV2Out(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::ITensorListRef& scale_a, at::IntArrayRef recipe_a,
+    at::IntArrayRef swizzle_a, const at::ITensorListRef& scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, at::Tensor& out) {
+#else
+at::Tensor& AtenScaledGroupedMmV2Out(
+    const at::Tensor& self, const at::Tensor& mat2, at::TensorList scale_a,
+    at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b,
+    at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim,
+    bool use_fast_accum, at::Tensor& out) {
+#endif
+  TT_KERNEL(
+      OpName::kScaledGroupedMmV2Out, param_keys,
+      (self, mat2, scale_a, recipe_a, swizzle_a, scale_b, recipe_b, swizzle_b,
+       offs, bias, out_dtype, contraction_dim, use_fast_accum, out),
+      {
+        TT_THROW_IF_ERROR(
+            ValidateOutDtype(out, out_dtype.value_or(self.scalar_type()),
+                             /*allow_out_dtype_cast=*/false));
+        TT_ASSIGN_OR_THROW(
+            auto result_buffer,
+            ScaledGroupedMmV2(self, mat2, scale_a, recipe_a, swizzle_a, scale_b,
+                              recipe_b, swizzle_b, offs, bias, out_dtype,
+                              contraction_dim, use_fast_accum,
+                              std::move(param_keys)));
+        TT_THROW_IF_ERROR(
+            ResizeTensorIfShapeDiffers(out, result_buffer.dimensions()));
+        TT_THROW_IF_ERROR(
+            AssignBufferToAtTensor(std::move(result_buffer), out));
+        return out;
+      });
 }
 
 }  // namespace torch_tpu
