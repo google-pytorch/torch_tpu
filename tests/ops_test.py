@@ -822,6 +822,16 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"atol": 9.4e-2},
         torch.float16: {"atol": 1.3e-1},
     },
+    "_foreach_lgamma": {
+        torch.bfloat16: {"rtol": 8e-3, "atol": 4.7e-3},
+        torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
+        torch.float32: {"rtol": 2.8e-4, "atol": 3.3e-4},
+        torch.int16: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int32: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int64: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.uint8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+    },
     "_foreach_log": {
         torch.complex64: {"rtol": 6.3e-5, "atol": 6.8e-5},
         torch.float32: {"rtol": 7.4e-5, "atol": 8.3e-5},
@@ -903,8 +913,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.uint8: {"atol": 3e-5},
     },
     "_log_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 2.2e-2, "atol": 5.4e-2},
-        torch.float16: {"rtol": 2.7e-3, "atol": 8.5e-3},
         torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
     },
     "_native_batch_norm_legit": {
@@ -916,8 +924,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 2.0e-1, "atol": 3.2e-1},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"rtol": 1.9e-2, "atol": 4.6e-2},
-        torch.float16: {"rtol": 1.5e-3, "atol": 4.7e-3},
+        torch.bfloat16: {"atol": 5.9e-3},
+        torch.float16: {"atol": 5.9e-4},
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-4, "atol": 1e-4},
@@ -1000,8 +1008,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
     # bf16/f16 cumsum accumulation rounds differently from the GPU
     # reference, which is itself not bit-exact (mirrors the vs-CPU tol).
     "cumsum": {
-        torch.bfloat16: {"rtol": 2.3e-2, "atol": 3.8e-2},
-        torch.float16: {"rtol": 3.7e-3, "atol": 4.7e-3},
+        torch.bfloat16: {"atol": 1.9e-2},
+        torch.float16: {"rtol": 3.5e-3, "atol": 2.4e-3},
     },
     "digamma": {
         torch.float32: {"rtol": 4e-5, "atol": 1.3e-5},
@@ -1043,14 +1051,13 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 4.1e-6},
     },
     "lgamma": {
-        torch.bfloat16: {"rtol": 2.6e-2, "atol": 1.6e-4},
-        torch.float16: {"rtol": 1.3e-2, "atol": 1.5e-4},
-        torch.float32: {"rtol": 1.3e-2, "atol": 2.6e-4},
-        torch.int16: {"rtol": 1.3e-4, "atol": 2.3e-4},
-        torch.int32: {"rtol": 1.3e-4, "atol": 2.3e-4},
-        torch.int64: {"rtol": 1.3e-4, "atol": 2.3e-4},
-        torch.int8: {"rtol": 1.3e-4, "atol": 2.3e-4},
-        torch.uint8: {"rtol": 1.3e-4, "atol": 2.3e-4},
+        torch.float16: {"rtol": 9.2e-4, "atol": 1.8e-4},
+        torch.float32: {"rtol": 1.7e-4, "atol": 1.8e-4},
+        torch.int16: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int32: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int64: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.int8: {"rtol": 1.5e-4, "atol": 6.3e-5},
+        torch.uint8: {"rtol": 1.5e-4, "atol": 6.3e-5},
     },
     "linalg.lu": {
         torch.complex64: {"rtol": 5, "atol": 10},
@@ -1113,8 +1120,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 5.7e-5, "atol": 8.3e-5},
     },
     "logcumsumexp": {
-        torch.bfloat16: {"atol": 4.7e-3},
-        torch.float16: {"rtol": 1.8e-3, "atol": 1.4e-3},
+        torch.bfloat16: {"atol": 3.7e-5},
+        torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
         torch.float32: {"rtol": 5e-5, "atol": 3.2e-5},
     },
     "logit": {
@@ -1137,18 +1144,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 3.8e-2},
         torch.float16: {"rtol": 4.8e-2},
         torch.float32: {"rtol": 5.2e-2},
-    },
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"atol": 1.9e-2},
-        torch.float16: {"rtol": 1.8e-3, "atol": 3.6e-3},
-    },
-    "nn.functional.adaptive_avg_pool3d": {
-        torch.bfloat16: {"rtol": 1.9e-2, "atol": 1.9e-2},
-        torch.float16: {"rtol": 3.1e-3, "atol": 3.1e-3},
-    },
-    "nn.functional.avg_pool2d": {
-        torch.bfloat16: {"rtol": 3.8e-2, "atol": 4.5e-2},
-        torch.float16: {"rtol": 3.5e-3, "atol": 7.1e-3},
     },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
@@ -1321,7 +1316,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"atol": 1.4e-4},
     },
     "_log_softmax_backward_data": {
-        torch.float16: {"rtol": 1.8e-3, "atol": 2.4e-3},
         torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
     },
     "_native_batch_norm_legit": {
@@ -1333,8 +1327,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 2.0e-1, "atol": 3.2e-1},
     },
     "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 3.5e-2},
-        torch.float16: {"atol": 4.6e-3},
+        torch.bfloat16: {"atol": 5.9e-3},
+        torch.float16: {"atol": 5.9e-4},
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-5, "atol": 3e-5},
@@ -1460,10 +1454,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "mm": {
         torch.complex64: {"rtol": 3.8e-2},
-    },
-    "nn.functional.adaptive_avg_pool2d": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 1.9e-2},
-        torch.float16: {"rtol": 1.8e-3, "atol": 1.8e-3},
     },
     "nn.functional.binary_cross_entropy": {
         torch.bfloat16: {"rtol": 9e-3, "atol": 5.9e-3},
@@ -1596,10 +1586,6 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
                 torch.float16: {"rtol": 1e-3, "atol": 3e-1},
                 torch.float32: {"rtol": 4e-4, "atol": 8e-2},
             },
-            "cdist": {
-                torch.float16: {"rtol": 3.2e-2, "atol": 7.9e-3},
-                torch.float32: {"rtol": 3.7e-2, "atol": 8.5e-3},
-            },
             "erf": {
                 torch.bfloat16: {"rtol": 2e-2, "atol": 3e-4},
                 torch.float16: {"rtol": 2e-3, "atol": 1e-4},
@@ -1674,11 +1660,6 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
             },
             "nn.functional.glu": {
                 torch.float32: {"rtol": 6.7e-5, "atol": 1.1e-5},
-            },
-            "nn.functional.group_norm": {
-                torch.bfloat16: {"rtol": 6e-1, "atol": 3e-2},
-                torch.float32: {"rtol": 1.7, "atol": 3e-1},
-                torch.float64: {"rtol": 1.7, "atol": 5e-2},
             },
             "nn.functional.hardswish": {
                 torch.bfloat16: {"rtol": 2.8e-2, "atol": 1e-2},

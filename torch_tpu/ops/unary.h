@@ -67,7 +67,6 @@ TT_UNARY_BUILDER_FP_ONLY_(BuildErfInvShlo, mlir::chlo::ErfInv);
 TT_UNARY_BUILDER_FP_ONLY_(BuildErfShlo, mlir::chlo::Erf);
 TT_UNARY_BUILDER_FP_ONLY_(BuildExpShlo, mlir::stablehlo::Exp);
 TT_UNARY_BUILDER_FP_ONLY_(BuildExpm1Shlo, mlir::stablehlo::Expm1);
-TT_UNARY_BUILDER_FP_ONLY_(BuildLgammaShlo, mlir::chlo::Lgamma);
 TT_UNARY_BUILDER_FP_ONLY_(BuildRsqrtShlo, mlir::stablehlo::Rsqrt);
 TT_UNARY_BUILDER_FP_ONLY_(BuildSinShlo, mlir::stablehlo::Sine);
 TT_UNARY_BUILDER_FP_ONLY_(BuildSinhShlo, mlir::chlo::Sinh);
@@ -106,6 +105,8 @@ absl::StatusOr<mlir::MlirOp> BuildLog10Shlo(
 absl::StatusOr<mlir::MlirOp> BuildErfcShlo(mlir::MlirOp input,
                                            mlir::ElementType out_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildFracShlo(mlir::MlirOp input);
+absl::StatusOr<mlir::MlirOp> BuildLgammaShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type);
 
 }  // namespace torch_tpu
 
