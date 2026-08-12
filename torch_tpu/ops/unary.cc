@@ -30,6 +30,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
@@ -241,40 +242,36 @@ absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
   return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
 }
 
-absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
-                                            mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
-  // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
+absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_input_op,
+                      ConvertIfInteger(input_op, default_mlir_type));
   TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
+                      InferComputationDtype(default_mlir_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_type));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_type);
+                      CastIfNeeded(converted_input_op, computation_type));
 
   mlir::MlirOp result_op = mlir::stablehlo::Log1p(computation_input_op);
-
-  return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+  return CastIfNeeded(result_op, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_input_op,
                       ConvertIfInteger(input_op, default_mlir_type));
-  mlir::MlirBuilder& builder = op.getBuilder();
-  mlir::RankedTensorType type = GetTensorTypeOrDie(op);
-  mlir::MlirOp value_2 =
-      MakeScalarConstant(builder, 2.0, type.getElementType());
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
+                      InferComputationDtype(default_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      CastIfNeeded(converted_input_op, computation_type));
+
+  mlir::MlirBuilder& builder = computation_input_op.getBuilder();
+  mlir::MlirOp value_2 = MakeScalarConstant(builder, 2.0, computation_type);
   mlir::MlirOp ln2 = mlir::stablehlo::Log(value_2);
-  TT_ASSIGN_OR_RETURN((auto [ln2_b, op_b]), ApplyBroadcastIfNeeded(ln2, op));
+  TT_ASSIGN_OR_RETURN((auto [ln2_b, op_b]),
+                      ApplyBroadcastIfNeeded(ln2, computation_input_op));
   mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2_b, op_b);
   mlir::MlirOp result_op = mlir::stablehlo::Exp(mul_op);
-  return mlir::stablehlo::ConvertElementType(result_op, default_mlir_type);
+  return CastIfNeeded(result_op, default_mlir_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(
@@ -359,6 +356,18 @@ absl::StatusOr<mlir::MlirOp> BuildFracShlo(mlir::MlirOp input) {
   // PyTorch defines frac(x) = x - trunc(x)
   TT_ASSIGN_OR_RETURN(mlir::MlirOp trunc_val, BuildTruncShlo(input));
   return mlir::stablehlo::Subtract(input, trunc_val);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLgammaShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp converted_input_op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
+                      InferComputationDtype(default_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      CastIfNeeded(converted_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Lgamma(computation_input_op);
+  return CastIfNeeded(result_op, default_mlir_type);
 }
 
 }  // namespace torch_tpu

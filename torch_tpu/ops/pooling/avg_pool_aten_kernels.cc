@@ -36,6 +36,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -194,6 +195,11 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
     mlir::MlirOp input, int64_t spatial_dim_count, Dimensions kernel_size,
     Dimensions stride, Dimensions padding, bool ceil_mode,
     bool count_include_pad, std::optional<int64_t> divisor_override) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
   auto& builder = input.getBuilder();
 
   // 1. Create a batch input by normalizing the input tensor
@@ -261,7 +267,9 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
                                           count_include_pad, divisor_override));
   auto final_output = mlir::stablehlo::Div(sum_output, divisor);
 
-  return RemoveTrivialBatch(final_output, original_dim_size, spatial_dim_count);
+  auto result =
+      RemoveTrivialBatch(final_output, original_dim_size, spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 // Mathematically, average pooling is a linear transformation that can be
@@ -310,6 +318,12 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
     const Dimensions& kernel_size, const Dimensions& stride,
     const Dimensions& padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
   auto& builder = grad_output.getBuilder();
 
   // 1. Create batch inputs for both input and grad_output
@@ -445,8 +459,9 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
   auto sliced_grad = mlir::stablehlo::Slice(slicable_result, start_indices,
                                             limit_indices, slice_strides);
 
-  return RemoveTrivialBatch(sliced_grad, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  auto result = RemoveTrivialBatch(
+      sliced_grad, batch_input_info.original_dim_size, spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 }  // namespace
 

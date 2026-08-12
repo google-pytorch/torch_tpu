@@ -36,6 +36,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/ops/macros/kernel.h"
@@ -102,24 +103,30 @@ absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(const int64_t normalized_dim,
   if (input_type.getRank() == 0) {
     return input;
   }
-  const mlir::Type element_type = input_type.getElementType();
+  const mlir::ElementType input_elem_type = GetElementTypeOrDie(input);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(input_elem_type));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
   mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::RankedTensorType compute_input_type = GetTensorTypeOrDie(input);
+  const mlir::Type compute_element_type = compute_input_type.getElementType();
 
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(input_type.getShape().begin(),
-                                         input_type.getShape().end());
+  llvm::SmallVector<int64_t> carry_shape(compute_input_type.getShape().begin(),
+                                         compute_input_type.getShape().end());
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
   // The identity of logaddexp is -inf.
   const llvm::APFloat neg_inf = llvm::APFloat::getInf(
-      llvm::cast<mlir::FloatType>(element_type).getFloatSemantics(),
+      llvm::cast<mlir::FloatType>(compute_element_type).getFloatSemantics(),
       /*Negative=*/true);
   const mlir::Attribute neg_inf_attr =
-      mlir::FloatAttr::get(element_type, neg_inf);
+      mlir::FloatAttr::get(compute_element_type, neg_inf);
   const mlir::MlirOp neg_inf_scalar = mlir::stablehlo::Constant(
       builder,
       mlir::DenseElementsAttr::get(
-          mlir::RankedTensorType::get({}, element_type), neg_inf_attr));
+          mlir::RankedTensorType::get({}, compute_element_type), neg_inf_attr));
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
                       BroadcastIfNeeded(neg_inf_scalar, carry_shape));
 
@@ -133,7 +140,7 @@ absl::StatusOr<mlir::MlirOp> BuildLogcumsumexpShlo(const int64_t normalized_dim,
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           LogaddexpScanBody,
           ScanOptions{.should_squeeze = true, .is_associative = true}));
-  return results[/*num_carries=*/1];
+  return CastIfNeeded(results[/*num_carries=*/1], input_elem_type);
 }
 
 }  // namespace

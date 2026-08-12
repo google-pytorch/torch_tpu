@@ -32,6 +32,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/scan_builder.h"
@@ -42,18 +43,21 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
     const int64_t normalized_dim,
     const std::optional<mlir::ElementType> out_dtype, mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  mlir::Type element_type = input_type.getElementType();
+  mlir::ElementType target_element_type = GetElementTypeOrDie(input);
 
   mlir::MlirBuilder& builder = input.getBuilder();
   if (out_dtype.has_value()) {
-    element_type = getElementType(builder.getContext(), out_dtype.value());
+    target_element_type = out_dtype.value();
   } else if (input_type.getElementType().isInteger()) {
-    element_type = builder.getOpBuilder().getI64Type();
+    target_element_type = mlir::ElementType::I64;
   }
 
-  if (input_type.getElementType() != element_type) {
-    input = mlir::stablehlo::ConvertElementType(input, element_type);
-  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(target_element_type));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
+  const mlir::Type compute_element_type =
+      getElementType(builder.getContext(), compute_dtype);
 
   const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
   // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
@@ -61,7 +65,8 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
                                          promoted_type.getShape().end());
   carry_shape.erase(carry_shape.begin() + normalized_dim);
 
-  const mlir::MlirOp init_value = MakeScalarConstant(builder, 0, element_type);
+  const mlir::MlirOp init_value =
+      MakeScalarConstant(builder, 0, compute_element_type);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
                       BroadcastIfNeeded(init_value, carry_shape));
 
@@ -86,7 +91,7 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           std::move(body_builder),
           ScanOptions{.should_squeeze = true, .is_associative = true}));
-  return results[/*num_carries=*/1];
+  return CastIfNeeded(results[/*num_carries=*/1], target_element_type);
 }
 
 }  // namespace torch_tpu
