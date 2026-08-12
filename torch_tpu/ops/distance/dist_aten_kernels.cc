@@ -130,9 +130,15 @@ mlir::MlirOp BroadcastCdistInput(mlir::MlirOp op,
 absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
     mlir::MlirOp x1_op, mlir::MlirOp x2_op, double p, int64_t compute_mode,
     const Dimensions common_batch_shape, int64_t r1, int64_t r2, int64_t c) {
+  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_type));
+
+  TT_ASSIGN_OR_RETURN(x1_op, CastIfNeeded(x1_op, compute_dtype));
+  TT_ASSIGN_OR_RETURN(x2_op, CastIfNeeded(x2_op, compute_dtype));
+
   const mlir::RankedTensorType x1_type = GetTensorTypeOrDie(x1_op);
   const mlir::Type element_type = x1_type.getElementType();
-  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(x1_op));
 
   // Define the target shape for the difference tensor: (B_common..., R1, R2, C)
   Dimensions target_diff_shape(common_batch_shape.begin(),
@@ -160,13 +166,13 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
 
   if (p == 0.0) {
     // Special handling for 0-norm (hamming distance equivalent)
-    return BuildZeroNorm(diff_op, reduce_dim_idx, element_type);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp res,
+                        BuildZeroNorm(diff_op, reduce_dim_idx, element_type));
+    return CastIfNeeded(res, out_type);
   } else {
     // General case for p-norm
-    TT_ASSIGN_OR_RETURN(auto result,
-                        BuildPNormShlo(diff_op, p, {reduce_dim_idx},
-                                       ReductionMode::kDropDims, out_type));
-    return result;
+    return BuildPNormShlo(diff_op, p, {reduce_dim_idx},
+                          ReductionMode::kDropDims, out_type);
   };
 }
 
@@ -176,10 +182,14 @@ absl::StatusOr<mlir::MlirOp> BuildCdistForwardShlo(
 // Output shape: (B..., R(R-1)/2)
 absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
                                                   double p) {
+  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(input_op));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_type));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
+
   mlir::MlirBuilder& builder = input_op.getBuilder();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   const mlir::Type element_type = input_type.getElementType();
-  TT_ASSIGN_OR_RETURN(mlir::ElementType out_type, GetElementType(input_op));
 
   const int64_t n = input_type.getDimSize(0);
   const int64_t num_pairs = n * (n - 1) / 2;
@@ -213,7 +223,9 @@ absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
 
   if (p == 0.0) {
     // Special handling for 0-norm (hamming distance equivalent)
-    return BuildZeroNorm(diff_op, /*reduce_dim=*/1, element_type);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp res,
+                        BuildZeroNorm(diff_op, /*reduce_dim=*/1, element_type));
+    return CastIfNeeded(res, out_type);
   } else {
     // General case for p-norm
     return BuildPNormShlo(diff_op, p, {1}, ReductionMode::kDropDims, out_type);

@@ -44,6 +44,7 @@ torch_tpu_cc_library(
     srcs = ["cumsum.cc"],
     hdrs = ["cumsum.h"],
     deps = [
+        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/ops:op_builder_utils",
         "//torch_tpu/ops:scan_builder",

@@ -30,6 +30,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
@@ -147,6 +148,15 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
     }
   }
 
+  const mlir::ElementType out_element_type = GetElementTypeOrDie(output_op);
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      InferComputationDtype(out_element_type));
+  TT_ASSIGN_OR_RETURN(grad_output_op,
+                      CastIfNeeded(grad_output_op, computation_dtype));
+  TT_ASSIGN_OR_RETURN(output_op, CastIfNeeded(output_op, computation_dtype));
+  const mlir::RankedTensorType comp_output_type = GetTensorTypeOrDie(output_op);
+
+  mlir::MlirOp result;
   if (softmax_mode == SoftmaxMode::kSoftmax) {
     // For i a valid index in the dim-th dimension:
     //   (dL / d input)_i = (output_op)_i * ((grad_output_op)_i - dot(output_op,
@@ -166,27 +176,30 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(
     ABSL_VLOG(3) << "BuildSoftmaxBackwardDataShlo: dot_op_type: "
                  << mlir::debugString(dot_op_type);
     auto dot_broadcasted =
-        mlir::stablehlo::BroadcastInDim(output_type, dot_op, all_but_dim);
+        mlir::stablehlo::BroadcastInDim(comp_output_type, dot_op, all_but_dim);
     // Compute grad_output_op - dot_broadcasted
     auto sub_op = mlir::stablehlo::Subtract(grad_output_op, dot_broadcasted);
 
     // Compute output_op * sub_op
-    return mlir::stablehlo::Mul(output_op, sub_op);
+    result = mlir::stablehlo::Mul(output_op, sub_op);
+  } else {
+    // softmax_mode == SoftmaxMode::kLogSoftmax
+    // For i a valid index in the dim-th dimension:
+    //   (dL / d input)_i = (grad_output_op)_i - exp((output_op)_i) *
+    //   sum(grad_output_op, dim)
+    // where the sum is broadcasted back to the original shape.
+    // Start by computing the sum
+    TT_ASSIGN_OR_RETURN(auto sum_op, BuildSumShlo(grad_output_op, {dim}));
+    auto sum_broadcasted =
+        mlir::stablehlo::BroadcastInDim(comp_output_type, sum_op, all_but_dim);
+    // Compute exp(output_op) * sum(grad_output_op, dim)
+    auto exp_op = mlir::stablehlo::Exp(output_op);
+    auto mul_op = mlir::stablehlo::Mul(exp_op, sum_broadcasted);
+    // Compute grad_output_op - mul_op
+    result = mlir::stablehlo::Subtract(grad_output_op, mul_op);
   }
-  // softmax_mode == SoftmaxMode::kLogSoftmax
-  // For i a valid index in the dim-th dimension:
-  //   (dL / d input)_i = (grad_output_op)_i - exp((output_op)_i) *
-  //   sum(grad_output_op, dim)
-  // where the sum is broadcasted back to the original shape.
-  // Start by computing the sum
-  TT_ASSIGN_OR_RETURN(auto sum_op, BuildSumShlo(grad_output_op, {dim}));
-  auto sum_broadcasted =
-      mlir::stablehlo::BroadcastInDim(output_type, sum_op, all_but_dim);
-  // Compute exp(output_op) * sum(grad_output_op, dim)
-  auto exp_op = mlir::stablehlo::Exp(output_op);
-  auto mul_op = mlir::stablehlo::Mul(exp_op, sum_broadcasted);
-  // Compute grad_output_op - mul_op
-  return mlir::stablehlo::Subtract(grad_output_op, mul_op);
+
+  return CastIfNeeded(result, out_element_type);
 }
 
 namespace {

@@ -34,6 +34,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/dtype.h"
@@ -227,6 +228,11 @@ absl::StatusOr<mlir::MlirOp> BuildGatherPool1D(mlir::MlirBuilder& builder,
 absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dShlo(
     mlir::MlirOp input_op, const int64_t in_h, const int64_t in_w,
     const int64_t out_h, const int64_t out_w, const int64_t spatial_dim_count) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
+
   // Create a batch input
   TT_ASSIGN_OR_RETURN(auto batch_input_info,
                       CreateBatchInput(input_op, spatial_dim_count));
@@ -247,8 +253,9 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dShlo(
   TT_ASSIGN_OR_RETURN(auto w_op, BuildGatherPool1D(builder, h_op, w_dim,
                                                    h_shape[w_dim], out_w));
 
-  return RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  auto result = RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
+                                   spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 // Implements the general case of 3D adaptive average pooling using separate 1D
@@ -257,6 +264,11 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
     mlir::MlirOp input_op, const int64_t in_d, const int64_t in_h,
     const int64_t in_w, const int64_t out_d, const int64_t out_h,
     const int64_t out_w, const int64_t spatial_dim_count) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
+
   // Create a batch input
   TT_ASSIGN_OR_RETURN(auto batch_input_info,
                       CreateBatchInput(input_op, spatial_dim_count));
@@ -285,8 +297,9 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
   TT_ASSIGN_OR_RETURN(auto w_op, BuildGatherPool1D(builder, h_op, w_dim,
                                                    h_shape[w_dim], out_w));
 
-  return RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  auto result = RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
+                                   spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 // Builds a 1D scatter-add operation (Backward of GatherPool).
@@ -432,6 +445,12 @@ absl::StatusOr<mlir::MlirOp> BuildScatterAdd1D(mlir::MlirBuilder& builder,
 
 absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
   const int64_t spatial_dim_count = 2;
   mlir::MlirBuilder& builder = grad_output.getBuilder();
 
@@ -460,12 +479,19 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool2dBackwardShlo(
   TT_ASSIGN_OR_RETURN(auto h_op,
                       BuildScatterAdd1D(builder, w_op, h_dim, in_h, out_h));
 
-  return RemoveTrivialBatch(h_op, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  auto result = RemoveTrivialBatch(h_op, batch_input_info.original_dim_size,
+                                   spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+
   const int64_t spatial_dim_count = 3;
   mlir::MlirBuilder& builder = grad_output.getBuilder();
 
@@ -501,8 +527,9 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
   TT_ASSIGN_OR_RETURN(auto d_op,
                       BuildScatterAdd1D(builder, h_op, d_dim, in_d, out_d));
 
-  return RemoveTrivialBatch(d_op, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  auto result = RemoveTrivialBatch(d_op, batch_input_info.original_dim_size,
+                                   spatial_dim_count);
+  return CastIfNeeded(result, orig_dtype);
 }
 }  // namespace
 
