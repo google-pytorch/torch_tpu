@@ -25,7 +25,6 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
-#include "ATen/native/Resize.h"
 #include "ATen/ops/promote_types.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -49,6 +48,7 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/ops/precision_context.h"
+#include "torch_tpu/ops/resize/resize_aten_kernels.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -462,7 +462,9 @@ at::Tensor& AtenConvolutionOut(const at::Tensor& input,
                   Convolution(input, weight, bias_opt, stride, padding,
                               dilation, transposed, output_padding, groups,
                               std::move(param_keys)));
-              at::native::resize_output(out, result.dimensions());
+              if (out.sizes() != result.dimensions()) {
+                AtenResize_(out, result.dimensions(), std::nullopt);
+              }
               TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result), out));
               return out;
             });
