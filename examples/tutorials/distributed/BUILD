@@ -31,8 +31,6 @@ torch_tpu_py_test(
     env = {
         "WORLD_SIZE": "8",
     },
-    notap = "this is a manual test",
-    notest_oss = "Disabled during switch from opt-in to opt-out",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite:8",
@@ -40,6 +38,7 @@ torch_tpu_py_test(
     deps = [
         ":hello_world_distributed",
         "//shims/torch:pytorch",
+        "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/shims/pyglib/contrib/g3_multiprocessing",

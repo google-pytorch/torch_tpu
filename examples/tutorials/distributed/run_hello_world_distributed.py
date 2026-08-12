@@ -12,25 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A wrapper to run the tensor parallel worker via g3_distributed.torchrun."""
+"""A wrapper to run the distributed tutorial worker via distributed_utils.dist_run."""
 
 import os
-from torch.google import distributed as g3_distributed
 import torch.multiprocessing as mp
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from examples.tutorials.distributed import hello_world_distributed
-from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
+from tests.distributed import distributed_utils
+
+try:
+  from torch_tpu._internal.shims.pyglib.contrib.g3_multiprocessing import g3_multiprocessing
+except (ImportError, ModuleNotFoundError):
+  g3_multiprocessing = None
 
 
-def main(_):
-  singlehost_wrapper.prepare_tpu_environment()
+def main(_=None):
   world_size = int(os.environ["WORLD_SIZE"])
-  g3_distributed.torchrun(
-      hello_world_distributed.run_all_reduce,
-      nproc_per_node=world_size,
-  )()
+  singlehost_wrapper.prepare_tpu_environment(world_size=world_size)
+  distributed_utils.dist_run(world_size, hello_world_distributed.run_all_reduce)
 
 
 if __name__ == "__main__":
   mp.set_start_method("spawn")
-  g3_multiprocessing.handle_main(main)
+  if g3_multiprocessing is not None:
+    g3_multiprocessing.handle_main(main)
+  else:
+    main()
