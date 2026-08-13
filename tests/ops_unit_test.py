@@ -37,6 +37,8 @@ from absl.testing import flagsaver
 from absl.testing import parameterized
 from scipy import stats
 import torch
+from torch._dynamo import exc as dynamo_exc
+from torch._inductor import exc as inductor_exc
 from torch.testing._internal import common_methods_invocations
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
@@ -10106,6 +10108,20 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
     self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
 
 
+def _backend_compiler_failure(
+    inner: Exception, backend_name: str = "tpu"
+) -> Exception:
+  """Builds an exception that TorchDynamo raises when a backend fails to compile."""
+
+  def backend_fn():
+    raise AssertionError("__error__")
+
+  backend_fn.__name__ = backend_name
+  return dynamo_exc.BackendCompilerFailed(
+      backend_fn, inner, first_useful_frame=None
+  )
+
+
 class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
   """Tests for the op_testing framework itself."""
 
@@ -10340,6 +10356,61 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertIsInstance(restored.output_value, ValueError)
     self.assertEqual(type(restored.output_value).__name__, "ValueError")
     self.assertEqual(str(restored.output_value), "bad value: 42")
+
+  def test_normalize_exception_retains_unwrapped_exceptions(self):
+    for e in (RuntimeError("kill"), NotImplementedError("unavailable")):
+      self.assertIs(op_testing._normalize_exception(e), e)
+
+  def test_normalize_exception_returns_inner_exception_from_backend_compiler_failure(
+      self,
+  ):
+    inner = NotImplementedError("aten::mm is not implemented")
+    wrapped = _backend_compiler_failure(inner)
+    self.assertIs(op_testing._normalize_exception(wrapped), inner)
+
+  def test_normalize_exception_returns_cause_in_raise_from(self):
+    root = ValueError("42")
+    try:
+      try:
+        raise root
+      except ValueError as e:
+        raise dynamo_exc.Unsupported("graph break") from e
+    except dynamo_exc.Unsupported as wrapped:
+      self.assertIs(op_testing._normalize_exception(wrapped), root)
+
+  def test_normalize_exception_returns_root_from_nested_chain(self):
+    root = RuntimeError("kill")
+    nested = _backend_compiler_failure(
+        inductor_exc.InductorError(root, first_useful_frame=None),
+        backend_name="inductor",
+    )
+    self.assertIs(op_testing._normalize_exception(nested), root)
+
+  def test_normalize_exception_returns_underlying_op_failure_in_torch_compile(
+      self,
+  ):
+    torch._dynamo.reset()
+    compiled = torch.compile(torch.isneginf, dynamic=False, backend="eager")
+    with self.assertRaises(dynamo_exc.TorchDynamoException) as ctx:
+      compiled(torch.randn(4, dtype=torch.complex64))
+
+    normalized = op_testing._normalize_exception(ctx.exception)
+    self.assertIs(type(normalized), RuntimeError)
+    self.assertIn(
+        "Complex dtype is not supported for isneginf", str(normalized)
+    )
+
+  def test_golden_data_records_normalized_exceptions(self):
+    wrapped = _backend_compiler_failure(
+        NotImplementedError("aten::mm is not implemented")
+    )
+    output = op_testing.OpOutput(op_testing._normalize_exception(wrapped))
+    restored = op_testing.OpOutput.from_plistlib_pytree(
+        output.to_plistlib_pytree()
+    ).output_value
+
+    self.assertEqual(type(restored).__name__, "NotImplementedError")
+    self.assertEqual(str(restored), "aten::mm is not implemented")
 
   def test_get_dtype_exclusions_with_iterable_returns_exclusions_tuple(self):
     self.assertEqual(

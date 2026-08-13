@@ -44,6 +44,7 @@ from absl.testing import absltest
 from etils import epath
 import safetensors.torch as st
 import torch
+from torch._dynamo import exc as dynamo_exc
 from torch.testing._internal import autograd_function_db
 from torch.testing._internal import common_dtype
 from torch.testing._internal import common_methods_invocations
@@ -1795,6 +1796,60 @@ def _resolve_enum_class(mod_name: str, class_name: str) -> Any:
   return None
 
 
+def _normalize_exception(e: Exception) -> Exception:
+  """Returns the exception the op raised, with TorchDynamo wrappers removed.
+
+  Under torch.compile, the op's own exception does not reach the caller.
+  TorchDynamo captures it and raises one of its own exceptions instead, which
+  describes how the failure surfaced rather than why the op failed. Examples:
+
+    BackendCompilerFailed: backend='tpu' raised:
+      NotImplementedError: hardswish(): expected the input dtype to be ...
+
+    TorchRuntimeError: RuntimeError when making fake tensor call ... got
+      RuntimeError('Complex dtype is not supported for isneginf')
+
+  Such wrapper types indicate which backend or which compilation stage failed,
+  thus they differ between the golden device and TPU even when the op failed for
+  exactly the same reason.
+
+  TorchDynamo wraps the underlying exception in the following ways:
+    1. `inner_exception`: stored directly by `BackendCompilerFailed`.
+    2. `__cause__`: linked when raised explicitly via `raise ... from exc`
+      (e.g., `Unsupported`).
+    3. `__context__`: preserved implicitly when raised with `from None`
+      (e.g., `TorchRuntimeError`).
+
+  A TorchDynamo exception with nothing chained to it, such as a graph break that
+  no exception caused, is returned as is, since there is nothing better to
+  report.
+
+  Args:
+    e: The exception an op raised.
+
+  Returns:
+    The first exception in the exception chain that is not one of TorchDynamo
+    wrappers, or `e` itself if it is not a TorchDynamo exception.
+  """
+  seen = {id(e)}
+
+  # Every exception TorchDynamo raises derives from TorchDynamoException.
+  while isinstance(e, dynamo_exc.TorchDynamoException):
+    wrapped = getattr(e, "inner_exception", None)
+    if not isinstance(wrapped, Exception):
+      wrapped = e.__cause__
+    if not isinstance(wrapped, Exception):
+      wrapped = e.__context__
+    # Prevent looping forever on a self-referencing chain.
+    if not isinstance(wrapped, Exception) or id(wrapped) in seen:
+      break
+
+    seen.add(id(wrapped))
+    e = wrapped
+
+  return e
+
+
 def _deserialize_exception(payload: Any) -> Exception:
   """Deserializes an Exception object from a serialized "$$exception" payload."""
   # TODO(b/542331196): remove this check once exceptions are consistently in dict
@@ -2930,6 +2985,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
         )
     except Exception as e:  # pylint: disable=broad-except
       # The op raised an exception.
+      e = _normalize_exception(e)
       if _gen_gpu_golden_mode():
         print(
             f"Exception caught during golden generation for {op_name}: {e}",
