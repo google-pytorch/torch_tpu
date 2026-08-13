@@ -66,7 +66,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_compile_test",
     srcs = ["split_compile_test.py"],
-    notest_oss = "Temporary disable in OSS",
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
