@@ -196,7 +196,7 @@ _COMMON_ENV = {
     "PYPROJECT_PATH": "$(location //:pyproject.toml)",
 }
 
-py_test(
+torch_tpu_py_test(
     name = "wheel_single_source_test",
     srcs = ["wheel_single_source_test.py"],
     data = [
@@ -222,7 +222,7 @@ py_test(
 # Structural checks on the multi-ABI wheel: one shared libxla_base.so, a glue +
 # torch common per built version, the shared base is XLA-only, and no libtorch
 # is bundled. Needs nm/readelf/c++filt (binutils), which the image provides.
-py_test(
+torch_tpu_py_test(
     name = "wheel_structure_test",
     srcs = ["wheel_structure_test.py"],
     data = [":torch_tpu_wheel"],
