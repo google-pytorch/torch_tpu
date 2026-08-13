@@ -1,4 +1,4 @@
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end", "torch_tpu_py_library")
 
 # Copyright 2025 Google LLC
 #
@@ -128,6 +128,36 @@ pybind_extension(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "sync_backend_bridge",
+    srcs = ["sync_backend_bridge.cc"],
+    hdrs = ["sync_backend_bridge.h"],
+    deps = [
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
+        "//torch_tpu/runtime:eager_runtime_adapter",
+        "//torch_tpu/runtime/cerebro:cerebro_backend_impl",
+        "//torch_tpu/runtime/cerebro:cerebro_cluster_pipeline",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla/tsl/framework:allocator",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "sync_backend_bridge_test",
+    srcs = ["sync_backend_bridge_test.cc"],
+    deps = [
+        ":sync_backend_bridge",
+        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status",
     ],
 )
 

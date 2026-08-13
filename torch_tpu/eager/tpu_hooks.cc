@@ -40,6 +40,7 @@
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "torch/headeronly/macros/Export.h"
+#include "torch_tpu/_internal/device/device_backend_bridge.h"
 #include "torch_tpu/_internal/sync/sync.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/device_type.h"
@@ -54,6 +55,7 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "torch_tpu/runtime/backend_config.h"
 
 namespace torch_tpu {
 namespace {
@@ -72,6 +74,19 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
       << "Device index " << static_cast<int>(device_index)
       << " is out of bounds of the maximum device count " << kMaxDevices;
 
+  if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+    int bridge_count = DeviceBackendBridge::GetLocalDeviceCount();
+    if (bridge_count > 0) {
+      TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Device index validation
+          device_index < static_cast<c10::DeviceIndex>(bridge_count),
+          error::kInvalidArgument)
+          << "Device index " << static_cast<int>(device_index)
+          << " is out of bounds of the number of addressable devices "
+          << bridge_count;
+      return;
+    }
+  }
+
   auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
   if (pjrt_client == nullptr) {
     TORCH_WARN("PJRT client not available, using TPU device index ",
@@ -79,7 +94,8 @@ void ValidateDeviceIndex(c10::DeviceIndex device_index) {
     return;
   }
 
-  const int addressable_device_count = pjrt_client->addressable_device_count();
+  const int addressable_device_count =
+      std::min(pjrt_client->addressable_device_count(), kMaxDevices);
   TT_CHECK_THROW(
       device_index < static_cast<c10::DeviceIndex>(addressable_device_count),
       error::kInvalidArgument)
@@ -183,10 +199,16 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
 }
 
 c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
+  if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+    int bridge_count = DeviceBackendBridge::GetLocalDeviceCount();
+    if (bridge_count > 0) {
+      return static_cast<c10::DeviceIndex>(bridge_count);
+    }
+  }
   auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
   if (pjrt_client != nullptr) {
     return static_cast<c10::DeviceIndex>(
-        pjrt_client->addressable_device_count());
+        std::min(pjrt_client->addressable_device_count(), kMaxDevices));
   }
   return 0;
 }
@@ -267,6 +289,9 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
   }
 
   bool hasPrimaryContext(c10::DeviceIndex device_index) const override {
+    if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+      return device_index >= 0 && device_index < kMaxDevices;
+    }
     return PjrtBackend::GetInstance().GetClient() != nullptr;
   }
 

@@ -58,6 +58,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/_internal/sync/sync_backend_bridge.h"
 #include "torch_tpu/common/context_states.h"
 #include "torch_tpu/common/device_type.h"
 #include "torch_tpu/common/dimension_types.h"
@@ -357,6 +358,31 @@ class TpuAllocator final : public c10::DeviceAllocator {
   c10::CachingDeviceAllocator::DeviceStats getDeviceStats(
       c10::DeviceIndex device) override {
     c10::CachingDeviceAllocator::DeviceStats stats;
+    auto stats_or = SyncBackendBridge::GetMemoryStats();
+    if (stats_or.ok()) {
+      const auto& s = *stats_or;
+      using StatType = c10::CachingAllocator::StatType;
+
+      stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
+          s.bytes_in_use;
+      stats.allocated_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
+          s.peak_bytes_in_use;
+
+      stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
+          s.bytes_in_use;
+      stats.active_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
+          s.peak_bytes_in_use;
+
+      stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current =
+          s.bytes_reserved;
+      stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].peak =
+          s.peak_bytes_reserved;
+
+      stats.allocation[static_cast<size_t>(StatType::AGGREGATE)].current =
+          s.num_allocs;
+
+      return stats;
+    }
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
       TORCH_WARN("Failed to get allocator stats: ", pjrt_stats_or.status());
@@ -408,6 +434,13 @@ class TpuAllocator final : public c10::DeviceAllocator {
 
   std::pair<size_t, size_t>  // STD_PAIR_OK=dictated by PyTorch.
   getMemoryInfo(c10::DeviceIndex device) override {
+    auto stats_or = SyncBackendBridge::GetMemoryStats();
+    if (stats_or.ok()) {
+      const auto& s = *stats_or;
+      size_t limit = s.bytes_limit.value_or(0);
+      size_t used = s.bytes_in_use;
+      return {limit - used, limit};
+    }
     auto pjrt_stats_or = PjrtBackend::GetInstance().GetAllocatorStats();
     if (!pjrt_stats_or.ok()) {
       TORCH_WARN("Failed to get allocator stats: ", pjrt_stats_or.status());

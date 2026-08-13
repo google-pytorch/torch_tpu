@@ -587,6 +587,10 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return _device_ops_backend._get_cache_stats()  # pylint: disable=protected-access
 
   @classmethod
+  def _get_active_backend_name(cls) -> str:
+    return _device_ops_backend._get_active_backend_name()  # pylint: disable=protected-access
+
+  @classmethod
   def _shutdown_runtime(cls):
     if cls.is_initialized():
       if torch.distributed.is_available():

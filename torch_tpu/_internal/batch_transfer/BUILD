@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 licenses(["notice"])
@@ -64,6 +64,40 @@ torch_tpu_cc_library(
         "//torch_tpu/common:dimension_types",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/experimental/batch_transfer",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "tensor_transfer_bridge",
+    srcs = ["tensor_transfer_bridge.cc"],
+    hdrs = ["tensor_transfer_bridge.h"],
+    deps = [
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/pjrt:pjrt_utils",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:device_buffer",
+        "//torch_tpu/runtime:eager_runtime_adapter",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:IR",
+        "@xla//xla/tsl/concurrency:future",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "tensor_transfer_bridge_test",
+    srcs = ["tensor_transfer_bridge_test.cc"],
+    deps = [
+        ":tensor_transfer_bridge",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
     ],
 )
 

@@ -380,4 +380,34 @@ torch_tpu_cc_test(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "compile_backend_bridge",
+    srcs = ["compile_backend_bridge.cc"],
+    hdrs = ["compile_backend_bridge.h"],
+    deps = [
+        "//shims/torch:aten_headers",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:device_buffer",
+        "//torch_tpu/runtime:eager_runtime_adapter",
+        "//torch_tpu/runtime:executable",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "compile_backend_bridge_test",
+    srcs = ["compile_backend_bridge_test.cc"],
+    deps = [
+        ":compile_backend_bridge",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/_internal/batch_transfer:tensor_transfer_bridge",
+        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
+    ],
+)
+
 torch_tpu_package_end()

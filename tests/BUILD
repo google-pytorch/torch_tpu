@@ -49,6 +49,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "cerebro_e2e_test",
+    srcs = ["cerebro_e2e_test.py"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "_versioned_so_loader_test",
     srcs = ["_versioned_so_loader_test.py"],
     deps = [

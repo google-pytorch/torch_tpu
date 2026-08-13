@@ -52,6 +52,7 @@
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
@@ -59,7 +60,9 @@
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
+#include "torch_tpu/pjrt/pjrt_state.h"
 #include "torch_tpu/pjrt/pjrt_utils.h"
+#include "torch_tpu/runtime/backend_config.h"
 
 namespace torch_tpu {
 
@@ -125,6 +128,16 @@ absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
                                                       uint64_t seed,
                                                       uint64_t offset) {
   const uint64_t host_data[2] = {seed, offset};
+  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
+  if (pjrt_client == nullptr) {
+    std::vector<char> raw_bytes(
+        reinterpret_cast<const char*>(host_data),
+        reinterpret_cast<const char*>(host_data) + sizeof(host_data));
+    TT_ASSIGN_OR_RETURN(auto rng_buf,
+                        CreateConstantDeviceBufferRef(std::move(raw_bytes), {2},
+                                                      mlir::ElementType::UI64));
+    return MakeTensor(std::move(rng_buf), device.index());
+  }
   TT_ASSIGN_OR_RETURN(
       auto rng_state_buffer,
       TpuMallocAndMemcpyHtoD(host_data, mlir::ElementType::UI64, {2}));
@@ -194,6 +207,9 @@ class DeviceGenerators {
 
 absl::Status DeviceGeneratorState::MaybeMaterializeDeviceStateTensor(
     bool force_materialization) {
+  if (PjrtBackend::GetInstance().GetClient() == nullptr) {
+    return absl::OkStatus();
+  }
   if (!force_materialization &&
       ++materialize_state_counter_ < kMaterializationThreshold) {
     return absl::OkStatus();

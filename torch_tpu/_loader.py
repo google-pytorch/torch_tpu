@@ -193,11 +193,14 @@ def _init_device_impl(device: str) -> torch.device:
 
   # pylint: disable=protected-access
   torch._register_device_module(device, device_module)  # pyrefly: ignore[bad-argument-type]
-  print(f"Registered Python module for '{device}'.", file=sys.stderr)
-
+  backend_name = "unknown"
+  if hasattr(device_module, "_get_active_backend_name"):
+    backend_name = device_module._get_active_backend_name()
   print(
-      f"Device type: {device_d.type}, Device index:"
-      f" {device_d.index if device_d.index is not None else 'default'}"
+      f"TorchTPU initialized with runtime backend: '{backend_name}' "
+      f"(device: {device_d.type}, Device index: "
+      f"{device_d.index if device_d.index is not None else 'default'})",
+      file=sys.stderr,
   )
 
   if device == "tpu" and not torch.distributed.is_initialized():

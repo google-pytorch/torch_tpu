@@ -206,8 +206,9 @@ absl::StatusOr<std::vector<Indices>>
 ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
   std::vector<Indices> argument_layouts;
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  ABSL_CHECK(client != nullptr)  // CRASH_OK
-      << "Could not get PjRtClient from PjrtBackend.";
+  if (client == nullptr) {
+    return argument_layouts;
+  }
   const auto& arguments = traversal.arguments();
   for (size_t i = 0; i < arguments.size(); ++i) {
     const DeviceBufferRef& arg = arguments[i];

@@ -35,6 +35,7 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, needed for at::Tensor mapping
+#include "torch_tpu/_internal/device/device_backend_bridge.h"
 #include "torch_tpu/_internal/sync/sync.h"
 #include "torch_tpu/common/compilation_cache.h"
 #include "torch_tpu/common/device_type.h"
@@ -48,6 +49,7 @@
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/eager/tpu_hooks.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "torch_tpu/runtime/backend_config.h"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -117,6 +119,9 @@ PyTpuEventBase PyRecordEvent(std::optional<int> device_index,
 }
 
 void InitRuntimeOptions(const std::string& device_type) {
+  if (device_type == "xla_cpu" || device_type == "xla_cuda") {
+    SetGlobalBackendKind(BackendKind::kPjrt);
+  }
   if (device_type == "tpu" || device_type == "xla_cuda") {
     TT_THROW_IF_ERROR(AddTpuHooks()) << "Failed to add TPU hooks.";
     RegisterTpuAllocator();
@@ -177,6 +182,20 @@ int64_t PyNextStreamId(int64_t device_index) {
 }
 
 py::dict PyGetLocalDeviceAttributes() {
+  if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+    auto devs = DeviceBackendBridge::GetAddressableDevices();
+    if (!devs.empty()) {
+      py::dict attrs;
+      attrs["id"] = devs[0].id;
+      attrs["process_index"] = 0;
+      attrs["device_kind"] = devs[0].kind;
+      if (!devs[0].coords.empty()) {
+        attrs["coords"] = devs[0].coords;
+      }
+      return attrs;
+    }
+  }
+
   absl::StatusOr<PjRtDeviceAttributes> attrs_or =
       PjrtBackend::GetInstance().GetDeviceAttributes();
   TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=PjrtBackend is always initialized in
@@ -205,6 +224,15 @@ py::dict PyGetLocalDeviceAttributes() {
 
 PYBIND11_MODULE(_device_ops_backend, m) {
   py::module::import("torch");
+  static const bool _registered = []() {
+    auto status = AddTpuHooks();
+    if (!status.ok()) {
+      ABSL_LOG(WARNING) << "Failed to register TPU hooks: " << status;
+    }
+    RegisterTpuAllocator();
+    return true;
+  }();
+
   m.doc() =
       "PjRt backend utilities for PyTorch PrivateUse1 integration. "
       "Core ops are registered via C++ TORCH_LIBRARY_IMPL.";
@@ -217,7 +245,12 @@ PYBIND11_MODULE(_device_ops_backend, m) {
 
   m.def(
       "_is_initialized",
-      []() -> bool { return PjrtBackend::GetInstance().IsInitialized(); },
+      []() -> bool {
+        if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+          return true;
+        }
+        return PjrtBackend::GetInstance().IsInitialized();
+      },
       "Returns whether the PjRt runtime is initialized.");
 
   m.def(
@@ -228,6 +261,14 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         PjrtBackend::GetInstance().Shutdown();
       },
       "Shuts down the PjRt runtime.");
+
+  m.def(
+      "_get_active_backend_name",
+      []() -> std::string {
+        return std::string(
+            BackendKindToString(GetGlobalBackendConfig().default_backend));
+      },
+      "Returns the active runtime backend name (e.g. cerebro, pjrt).");
 
   m.def("_get_current_stream_id", &PyGetCurrentStreamId,
         py::arg("device_index") = py::none(),
@@ -266,6 +307,13 @@ PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_current_device_id",
       []() -> int {
+        if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+          auto devs = DeviceBackendBridge::GetAddressableDevices();
+          if (!devs.empty()) {
+            return devs[0].id;
+          }
+          return 0;
+        }
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         ABSL_CHECK(client != nullptr)  // CRASH_OK
             << "PjRtClient is null after initialization.";
@@ -288,6 +336,9 @@ PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
+        if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+          return DeviceBackendBridge::GetLocalDeviceCount();
+        }
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         TT_CHECK_THROW(client != nullptr, error::kInternal)
             << "PjRtClient is null after initialization.";

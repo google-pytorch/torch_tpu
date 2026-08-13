@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_cc_test", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -25,6 +25,7 @@ torch_tpu_py_library(
     srcs = ["_device_module.py"],
     deps = [
         ":_device_ops_backend",
+        ":device_backend_bridge",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/distributed:device_mesh",
         "//torch_tpu/_internal/precision",
@@ -47,11 +48,13 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        ":device_backend_bridge",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/_internal/sync:sync_backend_bridge",
         "//torch_tpu/_internal/sync:sync_cc",
         "//torch_tpu/common:compilation",
         "//torch_tpu/common:compilation_cache",
@@ -69,12 +72,37 @@ pybind_extension(
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/eager:tpu_hooks",
         "//torch_tpu/pjrt:pjrt_state",
+        "//torch_tpu/runtime:backend_config",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/time",
         "@xla//xla/pjrt:pjrt_client",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "device_backend_bridge",
+    srcs = ["device_backend_bridge.cc"],
+    hdrs = ["device_backend_bridge.h"],
+    deps = [
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "device_backend_bridge_test",
+    srcs = ["device_backend_bridge_test.cc"],
+    deps = [
+        ":device_backend_bridge",
+        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/runtime:backend",
+        "//torch_tpu/runtime:backend_config",
+        "@com_google_absl//absl/cleanup",
     ],
 )
 

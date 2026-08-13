@@ -80,11 +80,12 @@ DeviceBufferList::Data::Data(
     absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer)
     : materialization_pending_(true), materialization_started_(true) {
   auto client_or = PjrtBackend::GetInstance().GetSharedClient();
-  ABSL_CHECK(client_or.ok()) << client_or.status();  // CRASH_OK
+  std::shared_ptr<xla::PjRtClient> client =
+      client_or.ok() ? std::move(client_or).value() : nullptr;
   std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers;
   buffers.push_back(std::move(buffer));
   materialized_buffers_ =
-      MaterializedData(std::move(client_or).value(), std::move(buffers));
+      MaterializedData(std::move(client), std::move(buffers));
   auto [promise, future] = xla::MakePromise<void>();
   materialization_promise_ = std::move(promise);
   materialization_future_ = std::move(future);
@@ -162,8 +163,9 @@ absl::Status DeviceBufferList::Data::SetMaterializationStarted(
       << "attempted to set materialized buffers after materialization was "
          "already started";
 
-  TT_ASSIGN_OR_RETURN(auto client,
-                      PjrtBackend::GetInstance().GetSharedClient());
+  auto client_or = PjrtBackend::GetInstance().GetSharedClient();
+  std::shared_ptr<xla::PjRtClient> client =
+      client_or.ok() ? std::move(client_or).value() : nullptr;
 
   materialized_buffers_ =
       MaterializedData(std::move(client), std::move(buffers));

@@ -38,6 +38,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "torch_tpu/_internal/device/device_backend_bridge.h"
 #include "torch_tpu/common/compilation_spec.h"
 #include "torch_tpu/common/compile_options_key.h"
 #include "torch_tpu/common/context_manager.h"
@@ -49,6 +50,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
+#include "torch_tpu/runtime/backend_config.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/hlo/translate/register.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -225,8 +227,19 @@ static void UpdateFromXlaFlags(xla::CompileOptions& options) {
 
 static absl::Status SetDefaultDeviceAssignment(
     xla::ExecutableBuildOptions& options) {
-  TT_ASSIGN_OR_RETURN(const int num_devices,
-                      PjrtBackend::GetInstance().GetGlobalDeviceCount());
+  int num_devices = 1;
+  int global_device_id = 0;
+  if (PjrtBackend::GetInstance().GetClient() != nullptr) {
+    TT_ASSIGN_OR_RETURN(num_devices,
+                        PjrtBackend::GetInstance().GetGlobalDeviceCount());
+    if (num_devices == 1) {
+      TT_ASSIGN_OR_RETURN(global_device_id,
+                          PjrtBackend::GetInstance().GetGlobalDeviceId());
+    }
+  } else {
+    num_devices = 1;
+  }
+
   // These options are sensible for 1 partition and 1 replica per device,
   // which aligns with typical single-host parallelism in native PyTorch.
   // Every device runs identical HLO and collectives are included explicitly.
@@ -239,13 +252,17 @@ static absl::Status SetDefaultDeviceAssignment(
   options.set_num_partitions(num_devices);
   xla::DeviceAssignment da(1, num_devices);
   if (num_devices == 1) {
-    TT_ASSIGN_OR_RETURN(const int global_device_id,
-                        PjrtBackend::GetInstance().GetGlobalDeviceId());
     da(0, 0) = global_device_id;
   } else {
     const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
-    for (int idx = 0; idx < num_devices; ++idx) {
-      da(0, idx) = pjrt_client->devices()[idx]->global_device_id().value();
+    if (pjrt_client != nullptr) {
+      for (int idx = 0; idx < num_devices; ++idx) {
+        da(0, idx) = pjrt_client->devices()[idx]->global_device_id().value();
+      }
+    } else {
+      for (int idx = 0; idx < num_devices; ++idx) {
+        da(0, idx) = idx;
+      }
     }
   }
   options.set_device_assignment(da);
@@ -289,6 +306,9 @@ static absl::Status SetDefaultDeviceAssignment(
 //
 // Returns whether the current device is a TPU.
 static absl::StatusOr<bool> SetTpuOptions(xla::CompileOptions& options) {
+  if (GetGlobalBackendConfig().default_backend == BackendKind::kCerebro) {
+    return false;
+  }
   const xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
   TT_RET_CHECK(client, error::kFailedPrecondition)
       << "PjRtClient must be initialized";

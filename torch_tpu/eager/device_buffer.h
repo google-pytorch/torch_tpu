@@ -872,13 +872,12 @@ class DeviceBufferList {
     class MaterializedData {
      public:
       MaterializedData(
-          std::shared_ptr<xla::PjRtClient> absl_nonnull client,
+          absl_nullable std::shared_ptr<xla::PjRtClient> client,
           std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
-          : client_(std::move(client)), buffers_(std::move(buffers)) {
-        ABSL_CHECK(client_ != nullptr);  // CRASH_OK
-      }
+          : client_(std::move(client)), buffers_(std::move(buffers)) {}
 
-      [[nodiscard]] const std::shared_ptr<xla::PjRtClient>& client() const {
+      [[nodiscard]] absl_nullable const std::shared_ptr<xla::PjRtClient>&
+      client() const {
         return client_;
       }
 
@@ -889,7 +888,7 @@ class DeviceBufferList {
       }
 
      private:
-      std::shared_ptr<xla::PjRtClient> absl_nonnull client_;
+      absl_nullable std::shared_ptr<xla::PjRtClient> client_;
       std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers_;
     };
 

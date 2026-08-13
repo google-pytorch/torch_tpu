@@ -29,6 +29,7 @@
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/_internal/batch_transfer/tensor_transfer_bridge.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/status_builder.h"
@@ -36,7 +37,6 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
-#include "torch_tpu/pjrt/pjrt_utils.h"
 #include "tsl/profiler/lib/traceme.h"
 
 namespace torch_tpu {
@@ -107,8 +107,8 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   if (can_copy_directly) {
     // Store the status first, so that we can translate the OpenXLA OOM error
     // message if needed.
-    absl::Status status = TpuMemcpyDtoHDirect(materialized_src_buf,
-                                              dest.data_ptr(), non_blocking);
+    absl::Status status = TensorTransferBridge::MemcpyDtoHDirect(
+        materialized_src_buf, dest.data_ptr(), non_blocking);
     TT_RETURN_IF_ERROR(TranslateXlaTensorOomError(
         std::move(status), dest.scalar_type(), src.sizes()));
     return absl::OkStatus();
@@ -119,7 +119,8 @@ absl::Status CopyTpuToCpu(const at::Tensor& src, const at::Tensor& dest,
   // synchronous, otherwise the CPU copy_() will read garbage.
   TT_ASSIGN_OR_RETURN(
       at::Tensor cpu_tensor_receiver,
-      TpuMemcpyDtoH(materialized_src_buf, /*non_blocking=*/false),
+      TensorTransferBridge::MemcpyDtoH(materialized_src_buf,
+                                       /*non_blocking=*/false),
       TranslateXlaTensorOomError(_, dest.scalar_type(), src.sizes()));
 
   // Redispatch using copy_() on the CPU to do any type or layout conversions

@@ -23,6 +23,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "torch_tpu/_internal/batch_transfer/tensor_transfer_bridge.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/layout_utils.h"
@@ -30,7 +31,6 @@
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
-#include "torch_tpu/pjrt/pjrt_utils.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -52,7 +52,7 @@ absl::StatusOr<DeviceBufferRef> CopyCpuToTpuBuffer(const at::Tensor& src,
                                          tpu_layout.element_type);
   }
 
-  return TpuMallocAndMemcpyHtoD(
+  return TensorTransferBridge::MallocAndMemcpyHtoD(
       contiguous_src_for_tpu.data_ptr(), tpu_layout.element_type,
       tpu_layout.sizes,
       non_blocking ? std::make_optional(contiguous_src_for_tpu) : std::nullopt);
