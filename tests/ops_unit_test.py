@@ -38,6 +38,7 @@ from absl.testing import parameterized
 from scipy import stats
 import torch
 from torch.testing._internal import common_methods_invocations
+from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
@@ -91,6 +92,65 @@ class OpsUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   If a bug is found that's not covered by do_test_op() in ops_test.py, please
   add it here.
   """
+
+  def test_addcdiv(self):
+    for dtype in (torch.float32, torch.float64):
+      # Test 1: Inplace addcdiv_ on 2D tensors (5,5) with dimension 0 dynamic
+      with self.subTest(dtype=dtype, case="test_1_5x5_dim0_dynamic"):
+        s_2d_tpu = torch.randn(5, 5, dtype=dtype, device="tpu")
+        t1_2d_tpu = torch.randn(5, 5, dtype=dtype, device="tpu")
+        t2_2d_tpu = torch.randn(5, 5, dtype=dtype, device="tpu")
+
+        s_2d_cpu = s_2d_tpu.cpu()
+        t1_2d_cpu = t1_2d_tpu.cpu()
+        t2_2d_cpu = t2_2d_tpu.cpu()
+
+        dynamism.mark_dynamic(
+            s_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+        dynamism.mark_dynamic(
+            t1_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+        dynamism.mark_dynamic(
+            t2_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+
+        # Functional torch.addcdiv
+        out_2d_tpu = torch.addcdiv(s_2d_tpu, t1_2d_tpu, t2_2d_tpu, value=3.14)
+        out_2d_cpu = torch.addcdiv(s_2d_cpu, t1_2d_cpu, t2_2d_cpu, value=3.14)
+
+        utils.assert_close(actual=out_2d_tpu.cpu(), expected=out_2d_cpu)
+
+      # Test 2: addcdiv on 2D tensors (2,3) with dimension 0 dynamic
+      with self.subTest(dtype=dtype, case="test_2_2x3_dim0_dynamic"):
+        s_2d_tpu = torch.tensor(
+            [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=dtype, device="tpu"
+        )
+        t1_2d_tpu = torch.tensor(
+            [[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]], dtype=dtype, device="tpu"
+        )
+        t2_2d_tpu = torch.tensor(
+            [[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]], dtype=dtype, device="tpu"
+        )
+        dynamism.mark_dynamic(
+            s_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+        dynamism.mark_dynamic(
+            t1_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+        dynamism.mark_dynamic(
+            t2_2d_tpu, dimension=0, lower_bound=2, upper_bound=15
+        )
+
+        s_2d_cpu = s_2d_tpu.cpu()
+        t1_2d_cpu = t1_2d_tpu.cpu()
+        t2_2d_cpu = t2_2d_tpu.cpu()
+
+        # Functional torch.addcdiv
+        out_2d_tpu = torch.addcdiv(s_2d_tpu, t1_2d_tpu, t2_2d_tpu, value=3.14)
+        out_2d_cpu = torch.addcdiv(s_2d_cpu, t1_2d_cpu, t2_2d_cpu, value=3.14)
+
+        utils.assert_close(actual=out_2d_tpu.cpu(), expected=out_2d_cpu)
 
   def test_prelu_kernel_direct(self):
     for dtype in (torch.float32, torch.bfloat16, torch.float16):

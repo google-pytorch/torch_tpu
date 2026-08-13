@@ -142,7 +142,7 @@ def verify_op_supports_dynamism(
   """
 
   untriaged_ops_deny_list = [
-      "addcdiv",  # dynamic triage (invalid result)
+      # "addcdiv",  # dynamic triage (invalid result)
       "bincount",  # MLIR assertion failure (bounds length vs rank)
       "clamp_min",  # dynamic triage (invalid result)
       "conj_physical",  # identity operation for i64 and f64 fails
