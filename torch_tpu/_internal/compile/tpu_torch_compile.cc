@@ -489,6 +489,10 @@ SharedLoadedExecutableWithMetadata PyCompileMlir(
         std::move(xla_arg_layouts);
   }
 
+  // PJRT compilation can take minutes. Release the GIL after all Python
+  // context capture and MLIR inspection so independent modules can compile
+  // concurrently from Python worker threads.
+  py::gil_scoped_release release;
   TT_ASSIGN_OR_THROW(
       auto executable,
       CompileMlirExecutable(xla::MaybeOwningMlirModule(module->get()),

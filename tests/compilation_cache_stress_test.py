@@ -15,6 +15,8 @@
 """Stress test for compilation cache eviction."""
 
 import concurrent.futures
+import sys
+import threading
 import time
 
 from absl.testing import absltest
@@ -24,6 +26,62 @@ from tests import seed_test_utils
 
 
 class CompilationCacheStressTest(seed_test_utils.RepeatableTest):
+
+  def test_compile_mlir_releases_gil(self):
+    """Python threads should run while PJRT compilation is in progress."""
+    # Make the module unique to avoid a persistent compilation-cache hit. The
+    # chain also keeps compilation in flight long enough for the waiting thread
+    # to be scheduled after the native binding releases the GIL.
+    constant = time.time_ns() % 1_000_000
+    operations = [
+        f"  %c = stablehlo.constant dense<{constant}.0> : tensor<256x256xf32>",
+        "  %0 = stablehlo.add %arg0, %c : tensor<256x256xf32>",
+    ]
+    for index in range(1, 200):
+      operations.append(
+          f"  %{index} = stablehlo.add %{index - 1}, %c : tensor<256x256xf32>"
+      )
+    mlir_text = "\n".join(
+        [
+            "module {",
+            "func.func @main(%arg0: tensor<256x256xf32>) -> tensor<256x256xf32> {",
+            *operations,
+            "  return %199 : tensor<256x256xf32>",
+            "}",
+            "}",
+        ]
+    )
+    mlir_module = tpu_torch_compile.parse_mlir_text(mlir_text)
+
+    compile_started = threading.Event()
+    compile_finished = threading.Event()
+    heartbeat_ran_during_compile = threading.Event()
+
+    def heartbeat():
+      compile_started.wait()
+      if not compile_finished.is_set():
+        heartbeat_ran_during_compile.set()
+
+    heartbeat_thread = threading.Thread(target=heartbeat)
+    heartbeat_thread.start()
+
+    # Prevent the interpreter from scheduling heartbeat between Event.set()
+    # and the native call. It must be scheduled by compile_mlir releasing the
+    # GIL, not by normal bytecode thread switching.
+    previous_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(60.0)
+    try:
+      compile_started.set()
+      tpu_torch_compile.compile_mlir(mlir_module, fast_compile=False)
+    finally:
+      compile_finished.set()
+      sys.setswitchinterval(previous_switch_interval)
+      heartbeat_thread.join()
+
+    self.assertTrue(
+        heartbeat_ran_during_compile.is_set(),
+        "compile_mlir held the Python GIL for the entire PJRT compilation",
+    )
 
   def test_eviction_does_not_affect_inflight_compilation(self):
     """Eviction should not affect in-flight compilations."""
