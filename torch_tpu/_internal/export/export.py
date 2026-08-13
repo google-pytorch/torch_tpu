@@ -528,6 +528,12 @@ def fx_to_mlir(
   ] + [device_module.default_generators[device.index or 0]]
 
   orig_generator_states = {}
+  # Save clean references to the argument tensors before interpretation,
+  # so that in-place mutations (e.g. copy_) during interpretation do not
+  # overwrite the argument tensors passed to traverse_and_compile.
+  argument_tensors = [
+      tpu_torch_compile.clone_placeholder(a) for a in argument_tensors
+  ]
   for gen in argument_generators:
     orig_generator_states[gen] = gen.graphsafe_get_state().clone_state()
 
@@ -545,14 +551,7 @@ def fx_to_mlir(
 
   try:
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
-      # We clone the args so that inplace updates do not overwrite the
-      # placeholder args. These copies will be removed in the compiled code so
-      # there is no performance impact.
-      # Remove once b/491716758 is implemented.
-      cloned_args = (
-          x.clone() if isinstance(x, torch.Tensor) else x for x in args
-      )
-      fx_outputs = EagerLikeFxInterpreter(module).run(*cloned_args)
+      fx_outputs = EagerLikeFxInterpreter(module).run(*args)
 
     (
         result_tensors,

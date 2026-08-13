@@ -195,6 +195,26 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
   return view_tensor;
 }
 
+// Creates a new at::Tensor wrapper with an independent StorageImpl
+// pointing to the same underlying non-deferred DeviceBufferRef.
+at::Tensor PyClonePlaceholder(const at::Tensor& arg_tensor) {
+  TT_ASSIGN_OR_THROW(DeviceBufferRef base_buffer_ref,
+                     GetBaseBuffer(arg_tensor));
+  at::Tensor base_tensor =
+      MakeTensor(base_buffer_ref, arg_tensor.device().index());
+  at::Tensor view_tensor;  // UNINITIALIZED_TENSOR_OK
+  if (TensorHasTrivialLayout(arg_tensor)) {
+    view_tensor = base_tensor;
+  } else {
+    view_tensor = base_tensor.as_strided(
+        arg_tensor.sizes(), arg_tensor.strides(), arg_tensor.storage_offset());
+  }
+  if (arg_tensor.requires_grad()) {
+    view_tensor.requires_grad_(true);
+  }
+  return view_tensor;
+}
+
 PyLayout ToPyLayout(const xla::Layout& layout) {
   std::vector<int64_t>  // INT_VEC_OK
       minor_to_major(layout.minor_to_major().begin(),
@@ -263,6 +283,11 @@ PyLayout PyGetDefaultLayout(at::ScalarType dtype,
 bool PyIsDeviceShapeDynamic(const at::Tensor& tensor) {
   TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
   return buffer_ref.on_device_shape_is_dynamic();
+}
+
+bool PyIsDeferred(const at::Tensor& tensor) {
+  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBuffer(tensor));
+  return buffer_ref.is_deferred();
 }
 
 std::vector<std::optional<PyLayout>> PyGetParameterLayouts(
@@ -1243,6 +1268,11 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
         py::arg("requires_grad"));
   m.def("placeholder_like", PyMakePlaceholderLike, py::arg("arg_tensor"));
+  m.def("clone_placeholder", PyClonePlaceholder, py::arg("arg_tensor"),
+        R"doc(
+          Creates an independent placeholder tensor wrapper that shares the
+          same underlying device buffer reference.
+        )doc");
   m.def("dynamic_placeholder", PyMakeDynamicPlaceholder, py::arg("sizes"),
         py::arg("dtype"), py::arg("tensor_bounds"),
         py::arg("requires_grad") = false);
@@ -1251,6 +1281,7 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("get_default_layout", &PyGetDefaultLayout, py::arg("dtype"),
         py::arg("shape"));
   m.def("is_device_shape_dynamic", &PyIsDeviceShapeDynamic, py::arg("tensor"));
+  m.def("is_deferred", &PyIsDeferred, py::arg("tensor"));
   m.def("traverse_and_compile", PyTraverseAndCompile, py::arg("result_tensors"),
         py::arg("argument_tensors"), py::arg("fast_compile") = false,
         py::arg("build_mlir_module") = false,

@@ -27,6 +27,7 @@ from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.device_utils import annotations
+from torch_tpu._internal.export import export
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
 
@@ -1220,6 +1221,41 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
         self.assertIsInstance(tiles, list)
         self.assertIsInstance(element_size_in_bits, int)
         self.assertEqual(minor_to_major, [1, 0])
+
+  def test_clone_placeholder_shares_buffer_but_isolates_storage(self):
+    """Verifies clone_placeholder creates an independent wrapper that is not mutated by in-place ops."""
+    real_tensor = torch.randn(4, 8, device=torch.device('tpu'))
+    ph = tpu_torch_compile.placeholder_like(real_tensor)
+    cloned_ph = tpu_torch_compile.clone_placeholder(ph)
+    self.assertEqual(ph.shape, cloned_ph.shape)
+    self.assertEqual(ph.stride(), cloned_ph.stride())
+    self.assertEqual(ph.dtype, cloned_ph.dtype)
+    self.assertEqual(ph.device, cloned_ph.device)
+    # In-place operation on ph should not turn cloned_ph into a deferred op
+    with eager_mode_defer_all():
+      ph.add_(1.0)
+    self.assertTrue(tpu_torch_compile.is_deferred(ph))
+    self.assertFalse(tpu_torch_compile.is_deferred(cloned_ph))
+
+  def test_export_fx_with_in_place_mutation_no_synthetic_clones(self):
+    """Verifies that compiling a graph with in-place mutation does not insert synthetic clone ops."""
+
+    class InPlaceModule(torch.nn.Module):
+
+      def forward(self, x, y):
+        x.copy_(x + y)
+        return x
+
+    model = InPlaceModule()
+    x = torch.randn(4, 4, device=torch.device('tpu'))
+    y = torch.randn(4, 4, device=torch.device('tpu'))
+    ph_x = tpu_torch_compile.placeholder_like(x)
+    ph_y = tpu_torch_compile.placeholder_like(y)
+    gm = make_fx(model)(x, y)
+    exported = export.fx_to_mlir(gm, [ph_x, ph_y], build_mlir_module=True)
+    mlir_text = exported.serialize_text()
+    self.assertNotIn('aten.clone', mlir_text)
+    self.assertIsNotNone(exported.module)
 
 
 if __name__ == '__main__':
