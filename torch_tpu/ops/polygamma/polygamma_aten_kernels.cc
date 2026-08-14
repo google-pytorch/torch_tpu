@@ -410,7 +410,7 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
   TT_KERNEL(OpName::kPolygammaOut, param_keys, (n, self, out), {
     TT_CHECK_THROW(n >= 0, error::kInvalidArgument)
         << "expected n to be non-negative, got " << n;
-    TT_CHECK_THROW(!IsComplex(self), error::kInvalidArgument)
+    TT_CHECK_THROW(!IsComplex(self), error::kPythonNotImplementedError)
         << "expected the input dtype not to be complex, got "
         << ToString(self.scalar_type());
 

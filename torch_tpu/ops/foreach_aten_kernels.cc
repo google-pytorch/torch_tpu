@@ -457,12 +457,13 @@ template <typename IsType>
 absl::Status CheckTensorsNotTypeImpl(at::TensorList tensors,
                                      const std::string_view arg_name,
                                      const IsType& is_type,
-                                     const std::string_view type_name) {
+                                     const std::string_view type_name,
+                                     absl::StatusCode error_code) {
   const Indices& bad_indices = FilterIndices(
       tensors.size(),
       [tensors, &is_type](const int64_t i) { return is_type(tensors[i]); });
 
-  TT_RET_CHECK(bad_indices.empty(), error::kInvalidArgument)
+  TT_RET_CHECK(bad_indices.empty(), error_code)
       << "expected all " << tensors.size() << " tensors in the " << arg_name
       << " list not to be " << type_name << ", got "
       << FormatCount(bad_indices.size(),
@@ -476,29 +477,40 @@ absl::Status CheckTensorsNotTypeImpl(at::TensorList tensors,
   return absl::OkStatus();
 }
 
-absl::Status CheckNotBool(at::TensorList tensors,
-                          const std::string_view arg_name) {
+// The three checks below default to reporting an unimplemented dtype, which is
+// how CUDA reports a tensor list it has no kernel for ("frac_cuda" is not
+// implemented for 'Byte'). Ops that ATen rejects before it ever dispatches --
+// an in-place op whose floating-point result cannot be cast back into an
+// integral list, a bool subtraction, an in-place abs of a complex list -- pass
+// error::kInvalidArgument instead, because CUDA reports those as plain
+// RuntimeErrors.
+absl::Status CheckNotBool(
+    at::TensorList tensors, const std::string_view arg_name,
+    absl::StatusCode error_code = error::kPythonNotImplementedError) {
   TT_RETURN_IF_ERROR(CheckTensorsNotTypeImpl(tensors, arg_name,
                                              /* is_type= */ IsBool<at::Tensor>,
-                                             /* type_name= */ "bool"));
+                                             /* type_name= */ "bool",
+                                             error_code));
   return absl::OkStatus();
 }
 
-absl::Status CheckNotIntegral(at::TensorList tensors,
-                              const std::string_view arg_name) {
+absl::Status CheckNotIntegral(
+    at::TensorList tensors, const std::string_view arg_name,
+    absl::StatusCode error_code = error::kPythonNotImplementedError) {
   TT_RETURN_IF_ERROR(
       CheckTensorsNotTypeImpl(tensors, arg_name,
                               /* is_type= */ IsIntegral<at::Tensor>,
-                              /* type_name= */ "integral"));
+                              /* type_name= */ "integral", error_code));
   return absl::OkStatus();
 }
 
-absl::Status CheckNotComplex(at::TensorList tensors,
-                             const std::string_view arg_name) {
+absl::Status CheckNotComplex(
+    at::TensorList tensors, const std::string_view arg_name,
+    absl::StatusCode error_code = error::kPythonNotImplementedError) {
   TT_RETURN_IF_ERROR(
       CheckTensorsNotTypeImpl(tensors, arg_name,
                               /* is_type= */ IsComplex<at::Tensor>,
-                              /* type_name= */ "complex"));
+                              /* type_name= */ "complex", error_code));
   return absl::OkStatus();
 }
 
@@ -928,8 +940,12 @@ std::vector<at::Tensor> AtenForeachAbs(at::TensorList self) {
 
 void AtenForeachAbs_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachAbs_, _, (self), {
-    // _foreach_abs_ does not support complex dtype.
-    TT_THROW_IF_ERROR(CheckNotComplex(self, /* arg_name= */ "self"));
+    // _foreach_abs_ does not support complex dtype. ATen rejects it before
+    // dispatch ("In-place abs is not supported for complex tensors."), so
+    // unlike the other foreach ops this is an invalid argument rather than an
+    // unimplemented dtype.
+    TT_THROW_IF_ERROR(
+        CheckNotComplex(self, /* arg_name= */ "self", error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildAbsShlo,
@@ -953,7 +969,8 @@ std::vector<at::Tensor> AtenForeachAcos(at::TensorList self) {
 
 void AtenForeachAcos_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachAcos_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -977,7 +994,8 @@ std::vector<at::Tensor> AtenForeachAsin(at::TensorList self) {
 
 void AtenForeachAsin_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachAsin_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1001,7 +1019,8 @@ std::vector<at::Tensor> AtenForeachAtan(at::TensorList self) {
 
 void AtenForeachAtan_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachAtan_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1051,7 +1070,8 @@ std::vector<at::Tensor> AtenForeachCos(at::TensorList self) {
 
 void AtenForeachCos_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachCos_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildCosShlo,
@@ -1074,7 +1094,8 @@ std::vector<at::Tensor> AtenForeachCosh(at::TensorList self) {
 
 void AtenForeachCosh_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachCosh_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1100,7 +1121,8 @@ std::vector<at::Tensor> AtenForeachErf(at::TensorList self) {
 void AtenForeachErf_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErf_, _, (self), {
     TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildErfShlo,
@@ -1125,7 +1147,8 @@ std::vector<at::Tensor> AtenForeachErfc(at::TensorList self) {
 void AtenForeachErfc_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachErfc_, _, (self), {
     TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1149,7 +1172,8 @@ std::vector<at::Tensor> AtenForeachExp(at::TensorList self) {
 
 void AtenForeachExp_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachExp_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildExpShlo,
@@ -1172,7 +1196,8 @@ std::vector<at::Tensor> AtenForeachExpm1(at::TensorList self) {
 
 void AtenForeachExpm1_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachExpm1_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1251,7 +1276,8 @@ std::vector<at::Tensor> AtenForeachLgamma(at::TensorList self) {
 void AtenForeachLgamma_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLgamma_, _, (self), {
     TT_THROW_IF_ERROR(CheckNotComplex(self, /*arg_name=*/"self"));
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1275,7 +1301,8 @@ std::vector<at::Tensor> AtenForeachLog(at::TensorList self) {
 
 void AtenForeachLog_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLog_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildLogShlo,
@@ -1298,7 +1325,8 @@ std::vector<at::Tensor> AtenForeachLog10(at::TensorList self) {
 
 void AtenForeachLog10_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLog10_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1322,7 +1350,8 @@ std::vector<at::Tensor> AtenForeachLog1p(at::TensorList self) {
 
 void AtenForeachLog1p_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLog1p_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1346,7 +1375,8 @@ std::vector<at::Tensor> AtenForeachLog2(at::TensorList self) {
 
 void AtenForeachLog2_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachLog2_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1391,7 +1421,8 @@ std::vector<at::Tensor> AtenForeachReciprocal(at::TensorList self) {
 
 void AtenForeachReciprocal_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachReciprocal_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1445,7 +1476,8 @@ std::vector<at::Tensor> AtenForeachRsqrt(at::TensorList self) {
 
 void AtenForeachRsqrt_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachRsqrt_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1469,7 +1501,8 @@ std::vector<at::Tensor> AtenForeachSigmoid(at::TensorList self) {
 
 void AtenForeachSigmoid_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachSigmoid_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1517,7 +1550,8 @@ std::vector<at::Tensor> AtenForeachSin(at::TensorList self) {
 
 void AtenForeachSin_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachSin_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildSinShlo,
@@ -1540,7 +1574,8 @@ std::vector<at::Tensor> AtenForeachSinh(at::TensorList self) {
 
 void AtenForeachSinh_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachSinh_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1564,7 +1599,8 @@ std::vector<at::Tensor> AtenForeachSqrt(at::TensorList self) {
 
 void AtenForeachSqrt_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachSqrt_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -1588,7 +1624,8 @@ std::vector<at::Tensor> AtenForeachTan(at::TensorList self) {
 
 void AtenForeachTan_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachTan_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(auto result_buffers,
                        ForeachUnaryOp(self, std::move(out_dtypes), BuildTanShlo,
@@ -1611,7 +1648,8 @@ std::vector<at::Tensor> AtenForeachTanh(at::TensorList self) {
 
 void AtenForeachTanh_(at::TensorList self) {
   TT_KERNEL(OpName::kForeachTanh_, _, (self), {
-    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self));
     TT_ASSIGN_OR_THROW(
         auto result_buffers,
@@ -2441,8 +2479,10 @@ std::vector<at::Tensor> AtenForeachSubList(at::TensorList self,
       OpName::kForeachSubList, param_keys, (self, other, promoted_neg_alpha), {
         // _foreach_add supports bool, but _foreach_sub does not.
         TT_THROW_IF_ERROR(CheckNotBool(alpha, /* arg_name= */ "alpha"));
-        TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
-        TT_THROW_IF_ERROR(CheckNotBool(other, /* arg_name= */ "other"));
+        TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
+        TT_THROW_IF_ERROR(CheckNotBool(other, /* arg_name= */ "other",
+                                       error::kInvalidArgument));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, other));
 
         // Check for invalid input types.
@@ -2474,8 +2514,10 @@ void AtenForeachSub_List(at::TensorList self, at::TensorList other,
       OpName::kForeachSub_List, param_keys, (self, other, promoted_neg_alpha), {
         // _foreach_add supports bool, but _foreach_sub does not.
         TT_THROW_IF_ERROR(CheckNotBool(alpha, /* arg_name= */ "alpha"));
-        TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
-        TT_THROW_IF_ERROR(CheckNotBool(other, /* arg_name= */ "other"));
+        TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self",
+                                       error::kInvalidArgument));
+        TT_THROW_IF_ERROR(CheckNotBool(other, /* arg_name= */ "other",
+                                       error::kInvalidArgument));
         TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, other));
 
         // Check for invalid input types.
@@ -2505,7 +2547,8 @@ std::vector<at::Tensor> AtenForeachSubScalar(at::TensorList self,
   TT_KERNEL(OpName::kForeachSubScalar, _, (self, promoted_scalar), {
     // _foreach_add supports bool, but _foreach_sub does not.
     TT_THROW_IF_ERROR(CheckNotBool(scalar, /* arg_name= */ "scalar"));
-    TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(
+        CheckNotBool(self, /* arg_name= */ "self", error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, scalar));
     std::vector<at::Tensor> other;
     other.reserve(self.size());
@@ -2532,7 +2575,8 @@ void AtenForeachSub_Scalar(at::TensorList self, const at::Scalar& scalar) {
   TT_KERNEL(OpName::kForeachSub_Scalar, _, (self, promoted_scalar), {
     // _foreach_add supports bool, but _foreach_sub does not.
     TT_THROW_IF_ERROR(CheckNotBool(scalar, /* arg_name= */ "scalar"));
-    TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(
+        CheckNotBool(self, /* arg_name= */ "self", error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, scalar));
     std::vector<at::Tensor> other;
     other.reserve(self.size());
@@ -2560,7 +2604,8 @@ std::vector<at::Tensor> AtenForeachSubScalarList(
   TT_KERNEL(OpName::kForeachSubScalarList, _, (self, promoted_scalars), {
     // _foreach_add supports bool, but _foreach_sub does not.
     TT_THROW_IF_ERROR(CheckNotBool(scalars, /* arg_name= */ "scalars"));
-    TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(
+        CheckNotBool(self, /* arg_name= */ "self", error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, scalars));
     std::vector<at::Tensor> other;
     other.reserve(self.size());
@@ -2588,7 +2633,8 @@ void AtenForeachSub_ScalarList(at::TensorList self,
   TT_KERNEL(OpName::kForeachSub_ScalarList, _, (self, promoted_scalars), {
     // _foreach_add supports bool, but _foreach_sub does not.
     TT_THROW_IF_ERROR(CheckNotBool(scalars, /* arg_name= */ "scalars"));
-    TT_THROW_IF_ERROR(CheckNotBool(self, /* arg_name= */ "self"));
+    TT_THROW_IF_ERROR(
+        CheckNotBool(self, /* arg_name= */ "self", error::kInvalidArgument));
     TT_ASSIGN_OR_THROW(auto out_dtypes, GetOutputDtypes(self, scalars));
     std::vector<at::Tensor> other;
     other.reserve(self.size());
@@ -2841,7 +2887,8 @@ std::vector<at::Tensor> AtenForeachNormScalar(
       (self, promoted_ord,
        IgnoreInCacheKey(dtype, "Delegates to AtenLinalgVectorNormOut")),
       {
-        TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self"));
+        TT_THROW_IF_ERROR(CheckNotIntegral(self, /* arg_name= */ "self",
+                                           error::kInvalidArgument));
         TT_ASSIGN_OR_THROW(at::Tensor ord_tensor, promoted_ord.GetTensor());
         std::vector<at::Tensor> result;
         result.reserve(self.size());

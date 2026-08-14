@@ -161,12 +161,12 @@ absl::StatusOr<DeviceBufferRef> Addmv(
 absl::Status CheckAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
                               const at::Tensor& vec, const at::Scalar& beta,
                               const at::Scalar& alpha) {
-  TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBool(self), error::kPythonNotImplementedError)
       << "the dtype of the first argument cannot be bool";
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
                  // before dtype check.
-      !IsBool(mat), error::kInvalidArgument)
+      !IsBool(mat), error::kPythonNotImplementedError)
       << "the dtype of the second argument cannot be bool";
   TT_RET_CHECK(mat.dim() == 2, error::kInvalidArgument)
       << "expected the second argument to be a matrix (2D tensor), got "
@@ -174,7 +174,7 @@ absl::Status CheckAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch implementation promotes dtype
                  // before dtype check.
-      !IsBool(vec), error::kInvalidArgument)
+      !IsBool(vec), error::kPythonNotImplementedError)
       << "the dtype of the third argument cannot be bool";
   TT_RET_CHECK(vec.dim() == 1, error::kInvalidArgument)
       << "expected the third argument to be a vector (1D tensor), got "

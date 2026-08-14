@@ -47,20 +47,20 @@ namespace torch_tpu {
 namespace {
 
 absl::Status CheckBmmOut(const at::Tensor& out) {
-  TT_RET_CHECK(!IsBool(out), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBool(out), error::kPythonNotImplementedError)
       << "the dtype of the output tensor cannot be bool";
   return absl::OkStatus();
 }
 
 absl::Status CheckBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
-  TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBool(self), error::kPythonNotImplementedError)
       << "the dtype of the first argument cannot be bool";
   TT_RET_CHECK(self.dim() == 3, error::kInvalidArgument)
       << "expected the first argument to be a 3D tensor (batch of matrices), "
          "got "
       << self.dim() << "D";
 
-  TT_RET_CHECK(!IsBool(mat2), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBool(mat2), error::kPythonNotImplementedError)
       << "the dtype of the second argument cannot be bool";
   TT_RET_CHECK(mat2.dim() == 3, error::kInvalidArgument)
       << "expected the second argument to be a 3D tensor (batch of matrices), "

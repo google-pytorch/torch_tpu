@@ -85,7 +85,7 @@ absl::StatusOr<mlir::MlirOp> BuildHardsigmoidBackwardShlo(
 
 at::Tensor& AtenHardsigmoidOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kHardsigmoidOut, _, (self, out), {
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    TT_CHECK_THROW(self.is_floating_point(), error::kPythonNotImplementedError)
         << "expected the input dtype to be floating point, got "
         << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
@@ -101,7 +101,8 @@ at::Tensor& AtenHardsigmoidBackwardGradInput(const at::Tensor& grad_output,
   TT_KERNEL(
       OpName::kHardsigmoidBackwardGradInput, _, (grad_output, self, grad_input),
       {
-        TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+        TT_CHECK_THROW(self.is_floating_point(),
+                       error::kPythonNotImplementedError)
             << "expected the input dtype to be floating point, got "
             << ToString(self.scalar_type());
         TT_ASSIGN_OR_THROW(const auto output_mlir_type,

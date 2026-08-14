@@ -89,12 +89,12 @@ absl::StatusOr<DeviceBufferRef> AtenLeakyReluTensorHelper(
     const at::Tensor& out, OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
-  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBoolean(dtype), error::kPythonNotImplementedError)
       << "boolean dtypes are not supported, got " << self.scalar_type();
   TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "integer dtypes are not supported, got " << self.scalar_type();
-  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(dtype), error::kPythonNotImplementedError)
       << "complex dtypes are not supported, got " << self.scalar_type();
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,
@@ -116,12 +116,12 @@ absl::StatusOr<DeviceBufferRef> AtenLeakyReluBackwardTensorHelper(
     OpParamCacheKeys param_keys) {
   TT_ASSIGN_OR_RETURN(const auto dtype,
                       ConvertTo<mlir::ElementType>(grad_output.scalar_type()));
-  TT_RET_CHECK(!IsBoolean(dtype), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBoolean(dtype), error::kPythonNotImplementedError)
       << "boolean dtypes are not supported, got " << grad_output.scalar_type();
   TT_RET_CHECK(!IsInteger(dtype, /*includeBool=*/false),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "integer dtypes are not supported, got " << grad_output.scalar_type();
-  TT_RET_CHECK(!IsComplex(dtype), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(dtype), error::kPythonNotImplementedError)
       << "complex dtypes are not supported, got " << grad_output.scalar_type();
 
   TT_ASSIGN_OR_RETURN(const auto out_dtype,

@@ -147,7 +147,7 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
   TT_ASSIGN_OR_RETURN(at::Tensor min_val, promoted_min.GetTensor(out_dtype));
   TT_ASSIGN_OR_RETURN(at::Tensor max_val, promoted_max.GetTensor(out_dtype));
 
-  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(self), error::kPythonNotImplementedError)
       << "expected the first argument not to be complex, got "
       << ToString(self.scalar_type());
 

@@ -2467,6 +2467,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: cpu does incorrect rounding for bfloat16 and float16.
         exclude_dtypes=(torch.bfloat16, torch.float16),
         exclude_inplace_dtypes=(torch.bfloat16, torch.float16),
+        # ATen validates the in-place broadcast before it dispatches on the
+        # dtype, so an in-place sample whose output cannot hold the broadcast
+        # result reports the shape error rather than the dtype error, while
+        # TorchTPU checks the dtype first.
+        check_exception_type=False,
     )
 
   def test_flip(self):
@@ -2556,6 +2561,11 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.bool,) + COMPLEX_DTYPES,
             "gpu": COMPLEX_DTYPES,
         },
+        # CUDA reports bool inconsistently for the in-place variant: samples
+        # where the result cannot be cast back into the bool output fail with a
+        # RuntimeError, the rest with a NotImplementedError, so no single
+        # exception type can match.
+        check_exception_type=False,
     )
 
   @category("foreach")
@@ -2573,6 +2583,11 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.bool,) + COMPLEX_DTYPES,
             "gpu": COMPLEX_DTYPES,
         },
+        # CUDA reports bool inconsistently for the in-place variant: samples
+        # where the result cannot be cast back into the bool output fail with a
+        # RuntimeError, the rest with a NotImplementedError, so no single
+        # exception type can match.
+        check_exception_type=False,
     )
 
   @category("foreach")
@@ -2685,6 +2700,11 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.bool,) + COMPLEX_DTYPES,
             "gpu": COMPLEX_DTYPES,
         },
+        # CUDA reports bool inconsistently for the in-place variant: samples
+        # where the result cannot be cast back into the bool output fail with a
+        # RuntimeError, the rest with a NotImplementedError, so no single
+        # exception type can match.
+        check_exception_type=False,
     )
 
   @category("foreach")
@@ -2701,6 +2721,11 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.bool,) + COMPLEX_DTYPES,
             "gpu": COMPLEX_DTYPES,
         },
+        # CUDA reports bool inconsistently for the in-place variant: samples
+        # where the result cannot be cast back into the bool output fail with a
+        # RuntimeError, the rest with a NotImplementedError, so no single
+        # exception type can match.
+        check_exception_type=False,
     )
 
   @category("foreach")
@@ -3451,6 +3476,11 @@ class TestOps(op_testing.OpInfoTestBase):
         #    this rewriting is not implemented: %convolution [...]"
         exclude_dtypes=COMPLEX_DTYPES
         + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        # CUDA reports bool inconsistently for this op: samples that reach
+        # cuDNN fail with a RuntimeError from getCudnnDataTypeFromScalarType(),
+        # while samples that reach the depthwise or slow kernels fail with a
+        # NotImplementedError, so no single exception type can match.
+        check_exception_type=False,
     )
 
   def test_nn_functional_conv2d(self):
@@ -3460,6 +3490,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # dtypes. See comments in test_nn_functional_conv1d.
         exclude_dtypes=COMPLEX_DTYPES
         + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        # CUDA reports bool inconsistently for this op: samples that reach
+        # cuDNN fail with a RuntimeError from getCudnnDataTypeFromScalarType(),
+        # while samples that reach the depthwise or slow kernels fail with a
+        # NotImplementedError, so no single exception type can match.
+        check_exception_type=False,
     )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
@@ -3492,6 +3527,11 @@ class TestOps(op_testing.OpInfoTestBase):
         #    this rewriting is not implemented: %convolution [...]"
         exclude_dtypes=COMPLEX_DTYPES
         + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        # CUDA reports bool inconsistently for this op: samples that reach
+        # cuDNN fail with a RuntimeError from getCudnnDataTypeFromScalarType(),
+        # while samples that reach the depthwise or slow kernels fail with a
+        # NotImplementedError, so no single exception type can match.
+        check_exception_type=False,
     )
 
   # TODO(gleasonk): why does compilation time out on this input?
@@ -3555,9 +3595,7 @@ class TestOps(op_testing.OpInfoTestBase):
         [attention.SDPBackend.OVERRIDEABLE, attention.SDPBackend.MATH],
         set_priority=True,
     ):
-      self.do_test_op(
-          "nn.functional.scaled_dot_product_attention",
-      )
+      self.do_test_op("nn.functional.scaled_dot_product_attention")
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
   # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
@@ -3570,9 +3608,7 @@ class TestOps(op_testing.OpInfoTestBase):
         [attention.SDPBackend.EFFICIENT_ATTENTION, attention.SDPBackend.MATH],
         set_priority=True,
     ):
-      self.do_test_op(
-          "nn.functional.scaled_dot_product_attention",
-      )
+      self.do_test_op("nn.functional.scaled_dot_product_attention")
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
   # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
@@ -3585,14 +3621,17 @@ class TestOps(op_testing.OpInfoTestBase):
         [attention.SDPBackend.FLASH_ATTENTION, attention.SDPBackend.MATH],
         set_priority=True,
     ):
-      self.do_test_op(
-          "nn.functional.scaled_dot_product_attention",
-      )
+      self.do_test_op("nn.functional.scaled_dot_product_attention")
 
   def test_nn_functional_batch_norm(self):
     self.do_test_op(
         "nn.functional.batch_norm",
         exclude_dtypes=(_if_tpu_vs_gpu_compiled((torch.complex64,), ())),
+        # CUDA reports the non-floating dtypes inconsistently for this op:
+        # samples that reach cuDNN fail with a RuntimeError from
+        # getCudnnDataTypeFromScalarType(), while the rest fail with a
+        # NotImplementedError from batch_norm_stats_cuda.
+        check_exception_type=False,
     )
 
   def test_nn_functional_elu(self):

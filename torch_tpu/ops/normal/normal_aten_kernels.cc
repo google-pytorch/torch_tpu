@@ -243,7 +243,7 @@ absl::StatusOr<MlirOpResults<1>> BuildNormalShlo(
 absl::Status CheckNormalPreconditions(const at::Tensor& tensor,
                                       std::string_view arg_name) {
   TT_RET_CHECK(IsFloatingPoint(tensor) || IsComplex(tensor),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected the " << arg_name
       << " tensor to be floating point or complex type, got "
       << ToString(tensor.scalar_type());

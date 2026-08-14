@@ -98,7 +98,7 @@ namespace torch_tpu {
 
 absl::Status CheckNotComplex(const at::Tensor& tensor,
                              const std::string_view arg_name) {
-  TT_RET_CHECK(!IsComplex(tensor), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(tensor), error::kPythonNotImplementedError)
       << "expected " << arg_name << " not to be complex, got "
       << ToString(tensor.scalar_type());
   return absl::OkStatus();
@@ -366,7 +366,8 @@ at::Tensor& AtenSignbitOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenTruncOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kTruncOut, _, (self, out), {
-    TT_CHECK_THROW(self.scalar_type() != at::kBool, error::kInvalidArgument)
+    TT_CHECK_THROW(self.scalar_type() != at::kBool,
+                   error::kPythonNotImplementedError)
         << "does not support boolean types";
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildTruncShlo,

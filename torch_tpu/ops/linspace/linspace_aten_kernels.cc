@@ -231,7 +231,7 @@ at::Tensor& AtenLinspaceOut(const at::Scalar& start, const at::Scalar& end,
 
         const at::ScalarType output_dtype = out.scalar_type();
         TT_CHECK_THROW(output_dtype != at::ScalarType::Bool || steps <= 1,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "expected output dtype to be other than bool, got "
             << ToString(output_dtype);
 

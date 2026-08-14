@@ -423,12 +423,14 @@ absl::StatusOr<DivOpOptions> GetDivOpBuilder(
 
 absl::Status CheckFloorDivideInputs(const at::Tensor& self,
                                     const at::Tensor& other) {
-  TT_RET_CHECK(!IsComplex(self) && !IsBool(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(self) && !IsBool(self),
+               error::kPythonNotImplementedError)
       << "expected dtype of the first argument to be neither complex nor "
          "bool, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(!IsComplex(other) && !IsBool(other), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(other) && !IsBool(other),
+               error::kPythonNotImplementedError)
       << "expected dtype of the second argument to be neither complex nor "
          "bool, got "
       << ToString(other.scalar_type());
@@ -437,11 +439,11 @@ absl::Status CheckFloorDivideInputs(const at::Tensor& self,
 }
 
 absl::Status CheckAtan2Inputs(const at::Tensor& x, const at::Tensor& y) {
-  TT_RET_CHECK(!IsComplex(x), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(x), error::kPythonNotImplementedError)
       << "expected the dtype of the first argument not to be complex, got "
       << ToString(x.scalar_type());
 
-  TT_RET_CHECK(!IsComplex(y), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(y), error::kPythonNotImplementedError)
       << "expected the dtype of the second argument not to be complex, got "
       << ToString(y.scalar_type());
 
@@ -451,13 +453,13 @@ absl::Status CheckAtan2Inputs(const at::Tensor& x, const at::Tensor& y) {
 absl::Status CheckBitwiseOpsInputs(const at::Tensor& self,
                                    const at::Tensor& other) {
   TT_RET_CHECK(!IsFloatingPoint(self) && !IsComplex(self),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected the dtype of the first argument to be neither "
          "floating-point nor complex, got "
       << ToString(self.scalar_type());
 
   TT_RET_CHECK(!IsFloatingPoint(other) && !IsComplex(other),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected the dtype of the second argument to be neither "
          "floating-point nor complex, got "
       << ToString(other.scalar_type());
@@ -467,11 +469,11 @@ absl::Status CheckBitwiseOpsInputs(const at::Tensor& self,
 
 absl::Status CheckBitwiseShiftInputs(const at::Tensor& self,
                                      const at::Tensor& other) {
-  TT_RET_CHECK(IsInteger(self), error::kInvalidArgument)
+  TT_RET_CHECK(IsInteger(self), error::kPythonNotImplementedError)
       << "expected the dtype of the first argument to be integer, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(IsInteger(other), error::kInvalidArgument)
+  TT_RET_CHECK(IsInteger(other), error::kPythonNotImplementedError)
       << "expected the dtype of the second argument to be integer, got "
       << ToString(other.scalar_type());
 
@@ -509,11 +511,11 @@ absl::Status CheckComplexOutInputs(const at::Tensor& real,
 //   - at::Scalar
 template <typename T>
 absl::Status CheckInputsNotComplex(const at::Tensor& self, const T& other) {
-  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(self), error::kPythonNotImplementedError)
       << "expected the dtype of the first argument not to be complex, got "
       << ToString(self.scalar_type());
 
-  TT_RET_CHECK(!IsComplex(other), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(other), error::kPythonNotImplementedError)
       << "expected the dtype of the second argument not to be complex, got "
       << ToString(GetScalarType(other));
 
@@ -530,13 +532,13 @@ absl::Status CheckPowInputs(const T& self, const U& exponent) {
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch native devices supports boolean
                  // dtype.
-      !IsBool(self), error::kInvalidArgument)
+      !IsBool(self), error::kPythonNotImplementedError)
       << "expected the dtype of the first argument not to be boolean, got "
       << ToString(GetScalarType(self));
 
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=PyTorch native devices supports boolean
                  // dtype.
-      !IsBool(exponent), error::kInvalidArgument)
+      !IsBool(exponent), error::kPythonNotImplementedError)
       << "expected the dtype of the second argument not to be boolean, got "
       << ToString(GetScalarType(exponent));
 
@@ -554,7 +556,7 @@ absl::Status CheckRemainderInputs(const T& self, const at::Tensor& other) {
   at::ScalarType result_type = at::result_type(self, other);
 
   TT_RET_CHECK(!IsBool(result_type) && !IsComplex(result_type),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected the dtype of the output (promoted inputs dtype) to be "
          "neither bool nor complex, got "
       << ToString(result_type);
@@ -1276,11 +1278,11 @@ at::Tensor& AtenFmodTensorOut(const at::Tensor& self, const at::Tensor& other,
                               at::Tensor& out) {
   TT_KERNEL(OpName::kFmodTensorOut, _, (self, other, out), {
     TT_CHECK_THROW(!self.is_complex() && !other.is_complex(),
-                   error::kInvalidArgument)
+                   error::kPythonNotImplementedError)
         << "complex dtypes are not supported";
     TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                        other.scalar_type() != at::ScalarType::Bool,
-                   error::kInvalidArgument)
+                   error::kPythonNotImplementedError)
         << "boolean dtypes are not supported";
 
     TT_THROW_IF_ERROR(

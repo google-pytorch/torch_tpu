@@ -58,7 +58,7 @@ absl::StatusOr<mlir::MlirOp> BuildDigammaShlo(mlir::MlirOp input_op,
 
 at::Tensor& AtenDigammaOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kDigammaOut, param_keys, (self, out), {
-    TT_CHECK_THROW(!IsComplex(self), error::kInvalidArgument)
+    TT_CHECK_THROW(!IsComplex(self), error::kPythonNotImplementedError)
         << "expected the input dtype not to be complex, got "
         << ToString(self.scalar_type());
 

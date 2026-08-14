@@ -558,12 +558,15 @@ at::Tensor& AtenAvgPool2dOut(const at::Tensor& self,
       (self, kernel_size, stride, padding, ceil_mode, count_include_pad,
        divisor_override, out),
       {
+        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
+                       error::kPythonNotImplementedError)
+            << "not yet implemented for bool dtype";
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::Char &&
                            self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "not yet implemented for uint8, int8, int16, int32,"
             << " and complex64 dtypes, got "
             << torch_tpu::ToString(self.scalar_type());
@@ -596,7 +599,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "not yet implemented for bool, bfloat16, float16, uint8, int8,"
             << " int16, int32, and complex64 dtypes, got "
             << torch_tpu::ToString(self.scalar_type());

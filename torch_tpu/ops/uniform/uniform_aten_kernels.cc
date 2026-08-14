@@ -55,7 +55,7 @@ NAryMlirOpBuilder<1, 1> GetUniformFunctional(Dimensions dims,
 
 absl::Status CheckUniformPreconditions(const at::Tensor& self) {
   TT_RET_CHECK(IsFloatingPoint(self) || IsComplex(self),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected the input dtype to be floating point or complex, got "
       << ToString(self.scalar_type());
 

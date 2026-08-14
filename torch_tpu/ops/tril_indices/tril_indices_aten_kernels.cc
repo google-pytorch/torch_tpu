@@ -67,7 +67,7 @@ at::Tensor AtenTrilIndices(int64_t row, int64_t col, int64_t offset,
         // PyTorch native devices (CPU and CUDA) only support int32 and int64.
         TT_CHECK_THROW(
             dtype == at::ScalarType::Long || dtype == at::ScalarType::Int,
-            error::kInvalidArgument)
+            error::kPythonNotImplementedError)
             << "expected the dtype to be either int32 or int64, got "
             << ToString(dtype);
 

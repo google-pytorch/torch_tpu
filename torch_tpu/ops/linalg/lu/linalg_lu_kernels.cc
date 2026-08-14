@@ -72,7 +72,8 @@ absl::Status CheckLuSupportedDtype(const at::Tensor& tensor) {
   const bool is_f32_or_f64 = (dtype == c10::kFloat || dtype == c10::kDouble);
   const bool is_c64_or_c128 =
       (dtype == c10::kComplexFloat || dtype == c10::kComplexDouble);
-  TT_RET_CHECK(is_f32_or_f64 || is_c64_or_c128, error::kInvalidArgument)
+  TT_RET_CHECK(is_f32_or_f64 || is_c64_or_c128,
+               error::kPythonNotImplementedError)
       << "expected the input dtype to be " << ToString(c10::kFloat) << ", "
       << ToString(c10::kDouble) << ", " << ToString(c10::kComplexFloat)
       << ", or " << ToString(c10::kComplexDouble) << ", got "

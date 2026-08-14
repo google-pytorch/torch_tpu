@@ -235,7 +235,7 @@ at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
   TT_KERNEL(
       OpName::kEmbeddingRenorm_, pk, (self, indices, max_norm, norm_type), {
         TT_CHECK_THROW(IsFloatingPoint(self) || IsComplex(self),
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "expected floating point or complex, got "
             << ToString(self.scalar_type());
 

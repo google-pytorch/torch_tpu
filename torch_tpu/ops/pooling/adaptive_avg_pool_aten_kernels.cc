@@ -536,13 +536,16 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dBackwardShlo(
 absl::StatusOr<DeviceBufferRef> AdaptiveAvgPool2dHelper(
     const at::Tensor& self, c10::SymIntArrayRef output_size,
     at::ScalarType output_dtype, OpParamCacheKeys param_keys) {
+  TT_RET_CHECK(self.scalar_type() != at::ScalarType::Bool,
+               error::kPythonNotImplementedError)
+      << "not yet implemented for bool dtype";
   TT_RET_CHECK(self.scalar_type() != at::ScalarType::Byte &&
                    self.scalar_type() != at::ScalarType::Char &&
                    self.scalar_type() != at::ScalarType::Short &&
                    self.scalar_type() != at::ScalarType::Int &&
                    self.scalar_type() != at::ScalarType::Long &&
                    self.scalar_type() != at::ScalarType::ComplexFloat,
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "not yet implemented for uint8, int8, int16, int32, int64,"
       << " and complex64 dtypes, got "
       << torch_tpu::ToString(self.scalar_type());
@@ -653,7 +656,7 @@ at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::Long &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "not yet implemented for bool, uint8, int8, int16, int32, int64,"
             << " and complex64 dtypes, got "
             << torch_tpu::ToString(self.scalar_type());

@@ -60,7 +60,7 @@ absl::Status CheckAMinMaxInputs(const at::Tensor& self, at::Tensor& out) {
       << "expected output tensor to be on " << GetPrivateUse1DeviceDebugName()
       << ", got " << out.device();
 
-  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(self), error::kPythonNotImplementedError)
       << "expected the dtype of the input not to be complex, got "
       << ToString(self.scalar_type());
 

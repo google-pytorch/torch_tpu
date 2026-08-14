@@ -203,6 +203,16 @@ absl::StatusOr<DeviceBufferRefArray<2>> ThnnFusedGruCellImpl(
       << "expected feature size of argument #1 'input_gates' to match 3 * "
          "feature size of argument #3 'hx' ("
       << 3 * hx.size(1) << "), got " << input_gates.size(1);
+  // CUDA does not implement this op for integral dtypes, and reports them as
+  // not implemented. Without this check they would instead surface much later,
+  // as an XLA compilation failure. Complex dtypes are deliberately left alone:
+  // TorchTPU lowers them fine, and ops_test excludes them from the comparison
+  // against CUDA.
+  TT_RET_CHECK(!c10::isIntegralType(input_gates.scalar_type(),
+                                    /*includeBool=*/true),
+               error::kPythonNotImplementedError)
+      << "expected the input dtype not to be integral, got "
+      << ToString(input_gates.scalar_type());
 
   const int64_t batch = hx.size(0);
   const int64_t hidden = hx.size(1);

@@ -55,7 +55,7 @@ namespace {
 absl::Status CheckIsFloating(const at::Tensor& tensor,
                              const std::string_view arg_name) {
   TT_RET_CHECK(c10::isFloatingType(tensor.scalar_type()),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "expected " << arg_name << " to be floating point, got "
       << ToString(tensor.scalar_type());
   return absl::OkStatus();

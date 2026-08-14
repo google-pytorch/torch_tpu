@@ -46,7 +46,7 @@ namespace torch_tpu {
 namespace {
 
 absl::Status CheckLerpSelfInput(const at::Tensor& self) {
-  TT_RET_CHECK(!IsIntegral(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsIntegral(self), error::kPythonNotImplementedError)
       << "expected the first argument's dtype to be non-integral, got "
       << ToString(self.scalar_type());
 

@@ -42,13 +42,16 @@ at::Tensor& AtenMseLossOut(const at::Tensor& self, const at::Tensor& target,
   TT_KERNEL(
       OpName::kMseLossOut, _,
       (self, target, IgnoreInCacheKey(reduction, "Doesn't affect SHLO"), out), {
+        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
+                       error::kPythonNotImplementedError)
+            << "bool dtype is not supported";
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::Char &&
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::Long &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "uint8, int8, int16, int32, int64, and complex64 dtypes"
             << " are not supported, got: "
             << torch_tpu::ToString(self.scalar_type());

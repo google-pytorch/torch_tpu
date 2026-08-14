@@ -124,7 +124,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenNllLossForwardOut(
                 self.scalar_type() == at::ScalarType::Float8_e4m3fnuz ||
                 self.scalar_type() == at::ScalarType::Float8_e8m0fnu ||
                 self.scalar_type() == at::ScalarType::Float4_e2m1fn_x2,
-            error::kInvalidArgument)
+            error::kPythonNotImplementedError)
             << "unsupported input dtype: " << ToString(self.scalar_type());
         TT_CHECK_THROW(IsLongOrByte(target), error::kInvalidArgument)
             << "expected the target dtype to be either int64 or uint8, got "

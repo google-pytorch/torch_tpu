@@ -1795,13 +1795,8 @@ def _resolve_enum_class(mod_name: str, class_name: str) -> Any:
   return None
 
 
-def _deserialize_exception(payload: Any) -> Exception:
+def _deserialize_exception(payload: Mapping[str, Any]) -> Exception:
   """Deserializes an Exception object from a serialized "$$exception" payload."""
-  # TODO(b/542331196): remove this check once exceptions are consistently in dict
-  # format after golden updates.
-  if not isinstance(payload, dict):
-    return Exception(payload or "")
-
   type_name = str(payload.get("type", "Exception"))
   message = payload.get("message", "")
 
@@ -2945,8 +2940,19 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       torch_tpu_result: Any,
       op_description: str,
       torch_tpu_printable_input: OpInput,
+      check_exception_type: bool = True,
   ) -> None:
-    """Asserts that golden_result and torch_tpu_result are both exceptions or both not exceptions."""
+    """Asserts that golden_result and torch_tpu_result agree on how the op failed.
+
+    Args:
+      golden_result: The result the op produced on the golden device.
+      torch_tpu_result: The result the op produced on TorchTPU.
+      op_description: A description of the op, used in failure messages.
+      torch_tpu_printable_input: The op input, used in failure messages.
+      check_exception_type: Whether the two devices also have to raise the same
+        exception type. See do_test_op()'s argument of the same name. Whether
+        the op failed at all is always checked.
+    """
 
     golden_thrown = isinstance(golden_result, Exception)
     torch_tpu_thrown = isinstance(torch_tpu_result, Exception)
@@ -2970,21 +2976,18 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
           f"{torch_tpu_printable_input}\n"
           f"{self.golden_device_name()} result: {golden_result}",
       )
-    elif golden_thrown and torch_tpu_thrown:
+    elif golden_thrown and torch_tpu_thrown and check_exception_type:
       golden_type = type(golden_result).__name__
       torch_tpu_type = type(torch_tpu_result).__name__
 
       if golden_type != torch_tpu_type:
-        pass
-        # TODO(b/542331196): enable it once exceptions are recorded in the
-        # structured dict format.
-        # self.fail(
-        #     f"\n{op_description} failed on both {self.golden_device_name()} and"
-        #     " TorchTPU, but raised different exception types.\n"
-        #     f"{self.golden_device_name()}: {golden_type}: {golden_result}\n"
-        #     f"TorchTPU: {torch_tpu_type}: {torch_tpu_result}\n"
-        #     f"{torch_tpu_printable_input}",
-        # )
+        self.fail(
+            f"\n{op_description} failed on both {self.golden_device_name()} and"
+            " TorchTPU, but raised different exception types.\n"
+            f"{self.golden_device_name()}: {golden_type}: {golden_result}\n"
+            f"TorchTPU: {torch_tpu_type}: {torch_tpu_result}\n"
+            f"{torch_tpu_printable_input}",
+        )
 
   def _assert_structure_consistency(
       self, *, golden_result: Any, torch_tpu_result: Any
@@ -3105,6 +3108,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       skip_output_indices: Sequence[int],
       compute_grad: bool,
       use_compiled: bool,
+      check_exception_type: bool,
   ) -> None:
 
     if check_value == CheckValueMode.LOOSE:
@@ -3172,6 +3176,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
             f"{op_name}() with dtype {dtype} (variant={variant.value})"
         ),
         torch_tpu_printable_input=torch_tpu_printable_input,
+        check_exception_type=check_exception_type,
     )
 
     if not golden_thrown and not torch_tpu_thrown:
@@ -3202,6 +3207,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       check_device: bool,
       check_dynamism: bool,
       check_op_failures: bool,
+      check_exception_type: bool,
       skip_output_indices: Sequence[int],
       skip_if: Callable[[str, OpVariant, OpInput], bool] | None,
       max_samples_per_op_dtype: int | None,
@@ -3227,6 +3233,8 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
         dynamism.
       check_op_failures: Whether to check that the op fails on TorchTPU when it
         fails on the golden device.
+      check_exception_type: Whether TorchTPU also has to raise the same
+        exception type as the golden device.
       skip_output_indices: The indices of the output to skip checking.
       skip_if: A function that returns True if a test case should be skipped,
         given the golden device, the op variant, and the op input.
@@ -3335,6 +3343,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
                     skip_output_indices=skip_output_indices,
                     compute_grad=compute_grad,
                     use_compiled=use_compiled,
+                    check_exception_type=check_exception_type,
                 )
             )
 
@@ -3374,6 +3383,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
       check_dtype: bool = True,
       check_op_failures: bool = True,
       check_inplace_op_failures: bool = True,
+      check_exception_type: bool = True,
       skip_output_indices: Sequence[int] | None = None,
       skip_if: Callable[[str, OpVariant, OpInput], bool] | None = None,
       max_samples_per_op_dtype: int | None = None,
@@ -3409,7 +3419,17 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
         fails on the golden device. If False, the op will be skipped on TorchTPU
         if it fails on the golden device.
       check_inplace_op_failures: If True, check that the inplace variant of the
-        op fails on TorchTPU when it fails on the golden device. If False, the
+        op fails on TorchTPU when it fails on the golden device.
+      check_exception_type: If True, also check that TorchTPU raises the same
+        exception type as the golden device when both fail. Compiled mode
+        never checks the type (see the TODO in the body), so this only affects
+        the other modes. Pass False for an op whose type cannot match there,
+        which happens when the golden device reports the same (op, dtype) with
+        different exception types depending on which of its own kernels a
+        sample lands in: nn.functional.conv2d with bool fails in cuDNN with a
+        RuntimeError but in the depthwise kernel with a NotImplementedError,
+        so no single TorchTPU type can match. Whether the op failed at all is
+        always checked. If False, the
         inplace variant of the op will be skipped on TorchTPU if the input
         causes it to fail on the golden device.
       skip_output_indices: A list of output indices to skip when checking the
@@ -3457,6 +3477,13 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
         exclude_inplace_dtypes
     )
     skip_output_indices = skip_output_indices or []
+    # TODO(b/542331196): compare exception types in compiled mode too. There,
+    # TorchDynamo labels a failure by the stage that raised it --
+    # BackendCompilerFailed when a backend rejects the graph, TorchRuntimeError
+    # when tracing fails -- rather than by what the op did, and TorchTPU's
+    # backend and the golden device's inductor backend do not fail at the same
+    # stage. Whether the op failed at all is still checked in compiled mode.
+    check_exception_type = check_exception_type and not is_tpu_vs_gpu_compiled()
     compute_grad = _COMPUTE_GRAD.value
     use_compiled = is_compiled_mode()
 
@@ -3492,6 +3519,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
             check_device=check_device,
             check_dynamism=check_dynamism,
             check_op_failures=check_op_failures,
+            check_exception_type=check_exception_type,
             skip_output_indices=skip_output_indices,
             skip_if=skip_if,
             max_samples_per_op_dtype=max_samples_per_op_dtype,
@@ -3515,6 +3543,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
               check_device=check_device,
               check_dynamism=check_dynamism,
               check_op_failures=check_op_failures,
+              check_exception_type=check_exception_type,
               skip_output_indices=skip_output_indices,
               skip_if=skip_if,
               max_samples_per_op_dtype=max_samples_per_op_dtype,
@@ -3539,6 +3568,7 @@ class OpInfoTestBase(VaryingSeedTest, TorchTpuTestBase):
             check_device=check_device,
             check_dynamism=check_dynamism,
             check_op_failures=check_inplace_op_failures,
+            check_exception_type=check_exception_type,
             skip_output_indices=skip_output_indices,
             skip_if=skip_if,
             max_samples_per_op_dtype=max_samples_per_op_dtype,

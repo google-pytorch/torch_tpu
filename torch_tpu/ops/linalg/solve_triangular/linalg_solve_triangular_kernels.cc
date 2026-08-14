@@ -113,7 +113,7 @@ at::Tensor& AtenLinalgSolveTriangularOut(const at::Tensor& a,
                            a.scalar_type() != c10::ScalarType::Half &&
                            !at::isIntegralType(a.scalar_type(),
                                                /*includeBool=*/true),
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "triangular solve not supported for dtype "
             << ToString(a.scalar_type());
 
@@ -153,7 +153,7 @@ at::Tensor AtenLinalgSolveTriangular(const at::Tensor& a, const at::Tensor& b,
                            a.scalar_type() != c10::ScalarType::Half &&
                            !at::isIntegralType(a.scalar_type(),
                                                /*includeBool=*/true),
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "triangular solve not supported for dtype "
             << ToString(a.scalar_type());
 

@@ -43,7 +43,7 @@ absl::StatusOr<mlir::ElementType> CheckedGetDotOutputType(
     const at::Tensor& lhs, const at::Tensor& rhs) {
   at::ScalarType output_scalar_type = at::result_type(lhs, rhs);
 
-  TT_RET_CHECK(!IsBool(output_scalar_type), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBool(output_scalar_type), error::kPythonNotImplementedError)
       << "the input dtypes cannot be bool";
 
   TT_ASSIGN_OR_RETURN(auto output_type,

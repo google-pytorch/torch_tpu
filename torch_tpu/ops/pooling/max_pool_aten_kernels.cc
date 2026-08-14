@@ -778,7 +778,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxPool2dWithIndicesOut(
       OpName::kMaxPool2dWithIndicesOut, param_keys,
       (self, kernel_size, stride, padding, dilation, ceil_mode, out, indices), {
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "bool dtype is not supported";
 
         const int64_t spatial_dim_count = 2;
@@ -797,7 +797,7 @@ std::tuple<at::Tensor&, at::Tensor&> AtenMaxPool3dWithIndicesOut(
       OpName::kMaxPool3dWithIndicesOut, param_keys,
       (self, kernel_size, stride, padding, dilation, ceil_mode, out, indices), {
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "bool dtype is not supported";
 
         const int64_t spatial_dim_count = 3;
@@ -931,7 +931,7 @@ at::Tensor TpuMaxPool2d(const at::Tensor& self, at::IntArrayRef kernel_size,
   TT_KERNEL(OpName::kMaxPool2d, param_keys,
             (self, kernel_size, stride, padding, dilation, ceil_mode), {
               TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
-                             error::kInvalidArgument)
+                             error::kPythonNotImplementedError)
                   << "bool dtype is not supported";
 
               const int64_t spatial_dim_count = 2;

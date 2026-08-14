@@ -560,7 +560,7 @@ absl::Status CheckIsFloatingPoint(const at::Tensor& tensor,
 
 absl::Status CheckNotBFloatOrHalf(const at::Tensor& tensor,
                                   const std::string_view name) {
-  TT_RET_CHECK(!IsBFloatOrHalf(tensor), error::kInvalidArgument)
+  TT_RET_CHECK(!IsBFloatOrHalf(tensor), error::kPythonNotImplementedError)
       << "expected the " << name << " dtype not to be bfloat16 or float16, got "
       << ToString(tensor.scalar_type());
   return absl::OkStatus();

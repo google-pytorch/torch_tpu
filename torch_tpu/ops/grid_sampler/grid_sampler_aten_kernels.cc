@@ -1020,7 +1020,7 @@ absl::Status CheckInputAndPaddingMode(const at::Tensor& input,
          "(reflection), got "
       << padding_mode;
 
-  TT_RET_CHECK(IsFloatingPoint(input), error::kInvalidArgument)
+  TT_RET_CHECK(IsFloatingPoint(input), error::kPythonNotImplementedError)
       << "expected the input dtype to be floating point, got "
       << torch_tpu::ToString(input.scalar_type());
 

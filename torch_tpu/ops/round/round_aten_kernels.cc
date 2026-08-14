@@ -49,7 +49,7 @@ absl::Status CheckNumericDtype(at::ScalarType scalar_type) {
                       ConvertTo<mlir::ElementType>(scalar_type));
   TT_RET_CHECK(c10::isFloatingType(scalar_type) ||
                    c10::isIntegralType(scalar_type, /*include_bool=*/false),
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "dtype " << ToString(dtype) << " is not supported";
   return absl::OkStatus();
 }

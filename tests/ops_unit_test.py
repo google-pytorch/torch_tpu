@@ -10310,6 +10310,55 @@ class OpTestingFrameworkTest(op_testing.OpInfoTestBase):
     self.assertEqual(type(restored.output_value).__name__, "ValueError")
     self.assertEqual(str(restored.output_value), "bad value: 42")
 
+  def _check_failure_consistency(self, golden, torch_tpu, **kwargs):
+    """Runs the framework's failure-consistency assertion on two results."""
+    self._assert_failure_consistency(
+        golden_result=golden,
+        torch_tpu_result=torch_tpu,
+        op_description="fake_op() with dtype torch.bool (variant=base)",
+        torch_tpu_printable_input=op_testing.OpInput(
+            FakeSample("s", torch.zeros(1), (), {})
+        ),
+        **kwargs,
+    )
+
+  def test_failure_consistency_rejects_different_exception_types(self):
+    with self.assertRaisesRegex(
+        AssertionError, "raised different exception types"
+    ):
+      self._check_failure_consistency(
+          RuntimeError("golden"), NotImplementedError("tpu")
+      )
+
+  def test_failure_consistency_accepts_the_same_exception_type(self):
+    self._check_failure_consistency(
+        RuntimeError("golden"), RuntimeError("tpu")
+    )
+
+  def test_failure_consistency_ignores_type_when_check_is_off(self):
+    """This is what do_test_op's check_exception_type=False turns off."""
+    self._check_failure_consistency(
+        RuntimeError("golden"),
+        NotImplementedError("tpu"),
+        check_exception_type=False,
+    )
+
+  def test_failure_consistency_still_requires_both_to_fail(self):
+    """Turning off the type check must not stop requiring a failure."""
+    with self.assertRaisesRegex(
+        AssertionError, "it should fail on TorchTPU too"
+    ):
+      self._check_failure_consistency(
+          RuntimeError("golden"), torch.zeros(1), check_exception_type=False
+      )
+
+    with self.assertRaisesRegex(
+        AssertionError, "it should succeed on TorchTPU"
+    ):
+      self._check_failure_consistency(
+          torch.zeros(1), RuntimeError("tpu"), check_exception_type=False
+      )
+
   def test_get_dtype_exclusions_with_iterable_returns_exclusions_tuple(self):
     self.assertEqual(
         op_testing._get_dtype_exclusions((torch.float32,), "gpu"),

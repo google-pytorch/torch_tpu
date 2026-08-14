@@ -121,6 +121,16 @@ at::Tensor AtenBinCount(const at::Tensor& self,
                         "Tensors are implicitly tracked by DispatchOp inputs"),
        IgnoreInCacheKey(minlength, "Captured via nbins in param_keys")),
       {
+        // CUDA implements this op for integral dtypes only, and reports
+        // anything else as not implemented. Without this check the unsupported
+        // dtype would instead surface much later, as an XLA compilation
+        // failure.
+        TT_CHECK_THROW(
+            c10::isIntegralType(self.scalar_type(), /*includeBool=*/false),
+            error::kPythonNotImplementedError)
+            << "expected the input dtype to be integer, got "
+            << ToString(self.scalar_type());
+
         auto weights_ = SanitizeOptionalTensor(weights);
         int64_t minlength_val = minlength.guard_int(__FILE__, __LINE__);
 

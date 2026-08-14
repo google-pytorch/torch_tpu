@@ -81,7 +81,7 @@ at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
         TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
                            tensor1.scalar_type() != at::ScalarType::Bool &&
                            tensor2.scalar_type() != at::ScalarType::Bool,
-                       error::kInvalidArgument)
+                       error::kPythonNotImplementedError)
             << "bool tensors are not supported, "
             << "got input: " << ToString(self.scalar_type())
             << ", tensor1: " << ToString(tensor1.scalar_type())

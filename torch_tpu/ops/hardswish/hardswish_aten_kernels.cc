@@ -89,7 +89,7 @@ absl::StatusOr<mlir::MlirOp> BuildHardswishBackwardShlo(
 at::Tensor AtenHardswish(const at::Tensor& self) {
   TT_KERNEL(OpName::kHardswish, _, (self), {
     // CUDA only supports floats for hardswish.
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    TT_CHECK_THROW(self.is_floating_point(), error::kPythonNotImplementedError)
         << "expected the input dtype to be floating point, got "
         << ToString(self.scalar_type());
     TT_ASSIGN_OR_THROW(
@@ -102,7 +102,7 @@ at::Tensor AtenHardswish(const at::Tensor& self) {
 
 at::Tensor& AtenHardswishOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kHardswishOut, _, (self, out), {
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    TT_CHECK_THROW(self.is_floating_point(), error::kPythonNotImplementedError)
         << "expected the input dtype to be floating point, got "
         << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
@@ -114,7 +114,7 @@ at::Tensor& AtenHardswishOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenHardswish_(at::Tensor& self) {
   TT_KERNEL(OpName::kHardswish_, _, (self), {
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    TT_CHECK_THROW(self.is_floating_point(), error::kPythonNotImplementedError)
         << "expected the input dtype to be floating point, got "
         << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
@@ -127,7 +127,7 @@ at::Tensor& AtenHardswish_(at::Tensor& self) {
 at::Tensor AtenHardswishBackward(const at::Tensor& grad_output,
                                  const at::Tensor& self) {
   TT_KERNEL(OpName::kHardswishBackward, _, (grad_output, self), {
-    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+    TT_CHECK_THROW(self.is_floating_point(), error::kPythonNotImplementedError)
         << "expected the input dtype to be floating point, got "
         << ToString(self.scalar_type());
     TT_ASSIGN_OR_THROW(const auto output_mlir_type,

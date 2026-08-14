@@ -121,7 +121,7 @@ absl::StatusOr<mlir::MlirOp> BuildEluBackwardGradInputShlo(
 
 absl::Status CheckIsFloatingPoint(const at::Tensor& tensor,
                                   const std::string_view name) {
-  TT_RET_CHECK(IsFloatingPoint(tensor), error::kInvalidArgument)
+  TT_RET_CHECK(IsFloatingPoint(tensor), error::kPythonNotImplementedError)
       << "expected the " << name << " dtype to be floating point, got "
       << ToString(tensor.scalar_type());
   return absl::OkStatus();

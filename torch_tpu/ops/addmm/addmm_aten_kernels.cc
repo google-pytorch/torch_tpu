@@ -129,7 +129,7 @@ absl::StatusOr<mlir::ElementType> ValidateAddmmInputsAndGetOutputDtype(
                    mat2.scalar_type() != at::kBool &&
                    beta.scalar().type() != at::kBool &&
                    alpha.scalar().type() != at::kBool,
-               error::kInvalidArgument)
+               error::kPythonNotImplementedError)
       << "boolean dtypes are not supported";
   TT_RET_CHECK(!self.is_complex() && !mat1.is_complex() && !mat2.is_complex() &&
                    beta.scalar().type() != at::kComplexFloat &&

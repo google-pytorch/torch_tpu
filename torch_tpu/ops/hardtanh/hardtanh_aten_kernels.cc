@@ -71,9 +71,12 @@ absl::Status CheckHardtanhInputs(const at::Tensor& self,
                                  PromotedScalar& promoted_max) {
   auto scalar_type = self.scalar_type();
 
-  TT_RET_CHECK(!IsComplex(self), error::kInvalidArgument)
+  TT_RET_CHECK(!IsComplex(self), error::kPythonNotImplementedError)
       << "expected the input dtype to be non-complex, got "
       << ToString(scalar_type);
+  // CUDA rejects bool with a plain TORCH_CHECK ("Bool inputs not supported for
+  // hardtanh"), unlike the complex case above, which it reports as not
+  // implemented.
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "expected the input dtype to be non-boolean, got "
       << ToString(scalar_type);
@@ -122,7 +125,8 @@ absl::StatusOr<DeviceBufferRef> AtenHardtanhBackwardImpl(
     PromotedScalar& promoted_min, PromotedScalar& promoted_max,
     OpParamCacheKeys param_keys) {
   auto scalar_type = self.scalar_type();
-  TT_RET_CHECK(c10::isFloatingType(scalar_type), error::kInvalidArgument)
+  TT_RET_CHECK(c10::isFloatingType(scalar_type),
+               error::kPythonNotImplementedError)
       << "expected the input dtype to be floating point, got "
       << ToString(scalar_type);
 
