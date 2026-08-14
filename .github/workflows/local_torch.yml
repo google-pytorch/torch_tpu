@@ -97,9 +97,13 @@ jobs:
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Build TorchTPU wheel
         run: |
+          # wheel_common is not a --config=ci descendant, so it does not pick
+          # up the color flags .bazelrc sets there; see that comment for why
+          # an Actions log is monochrome without them.
           bazel build -c opt //ci/wheel:torch_tpu_wheel \
             --config=wheel_common \
             --config=local_torch \
+            --color=yes --curses=no \
             --repo_env=TORCH_SOURCE=$TORCH_SOURCE
 
           cp bazel-bin/ci/wheel/torch_tpu-*.whl dist/
@@ -169,9 +173,13 @@ jobs:
       - name: Build TorchTPU wheel
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
+          # wheel_common is not a --config=ci descendant, so it does not pick
+          # up the color flags .bazelrc sets there; see that comment for why
+          # an Actions log is monochrome without them.
           bazel build -c opt //ci/wheel:torch_tpu_wheel \
             --config=wheel_common \
             --config=local_torch \
+            --color=yes --curses=no \
             --repo_env=TORCH_SOURCE=$TORCH_SOURCE
 
           cp bazel-bin/ci/wheel/torch_tpu-*.whl dist/
