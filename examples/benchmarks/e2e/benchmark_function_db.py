@@ -39,6 +39,13 @@ def _sdpa_kernel_if_not_cuda(use_math_attention_fallback: bool = False):
       yield
 
 
+def assert_grad_accumulation_steps(grad_accumulation_steps: int) -> None:
+  """Asserts that gradient accumulation steps is 1."""
+  # Grad accumulation is not supported by torchax so we don't allow it for the
+  # purposes of running the same code across all backends.
+  assert grad_accumulation_steps == 1
+
+
 # ==============================================================================
 # 1. HUGGING FACE LLM FACTORIES & RUNNERS
 # ==============================================================================
@@ -79,11 +86,13 @@ def huggingface_llm_train_factory(
 
   Args:
     grad_accumulation_steps: The number of gradient accumulation steps.
+    use_math_attention_fallback: Whether to use fallback to math attention.
 
   Returns:
     A callable step function that executes training iterations with gradient
     accumulation and returns the average step loss as a tensor.
   """
+  assert_grad_accumulation_steps(grad_accumulation_steps)
 
   def train_step(
       model: torch.nn.Module, inputs: Any, optimizer: torch.optim.Optimizer
@@ -150,6 +159,7 @@ def huggingface_diffuser_train_factory(
     A callable step function that executes training iterations with gradient
     accumulation and returns the average step loss as a tensor.
   """
+  assert_grad_accumulation_steps(grad_accumulation_steps)
 
   def train_step(
       model: torch.nn.Module, inputs: Any, optimizer: torch.optim.Optimizer
@@ -274,6 +284,7 @@ def generic_train_factory(
     A callable step function that executes training iterations with gradient
     accumulation, optimizer updates, and returns the average step loss.
   """
+  assert_grad_accumulation_steps(grad_accumulation_steps)
 
   def train_step(
       model: torch.nn.Module, inputs: Any, optimizer: torch.optim.Optimizer

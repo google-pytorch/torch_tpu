@@ -112,6 +112,12 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "model_configs",
+    testonly = True,
+    srcs = ["model_configs.py"],
+)
+
+torch_tpu_py_library(
     name = "test_utils",
     testonly = 1,
     srcs = ["test_utils.py"],
@@ -119,6 +125,7 @@ torch_tpu_py_library(
         ":benchmark_utils",
         ":common",
         ":mlcompass_utils",
+        ":model_configs",
         ":model_utils",
         ":performance_utils",
         "//examples/benchmarks/e2e/torchax:performance_utils",
@@ -138,6 +145,7 @@ torch_tpu_py_library(
         ":benchmark_function_db",
         ":benchmark_utils",
         ":common",
+        ":model_configs",
         ":model_utils",
         ":performance_utils",
         ":test_utils",

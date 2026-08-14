@@ -27,6 +27,7 @@ from absl.testing import parameterized
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import mlcompass_utils
+from examples.benchmarks.e2e import model_configs
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e import performance_utils
 from torch_tpu._internal.distributed import multiprocessing
@@ -365,3 +366,36 @@ def generate_run_mode_configs(
         testcase_name=run_mode.value,
         run_mode=run_mode,
     )
+
+
+def generate_model_test_configs(
+    model_configs_list: Sequence[model_configs.ModelConfig],
+    run_modes: Sequence[common.RunMode] = (
+        common.RunMode.EAGER_DEFAULT,
+        common.RunMode.EAGER_OPTIMIZED,
+        common.RunMode.COMPILED,
+    ),
+    exclude_run_modes: Sequence[common.RunMode] | None = None,
+):
+  """Generates model test configs for parameterized tests.
+
+  Args:
+    model_configs_list: The model configs to generate test parameters for.
+    run_modes: The run modes to generate test parameters for.
+    exclude_run_modes: Run modes to exclude from generation.
+
+  Yields:
+    A dictionary containing the test parameters.
+  """
+  if exclude_run_modes is not None:
+    run_modes = [rm for rm in run_modes if rm not in exclude_run_modes]
+  for run_mode in run_modes:
+    for model_config in model_configs_list:
+      microbenchmark_name = get_microbenchmark_name(model_config)
+      testcase_name = f"{run_mode.value}_{microbenchmark_name}"
+
+      yield dict(
+          testcase_name=testcase_name,
+          run_mode=run_mode,
+          model_config=model_config,
+      )
