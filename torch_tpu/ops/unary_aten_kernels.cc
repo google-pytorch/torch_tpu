@@ -410,9 +410,10 @@ at::Tensor& AtenFloorOut(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out) {
   TT_KERNEL(OpName::kSiluOut, _, (self, out), {
-    TT_CHECK_THROW(
-        self.scalar_type() != at::kBool && self.scalar_type() != at::kLong,
-        error::kPythonNotImplementedError)
+    TT_CHECK_THROW(self.scalar_type() != at::kBool &&
+                       self.scalar_type() != at::kInt &&
+                       self.scalar_type() != at::kLong,
+                   error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildSiluShlo,

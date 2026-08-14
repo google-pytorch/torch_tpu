@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -56,7 +57,8 @@ absl::Status CheckBmmInputs(const at::Tensor& self, const at::Tensor& mat2) {
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
   TT_RET_CHECK(
-      self.numel() == 0 || mat2.numel() == 0 || self.scalar_type() != at::kLong,
+      self.numel() == 0 || mat2.numel() == 0 ||
+          (self.scalar_type() != at::kInt && self.scalar_type() != at::kLong),
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
   TT_RET_CHECK(self.dim() == 3, error::kInvalidArgument)

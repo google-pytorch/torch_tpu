@@ -277,9 +277,9 @@ class DynamismTest(seed_test_utils.RepeatableTest, parameterized.TestCase):
       dynamism.mark_dynamic(mat1, 0, 2, 10)
 
     args = (
-        torch.arange(4, dtype=torch.int32).reshape(4),  # self/bias
-        torch.arange(15, dtype=torch.int32).reshape(3, 5),  # mat1
-        torch.arange(20, dtype=torch.int32).reshape(5, 4),  # mat2
+        torch.arange(4, dtype=torch.float32).reshape(4),  # self/bias
+        torch.arange(15, dtype=torch.float32).reshape(3, 5),  # mat1
+        torch.arange(20, dtype=torch.float32).reshape(5, 4),  # mat2
     )
     self._run_bounded_dynamism_test(torch.addmm, mark_dynamic, *args)
 
@@ -290,9 +290,9 @@ class DynamismTest(seed_test_utils.RepeatableTest, parameterized.TestCase):
       dynamism.mark_dynamic(mat1, 0, 2, 10)
 
     args = (
-        torch.arange(12, dtype=torch.int32).reshape(3, 4),  # self/bias
-        torch.arange(15, dtype=torch.int32).reshape(3, 5),  # mat1
-        torch.arange(20, dtype=torch.int32).reshape(5, 4),  # mat2
+        torch.arange(12, dtype=torch.float32).reshape(3, 4),  # self/bias
+        torch.arange(15, dtype=torch.float32).reshape(3, 5),  # mat1
+        torch.arange(20, dtype=torch.float32).reshape(5, 4),  # mat2
     )
     self._run_bounded_dynamism_test(torch.addmm, mark_dynamic, *args)
 

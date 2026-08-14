@@ -26,6 +26,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -60,7 +61,8 @@ absl::Status CheckBaddbmmInputs(const at::Tensor& self,
                                 const at::Tensor& batch1,
                                 const at::Tensor& batch2) {
   TT_RET_CHECK(batch1.numel() == 0 || batch2.numel() == 0 ||
-                   batch1.scalar_type() != at::kLong,
+                   (batch1.scalar_type() != at::kInt &&
+                    batch1.scalar_type() != at::kLong),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(batch1.scalar_type());
 

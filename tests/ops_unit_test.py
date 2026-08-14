@@ -8031,17 +8031,17 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
   def test_set_dimension_logical_size_with_mlir_on_tpu(self):
     """Tests the tpu.set_dimension_logical_size custom op on TPU using MLIR."""
     device = torch.device("tpu")
-    x = torch.arange(25, device=device, dtype=torch.int32).reshape(5, 5)
-    y = torch.arange(25, device=device, dtype=torch.int32).reshape(5, 5)
+    x = torch.arange(25, device=device, dtype=torch.float32).reshape(5, 5)
+    y = torch.arange(25, device=device, dtype=torch.float32).reshape(5, 5)
     size = torch.tensor(1, device=device, dtype=torch.int32)
     golden_result = torch.matmul(x[:, : size.item()], y[: size.item(), :])
     mlir_program = """
 module {
-  func.func @main(%arg0: tensor<5x5xi32>, %arg1: tensor<5x5xi32>, %arg2: tensor<i32>) -> tensor<5x5xi32> {
-    %0 = stablehlo.set_dimension_size %arg0, %arg2, dim=1 : (tensor<5x5xi32>, tensor<i32>) -> tensor<5x?xi32, #stablehlo.bounds<?, 5>>
-    %1 = stablehlo.set_dimension_size %arg1, %arg2, dim=0 : (tensor<5x5xi32>, tensor<i32>) -> tensor<?x5xi32, #stablehlo.bounds<5, ?>>
-    %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<5x?xi32, #stablehlo.bounds<?, 5>>, tensor<?x5xi32, #stablehlo.bounds<5, ?>>) -> tensor<5x5xi32>
-    return %2: tensor<5x5xi32>
+  func.func @main(%arg0: tensor<5x5xf32>, %arg1: tensor<5x5xf32>, %arg2: tensor<i32>) -> tensor<5x5xf32> {
+    %0 = stablehlo.set_dimension_size %arg0, %arg2, dim=1 : (tensor<5x5xf32>, tensor<i32>) -> tensor<5x?xf32, #stablehlo.bounds<?, 5>>
+    %1 = stablehlo.set_dimension_size %arg1, %arg2, dim=0 : (tensor<5x5xf32>, tensor<i32>) -> tensor<?x5xf32, #stablehlo.bounds<5, ?>>
+    %2 = stablehlo.dot_general %0, %1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<5x?xf32, #stablehlo.bounds<?, 5>>, tensor<?x5xf32, #stablehlo.bounds<5, ?>>) -> tensor<5x5xf32>
+    return %2: tensor<5x5xf32>
   }
 }
 """
@@ -9259,52 +9259,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase, parameterized.TestCase):
             maxpool_int16.to(device),
             kernel_size=(3, 2),
             stride=(2, 2),
-            padding=(1, 1),
-            dilation=(1, 1),
-            ceil_mode=True,
-            return_indices=True,
-        )
-    )
-
-    maxpool_int32 = torch.tensor(
-        [
-            [
-                [-7, -3, 2, -7, -4, -7],
-                [-4, 9, 1, 7, 8, -9],
-                [9, -1, -8, 1, -6, 0],
-                [-5, 7, 1, 9, 4, 9],
-                [-2, -4, 2, 1, 2, 0],
-                [-6, 0, 1, 0, -3, 6],
-            ],
-            [
-                [8, 5, 2, 1, 5, 3],
-                [4, -2, -2, -5, -8, -4],
-                [-6, 2, 0, -8, -9, -2],
-                [-8, -1, 4, 6, -8, 4],
-                [-7, -3, 6, 8, 6, -7],
-                [-3, -9, 7, 0, 4, -4],
-            ],
-        ],
-        dtype=torch.int32,
-        device=device,
-    )
-
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.nn.functional.max_pool2d(
-            maxpool_int32.to(device),
-            kernel_size=(3, 3),
-            stride=(2, 2),
-            padding=(1, 1),
-            dilation=(1, 2),
-            ceil_mode=True,
-            return_indices=True,
-        )
-    )
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.nn.functional.max_pool2d(
-            maxpool_int32.to(device),
-            kernel_size=(3, 2),
-            stride=(2, 1),
             padding=(1, 1),
             dilation=(1, 1),
             ceil_mode=True,

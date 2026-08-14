@@ -786,9 +786,10 @@ absl::StatusOr<TensorVector> ConstructScaleFactorArray(
 }
 
 void CheckUpsampleDtypes(const at::Tensor& tensor) {
-  TT_CHECK_THROW(
-      tensor.scalar_type() != at::kBool && tensor.scalar_type() != at::kLong,
-      error::kPythonNotImplementedError)
+  TT_CHECK_THROW(tensor.scalar_type() != at::kBool &&
+                     tensor.scalar_type() != at::kInt &&
+                     tensor.scalar_type() != at::kLong,
+                 error::kPythonNotImplementedError)
       << "not implemented for " << ToString(tensor.scalar_type());
 }
 

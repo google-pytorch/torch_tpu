@@ -1905,7 +1905,7 @@ class TestOps(op_testing.OpInfoTestBase):
         # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
         # implemented.
         exclude_dtypes={
-            "cpu": COMPLEX_DTYPES + (torch.int64,),
+            "cpu": COMPLEX_DTYPES + (torch.int32, torch.int64),
             # TODO: make addmm fail for integral dtypes to match GPU.
             "gpu": (
                 COMPLEX_DTYPES
@@ -1913,7 +1913,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -1922,14 +1921,13 @@ class TestOps(op_testing.OpInfoTestBase):
         # is OK (UNIMPLEMENTED: Converting from type C128 to type F32 is not
         # implemented.
         exclude_inplace_dtypes={
-            "cpu": COMPLEX_DTYPES + (torch.int64,),
+            "cpu": COMPLEX_DTYPES + (torch.int32, torch.int64),
             "gpu": (
                 COMPLEX_DTYPES
                 + (
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -1941,21 +1939,19 @@ class TestOps(op_testing.OpInfoTestBase):
         "addmv",
         # GPU (CUDA) does not support integral dtypes for addmv.
         exclude_dtypes={
-            "cpu": (torch.int64,),
+            "cpu": (torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
             ),
         },
         exclude_inplace_dtypes={
-            "cpu": (torch.int64,),
+            "cpu": (torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
             ),
         },
     )
@@ -2060,22 +2056,20 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO(b/495524286): Failed to generate integral golden results on GPU
         # GPU (CUDA) does not support integral dtypes for baddbmm.
         exclude_dtypes={
-            "cpu": (torch.bool, torch.int64),
+            "cpu": (torch.bool, torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
                 torch.bool,
             ),
         },
         exclude_inplace_dtypes={
-            "cpu": (torch.bool, torch.int64),
+            "cpu": (torch.bool, torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
                 torch.bool,
             ),
         },
@@ -2142,12 +2136,11 @@ class TestOps(op_testing.OpInfoTestBase):
         "bmm",
         # GPU (CUDA) does not support integral dtypes for bmm.
         exclude_dtypes={
-            "cpu": (torch.int64,),
+            "cpu": (torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
             ),
         },
     )
@@ -2306,12 +2299,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # 1e-05.
         # GPU (CUDA) does not support integral dtypes for dot.
         exclude_dtypes={
-            "cpu": (torch.int64,),
+            "cpu": (torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
             ),
         },
     )
@@ -2328,7 +2320,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
                 + COMPLEX_DTYPES
             ),
@@ -2615,7 +2606,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                     torch.bool,
                 )
                 + COMPLEX_DTYPES
@@ -3207,10 +3197,17 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "cpu": (
                 torch.bool,
+                torch.int32,
                 torch.int64,
             ),
             # TODO: make matmul fail for integral dtypes to match GPU.
-            "gpu": INTEGRAL_DTYPES,
+            "gpu": (
+                torch.uint8,
+                torch.int8,
+                torch.int16,
+                torch.int64,
+                torch.bool,
+            ),
         },
     )
 
@@ -3243,6 +3240,7 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (
                 torch.complex64,
                 torch.float64,
+                torch.int32,
                 torch.int64,
             ),
             "gpu": (
@@ -3256,7 +3254,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -3271,6 +3268,7 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (
                 torch.complex64,
                 torch.float64,
+                torch.int32,
                 torch.int64,
             ),
             "gpu": (
@@ -3284,7 +3282,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -3313,7 +3310,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
                 torch.int64,
             ),
         },
@@ -3467,8 +3463,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # 2. TPU lowering for int64 crashes due to "While rewriting computation
         #    to not contain X64 element types, XLA encountered an HLO for which
         #    this rewriting is not implemented: %convolution [...]"
-        exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        exclude_dtypes={
+            "cpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+            "gpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int64),
+        },
     )
 
   def test_nn_functional_conv2d(self):
@@ -3476,8 +3476,12 @@ class TestOps(op_testing.OpInfoTestBase):
         "nn.functional.conv2d",
         # TODO: fix nn.functional.conv*d() failing with integral and complex
         # dtypes. See comments in test_nn_functional_conv1d.
-        exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        exclude_dtypes={
+            "cpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+            "gpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int64),
+        },
     )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
@@ -3493,8 +3497,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # 2. TPU lowering for int64 crashes due to "While rewriting computation
         #    to not contain X64 element types, XLA encountered an HLO for which
         #    this rewriting is not implemented: %convolution [...]"
-        exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        exclude_dtypes={
+            "cpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+            "gpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int64),
+        },
     )
 
   def test_nn_functional_conv_transpose2d(self):
@@ -3508,8 +3516,12 @@ class TestOps(op_testing.OpInfoTestBase):
         # 2. TPU lowering for int64 crashes due to "While rewriting computation
         #    to not contain X64 element types, XLA encountered an HLO for which
         #    this rewriting is not implemented: %convolution [...]"
-        exclude_dtypes=COMPLEX_DTYPES
-        + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+        exclude_dtypes={
+            "cpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
+            "gpu": COMPLEX_DTYPES
+            + (torch.uint8, torch.int8, torch.int16, torch.int64),
+        },
     )
 
   # TODO(gleasonk): why does compilation time out on this input?
@@ -3652,7 +3664,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
                 + COMPLEX_DTYPES
             ),
@@ -3665,7 +3676,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
                 + COMPLEX_DTYPES
             ),
@@ -3793,7 +3803,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
                 torch.bool,
             ),
         },
@@ -4027,7 +4036,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -4045,7 +4053,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -4063,7 +4070,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -4083,7 +4089,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.int32,
                 )
             ),
         },
@@ -4100,12 +4105,11 @@ class TestOps(op_testing.OpInfoTestBase):
         "vdot",
         # GPU (CUDA) does not support integral dtypes for vdot.
         exclude_dtypes={
-            "cpu": (torch.int64,),
+            "cpu": (torch.int32, torch.int64),
             "gpu": (
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.int32,
             ),
         },
     )

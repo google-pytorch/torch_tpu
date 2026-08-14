@@ -30,6 +30,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
@@ -180,6 +181,13 @@ absl::StatusOr<at::ScalarType> GetPromotedType(
 
   at::ScalarType promoted_type =
       at::promote_types(input.scalar_type(), weight.scalar_type());
+
+  // CUDA runs zero-batch and zero-channel convolutions on a dtype-agnostic
+  // path, so only non-empty int32 inputs fail.
+  TT_RET_CHECK(
+      input.size(0) == 0 || input.size(1) == 0 || promoted_type != at::kInt,
+      error::kPythonNotImplementedError)
+      << "not implemented for " << ToString(promoted_type);
 
   if (bias_opt.has_value()) {
     // TODO: native PyTorch does not errors on boolean bias.

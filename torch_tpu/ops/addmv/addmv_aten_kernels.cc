@@ -23,6 +23,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -165,7 +166,8 @@ absl::Status CheckAddmvInputs(const at::Tensor& self, const at::Tensor& mat,
   TT_RET_CHECK(!IsBool(self), error::kInvalidArgument)
       << "the dtype of the first argument cannot be bool";
 
-  TT_RET_CHECK(mat.numel() == 0 || mat.scalar_type() != at::kLong,
+  TT_RET_CHECK(mat.numel() == 0 || (mat.scalar_type() != at::kInt &&
+                                    mat.scalar_type() != at::kLong),
                error::kPythonNotImplementedError)
       << "not implemented for " << ToString(mat.scalar_type());
 

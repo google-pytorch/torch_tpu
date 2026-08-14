@@ -775,7 +775,8 @@ void CheckMaxPoolDtypes(const at::Tensor& self) {
       << "bool dtype is not supported";
 
   TT_CHECK_THROW(
-      self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
+      self.numel() == 0 || (self.scalar_type() != at::ScalarType::Int &&
+                            self.scalar_type() != at::ScalarType::Long),
       error::kPythonNotImplementedError)
       << "not implemented for " << ToString(self.scalar_type());
 }
