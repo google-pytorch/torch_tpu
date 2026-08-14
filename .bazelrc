@@ -295,22 +295,17 @@ common:ci --remote_download_minimal
 common:ci --keep_going
 test:ci --test_output=errors
 
-# Colorize CI logs. GitHub Actions captures step output through a pipe, so the
-# Bazel client detects no terminal and sends `--isatty=0` to the server; the
-# default `--color=auto` then resolves to "no color" and every CI log arrives
-# monochrome, even though the Actions log viewer does render ANSI SGR escapes.
-# Forcing color back on restores the red/yellow ERROR and WARNING banners that
-# make a failing log skimmable.
+# Enable ANSI color in CI logs.
 #
-# Curses stays off deliberately: it repaints the progress bar in place using
-# cursor-movement escapes, which the log viewer does not implement. Leaving it
-# on `auto` would already resolve to "no" here (same `--isatty=0`), but pinning
-# it makes the intent explicit and keeps the log append-only if that detection
-# ever changes.
+# Intentionlly override the default `--color=auto` since because Bazel
+# client sends `--isatty=0` when bi terminal is available in GitHub Actions.
+# Besides, turn off curses since the log viewer does not implement cursor-movement
+# escapes.
 #
-# This only affects Bazel's own progress/diagnostic stream on stderr. Target
-# lists, query results, and every other machine-readable payload go to stdout
-# uncolored, so `bazel-diff` and `bazel query | tr` keep parsing clean text.
+# It only affects Bazel's own progress / diagnostic stream on stderr. Target
+# lists, query results, and every other machine-readable payload written to
+# stdout are still uncolored, so analyers like `bazel-diff` and `bazel query`
+# keep parsing clean text.
 common:ci --color=yes
 common:ci --curses=no
 

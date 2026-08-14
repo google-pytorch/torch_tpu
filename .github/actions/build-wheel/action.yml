@@ -50,11 +50,6 @@ runs:
         EXTRA_BAZEL_ARGS: ${{ inputs.extra_bazel_args }}
       run: |
         read -ra EXTRA_ARGS <<< "${EXTRA_BAZEL_ARGS}"
-        # --color=yes/--curses=no are the "environment-specific bazel flags"
-        # build_wheels.sh expects its callers to supply: the wheel build does
-        # not go through --config=ci (Kokoro shares the script), so it needs
-        # the flags the ci config sets in .bazelrc. See the comment there for
-        # why GitHub Actions logs come out monochrome without them.
         ci/build_wheels.sh --output-dir dist "${PYTHON_VERSION}" -- \
           --color=yes --curses=no ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
     - name: Check wheel metadata
