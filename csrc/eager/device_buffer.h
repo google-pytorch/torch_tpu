@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/log/absl_check.h"
@@ -127,6 +128,14 @@ inline bool IsSplitAfter(OpSplitMode split_mode) {
          split_mode == OpSplitMode::kSplitBoth;
 }
 
+// Returns true if the PjRtBuffer is host offloaded.
+inline bool IsPinnedHostBuffer(const xla::PjRtBuffer* absl_nullable buffer) {
+  if (buffer == nullptr || buffer->memory_space() == nullptr) {
+    return false;
+  }
+  return buffer->memory_space()->kind() == "pinned_host";
+}
+
 class DeviceBufferList;
 class DeferredOp;
 
@@ -222,6 +231,12 @@ class DeviceBufferRef {
   // Returns true if this DeviceBufferRef has finished materialization.
   // It may have succeeded or failed.
   [[nodiscard]] bool is_materialized() const;
+
+  // Returns true if this DeviceBufferRef is host offloaded.
+  [[nodiscard]] bool is_pinned_host() const;
+
+  // Marks this DeviceBufferRef as host offloaded.
+  void set_is_pinned_host() const;
 
   // Returns true if this DeviceBufferRef was created by a deferred op with a
   // statically-known constant value.
@@ -531,7 +546,8 @@ class DeviceBufferList {
   // This is a buffer that is not backed by any data, but is used to represent
   // an argument to a compiled executable.
   static absl::StatusOr<DeviceBufferRef> CreatePlaceholder(
-      Dimensions dimensions, mlir::ElementType element_type);
+      Dimensions dimensions, mlir::ElementType element_type,
+      bool is_pinned_host = false);
 
   // Creates a DeviceBufferList that represents a pending materialized buffer.
   // This is used to hold the output of calling a precompiled executable, such
@@ -629,6 +645,12 @@ class DeviceBufferList {
   // It may have succeeded or failed.
   [[nodiscard]] bool is_materialized() const { return data_.is_materialized(); }
 
+  // Returns true if this DeviceBufferList is host offloaded.
+  [[nodiscard]] bool is_pinned_host() const;
+
+  // Marks this DeviceBufferList as host offloaded.
+  void set_is_pinned_host();
+
   // The logical dimensions of the indexed buffer.
   [[nodiscard]] absl::Span<const int64_t> dimensions(int64_t index) const;
 
@@ -718,6 +740,10 @@ class DeviceBufferList {
     ABSL_CHECK_OK(buffer_or);  // CRASH_OK: we just created it
     const xla::PjRtBuffer* absl_nonnull buffer_ptr = buffer_or.value();
 
+    if (IsPinnedHostBuffer(buffer_ptr)) {
+      is_pinned_host_ = true;
+    }
+
     const xla::Shape& on_device_shape = buffer_ptr->on_device_shape();
     Shape shape(CopyIntVector(on_device_shape.dimensions()), element_type);
     if (on_device_shape.has_layout()) {
@@ -755,12 +781,11 @@ class DeviceBufferList {
     stream_id_ = stream_id;
     creation_index_ = g_creation_index_.fetch_add(1);
 
-    {
-      const auto shared_deferred_op = data_.deferred_op();
-      ABSL_CHECK(shared_deferred_op);  // CRASH_OK=we just created it
-      for (const auto& input : shared_deferred_op->inputs()) {
-        input.RecordChildOp(creation_index_);
-      }
+    const auto shared_deferred_op = data_.deferred_op();
+    ABSL_CHECK(shared_deferred_op);  // CRASH_OK=we just created it
+    is_pinned_host_ = ComputeIsHostOffloaded(*shared_deferred_op);
+    for (const auto& input : shared_deferred_op->inputs()) {
+      input.RecordChildOp(creation_index_);
     }
 
     if (ABSL_VLOG_IS_ON(3)) {
@@ -829,7 +854,25 @@ class DeviceBufferList {
       absl::Span<const absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers)
       const;
 
+  // Returns true if the deferred op produces a host offloaded buffer.
+  static bool ComputeIsHostOffloaded(const DeferredOp& deferred_op) {
+    if (deferred_op.op_name() == OpName::kAoOffload) {
+      return true;
+    }
+    return IsMetadataOnly(deferred_op.op_name()) &&
+           absl::c_any_of(deferred_op.inputs(), [](const auto& input) {
+             return input.is_pinned_host();
+           });
+  }
+
+  // Returns true if this node itself is directly marked as host offloaded or
+  // holds a materialized host offloaded buffer.
+  [[nodiscard]] bool IsDirectlyPinnedHost() const;
+
   static std::atomic_uint64_t g_creation_index_;
+
+  // Whether this buffer is host offloaded (e.g. from activation offloading).
+  std::atomic<bool> is_pinned_host_ = false;
 
   // The shapes of all the buffers in the DeviceBufferList.
   std::vector<Shape> shapes_;
@@ -963,7 +1006,8 @@ class DeviceBufferList {
     // Returns true if this DeviceBufferList::Data has finished materialization.
     // It may have succeeded or failed.
     [[nodiscard]] bool is_materialized() const {
-      return materialization_future_.IsKnownReady();
+      return !placeholder_ && materialization_future_.IsValid() &&
+             materialization_future_.IsKnownReady();
     }
 
     // Returns true if the DeviceBufferList::Data was created as a constant or

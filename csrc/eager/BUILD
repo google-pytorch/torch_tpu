@@ -172,6 +172,8 @@ torch_tpu_cc_library(
         "device_buffer.h",
     ],
     deps = [
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_set",
         ":current_stream",
         ":eager_mode",
         "//csrc/common:cache_key",
@@ -626,6 +628,7 @@ torch_tpu_cc_library(
     srcs = ["tpu_aten_kernels.cc"],
     hdrs = ["tpu_aten_kernels.h"],
     deps = [
+        "//csrc/ops/ao:ao_offload_kernels",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
         "//shims/torch/c10/core:base_headers",

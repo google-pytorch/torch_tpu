@@ -71,6 +71,21 @@ def _make_lu_unpack_outputs(
   )
 
 
+def _ensure_ao_ops_registered() -> None:
+  """Ensures activation offload ops are registered, skipping test if unavailable."""
+  try:
+    # pylint: disable=g-import-not-at-top
+    from torch._functorch._activation_offloading import offload_ops
+    # Reference offload_ops to prevent a lint warning. The import is required
+    # to register the offload custom ops.
+    _ = offload_ops
+  except ImportError:
+    raise absltest.SkipTest(
+        "torch._functorch._activation_offloading.offload_ops is not available"
+        " in this PyTorch version"
+    )
+
+
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
   """Tests error messages on TPU."""
 
@@ -3829,6 +3844,41 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         message_reviewed_by="wan",
     ):
       obj.throw_tterror_in_member_function()
+  @et.why_tpu_only("ao.reload is implemented for device=tpu.")
+  def test_reload_invalid_device(self):
+    _ensure_ao_ops_registered()
+    x = torch.tensor([1.0, 2.0], device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reload(): expected 'tpu' device, got 'cpu'""",
+    ):
+      torch.ops.ao.reload(x, torch.device("cpu"))
+
+  @et.why_tpu_only("ao.reload is implemented for device=tpu.")
+  def test_reload_cpu_tensor(self):
+    _ensure_ao_ops_registered()
+    x = torch.tensor([1.0, 2.0], device="cpu", dtype=torch.float32)
+    with self.assertRaises(RuntimeError):
+      torch.ops.ao.reload(x, torch.device("tpu"))
+
+  @et.why_tpu_only("ao.offload is implemented for device=tpu.")
+  def test_offload_cpu_tensor(self):
+    _ensure_ao_ops_registered()
+    x = torch.tensor([1.0, 2.0], device="cpu", dtype=torch.float32)
+    with self.assertRaises((RuntimeError, ValueError)):
+      torch.ops.ao.offload(x)
+
+  @et.why_tpu_only("ao.reload is implemented for device=tpu.")
+  def test_reload_mismatched_device_index(self):
+    _ensure_ao_ops_registered()
+    x = torch.arange(5, device=torch.device("tpu", 0), dtype=torch.float32)
+    y = torch.ops.ao.offload(x)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""reload(): expected reload device 'tpu:0', got 'tpu:1'""",
+    ):
+      torch.ops.ao.reload(y, torch.device("tpu", 1))
 
 
 if __name__ == "__main__":

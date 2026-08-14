@@ -185,6 +185,18 @@ def _is_tracing_enabled() -> bool:
   return bool(trace_log.handlers)
 
 
+def is_pinned_host_tensor(t: Any) -> bool:
+  """Returns whether `t` is a Tensor located in pinned host memory."""
+  if not isinstance(t, torch.Tensor):
+    return False
+  if getattr(t, "_is_pinned_host", False):
+    return True
+  try:
+    return bool(t.device.type == "tpu" and tpu_torch_compile.is_pinned_host(t))
+  except Exception:  # pylint: disable=broad-exception-caught
+    return False
+
+
 def _create_storage_aware_placeholders(
     example_inputs: Sequence[Any],
     bounds: Sequence[Any] | None = None,
@@ -218,17 +230,26 @@ def _create_storage_aware_placeholders(
         or has_dynamic_bounds
     ):
       for i, arg in entries:
+        is_pinned_host = is_pinned_host_tensor(arg)
         arg_bounds = bounds[i] if bounds is not None else None
         if arg_bounds is not None:
           placeholders[i] = tpu_torch_compile.dynamic_placeholder(
-              arg.shape, arg.dtype, arg_bounds, arg.requires_grad
+              arg.shape,
+              arg.dtype,
+              arg_bounds,
+              arg.requires_grad,
+              is_pinned_host=is_pinned_host,
           )
         else:
-          placeholders[i] = tpu_torch_compile.placeholder_like(arg)
+          placeholders[i] = tpu_torch_compile.placeholder_like(
+              arg, is_pinned_host=is_pinned_host
+          )
     else:
       _, primary_arg = entries[0]
       elem_size = primary_arg.element_size()
       storage_numel = storage.size() // elem_size if elem_size > 0 else 0
+
+      is_pinned_host = any(is_pinned_host_tensor(arg) for _, arg in entries)
 
       # Check if one of the tensors already spans the full storage contiguously.
       base_tensor = next(
@@ -242,7 +263,9 @@ def _create_storage_aware_placeholders(
           None,
       )
       if base_tensor is not None:
-        base_ph = tpu_torch_compile.placeholder_like(base_tensor)
+        base_ph = tpu_torch_compile.placeholder_like(
+            base_tensor, is_pinned_host=is_pinned_host
+        )
       else:
         # Otherwise, synthesize a 1D flat placeholder matching total storage elements.
         flat_meta = torch.empty(
@@ -250,7 +273,9 @@ def _create_storage_aware_placeholders(
             dtype=primary_arg.dtype,
             device=torch.device("meta"),
         )
-        base_ph = tpu_torch_compile.placeholder_like(flat_meta)
+        base_ph = tpu_torch_compile.placeholder_like(
+            flat_meta, is_pinned_host=is_pinned_host
+        )
 
       for i, arg in entries:
         ph = base_ph.as_strided(

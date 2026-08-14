@@ -82,7 +82,10 @@
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/client/executable_build_options.h"
 #include "xla/layout.h"
+#include "xla/layout_util.h"
 #include "xla/service/device_assignment.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -488,6 +491,27 @@ mlir::MlirOp CreateArgumentOp(mlir::func::FunctionBuilder& fb,
   return CreateDynamicArgumentOp(fb, argument, use_stablehlo_bounds);
 }
 
+void AnnotateBufferPlacements(mlir::ModuleOp module,
+                              absl::Span<const DeviceBufferRef> outputs,
+                              absl::Span<const DeviceBufferRef> arguments) {
+  auto func = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!func) {
+    return;
+  }
+  mlir::MLIRContext* const context = func.getContext();
+  const auto pinned_host_attr = mlir::StringAttr::get(context, "pinned_host");
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    if (outputs[i].is_pinned_host()) {
+      func.setResultAttr(i, "mhlo.memory_kind", pinned_host_attr);
+    }
+  }
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    if (arguments[i].is_pinned_host()) {
+      func.setArgAttr(i, "mhlo.memory_kind", pinned_host_attr);
+    }
+  }
+}
+
 }  // namespace
 
 const PythonContext* absl_nullable Traversal::GetPythonContext() const {
@@ -629,6 +653,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   if (!donated_arguments.empty()) {
     AnnotateBufferDonations(module.get(), donated_arguments);
   }
+
+  AnnotateBufferPlacements(module.get(), outputs, arguments);
   return module;
 }
 
@@ -702,6 +728,82 @@ std::string MlirModuleToString(mlir::ModuleOp module) {
   module.print(os, flags);
   return os.str();
 }
+
+std::vector<xla::Shape> GetXlaShapes(absl::Span<const DeviceBufferRef> buffers,
+                                     bool use_stablehlo_bounds) {
+  std::vector<xla::Shape> shapes;
+  shapes.reserve(buffers.size());
+  for (const auto& buffer : buffers) {
+    const xla::PrimitiveType primitive_type =
+        ConvertTo<xla::PrimitiveType>(buffer.element_type());
+    xla::Shape shape =
+        xla::ShapeUtil::MakeShape(primitive_type, buffer.dimensions());
+    shape.clear_layout();
+    if (use_stablehlo_bounds) {
+      for (const auto& dynamic_dim : buffer.dynamic_dimensions()) {
+        shape.set_dynamic_dimension(dynamic_dim.dimension, true);
+      }
+    }
+    shapes.push_back(std::move(shape));
+  }
+  return shapes;
+}
+
+void ApplyHostMemorySpace(absl::Span<const DeviceBufferRef> buffers,
+                          std::vector<xla::Shape>& xla_shapes) {
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    if (!buffers[i].is_pinned_host()) {
+      continue;
+    }
+    if (!xla_shapes[i].has_layout()) {
+      xla::LayoutUtil::SetToDefaultLayout(&xla_shapes[i]);
+    }
+    xla_shapes[i].mutable_layout()->set_memory_space(
+        xla::Layout::kHostMemorySpace);
+  }
+}
+
+void ApplyMemoryPlacements(CompilationSpec& spec,
+                           absl::Span<const DeviceBufferRef> outputs,
+                           absl::Span<const DeviceBufferRef> arguments,
+                           bool use_stablehlo_bounds) {
+  bool changed = false;
+  if (absl::c_any_of(outputs,
+                     [](const auto& b) { return b.is_pinned_host(); })) {
+    const xla::Shape* const existing_result_layout =
+        spec.xla_compile_options->executable_build_options.result_layout();
+    std::vector<xla::Shape> output_shapes;
+    if (existing_result_layout != nullptr) {
+      output_shapes = existing_result_layout->IsTuple()
+                          ? existing_result_layout->tuple_shapes()
+                          : std::vector<xla::Shape>{*existing_result_layout};
+    }
+    if (output_shapes.size() != outputs.size()) {
+      output_shapes = GetXlaShapes(outputs, use_stablehlo_bounds);
+    }
+    ApplyHostMemorySpace(outputs, output_shapes);
+    const bool is_tuple =
+        existing_result_layout != nullptr && existing_result_layout->IsTuple();
+    spec.xla_compile_options->executable_build_options.set_result_layout(
+        is_tuple ? xla::ShapeUtil::MakeTupleShape(output_shapes)
+                 : xla::ShapeUtil::MakeMaybeTupleShape(output_shapes));
+    changed = true;
+  }
+  if (absl::c_any_of(arguments,
+                     [](const auto& b) { return b.is_pinned_host(); })) {
+    if (!spec.xla_compile_options->argument_layouts.has_value()) {
+      spec.xla_compile_options->argument_layouts =
+          GetXlaShapes(arguments, use_stablehlo_bounds);
+    }
+    ApplyHostMemorySpace(arguments,
+                         *spec.xla_compile_options->argument_layouts);
+    changed = true;
+  }
+  if (changed) {
+    spec.compile_options_key = MakeCompileOptionsKey(*spec.xla_compile_options);
+  }
+}
+
 }  // namespace
 
 bool Traversal::HasSparseCoreOp() const {
@@ -768,6 +870,8 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   };
   std::vector<Shape> argument_shapes = GetShapes(arguments_);
   std::vector<Shape> output_shapes = GetShapes(outputs_);
+
+  ApplyMemoryPlacements(spec, outputs_, arguments_, use_stablehlo_bounds);
 
   CompilationCacheKey compilation_cache_key =
       GetCacheKey(spec.compile_options_key, argument_layouts);

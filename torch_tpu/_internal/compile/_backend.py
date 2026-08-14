@@ -141,6 +141,89 @@ def _raise_on_symint(
   return _pytree.tree_map_only(torch.SymInt, _raise, x)
 
 
+_is_pinned_host_tensor = compiler.is_pinned_host_tensor
+
+
+def _is_reload_node(node: torch.fx.Node) -> bool:
+  """Returns whether `node` represents a torch.ops.ao.reload operation."""
+  if node.op != "call_function":
+    return False
+  ao_reload = getattr(getattr(torch.ops, "ao", None), "reload", None)
+  if (
+      ao_reload is not None
+      and getattr(node.target, "_overloadpacket", node.target) == ao_reload
+  ):
+    return True
+  target_str = str(node.target)
+  return "ao.reload" in target_str or "ao::reload" in target_str
+
+
+def _is_offload_node(node: torch.fx.Node) -> bool:
+  """Returns whether `node` represents a torch.ops.ao.offload operation."""
+  if node.op != "call_function":
+    return False
+  ao_offload = getattr(getattr(torch.ops, "ao", None), "offload", None)
+  if (
+      ao_offload is not None
+      and getattr(node.target, "_overloadpacket", node.target) == ao_offload
+  ):
+    return True
+  target_str = str(node.target)
+  return "ao.offload" in target_str or "ao::offload" in target_str
+
+
+def _placeholder_reaches_reload(
+    p: torch.fx.Node, gm: torch.fx.GraphModule
+) -> bool:
+  """Traverses users of placeholder `p` to check if consumed by ao.reload."""
+  if p.meta.get("saved_for_offloading", False):
+    return True
+  visited = set()
+  stack = [p]
+  while stack:
+    curr = stack.pop()
+    if curr in visited:
+      continue
+    visited.add(curr)
+    for user in curr.users:
+      if _is_reload_node(user):
+        return True
+      if _is_offload_node(user):
+        continue
+      if user.op == "call_module" and isinstance(user.target, str):
+        submod = getattr(gm, user.target, None)
+        if isinstance(submod, torch.fx.GraphModule):
+          sub_placeholders = [
+              n for n in submod.graph.nodes if n.op == "placeholder"
+          ]
+          for i, arg in enumerate(user.args):
+            if arg is curr and i < len(sub_placeholders):
+              if _placeholder_reaches_reload(sub_placeholders[i], submod):
+                return True
+      elif user.op != "output" and user not in visited:
+        stack.append(user)
+  return False
+
+
+def _detect_offloaded_placeholder_indices(
+    graph_module: torch.fx.GraphModule,
+    example_inputs: Sequence[Any],
+) -> set[int]:
+  """Detects which placeholder inputs correspond to offloaded activations."""
+  pinned_indices = set()
+  idx = 0
+  for node in graph_module.graph.nodes:
+    if node.op != "placeholder":
+      continue
+    if idx < len(example_inputs) and (
+        _is_pinned_host_tensor(example_inputs[idx])
+        or _placeholder_reaches_reload(node, graph_module)
+    ):
+      pinned_indices.add(idx)
+    idx += 1
+  return pinned_indices
+
+
 @contextlib.contextmanager
 def _serialization_context(
     example_inputs: Sequence[Any],
@@ -641,6 +724,12 @@ class TpuBackend:
           graph_module.print_readable(print_output=False)
       )
 
+    pinned_host_indices = {
+        idx
+        for idx, example_input in enumerate(example_inputs)
+        if _is_pinned_host_tensor(example_input)
+    }
+
     compiler_instance = make_backend_compiler(
         example_inputs, async_compile=async_compile, debug=debug
     )
@@ -658,6 +747,7 @@ class TpuBackend:
               custom_module_name,
               debug,
               compiled_artifacts,
+              pinned_host_indices,
           ),
       )
     else:
@@ -668,6 +758,7 @@ class TpuBackend:
           custom_module_name,
           debug,
           compiled_artifacts,
+          pinned_host_indices,
       )
 
     bw_compiler = functools.partial(
@@ -677,6 +768,7 @@ class TpuBackend:
         custom_module_name,
         debug,
         compiled_artifacts,
+        None,
     )
 
     save_context = (
@@ -749,6 +841,7 @@ class TpuBackend:
       custom_module_name: str | None,
       debug: TpuCompileDebug | None,
       compiled_artifacts: list[compiler.CompiledArtifact],
+      pinned_host_indices: set[int] | None,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[torch.Tensor],
   ) -> Callable[..., Any]:
@@ -764,6 +857,8 @@ class TpuBackend:
         options, if any.
       debug: Container for recording compilation debug artifacts.
       compiled_artifacts: Per-call container tracking compiled artifacts.
+      pinned_host_indices: Set of indices of inputs that are offloaded to host,
+        or None to auto-detect.
       graph_module: The FX graph module to compile.
       example_inputs: Example inputs to the FX graph for tracing (not the actual
         inputs).
@@ -771,6 +866,16 @@ class TpuBackend:
     Returns:
       A function that executes the compiled graph on the TPU.
     """
+    pinned_indices = set(
+        pinned_host_indices or ()
+    ) | _detect_offloaded_placeholder_indices(graph_module, example_inputs)
+    for idx in pinned_indices:
+      if idx >= len(example_inputs):
+        continue
+      tensor = example_inputs[idx]
+      if isinstance(tensor, torch.Tensor):
+        tensor._is_pinned_host = True
+
     fwd_or_bwd_str = "FORWARD" if is_fwd else "BACKWARD"
 
     _log_gm_and_inputs(

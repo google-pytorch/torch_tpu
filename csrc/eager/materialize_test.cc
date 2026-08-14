@@ -241,3 +241,88 @@ TEST(MaterializeCommonTest, GetCompilationMode) {
 
 }  // namespace
 }  // namespace torch_tpu
+
+TEST(DeviceBufferTest, SetPinnedHostDeepChain) {
+  ScopedPythonContextCapturer capturer(OpName::kView);
+  const Shape shape(Dimensions{10}, mlir::ElementType::F32);
+  const auto builder = [](mlir::MlirBuilder&, absl::Span<mlir::MlirOp> inputs) {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> root_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kEmpty,
+          [](mlir::MlirBuilder& b, absl::Span<mlir::MlirOp>) {
+            return DynamicMlirOpResults{BuildFillUninitialized(
+                b, mlir::ElementType::F32, Dimensions{10})};
+          },
+          /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape}));
+  DeviceBufferRef cur = root_refs[0];
+  EXPECT_FALSE(cur.is_pinned_host());
+
+  constexpr int kChainDepth = 5000;
+  for (int i = 0; i < kChainDepth; ++i) {
+    TT_ASSERT_OK_AND_ASSIGN(
+        const std::vector<DeviceBufferRef> next_refs,
+        DeviceBufferList::CreateDeferred(OpName::kView, builder,
+                                         /*inputs=*/{cur},
+                                         OpParamCacheKeys::Empty(), {shape}));
+    cur = next_refs[0];
+  }
+
+  EXPECT_FALSE(cur.is_pinned_host());
+  EXPECT_FALSE(root_refs[0].is_pinned_host());
+
+  // Marking the leaf as pinned host should iteratively traverse and mark all
+  // ancestors.
+  cur.set_is_pinned_host();
+
+  EXPECT_TRUE(cur.is_pinned_host());
+  EXPECT_TRUE(root_refs[0].is_pinned_host());
+}
+
+TEST(DeviceBufferTest, SetPinnedHostSiblingViews) {
+  ScopedPythonContextCapturer capturer(OpName::kView);
+  const Shape shape(Dimensions{10}, mlir::ElementType::F32);
+  const auto builder = [](mlir::MlirBuilder&, absl::Span<mlir::MlirOp> inputs) {
+    return DynamicMlirOpResults{inputs[0]};
+  };
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> root_refs,
+      DeviceBufferList::CreateDeferred(
+          OpName::kEmpty,
+          [](mlir::MlirBuilder& b, absl::Span<mlir::MlirOp>) {
+            return DynamicMlirOpResults{BuildFillUninitialized(
+                b, mlir::ElementType::F32, Dimensions{10})};
+          },
+          /*inputs=*/{}, OpParamCacheKeys::Empty(), {shape}));
+  const DeviceBufferRef root = root_refs[0];
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> view1_refs,
+      DeviceBufferList::CreateDeferred(OpName::kView, builder,
+                                       /*inputs=*/{root},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  const DeviceBufferRef view1 = view1_refs[0];
+
+  TT_ASSERT_OK_AND_ASSIGN(
+      const std::vector<DeviceBufferRef> view2_refs,
+      DeviceBufferList::CreateDeferred(OpName::kView, builder,
+                                       /*inputs=*/{root},
+                                       OpParamCacheKeys::Empty(), {shape}));
+  const DeviceBufferRef view2 = view2_refs[0];
+
+  EXPECT_FALSE(root.is_pinned_host());
+  EXPECT_FALSE(view1.is_pinned_host());
+  EXPECT_FALSE(view2.is_pinned_host());
+
+  // Marking view1 as pinned host sets the root, and view2 dynamically sees it.
+  view1.set_is_pinned_host();
+
+  EXPECT_TRUE(view1.is_pinned_host());
+  EXPECT_TRUE(root.is_pinned_host());
+  EXPECT_TRUE(view2.is_pinned_host());
+}
+

@@ -171,8 +171,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
 
 absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
                                            at::ScalarType dtype,
-                                           bool requires_grad) {
-  TT_ASSIGN_OR_RETURN(mlir::ElementType tensor_element_type,
+                                           bool requires_grad,
+                                           bool is_pinned_host) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType tensor_element_type,
                       ConvertTo<mlir::ElementType>(dtype));
   Dimensions physical_sizes(sizes.begin(), sizes.end());
   if (dtype == at::kFloat4_e2m1fn_x2) {
@@ -180,18 +181,20 @@ absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
         << "expected float4_e2m1fn_x2 tensors to be at least 1-dimensional";
     physical_sizes.back() *= 2;
   }
-  TT_ASSIGN_OR_RETURN(DeviceBufferRef placeholder,
-                      DeviceBufferList::CreatePlaceholder(
-                          std::move(physical_sizes), tensor_element_type));
+  TT_ASSIGN_OR_RETURN(
+      DeviceBufferRef placeholder,
+      DeviceBufferList::CreatePlaceholder(std::move(physical_sizes),
+                                          tensor_element_type, is_pinned_host));
   auto new_tensor = MakeTensor(std::move(placeholder));
   new_tensor.set_requires_grad(requires_grad);
   return new_tensor;
 }
 
-absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad) {
-  TT_ASSIGN_OR_RETURN(
-      DeviceBufferRef placeholder,
-      DeviceBufferList::CreatePlaceholder(shape.dimensions(), shape.dtype()));
+absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
+                                           bool is_pinned_host) {
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef placeholder,
+                      DeviceBufferList::CreatePlaceholder(
+                          shape.dimensions(), shape.dtype(), is_pinned_host));
   for (const auto& dynamic_dim : shape.dynamic_dimensions()) {
     TT_RETURN_IF_ERROR(placeholder.MarkDynamic(dynamic_dim.dimension,
                                                dynamic_dim.lower_bound,

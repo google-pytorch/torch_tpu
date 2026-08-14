@@ -27,7 +27,9 @@
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -437,11 +439,13 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
 }
 
 absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePlaceholder(
-    Dimensions dimensions, mlir::ElementType element_type) {
+    Dimensions dimensions, mlir::ElementType element_type,
+    bool is_pinned_host) {
   TT_RETURN_IF_ERROR(ValidateTensorByteSize(dimensions, element_type));
   // Can't use make_shared because the constructor is private.
   auto device_buffer = std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
       std::move(dimensions), element_type, /*placeholder=*/true));
+  device_buffer->is_pinned_host_ = is_pinned_host;
   return DeviceBufferRef(std::move(device_buffer), 0);
 }
 
@@ -543,6 +547,11 @@ void DeviceBufferList::CheckMaterialization(
 absl::Status DeviceBufferList::SetAsMaterialized(
     std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>> buffers) {
   CheckMaterialization(buffers);
+  if (absl::c_any_of(buffers, [](const auto& buffer) {
+        return IsPinnedHostBuffer(buffer.get());
+      })) {
+    is_pinned_host_ = true;
+  }
   ABSL_VLOG(1) << "[SetAsMaterialized] Setting as materialized";
   return data_.SetMaterializationStarted(std::move(buffers));
 }
@@ -641,6 +650,73 @@ absl::StatusOr<size_t> DeviceBufferRef::pjrt_buffer_size() const {
 
 [[nodiscard]] bool DeviceBufferRef::is_materialized() const {
   return device_buffer_list_->is_materialized();
+}
+
+bool DeviceBufferList::IsDirectlyPinnedHost() const {
+  if (is_pinned_host_) {
+    return true;
+  }
+  if (!data_.is_materialized()) {
+    return false;
+  }
+  const auto buffer_status = data_[0];
+  return buffer_status.ok() && IsPinnedHostBuffer(buffer_status.value());
+}
+
+namespace {
+
+template <typename T>
+void PushMetadataInputs(T& node, std::vector<T*>& stack) {
+  const auto op = node.deferred_op();
+  if (op == nullptr || !IsMetadataOnly(op->op_name())) {
+    return;
+  }
+  for (const auto& input : op->inputs()) {
+    if (auto* const list = input.device_buffer_list().get()) {
+      stack.push_back(list);
+    }
+  }
+}
+
+}  // namespace
+
+bool DeviceBufferList::is_pinned_host() const {
+  std::vector<const DeviceBufferList*> stack = {this};
+  absl::flat_hash_set<const DeviceBufferList*> visited;
+  while (!stack.empty()) {
+    const DeviceBufferList* const current = stack.back();
+    stack.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    if (current->IsDirectlyPinnedHost()) {
+      return true;
+    }
+    PushMetadataInputs(*current, stack);
+  }
+  return false;
+}
+
+[[nodiscard]] bool DeviceBufferRef::is_pinned_host() const {
+  return device_buffer_list_->is_pinned_host();
+}
+
+void DeviceBufferList::set_is_pinned_host() {
+  std::vector<DeviceBufferList*> stack = {this};
+  absl::flat_hash_set<DeviceBufferList*> visited;
+  while (!stack.empty()) {
+    DeviceBufferList* const current = stack.back();
+    stack.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    current->is_pinned_host_ = true;
+    PushMetadataInputs(*current, stack);
+  }
+}
+
+void DeviceBufferRef::set_is_pinned_host() const {
+  device_buffer_list_->set_is_pinned_host();
 }
 
 [[nodiscard]] bool DeviceBufferRef::is_constant() const {

@@ -97,6 +97,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "ao_offload_test",
+    srcs = ["ao_offload_test.py"],
+    tags = ["requires-tpu-v5lite"],
+    deps = [
+        ":seed_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "compilation_mode_test",
     srcs = ["compilation_mode_test.py"],
     deps = [

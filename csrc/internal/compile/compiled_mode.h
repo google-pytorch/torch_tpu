@@ -60,8 +60,10 @@ namespace torch_tpu {
 // expectations for the behavior of the compiled mode output.
 absl::StatusOr<at::Tensor> MakePlaceholder(absl::Span<const int64_t> sizes,
                                            at::ScalarType dtype,
-                                           bool requires_grad);
-absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad);
+                                           bool requires_grad,
+                                           bool is_pinned_host = false);
+absl::StatusOr<at::Tensor> MakePlaceholder(Shape shape, bool requires_grad,
+                                           bool is_pinned_host = false);
 
 // Extracts the MLIR module from the given graph without compiling or
 // materializing.

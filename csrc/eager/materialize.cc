@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -268,6 +269,23 @@ MaterializationStages ProcessMaterializationTask(
   return ApplySplitMode(std::move(traversals), task.common, mlir_context);
 }
 
+void MarkPinnedHostOutputs(
+    absl::Span<const DeviceBufferRef> outputs,
+    const SharedLoadedExecutableWithMetadata& executable) {
+  const auto output_memory_kinds =
+      executable->GetLoadedExecutable()->GetOutputMemoryKinds();
+  if (!output_memory_kinds.ok() || output_memory_kinds->empty()) {
+    return;
+  }
+  const auto& kinds = output_memory_kinds->front();
+  const size_t count = std::min(outputs.size(), kinds.size());
+  for (size_t i = 0; i < count; ++i) {
+    if (kinds[i] == "pinned_host") {
+      outputs[i].set_is_pinned_host();
+    }
+  }
+}
+
 // Signals that a shutdown has been initiated.
 enum class ShutdownSentinel {};
 
@@ -436,6 +454,7 @@ class MaterializationWorker {
           DeviceBufferList::CreatePending(shape, device_index, stream_id));
       outputs.push_back(std::move(output_ref));
     }
+    MarkPinnedHostOutputs(outputs, executable);
     RecordBackgroundMaterialization(outputs);
 
     // Intentional copy on outputs; we need to both include them in the task

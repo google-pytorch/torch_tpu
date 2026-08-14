@@ -107,6 +107,12 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "any.all_out";
     case OpName::kAnyOut:
       return "any.out";
+    case OpName::kAoOffload:
+      return "offload";
+    case OpName::kAoReload:
+      return "reload";
+    case OpName::kAoWaitTensor:
+      return "wait_tensor";
     case OpName::kArangeStartOut:
       return "arange.start_out";
     case OpName::kArgMaxOut:

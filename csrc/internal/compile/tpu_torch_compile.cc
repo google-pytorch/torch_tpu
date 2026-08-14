@@ -131,18 +131,29 @@ bool IsValidLayout(const std::vector<int64_t>& layout,  // INT_VEC_OK
   return true;
 }
 
+bool PyIsPinnedHost(const at::Tensor& tensor) {
+  if (!tensor.has_storage()) {
+    return false;
+  }
+  const auto buffer_ref = GetBuffer(tensor);
+  return buffer_ref.ok() && buffer_ref->is_pinned_host();
+}
+
 at::Tensor PyMakePlaceholder(const std::vector<int64_t>& sizes,  // INT_VEC_OK
-                             at::ScalarType dtype, bool requires_grad) {
-  TT_ASSIGN_OR_THROW(at::Tensor prepared_tensor,
-                     MakePlaceholder(sizes, dtype, requires_grad),
-                     _.SetPrepend() << "failed to create placeholder tensor: ");
+                             at::ScalarType dtype, bool requires_grad,
+                             bool is_pinned_host) {
+  TT_ASSIGN_OR_THROW(
+      const at::Tensor prepared_tensor,
+      MakePlaceholder(sizes, dtype, requires_grad, is_pinned_host),
+      _.SetPrepend() << "failed to create placeholder tensor: ");
   return prepared_tensor;
 }
 
 at::Tensor PyMakeDynamicPlaceholder(
     const std::vector<int64_t>& sizes,  // INT_VEC_OK
-    at::ScalarType dtype, const TensorBounds& bounds, bool requires_grad) {
-  TT_ASSIGN_OR_THROW(mlir::ElementType element_type,
+    at::ScalarType dtype, const TensorBounds& bounds, bool requires_grad,
+    bool is_pinned_host) {
+  TT_ASSIGN_OR_THROW(const mlir::ElementType element_type,
                      ConvertTo<mlir::ElementType>(dtype));
   Shape shape(CopyIntVector(sizes), element_type);
   shape.dynamic_dimensions().reserve(bounds.dynamic_dims.size());
@@ -152,14 +163,19 @@ at::Tensor PyMakeDynamicPlaceholder(
                                 .lower_bound = 2,  // Default lower bound
                                 .upper_bound = bounds.upper_bounds[i]});
   }
-  TT_ASSIGN_OR_THROW(at::Tensor prepared_tensor,
-                     MakePlaceholder(std::move(shape), requires_grad),
-                     _.SetPrepend()
-                         << "failed to create dynamic placeholder tensor: ");
+  TT_ASSIGN_OR_THROW(
+      const at::Tensor prepared_tensor,
+      MakePlaceholder(std::move(shape), requires_grad, is_pinned_host),
+      _.SetPrepend() << "failed to create dynamic placeholder tensor: ");
   return prepared_tensor;
 }
 
-at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
+at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor,
+                                 bool is_pinned_host) {
+  if (!is_pinned_host) {
+    is_pinned_host = PyIsPinnedHost(arg_tensor);
+  }
+
   // arg_tensor may be a view, but placeholder DeviceBufferRefs are always
   // interpreted as contiguous.
   // If we want to make an equivalent view, we need to create a contiguous base
@@ -170,14 +186,14 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
   // This is the smallest amount of data necessary to back the view.
   // If arg_tensor is already contiguous, then this will just be its shape.
   TT_ASSIGN_OR_THROW(
-      Dimensions minimal_base_sizes,
+      const Dimensions minimal_base_sizes,
       GetContiguousBaseShape(StridedLayout::FromTensor(arg_tensor)));
 
   // Then, we create a contiguous placeholder tensor with this shape.
   TT_ASSIGN_OR_THROW(
-      at::Tensor base_tensor,
+      const at::Tensor base_tensor,
       MakePlaceholder(minimal_base_sizes, arg_tensor.scalar_type(),
-                      /*requires_grad=*/false),
+                      /*requires_grad=*/false, is_pinned_host),
       _.SetPrepend() << "failed to create placeholder tensor: ");
 
   // NOTE: This logic must match the logic from PrepareCompiledModeArguments in
@@ -1280,17 +1296,21 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
       "    from the executable.\n"
       "    This is useful for bounded dynamic programs where the actual\n"
       "    output shape might differ from the static upper bound.");
-  mod_with_error_handling.def("placeholder", PyMakePlaceholder,
-                              py::arg("sizes"), py::arg("dtype"),
-                              py::arg("requires_grad"));
+  mod_with_error_handling.def(
+      "placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
+      py::arg("requires_grad") = false, py::arg("is_pinned_host") = false);
   mod_with_error_handling.def("placeholder_like", PyMakePlaceholderLike,
-                              py::arg("arg_tensor"));
+                              py::arg("arg_tensor"),
+                              py::arg("is_pinned_host") = false);
   mod_with_error_handling.def("clone_placeholder", PyClonePlaceholder,
                               py::arg("arg_tensor"));
-  mod_with_error_handling.def("dynamic_placeholder", PyMakeDynamicPlaceholder,
-                              py::arg("sizes"), py::arg("dtype"),
-                              py::arg("tensor_bounds"),
-                              py::arg("requires_grad") = false);
+  mod_with_error_handling.def(
+      "dynamic_placeholder", PyMakeDynamicPlaceholder, py::arg("sizes"),
+      py::arg("dtype"), py::arg("tensor_bounds"),
+      py::arg("requires_grad") = false, py::arg("is_pinned_host") = false);
+  mod_with_error_handling.def(
+      "is_pinned_host", &PyIsPinnedHost, py::arg("tensor"),
+      "Returns whether the given tensor is host offloaded.");
   mod_with_error_handling.def("get_device_layout_if_materialized",
                               &PyGetDeviceLayoutIfMaterialized,
                               py::arg("tensor"));

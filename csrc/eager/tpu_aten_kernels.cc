@@ -48,6 +48,7 @@
 #include "csrc/ops/addmv/addmv_aten_kernels.h"
 #include "csrc/ops/all_any/all_any_aten_kernels.h"
 #include "csrc/ops/angle/angle_aten_kernels.h"
+#include "csrc/ops/ao/ao_offload_kernels.h"
 #include "csrc/ops/arange/arange_aten_kernels.h"
 #include "csrc/ops/as_strided/as_strided_aten_kernels.h"
 #include "csrc/ops/assertion_aten_kernels.h"
@@ -1483,6 +1484,12 @@ TORCH_LIBRARY_IMPL(tpu, AutogradPrivateUse1, m) {
         return AtenSparseGatherAutograd::apply(row_pointers, indices, operand,
                                                max_non_zeroes_per_row);
       });
+}
+
+TORCH_LIBRARY_IMPL(ao, PrivateUse1, m) {
+  ImplStable<OpName::kAoOffload>(m, AtenAoOffload);
+  ImplStable<OpName::kAoReload>(m, AtenAoReload);
+  ImplStable<OpName::kAoWaitTensor>(m, AtenAoWaitTensor);
 }
 
 // Registers implementations for torch.ops.tpu ops for CPU tensors.
