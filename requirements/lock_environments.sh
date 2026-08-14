@@ -34,9 +34,10 @@ cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
 
-PYPROJECT_CUDA=$(mktemp --suffix=_cuda.toml)
-trap 'rm -f "$PYPROJECT_CUDA"' EXIT
-sed -E 's/index = "pytorch-cpu",? *//; s/,? *index = "pytorch-cpu"//' pyproject.toml > "$PYPROJECT_CUDA"
+TMP_DIR=$(mktemp -d)
+PYPROJECT_CUDA="$TMP_DIR/pyproject.toml"
+trap 'rm -rf "$TMP_DIR"' EXIT
+sed -E '/= *\{ *index = "pytorch-cpu" *\}/d; s/index = "pytorch-cpu",? *//; s/,? *index = "pytorch-cpu"//' pyproject.toml > "$PYPROJECT_CUDA"
 
 # Loop over supported Python versions and generate the full-environment locks.
 for version in "3.11" "3.12" "3.13" "3.14"; do
@@ -71,6 +72,9 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     --generate-hashes \
     --index-url https://pypi.org/simple \
     --output-file "$REQUIREMENTS_CUDA_FILE"
+
+  # Normalize the temporary path back to pyproject.toml.
+  sed -i "s|$PYPROJECT_CUDA|pyproject.toml|g" "$REQUIREMENTS_CUDA_FILE"
 done
 
 # Torch-only locks for the extra PyTorch versions the multi-ABI wheel ships a
@@ -79,7 +83,7 @@ done
 # lock. The version list is read from the single source of truth in
 # //bazel:pytorch_versions.bzl so it stays in step with the pip hubs in
 # MODULE.bazel.
-for version in $(uv run bazel/pytorch_versions.py EXTRA_PYTORCH_VERSIONS); do
+for version in $(uv run --no-project bazel/pytorch_versions.py EXTRA_PYTORCH_VERSIONS); do
   version_und=$(echo "$version" | tr '.' '_')
   REQUIREMENTS_FILE="requirements/requirements_torch_${version_und}.txt"
 
@@ -137,7 +141,7 @@ EOF
 # let a stale name ship a glue built against a different ABI.
 pinned_snapshot=$(grep -m1 '^torch==' "$REQUIREMENTS_FILE" | cut -d'=' -f3)
 pinned_release=$(echo "$pinned_snapshot" | cut -d'+' -f1 | cut -d'.' -f1-3)
-declared=$(uv run bazel/pytorch_versions.py NIGHTLY_TORCH_VERSION)
+declared=$(uv run --no-project bazel/pytorch_versions.py NIGHTLY_TORCH_VERSION)
 if [ "$pinned_release" != "$declared" ]; then
   echo "ERROR: the nightly lock now pins torch $pinned_snapshot (release $pinned_release)," >&2
   echo "but NIGHTLY_TORCH_VERSION is $declared. Update it in bazel/pytorch_versions.bzl" >&2
