@@ -27,8 +27,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/env_vars.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/env_vars.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 namespace torch_tpu {
 namespace {

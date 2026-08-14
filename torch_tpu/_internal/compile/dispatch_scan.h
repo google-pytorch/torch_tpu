@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
-#include "torch_tpu/common/compilation.h"
+#include "torch_tpu/csrc/common/compilation.h"
 #include "torch_tpu/ops/scan_builder.h"
 
 namespace torch_tpu {

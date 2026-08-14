@@ -56,7 +56,7 @@
 #include "stablehlo/conversions/linalg/transforms/Passes.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/_internal/mosaic/op_builders.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/ops/scaled_dot_product_attention/util.h"
 #include "xla/xla_data.pb.h"
 

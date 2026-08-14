@@ -27,8 +27,8 @@
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/dialect/Register.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/shape.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {

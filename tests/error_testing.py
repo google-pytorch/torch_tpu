@@ -102,8 +102,8 @@ def _parse_error(msg: str):
   #   empty(): product of dimension sizes ...
   #
   #   C++ error trace (starting from the origin):
-  #   third_party/py/torch_tpu/common/error_utils.cc:53: SafeMultiply()
-  #   third_party/py/torch_tpu/common/error_utils.cc:101:
+  #   third_party/py/torch_tpu/csrc/common/error_utils.cc:53: SafeMultiply()
+  #   third_party/py/torch_tpu/csrc/common/error_utils.cc:101:
   #   ValidateTensorByteSize()
   #   third_party/py/torch_tpu/device_buffer.cc:361: CreateEmpty()
   #   third_party/py/torch_tpu/ops/nullary_aten_kernels.cc:90: MakeEmptyBuffer()

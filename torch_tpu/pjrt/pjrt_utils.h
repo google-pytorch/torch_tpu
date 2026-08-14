@@ -29,7 +29,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/compilation.h"
+#include "torch_tpu/csrc/common/compilation.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"

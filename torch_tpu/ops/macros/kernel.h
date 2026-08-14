@@ -26,10 +26,10 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/macro_utils.h"
-#include "torch_tpu/common/op_name_stack.h"  // IWYU pragma: keep for ScopedOpName
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/macro_utils.h"
+#include "torch_tpu/csrc/common/op_name_stack.h"  // IWYU pragma: keep for ScopedOpName
 #include "torch_tpu/ops/macros/logging.h"
 
 // TT_KERNEL(op_name, param_keys, (arg1, arg2, ...), statements) wraps the

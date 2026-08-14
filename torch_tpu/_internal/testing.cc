@@ -20,8 +20,8 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep, for at::Tensor mapping
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/pybind_error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/pybind_error_utils.h"
 #include "torch_tpu/eager/device_gen_impl.h"
 #include "torch_tpu/eager/events_queue.h"
 #include "torch_tpu/eager/op_dispatcher.h"

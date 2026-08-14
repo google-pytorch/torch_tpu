@@ -43,7 +43,7 @@ class TestErrorsWithCppContext(seed_test_utils.RepeatableTest):
     #   empty(): dimension sizes must be >= 0, got [-1], which contains -1
     #
     #   C++ error trace (starting from the origin):
-    #   third_party/py/torch_tpu/common/error_utils.cc:95:
+    #   third_party/py/torch_tpu/csrc/common/error_utils.cc:95:
     #   ValidateTensorByteSize()
     #   third_party/py/torch_tpu/device_buffer.cc:361: CreateEmpty()
     #   third_party/py/torch_tpu/ops/nullary_aten_kernels.cc:90:

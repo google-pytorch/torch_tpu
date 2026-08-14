@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 #include "pybind11/pybind11.h"
-#include "torch_tpu/common/native_scan_support.h"
-#include "torch_tpu/common/utils.h"
+#include "torch_tpu/csrc/common/native_scan_support.h"
+#include "torch_tpu/csrc/common/utils.h"
 
 namespace torch_tpu {
 

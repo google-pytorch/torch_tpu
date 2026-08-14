@@ -22,7 +22,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/shape.h"
 
 namespace torch_tpu {
 

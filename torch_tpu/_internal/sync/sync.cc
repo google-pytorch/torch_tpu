@@ -31,7 +31,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/DebugStringHelper.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/materialize.h"
 #include "torch_tpu/eager/structured_log_buffer.h"

@@ -32,9 +32,9 @@ torch_tpu_cc_library(
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:compilation",
-        "//torch_tpu/common:compilation_spec",
-        "//torch_tpu/common:error_utils",
+        "//torch_tpu/csrc/common:compilation",
+        "//torch_tpu/csrc/common:compilation_spec",
+        "//torch_tpu/csrc/common:error_utils",
     ],
 )
 
@@ -43,16 +43,16 @@ pybind_extension(
     name = "compiler_options_impl",
     srcs = ["compiler_options_impl.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:compilation",
-        "//torch_tpu/common:compilation_spec",
-        "//torch_tpu/common:error_utils",
+        "//torch_tpu/csrc/common:compilation",
+        "//torch_tpu/csrc/common:compilation_spec",
+        "//torch_tpu/csrc/common:error_utils",
         "@com_google_absl//absl/status",
     ],
 )

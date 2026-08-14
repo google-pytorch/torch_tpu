@@ -30,7 +30,7 @@
 #include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
 #include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
-#include "torch_tpu/common/utils.h"
+#include "torch_tpu/csrc/common/utils.h"
 #include "tsl/profiler/lib/profiler_session.h"
 #include "tsl/profiler/protobuf/xplane.pb.h"
 

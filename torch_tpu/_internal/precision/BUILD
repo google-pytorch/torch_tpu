@@ -27,14 +27,14 @@ pybind_extension(
     name = "precision_impl",
     srcs = ["precision_impl.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
         "//torch_tpu/ops:precision_context",
         "@stablehlo//:stablehlo_ops",
     ],

@@ -30,8 +30,8 @@ torch_tpu_cc_library(
     srcs = ["execution_mode_impl.cc"],
     deps = [
         "//shims/pybind11",
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
         "//torch_tpu/eager:eager_mode",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
@@ -42,12 +42,12 @@ pybind_extension(
     name = "execution_mode_impl",
     srcs = ["execution_mode_impl.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
         "//torch_tpu/eager:eager_mode",
         "//torch_tpu/eager:tpu_aten_kernels",
     ],

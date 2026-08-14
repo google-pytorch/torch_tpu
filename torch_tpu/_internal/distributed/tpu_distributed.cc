@@ -27,7 +27,7 @@
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/utils/pybind.h"  // IWYU pragma: keep or multi_tpu_test fails
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/distributed/process_group_tpu.h"
 #include "torch_tpu/distributed/utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"

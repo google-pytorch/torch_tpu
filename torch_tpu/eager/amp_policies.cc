@@ -137,7 +137,7 @@
 #include "ATen/ops/triplet_margin_loss_ops.h"
 #include "ATen/ops/view_as_complex_ops.h"
 #include "torch/library.h"
-#include "torch_tpu/common/macro_utils.h"
+#include "torch_tpu/csrc/common/macro_utils.h"
 
 namespace torch_tpu {
 

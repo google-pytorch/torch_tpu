@@ -23,9 +23,9 @@
 #include "pybind11/stl.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch_tpu/_internal/dynamism/dynamism.h"
-#include "torch_tpu/common/device_type.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/device_type.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/shape.h"
 
 namespace torch_tpu {
 namespace py = pybind11;

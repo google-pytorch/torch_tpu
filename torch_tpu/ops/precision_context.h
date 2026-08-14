@@ -20,7 +20,7 @@
 #include <string_view>
 
 #include "stablehlo/dialect/StablehloOps.h"
-#include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/csrc/common/cache_key.h"
 
 namespace torch_tpu {
 

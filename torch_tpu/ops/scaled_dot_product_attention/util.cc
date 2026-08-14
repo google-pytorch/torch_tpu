@@ -43,7 +43,7 @@
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "torch_tpu/_internal/mosaic/op_builders.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 namespace mlir::torch_tpu {
 

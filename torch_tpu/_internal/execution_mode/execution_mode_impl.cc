@@ -15,8 +15,8 @@
  */
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
-#include "torch_tpu/common/context_manager.h"
-#include "torch_tpu/common/context_states.h"
+#include "torch_tpu/csrc/common/context_manager.h"
+#include "torch_tpu/csrc/common/context_states.h"
 #include "torch_tpu/eager/eager_mode.h"
 #include "torch_tpu/eager/tpu_aten_kernels.h"
 

@@ -35,7 +35,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 #include "torch_tpu/eager/materialize.h"
 
 namespace torch_tpu {

@@ -17,7 +17,7 @@
 #include "torch_tpu/_internal/compile/torch_compile_utils.h"
 
 #include "absl/strings/match.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 
 namespace torch_tpu {
 

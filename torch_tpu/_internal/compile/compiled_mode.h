@@ -32,9 +32,9 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/compilation.h"
-#include "torch_tpu/common/compilation_spec.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/compilation.h"
+#include "torch_tpu/csrc/common/compilation_spec.h"
+#include "torch_tpu/csrc/common/shape.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 
 // The core functions used for Dynamo compiled mode.

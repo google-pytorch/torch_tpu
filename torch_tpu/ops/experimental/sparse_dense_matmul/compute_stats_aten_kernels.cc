@@ -23,7 +23,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "c10/core/ScalarType.h"
 #include "torch/library.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 namespace torch_tpu {
 

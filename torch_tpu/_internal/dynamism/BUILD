@@ -30,8 +30,8 @@ torch_tpu_cc_library(
     ],
     deps = [
         "//shims/torch:aten_headers",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:shape",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:shape",
         "//torch_tpu/eager:device_buffer",
         "//torch_tpu/eager:tensor_to_buffer",
         "@com_google_absl//absl/log:absl_log",
@@ -48,9 +48,9 @@ torch_tpu_cc_library(
         "//shims/pybind11",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:device_type",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:shape",
+        "//torch_tpu/csrc/common:device_type",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:shape",
     ],
 )
 
@@ -60,11 +60,11 @@ torch_tpu_cc_library(
     hdrs = ["dynamism_ops.h"],
     deps = [
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:aten_utils",
-        "//torch_tpu/common:dimension_types",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:shape",
-        "//torch_tpu/common:to_string",
+        "//torch_tpu/csrc/common:aten_utils",
+        "//torch_tpu/csrc/common:dimension_types",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:shape",
+        "//torch_tpu/csrc/common:to_string",
         "//torch_tpu/ops:op_builder_utils",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status:statusor",
@@ -85,7 +85,7 @@ pybind_extension(
     name = "_tpu_torch_dynamism",
     srcs = ["dynamism_py.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     py_deps = [
         "//shims/torch:pytorch",
@@ -95,9 +95,9 @@ pybind_extension(
         ":dynamism_cc",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:device_type",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:shape",
+        "//torch_tpu/csrc/common:device_type",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:shape",
     ],
 )
 
@@ -117,9 +117,9 @@ torch_tpu_cc_test(
     srcs = ["dynamism_ops_test.cc"],
     deps = [
         ":dynamism_ops",
-        "//torch_tpu/common:dimension_types",
-        "//torch_tpu/common:oss_test_main",
-        "//torch_tpu/common:shape",
+        "//torch_tpu/csrc/common:dimension_types",
+        "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/common:shape",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",

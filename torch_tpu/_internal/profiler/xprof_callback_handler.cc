@@ -24,8 +24,8 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "torch/csrc/profiler/orchestration/observer.h"
-#include "torch_tpu/common/context_manager.h"
-#include "torch_tpu/common/context_states.h"
+#include "torch_tpu/csrc/common/context_manager.h"
+#include "torch_tpu/csrc/common/context_states.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "tsl/profiler/lib/traceme_encode.h"
 

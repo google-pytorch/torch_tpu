@@ -22,8 +22,8 @@
 #include <utility>
 #include <vector>
 
-#include "torch_tpu/common/fingerprint_utils.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/to_string.h"
 
 namespace torch_tpu {
 namespace {

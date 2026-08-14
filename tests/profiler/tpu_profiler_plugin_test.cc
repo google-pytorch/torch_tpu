@@ -30,7 +30,7 @@
 #include "absl/strings/string_view.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
 
 namespace torch_tpu {

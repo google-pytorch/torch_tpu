@@ -23,7 +23,7 @@
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 namespace torch_tpu {
 

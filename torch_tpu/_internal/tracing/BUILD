@@ -28,7 +28,7 @@ pybind_extension(
     name = "_tpu_torch_tracing",
     srcs = ["tracing_py.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [

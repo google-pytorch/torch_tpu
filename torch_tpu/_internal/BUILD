@@ -28,8 +28,8 @@ torch_tpu_cc_library(
     srcs = ["env.cc"],
     deps = [
         "//shims/pybind11",
-        "//torch_tpu/common:native_scan_support",
-        "//torch_tpu/common:utils",
+        "//torch_tpu/csrc/common:native_scan_support",
+        "//torch_tpu/csrc/common:utils",
     ],
 )
 
@@ -37,13 +37,13 @@ pybind_extension(
     name = "env",
     srcs = ["env.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:native_scan_support",
-        "//torch_tpu/common:utils",
+        "//torch_tpu/csrc/common:native_scan_support",
+        "//torch_tpu/csrc/common:utils",
     ],
 )
 
@@ -75,8 +75,8 @@ torch_tpu_cc_library(
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:pybind_error_utils",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:pybind_error_utils",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:op_dispatcher",
@@ -92,7 +92,7 @@ pybind_extension(
     name = "testing",
     srcs = ["testing.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     py_deps = [
         "//shims/torch:pytorch",
@@ -103,8 +103,8 @@ pybind_extension(
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:pybind_error_utils",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:pybind_error_utils",
         "//torch_tpu/eager:device_gen_impl",
         "//torch_tpu/eager:events_queue",
         "//torch_tpu/eager:op_dispatcher",

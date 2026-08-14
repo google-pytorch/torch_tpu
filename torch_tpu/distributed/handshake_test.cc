@@ -17,7 +17,7 @@
 #include "torch_tpu/distributed/handshake.h"
 
 #include "gtest/gtest.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 
 namespace torch_tpu {
 namespace {

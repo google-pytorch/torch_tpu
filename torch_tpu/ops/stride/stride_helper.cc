@@ -24,10 +24,10 @@
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dtype.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/to_string.h"
 
 namespace torch_tpu {
 
