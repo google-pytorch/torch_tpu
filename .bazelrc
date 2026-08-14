@@ -297,8 +297,8 @@ test:ci --test_output=errors
 
 # Enable ANSI color in CI logs.
 #
-# Intentionlly override the default `--color=auto` since because Bazel
-# client sends `--isatty=0` when bi terminal is available in GitHub Actions.
+# Intentionally override the default `--color=auto` because Bazel client
+# sends `--isatty=0` when no terminal is available in GitHub Actions.
 # Besides, turn off curses since the log viewer does not implement cursor-movement
 # escapes.
 #
