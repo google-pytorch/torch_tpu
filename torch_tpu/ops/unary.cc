@@ -30,6 +30,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
@@ -133,6 +134,150 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   auto res = mlir::stablehlo::Abs(input);
 
   return res;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAcosShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Acos(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAcoshShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Acosh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAsinShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Asin(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAsinhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Asinh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAtanShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Atan(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAtanhShlo(mlir::MlirOp input_op,
+                                            mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Atanh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildCosShlo(mlir::MlirOp input_op,
+                                          mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::stablehlo::Cosine(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildCoshShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Cosh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildSinShlo(mlir::MlirOp input_op,
+                                          mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::stablehlo::Sine(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildSinhShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::chlo::Sinh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildTanShlo(mlir::MlirOp input_op,
+                                          mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::stablehlo::Tan(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildTanhShlo(mlir::MlirOp input_op,
+                                           mlir::ElementType default_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_type,
+                      InferComputationDtype(default_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
+                      ConvertIfInteger(input_op, computation_type));
+  TT_ASSIGN_OR_RETURN(computation_input_op,
+                      CastIfNeeded(computation_input_op, computation_type));
+  mlir::MlirOp result_op = mlir::stablehlo::Tanh(computation_input_op);
+  return CastIfNeeded(result_op, default_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildCeilShlo(mlir::MlirOp input_op) {

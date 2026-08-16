@@ -1559,23 +1559,9 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
                 torch.float16: {"rtol": 6e-2, "atol": 1e-3},
                 torch.float32: {"rtol": 5e-2, "atol": 2e-4},
             },
-            "acos": {
-                torch.float16: {"rtol": 3e-3, "atol": 2e-2},
-            },
-            "asin": {
-                torch.float16: {"rtol": 3e-3, "atol": 2e-2},
-            },
-            "atan": {
-                torch.float16: {"rtol": 2e-3, "atol": 1e-4},
-            },
             "atan2": {
                 torch.bfloat16: {"rtol": 5.2e-2, "atol": 4e-2},
                 torch.float16: {"rtol": 1.3e-2, "atol": 2e-3},
-            },
-            "atanh": {
-                torch.bfloat16: {"rtol": 2e-2, "atol": 3e-1},
-                torch.float16: {"rtol": 1e-3, "atol": 3e-1},
-                torch.float32: {"rtol": 4e-4, "atol": 8e-2},
             },
             "erf": {
                 torch.bfloat16: {"rtol": 2e-2, "atol": 3e-4},
@@ -1670,14 +1656,6 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
             "softmax": {
                 torch.bfloat16: {"rtol": 1e-3, "atol": 5.8e-3},
                 torch.float16: {"rtol": 1e-3, "atol": 1.1e-3},
-            },
-            "tan": {
-                torch.float32: {"rtol": 1e-5, "atol": 2e-2},
-            },
-            "tanh": {
-                torch.bfloat16: {"rtol": 2.4e-2, "atol": 2e-3},
-                torch.float16: {"rtol": 1.2e-1, "atol": 1.1e-3},
-                torch.float32: {"rtol": 3.8e-1, "atol": 6.6e-5},
             },
             "var": {
                 torch.bfloat16: {"rtol": 3e-1, "atol": 2e-2},
