@@ -1205,6 +1205,114 @@ register_extension_info(
     label_regex_for_dep = "{extension_name}",
 )
 
+DEFAULT_TORCH_TEST_DEPS = [
+    "//shims/torch:testing_internal",
+    "//tests:torch_test_configs",
+    "//torch_tpu",
+    "@pypi//hypothesis",
+    "@pypi//pytest",
+    # Backs upstream --save-xml, which the runner uses to populate Bazel's
+    # per-test XML_OUTPUT_FILE (per-test results in ResultStore).
+    "@pypi//unittest_xml_reporting",
+]
+
+def torch_tpu_oss_torch_test(
+        name,
+        torch_test_module,
+        srcs = ["//tests:run_torch_tests.py"],
+        main = "//tests:run_torch_tests.py",
+        args = None,
+        extra_deps = [],
+        tags = None,
+        shard_count = None,
+        timeout = "long",
+        **kwargs):
+    """Creates an OSS-only upstream PyTorch test-suite target for the TPU backend.
+
+    Runs the unmodified upstream module pytorch/test/<torch_test_module>.py
+    against the tpu (PrivateUse1) backend. The upstream sources are NOT part
+    of the Bazel graph: the CI workflow checks out pytorch/pytorch and points
+    TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR at its test/ directory. Targets are
+    normally not written by hand: `bazel run //tests:gen_torch_tests`
+    generates one per eligible upstream module into tests/torch/BUILD. The
+    runner requires a torch that ships PrivateUse1TestBase.set_test_configs
+    (>= 2.13) and exits early (success) on older wheels; run with
+    --//:_torch_version=<version> to select the wheel matching the checkout.
+
+    Args:
+        name: The name of the test.
+        torch_test_module: Name of the upstream test module under
+            pytorch/test/, without the .py extension (e.g. "test_torch").
+        srcs: List of runner source files (defaults to
+            ["//tests:run_torch_tests.py"]).
+        main: Main entrypoint script (defaults to
+            "//tests:run_torch_tests.py").
+        args: Extra arguments forwarded to the upstream unittest main, e.g.
+            ["-k", "cdist"]. `bazel test --test_filter=<pattern>` also works.
+        extra_deps: Dependencies appended to `DEFAULT_TORCH_TEST_DEPS` (e.g.
+            "@pypi//scipy" for suites that import it).
+        tags: Optional additional tags.
+        shard_count: Bazel shard count. Supported even though upstream uses
+            plain unittest: the runner implements Bazel's sharding protocol
+            by deterministically partitioning test ids.
+        timeout: Bazel test timeout; defaults to "long" ("eternal" would
+            require notap, whose notest tag OSS CI filters out). The
+            dedicated workflow raises the ceiling with --test_timeout.
+        **kwargs: Additional arguments passed to torch_tpu_py_test.
+
+    Returns:
+        The instantiated target returned by `oss_target(torch_tpu_py_test, ...)`,
+        which creates a `torch_tpu_py_test` target when building in OSS.
+    """
+    env = {
+        "TORCH_TPU_INTERNAL_TORCH_TEST_MODULE": torch_test_module,
+        # Restrict instantiate_device_type_tests to the tpu backend (read
+        # natively by torch.testing._internal.common_device_type).
+        "PYTORCH_TESTING_DEVICE_ONLY_FOR": "tpu",
+    }
+    env.update(kwargs.pop("env", {}))
+
+    all_tags = [
+        "requires-tpu-v5lite",
+        "wheel_test_excluded",
+    ] + (tags or [])
+
+    return oss_target(
+        torch_tpu_py_test,
+        name = name,
+        srcs = srcs,
+        main = main,
+        args = args,
+        env = env,
+        # No nolocal: it would tag the target "manual", which wildcard
+        # patterns skip, and the workflow (like local use) runs the whole
+        # generated package as //tests/torch:all. The package only exists
+        # after deliberately running //tests:gen_torch_tests, so the targets
+        # stay out of ordinary local wildcard runs anyway.
+        # No _build_test companion: the generated package exists only where
+        # the real targets build and run (the upstream_tests.yaml workflow),
+        # and the companions would fail under its accelerator run_under
+        # wrapper while adding nothing.
+        nobuild = "The generated //tests/torch package is absent from presubmit; the " +
+                  "upstream_tests.yaml workflow builds the real targets.",
+        nonightly_oss = "Restricted strictly to the upstream_tests.yaml workflow.",
+        nopresubmit_oss = "Relegated to the upstream_tests.yaml workflow to avoid adding " +
+                          "flakiness/latency to every PR.",
+        shard_count = shard_count,
+        # Upstream tests parse sys.argv with unittest, which rejects the
+        # absl test-shuffling flag.
+        shuffle_tests = False,
+        tags = all_tags,
+        timeout = timeout,
+        deps = DEFAULT_TORCH_TEST_DEPS + extra_deps,
+        **kwargs
+    )
+
+register_extension_info(
+    extension = torch_tpu_oss_torch_test,
+    label_regex_for_dep = "{extension_name}",
+)
+
 def _get_subpackage_targets_named(name):
     """Gets targets with the given name from all direct subpackages.
 

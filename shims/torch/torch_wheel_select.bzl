@@ -82,3 +82,37 @@ def torch_headers_select(base, extra = []):
     }
     rows.update(base)
     return rows
+
+# Python-level dependencies of the torch wheel itself. The extra-version pip
+# hubs are locked --no-deps (torch only), so each extra-version row must
+# supply torch's Python dependencies from the default hub, where they are
+# ABI-independent and shared across torch versions.
+_TORCH_PY_DEPS = [
+    "@pypi//filelock",
+    "@pypi//fsspec",
+    "@pypi//jinja2",
+    "@pypi//networkx",
+    "@pypi//setuptools",
+    "@pypi//sympy",
+    "@pypi//typing_extensions",
+]
+
+def torch_py_select(base, extra = []):
+    """A select() dict choosing the torch Python package per torch version.
+
+    For py_library deps: makes Python targets (and thus py tests) run against
+    the torch selected by --//:_torch_version instead of the default pin.
+    Each extra-version row is that version's wheel `:pkg` plus torch's Python
+    dependencies from the default hub (the torch-only locks carry none).
+
+    Args:
+      base: the select() dict for the default torch version.
+      extra: labels appended to every extra-version row (e.g. the numpy the
+        base rows already carry).
+    """
+    rows = {
+        _torch_version_setting(v): [_extra_wheel(v, "pkg")] + _TORCH_PY_DEPS + extra
+        for v in _EXTRA_GLUE_VERSIONS
+    }
+    rows.update(base)
+    return rows

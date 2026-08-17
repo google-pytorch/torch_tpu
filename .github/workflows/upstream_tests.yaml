@@ -26,6 +26,14 @@ on:
         options:
           - 'yes'
           - 'no'
+      pytorch-ref:
+        description: 'pytorch/pytorch git ref for the test sources (tag, branch, or "main" for nightly-tracking runs)'
+        type: string
+        default: 'v2.13.0'
+      torch-version:
+        description: 'torch wheel to run against (--//:_torch_version); keep matching pytorch-ref. E.g. 2.13.0, or 2.15.0 for the nightly channel.'
+        type: string
+        default: '2.13.0'
   pull_request:
     branches:
       - main
@@ -55,18 +63,21 @@ jobs:
       matrix:
         job_info: [
           {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu",
-            extra_flags: "--test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test",
-            target: "//tests:run_upstream_test_cpu",
-          },
-          {
             name: "TPU v7",
             runner: "linux-x86-tpu7x-224-4tpu",
             config: "ci_tpu_v7",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test',
-            target: "//tests:run_upstream_test_tpu",
+            # parallel_accelerator_execute.sh assigns each concurrent test
+            # (shard) its own TPU chip, so override the config's
+            # --local_test_jobs=1 to use all 4 chips. --test_timeout raises
+            # the per-shard ceiling for the large upstream suites (targets
+            # declare timeout="long"). --keep_going surfaces every failing
+            # suite instead of stopping at the first one. The generated
+            # targets carry the "nobuild" tag (suppresses build_test
+            # companions and keeps them out of the ordinary TPU CI configs),
+            # so this dedicated workflow must override the config's tag
+            # filters (last flag wins) to actually run them.
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --local_test_jobs=4 --test_timeout=3600 --keep_going --build_tag_filters= --test_tag_filters=-notest --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test',
+            target: "//tests/torch:all",
           },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
@@ -79,6 +90,8 @@ jobs:
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        with:
+          persist-credentials: false
 
       # Enable remote connections. Add a waiting step.
       # See go/ml-github-actions:connect#add-waiting-step.
@@ -87,12 +100,36 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
+      # The tested PyTorch version is configured here (not in Bazel): the
+      # sources come from this checkout ref, and the matching torch wheel is
+      # selected with --//:_torch_version. Dispatch with pytorch-ref=main +
+      # torch-version=<nightly channel> to exercise the newest upstream
+      # tests against the nightly wheel.
       - name: Checkout PyTorch
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
         with:
           repository: pytorch/pytorch
           path: pytorch
-          ref: v2.10.0
+          ref: ${{ inputs.pytorch-ref || 'v2.13.0' }}
+          persist-credentials: false
+
+      # Collect-everything-then-exclude: probe the checkout for every module
+      # that instantiates device-generic tests for the tpu backend and
+      # generate one torch_tpu_oss_torch_test target each into
+      # tests/torch/BUILD (customizations live in tests/torch_test_targets.py).
+      - name: Generate upstream test targets
+        env:
+          TORCH_VERSION: ${{ inputs.torch-version || '2.13.0' }}
+        run: >-
+          bazel run --config=${{ matrix.job_info.config }}
+          --//:_torch_version="$TORCH_VERSION"
+          //tests:gen_torch_tests --
+          --pytorch_test_dir="$GITHUB_WORKSPACE/pytorch/test"
 
       - name: Run Bazel Test
-        run: bazel test --config=${{ matrix.job_info.config }} ${{ matrix.job_info.extra_flags }} ${{ matrix.job_info.target }}
+        env:
+          TORCH_VERSION: ${{ inputs.torch-version || '2.13.0' }}
+        run: >-
+          bazel test --config=${{ matrix.job_info.config }}
+          --//:_torch_version="$TORCH_VERSION"
+          ${{ matrix.job_info.extra_flags }} ${{ matrix.job_info.target }}

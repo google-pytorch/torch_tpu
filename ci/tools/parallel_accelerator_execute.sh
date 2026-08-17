@@ -42,9 +42,10 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
 
 if command -v rlocation >/dev/null; then
   TEST_BINARY="$(rlocation "${TEST_WORKSPACE:-_main}/${1#./}")"
-else
-  TEST_BINARY="$1"
 fi
+# rlocation can miss (e.g. build_test companion scripts); fall back to the
+# path Bazel passed, which resolves from the test's working directory.
+[ -n "${TEST_BINARY:-}" ] || TEST_BINARY="$1"
 shift; set +uo pipefail
 
 

@@ -16,7 +16,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
-load("//shims/torch:torch_wheel_select.bzl", "torch_headers_select", "torch_lib_select")
+load("//shims/torch:torch_wheel_select.bzl", "torch_headers_select", "torch_lib_select", "torch_py_select")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
@@ -131,40 +131,49 @@ _CUDA_PYPI_DEPS = [
 py_library(
     # PY_LIBRARY_OK=OSS torch shim target
     name = "pytorch",
-    deps = select({
-        ":use_local_torch": [
-            "@local_torch//:torch",
-            "@pypi//numpy",
-        ],
-        ":use_cuda_torch": _CUDA_PYPI_DEPS + [
-            "@pypi_cuda//numpy",
-        ],
-        "//conditions:default": [
-            "@pypi//numpy",
-            "@pypi//torch",
-        ],
-    }),
+    deps = select(torch_py_select(
+        {
+            ":use_local_torch": [
+                "@local_torch//:torch",
+                "@pypi//numpy",
+            ],
+            ":use_cuda_torch": _CUDA_PYPI_DEPS + [
+                "@pypi_cuda//numpy",
+            ],
+            "//conditions:default": [
+                "@pypi//numpy",
+                "@pypi//torch",
+            ],
+        },
+        extra = ["@pypi//numpy"],
+    )),
 )
 
 py_library(
     # PY_LIBRARY_OK=OSS torch shim target
     name = "testing_internal",
-    deps = select({
-        ":use_local_torch": [
-            "@local_torch//:torch",
+    deps = select(torch_py_select(
+        {
+            ":use_local_torch": [
+                "@local_torch//:torch",
+                "@pypi//expecttest",
+                "@pypi//numpy",
+            ],
+            ":use_cuda_torch": _CUDA_PYPI_DEPS + [
+                "@pypi_cuda//expecttest",
+                "@pypi_cuda//numpy",
+            ],
+            "//conditions:default": [
+                "@pypi//expecttest",
+                "@pypi//numpy",
+                "@pypi//torch",
+            ],
+        },
+        extra = [
             "@pypi//expecttest",
             "@pypi//numpy",
         ],
-        ":use_cuda_torch": _CUDA_PYPI_DEPS + [
-            "@pypi_cuda//expecttest",
-            "@pypi_cuda//numpy",
-        ],
-        "//conditions:default": [
-            "@pypi//expecttest",
-            "@pypi//numpy",
-            "@pypi//torch",
-        ],
-    }),
+    )),
 )
 
 # Alias test_libs to :pytorch so it inherits the conditional logic

@@ -79,8 +79,11 @@ bool_flag(
 # Defaults to the sentinel ("no specific version"): the standard build and the
 # default version's glue use the default pip hub's torch and never leave this
 # configuration, so the pinning transitions reset to the default rather than
-# diverge from it. Only ever set by transitions, never on the command line --
-# a wheel build always builds every version.
+# diverge from it. Wheel builds only ever set it through transitions -- a
+# wheel build always builds every version. On the command line it pins the
+# whole dev build (including py deps, via torch_py_select) to one extra
+# version, which is how upstream_tests.yaml runs the upstream suites against
+# the torch matching their sources.
 string_flag(
     name = "_torch_version",
     build_setting_default = SENTINEL_TORCH_VERSION,
