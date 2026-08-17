@@ -19,8 +19,10 @@
 #include "absl/status/statusor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/DebugStringHelper.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 
@@ -42,6 +44,19 @@ absl::StatusOr<mlir::MlirOp> BuildAddShlo(mlir::MlirOp lhs_op,
     return stablehlo::Or(lhs, rhs);
   }
   return stablehlo::Add(lhs, rhs);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildPowShlo(mlir::MlirOp lhs_op,
+                                          mlir::MlirOp rhs_op) {
+  TT_ASSIGN_OR_RETURN((auto [lhs, rhs]),
+                      ApplyBroadcastIfNeeded(lhs_op, rhs_op));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(lhs);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(lhs, CastIfNeeded(lhs, compute_dtype));
+  TT_ASSIGN_OR_RETURN(rhs, CastIfNeeded(rhs, compute_dtype));
+  mlir::MlirOp pow_res = stablehlo::Pow(lhs, rhs);
+  return CastIfNeeded(pow_res, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildComplexShlo(mlir::MlirOp real_op,
