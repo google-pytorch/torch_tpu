@@ -29,6 +29,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/cache_key.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
@@ -180,13 +181,16 @@ absl::Status LogSigmoidBackward(const at::Tensor& grad_output,
 }  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildSigmoidShlo(mlir::MlirOp input_op) {
-  // TODO: We should not be converting unsupported dtypes to support certain
-  // dtypes. This leads to unexpected precision loss.
   // Convert integral dtypes to float since StableHLO doesn't support
   // Logistic for integer dtypes.
-  TT_ASSIGN_OR_RETURN(input_op,
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
                       ConvertIfInteger(input_op, mlir::ElementType::F32));
-  return mlir::stablehlo::Logistic(input_op);
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::stablehlo::Logistic(op);
+  return CastIfNeeded(res, orig_dtype);
 }
 
 at::Tensor& AtenSigmoidOut(const at::Tensor& self, at::Tensor& out) {
