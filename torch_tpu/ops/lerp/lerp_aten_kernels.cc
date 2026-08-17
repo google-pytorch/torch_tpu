@@ -72,10 +72,17 @@ absl::StatusOr<MlirOpResults<1>> BuildLerpShlo(mlir::MlirOp self,
   end = mlir::stablehlo::ConvertElementType(end, common_type);
   weight = mlir::stablehlo::ConvertElementType(weight, common_type);
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(common_type));
+  TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
+  TT_ASSIGN_OR_RETURN(end, CastIfNeeded(end, compute_dtype));
+  TT_ASSIGN_OR_RETURN(weight, CastIfNeeded(weight, compute_dtype));
+
   // Compute result = self + weight * (end - self)
   auto diff_op = mlir::stablehlo::Subtract(end, self);
   auto mul_op = mlir::stablehlo::Mul(weight, diff_op);
-  return mlir::stablehlo::Add(self, mul_op);
+  auto res = mlir::stablehlo::Add(self, mul_op);
+  return CastIfNeeded(res, common_type);
 }
 
 NAryMlirOpBuilder<3> GetLerpTensorOutFunctional(mlir::ElementType common_type) {
