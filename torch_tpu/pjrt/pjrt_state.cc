@@ -21,7 +21,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -141,7 +140,7 @@ std::optional<int64_t> GetIntAttribute(const xla::PjRtDevice* device,
   const auto& attributes = device->Attributes();
   auto it = attributes.find(key);
   if (it != attributes.end()) {
-    if (const auto* val = std::get_if<int64_t>(&it->second)) {
+    if (const int64_t* val = std::get_if<int64_t>(&it->second)) {
       return *val;
     }
   }
@@ -153,8 +152,8 @@ std::optional<std::vector<int64_t>> GetIntVecAttribute(  // INT_VEC_OK
   const auto& attributes = device->Attributes();
   auto it = attributes.find(key);
   if (it != attributes.end()) {
-    if (const auto* val =
-            std::get_if<std::vector<int64_t>>(&it->second)) {  // INT_VEC_OK
+    if (const std::vector<int64_t>* val =                  // INT_VEC_OK
+        std::get_if<std::vector<int64_t>>(&it->second)) {  // INT_VEC_OK
       return *val;
     }
   }
@@ -162,6 +161,50 @@ std::optional<std::vector<int64_t>> GetIntVecAttribute(  // INT_VEC_OK
 }
 
 }  // namespace
+
+bool IsDeviceAcquisitionFailure(const absl::Status& status) {
+  if (status.ok()) return false;
+  std::string_view msg = status.message();
+
+  const bool has_device_context = absl::StrContains(msg, "/dev/vfio") ||
+                                  absl::StrContains(msg, "/dev/accel") ||
+                                  absl::StrContains(msg, "iommu") ||
+                                  absl::StrContains(msg, "vfio container");
+
+  // 1. POSIX EBUSY / Device busy error signatures (require device context)
+  const bool is_ebusy = has_device_context &&
+                        (absl::StrContains(msg, "EBUSY") ||
+                         absl::StrContains(msg, "Device or resource busy") ||
+                         absl::StrContains(msg, "os error 16"));
+
+  // 2. POSIX EACCES / Permission denied (require device context)
+  const bool is_eacces =
+      has_device_context && (absl::StrContains(msg, "EACCES") ||
+                             absl::StrContains(msg, "Permission denied"));
+
+  // 3. Explicit IOMMU group / VFIO container open failures
+  const bool is_iommu_vfio =
+      absl::StrContains(msg, "Couldn't open iommu group") ||
+      absl::StrContains(msg, "vfio container");
+
+  // 4. Multi-process lockfile contention
+  const bool is_tpu_lock =
+      absl::StrContains(msg, "already in use by process with pid") ||
+      absl::StrContains(msg, "libtpu multi-process lockfile");
+
+  return is_ebusy || is_eacces || is_iommu_vfio || is_tpu_lock;
+}
+
+absl::Status EnrichDeviceAcquisitionStatus(const absl::Status& status) {
+  return TT_ERROR(status.code())
+         << "[TorchTPU] Failed to acquire TPU hardware device: "
+         << status.message()
+         << ". This typically indicates that another process is already "
+            "holding "
+            "the hardware lock on this device node. Ensure TPU_VISIBLE_DEVICES "
+            "or "
+            "LOCAL_RANK is configured to isolate devices across processes.";
+}
 
 PjrtBackend& PjrtBackend::GetInstance() {
   static absl::NoDestructor<PjrtBackend> instance;
@@ -207,8 +250,10 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
-      TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
+    if (const absl::StatusOr<int>& world_size_or = GetWorldSizeFromEnvOnce();
+        world_size_or.ok()) {
+      TT_ASSIGN_OR_RETURN(DistributedWorkerConfiguration config,
+                          GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "InitializeDistributedEnvironment failed: ";
     }
@@ -229,16 +274,29 @@ absl::Status PjrtBackend::InitializeInternal() {
   TT_ASSIGN_OR_RETURN(bool is_initialized,
                       pjrt::IsPjrtPluginInitialized(plugin_name));
   if (!is_initialized) {
-    TT_RETURN_IF_ERROR(pjrt::InitializePjrtPlugin(plugin_name)).SetPrepend()
-        << "initializing the PjRt plugin failed with: ";
+    absl::Status init_plugin_status = pjrt::InitializePjrtPlugin(plugin_name);
+    if (!init_plugin_status.ok()) {
+      if (IsDeviceAcquisitionFailure(init_plugin_status)) {
+        return EnrichDeviceAcquisitionStatus(init_plugin_status);
+      }
+      return TT_ERROR(init_plugin_status.code())
+             << "initializing the PjRt plugin failed with: "
+             << init_plugin_status.message();
+    }
   }
 
   // Mem tracking note: Background threads in XLA spun up during GetPjRtClient.
-  TT_ASSIGN_OR_RETURN(
-      client_,
-      torch_tpu::GetPjRtClient(options_.device_type,
-                               options_.premapped_buffer_size_bytes),
-      _.SetPrepend() << "retrieving a PjRtClient failed with: ");
+  auto client = torch_tpu::GetPjRtClient(options_.device_type,
+                                         options_.premapped_buffer_size_bytes);
+  if (!client.ok()) {
+    if (IsDeviceAcquisitionFailure(client.status())) {
+      return EnrichDeviceAcquisitionStatus(client.status());
+    }
+    return TT_ERROR(client.status().code())
+           << "retrieving a PjRtClient failed with: "
+           << client.status().message();
+  }
+  client_ = std::move(*client);
 
   ABSL_CHECK_NE(client_, nullptr)  // CRASH_OK
       << "PjRtClient should not be null after initialization.";
@@ -254,7 +312,8 @@ absl::Status PjrtBackend::InitializeInternal() {
       << "No addressable PjRt devices found.";
 
   int world_size = 1;
-  if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
+  if (const absl::StatusOr<int>& world_size_or = GetWorldSizeFromEnvOnce();
+      world_size_or.ok()) {
     world_size = *world_size_or;
   }
 
@@ -284,6 +343,11 @@ absl::Status PjrtBackend::InitializeInternal() {
 bool PjrtBackend::IsInitialized() const {
   absl::ReaderMutexLock lock(mutex_);
   return client_ != nullptr;
+}
+
+absl::Status PjrtBackend::GetInitializationStatus() const {
+  absl::ReaderMutexLock lock(mutex_);
+  return init_status_;
 }
 
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {

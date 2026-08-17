@@ -52,6 +52,15 @@ struct PjRtDeviceAttributes {
   std::optional<int64_t> slice_index;
 };
 
+// Returns true if the status represents a TPU/VFIO hardware device lock
+// collision or permission failure (e.g. EBUSY, EACCES, IOMMU group already
+// opened).
+bool IsDeviceAcquisitionFailure(const absl::Status& status);
+
+// Wraps a low-level device acquisition error into an informative status
+// message.
+absl::Status EnrichDeviceAcquisitionStatus(const absl::Status& status);
+
 // PjrtBackend manages the lifecycle and state of the PjRt runtime.
 //
 // It provides a singleton interface to initialize and access the PjRt client
@@ -79,6 +88,10 @@ class PjrtBackend {
 
   // Returns whether the PjRt runtime is initialized.
   [[nodiscard]] bool IsInitialized() const ABSL_LOCKS_EXCLUDED(mutex_);
+
+  // Returns the status of the most recent initialization attempt.
+  [[nodiscard]] absl::Status GetInitializationStatus() const
+      ABSL_LOCKS_EXCLUDED(mutex_);
 
   // Returns the PjRtClient singleton. Triggers lazy initialization if needed.
   [[nodiscard]] xla::PjRtClient* absl_nullable GetClient()

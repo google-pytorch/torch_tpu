@@ -19,8 +19,10 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
+#include "absl/strings/match.h"
 #include "gtest/gtest.h"
 #include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 namespace torch_tpu {
@@ -66,7 +68,7 @@ TEST_F(PjRtInitTest, InitializePjRtSetsCorrectDeviceCount) {
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = "xla_cpu"});
 
-  auto* client = PjrtBackend::GetInstance().GetClient();
+  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
   ASSERT_NE(client, nullptr);
   EXPECT_TRUE(PjrtBackend::GetInstance().IsInitialized());
 
@@ -89,7 +91,7 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
 
   PjrtBackend::GetInstance().SetPjRtInitializationOptions(
       {.device_type = "xla_cpu"});
-  auto* client = PjrtBackend::GetInstance().GetClient();
+  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
   ASSERT_NE(client, nullptr);
 
   const char* xla_flags = std::getenv(kXlaFlagsEnvVar);
@@ -99,6 +101,85 @@ TEST_F(PjRtInitTest, InitializeExpandsRankInEnvVars) {
   const char* libtpu_args = std::getenv(kLibtpuInitArgsEnvVar);
   EXPECT_NE(libtpu_args, nullptr);
   EXPECT_STREQ(libtpu_args, "some_args_1234");
+}
+
+TEST_F(PjRtInitTest, DeviceLockFailureClassification) {
+  // Test false-positive rejections (generic errors):
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(absl::OkStatus()));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(TT_ERROR(error::kInvalidArgument)
+                                          << "invalid shape for tensor"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(TT_ERROR(error::kNotFound)
+                                          << "file not found"));
+  EXPECT_FALSE(
+      IsDeviceAcquisitionFailure(TT_ERROR(error::kPermissionDenied)
+                                 << "Permission denied reading config.json"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kFailedPrecondition)
+      << "TPU initialization failed: graph compilation error"));
+
+  // Test false-positive rejections (EBUSY / EACCES on non-device resources):
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kUnavailable)
+      << "Failed to bind rendezvous port 8080: EBUSY"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kUnavailable)
+      << "Resource temporarily unavailable: Device or "
+         "resource busy in lockfile /tmp/cache.lock"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kPermissionDenied)
+      << "Failed to create cache directory /tmp/xla_cache: EACCES"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kPermissionDenied)
+      << "Permission denied reading config /tmp/xla.json"));
+  EXPECT_FALSE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kInternal) << "os error 16 occurred on socket stream"));
+
+  // Test true collision detections (hardware device lock contention):
+  EXPECT_TRUE(
+      IsDeviceAcquisitionFailure(TT_ERROR(error::kFailedPrecondition)
+                                 << "open(/dev/vfio/633): Device or resource "
+                                    "busy: Couldn't open iommu group"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kUnavailable)
+      << "open(/dev/vfio/633): EBUSY (os error 16)"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kPermissionDenied)
+      << "Permission denied opening /dev/vfio/vfio"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kPermissionDenied)
+      << "open(/dev/accel0): Permission denied (EACCES)"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kAborted)
+      << "InitializePjrtPlugin failed: The TPU is already in "
+         "use by process with pid 12345"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kAborted)
+      << "Internal error when accessing libtpu multi-process lockfile"));
+  EXPECT_TRUE(IsDeviceAcquisitionFailure(
+      TT_ERROR(error::kFailedPrecondition)
+      << "open(/dev/vfio/vfio): vfio container cannot be opened"));
+}
+
+TEST_F(PjRtInitTest, EnrichDeviceAcquisitionStatus) {
+  absl::Status raw_status = TT_ERROR(error::kFailedPrecondition)
+                            << "open(/dev/vfio/0): Device or resource busy";
+  absl::Status enriched = EnrichDeviceAcquisitionStatus(raw_status);
+
+  EXPECT_EQ(enriched.code(), error::kFailedPrecondition);
+  EXPECT_TRUE(absl::StrContains(
+      enriched.message(), "[TorchTPU] Failed to acquire TPU hardware device:"));
+  EXPECT_TRUE(absl::StrContains(enriched.message(),
+                                "TPU_VISIBLE_DEVICES or LOCAL_RANK"));
+}
+
+TEST_F(PjRtInitTest, InitializationFailureCachesStatusAndReturnsNullptr) {
+  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+      {.device_type = "invalid_device_type"});
+  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
+  EXPECT_EQ(client, nullptr);
+  EXPECT_FALSE(PjrtBackend::GetInstance().IsInitialized());
+  EXPECT_EQ(PjrtBackend::GetInstance().GetInitializationStatus().code(),
+            error::kInvalidArgument);
 }
 
 }  // namespace
