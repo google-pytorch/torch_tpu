@@ -968,10 +968,9 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 5.8e-5, "atol": 7.7e-5},
     },
     "baddbmm": {
-        torch.bfloat16: {"rtol": 1.7e-2, "atol": 1.5e-2},
         torch.complex64: {"rtol": 8.3e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 3.3e-1},
-        torch.float32: {"rtol": 3.4e-1, "atol": 3.6e-1},
+        torch.float16: {"rtol": 9.5e-2, "atol": 2.2e-1},
+        torch.float32: {"rtol": 7.2e-2, "atol": 2.7e-1},
     },
     "bmm": {
         torch.complex64: {"rtol": 9.6e-2},

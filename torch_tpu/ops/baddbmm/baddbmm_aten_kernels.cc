@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "ATen/OpMathType.h"
 #include "ATen/core/ATen_fwd.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
@@ -96,10 +97,27 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     std::optional<mlir::MlirOp> alpha_op, const MaybePromotedScalar& beta,
     const MaybePromotedScalar& alpha, mlir::stablehlo::Precision precision,
     mlir::ElementType out_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+
+  if (self_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(*self_op, compute_dtype));
+  }
+  TT_ASSIGN_OR_RETURN(batch1_op, CastIfNeeded(batch1_op, compute_dtype));
+  TT_ASSIGN_OR_RETURN(batch2_op, CastIfNeeded(batch2_op, compute_dtype));
+  if (beta_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(beta_op, CastIfNeeded(*beta_op, compute_dtype));
+  }
+  if (alpha_op.has_value()) {
+    TT_ASSIGN_OR_RETURN(alpha_op, CastIfNeeded(*alpha_op, compute_dtype));
+  }
+
   auto batch1_shape = GetTensorTypeOrDie(batch1_op).getShape();
   auto batch2_shape = GetTensorTypeOrDie(batch2_op).getShape();
   Dimensions out_shape = {batch1_shape[0], batch1_shape[1], batch2_shape[2]};
   auto& builder = batch1_op.getBuilder();
+
+  mlir::MlirOp result;
 
   // Case 1: beta is zero. Baddbmm result is just alpha * (batch1 @ batch2).
   if (beta.IsZero()) {
@@ -108,20 +126,17 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
     }
     TT_ASSIGN_OR_RETURN(
         mlir::MlirOp bmm_res,
-        BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
+        BuildBmmShlo(batch1_op, batch2_op, compute_dtype, precision));
     if (alpha.IsOne()) {
-      return bmm_res;
+      result = bmm_res;
+    } else {
+      // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
+      TT_ASSIGN_OR_RETURN(auto alpha_tensor,
+                          BroadcastIfNeeded(*alpha_op, bmm_res));
+      result = mlir::stablehlo::Mul(bmm_res, alpha_tensor);
     }
-    // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
-    TT_ASSIGN_OR_RETURN(auto alpha_tensor,
-                        BroadcastIfNeeded(*alpha_op, bmm_res));
-    return mlir::stablehlo::Mul(bmm_res, alpha_tensor);
-  }
-
-  // Case 2: beta is not zero. self_op is guaranteed to have a value.
-
-  // Case 2a: alpha is zero. Baddbmm result is just beta * self.
-  if (alpha.IsZero()) {
+  } else if (alpha.IsZero()) {
+    // Case 2a: alpha is zero. Baddbmm result is just beta * self.
     TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, out_shape));
     if (!beta.IsOne()) {
       // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
@@ -129,28 +144,31 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
                           BroadcastIfNeeded(*beta_op, self_bcst));
       self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
     }
-    return self_bcst;
+    result = self_bcst;
+  } else {
+    // Case 2b: alpha is not zero. Compute bmm_res = alpha * (batch1 @ batch2).
+    TT_ASSIGN_OR_RETURN(
+        mlir::MlirOp bmm_res,
+        BuildBmmShlo(batch1_op, batch2_op, compute_dtype, precision));
+    if (!alpha.IsOne()) {
+      // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
+      TT_ASSIGN_OR_RETURN(auto alpha_tensor,
+                          BroadcastIfNeeded(*alpha_op, bmm_res));
+      bmm_res = mlir::stablehlo::Mul(bmm_res, alpha_tensor);
+    }
+    // Compute beta * self and add.
+    TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, bmm_res));
+    if (!beta.IsOne()) {
+      // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
+      TT_ASSIGN_OR_RETURN(auto beta_tensor,
+                          BroadcastIfNeeded(*beta_op, self_bcst));
+      self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
+    }
+
+    result = mlir::stablehlo::Add(self_bcst, bmm_res);
   }
 
-  // Case 2b: alpha is not zero. Compute bmm_res = alpha * (batch1 @ batch2).
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp bmm_res,
-                      BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
-  if (!alpha.IsOne()) {
-    // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
-    TT_ASSIGN_OR_RETURN(auto alpha_tensor,
-                        BroadcastIfNeeded(*alpha_op, bmm_res));
-    bmm_res = mlir::stablehlo::Mul(bmm_res, alpha_tensor);
-  }
-  // Compute beta * self and add.
-  TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, bmm_res));
-  if (!beta.IsOne()) {
-    // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
-    TT_ASSIGN_OR_RETURN(auto beta_tensor,
-                        BroadcastIfNeeded(*beta_op, self_bcst));
-    self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
-  }
-
-  return mlir::stablehlo::Add(self_bcst, bmm_res);
+  return CastIfNeeded(result, out_dtype);
 }
 
 absl::StatusOr<DeviceBufferRef> Baddbmm(
@@ -244,13 +262,14 @@ absl::StatusOr<DeviceBufferRef> ResolveAndRunBaddbmm(
     MaybePromotedScalar beta, MaybePromotedScalar alpha,
     at::ScalarType out_dtype, OpParamCacheKeys& param_keys,
     std::optional<OpName> op_name_override = std::nullopt) {
+  const at::ScalarType compute_scalar_type = at::toOpMathType(out_dtype);
   std::optional<at::Tensor> beta_tensor;
   if (!beta.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(compute_scalar_type));
   }
   std::optional<at::Tensor> alpha_tensor;
   if (!alpha.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(compute_scalar_type));
   }
   return Baddbmm(self, batch1, batch2, std::move(beta), std::move(beta_tensor),
                  std::move(alpha), std::move(alpha_tensor), out_dtype,
