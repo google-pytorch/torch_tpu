@@ -770,10 +770,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "_foreach_acos": {
         torch.complex64: {"rtol": 4.2e-5, "atol": 7.1e-5},
     },
-    "_foreach_add": {
-        torch.bfloat16: {"rtol": 3.4e-2, "atol": 3.3e-2},
-        torch.float16: {"rtol": 6.4e-3, "atol": 6.5e-3},
-    },
     "_foreach_addcdiv": {
         torch.bfloat16: {"rtol": 1.7e-2, "atol": 2.2e-2},
         torch.float16: {"rtol": 1.2e-3, "atol": 3.3e-3},
@@ -781,12 +777,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "_foreach_addcmul": {
         torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.9e-2},
         torch.float16: {"rtol": 3.1e-3, "atol": 3.8e-3},
-    },
-    "_foreach_asin": {
-        torch.complex64: {"rtol": 6e-5, "atol": 6.1e-5},
-    },
-    "_foreach_atan": {
-        torch.complex64: {"rtol": 1.9e-5, "atol": 1.5e-5},
     },
     "_foreach_cos": {
         torch.complex64: {"rtol": 3.6e-6, "atol": 1e-2},
@@ -859,7 +849,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.uint8: {"rtol": 6.9e-5},
     },
     "_foreach_pow": {
-        torch.float32: {"rtol": 5.5e-6},
         torch.int16: {"atol": 1.3},
         torch.int32: {"atol": 1.3},
         torch.int8: {"atol": 1.3},
@@ -1260,12 +1249,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     # go/keep-sorted start
     "_foreach_acos": {
         torch.complex64: {"rtol": 4.2e-5, "atol": 7e-5},
-    },
-    "_foreach_asin": {
-        torch.complex64: {"rtol": 6e-5, "atol": 6.1e-5},
-    },
-    "_foreach_atan": {
-        torch.complex64: {"rtol": 1.9e-5, "atol": 1.5e-5},
     },
     "_foreach_cos": {
         torch.complex64: {"atol": 9.6e-3},

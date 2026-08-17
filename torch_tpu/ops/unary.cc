@@ -30,6 +30,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
@@ -133,6 +134,30 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   auto res = mlir::stablehlo::Abs(input);
 
   return res;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAsinShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::chlo::Asin(op);
+  return CastIfNeeded(res, orig_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAtanShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::chlo::Atan(op);
+  return CastIfNeeded(res, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildCeilShlo(mlir::MlirOp input_op) {
