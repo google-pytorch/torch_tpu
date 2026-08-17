@@ -17,8 +17,8 @@
 import torch
 import torch.export
 import torch.utils._pytree as pytree
-from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 
 
 def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):

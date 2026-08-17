@@ -16,7 +16,7 @@
 
 import dataclasses
 from typing import List
-from torch_tpu._internal.device_utils import annotations_py
+from torch_tpu.csrc.internal.device_utils import annotations_py
 
 field = dataclasses.field
 dataclass = dataclasses.dataclass

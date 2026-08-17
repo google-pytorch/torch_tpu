@@ -21,8 +21,8 @@ from absl.testing import absltest
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu.csrc.internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 from tests.distributed import distributed_utils

@@ -27,7 +27,7 @@ import torch
 import torch.export
 import torch.utils._pytree as pytree
 from torch_tpu._internal import execution_mode
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 from torch_tpu._internal.profiler import xprof_adapter
 
 EagerMode: TypeAlias = execution_mode.EagerMode

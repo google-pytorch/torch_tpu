@@ -33,7 +33,6 @@ from torch.fx.passes import graph_transform_observer
 from torch.fx.passes.split_module import split_module
 from torch_tpu._internal.compile import collective_ops
 from torch_tpu._internal.compile import compiler
-from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import clone_mutated_returned_placeholders
 from torch_tpu._internal.compile.fx_passes import force_collectives_output
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
@@ -42,6 +41,7 @@ from torch_tpu._internal.compile.fx_passes import reorder_symints
 from torch_tpu._internal.compile.fx_passes import sink_get_attr_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.distributed import spmd_util
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 
 
 def _get_unique_wait_tensor_producer(

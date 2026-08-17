@@ -24,7 +24,7 @@ from absl import logging
 from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import context as context_lib

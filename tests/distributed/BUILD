@@ -55,7 +55,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
         "@pypi//portpicker",
     ],
 )
@@ -122,8 +122,8 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
     ],
 )
 
@@ -357,9 +357,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:error_testing",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/distributed:multiprocessing",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/csrc/internal:testing",
     ],
 )
 
@@ -386,9 +386,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:error_testing",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/distributed:multiprocessing",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/csrc/internal:testing",
     ],
 )
 

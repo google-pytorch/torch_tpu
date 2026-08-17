@@ -25,13 +25,13 @@
 #include "c10/util/intrusive_ptr.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
-#include "torch_tpu/common/macro_utils.h"
+#include "torch_tpu/csrc/common/macro_utils.h"
 #if TT_TORCH_VERSION_GE(2, 14)
 #include "torch/csrc/distributed/c10d/Window.hpp"
 #endif
 #include "torch/csrc/distributed/c10d/Work.hpp"
-#include "torch_tpu/common/device_type.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/device_type.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/structured_log_buffer.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"

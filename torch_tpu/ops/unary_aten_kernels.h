@@ -24,7 +24,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
 

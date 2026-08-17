@@ -28,7 +28,7 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/ops/copy_from/copy_from_aten_kernels.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/op_names.h"

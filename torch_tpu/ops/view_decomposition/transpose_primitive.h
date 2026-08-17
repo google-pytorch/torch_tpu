@@ -21,7 +21,7 @@
 
 #include "absl/status/statusor.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 // Transpose is a view primitive. It reorders the axes of a tensor, preserving

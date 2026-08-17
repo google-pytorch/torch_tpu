@@ -31,7 +31,7 @@ from typing import Any
 
 from absl import logging
 from torch._logging import trace_structured
-from torch_tpu._internal.tracing import _tpu_torch_tracing
+from torch_tpu.csrc.internal.tracing import _tpu_torch_tracing
 
 _FLUSH_INTERVAL_SECONDS = 5.0
 
@@ -158,7 +158,7 @@ def enable_if_requested() -> None:
   with _lock:
     if _daemon is not None:
       return
-    from torch_tpu._internal.compile import tpu_torch_compile  # pylint: disable=g-import-not-at-top
+    from torch_tpu.csrc.internal.compile import tpu_torch_compile  # pylint: disable=g-import-not-at-top
 
     tpu_torch_compile.push_enable_tracebacks(True)
     _daemon = _FlushDaemon()

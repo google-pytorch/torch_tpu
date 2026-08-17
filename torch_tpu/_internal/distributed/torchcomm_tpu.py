@@ -30,7 +30,7 @@ import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 
 try:
-  from torch_tpu._internal.distributed import tpu_distributed
+  from torch_tpu.csrc.internal.distributed import tpu_distributed
 except ImportError:
   tpu_distributed = None  # pyrefly: ignore[assignment]
 

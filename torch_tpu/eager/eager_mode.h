@@ -17,7 +17,7 @@
 #ifndef TORCH_TPU_EAGER_EAGER_MODE_H_
 #define TORCH_TPU_EAGER_EAGER_MODE_H_
 
-#include "torch_tpu/common/context_states.h"
+#include "torch_tpu/csrc/common/context_states.h"
 
 namespace torch_tpu {
 

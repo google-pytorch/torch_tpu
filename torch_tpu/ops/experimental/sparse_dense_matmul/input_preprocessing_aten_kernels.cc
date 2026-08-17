@@ -38,7 +38,7 @@
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "torch/library.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 // JAX input preprocessing library
 // Note: Despite the jax_* prefix in paths and namespaces, the core C++

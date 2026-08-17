@@ -39,7 +39,7 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "torch_tpu/_internal/mosaic/op_builders.h"
+#include "torch_tpu/csrc/internal/mosaic/op_builders.h"
 
 namespace mlir::torch_tpu {
 

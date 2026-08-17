@@ -24,11 +24,11 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Final, List
 import torch
-from torch_tpu._internal.device import _device_ops_backend
 import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.stream import streams
 from torch_tpu._internal.utils import annotations
 from torch_tpu._internal.utils import hardware
+from torch_tpu.csrc.internal.device import _device_ops_backend
 
 experimental = annotations.experimental
 

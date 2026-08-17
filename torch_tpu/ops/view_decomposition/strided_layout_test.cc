@@ -18,7 +18,7 @@
 
 #include "absl/types/span.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 
 namespace torch_tpu {
 namespace {

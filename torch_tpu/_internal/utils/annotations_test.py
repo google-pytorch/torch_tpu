@@ -22,7 +22,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
-from torch_tpu._internal.precision.precision_impl import Precision
+from torch_tpu.csrc.internal.precision.precision_impl import Precision
 from torch_tpu._internal.utils import annotations
 from tests import seed_test_utils
 
@@ -363,7 +363,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
     )
 
   @mock.patch(
-      "torch_tpu._internal.device._device_ops_backend.get_default_generator",
+      "torch_tpu.csrc.internal.device._device_ops_backend.get_default_generator",
       return_value="mock_generator",
   )
   @mock.patch.object(torch.tpu, "current_device", return_value=0)

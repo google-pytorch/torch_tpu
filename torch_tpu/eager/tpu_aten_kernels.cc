@@ -40,7 +40,7 @@
 #include "absl/log/log.h"
 #include "c10/util/Exception.h"
 #include "torch/library.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/ops/a_min_max/a_min_max_aten_kernels.h"
 #include "torch_tpu/ops/addcdiv/addcdiv_aten_kernels.h"
 #include "torch_tpu/ops/addcmul/addcmul_aten_kernels.h"

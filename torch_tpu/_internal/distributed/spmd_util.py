@@ -19,8 +19,8 @@ from typing import Any, TypeVar
 
 import torch
 from torch.utils import _pytree
-from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.sync import sync
+from torch_tpu.csrc.internal.distributed import tpu_distributed
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 

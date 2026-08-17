@@ -65,6 +65,18 @@ bzl_library(
     visibility = ["//visibility:private"],
 )
 
+bzl_library(
+    name = "build_defs_test_bzl",
+    srcs = ["build_defs_test.bzl"],
+    parse_tests = False,
+    visibility = ["//visibility:private"],
+    deps = [
+        ":build_defs_bzl",
+        "@rules_testing//lib:analysis_test_bzl",
+        "@rules_testing//lib:test_suite_bzl",
+    ],
+)
+
 # Creates a test suite with the given name. The individual tests in
 # the suite are named build_defs_test_<suffix> and defined in build_defs_test.bzl.
 build_defs_test_suite(

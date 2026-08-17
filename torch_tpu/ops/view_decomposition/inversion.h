@@ -27,7 +27,7 @@
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/shape.h"
 #include "torch_tpu/ops/view_decomposition/conj_primitive.h"
 #include "torch_tpu/ops/view_decomposition/reshape_primitive.h"
 #include "torch_tpu/ops/view_decomposition/slice_primitive.h"

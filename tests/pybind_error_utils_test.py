@@ -16,7 +16,7 @@ from absl.testing import absltest
 import torch  # pylint: disable=unused-import  # noqa: F401
 
 # Pre-loads `libtorch.so` for the `_internal.testing` C++ extension in OSS.
-from torch_tpu._internal import testing
+from torch_tpu.csrc.internal import testing
 from tests import seed_test_utils
 
 

@@ -80,6 +80,7 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/pallas",
+        "//torch_tpu/csrc/internal/pallas:tpu_torch_pallas",
         "@pypi//jax",
     ],
 )
@@ -107,10 +108,10 @@ torch_tpu_py_test(
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
         "@pypi//jax",
     ],
 )

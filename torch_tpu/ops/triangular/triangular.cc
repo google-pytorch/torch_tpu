@@ -26,9 +26,9 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch_tpu/common/aten_utils.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {

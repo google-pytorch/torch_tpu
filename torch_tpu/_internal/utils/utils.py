@@ -28,7 +28,7 @@ from torch.utils import _pytree
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal import sync
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 

@@ -19,8 +19,8 @@ import os
 import torch
 import torch.distributed.tensor as dt
 from torch.utils import _pytree
-from torch_tpu._internal.device import _device_ops_backend
-from torch_tpu._internal.sync import _tpu_torch_sync
+from torch_tpu.csrc.internal.device import _device_ops_backend
+from torch_tpu.csrc.internal.sync import _tpu_torch_sync
 
 
 def _maybe_unwrap(tensor: torch.Tensor) -> torch.Tensor:

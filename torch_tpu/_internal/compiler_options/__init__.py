@@ -14,7 +14,7 @@
 
 import contextlib
 
-from torch_tpu._internal.compiler_options import compiler_options_impl as compiler
+from torch_tpu.csrc.internal.compiler_options import compiler_options_impl as compiler
 
 
 @contextlib.contextmanager

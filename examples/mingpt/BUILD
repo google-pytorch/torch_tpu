@@ -183,7 +183,7 @@ torch_tpu_py_library(
 #         "@pypi//jax",
 # #         "//shims/torch:pytorch",
 #         "//torch_tpu/eager:tpu_aten_kernels",
-#         "//torch_tpu/_internal/device:_device_ops_backend",
+#         "//torch_tpu/csrc/internal/device:_device_ops_backend",
 #         "//torch_tpu/_internal/device:_device_module",
 #         "//examples/mingpt/impl:mingpt",
 #         "//examples/mingpt/impl:mingpt_jax",

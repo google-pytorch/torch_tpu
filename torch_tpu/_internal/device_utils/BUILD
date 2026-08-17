@@ -18,7 +18,6 @@ load(
     "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -31,24 +30,7 @@ torch_tpu_py_library(
     name = "annotations",
     srcs = ["annotations.py"],
     deps = [
-        ":annotations_py",
-    ],
-)
-
-pybind_extension(
-    name = "annotations_py",
-    srcs = ["annotations_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
-        "//torch_tpu/common:error_utils",
-        "@com_google_absl//absl/status:statusor",
-        "@xla//xla:shape_util",
-        "@xla//xla/hlo/parser:hlo_parser",
+        "//torch_tpu/csrc/internal/device_utils:annotations_py",
     ],
 )
 
@@ -64,7 +46,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
     ],
 )
 

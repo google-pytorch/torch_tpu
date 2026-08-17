@@ -14,7 +14,7 @@
 
 """Batch transfer utilities for torch_tpu."""
 
-from torch_tpu._internal.batch_transfer import batch_transfer_impl
+from torch_tpu.csrc.internal.batch_transfer import batch_transfer_impl
 
 TransferFuture = batch_transfer_impl.TransferFuture
 batch_transfer_d2h = batch_transfer_impl.batch_transfer_d2h

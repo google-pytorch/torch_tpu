@@ -50,9 +50,9 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dtype.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
 

@@ -16,8 +16,8 @@
 
 from typing import Any
 
-from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.utils import annotations
+from torch_tpu.csrc.internal.device import _device_ops_backend
 
 __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {}
 

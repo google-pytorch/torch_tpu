@@ -126,7 +126,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:compiler",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
     ],
 )
 

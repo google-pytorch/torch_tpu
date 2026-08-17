@@ -14,24 +14,25 @@
  * limitations under the License.
  */
 
-#include "torch_tpu/_internal/profiler/tpu_profiler_plugin.h"
+#include "torch_tpu/csrc/internal/profiler/tpu_profiler_plugin.h"
 
-#include <kineto/ActivityType.h>
-#include <kineto/Config.h>
-#include <kineto/IActivityProfiler.h>
-
+// clang-format off
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
-#include "absl/status/status.h"
-#include "absl/strings/string_view.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/error_utils.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include <kineto/ActivityType.h>
+#include <kineto/Config.h>
+#include <kineto/IActivityProfiler.h>
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
+// clang-format on
 
 namespace torch_tpu {
 
