@@ -15,7 +15,7 @@
 from absl.testing import absltest
 import torch
 from torch.testing._internal.distributed.fake_pg import FakeStore
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 

@@ -789,10 +789,10 @@ def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs)
     deps = kwargs.pop("deps", [])
     if not is_oss():
         if type(deps) == "list":
-            if "//torch_tpu/_internal:testing" not in deps:
-                deps = deps + ["//torch_tpu/_internal:testing"]
+            if "//torch_tpu/csrc/internal:testing" not in deps:
+                deps = deps + ["//torch_tpu/csrc/internal:testing"]
         else:
-            deps = deps + ["//torch_tpu/_internal:testing"]
+            deps = deps + ["//torch_tpu/csrc/internal:testing"]
     else:
         # In OSS, dynamically route @pypi// dependencies to @pypi_cuda// if --config=cuda is used
         if type(deps) == "list":
@@ -843,7 +843,7 @@ def torch_tpu_py_test(
         shuffle_tests = True,
         autoload = True,
         is_wheel_test = False,
-        extra_pywrap_deps = ["//torch_tpu/common:pywrap_torch_tpu"],
+        extra_pywrap_deps = ["//torch_tpu/csrc/common:pywrap_torch_tpu"],
         strict = False,
         size = None,
         timeout = None,
@@ -1072,10 +1072,10 @@ def torch_tpu_py_test(
 
     if not is_oss():
         if type(deps) == "list":
-            if "//torch_tpu/_internal:testing" not in deps:
-                deps = deps + ["//torch_tpu/_internal:testing"]
+            if "//torch_tpu/csrc/internal:testing" not in deps:
+                deps = deps + ["//torch_tpu/csrc/internal:testing"]
         else:
-            deps = deps + ["//torch_tpu/_internal:testing"]
+            deps = deps + ["//torch_tpu/csrc/internal:testing"]
         all_deps = deps + deps_to_add
     else:
         # In OSS, dynamically route @pypi// dependencies to @pypi_cuda// if --config=cuda is used.

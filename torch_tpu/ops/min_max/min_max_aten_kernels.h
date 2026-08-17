@@ -24,7 +24,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
-#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
 #include "torch_tpu/ops/min_max/min_max.h"
 #include "torch_tpu/ops/op_names.h"
 

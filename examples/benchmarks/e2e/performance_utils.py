@@ -28,8 +28,8 @@ from tensorboardX import writer
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import optim
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
+from torch_tpu.csrc.internal import testing as tt_testing
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils

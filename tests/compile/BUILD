@@ -171,9 +171,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal:env",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/csrc/internal:env",
     ],
 )
 
@@ -242,12 +242,11 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/compile:compiler",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
         "//torch_tpu/_internal/device_utils:annotations",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
     ],
 )
 
@@ -261,8 +260,8 @@ torch_tpu_py_library(
         "//shims/minipyspy:minipyspy_enable",
         "//shims/torch:tensorboard_support",  # buildcleaner: keep
         "//tests:seed_test_utils",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
-        "//torch_tpu/_internal/device:_device_ops_backend",  # buildcleaner: keep
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
+        "//torch_tpu/csrc/internal/device:_device_ops_backend",  # buildcleaner: keep
     ],
 )
 
@@ -533,10 +532,10 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/compile:compiler",
         "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/csrc/internal:testing",
     ],
 )
 
@@ -559,9 +558,9 @@ torch_tpu_py_test(
         "//tests:module_registry",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/csrc/internal:testing",
     ],
 )
 

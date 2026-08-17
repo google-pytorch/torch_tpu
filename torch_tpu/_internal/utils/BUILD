@@ -34,11 +34,11 @@ torch_tpu_py_library(
     ],
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/export",
         "//torch_tpu/_internal/sync",
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
     ],
 )
 
@@ -91,7 +91,7 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
     ],
 )
 
@@ -182,7 +182,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/precision:precision_impl",
+        "//torch_tpu/csrc/internal/precision:precision_impl",
     ],
 )
 

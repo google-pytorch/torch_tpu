@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from absl.testing import absltest
-from torch_tpu._internal import testing
+from torch_tpu.csrc.internal import testing
 from tests import seed_test_utils
 
 

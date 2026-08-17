@@ -23,11 +23,11 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compile as compile_lib
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 

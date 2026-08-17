@@ -40,7 +40,7 @@ _GLUE_PACKAGE_PREFIX = "glue_"
 def versioned_glue_library():
     """Emits the pywrap_library + binaries for the glue package it is called from.
 
-    Call once, with no arguments, from a `//torch_tpu/common/glue_<suffix>/BUILD`.
+    Call once, with no arguments, from a `//torch_tpu/csrc/common/glue_<suffix>/BUILD`.
     The PyTorch version is the `<suffix>` in the package name (e.g. `glue_2_12_1`
     -> `2.12.1`), checked against GLUE_TORCH_VERSIONS.
     """
@@ -65,9 +65,9 @@ def versioned_glue_library():
     pywrap_library(
         name = "pywrap_" + suffix,
         common_lib_filters = {
-            "torch_tpu/common/xla_base": Label("//torch_tpu/common:xla_base_filter"),
+            "torch_tpu/csrc/common/xla_base": Label("//torch_tpu/csrc/common:xla_base_filter"),
         },
-        extra_deps = [Label("//torch_tpu/common:torch_rpath_flags")],
+        extra_deps = [Label("//torch_tpu/csrc/common:torch_rpath_flags")],
         pywrap_count = len(PYWRAP_EXTENSIONS),
         deps = [
             Label(glue)

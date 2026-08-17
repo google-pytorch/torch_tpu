@@ -38,13 +38,13 @@ from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
-from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 from torch_tpu._internal.profiler import xprof_adapter
 
 

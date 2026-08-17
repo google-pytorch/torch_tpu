@@ -19,8 +19,8 @@ from typing import Callable
 
 from absl import flags
 from absl import logging
-from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal import testing as tt_testing
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 from tests import seed_test_utils
 
 _NUM_RUNS = flags.DEFINE_integer(

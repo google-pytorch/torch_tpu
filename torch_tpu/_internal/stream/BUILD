@@ -23,7 +23,8 @@ torch_tpu_py_library(
     name = "streams",
     srcs = ["streams.py"],
     deps = [
-        "//torch_tpu/_internal/device:_device_ops_backend",
+        "//shims/torch:pytorch",
+        "//torch_tpu/csrc/internal/device:_device_ops_backend",
     ],
 )
 

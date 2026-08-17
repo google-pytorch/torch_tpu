@@ -27,9 +27,9 @@
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
+#include "torch_tpu/csrc/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 
 namespace torch_tpu {

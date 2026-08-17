@@ -33,7 +33,7 @@ from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.device_interface import register_interface_for_device
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _tpu_backend_config
-from torch_tpu._internal.distributed import tpu_distributed
+from torch_tpu.csrc.internal.distributed import tpu_distributed
 from torch_tpu._internal.utils import hardware
 
 # pylint: enable=g-import-not-at-top
@@ -99,7 +99,7 @@ def _configure_native_scan_gate() -> None:
   already run in __init__.py, ensuring TPU_LIBRARY_PATH is set before importing
   _internal.env.
   """
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
+  from torch_tpu.csrc.internal import env  # pylint: disable=g-import-not-at-top
   from torch_tpu._internal import native_scan  # pylint: disable=g-import-not-at-top
 
   env.set_native_scan_emitter_supported(
@@ -110,7 +110,7 @@ def _configure_native_scan_gate() -> None:
 
 def _warn_if_unoptimized() -> None:
   """Warns if TorchTPU is running in OSS with an unoptimized build."""
-  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
+  from torch_tpu.csrc.internal import env  # pylint: disable=g-import-not-at-top
 
   if not env.IS_INTERNAL_TORCH_TPU and not env.TORCH_TPU_IS_OPTIMIZED_BUILD:
     import warnings  # pylint: disable=g-import-not-at-top
@@ -252,7 +252,7 @@ def _init_device_impl(device: str) -> torch.device:
 
   # Monkey patch torch.set_float32_matmul_precision and
   # torch.get_float32_matmul_precision to maintain global precision state.
-  from torch_tpu._internal.precision import precision_impl  # pylint: disable=g-import-not-at-top
+  from torch_tpu.csrc.internal.precision import precision_impl  # pylint: disable=g-import-not-at-top
 
   @functools.wraps(torch.set_float32_matmul_precision)
   def _tpu_set_precision(precision: str) -> None:

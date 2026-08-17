@@ -20,7 +20,7 @@
 #include "absl/status/statusor.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 
 namespace torch_tpu {
 

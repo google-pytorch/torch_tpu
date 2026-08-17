@@ -22,8 +22,8 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/macro_utils.h"
-#include "torch_tpu/common/utils.h"
+#include "torch_tpu/csrc/common/macro_utils.h"
+#include "torch_tpu/csrc/common/utils.h"
 
 namespace torch_tpu {
 

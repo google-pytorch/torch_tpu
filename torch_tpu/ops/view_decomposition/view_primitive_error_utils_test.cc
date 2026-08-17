@@ -19,7 +19,7 @@
 #include "absl/types/span.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/reshape_primitive.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"

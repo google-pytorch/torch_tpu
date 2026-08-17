@@ -43,7 +43,7 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/context_states.h"
+#include "torch_tpu/csrc/common/context_states.h"
 #include "torch_tpu/ops/op_names.h"
 
 namespace torch_tpu {

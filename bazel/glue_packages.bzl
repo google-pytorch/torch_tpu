@@ -51,7 +51,7 @@ def _glue_packages_impl(rctx):
     for version in GLUE_TORCH_VERSIONS:
         suffix = version.replace(".", "_")
         rctx.file(
-            "torch_tpu/common/glue_{}/BUILD".format(suffix),
+            "torch_tpu/csrc/common/glue_{}/BUILD".format(suffix),
             _BUILD_TEMPLATE.format(glue_bzl = _GLUE_BZL, license = _LICENSE),
         )
 

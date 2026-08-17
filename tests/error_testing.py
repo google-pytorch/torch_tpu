@@ -28,7 +28,7 @@ from absl.testing import absltest
 import torch
 from torch.distributed.elastic.multiprocessing import errors
 import torch.multiprocessing as mp
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 
@@ -101,8 +101,8 @@ def _parse_error(msg: str):
   #   empty(): product of dimension sizes ...
   #
   #   C++ error trace (starting from the origin):
-  #   third_party/py/torch_tpu/common/error_utils.cc:53: SafeMultiply()
-  #   third_party/py/torch_tpu/common/error_utils.cc:101:
+  #   third_party/py/torch_tpu/csrc/common/error_utils.cc:53: SafeMultiply()
+  #   third_party/py/torch_tpu/csrc/common/error_utils.cc:101:
   #   ValidateTensorByteSize()
   #   third_party/py/torch_tpu/device_buffer.cc:361: CreateEmpty()
   #   third_party/py/torch_tpu/ops/nullary_aten_kernels.cc:90: MakeEmptyBuffer()
