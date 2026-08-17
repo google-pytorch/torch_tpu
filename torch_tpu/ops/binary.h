@@ -63,7 +63,6 @@ TT_BINARY_BUILDER_(BuildFmodTensorShlo, mlir::stablehlo::Rem);
 TT_BINARY_BUILDER_(BuildMaximumShlo, mlir::stablehlo::Max);
 TT_BINARY_BUILDER_(BuildMinimumShlo, mlir::stablehlo::Min);
 TT_BINARY_BUILDER_(BuildMulShlo, mlir::stablehlo::Mul);
-TT_BINARY_BUILDER_(BuildPowShlo, mlir::stablehlo::Pow);
 TT_BINARY_BUILDER_(BuildSubShlo, mlir::stablehlo::Subtract);
 TT_COMPARISON_BUILDER_(BuildEqShlo, mlir::stablehlo::ComparisonDirection::EQ);
 TT_COMPARISON_BUILDER_(BuildGeShlo, mlir::stablehlo::ComparisonDirection::GE);
@@ -85,6 +84,9 @@ TT_COMPARISON_BUILDER_(BuildNeShlo, mlir::stablehlo::ComparisonDirection::NE);
 // True+True=True. StableHLO always means the latter, so we lower these to
 // `stablehlo.or` to force the proper semantics.
 absl::StatusOr<mlir::MlirOp> BuildAddShlo(mlir::MlirOp lhs_op,
+                                          mlir::MlirOp rhs_op);
+
+absl::StatusOr<mlir::MlirOp> BuildPowShlo(mlir::MlirOp lhs_op,
                                           mlir::MlirOp rhs_op);
 
 absl::StatusOr<mlir::MlirOp> BuildPolarShlo(mlir::MlirOp abs_op,
