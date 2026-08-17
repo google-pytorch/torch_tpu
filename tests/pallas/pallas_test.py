@@ -93,6 +93,105 @@ def pass_through(x: jax.Array) -> jax.Array:
   return x
 
 
+_AUTOGRAD_BLOCK_SIZE = 128
+
+
+def _validate_autograd_example_shape(x: jax.Array, block_size: int):
+  if block_size <= 0 or block_size % 128:
+    raise ValueError("block_size must be a positive multiple of 128")
+  if x.ndim != 1 or x.shape[0] % block_size:
+    raise ValueError("input must be 1-D and divisible by block_size")
+
+
+def _autograd_mul_forward_kernel(
+    x_ref, y_ref, out_ref, local_dx_ref, local_dy_ref, *, negate
+):
+  sign = -1.0 if negate else 1.0
+  x, y = x_ref[...], y_ref[...]
+  out_ref[...] = sign * x * y
+  local_dx_ref[...] = sign * y
+  local_dy_ref[...] = sign * x
+
+
+@pallas.jax_op("pallas_autograd_example::mul_forward")
+def _autograd_mul_forward(
+    x: jax.Array, y: jax.Array, negate: bool, block_size: int
+) -> Tuple[jax.Array, jax.Array, jax.Array]:
+  _validate_autograd_example_shape(x, block_size)
+  if y.shape != x.shape:
+    raise ValueError("x and y must have the same shape")
+  block_spec = pl.BlockSpec((block_size,), lambda i: (i,))
+  out_shape = jax.ShapeDtypeStruct(x.shape, x.dtype)
+  return pl.pallas_call(
+      functools.partial(_autograd_mul_forward_kernel, negate=negate),
+      out_shape=(out_shape, out_shape, out_shape),
+      grid=(x.shape[0] // block_size,),
+      in_specs=(block_spec, block_spec),
+      out_specs=(block_spec, block_spec, block_spec),
+  )(x, y)
+
+
+def _autograd_mul_backward_kernel(
+    grad_out_ref, local_dx_ref, local_dy_ref, grad_x_ref, grad_y_ref
+):
+  grad_out = grad_out_ref[...]
+  grad_x_ref[...] = grad_out * local_dx_ref[...]
+  grad_y_ref[...] = grad_out * local_dy_ref[...]
+
+
+@pallas.jax_op("pallas_autograd_example::mul_backward")
+def _autograd_mul_backward(
+    grad_out: jax.Array,
+    local_dx: jax.Array,
+    local_dy: jax.Array,
+    block_size: int,
+) -> Tuple[jax.Array, jax.Array]:
+  _validate_autograd_example_shape(grad_out, block_size)
+  block_spec = pl.BlockSpec((block_size,), lambda i: (i,))
+  out_shape = jax.ShapeDtypeStruct(grad_out.shape, grad_out.dtype)
+  return pl.pallas_call(
+      _autograd_mul_backward_kernel,
+      out_shape=(out_shape, out_shape),
+      grid=(grad_out.shape[0] // block_size,),
+      in_specs=(block_spec, block_spec, block_spec),
+      out_specs=(block_spec, block_spec),
+  )(grad_out, local_dx, local_dy)
+
+
+def _autograd_mul_setup_context(ctx, inputs, output):
+  _, _, _, block_size = inputs
+  _, local_dx, local_dy = output
+  ctx.mark_non_differentiable(local_dx, local_dy)
+  ctx.save_for_backward(local_dx, local_dy)
+  ctx.block_size = block_size
+
+
+def _autograd_mul_backward_impl(
+    ctx, grad_out, _grad_local_dx, _grad_local_dy
+):
+  local_dx, local_dy = ctx.saved_tensors
+  grad_x, grad_y = _autograd_mul_backward(
+      grad_out.contiguous(), local_dx, local_dy, ctx.block_size
+  )
+  return grad_x, grad_y, None, None
+
+
+_autograd_mul_forward.register_autograd(
+    _autograd_mul_backward_impl, setup_context=_autograd_mul_setup_context
+)
+
+
+def _autograd_mul(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    *,
+    negate: bool = False,
+    block_size: int = _AUTOGRAD_BLOCK_SIZE,
+) -> torch.Tensor:
+  out, _, _ = _autograd_mul_forward(x, y, negate, block_size)
+  return out
+
+
 def jax_add_or_subtract_vectors_wrapper(
     mode: str, x: jax.Array, y: jax.Array
 ) -> jax.Array:
@@ -716,6 +815,92 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
           input_output_aliases={0: 0},
           donate_argnums=(1,),
       )
+
+  def test_pallas_autograd_example_eager_and_fullgraph(self):
+    x_host = torch.linspace(-2.0, 2.0, 256, dtype=torch.float32)
+    y_host = torch.linspace(3.0, -1.0, 256, dtype=torch.float32)
+    grad_host = torch.linspace(-0.5, 1.5, 256, dtype=torch.float32)
+
+    with self.subTest("multiple outputs and non-differentiable auxiliaries"):
+      x = x_host.to(self.device).requires_grad_()
+      y = y_host.to(self.device).requires_grad_()
+      out, local_dx, local_dy = _autograd_mul_forward(
+          x, y, False, _AUTOGRAD_BLOCK_SIZE
+      )
+      self.assertFalse(local_dx.requires_grad)
+      self.assertFalse(local_dy.requires_grad)
+      test_utils.assert_close(out.cpu(), x_host * y_host)
+      test_utils.assert_close(local_dx.cpu(), y_host)
+      test_utils.assert_close(local_dy.cpu(), x_host)
+
+      # A strided upstream gradient verifies that the autograd callback
+      # normalizes grad_out before passing it to the Pallas backward op.
+      grad = (
+          torch.stack(
+              (grad_host.to(self.device), grad_host.to(self.device)), dim=1
+          )
+          .flatten()[::2]
+      )
+      self.assertFalse(grad.is_contiguous())
+      out.backward(grad)
+      test_utils.assert_close(x.grad.cpu(), grad_host * y_host)
+      test_utils.assert_close(y.grad.cpu(), grad_host * x_host)
+
+    with self.subTest("static boolean and direct backward op"):
+      x = x_host.to(self.device).requires_grad_()
+      y = y_host.to(self.device).requires_grad_()
+      out, local_dx, local_dy = _autograd_mul_forward(
+          x, y, True, _AUTOGRAD_BLOCK_SIZE
+      )
+      direct_dx, direct_dy = _autograd_mul_backward(
+          grad_host.to(self.device),
+          local_dx,
+          local_dy,
+          _AUTOGRAD_BLOCK_SIZE,
+      )
+      test_utils.assert_close(out.cpu(), -(x_host * y_host))
+      test_utils.assert_close(direct_dx.cpu(), -(grad_host * y_host))
+      test_utils.assert_close(direct_dy.cpu(), -(grad_host * x_host))
+
+    with self.subTest("fullgraph forward and AOTAutograd backward"):
+
+      @torch.compile(backend="tpu", dynamic=False, fullgraph=True)
+      def compiled_loss(x_local, y_local, weight, negate: bool):
+        return (
+            _autograd_mul(
+                x_local,
+                y_local,
+                negate=negate,
+                block_size=_AUTOGRAD_BLOCK_SIZE,
+            )
+            * weight
+        ).sum()
+
+      for negate in (False, True):
+        sign = -1.0 if negate else 1.0
+        x = x_host.to(self.device).requires_grad_()
+        y = y_host.to(self.device).requires_grad_()
+        loss = compiled_loss(x, y, grad_host.to(self.device), negate)
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss).item())
+        test_utils.assert_close(
+            loss.cpu(), (sign * x_host * y_host * grad_host).sum()
+        )
+        test_utils.assert_close(x.grad.cpu(), sign * grad_host * y_host)
+        test_utils.assert_close(y.grad.cpu(), sign * grad_host * x_host)
+
+  def test_pallas_autograd_example_rejects_invalid_blocking(self):
+    x = torch.ones(256, dtype=torch.float32, device=self.device)
+    with self.assertRaisesRegex(
+        ValueError, "block_size must be a positive multiple of 128"
+    ):
+      _autograd_mul_forward(x, x, False, 64)
+
+    x = torch.ones(384, dtype=torch.float32, device=self.device)
+    with self.assertRaisesRegex(
+        ValueError, "input must be 1-D and divisible by block_size"
+    ):
+      _autograd_mul_forward(x, x, False, 256)
 
   def test_jax_dot_grad_for_backwards(self):
     """Test usage of jax.grad to generate a backwards function.
