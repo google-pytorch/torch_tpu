@@ -385,11 +385,13 @@ torch_tpu_cc_library(
     deps = [
         ":op_builder_utils",
         "//shims/torch:torch_headers",
+        "//torch_tpu/common:aten_utils",
         "//torch_tpu/common:error_utils",
         "//torch_tpu/common:macro_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
+        "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
