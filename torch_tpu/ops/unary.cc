@@ -30,6 +30,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/common/aten_utils.h"
 #include "torch_tpu/common/dtype.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/to_string.h"
@@ -43,29 +44,22 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> LogN(mlir::MlirOp input_op, int32_t n,
                                   mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
-  // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_dtype));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
 
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_type));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_type);
-
-  mlir::MlirBuilder& builder = input_op.getBuilder();
+  mlir::MlirBuilder& builder = op.getBuilder();
 
   // Defined as LogN(x) = log(x) / log(N):
-  mlir::MlirOp log_op = stablehlo::Log(computation_input_op);
-  mlir::MlirOp value_n = MakeScalarConstant(builder, n, computation_type);
+  mlir::MlirOp log_op = stablehlo::Log(op);
+  mlir::MlirOp value_n = MakeScalarConstant(builder, n, compute_dtype);
   mlir::MlirOp log_of_n = stablehlo::Log(value_n);
   mlir::MlirOp result_op = mlir::chlo::BroadcastDiv(log_op, log_of_n);
 
-  return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+  return CastIfNeeded(result_op, orig_dtype);
 }
 
 }  // namespace
@@ -135,6 +129,30 @@ absl::StatusOr<mlir::MlirOp> BuildAbsShlo(mlir::MlirOp input) {
   return res;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildAsinShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::chlo::Asin(op);
+  return CastIfNeeded(res, orig_dtype);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildAtanShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::chlo::Atan(op);
+  return CastIfNeeded(res, orig_dtype);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildCeilShlo(mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
   if (input_type.getElementType().isInteger()) {
@@ -162,6 +180,18 @@ absl::StatusOr<mlir::MlirOp> BuildConjPhysicalShlo(mlir::MlirOp input_op) {
   auto imag = mlir::stablehlo::Imag(input_op);
   auto neg_imag = mlir::stablehlo::Neg(imag);
   return mlir::stablehlo::Complex(real, neg_imag);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildCoshShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::chlo::Cosh(op);
+  return CastIfNeeded(res, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildReciprocalShlo(
@@ -222,23 +252,14 @@ absl::StatusOr<mlir::MlirOp> BuildLiftFreshShlo(mlir::MlirOp input_op) {
 
 absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
                                           mlir::ElementType default_dtype) {
-  at::ScalarType default_scalar_type = ConvertTo<at::ScalarType>(default_dtype);
-  // Similarly to CUDA, Half and BFloat16 inputs are promoted to to Float for
-  // the actual mathematical computation.
-  at::ScalarType computation_scalar_type =
-      at::toOpMathType(default_scalar_type);
-
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_type,
-                      ConvertTo<mlir::ElementType>(computation_scalar_type));
-
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp computation_input_op,
-                      ConvertIfInteger(input_op, computation_type));
-  computation_input_op = mlir::stablehlo::ConvertElementType(
-      computation_input_op, computation_type);
-
-  mlir::MlirOp result_op = mlir::stablehlo::Log(computation_input_op);
-
-  return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_dtype));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::stablehlo::Log(op);
+  return CastIfNeeded(res, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
@@ -262,6 +283,18 @@ absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
   return mlir::stablehlo::ConvertElementType(result_op, default_dtype);
 }
 
+absl::StatusOr<mlir::MlirOp> BuildExpShlo(mlir::MlirOp input_op,
+                                          mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::stablehlo::Exp(op);
+  return CastIfNeeded(res, orig_dtype);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
     mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
@@ -275,6 +308,18 @@ absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(
   mlir::MlirOp mul_op = mlir::stablehlo::Mul(ln2_b, op_b);
   mlir::MlirOp result_op = mlir::stablehlo::Exp(mul_op);
   return mlir::stablehlo::ConvertElementType(result_op, default_mlir_type);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildExpm1Shlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, default_mlir_type));
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(orig_dtype));
+  TT_ASSIGN_OR_RETURN(op, CastIfNeeded(op, compute_dtype));
+  mlir::MlirOp res = mlir::stablehlo::Expm1(op);
+  return CastIfNeeded(res, orig_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(
