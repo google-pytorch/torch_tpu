@@ -985,12 +985,13 @@ class TpuVsGpuErrorTest(et.ErrorTestBase, parameterized.TestCase):
     a = torch.ones(2, 3, dtype=dtype, device=et.device())
     b = torch.ones(3, 2, dtype=dtype, device=et.device())
 
-    # matmul decomposes to mm, so both report the mm kernel.
+    # `matmul` decomposes to `mm`, so both report the`mm` kernel.
     for op in (torch.mm, torch.matmul):
       with et.assert_raises_message(
           NotImplementedError,
           tpu=f"""mm(): not implemented for {tpu_dtype}""",
           gpu=f""""addmm_cuda" not implemented for '{gpu_dtype}'""",
+          message_reviewed_by="wan",
       ):
         op(a, b)
 
@@ -2378,6 +2379,7 @@ Device-side assertion tracking was not enabled by user.""",
         NotImplementedError,
         tpu=f"""addmm(): not implemented for {tpu_dtype}""",
         gpu=f""""addmm_cuda" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="gunhyun",
     ):
       torch.addmm(input_, mat1, mat2)
 
@@ -3523,6 +3525,7 @@ Device-side assertion tracking was not enabled by user.""",
         NotImplementedError,
         tpu=f"""{op_name}(): not implemented for int64""",
         gpu=f""""{gpu_op_name}" not implemented for 'Long'""",
+        message_reviewed_by="gunhyun",
     ):
       op(t, kernel_size=3)
 
@@ -4387,7 +4390,10 @@ Supported combinations for non-constant padding:
   )
   def test_foreach_div_inplace_integral(self, other_kind: str):
     device = et.device()
-    for dtype, tpu_dtype in ((torch.int32, "int32"), (torch.int64, "int64")):
+    for dtype, tpu_dtype, gpu_dtype in (
+        (torch.int32, "int32", "Int"),
+        (torch.int64, "int64", "Long")
+    ):
       self_list = [torch.tensor([4, 6], dtype=dtype, device=device)]
       other = {
           "tensor_list": [torch.tensor([2, 3], dtype=dtype, device=device)],
@@ -4395,7 +4401,6 @@ Supported combinations for non-constant padding:
           "scalar_list": [2],
           "tensor": torch.tensor(2, dtype=dtype, device=device),
       }[other_kind]
-      gpu_dtype = "Int" if dtype == torch.int32 else "Long"
 
       with et.assert_raises_message(
           RuntimeError,
@@ -4740,6 +4745,7 @@ Supported combinations for non-constant padding:
         NotImplementedError,
         tpu=f"""addmv(): not implemented for {tpu_dtype}""",
         gpu=f""""addmv_impl_cuda" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="gunhyun",
     ):
       torch.addmv(t, mat, vec)
 
@@ -4890,9 +4896,10 @@ Supported combinations for non-constant padding:
     b = torch.ones(1, 3, 2, dtype=dtype, device=et.device())
 
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu=f"""bmm(): not implemented for {tpu_dtype}""",
-        gpu=f""""baddbmm_cuda" not implemented for '{gpu_dtype}'""",
+      NotImplementedError,
+      tpu=f"""bmm(): not implemented for {tpu_dtype}""",
+      gpu=f""""baddbmm_cuda" not implemented for '{gpu_dtype}'""",
+      message_reviewed_by="gunhyun",
     ):
       torch.bmm(a, b)
 
@@ -5087,9 +5094,10 @@ Supported combinations for non-constant padding:
     batch2 = torch.ones(1, 3, 2, device=et.device(), dtype=dtype)
 
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu=f"""baddbmm(): not implemented for {tpu_dtype}""",
-        gpu=f""""baddbmm_cuda" not implemented for '{gpu_dtype}'""",
+      NotImplementedError,
+      tpu=f"""baddbmm(): not implemented for {tpu_dtype}""",
+      gpu=f""""baddbmm_cuda" not implemented for '{gpu_dtype}'""",
+      message_reviewed_by="gunhyun",
     ):
       torch.baddbmm(input_tensor, batch1, batch2)
 
@@ -5195,9 +5203,10 @@ Supported combinations for non-constant padding:
     t_int = torch.ones((1, 2, 5, 5), device=et.device(), dtype=torch.int32)
     weight = torch.ones((2, 1, 3, 3), device=et.device(), dtype=torch.int32)
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""convolution(): not implemented for int32""",
-        gpu=""""conv_depthwise2d_forward_cuda" not implemented for 'Int'""",
+      NotImplementedError,
+      tpu="""convolution(): not implemented for int32""",
+      gpu=""""conv_depthwise2d_forward_cuda" not implemented for 'Int'""",
+      message_reviewed_by="wan",
     ):
       torch.nn.functional.conv2d(t_int, weight, groups=2)
 
@@ -5823,7 +5832,7 @@ Supported combinations for non-constant padding:
         NotImplementedError,
         tpu=f"""vdot(): not implemented for {tpu_dtype}""",
         gpu=f""""dot" not implemented for '{gpu_dtype}'""",
-        message_reviewed_by="gunhyun",
+        message_reviewed_by="wan",
     ):
       torch.vdot(lhs, rhs)
 
@@ -6361,9 +6370,10 @@ Supported combinations for non-constant padding:
     grad_output = torch.ones((2, 3), device=et.device(), dtype=dtype)
     mask = torch.ones((2, 3), device=et.device(), dtype=torch.bool)
     with et.assert_raises_message(
-        NotImplementedError,
-        gpu=f""""masked_scale" not implemented for '{gpu_dtype}'""",
-        tpu=f"""native_dropout_backward(): not implemented for {tpu_dtype}""",
+      NotImplementedError,
+      tpu=f"""native_dropout_backward(): not implemented for {tpu_dtype}""",
+      gpu=f""""masked_scale" not implemented for '{gpu_dtype}'""",
+      message_reviewed_by="gunhyun",
     ):
       torch.ops.aten.native_dropout_backward(grad_output, mask, 2.0)
 
@@ -7147,11 +7157,25 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(5, device=et.device(), dtype=dtype)
 
     with et.assert_raises_message(
-        NotImplementedError,
-        tpu=f"""silu(): not implemented for {tpu_dtype}""",
-        gpu=f""""silu_cuda" not implemented for '{gpu_dtype}'""",
+      NotImplementedError,
+      tpu=f"""silu(): not implemented for {tpu_dtype}""",
+      gpu=f""""silu_cuda" not implemented for '{gpu_dtype}'""",
+      message_reviewed_by="gunhyun",
     ):
       torch.nn.functional.silu(t)
+
+  def test_silu_unsupported_dtype_int16(self):
+    # int16 is not rejected up front, so the error comes from the lowering
+    # when the result is materialized.
+    t = torch.ones(5, device=et.device(), dtype=torch.int16)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""silu(): materialization failed with: expected the input dtype to be floating point, got int16""",
+        gpu=""""silu_cuda" not implemented for 'Short'""",
+    ):
+      out = torch.nn.functional.silu(t)
+      out.cpu()
 
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
@@ -9092,9 +9116,10 @@ Device-side assertion tracking was not enabled by user.""",
   ):
     x = torch.ones(2, 2, device=et.device(), dtype=dtype)
     with et.assert_raises_message(
-        NotImplementedError,
-        gpu=f""""histc" not implemented for '{gpu_dtype}'""",
-        tpu=f"""histc(): not implemented for {tpu_dtype}""",
+      NotImplementedError,
+      tpu=f"""histc(): not implemented for {tpu_dtype}""",
+      gpu=f""""histc" not implemented for '{gpu_dtype}'""",
+      message_reviewed_by="wan",
     ):
       torch.histc(x)
 
@@ -9173,9 +9198,10 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       t = torch.ones(1, 1, 2, 2, device=et.device(), dtype=dtype)
       with et.assert_raises_message(
-          NotImplementedError,
-          gpu=f""""{gpu_op_name}" not implemented for '{gpu_dtype}'""",
-          tpu=f"""{tpu_op_name}(): not implemented for {tpu_dtype}""",
+        NotImplementedError,
+        tpu=f"""{tpu_op_name}(): not implemented for {tpu_dtype}""",
+        gpu=f""""{gpu_op_name}" not implemented for '{gpu_dtype}'""",
+        message_reviewed_by="gunhyun",
       ):
         torch.nn.functional.interpolate(t, scale_factor=2, mode=mode)
 
