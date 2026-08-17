@@ -132,6 +132,45 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildForeachShlo(
   return results;
 }
 
+absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildForeachAddShlo(
+    absl::Span<const mlir::MlirOp> self, absl::Span<const mlir::MlirOp> other,
+    std::optional<absl::Span<const mlir::MlirOp>> alpha,
+    bool alpha_is_minus_one, absl::Span<const mlir::ElementType> out_dtypes,
+    mlir::MlirBuilder& builder) {
+  mlir::SmallVector<mlir::MlirOp> results;
+  results.reserve(self.size());
+  for (size_t i = 0; i < self.size(); ++i) {
+    mlir::MlirOp current_self = self[i];
+    mlir::MlirOp current_other = other[i];
+
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(out_dtypes[i]));
+
+    TT_ASSIGN_OR_RETURN(current_self,
+                        CastIfNeeded(current_self, compute_dtype));
+    TT_ASSIGN_OR_RETURN(current_other,
+                        CastIfNeeded(current_other, compute_dtype));
+
+    mlir::MlirOp result;
+    if (alpha.has_value()) {
+      mlir::MlirOp current_alpha = (*alpha)[i];
+      TT_ASSIGN_OR_RETURN(current_alpha,
+                          CastIfNeeded(current_alpha, compute_dtype));
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp scaled_other,
+                          BuildMulShlo(current_other, current_alpha));
+      TT_ASSIGN_OR_RETURN(result, BuildAddShlo(current_self, scaled_other));
+    } else if (alpha_is_minus_one) {
+      TT_ASSIGN_OR_RETURN(result, BuildSubShlo(current_self, current_other));
+    } else {
+      TT_ASSIGN_OR_RETURN(result, BuildAddShlo(current_self, current_other));
+    }
+
+    TT_ASSIGN_OR_RETURN(result, CastIfNeeded(result, out_dtypes[i]));
+    results.push_back(result);
+  }
+  return results;
+}
+
 absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildForeachAddcdivShlo(
     absl::Span<const mlir::MlirOp> self, absl::Span<const mlir::MlirOp> tensor1,
     absl::Span<const mlir::MlirOp> tensor2,
@@ -227,6 +266,15 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildForeachLerpShlo(
     TT_ASSIGN_OR_RETURN(current_weight,
                         CastIfNeeded(current_weight, out_dtypes[i]));
 
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(out_dtypes[i]));
+    TT_ASSIGN_OR_RETURN(current_self,
+                        CastIfNeeded(current_self, compute_dtype));
+    TT_ASSIGN_OR_RETURN(current_other,
+                        CastIfNeeded(current_other, compute_dtype));
+    TT_ASSIGN_OR_RETURN(current_weight,
+                        CastIfNeeded(current_weight, compute_dtype));
+
     // lerp(start, end, weight) = start + weight * (end - start)
     TT_ASSIGN_OR_RETURN(mlir::MlirOp diff,
                         BuildSubShlo(current_other, current_self));
@@ -234,6 +282,7 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildForeachLerpShlo(
                         BuildMulShlo(current_weight, diff));
     TT_ASSIGN_OR_RETURN(mlir::MlirOp result,
                         BuildAddShlo(current_self, weighted_diff));
+    TT_ASSIGN_OR_RETURN(result, CastIfNeeded(result, out_dtypes[i]));
     results.push_back(result);
   }
   return results;
@@ -644,25 +693,16 @@ std::vector<DeviceBufferRef> ForeachAddList(
     absl::Span<mlir::MlirOp> other_ops =
         inputs.subspan(num_tensors, num_tensors);
 
-    // If alpha is 1.0, do a simple addition without multiplying by alpha.
-    if (alpha_is_one) {
-      return BuildForeachShlo(self_ops, other_ops, out_dtypes,
-                              mlir::stablehlo::Add, builder);
-    }
-
-    // If alpha is -1.0, do a simple subtraction without multiplying by alpha.
-    if (alpha_is_minus_one) {
-      return BuildForeachShlo(self_ops, other_ops, out_dtypes,
-                              mlir::stablehlo::Subtract, builder);
+    if (alpha_is_one || alpha_is_minus_one) {
+      return BuildForeachAddShlo(self_ops, other_ops, /*alpha=*/std::nullopt,
+                                 alpha_is_minus_one, out_dtypes, builder);
     }
 
     absl::Span<mlir::MlirOp> alpha_ops =
-        inputs.subspan(2 * num_tensors, 3 * num_tensors);
-    TT_ASSIGN_OR_RETURN(auto new_other_ops,
-                        BuildForeachShlo(other_ops, alpha_ops, out_dtypes,
-                                         mlir::stablehlo::Mul, builder));
-    return BuildForeachShlo(self_ops, absl::MakeSpan(new_other_ops), out_dtypes,
-                            mlir::stablehlo::Add, builder);
+        inputs.subspan(2 * num_tensors, num_tensors);
+    return BuildForeachAddShlo(self_ops, other_ops, alpha_ops,
+                               /*alpha_is_minus_one=*/false, out_dtypes,
+                               builder);
   };
 
   // Dispatch the op and prepare results.
