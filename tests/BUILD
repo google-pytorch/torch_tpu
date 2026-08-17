@@ -2264,6 +2264,24 @@ torch_tpu_oss_torch_example(
     ],
 )
 
+# Test to ensure pytorch example works with torch_tpu. It functions as an integration test and as a
+# documentation regression test. Tests downloading the raw PyTorch examples tree from GitHub.
+# Therefore, this test is OSS only.
+torch_tpu_oss_torch_example(
+    name = "run_upstream_example_imagenet_tpu",
+    torch_example_args = "--pretrained --batch-size=4 --epochs=1 --workers=0",
+    torch_example_main = "imagenet/main.py",
+)
+
+# Test to ensure pytorch example works with torch_tpu. It functions as an integration test and as a
+# documentation regression test. Tests downloading the raw PyTorch examples tree from GitHub.
+# Therefore, this test is OSS only.
+torch_tpu_oss_torch_example(
+    name = "run_upstream_example_fast_neural_style_tpu",
+    torch_example_args = "train --epochs=1 --batch-size=4 --dataset=/tmp/gcsfuse/data/fast_neural_style --save-model-dir=saved_models --accel --log-interval=1",
+    torch_example_main = "fast_neural_style/neural_style/neural_style.py",
+)
+
 torch_tpu_py_test(
     name = "scan_test",
     srcs = ["scan_test.py"],

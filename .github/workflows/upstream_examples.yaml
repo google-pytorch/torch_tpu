@@ -84,6 +84,20 @@ jobs:
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=TORCH_TPU_INTERNAL_TORCH_EXAMPLES_DIR=$GITHUB_WORKSPACE/pytorch_examples --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch_examples',
             target: "//tests:run_upstream_example_super_resolution_tpu",
           },
+          {
+            name: "TPU v7(imagenet)",
+            runner: "linux-x86-tpu7x-224-4tpu",
+            config: "ci_tpu_v7",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=TORCH_TPU_INTERNAL_TORCH_EXAMPLES_DIR=$GITHUB_WORKSPACE/pytorch_examples --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch_examples',
+            target: "//tests:run_upstream_example_imagenet_tpu",
+          },
+          {
+            name: "TPU v7(fast_neural_style)",
+            runner: "linux-x86-tpu7x-224-4tpu",
+            config: "ci_tpu_v7",
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=TORCH_TPU_INTERNAL_TORCH_EXAMPLES_DIR=$GITHUB_WORKSPACE/pytorch_examples --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch_examples',
+            target: "//tests:run_upstream_example_fast_neural_style_tpu",
+          },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.

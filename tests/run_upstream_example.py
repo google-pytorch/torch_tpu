@@ -199,6 +199,103 @@ def _copy_bsds300_dataset():
     shutil.copytree(gcs_images_dir, local_images_dir, dirs_exist_ok=True)
 
 
+def _copy_resnet18_checkpoints():
+  """Stages ResNet18 checkpoint from GCS Fuse mount into Torchvision hub cache.
+
+  Upstream PyTorch ImageNet example (imagenet/main.py) when run with
+  --pretrained
+  attempts to download 'resnet18-f37072fd.pth' from PyTorch Hub. In CI and
+  internal sandbox environments with restricted network access, we stage the
+  checkpoint from pre-mounted GCS bucket into Torchvision's hub checkpoint
+  cache.
+  """
+  gcs_ckpt = os.path.join(
+      _DATASET_BASE_DIR, "checkpoints", "resnet18-f37072fd.pth"
+  )
+  if not os.path.exists(gcs_ckpt):
+    raise FileNotFoundError(
+        f"GCS checkpoint file '{gcs_ckpt}' does not exist. Ensure GCS bucket"
+        f" 'torchtpu-shared' is mounted at '{_DATASET_BASE_DIR}'."
+    )
+
+  hub_dir = torch.hub.get_dir()
+  ckpt_dir = os.path.join(hub_dir, "checkpoints")
+  os.makedirs(ckpt_dir, exist_ok=True)
+
+  local_ckpt = os.path.join(ckpt_dir, "resnet18-f37072fd.pth")
+  if not os.path.exists(local_ckpt):
+    shutil.copyfile(gcs_ckpt, local_ckpt)
+
+
+def _copy_imagenet_dataset():
+  """Stages mini ImageNet dataset from GCS Fuse mount into local './imagenet' directory.
+
+  Upstream PyTorch ImageNet example (imagenet/main.py) looks for
+  './imagenet/train' and './imagenet/val' when --dummy is not used. In CI and
+  internal sandbox environments with restricted network access, we stage a
+  mini synthetic ImageNet dataset from the pre-mounted GCS bucket.
+  """
+  gcs_imagenet_dir = os.path.join(_DATASET_BASE_DIR, "imagenet_mini")
+  if not os.path.exists(gcs_imagenet_dir):
+    raise FileNotFoundError(
+        f"GCS dataset directory '{gcs_imagenet_dir}' does not exist. Ensure GCS"
+        f" bucket 'torchtpu-shared' is mounted at '{_DATASET_BASE_DIR}'."
+    )
+
+  local_imagenet_dir = os.path.join(os.getcwd(), "imagenet")
+  if not os.path.exists(local_imagenet_dir):
+    shutil.copytree(gcs_imagenet_dir, local_imagenet_dir, dirs_exist_ok=True)
+
+
+def _copy_vgg16_checkpoint():
+  """Stages VGG16 checkpoint from GCS Fuse mount into Torchvision hub cache.
+
+  Upstream PyTorch Fast Neural Style example
+  (fast_neural_style/neural_style/neural_style.py) uses
+  torchvision.models.vgg16,
+  which downloads 'vgg16-397923af.pth' from PyTorch Hub. In CI and internal
+  sandbox environments with restricted network access, we stage the checkpoint
+  from the pre-mounted GCS bucket into Torchvision's hub checkpoint cache.
+  """
+  gcs_ckpt = os.path.join(
+      _DATASET_BASE_DIR, "checkpoints", "vgg16-397923af.pth"
+  )
+  if not os.path.exists(gcs_ckpt):
+    raise FileNotFoundError(
+        f"GCS checkpoint file '{gcs_ckpt}' does not exist. Ensure GCS bucket"
+        f" 'torchtpu-shared' is mounted at '{_DATASET_BASE_DIR}'."
+    )
+
+  hub_dir = torch.hub.get_dir()
+  ckpt_dir = os.path.join(hub_dir, "checkpoints")
+  os.makedirs(ckpt_dir, exist_ok=True)
+
+  local_ckpt = os.path.join(ckpt_dir, "vgg16-397923af.pth")
+  if not os.path.exists(local_ckpt):
+    shutil.copyfile(gcs_ckpt, local_ckpt)
+
+
+def _setup_fast_neural_style():
+  """Sets up style images and saved_models directory for Fast Neural Style."""
+  # Copy style images from pytorch_examples repo to local working directory if present.
+  pytorch_examples_dir = os.environ.get("TORCH_TPU_INTERNAL_TORCH_EXAMPLES_DIR")
+  if pytorch_examples_dir:
+    style_images_src = os.path.join(
+        pytorch_examples_dir,
+        "fast_neural_style",
+        "images",
+        "style-images",
+    )
+    if os.path.exists(style_images_src):
+      local_style_dir = os.path.join(os.getcwd(), "images", "style-images")
+      os.makedirs(os.path.dirname(local_style_dir), exist_ok=True)
+      if not os.path.exists(local_style_dir):
+        shutil.copytree(style_images_src, local_style_dir, dirs_exist_ok=True)
+
+  # Create local './saved_models' directory for saving trained models.
+  os.makedirs("saved_models", exist_ok=True)
+
+
 def _setup_datasets(example: str):
   match example:
     case "gat/main.py":
@@ -215,6 +312,12 @@ def _setup_datasets(example: str):
       _stage_mnist_datasets()
     case "super_resolution/main.py":
       _copy_bsds300_dataset()
+    case "imagenet/main.py":
+      _copy_resnet18_checkpoints()
+      _copy_imagenet_dataset()
+    case "fast_neural_style/neural_style/neural_style.py":
+      _copy_vgg16_checkpoint()
+      _setup_fast_neural_style()
     case _:
       pass
 
