@@ -48,6 +48,9 @@ test = [
     "transformers>=5.8.0",
     "pytest>=9",
     "six>=1.17",
+    # Required at import time by several upstream PyTorch test suites
+    # (e.g. test/test_binary_ufuncs.py); see tests/run_torch_tests.py.
+    "hypothesis>=6.100",
 ]
 
 benchmark = [

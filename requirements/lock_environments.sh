@@ -34,10 +34,6 @@ cd "$working_dir"
 
 PYTHON_PLATFORM="x86_64-manylinux_2_31"
 
-PYPROJECT_CUDA=$(mktemp --suffix=_cuda.toml)
-trap 'rm -f "$PYPROJECT_CUDA"' EXIT
-sed -E 's/index = "pytorch-cpu",? *//; s/,? *index = "pytorch-cpu"//' pyproject.toml > "$PYPROJECT_CUDA"
-
 # Loop over supported Python versions and generate the full-environment locks.
 for version in "3.11" "3.12" "3.13" "3.14"; do
   version_und=$(echo "$version" | tr '.' '_')
@@ -63,7 +59,10 @@ for version in "3.11" "3.12" "3.13" "3.14"; do
     rm "$REQUIREMENTS_CUDA_FILE"
   fi
 
-  uv pip compile "$PYPROJECT_CUDA" \
+  # --no-sources ignores the [tool.uv.sources] pytorch-cpu index pins, so
+  # torch resolves as the CUDA build from PyPI instead of the +cpu wheel.
+  uv pip compile pyproject.toml \
+    --no-sources \
     --all-extras \
     --python-version "$version" \
     --python-platform "$PYTHON_PLATFORM" \
