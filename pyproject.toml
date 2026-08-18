@@ -51,6 +51,7 @@ test = [
     "hypothesis>=6.100",
     "google-cloud-storage>=2.14.0",
     "google-api-core>=2.18.0",
+    "unittest-xml-reporting>=4",
 ]
 
 benchmark = [
