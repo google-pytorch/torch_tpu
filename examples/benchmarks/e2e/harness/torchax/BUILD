@@ -18,6 +18,8 @@ load(
     "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
+load("//shims/mpm:genmpm.bzl", "genmpm")
+load("//shims/pkg:pkg.bzl", "pkg_binary_with_runfiles")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -104,6 +106,21 @@ torch_tpu_py_test(
         "@pypi//jax",
         "@pypi//torchax",
     ],
+)
+
+pkg_binary_with_runfiles(
+    name = "torchax_benchmark_test_with_runfiles",
+    testonly = 1,
+    binary = ":torchax_benchmark_test",
+)
+
+# Using a temporal MPM instead of a durable MPM as these are only used for testing. It also allows
+# testing changes from a local workspace.
+genmpm(
+    name = "torchax_benchmark_test_mpm",
+    testonly = 1,
+    temporal = True,
+    deps = [":torchax_benchmark_test_with_runfiles"],
 )
 
 torch_tpu_package_end()
