@@ -18,7 +18,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -60,6 +63,51 @@ namespace torch_tpu {
 namespace {
 
 constexpr int kMaxDevices = 8;
+
+// Returns the number of TPU PCI devices present in sysfs without initializing
+// the PJRT client or loading libtpu runtime.
+c10::DeviceIndex GetTpuPciDeviceCount() noexcept {
+  static const c10::DeviceIndex count = []() -> c10::DeviceIndex {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path pci_bus("/sys/bus/pci/devices");
+    if (!fs::exists(pci_bus, ec)) {
+      return 0;
+    }
+    int tpu_count = 0;
+    for (const auto& entry : fs::directory_iterator(pci_bus, ec)) {
+      if (ec) break;
+      const fs::path vendor_file = entry.path() / "vendor";
+      std::ifstream vendor_stream(vendor_file);
+      std::string vendor_id;
+      if (vendor_stream >> vendor_id && vendor_id == "0x1ae0") {
+        const fs::path device_file = entry.path() / "device";
+        std::ifstream device_stream(device_file);
+        std::string device_id;
+        if (device_stream >> device_id) {
+          if (device_id == "0x005e" || device_id == "0x0062" ||
+              device_id == "0x0063" || device_id == "0x006f" ||
+              device_id == "0x0076" || device_id == "0x0083") {
+            const fs::path iommu_group_symlink = entry.path() / "iommu_group";
+            if (fs::is_symlink(iommu_group_symlink, ec)) {
+              const fs::path group_target =
+                  fs::read_symlink(iommu_group_symlink, ec);
+              if (!ec) {
+                const fs::path vfio_device =
+                    fs::path("/dev/vfio") / group_target.filename();
+                if (fs::exists(vfio_device, ec)) {
+                  tpu_count++;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return static_cast<c10::DeviceIndex>(tpu_count);
+  }();
+  return count;
+}
 
 void ValidateDeviceIndex(c10::DeviceIndex device_index) {
   // This error message should not be hit; it should be impossible for users to
@@ -201,12 +249,15 @@ c10::Stream TpuDeviceGuardImpl::exchangeStream(c10::Stream s) const {
 }
 
 c10::DeviceIndex TpuDeviceGuardImpl::deviceCount() const noexcept {
-  auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
-  if (pjrt_client != nullptr) {
-    return static_cast<c10::DeviceIndex>(
-        pjrt_client->addressable_device_count());
+  if (PjrtBackend::GetInstance().IsInitialized()) {
+    auto* pjrt_client = PjrtBackend::GetInstance().GetClient();
+    if (pjrt_client != nullptr) {
+      return static_cast<c10::DeviceIndex>(
+          pjrt_client->addressable_device_count());
+    }
+    return 0;
   }
-  return 0;
+  return GetTpuPciDeviceCount();
 }
 
 c10::Stream TpuDeviceGuardImpl::getDefaultStream(c10::Device d) const {
@@ -285,7 +336,10 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
   }
 
   bool hasPrimaryContext(c10::DeviceIndex device_index) const override {
-    return PjrtBackend::GetInstance().GetClient() != nullptr;
+    if (PjrtBackend::GetInstance().IsInitialized()) {
+      return PjrtBackend::GetInstance().GetClient() != nullptr;
+    }
+    return GetTpuPciDeviceCount() > 0;
   }
 
   bool isPinnedPtr(const void* data) const override {
@@ -364,7 +418,10 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
   }
 
   bool isAvailable() const override {
-    return PjrtBackend::GetInstance().GetClient() != nullptr;
+    if (PjrtBackend::GetInstance().IsInitialized()) {
+      return PjrtBackend::GetInstance().GetClient() != nullptr;
+    }
+    return GetTpuPciDeviceCount() > 0;
   }
 };
 

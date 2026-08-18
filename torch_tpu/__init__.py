@@ -24,9 +24,13 @@ from torch_tpu import _versioned_so_loader
 _versioned_so_loader.install_hook(pathlib.Path(__file__).parent)
 
 try:
+  from torch_tpu._internal.utils import hardware  # pylint: disable=g-import-not-at-top
   import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
 
-  libtpu.configure_library_path()
+  # Only configure libtpu.so when TPU hardware is physically present to avoid
+  # loading TPU shared libraries into PJRT_NAMESPACES on GPU/CPU machines.
+  if hardware.get_tpu_device_count() > 0:
+    libtpu.configure_library_path()
 except ImportError:
   print("libtpu not found.")
   pass
