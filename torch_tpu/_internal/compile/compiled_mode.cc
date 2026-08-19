@@ -263,6 +263,9 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
 
   // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
+  std::string tier3_key =
+      traversal->GetCacheKey(compilation_spec.compile_options_key)
+          .CompactFormat();
   TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
                        // happens
       auto compiled_kernel,
@@ -295,6 +298,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   return CompileResult{
       .module = std::move(module),
       .executable = std::move(executable),
+      .tier3_key = std::move(tier3_key),
   };
 }
 

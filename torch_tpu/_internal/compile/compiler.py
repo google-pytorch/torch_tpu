@@ -303,6 +303,7 @@ class StaticCompiler(Compiler):
         updates_default_generator_state=exported_mlir.updates_default_generator_state,
         dynamic_outputs=exported_mlir.dynamic_outputs,
         unique_output_indices=exported_mlir.unique_output_indices,
+        tier3_key=exported_mlir.tier3_key,
     )
 
     if self._debug and mlir_module is not None:

@@ -147,6 +147,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       updates_default_generator_state: bool,
       dynamic_outputs: Sequence[bool] | None = None,
       unique_output_indices: Sequence[int] | None = None,
+      tier3_key: str | None = None,
   ):
     """Initializes the compiled executable wrapper.
 
@@ -167,12 +168,14 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         output tensor is dynamic.
       unique_output_indices: Optional sequence of original output indices
         corresponding to deduplicated outputs.
+      tier3_key: Optional string representation of the Tier-3 cache key.
     """  # fmt: skip
     self._executable = executable
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
     self._tensor_arg_indices = None
     self._graph_module_debug_str: str | None = None
     self._mlir_text: str | None = None
+    self._tier3_key: str | None = tier3_key
     self._updates_default_generator_state: bool = (
         updates_default_generator_state
     )
@@ -190,6 +193,15 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       ]
     else:
       self._cached_dynamic_output_shapes = None
+
+  @property
+  def tier3_key(self) -> str | None:
+    """The Tier-3 compilation cache key if available."""
+    return self._tier3_key
+
+  @tier3_key.setter
+  def tier3_key(self, value: str | None) -> None:
+    self._tier3_key = value
 
   @property
   def unique_output_indices(self) -> Sequence[int] | None:

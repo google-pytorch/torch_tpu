@@ -32,6 +32,8 @@
 #include "absl/base/nullability.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_split.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -65,6 +67,7 @@
 #include "torch_tpu/common/env_vars.h"
 #include "torch_tpu/common/error_utils.h"
 #include "torch_tpu/common/shape.h"
+#include "torch_tpu/common/tier3_compilation_cache.h"
 #include "torch_tpu/common/to_string.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
@@ -1061,6 +1064,29 @@ SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
   return executable;
 }
 
+SharedLoadedExecutableWithMetadata PyLoadExecutableFromTier3Key(
+    const std::string& tier3_key) {
+  uint64_t shapeless = 0;
+  uint64_t dimensions = 0;
+  uint64_t options = 0;
+  const std::vector<std::string_view> parts = absl::StrSplit(tier3_key, '_');
+  TT_CHECK_THROW(parts.size() == 3, error::kInvalidArgument)
+      << "Invalid tier3_key format: " << tier3_key;
+  TT_CHECK_THROW(absl::SimpleHexAtoi(parts[0], &shapeless) &&
+                     absl::SimpleHexAtoi(parts[1], &dimensions) &&
+                     absl::SimpleHexAtoi(parts[2], &options),
+                 error::kInvalidArgument)
+      << "Failed to parse hex values from tier3_key: " << tier3_key;
+  const GraphKey graph_key(ShapelessKey(shapeless),
+                           DimensionsKey(dimensions));
+  const CompilationCacheKey key(graph_key, CompileOptionsKey(options));
+  TT_ASSIGN_OR_THROW(
+      SharedLoadedExecutableWithMetadata executable,
+      GetFromTier3Cache(key),
+      _.SetPrepend() << "Failed to load executable from tier-3 cache: ");
+  return executable;
+}
+
 at::Tensor PyMakeConstantTensor(const at::Tensor& cpu_tensor) {
   TT_ASSIGN_OR_THROW(at::Tensor tpu_tensor, MakeConstantTensor(cpu_tensor));
   return tpu_tensor;
@@ -1201,7 +1227,8 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
 
   py::class_<CompileResult>(m, "CompileResult")
       .def_readonly("module", &CompileResult::module)
-      .def_readonly("executable", &CompileResult::executable);
+      .def_readonly("executable", &CompileResult::executable)
+      .def_readonly("tier3_key", &CompileResult::tier3_key);
 
   py::class_<torch_tpu::ContextedModule,  // NOLINT(bugprone-unused-raii)
              std::shared_ptr<torch_tpu::ContextedModule>>(m, "ContextedModule");
@@ -1352,6 +1379,9 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("load_serialized_executable", PyLoadSerializedExecutable,
         py::arg("serialized_bytes"),
         "Loads a PjRtLoadedExecutable from serialized bytes.");
+  m.def("load_executable_from_tier3_key", PyLoadExecutableFromTier3Key,
+        py::arg("tier3_key"),
+        "Loads a PjRtLoadedExecutable directly from tier-3 persistent cache using its key.");
   m.def("make_constant_tensor", PyMakeConstantTensor, py::arg("cpu_tensor"),
         "Creates a TPU tensor that represents the constant value of the CPU "
         "tensor.");
