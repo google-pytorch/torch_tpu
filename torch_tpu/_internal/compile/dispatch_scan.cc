@@ -51,6 +51,7 @@
 #include "torch_tpu/common/shape.h"
 #include "torch_tpu/common/utils.h"
 #include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/eager/device_buffer_utils.h"
 #include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/op_names.h"
@@ -292,11 +293,21 @@ std::vector<at::Tensor> PyCreateScanOp(
 
   std::vector<DeviceBufferRef> input_buffers = GetInputBuffers(inits, inputs);
   std::vector<Shape> output_shapes = GetOutputShapes(inits, dummy_outputs);
-  TT_ASSIGN_OR_THROW(const auto result_refs,
-                     DeviceBufferList::CreateDeferred(
-                         OpName::kCustomKernel, std::move(op_builder),
-                         std::move(input_buffers), std::move(cache_keys),
-                         std::move(output_shapes)));
+  // Must go through internal::CreateDeferredDeviceBufferList rather than
+  // DeviceBufferList::CreateDeferred: only the former calls
+  // RecordDeferredOpCreated, which puts the new op on the EventsQueue that
+  // PrepareTraversals reads to build execution order. Calling CreateDeferred
+  // directly leaves the scan node off the queue, so it never enters a
+  // traversal and its first consumer fails in materialize_common.cc.
+  TT_ASSIGN_OR_THROW(
+      const auto result_refs,
+      internal::CreateDeferredDeviceBufferList(internal::DeferredOpParams{
+          .op_name = OpName::kCustomKernel,
+          .op_builder = std::move(op_builder),
+          .op_param_cache_keys = std::move(cache_keys),
+          .inputs = std::move(input_buffers),
+          .output_shapes = std::move(output_shapes),
+      }));
 
   std::vector<at::Tensor> results;
   results.reserve(result_refs.size());
