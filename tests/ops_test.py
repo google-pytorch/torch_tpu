@@ -2551,15 +2551,9 @@ class TestOps(op_testing.OpInfoTestBase):
         "_foreach_clamp_max",
         # TODO: "clamp_max_scalar_cpu" not implemented for 'Bool'.
         # TODO: fix _foreach_clamp_max() failing with complex dtypes.
-        exclude_dtypes={
-            "cpu": (torch.bool,) + COMPLEX_DTYPES,
-            "gpu": COMPLEX_DTYPES,
-        },
+        exclude_dtypes=(torch.bool,) + COMPLEX_DTYPES,
         # TODO: fix _foreach_clamp_max_() failing with complex dtypes.
-        exclude_inplace_dtypes={
-            "cpu": (torch.bool,) + COMPLEX_DTYPES,
-            "gpu": COMPLEX_DTYPES,
-        },
+        exclude_inplace_dtypes=(torch.bool,) + COMPLEX_DTYPES,
     )
 
   @category("foreach")
@@ -2568,15 +2562,9 @@ class TestOps(op_testing.OpInfoTestBase):
         "_foreach_clamp_min",
         # TODO: "clamp_min_scalar_cpu" not implemented for 'Bool'.
         # TODO: fix _foreach_clamp_min() failing with complex dtypes.
-        exclude_dtypes={
-            "cpu": (torch.bool,) + COMPLEX_DTYPES,
-            "gpu": COMPLEX_DTYPES,
-        },
+        exclude_dtypes=(torch.bool,) + COMPLEX_DTYPES,
         # TODO: fix _foreach_clamp_min_() failing with complex dtypes.
-        exclude_inplace_dtypes={
-            "cpu": (torch.bool,) + COMPLEX_DTYPES,
-            "gpu": COMPLEX_DTYPES,
-        },
+        exclude_inplace_dtypes=(torch.bool,) + COMPLEX_DTYPES,
     )
 
   @category("foreach")

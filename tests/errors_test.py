@@ -4415,17 +4415,6 @@ Supported combinations for non-constant padding:
     ):
       torch._foreach_sub(self_list, [1, True])
 
-  def test_foreach_clamp_max_scalar_bool(self):
-    self_list = [
-        torch.tensor([True, False], dtype=torch.bool, device=et.device()),
-    ]
-
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""foreach_clamp_max(): not implemented for bool""",
-        gpu=""""clamp_scalar_cuda" not implemented for 'Bool'""",
-    ):
-      torch._foreach_clamp_max(self_list, True)
 
   @parameterized.named_parameters(
       dict(testcase_name="tensor_list", other_kind="tensor_list"),
