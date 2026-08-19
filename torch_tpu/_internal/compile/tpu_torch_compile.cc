@@ -1077,12 +1077,10 @@ SharedLoadedExecutableWithMetadata PyLoadExecutableFromTier3Key(
                      absl::SimpleHexAtoi(parts[2], &options),
                  error::kInvalidArgument)
       << "Failed to parse hex values from tier3_key: " << tier3_key;
-  const GraphKey graph_key(ShapelessKey(shapeless),
-                           DimensionsKey(dimensions));
+  const GraphKey graph_key(ShapelessKey(shapeless), DimensionsKey(dimensions));
   const CompilationCacheKey key(graph_key, CompileOptionsKey(options));
   TT_ASSIGN_OR_THROW(
-      SharedLoadedExecutableWithMetadata executable,
-      GetFromTier3Cache(key),
+      SharedLoadedExecutableWithMetadata executable, GetFromTier3Cache(key),
       _.SetPrepend() << "Failed to load executable from tier-3 cache: ");
   return executable;
 }
@@ -1381,7 +1379,8 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
         "Loads a PjRtLoadedExecutable from serialized bytes.");
   m.def("load_executable_from_tier3_key", PyLoadExecutableFromTier3Key,
         py::arg("tier3_key"),
-        "Loads a PjRtLoadedExecutable directly from tier-3 persistent cache using its key.");
+        "Loads a PjRtLoadedExecutable directly from tier-3 persistent cache "
+        "using its key.");
   m.def("make_constant_tensor", PyMakeConstantTensor, py::arg("cpu_tensor"),
         "Creates a TPU tensor that represents the constant value of the CPU "
         "tensor.");
