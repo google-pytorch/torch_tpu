@@ -1077,8 +1077,11 @@ SharedLoadedExecutableWithMetadata PyLoadExecutableFromTier3Key(
                      absl::SimpleHexAtoi(parts[2], &options),
                  error::kInvalidArgument)
       << "Failed to parse hex values from tier3_key: " << tier3_key;
-  const GraphKey graph_key(ShapelessKey(shapeless), DimensionsKey(dimensions));
-  const CompilationCacheKey key(graph_key, CompileOptionsKey(options));
+  const ShapelessKey shapeless_key(shapeless);
+  const DimensionsKey dimensions_key(dimensions);
+  const CompileOptionsKey options_key(options);
+  const GraphKey graph_key(shapeless_key, dimensions_key);
+  const CompilationCacheKey key(graph_key, options_key);
   TT_ASSIGN_OR_THROW(
       SharedLoadedExecutableWithMetadata executable, GetFromTier3Cache(key),
       _.SetPrepend() << "Failed to load executable from tier-3 cache: ");
