@@ -85,6 +85,8 @@ echo "Downloading bazel-diff..."
 curl -fLo /tmp/bazel-diff.jar --retry 5 --retry-connrefused \
   https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
 
+echo "Computing impacted targets between $BASE_SHA and $CURRENT_SHA..."
+
 echo "--- Generating Base Hashes ---"
 echo "PR detected. Fetching exact base SHA: $BASE_SHA"
 git fetch --depth=1 origin "$BASE_SHA"

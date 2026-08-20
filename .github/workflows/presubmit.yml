@@ -94,6 +94,10 @@ jobs:
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          # Keep the current commit's first parent fetchable
+          # to resolve bazel-diff base SHA below.
+          fetch-depth: 2
 
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
@@ -108,10 +112,19 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      # Diff against the current commit's first parent, i.e. main branch tip at CI run time.
+      # Intentionally do not use `github.event.pull_request.base.sha` as it is snapshotted upon
+      # PR creation. See https://github.com/orgs/community/discussions/59677 for more details.
+      - name: Resolve bazel-diff Base SHA
+        id: resolve_bazel_diff_base_sha
+        if: github.event_name == 'pull_request'
+        run: |
+          base="$(git rev-parse --verify "${GITHUB_SHA}^1")"
+          echo "sha=${base}" >> "$GITHUB_OUTPUT"
       - name: Run Impacted Tests via bazel-diff
         uses: ./.github/actions/bazel-diff
         with:
-          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          base_sha: ${{ inputs.override_base_sha || steps.resolve_bazel_diff_base_sha.outputs.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.job_info.config }}
           extra_bazel_flags: ${{ matrix.job_info.extra_flags }}

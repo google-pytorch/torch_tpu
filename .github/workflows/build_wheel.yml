@@ -164,6 +164,10 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          # Keep the current commit's first parent fetchable
+          # to resolve bazel-diff base SHA below.
+          fetch-depth: 2
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -192,11 +196,20 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python_version }}
           NOX_SMOKE_TEST: ${{ matrix.nox_smoke_test }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(${NOX_SMOKE_TEST})"
+      # Diff against the current commit's first parent, i.e. main branch tip at CI run time.
+      # Intentionally do not use `github.event.pull_request.base.sha` as it is snapshotted upon
+      # PR creation. See https://github.com/orgs/community/discussions/59677 for more details.
+      - name: Resolve bazel-diff Base SHA
+        id: resolve_bazel_diff_base_sha
+        if: github.event_name == 'pull_request'
+        run: |
+          base="$(git rev-parse --verify "${GITHUB_SHA}^1")"
+          echo "sha=${base}" >> "$GITHUB_OUTPUT"
       - name: Run Impacted Tests via bazel-diff
         if: ${{ !matrix.nox_smoke_test }}
         uses: ./.github/actions/bazel-diff
         with:
-          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          base_sha: ${{ inputs.override_base_sha || steps.resolve_bazel_diff_base_sha.outputs.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
@@ -301,6 +314,10 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          # Keep the current commit's first parent fetchable
+          # to resolve bazel-diff base SHA below.
+          fetch-depth: 2
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -331,11 +348,20 @@ jobs:
         env:
           PYTHON_VERSION: ${{ matrix.python_version }}
         run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(tpu-cpu)"
+      # Diff against the current commit's first parent, i.e. main branch tip at CI run time.
+      # Intentionally do not use `github.event.pull_request.base.sha` as it is snapshotted upon
+      # PR creation. See https://github.com/orgs/community/discussions/59677 for more details.
+      - name: Resolve bazel-diff Base SHA
+        id: resolve_bazel_diff_base_sha
+        if: github.event_name == 'pull_request'
+        run: |
+          base="$(git rev-parse --verify "${GITHUB_SHA}^1")"
+          echo "sha=${base}" >> "$GITHUB_OUTPUT"
       - name: Run Impacted Tests via bazel-diff
         if: matrix.config
         uses: ./.github/actions/bazel-diff
         with:
-          base_sha: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          base_sha: ${{ inputs.override_base_sha || steps.resolve_bazel_diff_base_sha.outputs.sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
