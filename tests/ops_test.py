@@ -3080,6 +3080,8 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
+  # TODO(b/535650392): re-enable this test in OSS.
+  @oss_utils.skip_in_oss()
   def test_linalg_inv_ex_out(self):
     self.do_test_op(
         "linalg.inv",
@@ -3141,6 +3143,8 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_log_sigmoid(self):
     self.do_test_op("nn.functional.logsigmoid")
 
+  # TODO(b/535650392): re-enable this test in OSS.
+  @oss_utils.skip_in_oss()
   def test_log_softmax(self):
     self.do_test_op("log_softmax")
 
@@ -3368,6 +3372,8 @@ class TestOps(op_testing.OpInfoTestBase):
         skip_if=_native_batch_norm_legit_notrain_gpu,
     )
 
+  # TODO(b/535650392): re-enable this test in OSS.
+  @oss_utils.skip_in_oss()
   def test_native_group_norm(self):
     # TODO: b/470451730 look into the high errors for bfloat16.
     # torch.bfloat16: {"rtol": 4.1, "atol": 4.0},
