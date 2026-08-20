@@ -107,7 +107,6 @@ torch_tpu_py_test(
     name = "multi_tpu_test",
     srcs = ["multi_tpu_test.py"],
     autoload = True,
-    notest_oss = "fix hang in OSS",  # TODO
     tags = if_oss(
         ["exclusive"],
         [],
