@@ -18,6 +18,7 @@ This module provides APIs to call Pallas kernels from PyTorch. Note that use
 of these APIs requires that your environment also has JAX/Pallas installed.
 """
 
+import contextlib
 import hashlib
 import inspect
 import pathlib
@@ -450,6 +451,7 @@ class JaxCallable:
   static_argnums: tuple[int, ...]
   donate_argnums: list[int]
   input_output_aliases: dict[int, int]
+  lowering_context: Callable[[], contextlib.AbstractContextManager[None]]
   exported: Any
   __signature__: Any
   __globals__: Any
@@ -464,6 +466,9 @@ class JaxCallable:
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
+      lowering_context: (
+          Callable[[], contextlib.AbstractContextManager[None]] | None
+      ) = None,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -490,6 +495,9 @@ class JaxCallable:
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
+      lowering_context: Optional context manager factory entered whenever JAX
+        traces or lowers the function. This can provide platform metadata that
+        is needed only while exporting a kernel.
     """
 
     self.name = name
@@ -508,6 +516,7 @@ class JaxCallable:
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
     self.static_argnums = static_argnums
+    self.lowering_context = lowering_context or contextlib.nullcontext
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
     with jax._src.config.export_ignore_forward_compatibility(True):
@@ -606,7 +615,8 @@ class JaxCallable:
         else:
           jax_kwargs[k] = v
 
-      jax_results = self.jit_fn(*jax_args, **jax_kwargs)
+      with self.lowering_context():
+        jax_results = self.jit_fn(*jax_args, **jax_kwargs)
 
       def wrap(x):
         if isinstance(x, jax.Array):
@@ -628,7 +638,10 @@ class JaxCallable:
       jax_args = jax_placeholders(
           args, mesh=self.mesh, partition_specs=self.input_partition_specs
       )
-      with jax._src.config.export_ignore_forward_compatibility(True):
+      with (
+          self.lowering_context(),
+          jax._src.config.export_ignore_forward_compatibility(True),
+      ):
         lowered = self.exported(*jax_args, **kwargs)
       # Normalize the MLIR module without location debug info so that
       # differing caller stack frames produce the same deterministic fingerprint
@@ -704,6 +717,10 @@ def custom_jax_kernel(
     input_output_aliases: dict[int, int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    lowering_context: (
+        Callable[[], contextlib.AbstractContextManager[None]] | None
+    ) = None,
     *,
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
@@ -719,6 +736,10 @@ def custom_jax_kernel(
     input_output_aliases: dict[int, int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    lowering_context: (
+        Callable[[], contextlib.AbstractContextManager[None]] | None
+    ) = None,
     *,
     warn_deprecated: bool = True,
 ) -> JaxCallable:
@@ -733,6 +754,8 @@ def custom_jax_kernel(
     input_output_aliases=None,
     mesh=None,
     input_partition_specs=None,
+    output_partition_specs=None,
+    lowering_context=None,
     *,
     warn_deprecated: bool = True,
 ):
@@ -776,6 +799,10 @@ def custom_jax_kernel(
     mesh: If using a distributed kernel, provide the device mesh.
     input_partition_specs: If using a distributed kernel, provide the input
       partition specs for each input tensor.
+    output_partition_specs: If using a distributed kernel, provide the output
+      partition specs for each output tensor.
+    lowering_context: Optional context manager factory entered whenever JAX
+      traces or lowers the function.
     warn_deprecated: If True, issue a deprecation warning.
 
   Returns:
@@ -798,14 +825,32 @@ def custom_jax_kernel(
     trace_key = _get_kernel_invocation_key(
         name_key,
         [],
-        {"static_argnums": static_argnums, "donate_argnums": donate_argnums},
+        {
+            "static_argnums": static_argnums,
+            "donate_argnums": donate_argnums,
+            "output_partition_specs": output_partition_specs,
+        },
     )
 
+    jit_kwargs = {}
+    if output_partition_specs is not None:
+      if mesh is None:
+        raise ValueError("output_partition_specs requires a mesh")
+      output_shardings = tuple(
+          jax.sharding.NamedSharding(mesh, spec)
+          for spec in output_partition_specs
+      )
+      jit_kwargs["out_shardings"] = (
+          output_shardings[0]
+          if len(output_shardings) == 1
+          else output_shardings
+      )
     jit_fn = jax.jit(
         jax_fn,
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
         keep_unused=True,
+        **jit_kwargs,
     )
     return JaxCallable(
         name=name,
@@ -816,6 +861,7 @@ def custom_jax_kernel(
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
         input_output_aliases=input_output_aliases,
+        lowering_context=lowering_context,
     )
 
   if jax_fn is None:
@@ -832,6 +878,10 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    lowering_context: (
+        Callable[[], contextlib.AbstractContextManager[None]] | None
+    ) = None,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
   ...
 
@@ -845,6 +895,10 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
+    lowering_context: (
+        Callable[[], contextlib.AbstractContextManager[None]] | None
+    ) = None,
 ) -> CustomOpDef:
   ...
 
@@ -857,6 +911,8 @@ def jax_op(
     donate_argnums=None,
     mesh=None,
     input_partition_specs=None,
+    output_partition_specs=None,
+    lowering_context=None,
 ):
   """Registers a JAX function as a custom PyTorch operation.
 
@@ -875,6 +931,9 @@ def jax_op(
     donate_argnums: A sequence of argument indices to donate.
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None
+    output_partition_specs: tuple[tuple[str, ...], ...] | None = None
+    lowering_context: Optional context manager factory entered whenever JAX
+      traces or lowers the function.
 
   Returns:
     A `CustomOpDef` instance if `fn` is provided, or a decorator that returns
@@ -901,7 +960,9 @@ def jax_op(
         donate_argnums=donate_argnums,
         mesh=mesh,
         input_partition_specs=input_partition_specs,
+        output_partition_specs=output_partition_specs,
         static_argnums=static_argnums,
+        lowering_context=lowering_context,
         warn_deprecated=False,
     )
 
@@ -931,7 +992,10 @@ def jax_op(
           args, mesh=mesh, partition_specs=input_partition_specs
       )
       # pylint: disable=protected-access
-      with jax._src.config.export_ignore_forward_compatibility(True):
+      with (
+          wrapped_fn.lowering_context(),
+          jax._src.config.export_ignore_forward_compatibility(True),
+      ):
         lowered = wrapped_fn.exported(*jax_args, **kwargs)
       # pylint: enable=protected-access
       return lowered.out_tree.unflatten(

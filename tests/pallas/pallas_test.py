@@ -14,6 +14,7 @@
 
 """Tests for Pallas custom kernels."""
 
+import contextlib
 import functools
 import os
 import pathlib
@@ -652,6 +653,38 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
       fake_x = mode.from_tensor(x)
       y = pass_through(fake_x)
       self.assertEqual(y.device, x.device)
+
+  def test_jax_op_enters_lowering_context(self):
+    active_contexts = 0
+
+    @contextlib.contextmanager
+    def lowering_context():
+      nonlocal active_contexts
+      active_contexts += 1
+      try:
+        yield
+      finally:
+        active_contexts -= 1
+
+    def require_context(x: jax.Array) -> jax.Array:
+      if not active_contexts:
+        raise RuntimeError("lowering context is not active")
+      return x + 1
+
+    op = pallas.jax_op(
+        "pallas::lowering_context",
+        require_context,
+        lowering_context=lowering_context,
+    )
+    x = torch.randn(5, device="tpu")
+    with torch._subclasses.FakeTensorMode() as mode:
+      fake_x = mode.from_tensor(x)
+      fake_y = op(fake_x)
+      self.assertEqual(fake_y.device, x.device)
+
+    y = op(x)
+    test_utils.assert_close(y.cpu(), (x + 1).cpu())
+    self.assertEqual(active_contexts, 0)
 
   # The following aliasing tests are for the deprecated input_output_aliases
   # so are not comprehensive.
