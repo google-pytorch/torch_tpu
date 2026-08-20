@@ -46,7 +46,9 @@ absl::StatusOr<absl_nonnull std::unique_ptr<xla::PjRtClient>> GetPjRtClient(
   }
   if (device_type == "xla_cpu") {
     int64_t cpu_device_count = 1;
-    if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
+    // We read the world size dynamically (without memoization) here because
+    // multi-processing workflows may mutate topology env vars in child workers.
+    if (auto world_size_or = GetWorldSizeFromEnv(); world_size_or.ok()) {
       cpu_device_count = *world_size_or;
     }
     return xla::GetCApiClient("cpu", {{"cpu_device_count", cpu_device_count}});

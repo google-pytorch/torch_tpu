@@ -207,7 +207,9 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
+    // We read the world size dynamically (without memoization) here because
+    // multi-processing workflows may mutate topology env vars in child workers.
+    if (auto world_size_or = GetWorldSizeFromEnv(); world_size_or.ok()) {
       TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "InitializeDistributedEnvironment failed: ";
@@ -254,7 +256,9 @@ absl::Status PjrtBackend::InitializeInternal() {
       << "No addressable PjRt devices found.";
 
   int world_size = 1;
-  if (auto world_size_or = GetWorldSizeFromEnvOnce(); world_size_or.ok()) {
+  // We read the world size dynamically (without memoization) here because
+  // multi-processing workflows may mutate topology env vars in child workers.
+  if (auto world_size_or = GetWorldSizeFromEnv(); world_size_or.ok()) {
     world_size = *world_size_or;
   }
 

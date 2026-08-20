@@ -187,6 +187,23 @@ const absl::flat_hash_map<const char*, std::string>& GetDeprecatedEnvVars();
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
+// Note: We deliberately do not memoize these environment variables (e.g. via
+// absl::NoDestructor). In OSS multi-processing workflows (such as mp.spawn),
+// child processes dynamically construct their topology environment variables
+// (WORLD_SIZE, RANK) via os.environ after PyTorch imports in the main process.
+// Memoizing them eagerly in the parent process would force child workers to
+// inherit stale values, breaking distributed initialization.
+// This function reads the environment variable freshly on each invocation.
+inline std::optional<std::string> GetEnv(const char* name) {
+  const char* const env_var =
+      std::getenv(name);  // GETENV_OK=Dynamic multiprocessing re-evaluation
+  if (env_var == nullptr) return std::nullopt;
+  if (env_var[0] == '\0') return std::string();
+  return std::string(env_var);
+}
+
+// Returns the value of the environment variable with the given name, or
+// std::nullopt if it is not set.
 //
 // This function is memoized, so the environment variable is only read once.
 //
