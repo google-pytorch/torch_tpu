@@ -223,8 +223,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   ScopedPythonContextProvider provider(
       ScopedPythonContextCapturer::GetContext());
 
-  ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-      !result_tensors.empty())
+  TT_RET_CHECK(!result_tensors.empty(), error::kInvalidArgument)
       << "no result tensors provided";
 
   std::vector<DeviceBufferRef> argument_refs;
@@ -236,8 +235,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
                             << ToString(tensor));
-    ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-        !buffer_ref.is_deferred())
+    TT_RET_CHECK(!buffer_ref.is_deferred(), error::kInternal)
         << "argument tensor has deferred ops: " << ToString(tensor);
     argument_refs.push_back(std::move(buffer_ref));
   }
@@ -245,25 +243,23 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   std::vector<DeviceBufferRef> result_refs;
   result_refs.reserve(result_tensors.size());
   for (const at::Tensor& tensor : result_tensors) {
-    TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                         // happens
-        auto buffer_ref, GetBuffer(tensor),
-        _ << "failed to get device buffer from result tensor: "
-          << ToString(tensor));
-    ABSL_CHECK(  // CRASH_OK=implies a bug in compile backend if this happens
-        !buffer_ref.is_materializing())
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBuffer(tensor),
+                        _.SetPrepend()
+                            << "failed to get device buffer from result tensor: "
+                            << ToString(tensor));
+    TT_RET_CHECK(!buffer_ref.is_materializing(), error::kInternal)
         << "result tensor is already materializing: " << ToString(tensor);
     result_refs.push_back(std::move(buffer_ref));
   }
 
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                       // happens
-      auto traversal, Traversal::Create(std::move(result_refs)),
-      _ << "failed to create traversal");
+  TT_ASSIGN_OR_RETURN(auto traversal, Traversal::Create(std::move(result_refs)),
+                      _.SetPrepend() << "failed to traverse graph: ");
 
-  // Recoverable, not a CHECK: the argument list is supplied by the caller
-  // (fx_to_mlir's `args`), so a mismatch is a caller error, not a compile-backend
-  // bug. ExtractMlirFromGraph above returns this same status.
+  // Recoverable, not a CHECK: nothing below this point is an invariant of the
+  // compile backend. The argument list is supplied by the caller (fx_to_mlir's
+  // `args`), and the compile itself can fail on any program XLA rejects. Both
+  // are ordinary errors that the caller has to see; the structural twin
+  // ExtractMlirFromGraph above returns every one of these same statuses.
   TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
           .SetPrepend()
@@ -275,13 +271,12 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
 
   // 2. Compile Traversal and get exec
   auto compilation_spec = GetCompilationSpec(options.compilation_mode);
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                       // happens
+  TT_ASSIGN_OR_RETURN(
       auto compiled_kernel,
       traversal->Compile(std::move(compilation_spec), nullptr,
                          options.use_stablehlo_bounds, options.argument_layouts,
                          options.donated_inputs),
-      _ << "failed to compile traversal");
+      _.SetPrepend() << "failed to compile traversal: ");
 
   TT_ASSIGN_OR_RETURN(auto executable, compiled_kernel.fixed_shape_kernel.get(),
                       _.SetPrepend() << "failed to get fixed shape kernel: ");
@@ -290,8 +285,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
   if (options.build_mlir_module) {
     ABSL_VLOG(1) << "Building MLIR module as requested.";
 
-    TT_ASSIGN_OR_CRASH(  // CRASH_OK=implies a bug in compile backend if this
-                         // happens
+    TT_ASSIGN_OR_RETURN(
         auto contexted_module,
         ContextedModule::Make(
             [&](mlir::MLIRContext& mlir_context)
@@ -300,7 +294,7 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
                                                 options.use_stablehlo_bounds,
                                                 options.donated_inputs);
             }),
-        _ << "failed to build MLIR module");
+        _.SetPrepend() << "failed to build MLIR module: ");
     module = std::make_shared<ContextedModule>(std::move(contexted_module));
   }
 
