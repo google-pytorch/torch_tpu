@@ -87,6 +87,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ExtractMlirFromGraph(
 struct CompileResult {
   absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
   SharedLoadedExecutableWithMetadata executable;
+  std::string tier3_key;
 };
 
 struct TraverseAndCompileOptions {

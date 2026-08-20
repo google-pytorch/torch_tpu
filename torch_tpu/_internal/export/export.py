@@ -123,6 +123,7 @@ class ExportedMlir:
   is_noop: bool = False
   dynamic_outputs: Sequence[bool] | None = None
   unique_output_indices: Sequence[int] | None = None
+  tier3_key: str | None = None
 
   def serialize_text(self, enable_debug_info: bool = False) -> str:
     """Returns the MLIR representation of the graph as text."""
@@ -618,4 +619,5 @@ def fx_to_mlir(
       updates_default_generator_state=updates_default_generator_state,
       dynamic_outputs=deduped_dynamic_outputs,
       unique_output_indices=unique_output_indices,
+      tier3_key=getattr(compile_result, "tier3_key", None),
   )

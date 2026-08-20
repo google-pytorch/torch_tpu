@@ -785,6 +785,7 @@ class ShapeDynamismMetadata;
 
 class DimensionsKey {
  public:
+  explicit DimensionsKey(FingerprintType key) : key_(key) {}
   explicit DimensionsKey(absl::Span<const int64_t> dimensions) {
     // We keep the false parameter for backward compatibility.
     // TODO: (b/494661082) - Remove the false parameter.
