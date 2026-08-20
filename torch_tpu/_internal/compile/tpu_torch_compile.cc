@@ -195,6 +195,24 @@ at::Tensor PyMakePlaceholderLike(const at::Tensor& arg_tensor) {
   return view_tensor;
 }
 
+at::Tensor PyClonePlaceholder(const at::Tensor& arg_tensor) {
+  TT_ASSIGN_OR_THROW(DeviceBufferRef base_buffer_ref,
+                     GetBaseBuffer(arg_tensor));
+  at::Tensor base_tensor =
+      MakeTensor(base_buffer_ref, arg_tensor.device().index());
+  at::Tensor view_tensor;  // UNINITIALIZED_TENSOR_OK
+  if (TensorHasTrivialLayout(arg_tensor)) {
+    view_tensor = base_tensor;
+  } else {
+    view_tensor = base_tensor.as_strided(
+        arg_tensor.sizes(), arg_tensor.strides(), arg_tensor.storage_offset());
+  }
+  if (arg_tensor.requires_grad()) {
+    view_tensor.requires_grad_(true);
+  }
+  return view_tensor;
+}
+
 PyLayout ToPyLayout(const xla::Layout& layout) {
   std::vector<int64_t>  // INT_VEC_OK
       minor_to_major(layout.minor_to_major().begin(),
@@ -1247,6 +1265,7 @@ PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
         py::arg("requires_grad"));
   m.def("placeholder_like", PyMakePlaceholderLike, py::arg("arg_tensor"));
+  m.def("clone_placeholder", PyClonePlaceholder, py::arg("arg_tensor"));
   m.def("dynamic_placeholder", PyMakeDynamicPlaceholder, py::arg("sizes"),
         py::arg("dtype"), py::arg("tensor_bounds"),
         py::arg("requires_grad") = false);

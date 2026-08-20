@@ -223,6 +223,26 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     minor_to_major, _, _ = param_layouts[0]
     self.assertEqual(minor_to_major, [0, 1])
 
+  def test_clone_placeholder(self):
+    x = torch.randn(16, 128, device='cpu').to(device=torch.device('tpu'))
+    placeholder = tpu_torch_compile.placeholder_like(x)
+    cloned = tpu_torch_compile.clone_placeholder(placeholder)
+    self.assertEqual(cloned.shape, placeholder.shape)
+    self.assertEqual(cloned.dtype, placeholder.dtype)
+    self.assertEqual(cloned.device, placeholder.device)
+    self.assertEqual(cloned.stride(), placeholder.stride())
+
+  def test_clone_placeholder_strided_view(self):
+    x = torch.randn(16, 128, device='cpu').to(device=torch.device('tpu'))
+    placeholder = tpu_torch_compile.placeholder_like(x)
+    view = placeholder[2:8, 10:20]
+    cloned = tpu_torch_compile.clone_placeholder(view)
+    self.assertEqual(cloned.shape, view.shape)
+    self.assertEqual(cloned.dtype, view.dtype)
+    self.assertEqual(cloned.device, view.device)
+    self.assertEqual(cloned.stride(), view.stride())
+    self.assertEqual(cloned.storage_offset(), view.storage_offset())
+
   def test_build_mlir(self):
     with eager_mode_defer_all():
       x = torch.ones(10, device='cpu').to(device=torch.device('tpu'))
