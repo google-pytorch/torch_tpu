@@ -261,9 +261,13 @@ absl::StatusOr<CompileResult> TraverseAndCompile(
       auto traversal, Traversal::Create(std::move(result_refs)),
       _ << "failed to create traversal");
 
-  ABSL_CHECK_OK(  // CRASH_OK=implies a bug in compile backend if this happens
+  // Recoverable, not a CHECK: the argument list is supplied by the caller
+  // (fx_to_mlir's `args`), so a mismatch is a caller error, not a compile-backend
+  // bug. ExtractMlirFromGraph above returns this same status.
+  TT_RETURN_IF_ERROR(
       traversal->ValidateAndReorderArguments(std::move(argument_refs)))
-      << "failed to validate and reorder traversal inputs";
+          .SetPrepend()
+      << "failed to validate and reorder traversal inputs: ";
 
   // Release the Python GIL before XLA compilation to allow multi-threaded
   // compilation.
