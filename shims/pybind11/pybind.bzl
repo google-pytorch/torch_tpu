@@ -120,12 +120,13 @@ def pybind_extension(name, **kwargs):
             XLA_BASE_PACKAGE,
             glue_common_package(version),
         ]
+        per_version_kwargs["visibility"] = ["//visibility:public"]
         _pybind_extension(name = versioned_name, **per_version_kwargs)
         torch_version_glue(
             name = "{}_glue".format(versioned_name),
             dep = ":{}".format(versioned_name),
             torch_version = version,
-            visibility = visibility,
+            visibility = ["//visibility:public"],
             testonly = testonly,
         )
 
