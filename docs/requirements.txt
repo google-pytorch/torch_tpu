@@ -3,3 +3,5 @@
 # TPU VM (see docs/README.md).
 jupyter-book>=1.0,<2
 jupytext>=1.16
+nbconvert>=7
+ipykernel
