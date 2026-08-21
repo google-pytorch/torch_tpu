@@ -527,6 +527,79 @@ class RngCudaRefTest(_BaseRngTest):
     self.assertEqual(g.device.type, self.device.type)
 
 
+class CompiledRngTest(_BaseRngTest):
+  """Reference tests comparing compiled RNG behaviors for current device."""
+
+  def setUp(self):
+    super().setUp()
+    # Force single-threaded synchronous compilation in Inductor to prevent
+    # spawning subprocesses, which fails in hermetic test runners.
+    torch._inductor.config.compile_threads = 1
+
+  def test_compiled_manual_seed_reproducibility(self):
+    """Verifies re-seeding produces identical outputs in compiled function."""
+
+    def fn(x):
+      return torch.rand_like(x) + torch.rand_like(x)
+
+    compiled_fn = torch.compile(fn, fullgraph=True)
+    x = torch.zeros(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+    out1 = compiled_fn(x)
+
+    self.backend_mod.manual_seed(42)
+    out2 = compiled_fn(x)
+    self.assertTrue(torch.equal(out1, out2))
+
+  def test_compiled_get_set_rng_state_restores_stream(self):
+    """Verifies get/set_rng_state restores compiled function random output."""
+
+    def fn(x):
+      return torch.rand_like(x) + torch.rand_like(x)
+
+    compiled_fn = torch.compile(fn, fullgraph=True)
+    x = torch.zeros(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+    saved_state = self.backend_mod.get_rng_state()
+    out1 = compiled_fn(x)
+
+    self.backend_mod.set_rng_state(saved_state)
+    out2 = compiled_fn(x)
+    self.assertTrue(torch.equal(out1, out2))
+
+  def test_compiled_consecutive_calls_without_seed_reset_differ(self):
+    """Verifies consecutive calls produce distinct outputs."""
+
+    def fn(x):
+      return torch.rand_like(x) + torch.rand_like(x)
+
+    compiled_fn = torch.compile(fn, fullgraph=True)
+    x = torch.zeros(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+    out1 = compiled_fn(x)
+    out2 = compiled_fn(x)
+    self.assertFalse(torch.equal(out1, out2))
+
+  def test_compiled_different_seeds_produce_different_outputs(self):
+    """Verifies different seeds produce distinct outputs."""
+
+    def fn(x):
+      return torch.rand_like(x) + torch.rand_like(x)
+
+    compiled_fn = torch.compile(fn, fullgraph=True)
+    x = torch.zeros(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+    out1 = compiled_fn(x)
+
+    self.backend_mod.manual_seed(99)
+    out2 = compiled_fn(x)
+    self.assertFalse(torch.equal(out1, out2))
+
+
 class SingleProcessMultiDeviceTest(_BaseRngTest):
   """Tests documenting single-process multi-device RNG differences.
 

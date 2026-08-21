@@ -1743,7 +1743,10 @@ torch_tpu_py_test(
     main = "rng_cuda_ref_test.py",
     nolocal = "Skipping in local runs by default as it requires --config=cuda.",
     tags = [
-        "requires-gpu-nvidia:2",
+        # Requires compute capability >= 7.0 for Triton / torch.compile.
+        # Requires 2 devices for multi-device tests.
+        # Multi-device sm80 is not available on Forge.
+        "requires-gpu-sm90-full:2",
     ],
     deps = [
         ":seed_test_utils",
