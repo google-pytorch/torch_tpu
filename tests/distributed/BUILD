@@ -105,7 +105,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "multi_tpu_test",
     srcs = ["multi_tpu_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        "PYTHONFAULTHANDLER": "1",
+        "GLOG_minloglevel": "0",
+        "TPU_STDERR_LOG_LEVEL": "0",
+    },
     tags = if_oss(
         ["exclusive"],
         [],

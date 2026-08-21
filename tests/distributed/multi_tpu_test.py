@@ -50,10 +50,20 @@ def run_global_device_count() -> None:
       f" {this_device}"
   )
 
+  # Synchronizes all ranks before exiting. Prevents faster ranks from exiting
+  # early and tearing down their communication channels while slower ranks
+  # are still finishing, which can cause ungraceful teardown crashes.
+  dist.barrier()
+
 
 class MultiTpuTest(absltest.TestCase):
 
   def test_global_device_count(self):
+    # Overrides singlehost_wrapper's default 3D mesh (2,2,2) with the 2D mesh
+    # topology (2,4,1) required for 8-chip TPU v5e slices to prevent mesh
+    # coordinate collisions during libtpu discovery.
+    os.environ["TORCH_TPU_TOPOLOGY"] = "2,4,1"  # copybara:comment(oss-only)
+
     distributed_utils.dist_run(
         nproc_per_node=8,
         fn=singlehost_wrapper.tpu_env_wrapper(
