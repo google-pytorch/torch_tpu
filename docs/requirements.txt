@@ -1,0 +1,5 @@
+# Tooling for building the documentation site and syncing notebooks.
+# Used by .github/workflows/docs.yaml and when regenerating notebooks on a
+# TPU VM (see docs/README.md).
+jupyter-book>=1.0,<2
+jupytext>=1.16

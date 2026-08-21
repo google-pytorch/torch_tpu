@@ -1,0 +1,50 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Table of contents for the docs site.
+# See https://jupyterbook.org/customize/toc.html
+format: jb-book
+root: notebooks/index
+parts:
+  - caption: Tutorials
+    chapters:
+      - file: notebooks/get_started_tpu
+      - file: notebooks/porting_vit_mnist
+      - file: notebooks/distributed_training_101
+  - caption: How-to Guides
+    chapters:
+      - file: notebooks/numerical_parity
+      - file: notebooks/advanced_compile
+      - file: notebooks/custom_pallas_kernel
+      - file: notebooks/performance_profiling
+  - caption: Reference
+    chapters:
+      - file: notebooks/api_mapping
+      - file: notebooks/environment_variables
+      - file: notebooks/error_glossary
+  - caption: Explanation
+    chapters:
+      - file: notebooks/compilation_cache
+      - file: notebooks/eager_mode
+      - file: notebooks/precision_management
+  - caption: "Advanced: Custom Ops and Kernels"
+    chapters:
+      - file: notebooks/extending_modules_and_functions_via_composition
+      - file: notebooks/customizing_autograd_via_torch_autograd_function
+      - file: notebooks/background_on_aten_ops
+      - file: notebooks/background_on_torch_compile
+      - file: notebooks/background_on_torch_compile_on_tpus_via_xla
+      - file: notebooks/quantized_sum
+      - file: notebooks/quant
+      - file: notebooks/custom_ops_via_pallas

@@ -1,0 +1,2 @@
+# Pair every notebook in this directory: MyST markdown (source of truth) + ipynb.
+formats = "md:myst,ipynb"

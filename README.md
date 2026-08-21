@@ -17,15 +17,13 @@ inference.
 *   Integration with `torch.compile()` for graph mode execution.
 *   Utilities for debugging and benchmarking.
 
-## User Guide and Interactive Notebooks
+## User Guide and Notebooks
 
-A user guide is available at http://google-pytorch.github.io/torch_tpu/ . This
-is a static version of the interactive notebooks. They are available in the docs
-folder.
-
-The notebooks are Marimo (similar to Jupyter). They can be run with `marimo edit
-file.py` and then you can access them in your browser. You will need to be
-running this from a TPU VM, a v6e GCE instance is easiest.
+A user guide is available at http://google-pytorch.github.io/torch_tpu/. It is
+built from the Jupyter notebooks in the `docs/notebooks` folder, which you can
+also download and run yourself. You will need to be running them from a TPU VM,
+a v6e GCE instance is easiest. See `docs/README.md` for how the documentation
+is authored and built.
 
 ## Installation
 

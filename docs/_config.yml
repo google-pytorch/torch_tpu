@@ -1,0 +1,44 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Jupyter Book configuration. See https://jupyterbook.org/customize/config.html
+title: TorchTPU Documentation
+author: Google LLC
+only_build_toc_files: true
+
+execute:
+  # Notebooks are executed manually on a TPU VM and committed with their
+  # outputs (see docs/README.md); CI must never try to execute them.
+  execute_notebooks: "off"
+
+exclude_patterns:
+  # Markdown files are the jupytext source of truth for review; the paired
+  # .ipynb files (with outputs) are what gets rendered.
+  - notebooks/*.md
+  - README.md
+
+repository:
+  url: https://github.com/google-pytorch/torch_tpu
+  path_to_book: docs
+  branch: main
+
+html:
+  use_repository_button: true
+  use_issues_button: false
+
+# TODO: enable the "Open in Colab" launch button once torch_tpu is publicly
+# pip-installable (the wheel currently requires gcloud-authenticated access
+# to Artifact Registry, so the notebooks cannot run on a Colab runtime yet).
+# launch_buttons:
+#   colab_url: "https://colab.research.google.com"

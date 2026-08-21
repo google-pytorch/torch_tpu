@@ -26,3 +26,6 @@ dist/
 # Vim undo files.
 *.un~
 .*.un~
+
+# Jupyter Book build output (built in CI, never committed).
+docs/_build/

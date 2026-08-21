@@ -12,45 +12,98 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Checks that the jupytext-paired notebooks in docs/notebooks are in sync on
+# every PR, builds the documentation site with Jupyter Book (without executing
+# the notebooks — their outputs are committed, see docs/README.md), and
+# deploys it to GitHub Pages on pushes to main.
+name: Docs
 
 on:
   # Runs on pushes targeting the default branch
   push:
     branches: ["main"]
 
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".gitattributes"
+      - ".github/workflows/docs.yaml"
+
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment
+# Allow only one concurrent deployment per ref
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Single deploy job since we're just deploying
+  # Verify that each committed .ipynb matches its .md source of truth.
+  check_notebook_sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install docs tooling
+        run: pip install -r docs/requirements.txt
+      - name: Check .md / .ipynb pairs are in sync
+        run: |
+          # Make the markdown files the newer side so jupytext syncs
+          # md -> ipynb (outputs in the notebooks are preserved).
+          touch docs/notebooks/*.md
+          jupytext --sync docs/notebooks/*.md
+          # Stage everything so newly created .ipynb files (a .md committed
+          # without its pair) are caught too, not just modified ones.
+          git add -A docs/notebooks
+          if ! git diff --cached --exit-code; then
+            echo "::error::Notebooks are out of sync with their markdown" \
+              "sources. Run 'jupytext --sync docs/notebooks/*.md' and commit" \
+              "the result (see docs/README.md)."
+            exit 1
+          fi
+
+  # Build the site from the committed notebooks (no execution, no TPU).
+  # Runs on PRs too as a smoke test; only non-PR runs upload the artifact.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install docs tooling
+        run: pip install -r docs/requirements.txt
+      - name: Build site
+        run: jupyter-book build docs/
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: "docs/_build/html"
+
+  # Deploy to GitHub Pages, only for pushes to main.
   deploy:
+    if: github.event_name != 'pull_request'
+    needs: [check_notebook_sync, build]
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
-        with:
-          # This points to your specific docs folder
-          path: 'docs/html'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

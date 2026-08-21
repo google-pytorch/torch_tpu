@@ -21,13 +21,4 @@ package(
     default_visibility = ["//src/torch_tpu/docs/notebooks:__subpackages__"],
 )
 
-# Make BUILD file maintenance tools ignore all *.py files as we don't
-# plan to run them as part of the build.
-filegroup(
-    name = "py_files",
-    srcs = glob(["**/*.py"]),
-    tags = ["ignore_srcs"],
-    visibility = ["//visibility:private"],
-)
-
 torch_tpu_package_end()

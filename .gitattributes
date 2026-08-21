@@ -1,0 +1,4 @@
+# The .ipynb notebooks are generated from their paired .md files with
+# jupytext and executed on a TPU VM (see docs/README.md). Review the .md
+# files instead; collapse the generated notebooks in diffs.
+docs/notebooks/*.ipynb linguist-generated=true
