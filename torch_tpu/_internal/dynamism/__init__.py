@@ -14,8 +14,8 @@
 
 """Manual bounded dynamism API."""
 
-from torch_tpu._internal.dynamism._tpu_torch_dynamism import get_dynamism_info
-from torch_tpu._internal.dynamism._tpu_torch_dynamism import mark_dynamic
+from torch_tpu.csrc.internal.dynamism._tpu_torch_dynamism import get_dynamism_info
+from torch_tpu.csrc.internal.dynamism._tpu_torch_dynamism import mark_dynamic
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [

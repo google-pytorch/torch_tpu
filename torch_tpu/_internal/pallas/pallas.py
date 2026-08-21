@@ -30,7 +30,7 @@ import torch
 from torch._library.custom_ops import CustomOpDef
 import torch.library
 from torch_tpu._internal.pallas import _compat
-from torch_tpu._internal.pallas import tpu_torch_pallas
+from torch_tpu.csrc.internal.pallas import tpu_torch_pallas
 
 try:
   # TODO: TorchXLA hit issues when workin with both JAX and PT in the same

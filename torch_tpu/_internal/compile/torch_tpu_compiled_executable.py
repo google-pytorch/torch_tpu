@@ -25,7 +25,7 @@ from absl import logging
 import torch
 from torch._inductor.output_code import OutputCode
 from torch._inductor.utils import InputType
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 
 _UNSET_GRAPH_HELPER_STR = (
     "FX/MLIR graph is not recorded by default. To record it, use debug mode:"

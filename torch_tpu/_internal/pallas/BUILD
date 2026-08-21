@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -59,75 +59,19 @@ torch_tpu_py_library(
     srcs = ["pallas.py"],
     deps = [
         ":pallas_compat",
-        ":tpu_torch_pallas",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//torch_tpu/csrc/internal/pallas:tpu_torch_pallas",
         "@pypi//frozendict",
         "@pypi//jax",
     ],
 )
 
-torch_tpu_cc_library(
-    name = "pallas_py_cc",
-    srcs = ["pallas_py.cc"],
-    deps = [
-        "//shims/pybind11",
-        "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:dimension_types",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
-        "//torch_tpu/eager:device_buffer",
-        "//torch_tpu/eager:op_dispatcher",
-        "//torch_tpu/eager:tensor_to_buffer",
-        "//torch_tpu/ops:custom_kernels",
-        "//torch_tpu/ops:op_builder_utils",
-        "//torch_tpu/ops:op_names",
-        "//torch_tpu/ops/macros:kernel",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-    ],
-)
-
-pybind_extension(
-    name = "tpu_torch_pallas",
-    srcs = ["pallas_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    py_deps = [
-        "//shims/torch:pytorch",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:dimension_types",
-        "//torch_tpu/common:dtype",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:layout_utils",
-        "//torch_tpu/eager:device_buffer",
-        "//torch_tpu/eager:op_dispatcher",
-        "//torch_tpu/eager:tensor_to_buffer",
-        "//torch_tpu/ops:custom_kernels",
-        "//torch_tpu/ops:op_builder_utils",
-        "//torch_tpu/ops:op_names",
-        "//torch_tpu/ops/macros:kernel",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-        "@stablehlo//:attr_type_builder_util",
-        "@stablehlo//:mlir_builder",
-    ],
-)
-
-torch_tpu_py_library(
+# NOTE: We use pytype_strict_library here instead of torch_tpu_py_library to break a circular
+# dependency cycle where torch_tpu_py_library automatically injects a dependency on
+# //torch_tpu/_internal:testing.
+pytype_strict_library(
+    # PY_LIBRARY_OK=Break circular dependency cycle with _internal:testing.
     name = "pallas_kernel_generate_utils",
     srcs = ["pallas_kernel_generate_utils.py"],
     deps = [],

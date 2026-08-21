@@ -17,8 +17,8 @@
 import contextlib
 from typing import Generator
 
-from torch_tpu._internal.precision import precision_impl
 from torch_tpu._internal.utils import annotations
+from torch_tpu.csrc.internal.precision import precision_impl
 
 experimental = annotations.experimental
 __all__ = ["precision", "Precision"]

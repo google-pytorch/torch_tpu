@@ -21,8 +21,8 @@ import os
 from typing import Any
 import warnings
 
-from torch_tpu._internal.profiler import _profiler_backend
 import torch_tpu._internal.profiler._impl as profiler
+from torch_tpu.csrc.internal.profiler import _profiler_backend
 
 
 class ProfilerActivity(enum.Enum):

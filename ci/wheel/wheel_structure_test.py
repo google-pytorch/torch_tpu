@@ -39,7 +39,7 @@ import zipfile
 from absl.testing import absltest
 
 # The single shared, version-independent XLA/MLIR base library.
-_XLA_BASE: Final[str] = "torch_tpu/common/libxla_base.so"
+_XLA_BASE: Final[str] = "torch_tpu/csrc/common/libxla_base.so"
 
 # A concrete, non-inline XLA symbol that lives in the shared base library.
 _XLA_SYMBOL: Final[str] = "ShapeUtil"
@@ -166,7 +166,7 @@ class WheelStructureTest(absltest.TestCase):  # ABSLTEST_OK=Wheel test
     for version in versions:
       # The env extension is present in every build; use it as a representative.
       self.assertIn(
-          f"torch_tpu/_internal/env_{version}.so",
+          f"torch_tpu/csrc/internal/env_{version}.so",
           self._names,
           f"Missing env glue for version {version}",
       )

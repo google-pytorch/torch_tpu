@@ -207,6 +207,7 @@ torch_tpu_py_test(
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
         "//torch_tpu",
     ],
 )
@@ -250,6 +251,7 @@ torch_tpu_py_library(
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
+        "//torch_tpu/csrc/internal:testing",
         "@pypi//fairscale",
     ],
 )

@@ -328,7 +328,7 @@ def _test_is_backend_dep(env):
         "@pypi_torch_2_12_1_312//:libc10",
         "@pypi_torch_312//:libtorch_cpu",
         "//shims/torch:torch_headers",
-        "//torch_tpu/common:dtype",
+        "//torch_tpu/csrc/common:dtype",
         ":a_local_target",
     ]:
         env.expect.where(dep = dep).that_bool(is_backend_dep_for_testing(dep)).equals(False)

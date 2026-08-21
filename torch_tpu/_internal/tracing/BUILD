@@ -17,25 +17,10 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
-)
-
-pybind_extension(
-    name = "_tpu_torch_tracing",
-    srcs = ["tracing_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch:torch_headers",
-        "//torch_tpu/eager:structured_log_buffer",
-        "@com_google_absl//absl/time",
-    ],
 )
 
 torch_tpu_py_library(
@@ -43,10 +28,10 @@ torch_tpu_py_library(
     srcs = ["__init__.py"],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":_tpu_torch_tracing",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
+        "//torch_tpu/csrc/internal/tracing:_tpu_torch_tracing",
     ],
 )
 

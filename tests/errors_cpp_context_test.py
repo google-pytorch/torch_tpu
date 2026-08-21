@@ -23,7 +23,7 @@ from absl.testing import absltest
 os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
 
 import torch  # pylint: disable=g-import-not-at-top
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 
@@ -43,7 +43,7 @@ class TestErrorsWithCppContext(seed_test_utils.RepeatableTest):
     #   empty(): dimension sizes must be >= 0, got [-1], which contains -1
     #
     #   C++ error trace (starting from the origin):
-    #   third_party/py/torch_tpu/common/error_utils.cc:95:
+    #   third_party/py/torch_tpu/csrc/common/error_utils.cc:95:
     #   ValidateTensorByteSize()
     #   third_party/py/torch_tpu/device_buffer.cc:361: CreateEmpty()
     #   third_party/py/torch_tpu/ops/nullary_aten_kernels.cc:90:

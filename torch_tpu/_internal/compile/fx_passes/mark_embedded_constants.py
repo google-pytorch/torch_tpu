@@ -18,7 +18,7 @@ import torch
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.export.unflatten import _assign_attr
 from torch.export.unflatten import _AttrKind
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 
 
 def apply(

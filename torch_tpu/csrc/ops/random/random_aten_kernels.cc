@@ -1,0 +1,170 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "torch_tpu/csrc/ops/random/random_aten_kernels.h"
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include "ATen/Context.h"
+#include "ATen/Dispatch.h"
+#include "ATen/Dispatch_v2.h"
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/Generator.h"
+#include "ATen/native/DistributionTemplates.h"
+#include "absl/log/absl_log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
+#include "c10/core/ScalarTypeToTypeMeta.h"
+#include "c10/util/Optional.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/Dispatch_v2.h"
+#include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dtype.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/utils.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
+#include "torch_tpu/csrc/eager/op_dispatcher.h"
+#include "torch_tpu/csrc/ops/macros/kernel.h"
+#include "torch_tpu/csrc/ops/op_builder_utils.h"
+#include "torch_tpu/csrc/ops/op_names.h"
+#include "torch_tpu/csrc/ops/random/random.h"
+#include "torch_tpu/csrc/ops/rng_utils.h"
+
+namespace torch_tpu {
+
+namespace {
+
+NAryMlirOpBuilder<1, 1> GetRandomFunctional(Dimensions dims,
+                                            mlir::ElementType output_dtype,
+                                            int64_t from, int64_t to) {
+  return [dims, output_dtype, from,
+          to](mlir::MlirOp rng_state) -> absl::StatusOr<MlirOpResults<1>> {
+    return BuildRandomShlo(rng_state, dims, output_dtype, from, to);
+  };
+}
+
+// See https://docs.pytorch.org/docs/stable/generated/torch.Tensor.random_.html
+// for the logic behind this.
+// Reusing logic from
+// torch/aten/src/ATen/native/DistributionTemplates.h
+absl::StatusOr<int64_t> ComputeToValue(at::ScalarType dtype) {
+  ABSL_VLOG(3) << "ComputeToValue: " << dtype;
+  absl::StatusOr<int64_t> maybe_to = TT_ERROR(error::kInvalidArgument)
+                                     << "Unsupported dtype for random: "
+                                     << dtype;
+  if (at::isFloatingType(dtype)) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::BFloat16, dtype,
+        "random_float_to_value_calc", [&] {
+          constexpr int64_t scalar_t_max =
+              static_cast<int64_t>(1) << std::numeric_limits<scalar_t>::digits;
+          maybe_to = scalar_t_max > std::numeric_limits<int64_t>::max()
+                         ? std::numeric_limits<int64_t>::max()
+                         : static_cast<int64_t>(scalar_t_max);
+        });
+  } else if (at::isIntegralType(dtype, /*includeBool=*/true)) {
+    AT_DISPATCH_V2(dtype, "random_integral_to_value_calc", AT_WRAP([&] {
+                     if constexpr (std::is_same_v<scalar_t, bool>) {
+                       maybe_to = static_cast<int64_t>(true);
+                     } else {
+                       maybe_to = static_cast<int64_t>(
+                           std::numeric_limits<scalar_t>::max());
+                     }
+                   }),
+                   AT_EXPAND(AT_INTEGRAL_TYPES_V2), at::kBool);
+  }
+  return maybe_to;
+}
+
+absl::Status FromToInRange(int64_t from, int64_t to, at::ScalarType dtype) {
+  TT_RET_CHECK(from < to, error::kInvalidArgument)
+      << "expected 'from' to be < 'to', got " << from << " vs " << to;
+  at::native::templates::check_from_to_in_range(
+      from, to - 1, c10::scalarTypeToTypeMeta(dtype));
+  return absl::OkStatus();
+}
+
+absl::Status Random(at::Tensor& self, c10::optional<at::Generator> generator,
+                    int64_t from, c10::optional<int64_t> to_opt,
+                    OpParamCacheKeys param_keys) {
+  if (self.numel() == 0) {
+    return absl::OkStatus();
+  }
+  int64_t to;
+  if (to_opt.has_value()) {
+    to = to_opt.value();
+  } else {
+    TT_ASSIGN_OR_RETURN(to, ComputeToValue(self.scalar_type()));
+  }
+  TT_RETURN_IF_ERROR(FromToInRange(from, to, self.scalar_type()));
+  TT_ASSIGN_OR_RETURN(mlir::ElementType output_dtype,
+                      ConvertTo<mlir::ElementType>(self.scalar_type()));
+  auto dims = CopyIntVector(self.sizes());
+
+  return DispatchRngOp(
+      self, generator,
+      [&](at::Tensor rng_input_state)
+          -> absl::StatusOr<std::vector<DeviceBufferRef>> {
+        TT_ASSIGN_OR_RETURN(
+            auto buf,
+            (DispatchOp<1, 1>(GetRandomFunctional(dims, output_dtype, from, to),
+                              {rng_input_state},
+                              {.out_dtype = output_dtype,
+                               .out_dims = self.sizes(),
+                               .op_param_cache_keys = std::move(param_keys),
+                               .split_mode = OpSplitMode::kSplitAfter})));
+        return std::vector<DeviceBufferRef>{std::move(buf)};
+      });
+}
+
+}  // namespace
+
+at::Tensor& AtenRandom_(at::Tensor& self,
+                        c10::optional<at::Generator> generator) {
+  TT_KERNEL(OpName::kRandom_, param_keys, (self, generator), {
+    TT_THROW_IF_ERROR(
+        Random(self, generator, 0, std::nullopt, std::move(param_keys)));
+    return self;
+  });
+}
+
+at::Tensor& AtenRandom_From(at::Tensor& self, int64_t from,
+                            c10::optional<int64_t> to,
+                            c10::optional<at::Generator> generator) {
+  TT_KERNEL(OpName::kRandom_From, param_keys, (self, from, to, generator), {
+    TT_THROW_IF_ERROR(Random(self, generator, from, to, std::move(param_keys)));
+    return self;
+  });
+}
+
+at::Tensor& AtenRandom_To(at::Tensor& self, int64_t to,
+                          c10::optional<at::Generator> generator) {
+  TT_KERNEL(OpName::kRandom_To, param_keys, (self, to, generator), {
+    TT_THROW_IF_ERROR(Random(self, generator, 0, to, std::move(param_keys)));
+    return self;
+  });
+}
+
+}  // namespace torch_tpu

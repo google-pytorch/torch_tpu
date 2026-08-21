@@ -24,7 +24,7 @@ torch_tpu_py_library(
     srcs = ["mark_embedded_constants.py"],
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
     ],
 )
 

@@ -23,13 +23,13 @@ symbol so the runtime dispatch loader (torch_tpu/_versioned_so_loader.py) can
 rename the module at import time.
 
 The glues for a given version are linked by a per-version `pywrap_library` (one
-per PyTorch version, in its own package under torch_tpu/common/glue_<suffix>).
+per PyTorch version, in its own package under torch_tpu/csrc/common/glue_<suffix>).
 Each such library factors the version-independent XLA/MLIR/absl backend into a
 single shared `libxla_base.so` (via a `common_lib_filters` entry fed by the
 `_backend_probe` targets emitted here) and keeps that version's torch-touching
 code in its own default common. All versions' `libxla_base.so` are byte-identical
 and map to the same wheel path, so the wheel ships one copy. Bazel-only builds
-are unaffected (they use `//torch_tpu/common:pywrap_torch_tpu`).
+are unaffected (they use `//torch_tpu/csrc/common:pywrap_torch_tpu`).
 """
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
@@ -44,11 +44,11 @@ load(
 
 # Package of the shared XLA base common library (libxla_base.so). Every
 # per-version pywrap_library factors the backend into this one wheel location.
-XLA_BASE_PACKAGE = "torch_tpu/common"
+XLA_BASE_PACKAGE = "torch_tpu/csrc/common"
 
 def glue_common_package(version):
     """Package (and wheel location) of a version's torch-touching common lib."""
-    return "torch_tpu/common/glue_{}".format(version_suffix(version))
+    return "torch_tpu/csrc/common/glue_{}".format(version_suffix(version))
 
 def pybind_extension(name, **kwargs):
     """Creates a pybind11 extension.

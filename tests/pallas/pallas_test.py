@@ -30,10 +30,10 @@ import torch._library.custom_ops as torch_custom_ops
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode

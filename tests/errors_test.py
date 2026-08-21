@@ -23,7 +23,7 @@ import unittest
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu._internal import env  # pylint: disable=unused-import
+from torch_tpu.csrc.internal import env  # pylint: disable=unused-import
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
 
