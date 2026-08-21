@@ -52,7 +52,7 @@ _V5P_TOPOLOGY: Final[Mapping[int, str]] = immutabledict.immutabledict({
 _V5E_TOPOLOGY: Final[Mapping[int, str]] = immutabledict.immutabledict({
     1: "1,1,1",
     4: "2,2,1",
-    8: "2,2,2",
+    8: "2,4,1",
 })
 
 _V6E_TOPOLOGY: Final[Mapping[int, str]] = immutabledict.immutabledict({

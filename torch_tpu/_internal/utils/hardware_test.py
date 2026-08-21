@@ -39,7 +39,7 @@ class TpuTopologyMockTest(absltest.TestCase):
       addr = f"0000:03:01.{i}"
       tpus.append({"addr": addr, "id": "0x0063", "vfio_group": str(146 + i)})
 
-    self._run_mock_test(tpus, "2,2,2")
+    self._run_mock_test(tpus, "2,4,1")
 
   def test_v5p_4_chips(self):
     tpus = []
