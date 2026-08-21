@@ -182,6 +182,11 @@ py_wheel(
     strip_path_prefixes = ["ci/wheel/remapped_pywrap_binaries_pkg"],
     summary = "TPU/XLA support for PyTorch",
     tags = ["manual"],
+    # Publishing runs via twine outside Bazel. See ci/upload_wheel.sh.
+    # Suppress the auto-generated `.publish` target, which rules_python
+    # creates by default under bzlmod. It may lead to flaky PyPI fetches
+    # of rules_python's internal twine deps.
+    twine_binary = None,
     # base version set by pyproject.toml.
     version = WHEEL_VERSION,
     visibility = ["//visibility:public"],
