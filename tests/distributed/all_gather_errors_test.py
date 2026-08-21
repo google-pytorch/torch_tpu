@@ -41,6 +41,10 @@ def run_all_gather_dtype_error() -> None:
   with et.assert_raises_message(ValueError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
 
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
+
 
 def run_all_gather_wrong_num_tensors() -> None:
   dist.init_process_group(backend="tpu_dist")
@@ -53,6 +57,10 @@ def run_all_gather_wrong_num_tensors() -> None:
   )
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
+
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 def run_all_gather_dispatch_failure() -> None:
@@ -73,9 +81,17 @@ def run_all_gather_dispatch_failure() -> None:
   with et.assert_raises_message(RuntimeError, tpu=expected_msg):
     dist.all_gather(output_tensors, input_tensor)
 
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
+
 
 class AllGatherErrorsTest(et.TpuOnlyDistributedErrorTestBase):
   _world_size = 8
+
+  def setUp(self):
+    super().setUp()
+    os.environ["TORCH_TPU_TOPOLOGY"] = "2,4,1"  # copybara:comment(oss-only)
 
   def test_invalid_dtype(self):
     distributed_utils.dist_run(

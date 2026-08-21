@@ -131,8 +131,11 @@ torch_tpu_py_test(
     srcs = ["collective_ops_test.py"],
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        "PYTHONFAULTHANDLER": "1",
+        "GLOG_minloglevel": "0",
+        "TPU_STDERR_LOG_LEVEL": "0",
     },
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -334,8 +337,12 @@ torch_tpu_py_test(
     args = [
         "--test_mode=tpu",
     ],
-    env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        "PYTHONFAULTHANDLER": "1",
+        "GLOG_minloglevel": "0",
+        "TPU_STDERR_LOG_LEVEL": "0",
+    },
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -611,7 +618,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "ragged_dot_test",
     srcs = ["ragged_dot_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        "PYTHONFAULTHANDLER": "1",
+        "GLOG_minloglevel": "0",
+        "TPU_STDERR_LOG_LEVEL": "0",
+    },
     tags = if_oss(
         ["exclusive"],
         [],

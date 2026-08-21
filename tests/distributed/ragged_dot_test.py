@@ -93,6 +93,10 @@ class RaggedDotDistributedTest(absltest.TestCase):
   a distributed environment.
   """
 
+  def setUp(self):
+    super().setUp()
+    os.environ["TORCH_TPU_TOPOLOGY"] = "2,4,1"  # copybara:comment(oss-only)
+
   def test_ragged_dot_independent_eager(self):
     distributed_utils.dist_run(
         nproc_per_node=8,

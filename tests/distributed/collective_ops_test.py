@@ -472,6 +472,10 @@ def run_send_recv() -> None:
     expected = torch.tensor([[float(src_rank), float(src_rank**2)]])
     utils.assert_close(recv_buffer.cpu(), expected)
 
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
+
 
 def run_isend_irecv() -> None:
   """Tests point-to-point asynchronous isend and irecv functionality."""
@@ -506,6 +510,10 @@ def run_isend_irecv() -> None:
   if send_work is not None:
     send_work.wait()
 
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
+
 
 def run_send_recv_same_tag():
   """Tests send and recv with the same tag for different src and dst ranks."""
@@ -536,6 +544,10 @@ def run_send_recv_same_tag():
 
       expected = torch.full(tensor_shape, tensor_value)
       utils.assert_close(recv_buffer.cpu(), expected)
+
+  if dist.is_initialized():
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 def run_collectives_with_non_uniform_deferred_ops() -> None:
@@ -647,6 +659,10 @@ def run_rank_variable_dead_collective_without_hang(world_size: int) -> None:
 
 class CollectiveOpsTest(absltest.TestCase):
   _world_size = 8
+
+  def setUp(self):
+    super().setUp()
+    os.environ["TORCH_TPU_TOPOLOGY"] = "2,4,1"  # copybara:comment(oss-only)
 
   def test_all_reduce_sum(self):
     distributed_utils.dist_run(
