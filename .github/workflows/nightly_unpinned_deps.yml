@@ -95,19 +95,27 @@ jobs:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
       # Resolve unpinned/highest upper bounds dependencies. Update the existing
-      # requirements.txt with the newly resolved dependencies.
+      # requirements.txt with the newly resolved dependencies, and write metadata.
       - name: Resolve Unpinned Dependencies
         env:
           PYTHON_VERSION: ${{ matrix.python_version }}
         run: |
           PYTHON_VERSION_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          REQUIREMENTS_FILE="requirements/requirements_${PYTHON_VERSION_UND}.txt"
           uv pip compile pyproject.toml \
             --all-extras \
             --python-version "${PYTHON_VERSION}" \
             --python-platform x86_64-manylinux_2_31 \
             --resolution highest \
             --generate-hashes \
-            --output-file "requirements/requirements_${PYTHON_VERSION_UND}.txt"
+            --output-file "${REQUIREMENTS_FILE}"
+          cat <<EOF > requirements/metadata.json
+          {
+            "python_version": "${PYTHON_VERSION}",
+            "pyproject_sha256": "$(sha256sum pyproject.toml | cut -d' ' -f1)"
+          }
+          EOF
+          echo "REQUIREMENTS_FILE=${REQUIREMENTS_FILE}" >> $GITHUB_ENV
 
       # Run the full test suite on CPU with Bazel using unpinned dependencies.
       - name: Run Bazel Tests
@@ -115,6 +123,16 @@ jobs:
           bazel test //... \
             --config=${{ matrix.job_info.config }} \
             --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
+
+      # Upload upper bounded requirements lock file and metadata on test success.
+      - name: Upload Upper Bounded Requirements Lock File
+        uses: actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392  # v4.0.0
+        with:
+          name: requirements-${{ matrix.python_version }}
+          path: |
+            ${{ env.REQUIREMENTS_FILE }}
+            requirements/metadata.json
+          retention-days: 7
 
       # Upload test logs on failure for triage.
       - name: Upload Test Logs on Failure
@@ -128,17 +146,15 @@ jobs:
   notify_failure:
     name: Notify Failed Runs
     needs: [run_tests]
-    if: always()
+    if: always() && contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
       - name: Get current date
         id: date
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
       - name: Check whether one of the jobs failed
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
