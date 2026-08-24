@@ -21,13 +21,13 @@ from absl.testing import absltest
 import torch
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import execution_mode
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
-from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu.csrc.internal import testing as tt_testing
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -1154,6 +1154,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
   def test_is_device_shape_dynamic(self):
     x_static = torch.ones(2, 3, device='tpu')
     self.assertFalse(tpu_torch_compile.is_device_shape_dynamic(x_static))
+
     def fn(x):
       return x + 1
 

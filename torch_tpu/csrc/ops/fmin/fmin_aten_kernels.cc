@@ -1,0 +1,60 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "torch_tpu/csrc/ops/fmin/fmin_aten_kernels.h"
+
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/ops/binary_aten_kernels.h"
+#include "torch_tpu/csrc/ops/macros/kernel.h"
+#include "torch_tpu/csrc/ops/op_builder_utils.h"
+#include "torch_tpu/csrc/ops/op_names.h"
+
+namespace torch_tpu {
+namespace {
+absl::StatusOr<mlir::MlirOp> BuildFminShlo(mlir::MlirOp self,
+                                           mlir::MlirOp other) {
+  TT_ASSIGN_OR_RETURN((auto [self_, other_]),
+                      ApplyBroadcastIfNeeded(self, other));
+
+  mlir::MlirOp self_less = mlir::stablehlo::Compare(
+      self_, other_, mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp other_nan = mlir::stablehlo::Compare(
+      other_, other_, mlir::stablehlo::ComparisonDirection::NE);
+
+  mlir::MlirOp self_less_or_other_nan =
+      mlir::stablehlo::Or(self_less, other_nan);
+
+  return mlir::stablehlo::Select(self_less_or_other_nan, self_, other_);
+}
+}  // namespace
+
+at::Tensor& AtenFminOut(const at::Tensor& self, const at::Tensor& other,
+                        at::Tensor& out) {
+  TT_KERNEL(OpName::kFminOut, _, (self, other, out), {
+    TT_THROW_IF_ERROR(
+        BinaryOpOut(self, other, out, BuildFminShlo,
+                    {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
+    return out;
+  });
+}
+}  // namespace torch_tpu

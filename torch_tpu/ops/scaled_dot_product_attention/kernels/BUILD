@@ -13,9 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
-load("//shims/build_defs_testing:bzl_library.bzl", "bzl_library")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
-load(":defs.bzl", "define_sdpa_kernel")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -101,7 +99,7 @@ pytype_strict_binary(
         ":scaled_dot_product_attention_kernels",
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
-        "//torch_tpu/_internal/pallas:pallas_kernel_generate_utils",
+        "//torch_tpu/src/torch_tpu/_internal/pallas:pallas_kernel_generate_utils",
         "@pypi//jax",
         "@pypi//numpy",
     ],
@@ -130,69 +128,5 @@ torch_tpu_py_test(
 )
 
 # Forward Kernels
-define_sdpa_kernel(
-    name = "sdpa_fwd_f32_non_causal_mlir",
-    dtype = "float32",
-    forward = True,
-    is_causal = False,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_fwd_f32_causal_mlir",
-    dtype = "float32",
-    forward = True,
-    is_causal = True,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_fwd_bf16_non_causal_mlir",
-    dtype = "bfloat16",
-    forward = True,
-    is_causal = False,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_fwd_bf16_causal_mlir",
-    dtype = "bfloat16",
-    forward = True,
-    is_causal = True,
-)
-
-# Backward Kernels
-define_sdpa_kernel(
-    name = "sdpa_bwd_f32_non_causal_mlir",
-    dtype = "float32",
-    forward = False,
-    is_causal = False,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_bwd_f32_causal_mlir",
-    dtype = "float32",
-    forward = False,
-    is_causal = True,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_bwd_bf16_non_causal_mlir",
-    dtype = "bfloat16",
-    forward = False,
-    is_causal = False,
-)
-
-define_sdpa_kernel(
-    name = "sdpa_bwd_bf16_causal_mlir",
-    dtype = "bfloat16",
-    forward = False,
-    is_causal = True,
-)
-
-bzl_library(
-    name = "defs_bzl",
-    srcs = ["defs.bzl"],
-    parse_tests = False,
-    visibility = ["//visibility:private"],
-    deps = ["//build_files:build_defs_bzl"],
-)
 
 torch_tpu_package_end()

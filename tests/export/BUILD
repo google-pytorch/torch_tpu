@@ -30,7 +30,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/export",
+        "//torch_tpu/src/torch_tpu/_internal/export",
     ],
 )
 

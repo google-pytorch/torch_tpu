@@ -15,24 +15,24 @@
 """Central list of every C++ Python extension in torch_tpu.
 
 Any new pybind_extension target created in the codebase MUST be added here so it
-is linked into both the bazel-only aggregator (//torch_tpu/common:pywrap_torch_tpu)
-and every per-version wheel pywrap_library (//torch_tpu/common/glue_<suffix>).
+is linked into both the bazel-only aggregator (//torch_tpu/csrc/common:pywrap_torch_tpu)
+and every per-version wheel pywrap_library (//torch_tpu/csrc/common/glue_<suffix>).
 """
 
 PYWRAP_EXTENSIONS = [
-    "//torch_tpu/_internal:env",
-    "//torch_tpu/_internal:testing",
-    "//torch_tpu/_internal/batch_transfer:batch_transfer_impl",
-    "//torch_tpu/_internal/compile:tpu_torch_compile",
-    "//torch_tpu/_internal/compiler_options:compiler_options_impl",
-    "//torch_tpu/_internal/device:_device_ops_backend",
-    "//torch_tpu/_internal/device_utils:annotations_py",
-    "//torch_tpu/_internal/distributed:tpu_distributed",
-    "//torch_tpu/_internal/dynamism:_tpu_torch_dynamism",
-    "//torch_tpu/_internal/execution_mode:execution_mode_impl",
-    "//torch_tpu/_internal/pallas:tpu_torch_pallas",
-    "//torch_tpu/_internal/precision:precision_impl",
-    "//torch_tpu/_internal/profiler:_profiler_backend",
-    "//torch_tpu/_internal/sync:_tpu_torch_sync",
-    "//torch_tpu/_internal/tracing:_tpu_torch_tracing",
+    "//torch_tpu/csrc/internal:env",
+    "//torch_tpu/csrc/internal:testing",
+    "//torch_tpu/csrc/internal/batch_transfer:batch_transfer_impl",
+    "//torch_tpu/csrc/internal/compile:tpu_torch_compile",
+    "//torch_tpu/csrc/internal/compiler_options:compiler_options_impl",
+    "//torch_tpu/csrc/internal/device:_device_ops_backend",
+    "//torch_tpu/csrc/internal/device_utils:annotations_py",
+    "//torch_tpu/csrc/internal/distributed:tpu_distributed",
+    "//torch_tpu/csrc/internal/dynamism:_tpu_torch_dynamism",
+    "//torch_tpu/csrc/internal/execution_mode:execution_mode_impl",
+    "//torch_tpu/csrc/internal/pallas:tpu_torch_pallas",
+    "//torch_tpu/csrc/internal/precision:precision_impl",
+    "//torch_tpu/csrc/internal/profiler:_profiler_backend",
+    "//torch_tpu/csrc/internal/sync:_tpu_torch_sync",
+    "//torch_tpu/csrc/internal/tracing:_tpu_torch_tracing",
 ]

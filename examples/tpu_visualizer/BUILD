@@ -33,9 +33,9 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
-        "//torch_tpu/_internal/utils:hardware",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
+        "//torch_tpu/src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/src/torch_tpu/_internal/utils:hardware",
     ],
 )
 

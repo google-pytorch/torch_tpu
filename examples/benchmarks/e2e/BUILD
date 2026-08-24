@@ -49,7 +49,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/profiler:xprof_adapter",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
         "@pypi//numpy",
     ],
 )
@@ -62,7 +62,7 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness:metrics",
         "//shims/absl_py/logging",
         "//torch_tpu/_internal/benchmarks:benchmark_adapter",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 
@@ -82,10 +82,10 @@ torch_tpu_py_library(
         "//shims/torch",
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
-        "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/_internal/optim",
         "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/src/torch_tpu/_internal/execution_mode",
+        "//torch_tpu/src/torch_tpu/_internal/optim",
         "@pypi//tensorboardx",
     ],
 )
@@ -102,9 +102,9 @@ torch_tpu_py_library(
         "//examples/benchmarks/quality_utils/metrics:data_loader",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/distributed:gpu_env",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/distributed:gpu_env",
+        "//torch_tpu/src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 
@@ -274,7 +274,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/profiler:xprof_adapter",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 
@@ -563,9 +563,9 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/profiler:xprof_adapter",
-        "//torch_tpu/_internal/sync",
+        "//torch_tpu/src/torch_tpu/_internal/compile",
+        "//torch_tpu/src/torch_tpu/_internal/sync",
         "@pypi//psutil",
     ],
 )

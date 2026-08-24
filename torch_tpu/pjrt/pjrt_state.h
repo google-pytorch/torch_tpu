@@ -29,7 +29,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
-#include "torch_tpu/common/device_type.h"
+#include "torch_tpu/csrc/common/device_type.h"
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/tsl/framework/allocator.h"

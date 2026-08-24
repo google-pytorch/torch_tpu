@@ -20,7 +20,7 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/status/status.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 
 namespace torch_tpu {

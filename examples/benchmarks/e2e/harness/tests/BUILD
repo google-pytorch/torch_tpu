@@ -62,7 +62,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/src/torch_tpu/_internal/execution_mode",
     ],
 )
 

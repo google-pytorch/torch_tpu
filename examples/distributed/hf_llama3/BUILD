@@ -30,8 +30,8 @@ torch_tpu_py_library(
         "//shims/etils/epath",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/compile",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
         "@pypi//transformers",
     ],
 )
@@ -44,7 +44,7 @@ pytype_strict_binary(
         ":hf_llama3_worker",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/distributed:multiprocessing",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
     ],
 )
 

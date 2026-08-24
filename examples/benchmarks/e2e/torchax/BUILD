@@ -38,7 +38,7 @@ torch_tpu_py_library(
         "//shims/torch",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/profiler:xprof_adapter",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//torch_tpu/src/torch_tpu/_internal/utils:log_utils",
         "@pypi//jax",
         "@pypi//numpy",
         "@pypi//optax",

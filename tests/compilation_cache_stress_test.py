@@ -21,7 +21,7 @@ import time
 
 from absl.testing import absltest
 import torch
-from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu.csrc.internal.compile import tpu_torch_compile
 from tests import seed_test_utils
 
 

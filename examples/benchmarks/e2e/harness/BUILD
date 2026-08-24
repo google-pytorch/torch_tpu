@@ -93,7 +93,7 @@ torch_tpu_py_library(
         ":target",
         "//examples/benchmarks/e2e:common",
         "//torch_tpu",
-        "//torch_tpu/_internal/execution_mode",
+        "//torch_tpu/src/torch_tpu/_internal/execution_mode",
     ],
 )
 
@@ -142,7 +142,7 @@ torch_tpu_py_library(
     deps = [
         ":target",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/compile",
+        "//torch_tpu/src/torch_tpu/_internal/compile",
     ],
 )
 
@@ -250,6 +250,7 @@ torch_tpu_py_library(
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
+        "//torch_tpu/csrc/internal:testing",
         "@pypi//fairscale",
     ],
 )

@@ -52,7 +52,7 @@ torch_tpu_py_library(
     name = "profiler",
     srcs = ["profiler.py"],
     deps = [
-        "//torch_tpu/_internal/profiler:profiler_config",
+        "//torch_tpu/src/torch_tpu/_internal/profiler:profiler_config",
     ],
 )
 
@@ -65,20 +65,20 @@ torch_tpu_py_library(
     deps = [
         ":profiler",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal:env",
-        "//torch_tpu/_internal:native_scan",
-        "//torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/device:_device_module",
-        "//torch_tpu/_internal/device:_tpu_backend_config",
-        "//torch_tpu/_internal/distributed:from_local",
-        "//torch_tpu/_internal/distributed:torchcomm_tpu",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/precision",
-        "//torch_tpu/_internal/profiler",
-        "//torch_tpu/_internal/sync",
-        "//torch_tpu/_internal/tracing",
-        "//torch_tpu/_internal/utils:hardware",
+        "//torch_tpu/csrc/internal:env",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
+        "//torch_tpu/csrc/internal/precision:precision_impl",
+        "//torch_tpu/src/torch_tpu/_internal:native_scan",
+        "//torch_tpu/src/torch_tpu/_internal/batch_transfer",  # buildcleaner: keep
+        "//torch_tpu/src/torch_tpu/_internal/compile",
+        "//torch_tpu/src/torch_tpu/_internal/device:_device_module",
+        "//torch_tpu/src/torch_tpu/_internal/device:_tpu_backend_config",
+        "//torch_tpu/src/torch_tpu/_internal/distributed:from_local",
+        "//torch_tpu/src/torch_tpu/_internal/distributed:torchcomm_tpu",
+        "//torch_tpu/src/torch_tpu/_internal/profiler",
+        "//torch_tpu/src/torch_tpu/_internal/sync",
+        "//torch_tpu/src/torch_tpu/_internal/tracing",
+        "//torch_tpu/src/torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -112,8 +112,8 @@ py_library_providing_imports_info(
     ) + [
         ":_loader",
         ":_versioned_so_loader",
-        "//torch_tpu/_internal:testing",  # buildcleaner: keep
-        "//torch_tpu/_internal/profiler:_impl",
+        "//torch_tpu/csrc/internal:testing",  # buildcleaner: keep
+        "//torch_tpu/src/torch_tpu/_internal/profiler:_impl",
     ],
 )
 

@@ -36,8 +36,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/src/torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -54,8 +54,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/src/torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -72,8 +72,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/utils:test_utils",
+        "//torch_tpu/src/torch_tpu/_internal/compile:tpu_backend",
+        "//torch_tpu/src/torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -85,8 +85,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/_internal/compile/dynamic:sym_utils",
+        "//torch_tpu/src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
+        "//torch_tpu/src/torch_tpu/_internal/compile/dynamic:sym_utils",
     ],
 )
 
@@ -98,10 +98,10 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:graph_transformations",
-        "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/_internal/compile/dynamic:view_ops_transformations",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
+        "//torch_tpu/src/torch_tpu/_internal/compile/dynamic:graph_transformations",
+        "//torch_tpu/src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
+        "//torch_tpu/src/torch_tpu/_internal/compile/dynamic:view_ops_transformations",
     ],
 )
 

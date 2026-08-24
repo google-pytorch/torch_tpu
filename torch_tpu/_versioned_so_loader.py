@@ -50,7 +50,10 @@ import re
 import sys
 from typing import Final
 
-_INTERNAL_PREFIX: Final[str] = "torch_tpu._internal."
+_INTERNAL_PREFIXES: Final[tuple[str, ...]] = (
+    "torch_tpu._internal.",
+    "torch_tpu.csrc.internal.",
+)
 
 # Resolved once by install_hook(): the suffix of the glue variant this process
 # loads, or None when dispatch is disabled.
@@ -242,7 +245,9 @@ class VersionDispatchFinder(importlib.abc.MetaPathFinder):
       handle the import (dispatch disabled, a name outside
       `torch_tpu._internal`, or no versioned artifact for this module).
     """
-    if _VERSION_SUFFIX is None or not fullname.startswith(_INTERNAL_PREFIX):
+    if _VERSION_SUFFIX is None or not any(
+        fullname.startswith(p) for p in _INTERNAL_PREFIXES
+    ):
       return None
     # Avoid infinite recursion when we look up the versioned name ourselves.
     if fullname.endswith(f"_{_VERSION_SUFFIX}"):

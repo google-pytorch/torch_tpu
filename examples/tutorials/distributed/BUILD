@@ -41,7 +41,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//torch_tpu/src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
     ],
 )
 

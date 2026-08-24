@@ -51,7 +51,7 @@ import warnings
 from absl import flags
 from absl.testing import absltest
 import torch
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests import subprocess_test_utils
