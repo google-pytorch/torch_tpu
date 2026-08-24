@@ -62,6 +62,7 @@ if [ "${TORCH_TPU_EXCLUSIVE_TEST:-0}" = "1" ]; then
     done
   done
   (
+    export TPU_VISIBLE_DEVICES="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
     export TPU_VISIBLE_CHIPS="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
     "$TEST_BINARY" "$@"
   )
