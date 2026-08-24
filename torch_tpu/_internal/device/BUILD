@@ -17,7 +17,10 @@ load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = [
+        "//:__subpackages__",
+        "@torch_tpu_glues//:__subpackages__",  # copybara:comment(oss-only)
+    ],
 )
 
 torch_tpu_py_library(

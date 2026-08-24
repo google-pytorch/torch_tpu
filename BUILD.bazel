@@ -33,6 +33,10 @@ exports_files(["README.md"])
 alias(
     name = "license",
     actual = "//torch_tpu:license",
+    visibility = [
+        "//:__subpackages__",
+        "@torch_tpu_glues//:__subpackages__",
+    ],
 )
 
 filegroup(

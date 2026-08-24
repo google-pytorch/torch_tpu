@@ -50,7 +50,7 @@ torch_tpu_py_library(
     name = "mingpt_lib",
     srcs = ["mingpt.py"],
     tags = [
-        # Prevent build_cleaner from adding @pypi//transformers, which is a lazy import
+        # Prevent build_cleaner from adding @pypi//transformers:v5, which is a lazy import
         # that is invisible to this package. See go/build-cleaner/customize-behavior#ignore-for-dep
         "nofixdeps",
         "ignore_for_dep=third_party.py.transformers",

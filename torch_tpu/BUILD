@@ -37,6 +37,10 @@ package(
 license(
     name = "license",
     package_name = "torch_tpu",
+    visibility = [
+        "//:__subpackages__",
+        "@torch_tpu_glues//:__subpackages__",  # copybara:comment(oss-only)
+    ],
 )
 
 exports_files(["LICENSE"])

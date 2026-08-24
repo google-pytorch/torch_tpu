@@ -22,6 +22,7 @@ load(
 
 package(
     default_applicable_licenses = ["//:license"],
+    default_visibility = ["//:__subpackages__"],
 )
 
 torch_tpu_py_library(

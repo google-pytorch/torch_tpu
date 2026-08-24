@@ -904,7 +904,10 @@ torch_tpu_cc_library(
     # The per-version wheel glues in //torch_tpu/common/glue_<suffix> pull this
     # in through their pywrap_library (extra_deps), so it must be visible to
     # this package's subpackages, not just this package.
-    visibility = ["//torch_tpu/common:__subpackages__"],
+    visibility = [
+        "//:__subpackages__",
+        "@torch_tpu_glues//:__subpackages__",  # copybara:comment(oss-only)
+    ],
 )
 
 # Single-version aggregator used by bazel-only builds and tests (injected into
