@@ -369,6 +369,7 @@ build --define=with_tpu_support=true
 # because it does not have RBE agents setup.
 common:remote_execution_readonly --remote_instance_name=projects/tensorflow-testing/instances/default_instance
 common:remote_execution_readonly --google_default_credentials
+common:remote_execution_readonly --remote_upload_local_results=false
 common:remote_execution_readonly --jobs=200
 common:remote_execution_readonly --remote_timeout=3600
 common:remote_execution_readonly --test_timeout=3600
