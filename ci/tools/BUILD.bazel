@@ -17,7 +17,13 @@ load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 
 exports_files(
-    ["run_cc_tpu_test.sh"],
+    [
+        "custom_lint.py",
+        "custom_lint_rules.py",
+        "custom_lint.sh",
+        "custom_lint_test.py",
+        "run_cc_tpu_test.sh",
+    ],
     visibility = ["//visibility:public"],
 )
 

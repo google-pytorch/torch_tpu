@@ -1,0 +1,27 @@
+ok entonces en el de rust vamos a revisar de la manera en que lo hace el de python con una ventana de 2 lineas te parece
+
+    Rule(
+        id='CheckModulePath',
+        path_regex='\\.(ipynb|py)$',
+        prohibited_regex='^\\s*(from|import)\\s+(google3\\.third_party\\.py\\.torch_tpu\\b|torch_tpu\\.)',
+        failure_message=(
+            "Please don't introduce public Python modules without a design"
+            ' review. See go/tt-api-policy for details.'
+        ),
+        suppression_regex='\\btorch_tpu\\.(_internal\\b|csrc\\b|ops\\b|examples\\b|google\\b|tests\\b)',
+        disable_tags=['ROLLBACK_OF', 'DISABLE_CHECK_MODULE_PATH'],
+    ),
+
+        Rule(
+        id='CheckBannedApiImport',
+        path_regex='\\.(ipynb|py)$',
+        prohibited_regex='\\b(import\\s+torch_tpu\\.api|from\\s+torch_tpu(\\.|\\s+import\\s+)api\\b|from\\s+google3\\.third_party\\.py\\.torch_tpu(\\.|\\s+import\\s+)api\\b)',
+        failure_message=(
+            'Please do not import torch_tpu.api or its members. The'
+            ' torch_tpu.api module has been removed. Accelerator devices like'
+            " `torch.device('tpu')` are now automatically available when"
+            ' importing `torch`.'
+        ),
+        path_exclusion_regex='.*custom_lint.*',
+        disable_tags=['ROLLBACK_OF'],
+    ),
