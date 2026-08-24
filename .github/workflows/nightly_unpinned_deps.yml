@@ -94,6 +94,26 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
+      # Record pre-update checksums of the lockfile and pyproject.toml in a metadata JSON
+      # file before updating, allowing external sync jobs to verify the base state hasn't changed.
+      - name: Compute Pre-Update Metadata
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          PYTHON_VERSION_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          REQUIREMENTS_FILE="requirements/requirements_${PYTHON_VERSION_UND}.txt"
+          METADATA_FILE="requirements/metadata.json"
+          LOCKFILE_SHA=$(sha256sum "${REQUIREMENTS_FILE}" | cut -d' ' -f1)
+          PYPROJECT_SHA=$(sha256sum pyproject.toml | cut -d' ' -f1)
+          cat <<EOF > "${METADATA_FILE}"
+          {
+            "python_version": "${PYTHON_VERSION}",
+            "lockfile_pre_update_sha256": "${LOCKFILE_SHA}",
+            "pyproject_pre_update_sha256": "${PYPROJECT_SHA}"
+          }
+          EOF
+          echo "METADATA_FILE=${METADATA_FILE}" >> $GITHUB_ENV
+
       # Resolve unpinned/highest upper bounds dependencies. Update the existing
       # requirements.txt with the newly resolved dependencies.
       - name: Resolve Unpinned Dependencies
@@ -101,13 +121,15 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python_version }}
         run: |
           PYTHON_VERSION_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          REQUIREMENTS_FILE="requirements/requirements_${PYTHON_VERSION_UND}.txt"
           uv pip compile pyproject.toml \
             --all-extras \
             --python-version "${PYTHON_VERSION}" \
             --python-platform x86_64-manylinux_2_31 \
             --resolution highest \
             --generate-hashes \
-            --output-file "requirements/requirements_${PYTHON_VERSION_UND}.txt"
+            --output-file "${REQUIREMENTS_FILE}"
+          echo "REQUIREMENTS_FILE=${REQUIREMENTS_FILE}" >> $GITHUB_ENV
 
       # Run the full test suite on CPU with Bazel using unpinned dependencies.
       - name: Run Bazel Tests
@@ -115,6 +137,16 @@ jobs:
           bazel test //... \
             --config=${{ matrix.job_info.config }} \
             --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }}
+
+      # Upload upper bounded requirements lock file and pre-update metadata on test success.
+      - name: Upload Upper Bounded Requirements Lock File
+        uses: actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392  # v4.0.0
+        with:
+          name: requirements-${{ matrix.python_version }}
+          path: |
+            ${{ env.REQUIREMENTS_FILE }}
+            ${{ env.METADATA_FILE }}
+          retention-days: 7
 
       # Upload test logs on failure for triage.
       - name: Upload Test Logs on Failure
@@ -128,17 +160,15 @@ jobs:
   notify_failure:
     name: Notify Failed Runs
     needs: [run_tests]
-    if: always()
+    if: always() && contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
       - name: Get current date
         id: date
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
       - name: Check whether one of the jobs failed
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
