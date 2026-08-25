@@ -903,15 +903,15 @@ def torch_tpu_py_test(
             non-nightly OSS, and it will be built and run in the nightly OSS.
         nonightly_oss: If a string is provided, the test will be built but not run in the nightly
             OSS.
-        oss_presubmit_tpu_generation: Optional integer specifying the TPU generation to run this
-            test on in OSS presubmit.
+        oss_presubmit_tpu_generation: Optional tpu_gen() naming the TPU generation to run
+            this test on in OSS presubmit, overriding the default picked from
+            TPU_GENERATION_PREFERENCES. Use it to place a test on a particular runner.
         run_on_accelerators: Optional list of `requires-tpu-<version>` tags to run the test on.
             If this is provided, generate a test target for each element in the list. The name of
             each target will be `<name>_<accelerator>`. For example, if this is set to
             `["requires-tpu-v5lite", "requires-tpu-v6e"]`, two targets will be created:
-            `<name>_tpu-v5lite` and `<name>_tpu-v6e`. Each target is also given the OSS
-            `presubmit-v<N>` tag matching its accelerator, so that OSS CI runs it on that
-            hardware. Mutually exclusive with oss_presubmit_tpu_generation.
+            `<name>_tpu-v5lite` and `<name>_tpu-v6e`. Each generated target is also tagged with
+            `presubmit-v<N>` matching the specified accelerator version.
         tags: The tags to add to the test.
         **kwargs: Any additional arguments.
     """
@@ -1117,16 +1117,9 @@ def torch_tpu_py_test(
                 fail("Unknown accelerator '%s'. Please add it to " % requires_acc +
                      "TPU_VERSION_TO_GENERATION.")
 
-            # A variant is meant for exactly one generation. Pin it away from
-            # the others so every job runs it only on the accelerator requested.
-            pins = [
-                "fails-on-tpu-" + gen
-                for gen in TPU_GENERATION_PREFERENCES
-                if gen != generation and ("fails-on-tpu-" + gen) not in tags
-            ]
             target_specs.append((
                 name + "_" + _get_tpu_version(requires_acc),
-                [requires_acc] + pins,
+                [requires_acc],
                 tpu_gen(
                     generation,
                     "Requested via run_on_accelerators = [\"%s\"]." % requires_acc,
