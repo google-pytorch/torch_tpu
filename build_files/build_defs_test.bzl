@@ -105,6 +105,23 @@ def _test_py_test_multi_tpu_targets_impl(env, targets):
     env.expect.that_collection(target_v6_tags).contains("custom_tag")
     env.expect.that_collection(target_v6_tags).not_contains("requires-tpu-v5lite")
 
+    # In OSS, the presubmit-v<N> tag - not requires-tpu-<version> - is what
+    # picks the runner, so each target must get the one matching its
+    # accelerator, and be pinned away from the other generations so that the
+    # postsubmit and wheel jobs do not run it on the wrong hardware either.
+    if is_oss():
+        env.expect.that_collection(target_v5_tags).contains("presubmit-v5")
+        env.expect.that_collection(target_v5_tags).not_contains("presubmit-v6")
+        env.expect.that_collection(target_v5_tags).contains("fails-on-tpu-v6")
+        env.expect.that_collection(target_v5_tags).contains("fails-on-tpu-v7")
+        env.expect.that_collection(target_v5_tags).not_contains("fails-on-tpu-v5")
+
+        env.expect.that_collection(target_v6_tags).contains("presubmit-v6")
+        env.expect.that_collection(target_v6_tags).not_contains("presubmit-v5")
+        env.expect.that_collection(target_v6_tags).contains("fails-on-tpu-v5")
+        env.expect.that_collection(target_v6_tags).contains("fails-on-tpu-v7")
+        env.expect.that_collection(target_v6_tags).not_contains("fails-on-tpu-v6")
+
 def _test_py_test_multi_tpu_targets(name):
     torch_tpu_py_test(
         name = name + "_subject",

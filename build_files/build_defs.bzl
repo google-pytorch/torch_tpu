@@ -64,6 +64,21 @@ _TORCH_TPU_COPTS = [
 # assigning an OSS presubmit runner to a test.
 TPU_GENERATION_PREFERENCES = ["v5", "v7", "v6"]
 
+# Maps a `requires-tpu-<version>` tag to the TPU generation it corresponds to.
+# Hardware is selected by the `presubmit-v<N>` tag filters in .bazelrc, not
+# by `requires-tpu-<version>`, so a test asking for a specific accelerator
+# must be given the matching generation.
+TPU_VERSION_TO_GENERATION = {
+    "requires-tpu-v5lite": "v5",
+    "requires-tpu-v5p": "v5",
+    "requires-tpu-v6e": "v6",
+    "requires-tpu-v7x": "v7",
+}
+
+def _get_tpu_generation(tag):
+    """Returns the TPU generation for a `requires-tpu-<version>[:<chips>]` tag."""
+    return TPU_VERSION_TO_GENERATION.get(tag.split(":")[0])
+
 def tpu_gen(generation, reason = None):
     """Helper to configure explicit TPU generation requirements.
 
@@ -890,11 +905,13 @@ def torch_tpu_py_test(
             OSS.
         oss_presubmit_tpu_generation: Optional integer specifying the TPU generation to run this
             test on in OSS presubmit.
-        run_on_accelerators: Optional list of `require-ACCELERATOR` tags to run the test on. If
-            this is provided, generate a test target for each element in the list. The name of
+        run_on_accelerators: Optional list of `requires-tpu-<version>` tags to run the test on.
+            If this is provided, generate a test target for each element in the list. The name of
             each target will be `<name>_<accelerator>`. For example, if this is set to
-            `["requires-foo:8", "requires-bar"]`, two targets will be created:
-            `<name>_foo_8` and `<name>_bar`.
+            `["requires-tpu-v5lite", "requires-tpu-v6e"]`, two targets will be created:
+            `<name>_tpu-v5lite` and `<name>_tpu-v6e`. Each target is also given the OSS
+            `presubmit-v<N>` tag matching its accelerator, so that OSS CI runs it on that
+            hardware. Mutually exclusive with oss_presubmit_tpu_generation.
         tags: The tags to add to the test.
         **kwargs: Any additional arguments.
     """
@@ -1089,14 +1106,36 @@ def torch_tpu_py_test(
         rule = py_test
     run_on_accelerators = run_on_accelerators or []
     if run_on_accelerators:
-        target_specs = [
-            (name + "_" + _get_tpu_version(requires_acc), [requires_acc])
-            for requires_acc in run_on_accelerators
-        ]
-    else:
-        target_specs = [(name, [])]
+        if oss_presubmit_tpu_generation != None:
+            fail("'run_on_accelerators' and 'oss_presubmit_tpu_generation' are mutually exclusive. " +
+                 "The TPU generation is derived from each accelerator tag.")
 
-    for target_name, additional_tags in target_specs:
+        target_specs = []
+        for requires_acc in run_on_accelerators:
+            generation = _get_tpu_generation(requires_acc)
+            if not generation:
+                fail("Unknown accelerator '%s'. Please add it to " % requires_acc +
+                     "TPU_VERSION_TO_GENERATION.")
+
+            # A variant is meant for exactly one generation. Pin it away from
+            # the others so every job runs it only on the accelerator requested.
+            pins = [
+                "fails-on-tpu-" + gen
+                for gen in TPU_GENERATION_PREFERENCES
+                if gen != generation and ("fails-on-tpu-" + gen) not in tags
+            ]
+            target_specs.append((
+                name + "_" + _get_tpu_version(requires_acc),
+                [requires_acc] + pins,
+                tpu_gen(
+                    generation,
+                    "Requested via run_on_accelerators = [\"%s\"]." % requires_acc,
+                ),
+            ))
+    else:
+        target_specs = [(name, [], oss_presubmit_tpu_generation)]
+
+    for target_name, additional_tags, target_tpu_generation in target_specs:
         target_tags = tags + additional_tags
         result = _check_and_adjust_test_tags(
             name = target_name,
@@ -1111,7 +1150,7 @@ def torch_tpu_py_test(
             nobuild_oss = nobuild_oss,
             nopresubmit_oss = nopresubmit_oss,
             nonightly_oss = nonightly_oss,
-            oss_presubmit_tpu_generation = oss_presubmit_tpu_generation,
+            oss_presubmit_tpu_generation = target_tpu_generation,
             tags = target_tags,
         )
         if result.create_build_test:
