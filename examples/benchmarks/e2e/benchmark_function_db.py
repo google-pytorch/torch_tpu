@@ -34,6 +34,7 @@ def _sdpa_kernel_if_not_cuda(use_math_attention_fallback: bool = False):
     yield
   else:
     attention_kernels = [
+        torch.nn.attention.SDPBackend.FLASH_ATTENTION,
         torch.nn.attention.SDPBackend.OVERRIDEABLE,
     ]
     if use_math_attention_fallback:
