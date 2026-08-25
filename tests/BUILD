@@ -282,7 +282,6 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    nopresubmit_oss = "This slow test is enabled in nightly.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
@@ -323,7 +322,6 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    nopresubmit_oss = "This slow test is enabled in nightly.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
@@ -364,7 +362,6 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    nopresubmit_oss = "This slow test is enabled in nightly.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
@@ -405,7 +402,6 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    nopresubmit_oss = "This slow test is enabled in nightly.",
     run_on_accelerators = [
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
