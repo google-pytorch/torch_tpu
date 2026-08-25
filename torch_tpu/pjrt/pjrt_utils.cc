@@ -23,6 +23,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -66,6 +67,7 @@
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_raw_buffer_extension.h"
+#include "xla/pjrt/c/pjrt_c_api_rma_extension.h"
 #include "xla/pjrt/c/pjrt_c_api_status_utils.h"
 #include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -528,6 +530,44 @@ struct RawBufferHolder {
   }
 };
 
+struct RmaHolder {
+  const PJRT_Api* c_api{nullptr};
+  const PJRT_Rma_Extension* extension{nullptr};
+  PJRT_Rma_RemoteWindow* remote_window{nullptr};
+
+  RmaHolder(const PJRT_Api* api, const PJRT_Rma_Extension* ext,
+            PJRT_Rma_RemoteWindow* win)
+      : c_api(api), extension(ext), remote_window(win) {}
+
+  RmaHolder(const RmaHolder&) = delete;
+  RmaHolder& operator=(const RmaHolder&) = delete;
+
+  ~RmaHolder() {
+    if (remote_window && c_api && extension &&
+        extension->PJRT_Rma_DestroyRemoteWindow) {
+      PJRT_Rma_DestroyRemoteWindow_Args args;
+      args.struct_size = PJRT_Rma_DestroyRemoteWindow_Args_STRUCT_SIZE;
+      args.extension_start = nullptr;
+      args.remote_window = remote_window;
+      pjrt::LogFatalIfPjrtError(extension->PJRT_Rma_DestroyRemoteWindow(&args),
+                                c_api);
+    }
+  }
+};
+
+const PJRT_Rma_Extension* FindRmaExtension(
+    const PJRT_Api** out_c_api = nullptr,
+    xla::PjRtCApiClient** out_client = nullptr) {
+  auto* client = PjrtBackend::GetInstance().GetClient();
+  if (!client) return nullptr;
+  auto* capi_client = dynamic_cast<xla::PjRtCApiClient*>(client);
+  if (!capi_client) return nullptr;
+  if (out_c_api) *out_c_api = capi_client->pjrt_c_api();
+  if (out_client) *out_client = capi_client;
+  return capi_client->FindExtension<PJRT_Rma_Extension>(
+      PJRT_Extension_Type::PJRT_Extension_Type_Rma);
+}
+
 // Context structure bundling all components required to initiate and track a
 // raw DMA transfer.
 struct RawBufferContext {
@@ -626,6 +666,7 @@ absl::StatusOr<AsyncDmaResult> TpuAsyncDmaCopyDtoH(
   }
 
   xla::Future<> future = pjrt::ConvertCEventToCppFuture(args.event, ctx.c_api);
+  future.OnReady([hold = ctx.hold](absl::Status) {});
   return AsyncDmaResult{std::move(future), std::move(ctx.hold)};
 }
 
@@ -653,7 +694,252 @@ absl::StatusOr<AsyncDmaResult> TpuAsyncDmaCopyHtoD(
   }
 
   xla::Future<> future = pjrt::ConvertCEventToCppFuture(args.event, ctx.c_api);
+  future.OnReady([hold = ctx.hold](absl::Status) {});
   return AsyncDmaResult{std::move(future), std::move(ctx.hold)};
+}
+
+bool TpuSupportsRma() {
+  const auto* ext = FindRmaExtension();
+  return ext != nullptr && ext->PJRT_Rma_Put != nullptr;
+}
+
+absl::StatusOr<std::string> TpuRmaExportWindow(
+    const DeviceBufferRef& buffer_ref) {
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=PrepareRawBuffer error
+      auto ctx, PrepareRawBuffer(buffer_ref));
+  const PJRT_Api* c_api = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_ExportWindow != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+
+  PJRT_Rma_ExportWindow_Args args;
+  args.struct_size = PJRT_Rma_ExportWindow_Args_STRUCT_SIZE;
+  args.extension_start = nullptr;
+  args.buffer = ctx.raw_buffer;
+  args.serialized_descriptor = nullptr;
+  args.serialized_descriptor_size = 0;
+
+  PJRT_Error* error = rma_ext->PJRT_Rma_ExportWindow(&args);
+  if (error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(error, c_api),
+                         "PJRT Rma_ExportWindow failed");
+  }
+  std::string desc(args.serialized_descriptor, args.serialized_descriptor_size);
+  if (rma_ext->PJRT_Rma_DestroyDescriptor != nullptr) {
+    PJRT_Rma_DestroyDescriptor_Args destroy_args;
+    destroy_args.struct_size = PJRT_Rma_DestroyDescriptor_Args_STRUCT_SIZE;
+    destroy_args.extension_start = nullptr;
+    destroy_args.serialized_descriptor = args.serialized_descriptor;
+    PJRT_Error* destroy_err =
+        rma_ext->PJRT_Rma_DestroyDescriptor(&destroy_args);
+    if (destroy_err != nullptr && c_api != nullptr &&
+        c_api->PJRT_Error_Destroy != nullptr) {
+      PJRT_Error_Destroy_Args err_destroy_args;
+      err_destroy_args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
+      err_destroy_args.extension_start = nullptr;
+      err_destroy_args.error = destroy_err;
+      c_api->PJRT_Error_Destroy(&err_destroy_args);
+    }
+  } else {
+    delete[] args.serialized_descriptor;
+  }
+  return desc;
+}
+
+absl::StatusOr<std::shared_ptr<void>> TpuRmaImportRemoteWindow(
+    std::string_view dst_window_desc) {
+  const PJRT_Api* c_api = nullptr;
+  xla::PjRtCApiClient* capi_client = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api, &capi_client);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_ImportWindow != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+
+  PJRT_Rma_ImportWindow_Args import_args;
+  import_args.struct_size = PJRT_Rma_ImportWindow_Args_STRUCT_SIZE;
+  import_args.extension_start = nullptr;
+  import_args.client = capi_client->pjrt_c_client();
+  import_args.serialized_descriptor = dst_window_desc.data();
+  import_args.serialized_descriptor_size = dst_window_desc.size();
+  import_args.remote_window = nullptr;
+
+  PJRT_Error* import_error = rma_ext->PJRT_Rma_ImportWindow(&import_args);
+  if (import_error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(import_error, c_api),
+                         "PJRT Rma_ImportWindow failed");
+  }
+
+  return std::make_shared<RmaHolder>(c_api, rma_ext, import_args.remote_window);
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaPut(
+    const DeviceBufferRef& src_buffer, int64_t src_byte_offset,
+    const std::shared_ptr<void>& remote_window_handle, int64_t dst_byte_offset,
+    int64_t copy_bytes) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=offset check
+      src_byte_offset >= 0, error::kInvalidArgument)
+      << "src_byte_offset must be non-negative";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=offset check
+      dst_byte_offset >= 0, error::kInvalidArgument)
+      << "dst_byte_offset must be non-negative";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=size check
+      copy_bytes > 0, error::kInvalidArgument)
+      << "copy_bytes must be positive";
+
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=PrepareRawBuffer error
+      auto ctx, PrepareRawBuffer(src_buffer));
+  const PJRT_Api* c_api = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_Put != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+  auto rma_hold = std::static_pointer_cast<RmaHolder>(remote_window_handle);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=valid handle check
+      rma_hold != nullptr && rma_hold->remote_window != nullptr,
+      error::kInvalidArgument)
+      << "Invalid remote window handle in TpuAsyncRmaPut";
+
+  PJRT_Rma_Put_Args put_args;
+  put_args.struct_size = PJRT_Rma_Put_Args_STRUCT_SIZE;
+  put_args.extension_start = nullptr;
+  put_args.src_buffer = ctx.raw_buffer;
+  put_args.src_offset_bytes = src_byte_offset;
+  put_args.dst_remote_window = rma_hold->remote_window;
+  put_args.dst_offset_bytes = dst_byte_offset;
+  put_args.transfer_size_bytes = copy_bytes;
+  put_args.event = nullptr;
+
+  PJRT_Error* put_error = rma_ext->PJRT_Rma_Put(&put_args);
+  if (put_error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(put_error, c_api),
+                         "PJRT Rma_Put failed");
+  }
+
+  xla::Future<> future = pjrt::ConvertCEventToCppFuture(put_args.event, c_api);
+
+  struct CombinedHold {
+    std::shared_ptr<RawBufferHolder> src_hold;
+    std::shared_ptr<RmaHolder> rma_hold;
+  };
+  auto combined_hold =
+      std::make_shared<CombinedHold>(CombinedHold{ctx.hold, rma_hold});
+
+  future.OnReady([hold = combined_hold](absl::Status) {});
+
+  return AsyncDmaResult{std::move(future), std::move(combined_hold)};
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaPut(const DeviceBufferRef& src_buffer,
+                                              int64_t src_byte_offset,
+                                              std::string_view dst_window_desc,
+                                              int64_t dst_byte_offset,
+                                              int64_t copy_bytes) {
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=import error
+      auto rma_hold, TpuRmaImportRemoteWindow(dst_window_desc));
+  return TpuAsyncRmaPut(src_buffer, src_byte_offset, rma_hold, dst_byte_offset,
+                        copy_bytes);
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaSignal(
+    const std::shared_ptr<void>& remote_window_handle, uint64_t signal_id) {
+  const PJRT_Api* c_api = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_Signal != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+  auto rma_hold = std::static_pointer_cast<RmaHolder>(remote_window_handle);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=valid handle check
+      rma_hold != nullptr && rma_hold->remote_window != nullptr,
+      error::kInvalidArgument)
+      << "Invalid remote window handle in TpuAsyncRmaSignal";
+
+  PJRT_Rma_Signal_Args sig_args;
+  sig_args.struct_size = PJRT_Rma_Signal_Args_STRUCT_SIZE;
+  sig_args.extension_start = nullptr;
+  sig_args.dst_remote_window = rma_hold->remote_window;
+  sig_args.signal_id = signal_id;
+  sig_args.event = nullptr;
+
+  PJRT_Error* sig_error = rma_ext->PJRT_Rma_Signal(&sig_args);
+  if (sig_error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(sig_error, c_api),
+                         "PJRT Rma_Signal failed");
+  }
+
+  xla::Future<> future = pjrt::ConvertCEventToCppFuture(sig_args.event, c_api);
+  future.OnReady([hold = rma_hold](absl::Status) {});
+  return AsyncDmaResult{std::move(future), std::move(rma_hold)};
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaSignal(
+    std::string_view dst_window_desc, uint64_t signal_id) {
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=import error
+      auto rma_hold, TpuRmaImportRemoteWindow(dst_window_desc));
+  return TpuAsyncRmaSignal(rma_hold, signal_id);
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaWaitSignal(
+    const DeviceBufferRef& local_buffer, uint64_t signal_id) {
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=PrepareRawBuffer error
+      auto ctx, PrepareRawBuffer(local_buffer));
+  const PJRT_Api* c_api = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_WaitSignal != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+
+  PJRT_Rma_WaitSignal_Args wait_args;
+  wait_args.struct_size = PJRT_Rma_WaitSignal_Args_STRUCT_SIZE;
+  wait_args.extension_start = nullptr;
+  wait_args.local_buffer = ctx.raw_buffer;
+  wait_args.signal_id = signal_id;
+  wait_args.event = nullptr;
+  wait_args.local_window_descriptor = nullptr;
+  wait_args.local_window_descriptor_size = 0;
+
+  PJRT_Error* wait_error = rma_ext->PJRT_Rma_WaitSignal(&wait_args);
+  if (wait_error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(wait_error, c_api),
+                         "PJRT Rma_WaitSignal failed");
+  }
+
+  xla::Future<> future = pjrt::ConvertCEventToCppFuture(wait_args.event, c_api);
+  future.OnReady([hold = ctx.hold](absl::Status) {});
+  return AsyncDmaResult{std::move(future), std::move(ctx.hold)};
+}
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaWaitSignal(
+    std::string_view local_window_desc, uint64_t signal_id) {
+  const PJRT_Api* c_api = nullptr;
+  const auto* rma_ext = FindRmaExtension(&c_api);
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=rma support check
+      rma_ext != nullptr && rma_ext->PJRT_Rma_WaitSignal != nullptr,
+      error::kUnavailable)
+      << "PJRT RMA extension not supported.";
+
+  PJRT_Rma_WaitSignal_Args wait_args;
+  wait_args.struct_size = PJRT_Rma_WaitSignal_Args_STRUCT_SIZE;
+  wait_args.extension_start = nullptr;
+  wait_args.local_buffer = nullptr;
+  wait_args.signal_id = signal_id;
+  wait_args.event = nullptr;
+  wait_args.local_window_descriptor = local_window_desc.data();
+  wait_args.local_window_descriptor_size = local_window_desc.size();
+
+  PJRT_Error* wait_error = rma_ext->PJRT_Rma_WaitSignal(&wait_args);
+  if (wait_error) {
+    return AdaptXlaError(pjrt::PjrtErrorToStatus(wait_error, c_api),
+                         "PJRT Rma_WaitSignal failed");
+  }
+
+  xla::Future<> future = pjrt::ConvertCEventToCppFuture(wait_args.event, c_api);
+  return AsyncDmaResult{std::move(future), nullptr};
 }
 
 std::string ToString(const xla::PjRtBuffer& buffer) {

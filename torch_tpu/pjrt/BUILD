@@ -149,6 +149,7 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
         "@xla//xla/pjrt/c:pjrt_c_api_helpers",
         "@xla//xla/pjrt/c:pjrt_c_api_raw_buffer_extension_hdrs",
+        "@xla//xla/pjrt/c:pjrt_c_api_rma_extension_hdrs",
         "@xla//xla/pjrt/c:pjrt_c_api_status_utils",
         "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
         "@xla//xla/service:collective_ops_utils",

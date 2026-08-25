@@ -34,6 +34,7 @@ torch_tpu_cc_library(
         "//torch_tpu/eager:structured_log_buffer",
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/pjrt:pjrt_utils",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@xla//xla:future",
     ],

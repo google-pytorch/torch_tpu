@@ -227,8 +227,9 @@ def _run_window_multi_tpu_peer_transfer_test() -> None:
   if rank > 0:
     # Wait for RMA signal and payload arrival from predecessor rank (rank - 1).
     recv_work = win.wait_signal(peer_rank=rank - 1, async_op=True)
-    if recv_work is not None:
-      recv_work.wait()
+
+  if recv_work is not None:
+    recv_work.wait()
     expected = torch.full(
         (num_elements,), float((rank - 1) * 10 + 1), dtype=torch.float32
     )
@@ -317,15 +318,17 @@ def _run_window_signal_wait_test() -> None:
   win = dist._new_window(tpu_tensor)
 
   # 2. Coordinate pipeline signaling from rank 0 -> 1 -> 2 -> ... -> world_size - 1.
-  if rank > 0:
-    wait_work = win.wait_signal(peer_rank=rank - 1, async_op=True)
-    if wait_work is not None:
-      wait_work.wait()
-
+  sig_work = None
+  wait_work = None
   if rank < world_size - 1:
     sig_work = win.signal(peer_rank=rank + 1, async_op=True)
-    if sig_work is not None:
-      sig_work.wait()
+  if rank > 0:
+    wait_work = win.wait_signal(peer_rank=rank - 1, async_op=True)
+
+  if wait_work is not None:
+    wait_work.wait()
+  if sig_work is not None:
+    sig_work.wait()
 
   # 3. Clean up and synchronize across ranks.
   win.tensor_deregister()

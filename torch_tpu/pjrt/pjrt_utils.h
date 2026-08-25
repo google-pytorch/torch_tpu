@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
@@ -86,6 +87,50 @@ absl::StatusOr<AsyncDmaResult> TpuAsyncDmaCopyDtoH(
 absl::StatusOr<AsyncDmaResult> TpuAsyncDmaCopyHtoD(
     const void* src_host_ptr, const DeviceBufferRef& dst_buffer,
     int64_t dst_byte_offset, int64_t copy_bytes);
+
+// Returns true if the active PJRT plugin supports the RMA extension.
+bool TpuSupportsRma();
+
+// Exports a registered TPU device buffer as an opaque RMA window descriptor
+// string for cross-process / cross-rank remote memory access.
+absl::StatusOr<std::string> TpuRmaExportWindow(
+    const DeviceBufferRef& buffer_ref);
+
+// Imports a remote RMA window descriptor and returns a cached RAII handle.
+absl::StatusOr<std::shared_ptr<void>> TpuRmaImportRemoteWindow(
+    std::string_view dst_window_desc);
+
+// Performs true one-sided asynchronous non-blocking RMA Put from a local TPU
+// device buffer into a remote TPU device window descriptor at a byte offset
+// over ICI using the PjRt RMA C API extension.
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaPut(const DeviceBufferRef& src_buffer,
+                                              int64_t src_byte_offset,
+                                              std::string_view dst_window_desc,
+                                              int64_t dst_byte_offset,
+                                              int64_t copy_bytes);
+
+// Performs true one-sided asynchronous non-blocking RMA Put using a
+// pre-imported cached remote window handle.
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaPut(
+    const DeviceBufferRef& src_buffer, int64_t src_byte_offset,
+    const std::shared_ptr<void>& remote_window_handle, int64_t dst_byte_offset,
+    int64_t copy_bytes);
+
+// Sends a one-sided RMA signal to a remote TPU window.
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaSignal(
+    std::string_view dst_window_desc, uint64_t signal_id);
+
+// Sends a one-sided RMA signal to a remote TPU window using a pre-imported
+// cached remote window handle.
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaSignal(
+    const std::shared_ptr<void>& remote_window_handle, uint64_t signal_id);
+
+// Waits asynchronously on a local RMA window for a matching signal.
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaWaitSignal(
+    const DeviceBufferRef& local_buffer, uint64_t signal_id);
+
+absl::StatusOr<AsyncDmaResult> TpuAsyncRmaWaitSignal(
+    std::string_view local_window_desc, uint64_t signal_id);
 
 std::string ToString(const xla::PjRtBuffer& buffer);
 

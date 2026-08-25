@@ -17,13 +17,15 @@
 #ifndef TORCH_TPU_DISTRIBUTED_WINDOW_TPU_H_
 #define TORCH_TPU_DISTRIBUTED_WINDOW_TPU_H_
 
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "ATen/core/TensorBody.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "c10/util/intrusive_ptr.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
@@ -66,39 +68,13 @@ class WorkTPU : public c10d::Work {
 // WindowTPU: One-sided RMA communication and zero-copy DMA window for TPUs
 // conforming to PyTorch's native c10d::Window interface.
 //
-// Communication Modalities:
-// 1. Local PCIe Transfers (Host <-> Device): Implemented as true one-sided
-//    asynchronous hardware DMA (via PJRT RawBuffer extension).
-// 2. Peer P2P Transfers (ICI Cross-Chip): Currently emulated via two-sided
-//    ProcessGroup send/recv rendezvous.
-//
-// Downsides of Emulating One-Way DMA with Two-Way Send/Recv:
-// - Active Receiver CPU Overhead: The destination rank's CPU must actively
-//   participate by calling wait_signal() (which calls CrossHostReceiveBuffers)
-//   to allocate placeholder buffers and publish descriptors to c10d::Store.
-// - Coupled Synchronization & Data Movement: put() only initiates a send; data
-//   is received only when wait_signal() executes, preventing pure decoupled
-//   atomic signaling.
-// - Offset Handling & Lack of P2P Offset Support: This implementation does
-//   not support non-zero targetOffsetNelems for remote peer P2P transfers (and
-//   throws an error if requested). Supporting arbitrary offsets in two-sided
-//   emulation requires allocating temporary staging buffers in HBM and
-//   performing a secondary Device-to-Device slice copy on the receiver,
-//   whereas true one-sided RMA writes directly to the target HBM offset in a
-//   single hardware pass with zero staging memory.
-// - Rendezvous Deadlock Risk: Because CrossHostSendBuffers blocks on descriptor
-//   availability in c10d::Store, circular or un-synchronized P2P patterns can
-//   deadlock if send and recv calls are not strictly sequenced.
-// - Increased Latency & Coordination Overhead: Incurs host-level c10d::Store
-//   TCP round-trips to exchange transfer descriptors on the critical path
-//   before hardware ICI DMA can initiate, as well as receiver thread
-//   synchronization delays and dynamic buffer allocation/binding overhead
-//   (compared to true hardware DMA which programs DMA registers in < 1 us
-//   directly against pre-registered static memory).
-//
-// TODO(cbasile): Upgrade peer P2P transfers to true one-sided hardware RDMA
-// over ICI once the PJRT C API exports a native RMA / direct cross-chip DMA
-// extension, allowing direct HBM writes without receiver CPU involvement.
+// Transfer Modalities:
+// 1. Local PCIe DMA (Host <-> Device): One-sided asynchronous DMA transfers
+//    between Host RAM and TPU HBM using the PJRT RawBuffer C API extension.
+// 2. Cross-Chip Inter-Chip Interconnect (ICI) One-Sided RMA: True one-sided
+//    direct hardware RDMA transfers into destination HBM at arbitrary element
+//    offsets and decoupled signaling using the PJRT RMA C API extension,
+//    bypassing remote CPU involvement.
 class WindowTPU : public c10d::Window {
  public:
   explicit WindowTPU(c10::intrusive_ptr<c10d::Backend> backend,
@@ -131,20 +107,36 @@ class WindowTPU : public c10d::Window {
   at::Tensor map_remote_tensor(int64_t rank) override;
   c10d::WindowAttr get_attr(int64_t peerRank) override;
 
+  // Exchanges and caches peer RMA window descriptors for cross-rank transfers.
+  void set_peer_window_descriptors(
+      const absl::flat_hash_map<int64_t, std::string>& peer_window_descriptors);
+  const std::optional<std::string>& local_window_descriptor() const {
+    return local_window_descriptor_;
+  }
+
  private:
-  // Internal helper methods for the 3 distinct Put transfer modalities.
+  // Internal helper methods for the Put transfer modalities.
   c10::intrusive_ptr<c10d::Work> PutDeviceToHostDma(const at::Tensor& tensor,
                                                     int64_t targetOffsetNelems,
                                                     bool asyncOp);
   c10::intrusive_ptr<c10d::Work> PutHostToDeviceDma(const at::Tensor& tensor,
                                                     int64_t targetOffsetNelems,
                                                     bool asyncOp);
+  c10::intrusive_ptr<c10d::Work> PutPeerRma(const at::Tensor& tensor,
+                                            int64_t dstRank,
+                                            int64_t targetOffsetNelems,
+                                            bool asyncOp);
   c10::intrusive_ptr<c10d::Work> PutPeerP2P(const at::Tensor& tensor,
                                             int64_t dstRank, bool asyncOp);
 
   c10::intrusive_ptr<c10d::Backend> backend_;
   int64_t local_rank_{0};
   std::optional<at::Tensor> registered_tensor_;
+  std::optional<std::string> local_window_descriptor_;
+  absl::flat_hash_map<int64_t, std::string> peer_window_descriptors_;
+  absl::flat_hash_map<int64_t, std::shared_ptr<void>> peer_remote_windows_;
+  absl::flat_hash_map<int64_t, uint64_t> peer_signal_seq_;
+  absl::flat_hash_map<int64_t, uint64_t> peer_wait_seq_;
 };
 
 }  // namespace torch_tpu
