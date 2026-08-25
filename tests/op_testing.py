@@ -77,7 +77,9 @@ Tolerance = test_utils.Tolerance
 AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
 
 FilterFn = Callable[[OpInfo, torch.Tensor, Sequence[Any]], str | None]
-MarkDynamicFn = Callable[[int, OpInfo, torch.Tensor, Sequence[Any]], None]
+MarkDynamicFn = Callable[
+    [int, OpInfo, torch.Tensor, Sequence[Any], Mapping[str, Any] | None], None
+]
 
 
 def _validate_tolerances(
@@ -3167,7 +3169,11 @@ class OpInfoTestBase(
       seed = seed if seed > 0 else (time.time_ns() % 100000)
       print(f">>>> Reproduce using `--check_dynamism_using_seed={seed}`")
       self.dynamism_mark_dynamic_fn(
-          seed, op, device_op_input.input_value, device_op_input.args
+          seed,
+          op,
+          device_op_input.input_value,
+          device_op_input.args,
+          device_op_input.kwargs,
       )
 
     if compute_grad:

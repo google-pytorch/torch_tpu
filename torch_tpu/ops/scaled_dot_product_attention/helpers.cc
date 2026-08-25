@@ -28,6 +28,7 @@
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch_tpu/common/dimension_types.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 
@@ -37,6 +38,9 @@ mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op, int batch_size,
                                 int num_batch_dims) {
   const mlir::RankedTensorType type = GetTensorTypeOrDie(mlir_op);
   int rank = type.getRank();
+  if (num_batch_dims == 1) {
+    return mlir_op;
+  }
   int num_non_batch_dims = rank - num_batch_dims;
   Dimensions new_dims(num_non_batch_dims + 1);
   new_dims[0] = batch_size;
@@ -48,6 +52,10 @@ mlir::MlirOp flatten_batch_dims(mlir::MlirOp mlir_op, int batch_size,
 
 mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
                                   absl::Span<const int64_t> shape) {
+  const mlir::RankedTensorType type = GetTensorTypeOrDie(mlir_op);
+  if (type.getRank() == shape.size()) {
+    return mlir_op;
+  }
   return mlir::stablehlo::Reshape(mlir_op, shape);
 }
 
@@ -55,7 +63,13 @@ mlir::MlirOp unflatten_batch_dims(mlir::MlirOp mlir_op,
                                   mlir::MlirOp mlir_op_with_target_dims) {
   const mlir::RankedTensorType type =
       GetTensorTypeOrDie(mlir_op_with_target_dims);
-  return mlir::stablehlo::Reshape(mlir_op, type.getShape());
+  if (GetTensorTypeOrDie(mlir_op).getRank() == type.getRank()) {
+    return mlir_op;
+  }
+  auto result_type = mlir::stablehlo::getRankedTensorType(
+      GetDimensions(mlir_op_with_target_dims),
+      GetTensorTypeOrDie(mlir_op).getElementType());
+  return mlir::stablehlo::Reshape(result_type, mlir_op);
 }
 
 int get_batch_size(absl::Span<const int64_t> shape) {

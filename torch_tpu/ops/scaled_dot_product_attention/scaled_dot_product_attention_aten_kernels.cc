@@ -49,6 +49,7 @@
 #include "torch_tpu/common/fixed_size_span.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/eager/op_dispatcher.h"
+#include "torch_tpu/eager/tensor_to_buffer.h"
 #include "torch_tpu/ops/custom_kernels.h"
 #include "torch_tpu/ops/macros/kernel.h"
 #include "torch_tpu/ops/nullary_aten_kernels.h"
@@ -361,13 +362,26 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         bool math_enabled = ctx.userEnabledMathSDP();
         bool overrideable_enabled = ctx.userEnabledOverrideableSDP();
 
+        bool is_dynamic = false;
+        if (auto buf = GetBuffer(query);
+            buf.ok() && buf->on_device_shape_is_dynamic()) {
+          is_dynamic = true;
+        } else if (auto buf = GetBuffer(key);
+                   buf.ok() && buf->on_device_shape_is_dynamic()) {
+          is_dynamic = true;
+        } else if (auto buf = GetBuffer(value);
+                   buf.ok() && buf->on_device_shape_is_dynamic()) {
+          is_dynamic = true;
+        }
+
         bool consistent_ranks = query.ndimension() == key.ndimension() &&
                                 query.ndimension() == value.ndimension();
         bool has_batch = query.ndimension() >= 4;
         bool has_mask = attn_mask.has_value();
         bool has_dropout = dropout_p != 0.0;
 
-        if (flash_enabled && c10::get_privateuse1_backend() != "xla_cpu") {
+        if (flash_enabled && !is_dynamic &&
+            c10::get_privateuse1_backend() != "xla_cpu") {
           bool supported_flash_dtype =
               (query.scalar_type() == at::ScalarType::Float ||
                query.scalar_type() == at::ScalarType::BFloat16);

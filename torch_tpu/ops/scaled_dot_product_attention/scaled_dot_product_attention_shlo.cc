@@ -112,16 +112,50 @@ mlir::MlirOp GetNegInf(mlir::MlirBuilder& builder,
 }
 
 mlir::MlirOp GetCausalMask(mlir::MlirBuilder& builder,
-                           mlir::ArrayRef<int64_t> shape) {
-  auto iota_type =
-      mlir::RankedTensorType::get(shape, builder.getOpBuilder().getI32Type());
-  mlir::MlirOp iota_i = mlir::stablehlo::Iota(builder, iota_type,
-                                              /*dimension=*/shape.size() - 2);
-  mlir::MlirOp iota_j = mlir::stablehlo::Iota(builder, iota_type,
-                                              /*dimension=*/shape.size() - 1);
+                           mlir::stablehlo::DimensionInfo seq_len_q,
+                           mlir::stablehlo::DimensionInfo seq_len_kv) {
+  auto static_type = mlir::RankedTensorType::get(
+      {seq_len_q.size, seq_len_kv.size}, builder.getOpBuilder().getI32Type());
+  mlir::MlirOp iota_i =
+      mlir::stablehlo::Iota(builder, static_type, /*dimension=*/0);
+  mlir::MlirOp iota_j =
+      mlir::stablehlo::Iota(builder, static_type, /*dimension=*/1);
 
-  return mlir::stablehlo::Compare(iota_i, iota_j,
-                                  mlir::stablehlo::ComparisonDirection::LT);
+  mlir::MlirOp q_len =
+      MakeScalarConstant(builder, static_cast<int32_t>(seq_len_q.size),
+                         builder.getOpBuilder().getI32Type());
+  if (seq_len_q.boundOp.has_value()) {
+    mlir::MlirOp bound_op_q(builder, *seq_len_q.boundOp);
+    q_len = mlir::stablehlo::GetDimensionSize(bound_op_q, seq_len_q.boundOpDim);
+  }
+
+  mlir::MlirOp kv_len =
+      MakeScalarConstant(builder, static_cast<int32_t>(seq_len_kv.size),
+                         builder.getOpBuilder().getI32Type());
+  if (seq_len_kv.boundOp.has_value()) {
+    mlir::MlirOp bound_op_kv(builder, *seq_len_kv.boundOp);
+    kv_len =
+        mlir::stablehlo::GetDimensionSize(bound_op_kv, seq_len_kv.boundOpDim);
+  }
+
+  // Bottom-right alignment: offset = seq_len_kv - seq_len_q.
+  // Query position i attends to key position j <= i + offset (mask where i +
+  // offset < j).
+  mlir::MlirOp offset = mlir::stablehlo::Subtract(kv_len, q_len);
+  mlir::MlirOp offset_bcast = mlir::stablehlo::BroadcastInDim(
+      static_type, offset, /*broadcast_dimensions=*/{});
+  mlir::MlirOp shifted_i = mlir::stablehlo::Add(iota_i, offset_bcast);
+
+  mlir::MlirOp mask = mlir::stablehlo::Compare(
+      shifted_i, iota_j, mlir::stablehlo::ComparisonDirection::LT);
+
+  if (seq_len_q.boundOp.has_value()) {
+    mask = mlir::stablehlo::SetDimensionSize(mask, q_len, /*dimension=*/0);
+  }
+  if (seq_len_kv.boundOp.has_value()) {
+    mask = mlir::stablehlo::SetDimensionSize(mask, kv_len, /*dimension=*/1);
+  }
+  return mask;
 }
 
 enum class SdpaPromotionType {
@@ -199,18 +233,41 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     bool is_causal, std::optional<double> scale) {
   auto query_tensor_type = GetTensorTypeOrDie(query);
   auto key_tensor_type = GetTensorTypeOrDie(key);
-  int rank = query_tensor_type.getRank();
-  int batch_size = get_batch_size(query_tensor_type.getShape());
-  int64_t head_dim = query_tensor_type.getDimSize(rank - 1);
-  int64_t seq_len_kv = key_tensor_type.getDimSize(rank - 2);
-  int64_t num_head_q = query_tensor_type.getDimSize(rank - 3);
-  int64_t num_head_kv = key_tensor_type.getDimSize(rank - 3);
+  auto value_tensor_type = GetTensorTypeOrDie(value);
+  int q_rank = query_tensor_type.getRank();
+  int k_rank = key_tensor_type.getRank();
+  int v_rank = value_tensor_type.getRank();
+  int q_batch_size = get_batch_size(query_tensor_type.getShape());
+  int k_batch_size = get_batch_size(key_tensor_type.getShape());
+  int v_batch_size = get_batch_size(value_tensor_type.getShape());
+  int64_t head_dim = query_tensor_type.getDimSize(q_rank - 1);
+  int64_t seq_len_kv = key_tensor_type.getDimSize(k_rank - 2);
+  int64_t num_head_q = query_tensor_type.getDimSize(q_rank - 3);
+  int64_t num_head_kv = key_tensor_type.getDimSize(k_rank - 3);
   auto element_type =
       mlir::cast<mlir::FloatType>(query_tensor_type.getElementType());
 
-  mlir::MlirOp query_4d = flatten_batch_dims(query, batch_size, rank - 3);
-  mlir::MlirOp key_4d = flatten_batch_dims(key, batch_size, rank - 3);
-  mlir::MlirOp value_4d = flatten_batch_dims(value, batch_size, rank - 3);
+  mlir::MlirOp query_4d = flatten_batch_dims(query, q_batch_size, q_rank - 3);
+  mlir::MlirOp key_4d = flatten_batch_dims(key, k_batch_size, k_rank - 3);
+  mlir::MlirOp value_4d = flatten_batch_dims(value, v_batch_size, v_rank - 3);
+
+  if (GetTensorTypeOrDie(query_4d).getDimSize(0) == 1 &&
+      GetTensorTypeOrDie(key_4d).getDimSize(0) != 1) {
+    auto target_shape = GetDimensions(query_4d);
+    target_shape[0] = GetDimensions(key_4d)[0];
+    TT_ASSIGN_OR_RETURN(
+        query_4d, BroadcastIfNeeded(query_4d, target_shape, {0, 1, 2, 3}));
+  } else if (GetTensorTypeOrDie(key_4d).getDimSize(0) == 1 &&
+             GetTensorTypeOrDie(query_4d).getDimSize(0) != 1) {
+    auto target_k_shape = GetDimensions(key_4d);
+    target_k_shape[0] = GetDimensions(query_4d)[0];
+    TT_ASSIGN_OR_RETURN(
+        key_4d, BroadcastIfNeeded(key_4d, target_k_shape, {0, 1, 2, 3}));
+    auto target_v_shape = GetDimensions(value_4d);
+    target_v_shape[0] = GetDimensions(query_4d)[0];
+    TT_ASSIGN_OR_RETURN(
+        value_4d, BroadcastIfNeeded(value_4d, target_v_shape, {0, 1, 2, 3}));
+  }
 
   int64_t head_count_ratio = 1;
   if (num_head_kv < num_head_q) {
@@ -225,8 +282,13 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
                           mlir::stablehlo::DimensionInfo{head_count_ratio});
       TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_input,
                           BroadcastIfNeeded(input, target_shape, {0, 1, 3, 4}));
-      return mlir::stablehlo::Reshape(
-          broadcasted_input, {batch_size, num_head_q, seq_len_kv, head_dim});
+      mlir::stablehlo::Dimensions reshape_shape = {
+          GetDimensions(input)[0], mlir::stablehlo::DimensionInfo{num_head_q},
+          mlir::stablehlo::DimensionInfo{seq_len_kv},
+          mlir::stablehlo::DimensionInfo{head_dim}};
+      auto result_type = mlir::stablehlo::getRankedTensorType(
+          reshape_shape, GetTensorTypeOrDie(input).getElementType());
+      return mlir::stablehlo::Reshape(result_type, broadcasted_input);
     };
     TT_ASSIGN_OR_RETURN(key_4d, replicate(key_4d));
     TT_ASSIGN_OR_RETURN(value_4d, replicate(value_4d));
@@ -259,8 +321,11 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
 
   mlir::MlirOp masked_attn_logits = scaled_attn_logits;
   if (is_causal) {
-    auto shape = GetTensorTypeOrDie(scaled_attn_logits).getShape();
-    mlir::MlirOp causal_mask = GetCausalMask(builder, shape);
+    auto q_dims = GetDimensions(query_4d);
+    auto k_dims = GetDimensions(key_4d);
+    mlir::MlirOp causal_mask_2d = GetCausalMask(builder, q_dims[2], k_dims[2]);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp causal_mask,
+                        BroadcastIfNeeded(causal_mask_2d, scaled_attn_logits));
     masked_attn_logits = mlir::stablehlo::Select(causal_mask, mask_out_value,
                                                  scaled_attn_logits);
   } else if (mask) {
@@ -273,18 +338,20 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
 
     int64_t mask_rank = GetTensorTypeOrDie(*mask).getRank();
     mlir::MlirOp flat_mask =
-        mask_rank > 4 ? flatten_batch_dims(*mask, batch_size, rank - 3) : *mask;
-    TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_mask,
-                        BroadcastIfNeeded(flat_mask, scaled_attn_logits));
-
+        mask_rank > 4 ? flatten_batch_dims(*mask, q_batch_size, q_rank - 3)
+                      : *mask;
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp min_val_bcast,
+                        BroadcastIfNeeded(min_val, flat_mask));
     // We clamp the mask so that it is finite. This avoids the issue where a
     // whole row is masked out resulting in a divide by zero in the softmax.
     // The reason this works is because when we shift the logits by the max
     // value the result is that the entire row will then just be zero ->
     // exp(0) = 1.
-    mlir::MlirOp clamped_mask =
-        mlir::stablehlo::Max(broadcasted_mask, mask_out_value);
-    masked_attn_logits = mlir::stablehlo::Add(scaled_attn_logits, clamped_mask);
+    mlir::MlirOp clamped_mask = mlir::stablehlo::Max(flat_mask, min_val_bcast);
+    TT_ASSIGN_OR_RETURN(
+        auto bcast_pair,
+        ApplyBroadcastIfNeeded({scaled_attn_logits, clamped_mask}));
+    masked_attn_logits = mlir::stablehlo::Add(bcast_pair[0], bcast_pair[1]);
   }
 
   auto max_reduce_builder = [element_type](mlir::RegionBuilder& rb) {
@@ -297,9 +364,11 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
       mlir::stablehlo::Reduce(builder, {masked_attn_logits},
                               /*init_value=*/{minus_inf}, max_reduce_builder,
                               /*dimensions=*/{3})[0];
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp max_logits_broadcasted,
-                      BroadcastIfNeeded(max_logits, masked_attn_logits,
-                                        /*broadcast_dimensions=*/{0, 1, 2}));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_max_logits,
+                      Unsqueeze(max_logits, 3));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp max_logits_broadcasted,
+      BroadcastIfNeeded(unsqueezed_max_logits, masked_attn_logits));
   mlir::MlirOp shifted_attn_logits =
       mlir::stablehlo::Subtract(masked_attn_logits, max_logits_broadcasted);
 
@@ -389,8 +458,9 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   // Softmax along the last dimension (Lk)
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
   mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_exp, Unsqueeze(sum_exp, 3));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
-                      BroadcastIfNeeded(sum_exp, exp_val, {0, 1, 2}));
+                      BroadcastIfNeeded(unsqueezed_sum_exp, exp_val));
   mlir::MlirOp softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
 
   if (promotion_type == SdpaPromotionType::kSoftmaxOnly && is_half_precision) {
@@ -579,10 +649,11 @@ ScaledDotProductFusedAttentionShloBackward(
     // shifted_attn_logits has shape [B, H, Lq, Lk].
     mlir::MlirOp sum_exp_converted =
         mlir::stablehlo::ConvertElementType(sum_exp_3d, element_type);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_sum_exp,
+                        Unsqueeze(sum_exp_converted, 3));
     TT_ASSIGN_OR_RETURN(
         mlir::MlirOp sum_exp_broadcasted,
-        BroadcastIfNeeded(sum_exp_converted, shifted_attn_logits,
-                          /*broadcast_dimensions=*/{0, 1, 2}));
+        BroadcastIfNeeded(unsqueezed_sum_exp, shifted_attn_logits));
 
     // Softmax along the last dimension (Lk)
     mlir::MlirOp exp_val = mlir::stablehlo::Exp(shifted_attn_logits);
@@ -610,9 +681,10 @@ ScaledDotProductFusedAttentionShloBackward(
     mlir::MlirOp s_mul_ds = mlir::stablehlo::Mul(softmax, grad_softmax);
     mlir::MlirOp rowsum_s_mul_ds =
         SumReduce(builder, s_mul_ds, /*dimension=*/3);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_rowsum,
+                        Unsqueeze(rowsum_s_mul_ds, 3));
     TT_ASSIGN_OR_RETURN(mlir::MlirOp rowsum_broadcasted,
-                        BroadcastIfNeeded(rowsum_s_mul_ds, softmax,
-                                          /*broadcast_dimensions=*/{0, 1, 2}));
+                        BroadcastIfNeeded(unsqueezed_rowsum, softmax));
     mlir::MlirOp shifted_ds =
         mlir::stablehlo::Subtract(grad_softmax, rowsum_broadcasted);
     mlir::MlirOp grad_p = mlir::stablehlo::Mul(softmax, shifted_ds);
@@ -624,8 +696,8 @@ ScaledDotProductFusedAttentionShloBackward(
         /*rhs_contracting_dimensions=*/{2});
     mlir::MlirOp grad_query_4d =
         mlir::stablehlo::DotGeneral(grad_p, key_4d, dq_dot_dims);
-    mlir::MlirOp broadcasted_scale_for_query = mlir::stablehlo::Broadcast(
-        scale_value, GetTensorTypeOrDie(grad_query_4d).getShape());
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_scale_for_query,
+                        BroadcastIfNeeded(scale_value, grad_query_4d));
     mlir::MlirOp scaled_grad_query_4d =
         mlir::stablehlo::Mul(grad_query_4d, broadcasted_scale_for_query);
 
@@ -636,8 +708,8 @@ ScaledDotProductFusedAttentionShloBackward(
         /*rhs_contracting_dimensions=*/{2});
     mlir::MlirOp grad_key_4d =
         mlir::stablehlo::DotGeneral(grad_p, query_4d, dk_dot_dims);
-    mlir::MlirOp broadcasted_scale_for_key = mlir::stablehlo::Broadcast(
-        scale_value, GetTensorTypeOrDie(grad_key_4d).getShape());
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_scale_for_key,
+                        BroadcastIfNeeded(scale_value, grad_key_4d));
     mlir::MlirOp scaled_grad_key_4d =
         mlir::stablehlo::Mul(grad_key_4d, broadcasted_scale_for_key);
 
