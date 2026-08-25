@@ -133,7 +133,6 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
     },
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -254,7 +253,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "alltoall_collective_test",
     srcs = ["alltoall_collective_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 4,
     tags = if_oss(
         ["exclusive"],
@@ -286,7 +284,6 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 8,
     tags = if_oss(
         ["exclusive"],
@@ -343,7 +340,6 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -396,7 +392,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "scatter_test",
     srcs = ["scatter_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
     tags = if_oss(
         ["exclusive"],
         [],
@@ -425,7 +420,6 @@ torch_tpu_py_test(
         "--test_mode=tpu",
     ],
     env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -512,7 +506,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dtensor_test",
     srcs = ["dtensor_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 10,
     tags = if_oss(
         ["exclusive"],
@@ -574,7 +567,6 @@ torch_tpu_py_test(
         "--xla_jf_conv_full_precision",  # Use highest precision for matmuls for tests only.
     ],
     main = "fairscale_tp_test.py",
-    notest_oss = "fix hang in OSS",  # TODO
     tags = if_oss(
         ["exclusive"],
         [],
@@ -601,7 +593,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "dcp_test",
     srcs = ["dcp_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 2,
     tags = if_oss(
         ["exclusive"],
@@ -699,7 +690,6 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "",
     },
-    notest_oss = "TODO(b/537411907): Re-enable in OSS once fixed.",
     tags = if_oss(
         # In OSS, we have to run the test exclusively to avoid the
         # "TPU initialization failed ... Device or resource busy" error.
@@ -724,7 +714,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_collective_ops_test",
     srcs = ["split_collective_ops_test.py"],
-    notest_oss = "TODO(b/537411907): Re-enable in OSS once fixed.",
     tags = if_oss(
         ["exclusive"],
         [],

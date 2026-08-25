@@ -206,7 +206,6 @@ torch_tpu_py_test(
     size = "large",
     timeout = "long",
     srcs = ["compile_with_distributed_test.py"],
-    notest_oss = "Disabled in OSS due to infra limitations on distributed tests",
     shard_count = 6,
     tags = [
         "requires-accel-hbm",
