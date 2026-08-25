@@ -1316,7 +1316,8 @@ torch_tpu_py_test(
     shard_count = 4,
     tags = [
         "nosan",  # *san builds are low-value for error tests.
-        "requires-gpu-nvidia",
+        # The golden reference for GPU tests is on sm90, so we should test with the same hardware.
+        "requires-gpu-sm90",
         "wheel_test_excluded",
     ],
     deps = [
