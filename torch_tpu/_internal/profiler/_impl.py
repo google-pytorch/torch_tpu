@@ -21,10 +21,13 @@ import socket
 import threading
 
 from absl import logging
-from torch_tpu._internal.profiler._profiler_backend import start_profiler_server
-from torch_tpu._internal.profiler._profiler_backend import start_trace as start_trace_backend
-from torch_tpu._internal.profiler._profiler_backend import stop_profiler_server
-from torch_tpu._internal.profiler._profiler_backend import stop_trace as stop_trace_backend
+
+
+def _get_profiler_backend():
+  # pylint: disable-next=g-import-not-at-top
+  from torch_tpu._internal.profiler import _profiler_backend
+
+  return _profiler_backend
 
 
 _profiler_server = None
@@ -59,7 +62,7 @@ def start_server(port: int):
   global _profiler_server
   if _profiler_server is not None:
     raise ValueError('Only one profiler server can be active at a time.')
-  start_profiler_server(port)
+  _get_profiler_backend().start_profiler_server(port)
   _profiler_server = port
   return port
 
@@ -74,7 +77,7 @@ def stop_server():
   if _profiler_server is None:
     raise ValueError('No active profiler server.')
   _profiler_server = None
-  stop_profiler_server()
+  _get_profiler_backend().stop_profiler_server()
 
 
 class _ProfileState:
@@ -152,7 +155,7 @@ def start_trace(
             f'worker_rank cannot contain path separators: {worker_rank}'
         )
 
-    start_trace_backend(str(log_dir), options)
+    _get_profiler_backend().start_trace(str(log_dir), options)
     _profile_state.profile_session = True
     _profile_state.log_dir = str(log_dir)
     _profile_state.worker_rank = worker_rank
@@ -183,7 +186,7 @@ def stop_trace() -> None:
     final_file = os.path.join(plugin_dir, filename)
 
     try:
-      stop_trace_backend(final_file)
+      _get_profiler_backend().stop_trace(final_file)
       logging.info('profiler saved in %s', final_file)
     finally:
       _profile_state.reset()

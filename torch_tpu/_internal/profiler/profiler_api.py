@@ -21,7 +21,6 @@ import os
 from typing import Any
 import warnings
 
-from torch_tpu._internal.profiler import _profiler_backend
 import torch_tpu._internal.profiler._impl as profiler
 from torch_tpu._internal.profiler._impl import start_server
 from torch_tpu._internal.profiler._impl import stop_server
@@ -159,6 +158,9 @@ def profile(
   profiler.start_trace(
       log_dir, profiler_options=options, worker_rank=worker_rank
   )
+  # pylint: disable-next=g-import-not-at-top
+  from torch_tpu._internal.profiler import _profiler_backend
+
   # pylint: disable-next=protected-access
   _profiler_backend._push_enable_profiler()
 
@@ -174,7 +176,8 @@ def register_kineto_backend() -> None:
   """Explicitly registers the Kineto backend for TPU profiling."""
   # Registration happens via static initializers when the module is imported.
   # This function serves as an explicit entry point to avoid unused imports.
-  pass
+  # pylint: disable-next=g-import-not-at-top,unused-import
+  from torch_tpu._internal.profiler import _profiler_backend  # noqa: F401
 
 
 __all__ = [
