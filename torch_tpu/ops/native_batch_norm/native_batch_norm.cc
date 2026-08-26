@@ -34,6 +34,18 @@
 #include "torch_tpu/ops/reductions/sum.h"
 
 namespace torch_tpu {
+namespace {
+
+// Computes the batch-norm inverse standard deviation: 1 / sqrt(variance + eps).
+// `variance` must already be in the desired accumulation precision.
+[[nodiscard]] mlir::MlirOp ComputeInvStd(mlir::MlirOp variance, double eps) {
+  auto eps_op = MakeConstantLike(variance, eps);
+  // Add eps to variance to avoid division by zero, similar to LayerNorm.
+  auto var_plus_eps = mlir::stablehlo::Add(variance, eps_op);
+  return mlir::stablehlo::Rsqrt(var_plus_eps);
+}
+
+}  // namespace
 
 absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackward(
     mlir::MlirOp grad_out, mlir::MlirOp input,
@@ -144,9 +156,7 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackward(
             : MakeConstant(builder, 1.0, input_dtype, {num_features});
     variance = mlir::stablehlo::ConvertElementType(variance, acc_dtype);
 
-    auto eps_op = MakeConstantLike(variance, eps);
-    auto var_plus_eps = mlir::stablehlo::Add(variance, eps_op);
-    auto inv_std = mlir::stablehlo::Rsqrt(var_plus_eps);
+    auto inv_std = ComputeInvStd(variance, eps);
 
     mlir::MlirOp grad_input, grad_weight, grad_bias;
 
@@ -256,10 +266,7 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
     output_mean = mlir::stablehlo::ConvertElementType(output_mean, acc_dtype);
     output_variance =
         mlir::stablehlo::ConvertElementType(output_variance, acc_dtype);
-    // Add eps to variance to avoid division by zero, similar to LayerNorm.
-    auto eps_op = MakeConstantLike(output_variance, eps);
-    auto variance_plus_eps = mlir::stablehlo::Add(output_variance, eps_op);
-    auto output_inverted_variance = mlir::stablehlo::Rsqrt(variance_plus_eps);
+    auto output_inverted_variance = ComputeInvStd(output_variance, eps);
     return {{output_tensor, output_mean, output_inverted_variance}};
 
   } else {
@@ -288,10 +295,11 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNorm(
     // Output tensor needs to be in input precision.
     output_tensor =
         mlir::stablehlo::ConvertElementType(output_tensor, input_dtype);
-    TT_ASSIGN_OR_RETURN(auto output_mean,
-                        MakeZeroSizedTensor(builder, acc_dtype));
-    TT_ASSIGN_OR_RETURN(auto output_inverted_variance,
-                        MakeZeroSizedTensor(builder, acc_dtype));
+
+    // To match CUDA semantics, the inference mode holds the running stats in
+    // accumulation precision. Instead, the CPU impl returns empty tensors.
+    auto output_mean = running_mean;
+    auto output_inverted_variance = ComputeInvStd(running_variance, eps);
     return {{output_tensor, output_mean, output_inverted_variance}};
   }
 }

@@ -1689,9 +1689,8 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(tpu_input.args, (1,))
     self.assertEqual(tpu_input.kwargs, {"device": "tpu"})
 
-  @parameterized.product(training=[True, False])
-  def test_batch_norm_forward_mixed_dtype(self, training):
-    """Tests batch_norm forward with mixed BF16 input and F32 stats."""
+  def test_batch_norm_forward_mixed_dtype_training(self):
+    """Tests batch_norm forward in training mode with mixed BF16 input and F32 stats."""
     input_dtype = torch.bfloat16
     stats_dtype = torch.float32
     n, c, h, w = 2, 4, 4, 4
@@ -1710,9 +1709,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           bias.to(device),
           running_mean.to(device),
           running_var.to(device),
-          training,
-          0.1,  # momentum
-          1e-5,  # eps
+          training=True,
+          momentum=0.1,
+          eps=1e-5,
       )
 
     # Comparison results: (output, save_mean, save_invstd)
@@ -1849,13 +1848,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(run_op)
 
   @parameterized.product(
-      training=[True, False],
       has_weight=[True, False],
       has_bias=[True, False],
       has_running_stats=[True, False],
   )
   def test_native_batch_norm_optional_args(
-      self, training, has_weight, has_bias, has_running_stats
+      self, has_weight, has_bias, has_running_stats
   ):
     input_dtype = torch.float32
     stats_dtype = torch.float32
@@ -1866,8 +1864,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     running_mean = (
         torch.randn(c, dtype=stats_dtype) if has_running_stats else None
     )
+    eps = 1e-5
     running_var = (
-        torch.rand(c, dtype=stats_dtype).abs() + 1e-5
+        torch.rand(c, dtype=stats_dtype).abs() + eps
         if has_running_stats
         else None
     )
@@ -1879,19 +1878,11 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           bias.to(device) if bias is not None else None,
           running_mean.to(device) if running_mean is not None else None,
           running_var.to(device) if running_var is not None else None,
-          training,
-          0.1,  # momentum
-          1e-5,  # eps
+          training=True,
+          momentum=0.1,  # momentum
+          eps=eps,  # eps
       )
 
-    if not training and not has_running_stats:
-      # PyTorch CPU's native_batch_norm kernel requires running stats when
-      # training=False, so we cannot compare against CPU. Verify TPU directly.
-      output, mean, invstd = run_op(torch.device("tpu"))
-      self.assertEqual(output.shape, input_val.shape)
-      self.assertEqual(mean.shape, torch.Size([0]))
-      self.assertEqual(invstd.shape, torch.Size([0]))
-      return
     self.assert_close_tpu_vs_cpu(run_op)
 
   def test_bernoulli_distribution(self):

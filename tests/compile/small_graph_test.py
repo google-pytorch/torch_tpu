@@ -459,7 +459,7 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     bias = torch.ones(5)
     running_mean = torch.ones(5)
     running_var = torch.ones(5)
-    training = False
+    training = True
     momentum = 0.5
     eps = 0.6
     inputs_val = [

@@ -86,10 +86,10 @@ absl::StatusOr<DeviceBufferRefArray<3>> TpuBatchNorm(
                       ConvertTo<mlir::ElementType>(input.scalar_type()));
   Dimensions features_dims = {input.size(kTorchFeaturesDimensionIndex)};
 
-  const Dimensions empty_dims = {0};
-  Dimensions output_mean_dims = training ? features_dims : empty_dims;
-  Dimensions output_variance_inverted_dims =
-      training ? features_dims : empty_dims;
+  // To match CUDA semantics, save_mean and save_invstd are per-channel, i.e.
+  // dim=[C], in both training and inference modes.
+  Dimensions output_mean_dims = features_dims;
+  Dimensions output_variance_inverted_dims = features_dims;
 
   const auto acc_type = ToAccumulateType(input.scalar_type());
   TT_ASSIGN_OR_RETURN(const auto acc_dtype,

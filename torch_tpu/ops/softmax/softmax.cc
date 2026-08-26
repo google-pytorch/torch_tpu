@@ -28,6 +28,7 @@
 #include "mlir/Support/DebugStringHelper.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch_tpu/common/aten_utils.h"
@@ -92,6 +93,11 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
     dim += input_type.getRank();
   }
 
+  const mlir::ElementType in_element_type = GetElementTypeOrDie(input_op);
+  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+                      InferComputationDtype(in_element_type));
+  TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, computation_dtype));
+
   TT_ASSIGN_OR_RETURN(mlir::MlirOp max_val_broadcasted,
                       BuildBroadcastedMaxShlo(input_op, dim));
   mlir::MlirOp shifted_op =
@@ -109,7 +115,7 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
     result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
   }
 
-  return result;
+  return CastIfNeeded(result, in_element_type);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildSoftmaxBackwardDataShlo(

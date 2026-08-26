@@ -824,9 +824,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 2.8e-5, "atol": 1.1e-5},
         torch.float32: {"atol": 5.2e-5},
     },
-    "_log_softmax_backward_data": {
-        torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
-    },
     "_native_batch_norm_legit": {
         torch.float32: {"rtol": 1e-5, "atol": 2.1e-5},
     },
@@ -834,10 +831,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"rtol": 1.0, "atol": 2.0e-1},
         torch.float16: {"rtol": 1.0, "atol": 2.0e-1},
         torch.float32: {"rtol": 2.0e-1, "atol": 3.2e-1},
-    },
-    "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 5.9e-3},
-        torch.float16: {"atol": 5.9e-4},
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-4, "atol": 1e-4},
@@ -1032,11 +1025,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 6.9e-5},
         torch.uint8: {"rtol": 6.9e-5},
     },
-    "log_softmax": {
-        torch.bfloat16: {"atol": 6.5e-3},
-        torch.float16: {"rtol": 1.2e-3, "atol": 6.3e-4},
-        torch.float32: {"rtol": 5.7e-5, "atol": 8.3e-5},
-    },
     "logcumsumexp": {
         torch.bfloat16: {"atol": 3.7e-5},
         torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
@@ -1152,10 +1140,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 4e-6},
         torch.uint8: {"rtol": 4e-6},
     },
-    "softmax": {
-        torch.bfloat16: {"atol": 4.7e-3},
-        torch.float16: {"atol": 5.9e-4},
-    },
     "tan": {
         torch.complex64: {"rtol": 7.1e-6},
     },
@@ -1209,9 +1193,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_foreach_tanh": {
         torch.complex64: {"rtol": 2.8e-5, "atol": 1.1e-5},
     },
-    "_log_softmax_backward_data": {
-        torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
-    },
     "_native_batch_norm_legit": {
         torch.float32: {"rtol": 1e-5, "atol": 2.1e-5},
     },
@@ -1219,10 +1200,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.bfloat16: {"rtol": 1.0, "atol": 2.0e-1},
         torch.float16: {"rtol": 1.0, "atol": 2.0e-1},
         torch.float32: {"rtol": 2.0e-1, "atol": 3.2e-1},
-    },
-    "_softmax_backward_data": {
-        torch.bfloat16: {"atol": 5.9e-3},
-        torch.float16: {"atol": 5.9e-4},
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-5, "atol": 3e-5},
@@ -1657,14 +1634,16 @@ def _linalg_lu_without_pivot_gpu(
   )
 
 
-# Returns true for test cases with `training=False` when comparing against GPU.
-# TODO(b/541256155): fix outputs to match GPU behavior when `training=False`.
-def _native_batch_norm_legit_notrain_gpu(
+# Returns true for inference mode (`training=False`) cases when comparing
+# against CPU, whose empty save_mean/save_invstd shapes differ from GPU.
+def _native_batch_norm_notrain_cpu(
     golden_device_type: str, unused_variant: OpVariant, op_input: OpInput
 ) -> bool:
+  # In inference mode, CPU returns empty ([0]) save_mean and
+  # save_invstd, whereas GPU returns per-channel ([C]) statistics.
   return (
-      golden_device_type == "gpu"
-      # _native_batch_norm_legit() has 1 (input) + 7 parameters.
+      golden_device_type == "cpu"
+      # native_batch_norm has 1 (input) + 7 parameters.
       and len(op_input.args) == 7
       # Excluding the input, `training` is the 5-th parameter.
       and not op_input.args[4]
@@ -3395,15 +3374,11 @@ class TestOps(op_testing.OpInfoTestBase):
         check_out_variant=False,
         exclude_dtypes={
             "gpu": (
-                (
-                    torch.bfloat16,
-                    torch.float16,
-                    torch.float32,
-                    torch.float64,
-                )
+                (torch.float64,)
                 + _if_tpu_vs_gpu_compiled((torch.complex64,), ())
             )
         },
+        skip_if=_native_batch_norm_notrain_cpu,
     )
 
   def test_native_batch_norm_legit(self):
@@ -3420,8 +3395,7 @@ class TestOps(op_testing.OpInfoTestBase):
                 + _if_tpu_vs_gpu_compiled((torch.complex64,), ())
             ),
         },
-        # TODO(b/541256155): match GPU behavior when `training=False`.
-        skip_if=_native_batch_norm_legit_notrain_gpu,
+        skip_if=_native_batch_norm_notrain_cpu,
     )
 
   # TODO(b/535650392): re-enable this test in OSS.
