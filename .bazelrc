@@ -241,14 +241,15 @@ common:tpu_envvars --test_env=HOST_BOUNDS
 # NOTE: This value can be host-specific and harmful to Bazel caching.
 common:tpu_envvars --test_env=VBAR_CONTROL_SERVICE_URL
 
-# Configs for Bazel remote caching.
-# These are split into read-only and read-write configs for security.
-# Only CI (or other trusted accounts) have write access to the cache to prevent
-# it from being *directly* poisoned/corrupted by untrusted users (a malicious PR
-# triggers CI could still do so, however).
+# Configs for Bazel remote caching. For security reasons, split configs into
+# read-only and read-write to prevent cache poisoning / corruption by untrusted users.
 #
-# However, we still want users to benefit from remote caching, so a read-only
-# config is enabled by default.
+# Only CI (or other trusted accounts) have write access to the cache. The setup
+# follows that
+#   - Presubmit and local builds can read from the cache but cannot write to it.
+#   - Postsubmit builds (including nightly) can both read from and write to the cache.
+# This ensures that only approved code can affect the cache, while users and all CI jobs
+# can benefit from the cache.
 #
 # See https://developers.google.com/remote-build-execution/docs/set-up/set-up-caching
 # for more details.
