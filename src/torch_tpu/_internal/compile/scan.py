@@ -21,6 +21,22 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
 
 
+def _to_placeholders(tensors):
+  """Returns `tensors` with every tensor replaced by a like-shaped placeholder.
+
+  Non-tensor entries are passed through, matching `to_fake` below.
+
+  Built exactly like `x_list` above -- same call, same `requires_grad` -- so
+  every operand `fx_to_mlir` sees is made the same way.
+  """
+  return [
+      tpu_torch_compile.placeholder(list(t.shape), t.dtype, t.requires_grad)
+      if isinstance(t, torch.Tensor)
+      else t
+      for t in tensors
+  ]
+
+
 def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   """TPU implementation for scan higher-order op.
 
@@ -82,8 +98,13 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
       ys_shape = [seq_len] + list(y.shape)
       dummy_ys.append(torch.zeros(ys_shape, dtype=y.dtype, device="meta"))
 
-  # Compile the body sub-graph to MLIR.
-  body_args = init_list + x_list + extra_list
+  # Compile the body sub-graph to MLIR. Every operand has to be a placeholder,
+  # as `x_list` already is -- `fx_to_mlir` traces the body under compiled mode,
+  # which rejects any buffer with deferred ops on it. Forwarding `init_list`
+  # and `extra_list` unchanged only holds when they came straight from the
+  # enclosing graph's inputs; whenever they are produced by an op instead, they
+  # are deferred buffers and the body's trace aborts on them.
+  body_args = _to_placeholders(init_list) + x_list + _to_placeholders(extra_list)
   body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
 
   # Call the C++ binding to create a deferred scan operation.
