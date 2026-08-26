@@ -295,6 +295,83 @@ class ScanOpTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out_ys.cpu(), expected_ys)
 
 
+class ScanDeferredOperandsTest(seed_test_utils.RepeatableTest):
+  """Scan whose carry and captured tensor are computed inside the graph.
+
+  Every other test in this file feeds `init` and any captured tensor straight
+  from a graph input, so by the time `_handle_scan_impl` runs they are already
+  unmaterialized placeholders. Producing them with an op first makes them
+  deferred buffers instead, which is the state the body's own trace cannot
+  accept.
+  """
+
+  def setUp(self):
+    super().setUp()
+    torch.compiler.reset()
+
+  def test_scan_with_computed_carry_and_captured_tensor(self):
+    def fn(init, xs, w):
+      carry = init * 2.0
+      scale = w + 1.0
+
+      def combine_fn(c, x):
+        new_c = c + x * scale
+        return new_c, new_c.clone()
+
+      return scan(combine_fn, carry, xs)
+
+    init = torch.tensor([1.0, 2.0], device="tpu")
+    xs = torch.tensor([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], device="tpu")
+    w = torch.tensor([1.0, 2.0], device="tpu")
+
+    expected_carry = torch.tensor([14.0, 22.0])
+    expected_ys = torch.tensor([[4.0, 7.0], [8.0, 13.0], [14.0, 22.0]])
+
+    out_carry, out_ys = _compile_and_run(fn, init, xs, w)
+
+    utils.assert_close(out_carry.cpu(), expected_carry)
+    utils.assert_close(out_ys.cpu(), expected_ys)
+
+  def test_scan_with_computed_operands_that_require_grad(self):
+    """The same scan, asked for its gradients.
+
+    The motivating case is a joint graph, where AOTAutograd emits a second scan
+    for the backward and every operand of it is computed rather than a graph
+    input. Nothing else in this file lowers a backward scan at all.
+    """
+
+    def fn(init, xs, w):
+      carry = init * 2.0
+      scale = w + 1.0
+
+      def combine_fn(c, x):
+        new_c = c + x * scale
+        return new_c, new_c.clone()
+
+      out_carry, out_ys = scan(combine_fn, carry, xs)
+      return (out_carry * out_carry).sum() + out_ys.sum()
+
+    def operands(device):
+      return (
+          torch.tensor([1.0, 2.0], device=device, requires_grad=True),
+          torch.tensor(
+              [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]],
+              device=device,
+              requires_grad=True,
+          ),
+          torch.tensor([1.0, 2.0], device=device, requires_grad=True),
+      )
+
+    expected = operands("cpu")
+    fn(*expected).backward()
+
+    actual = operands("tpu")
+    _compile_and_run(fn, *actual).backward()
+
+    for name, a, e in zip(("init", "xs", "w"), actual, expected):
+      utils.assert_close(a.grad.cpu(), e.grad, preamble=f"grad of {name}")
+
+
 class ScanLoweringTest(seed_test_utils.RepeatableTest):
 
   def test_scan_is_not_unrolled(self):
