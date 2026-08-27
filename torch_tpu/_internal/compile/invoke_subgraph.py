@@ -68,8 +68,12 @@ def _handle_invoke_subgraph_impl(subgraph, identifier, *operands):
       isinstance(output, torch.Tensor) for output in fake_outputs
   ):
     raise NotImplementedError(
-        "TorchTPU invoke_subgraph currently requires tensor-only outputs"
+      "TorchTPU invoke_subgraph currently requires tensor-only outputs"
     )
+
+  body_args = [
+      tpu_torch_compile.placeholder_like(operand) for operand in operands
+  ]
 
   body_module = None
   if identifier:
@@ -77,11 +81,11 @@ def _handle_invoke_subgraph_impl(subgraph, identifier, *operands):
       body_module = _BODY_MODULE_CACHE.get(identifier)
       if body_module is None:
         body_module = export.fx_to_mlir(
-            actual_subgraph, args=list(operands)
+            actual_subgraph, args=body_args
         ).module
         _BODY_MODULE_CACHE[identifier] = body_module
   else:
-    body_module = export.fx_to_mlir(actual_subgraph, args=list(operands)).module
+    body_module = export.fx_to_mlir(actual_subgraph, args=body_args).module
   flat_outputs = tpu_torch_compile.create_invoke_subgraph_op(
       inputs=list(operands),
       body_module=body_module,
