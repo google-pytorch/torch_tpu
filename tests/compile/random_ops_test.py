@@ -20,9 +20,9 @@ from absl.testing import parameterized
 import torch
 from torch.utils import _pytree
 from torch.utils import checkpoint
-from torch_tpu._internal import env
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu.csrc.internal import env
 from tests import seed_test_utils
 
 

@@ -32,9 +32,9 @@ from torch._inductor.utils import clear_caches
 from torch.compiler._cache import CacheArtifactManager
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import compile as tpu_compile
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import compiler as tpu_compiler_mod
 from torch_tpu._internal.utils import test_utils
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 

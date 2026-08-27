@@ -18,7 +18,7 @@ import warnings
 from absl.testing import absltest
 from absl.testing import parameterized
 from torch_tpu import _loader
-from torch_tpu._internal import env
+from torch_tpu.csrc.internal import env
 from tests import seed_test_utils
 
 

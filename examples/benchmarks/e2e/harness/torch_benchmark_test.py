@@ -30,7 +30,7 @@ from absl import logging
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-from torch_tpu._internal import testing as tt_testing
+from torch_tpu.csrc.internal import testing as tt_testing
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import base_test
 from examples.benchmarks.e2e.harness import cases

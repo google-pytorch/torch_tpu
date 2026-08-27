@@ -56,9 +56,9 @@ from torch.testing._internal.opinfo.definitions import linalg
 from torch.utils import _pytree
 from torch_tpu._internal import compile as tt_compile
 from torch_tpu._internal import compiler_options as compiler
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import quantize_utils
 from tests import seed_test_utils
 import yaml

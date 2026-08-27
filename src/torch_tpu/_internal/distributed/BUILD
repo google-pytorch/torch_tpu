@@ -1,0 +1,118 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load(
+    "//build_files:build_defs.bzl",
+    "oss_target",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
+
+package(
+    default_applicable_licenses = ["//:license"],
+    default_visibility = [
+        "//:__subpackages__",
+        "//shims/torchtitan:__subpackages__",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "gpu_env",
+    srcs = ["gpu_env.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "handshake",
+    srcs = ["handshake.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "@pypi//portpicker",
+        "@pypi//pyzmq",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "spmd_util",
+    srcs = [
+        "spmd_util.py",
+    ],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/sync",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "device_utils",
+    srcs = ["device_utils.py"],
+    deps = [
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "device_mesh",
+    srcs = ["device_mesh.py"],
+    deps = [
+        ":device_utils",
+        "//shims/torch:pytorch",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "from_local",
+    srcs = ["from_local.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/execution_mode",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "process_group_utils",
+    srcs = ["process_group_utils.py"],
+    deps = [
+        ":handshake",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/compile:collective_ops",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "torchcomm_tpu",
+    srcs = ["torchcomm_tpu.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "//torch_tpu/csrc/internal/distributed:tpu_distributed",  # buildcleaner: keep
+    ],
+)
+
+oss_target(
+    torch_tpu_py_library,
+    name = "multiprocessing",
+    srcs = ["multiprocessing.py"],
+    deps = [
+        "//shims/absl_py:app",
+    ],
+)
+
+torch_tpu_package_end()

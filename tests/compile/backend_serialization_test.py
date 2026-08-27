@@ -27,9 +27,9 @@ from torch._functorch._aot_autograd.aot_autograd_result import (
     deserialize_bundled_cache_entry,
 )
 from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
-from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
+from torch_tpu.csrc.internal import testing as tt_testing
 from tests import seed_test_utils
 
 
