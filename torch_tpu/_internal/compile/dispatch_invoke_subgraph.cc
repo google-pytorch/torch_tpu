@@ -28,6 +28,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -202,7 +203,32 @@ std::vector<at::Tensor> PyCreateInvokeSubgraphOp(
         << "expected " << body.getNumArguments() << " inputs, got "
         << op_inputs.size();
 
-    DynamicMlirOpResults results = mlir::func::Call(builder, body, op_inputs);
+    std::vector<mlir::MlirOp> call_inputs;
+    call_inputs.reserve(op_inputs.size());
+    for (auto [index, input] : llvm::enumerate(op_inputs)) {
+      const auto actual_type =
+          mlir::dyn_cast<mlir::RankedTensorType>(input.getValue().getType());
+      const auto expected_type = mlir::dyn_cast<mlir::RankedTensorType>(
+          body.getArgument(index).getType());
+      TT_RET_CHECK(actual_type && expected_type, error::kInvalidArgument)
+          << "invoke_subgraph inputs must be ranked tensors";
+      if (actual_type == expected_type) {
+        call_inputs.push_back(input);
+        continue;
+      }
+      TT_RET_CHECK(actual_type.hasStaticShape() &&
+                       expected_type.hasStaticShape() &&
+                       actual_type.getElementType() ==
+                           expected_type.getElementType() &&
+                       actual_type.getNumElements() ==
+                           expected_type.getNumElements(),
+                   error::kInvalidArgument)
+          << "invoke_subgraph input " << index
+          << " cannot be reshaped to the body parameter type";
+      call_inputs.push_back(mlir::stablehlo::Reshape(expected_type, input));
+    }
+
+    DynamicMlirOpResults results = mlir::func::Call(builder, body, call_inputs);
     TT_RET_CHECK(!results.empty(), error::kInternal)
         << "invoke_subgraph body must return at least one result";
     SetCompilationBoundaryAttributes(

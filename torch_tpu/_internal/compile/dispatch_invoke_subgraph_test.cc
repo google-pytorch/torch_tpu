@@ -68,6 +68,14 @@ static constexpr std::string_view kBodyMlir = R"mlir(
   }
 )mlir";
 
+static constexpr std::string_view kScalarBodyMlir = R"mlir(
+  module {
+    func.func @main(%input: tensor<bf16>) -> tensor<bf16> {
+      return %input : tensor<bf16>
+    }
+  }
+)mlir";
+
 class DispatchInvokeSubgraphTest : public testing::Test {
  protected:
   DispatchInvokeSubgraphTest() {
@@ -194,6 +202,39 @@ TEST_F(DispatchInvokeSubgraphTest, RejectsMismatchedInputs) {
   EXPECT_THAT(create_op,
               Throws<TtError>(Property(&TtError::what,
                                        HasSubstr("expected 2 inputs, got 1"))));
+}
+
+TEST_F(DispatchInvokeSubgraphTest, ReshapesEquivalentCallArguments) {
+  const at::Tensor input = MakePlaceholder({1});
+  const at::Tensor output = MakePlaceholder({});
+  const std::vector<at::Tensor> results = PyCreateInvokeSubgraphOp(
+      {input}, CreateBodyModule(kScalarBodyMlir), {output}, "scalar_body");
+
+  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef result, GetBuffer(results[0]));
+  const std::shared_ptr<DeferredOp> deferred_op = result.deferred_op();
+  ASSERT_TRUE(deferred_op != nullptr);
+
+  auto context = std::make_unique<mlir::MLIRContext>();
+  context->loadDialect<mlir::stablehlo::StablehloDialect>();
+  context->loadDialect<mlir::func::FuncDialect>();
+  mlir::ModuleBuilder builder(*context);
+  mlir::func::FunctionBuilder function_builder(builder, "main");
+  const mlir::Type input_type =
+      mlir::makeTensorType(*context, {1}, mlir::ElementType::BF16);
+  std::vector<mlir::MlirOp> mlir_inputs = {
+      mlir::func::Argument(function_builder, input_type)};
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const DynamicMlirOpResults call,
+      deferred_op->op_builder()(function_builder,
+                                absl::MakeSpan(mlir_inputs)));
+  mlir::func::Return(function_builder, call);
+  mlir::OwningOpRef<mlir::ModuleOp> module = builder.build();
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  int reshape_count = 0;
+  module->walk([&](mlir::stablehlo::ReshapeOp) { ++reshape_count; });
+  EXPECT_EQ(reshape_count, 1);
 }
 
 TEST_F(DispatchInvokeSubgraphTest, RejectsMismatchedOutputs) {

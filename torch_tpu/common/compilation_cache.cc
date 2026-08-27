@@ -50,6 +50,8 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/_internal/dynamism/dynamism_ops.h"
@@ -74,6 +76,8 @@
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 #include "tsl/platform/numbers.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/translate/stablehlo.h"
 #include "xla/hlo/utils/concurrency/concurrency_utils.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -87,6 +91,18 @@ ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
 namespace torch_tpu {
 
 namespace {
+
+bool HasInvokeSubgraphCompilationBoundary(mlir::ModuleOp module) {
+  const mlir::WalkResult result = module.walk([](mlir::func::CallOp call) {
+    const auto attrs = call->getAttrOfType<mlir::DictionaryAttr>(
+        "mhlo.frontend_attributes");
+    if (attrs && (attrs.get("compilation_unit") || attrs.get("inlineable"))) {
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted();
+}
 
 // Returns true if the future is ready.
 bool IsFutureReady(const SharedLoadedExecutableWithMetadataFuture& future) {
@@ -861,7 +877,19 @@ void CompilationCache::EnqueueCompilation(
   EnsureInitialized();
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
-                                UniqueCompileOptions options) mutable {
+                                UniqueCompileOptions options) mutable
+      -> absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> {
+    if (HasInvokeSubgraphCompilationBoundary(contexted_module.get())) {
+      ABSL_LOG(INFO)
+          << "Compiling invoke_subgraph module through the HLO proto path";
+      TT_ASSIGN_OR_RETURN(
+          std::unique_ptr<xla::HloModule> hlo_module,
+          xla::ConvertStablehloToHlo(contexted_module.get()));
+      return AdaptXlaError(
+          client.CompileAndLoad(xla::XlaComputation(hlo_module->ToProto()),
+                                std::move(*options)),
+          /* context= */ "failed to compile HLO module");
+    }
     return AdaptXlaError(
         client.CompileAndLoad(
             std::move(contexted_module).ToMaybeOwningMlirModule(),
