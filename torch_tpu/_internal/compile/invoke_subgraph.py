@@ -33,37 +33,19 @@ _BODY_MODULE_CACHE = {}
 _BODY_MODULE_CACHE_LOCK = threading.Lock()
 
 
-def _logical_placeholder(tensor: torch.Tensor):
-  return tpu_torch_compile.placeholder(
-      list(tensor.shape), tensor.dtype, tensor.requires_grad
-  )
-
-
-def _body_placeholders(
-    subgraph: torch.fx.GraphModule, operands: tuple[torch.Tensor, ...]
-):
-  placeholders = [
-      node for node in subgraph.graph.nodes if node.op == "placeholder"
-  ]
-  if len(placeholders) != len(operands):
-    raise RuntimeError(
-        "invoke_subgraph body placeholder count does not match operands: "
-        f"{len(placeholders)} vs {len(operands)}"
-    )
-  args = []
-  for node, operand in zip(placeholders, operands):
-    meta_value = node.meta.get("val")
-    args.append(
-        _logical_placeholder(
-            meta_value if isinstance(meta_value, torch.Tensor) else operand
-        )
-    )
-  return args
-
-
 def _trace_body_to_mlir(
     subgraph: torch.fx.GraphModule, body_args: list[torch.Tensor]
 ):
+  changed = False
+  for node in subgraph.graph.nodes:
+    if (
+        node.op == "call_function"
+        and node.target is torch.ops.aten.view.default
+    ):
+      node.target = torch.ops.aten.reshape.default
+      changed = True
+  if changed:
+    subgraph.recompile()
   with execution_mode.set_eager_mode(
       execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
   ):
@@ -77,6 +59,29 @@ def _trace_body_to_mlir(
         "TorchTPU invoke_subgraph currently requires tensor-only outputs"
     )
   return tpu_torch_compile.build_mlir(flat_outputs, body_args)
+
+
+def _dummy_output(value):
+  if isinstance(value, torch.fx.Node):
+    meta_value = value.meta.get("val")
+    if not isinstance(meta_value, torch.Tensor):
+      raise NotImplementedError(
+          "TorchTPU invoke_subgraph requires tensor output metadata"
+      )
+    return torch.empty_strided(
+        tuple(meta_value.shape),
+        tuple(meta_value.stride()),
+        dtype=meta_value.dtype,
+        device="meta",
+        requires_grad=meta_value.requires_grad,
+    )
+  if isinstance(value, tuple):
+    return tuple(_dummy_output(item) for item in value)
+  if isinstance(value, list):
+    return [_dummy_output(item) for item in value]
+  raise NotImplementedError(
+      "TorchTPU invoke_subgraph currently requires tensor-only outputs"
+  )
 
 
 def _unwrap_subgraph(subgraph):
@@ -102,11 +107,14 @@ def _handle_invoke_subgraph_impl(subgraph, identifier, *operands):
         "TorchTPU invoke_subgraph does not yet support boxed subgraphs"
     )
 
-  body_args = _body_placeholders(actual_subgraph, operands)
-  with torch._subclasses.fake_tensor.FakeTensorMode(allow_non_fake_inputs=True):
-    fake_operands = _body_placeholders(actual_subgraph, operands)
-    fake_result = actual_subgraph(*fake_operands)
-    fake_outputs, output_spec = pytree.tree_flatten(fake_result)
+  body_args = [
+      tpu_torch_compile.placeholder_like(operand) for operand in operands
+  ]
+  output_node = next(
+      node for node in actual_subgraph.graph.nodes if node.op == "output"
+  )
+  dummy_result = _dummy_output(output_node.args[0])
+  fake_outputs, output_spec = pytree.tree_flatten(dummy_result)
 
   if not fake_outputs or not all(
       isinstance(output, torch.Tensor) for output in fake_outputs
