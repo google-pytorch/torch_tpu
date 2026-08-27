@@ -57,28 +57,28 @@ jobs:
       fail-fast: false
       matrix:
         job_info: [
-          {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
+          # {
+          #   name: "CPU",
+          #   runner: "linux-x86-n4-16",
+          #   config: "ci_cpu_presubmit",
+          #   extra_flags: "",
+          # },
           {
             runner: "linux-x86-ct5lp-224-8tpu",
             config: "ci_tpu_v5_presubmit",
             extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
           },
-          # TODO(gunhyun): Re-enable once we have more quota.
+          # # TODO(gunhyun): Re-enable once we have more quota.
+          # # {
+          # #   runner: "linux-x86-ct6e-180-8tpu",
+          # #   config: "ci_tpu_v6_presubmit",
+          # #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
+          # # },
           # {
-          #   runner: "linux-x86-ct6e-180-8tpu",
-          #   config: "ci_tpu_v6_presubmit",
+          #   runner: "linux-x86-tpu7x-224-4tpu",
+          #   config: "ci_tpu_v7_presubmit",
           #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          # },
-          {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
+          # }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
@@ -112,20 +112,25 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      # Diff against the current commit's first parent, i.e. main branch tip at CI run time.
-      # Intentionally do not use `github.event.pull_request.base.sha` as it is snapshotted upon
-      # PR creation. See https://github.com/orgs/community/discussions/59677 for more details.
-      - name: Resolve bazel-diff Base SHA
-        id: resolve_bazel_diff_base_sha
-        if: github.event_name == 'pull_request'
+      # # Diff against the current commit's first parent, i.e. main branch tip at CI run time.
+      # # Intentionally do not use `github.event.pull_request.base.sha` as it is snapshotted upon
+      # # PR creation. See https://github.com/orgs/community/discussions/59677 for more details.
+      # - name: Resolve bazel-diff Base SHA
+      #   id: resolve_bazel_diff_base_sha
+      #   if: github.event_name == 'pull_request'
+      #   run: |
+      #     base="$(git rev-parse --verify "${GITHUB_SHA}^1")"
+      #     echo "sha=${base}" >> "$GITHUB_OUTPUT"
+      # - name: Run Impacted Tests via bazel-diff
+      #   uses: ./.github/actions/bazel-diff
+      #   with:
+      #     base_sha: ${{ inputs.override_base_sha || steps.resolve_bazel_diff_base_sha.outputs.sha }}
+      #     current_sha: ${{ inputs.override_current_sha || github.sha }}
+      #     bazel_config: ${{ matrix.job_info.config }}
+      #     extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+      #     disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+      - name: Run A/B Test for TPU Device Busy
         run: |
-          base="$(git rev-parse --verify "${GITHUB_SHA}^1")"
-          echo "sha=${base}" >> "$GITHUB_OUTPUT"
-      - name: Run Impacted Tests via bazel-diff
-        uses: ./.github/actions/bazel-diff
-        with:
-          base_sha: ${{ inputs.override_base_sha || steps.resolve_bazel_diff_base_sha.outputs.sha }}
-          current_sha: ${{ inputs.override_current_sha || github.sha }}
-          bazel_config: ${{ matrix.job_info.config }}
-          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
-          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          chmod +x ci/tools/test_device_busy_ab.sh
+          ci/tools/test_device_busy_ab.sh

@@ -14,7 +14,7 @@
 # limitations under the License.
 # ==============================================================================
 #
-# Coordinates access to accelerators TPUs between concurrent Bazel tests.
+# Coordinates access to accelerator TPUs between concurrent Bazel tests.
 #
 # Assigns each test an accelerator and ensures that tests are evenly distributed
 # between accelerators.
@@ -22,12 +22,11 @@
 # Example usage:
 # bazel test --run_under=/path/to/parallel_accelerator_execute.sh //tests/...
 #
-#
 # Environment variables:
 #     TORCH_TPU_ACCELERATOR_COUNT =
-#         Number of accelerators TPUs available.
+#         Number of accelerator TPUs available.
 #     TORCH_TPU_TESTS_PER_ACCELERATOR =
-#         Number of test runs per accelerators TPUs available.
+#         Number of test runs per accelerator TPUs available.
 
 TORCH_TPU_ACCELERATOR_COUNT=${TORCH_TPU_ACCELERATOR_COUNT:-8}
 TORCH_TPU_TESTS_PER_ACCELERATOR=${TORCH_TPU_TESTS_PER_ACCELERATOR:-1}
@@ -47,53 +46,86 @@ else
 fi
 shift; set +uo pipefail
 
-
-# *******************************************************************
-
 mkdir -p /var/lock
+
+# Enable job control so spawned test processes receive a distinct Process Group (PGID == TEST_PID).
+set -m
+
+TEST_PID=""
+TEST_PGID=""
+
+# Terminate the test's entire process group before releasing locks.
+# This ensures that any surviving child/grandchild workers (e.g. torch.multiprocessing workers)
+# are terminated even if the parent test process has already exited or crashed.
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+
+  if [ -n "${TEST_PGID:-}" ]; then
+    # Check if any process in the group is still alive
+    if kill -0 -"$TEST_PGID" 2>/dev/null; then
+      kill -TERM -"$TEST_PGID" 2>/dev/null || true
+      # Grace period for graceful shutdown / flushing logs
+      for _ in $(seq 1 10); do
+        kill -0 -"$TEST_PGID" 2>/dev/null || break
+        sleep 0.1
+      done
+      # Force-kill surviving stragglers
+      kill -KILL -"$TEST_PGID" 2>/dev/null || true
+      # Allow kernel TPU/VFIO drivers to finish unmapping device buffers
+      sleep 0.5
+    fi
+  fi
+  exit "$exit_code"
+}
+
+trap cleanup EXIT INT TERM
+
+run_test() {
+  "$TEST_BINARY" "$@" &
+  TEST_PID=$!
+  TEST_PGID=$!
+  wait "$TEST_PID"
+  local rc=$?
+  TEST_PID=""  # Direct binary exited; keep TEST_PGID so cleanup can purge orphaned stragglers
+  return "$rc"
+}
 
 # Multi-accelerator/distributed tests require exclusive access across all slots.
 if [ "${TORCH_TPU_EXCLUSIVE_TEST:-0}" = "1" ]; then
   echo "Acquiring ALL accelerator locks for exclusive test $TEST_BINARY..."
   for j in $(seq 0 $((TORCH_TPU_TESTS_PER_ACCELERATOR-1))); do
     for i in $(seq 0 $((TORCH_TPU_ACCELERATOR_COUNT-1))); do
-      exec {fd}>/var/lock/torch_tpu_accelerator_lock_${i}_${j} || exit 1
+      # Use >> to prevent lock file truncation race conditions
+      exec {fd}>>"/var/lock/torch_tpu_accelerator_lock_${i}_${j}" || exit 1
       flock "$fd" || exit 1
     done
   done
-  (
-    export TPU_VISIBLE_CHIPS="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
-    "$TEST_BINARY" "$@"
-  )
-  return_code=$?
-  exit $return_code
+
+  export TPU_VISIBLE_CHIPS="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
+  run_test "$@"
+  exit $?
 fi
 
 # Try to acquire any of the
 # TORCH_TPU_ACCELERATOR_COUNT * TORCH_TPU_TESTS_PER_ACCELERATOR
 # slots to run a test at.
 #
-# Prefer to allocate 1 test per accelerator over 4 tests on 1 accelerator
-# So, we iterate over TORCH_TPU_TESTS_PER_ACCELERATOR
-# first (j) then accelerators (i).
-#
-# If all slots are busy, we loop and retry until one is free.
+# Prefer to allocate 1 test per accelerator over multiple tests on 1 accelerator.
+# Iterate over TORCH_TPU_TESTS_PER_ACCELERATOR first (j) then accelerators (i).
 while true; do
-  for j in `seq 0 $((TORCH_TPU_TESTS_PER_ACCELERATOR-1))`; do
-    for i in `seq 0 $((TORCH_TPU_ACCELERATOR_COUNT-1))`; do
-      exec {lock_fd}>/var/lock/torch_tpu_accelerator_lock_${i}_${j} || exit 1
-      if flock -n "$lock_fd";
-      then
-        (
-          # This export only works within the brackets, so it is isolated to one
-          # single command.
-          export TPU_VISIBLE_CHIPS=$i
-          echo "Running test $TEST_BINARY $* on accelerator $i"
-          "$TEST_BINARY" $@
-        )
-        return_code=$?
-        # flock locks are automatically released when the FD is closed.
-        exit $return_code
+  for j in $(seq 0 $((TORCH_TPU_TESTS_PER_ACCELERATOR-1))); do
+    for i in $(seq 0 $((TORCH_TPU_ACCELERATOR_COUNT-1))); do
+      # Use >> to prevent file truncation.
+      exec {lock_fd}>>"/var/lock/torch_tpu_accelerator_lock_${i}_${j}" || exit 1
+      if flock -n "$lock_fd"; then
+        export TPU_VISIBLE_CHIPS=$i
+        echo "Running test $TEST_BINARY $* on accelerator $i"
+        run_test "$@"
+        exit $?
+      else
+        # Close file descriptor immediately to prevent FD leak during polling.
+        exec {lock_fd}>&-
       fi
     done
   done
