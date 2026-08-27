@@ -24,29 +24,28 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pybind_extension(
-    name = "_tpu_torch_tracing",
-    srcs = ["tracing_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch:torch_headers",
-        "//torch_tpu/eager:structured_log_buffer",
-        "@com_google_absl//absl/time",
-    ],
-)
-
 torch_tpu_py_library(
     name = "tracing",
     srcs = ["__init__.py"],
-    visibility = ["//:__subpackages__"],
     deps = [
         ":_tpu_torch_tracing",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
+pybind_extension(
+    name = "_tpu_torch_tracing",
+    srcs = ["//torch_tpu/csrc/internal/tracing:tracing_py.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//shims/torch:torch_headers",
+        "//torch_tpu/csrc/eager:structured_log_buffer",
+        "@com_google_absl//absl/time",
     ],
 )
 

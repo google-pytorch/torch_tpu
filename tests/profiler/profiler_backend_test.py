@@ -22,10 +22,8 @@ import tempfile
 from absl.testing import absltest
 import portpicker
 from torch_tpu._internal import testing as tt_testing
-import torch_tpu._internal.profiler
+from torch_tpu._internal.profiler import _profiler_backend as profiler_backend
 from tests import seed_test_utils
-
-profiler_backend = torch_tpu._internal.profiler._profiler_backend
 
 
 class ProfilerBackendTest(seed_test_utils.RepeatableTest):

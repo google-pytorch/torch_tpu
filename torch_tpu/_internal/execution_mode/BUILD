@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -23,42 +27,27 @@ package(
     ],
 )
 
-# This library is not used directly, but is needed for go/cclean. Without
-# this rule, cclean complains that execution_mode_impl.cc has no rule depending on it.
-torch_tpu_cc_library(
-    name = "execution_mode_impl_build",
-    srcs = ["execution_mode_impl.cc"],
-    deps = [
-        "//shims/pybind11",
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
-        "//torch_tpu/eager:eager_mode",
-        "//torch_tpu/eager:tpu_aten_kernels",
-    ],
-)
-
-pybind_extension(
-    # "private" python module for internal use.
-    name = "execution_mode_impl",
-    srcs = ["execution_mode_impl.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
-        "//torch_tpu/eager:eager_mode",
-        "//torch_tpu/eager:tpu_aten_kernels",
-    ],
-)
-
 torch_tpu_py_library(
     name = "execution_mode",
     srcs = [
         "__init__.py",
     ],
     deps = [":execution_mode_impl"],
+)
+
+pybind_extension(
+    name = "execution_mode_impl",
+    srcs = ["//torch_tpu/csrc/internal/execution_mode:execution_mode_impl.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
+        "//torch_tpu/csrc/eager:eager_mode",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
+    ],
 )
 
 torch_tpu_package_end()

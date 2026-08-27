@@ -33,9 +33,9 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/FuncBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/shape.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/shape.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/pjrt/pjrt_state.h"
 

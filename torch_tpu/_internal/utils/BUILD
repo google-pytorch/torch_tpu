@@ -91,7 +91,7 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
     ],
 )
 

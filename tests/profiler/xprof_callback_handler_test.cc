@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
-#include "torch_tpu/_internal/profiler/xprof_callback_handler.h"
+#include "torch_tpu/csrc/internal/profiler/xprof_callback_handler.h"
 
+// clang-format off
 #include <atomic>
 #include <chrono>
 #include <thread>
 #include <vector>
 
-#include "ATen/record_function.h"
 #include "gtest/gtest.h"
+#include "ATen/record_function.h"
+// clang-format on
 
 namespace torch_tpu {
 namespace {

@@ -15,7 +15,6 @@
 load(
     "//build_files:build_defs.bzl",
     "oss_target",
-    "torch_tpu_cc_library",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -103,46 +102,9 @@ torch_tpu_py_library(
     name = "torchcomm_tpu",
     srcs = ["torchcomm_tpu.py"],
     deps = [
-        ":tpu_distributed",
+        ":tpu_distributed",  # buildcleaner: keep
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-    ],
-)
-
-# This library is not used directly, but is needed for go/cclean. Without
-# this rule, cclean complains that tpu_distributed.cc has no rule depending on it.
-torch_tpu_cc_library(
-    name = "tpu_distributed_lib",
-    srcs = ["tpu_distributed.cc"],
-    deps = [
-        "//shims/pybind11",
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/distributed:process_group_tpu",
-        "//torch_tpu/distributed:utils",
-        "//torch_tpu/pjrt:pjrt_state",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:check",
-    ],
-)
-
-pybind_extension(
-    name = "tpu_distributed",
-    srcs = ["tpu_distributed.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch:torch_headers",
-        "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/distributed:process_group_tpu",
-        "//torch_tpu/distributed:utils",
-        "//torch_tpu/pjrt:pjrt_state",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:check",
     ],
 )
 
@@ -160,6 +122,25 @@ torch_tpu_py_library(
     srcs = ["collective_ops.py"],
     deps = [
         "//shims/torch:pytorch",
+    ],
+)
+
+pybind_extension(
+    name = "tpu_distributed",
+    srcs = ["//torch_tpu/csrc/internal/distributed:tpu_distributed.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/util:base_headers",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/distributed:process_group_tpu",
+        "//torch_tpu/csrc/distributed:utils",
+        "//torch_tpu/pjrt:pjrt_state",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:check",
     ],
 )
 

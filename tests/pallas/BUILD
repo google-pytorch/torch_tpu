@@ -80,6 +80,7 @@ torch_tpu_py_test(
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/pallas",
+        "//torch_tpu/_internal/pallas:tpu_torch_pallas",  # buildcleaner: keep
         "@pypi//jax",
     ],
 )

@@ -24,7 +24,7 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 
 // A DeviceBufferRef, or a PjRtBuffer, contains information about the shape
 // and element type of a tensor.

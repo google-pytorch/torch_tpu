@@ -28,11 +28,11 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
-#include "torch_tpu/common/dtype.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/eager/device_buffer.h"
-#include "torch_tpu/eager/device_gen_impl.h"
-#include "torch_tpu/eager/tensor_to_buffer.h"
+#include "torch_tpu/csrc/common/dtype.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
+#include "torch_tpu/csrc/eager/device_gen_impl.h"
+#include "torch_tpu/csrc/eager/tensor_to_buffer.h"
 
 namespace torch_tpu {
 

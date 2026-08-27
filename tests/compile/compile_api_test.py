@@ -1159,6 +1159,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
   def test_is_device_shape_dynamic(self):
     x_static = torch.ones(2, 3, device='tpu')
     self.assertFalse(tpu_torch_compile.is_device_shape_dynamic(x_static))
+
     def fn(x):
       return x + 1
 

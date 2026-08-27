@@ -249,6 +249,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
+        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/distributed:multiprocessing",
         "@pypi//fairscale",
     ],

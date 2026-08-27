@@ -41,10 +41,10 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch/csrc/profiler/combined_traceback.h"
 #include "torch/csrc/profiler/unwind/unwind.h"
-#include "torch_tpu/common/context_manager.h"
-#include "torch_tpu/common/context_states.h"
-#include "torch_tpu/common/flags.h"
-#include "torch_tpu/eager/eager_mode.h"
+#include "torch_tpu/csrc/common/context_manager.h"
+#include "torch_tpu/csrc/common/context_states.h"
+#include "torch_tpu/csrc/common/flags.h"
+#include "torch_tpu/csrc/eager/eager_mode.h"
 #include "torch_tpu/ops/op_names.h"
 
 ABSL_FLAG(std::optional<bool>, torch_tpu_internal_mlir_tracebacks,

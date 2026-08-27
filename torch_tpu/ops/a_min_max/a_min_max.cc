@@ -22,7 +22,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 

@@ -26,7 +26,9 @@ from torch_tpu._internal import sync
 from tests import seed_test_utils
 
 
-class StrictlyOrderingTest(seed_test_utils.RepeatableTest):
+class StrictlyOrderingTest(
+    seed_test_utils.RepeatableTest  # ABSLTEST_OK=No RNG used in this test.
+):
 
   def test_strictly_ordering(self):
     device = torch.device("tpu")

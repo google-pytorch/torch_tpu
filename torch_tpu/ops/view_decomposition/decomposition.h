@@ -22,7 +22,7 @@
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/ops/view_decomposition/view_sequence.h"
 

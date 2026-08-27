@@ -26,7 +26,9 @@ from torch_tpu._internal import execution_mode
 EagerMode = execution_mode.EagerMode
 
 
-class XlaCompileOptionsTest(seed_test_utils.RepeatableTest):
+class XlaCompileOptionsTest(
+    seed_test_utils.RepeatableTest  # ABSLTEST_OK=No RNG used in this test.
+):
   """Tests to ensure materialization worker threads use correct XLA compile options for specific eager modes."""
 
   def setUp(self):

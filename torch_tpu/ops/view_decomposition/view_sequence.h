@@ -27,7 +27,7 @@
 #include "absl/types/span.h"
 #include "c10/core/TensorImpl.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/cache_key.h"
+#include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/ops/view_decomposition/bitcast_primitive.h"
 #include "torch_tpu/ops/view_decomposition/broadcast_primitive.h"
 #include "torch_tpu/ops/view_decomposition/conj_primitive.h"

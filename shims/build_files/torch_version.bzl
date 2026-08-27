@@ -47,7 +47,7 @@ _TORCH_HEADERS_ONLY = "//:_torch_headers_only"
 # source of truth in //bazel:pytorch_versions.bzl. They are re-exported here --
 # Starlark does not re-export a loaded symbol, so we load it under a private
 # alias and bind a real public global -- because shims/pybind11/pybind.bzl and
-# torch_tpu/common/BUILD already load WHEEL_TORCH_VERSIONS from this module.
+# torch_tpu/csrc/common/BUILD already load WHEEL_TORCH_VERSIONS from this module.
 WHEEL_TORCH_VERSIONS = _WHEEL_TORCH_VERSIONS
 
 # All buildable glues: the released versions plus the nightly channel's, which

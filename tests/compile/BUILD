@@ -242,9 +242,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/compile:compiler",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/device_utils:annotations",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/utils:test_utils",
