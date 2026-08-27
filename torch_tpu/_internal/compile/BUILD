@@ -87,6 +87,7 @@ torch_tpu_py_library(
         "//learning/agents/tern/torch_agent:__subpackages__",
     ],
     deps = [
+        ":invoke_subgraph",
         ":scan",
         ":tpu_backend",
         "//shims/torch:pytorch",
@@ -110,6 +111,16 @@ torch_tpu_py_library(
         "//torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//torch_tpu/_internal/profiler:xprof_adapter",
         "//torch_tpu/_internal/utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "invoke_subgraph",
+    srcs = ["invoke_subgraph.py"],
+    deps = [
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//torch_tpu/_internal/export",
     ],
 )
 
@@ -188,6 +199,7 @@ torch_tpu_cc_library(
     srcs = ["tpu_torch_compile.cc"],
     deps = [
         ":compiled_mode",
+        ":dispatch_invoke_subgraph",
         ":dispatch_scan",
         "//shims/pybind11",
         "//shims/torch",
@@ -256,6 +268,7 @@ pybind_extension(
     wrap_py_init = True,
     deps = [
         ":compiled_mode",
+        ":dispatch_invoke_subgraph",
         ":dispatch_scan",
         "//shims/torch",
         "//shims/torch:aten",
@@ -318,6 +331,40 @@ pybind_extension(
 )
 
 torch_tpu_cc_library(
+    name = "dispatch_invoke_subgraph",
+    srcs = ["dispatch_invoke_subgraph.cc"],
+    hdrs = ["dispatch_invoke_subgraph.h"],
+    deps = [
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/common:cache_key",
+        "//torch_tpu/common:compilation",
+        "//torch_tpu/common:dtype",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:fingerprint_utils",
+        "//torch_tpu/common:shape",
+        "//torch_tpu/common:utils",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "//torch_tpu/ops:op_builder_utils",
+        "//torch_tpu/ops:op_names",
+        "//torch_tpu/ops:python_context",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@stablehlo//:func_builder",
+        "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "dispatch_scan",
     srcs = ["dispatch_scan.cc"],
     hdrs = ["dispatch_scan.h"],
@@ -347,6 +394,48 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:Parser",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "dispatch_invoke_subgraph_test",
+    srcs = ["dispatch_invoke_subgraph_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",
+    },
+    requires_libtpu = True,
+    deps = [
+        ":dispatch_invoke_subgraph",
+        "//shims/torch",
+        "//shims/torch:aten",
+        "//shims/torch:aten_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/common:compilation",
+        "//torch_tpu/common:context_states",
+        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/common:error_utils",
+        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/eager:device_buffer",
+        "//torch_tpu/eager:eager_mode",
+        "//torch_tpu/eager:tensor_to_buffer",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:func_builder",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_ops",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/transforms:hlo_module_splitter",
+        "@xla//xla/hlo/translate:stablehlo",
+        "@xla//xla/mlir/utils:error_util",
+        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

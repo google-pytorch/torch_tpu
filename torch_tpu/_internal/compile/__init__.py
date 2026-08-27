@@ -64,6 +64,12 @@ def _register_scan_operator() -> None:
   from torch_tpu._internal.compile import scan as _  # pylint: disable=g-import-not-at-top  # noqa: F401
 
 
+def _register_invoke_subgraph_operator() -> None:
+  """Registers the invoke_subgraph implementation for TPU."""
+  from torch_tpu._internal.compile import invoke_subgraph as _  # pylint: disable=g-import-not-at-top  # noqa: F401
+
+
+_register_invoke_subgraph_operator()
 _register_scan_operator()
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
