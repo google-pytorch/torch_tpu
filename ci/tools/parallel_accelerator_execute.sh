@@ -52,19 +52,38 @@ shift; set +uo pipefail
 
 mkdir -p /var/lock
 
+# Enable job control so background jobs get their own Process Group (PGID == TEST_PID).
+set -m
+
+TEST_PID=""
+
+# Terminate the test's process group before releasing locks.
+# This ensures all children and grandchildren (e.g. torch.multiprocessing workers)
+# are terminated even if they were re-parented to PID 1.
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if [ -n "$TEST_PID" ]; then
+    kill -TERM -"$TEST_PID" 2>/dev/null || true
+    kill -KILL -"$TEST_PID" 2>/dev/null || true
+  fi
+  exit $exit_code
+}
+trap cleanup EXIT INT TERM
+
 # Multi-accelerator/distributed tests require exclusive access across all slots.
 if [ "${TORCH_TPU_EXCLUSIVE_TEST:-0}" = "1" ]; then
   echo "Acquiring ALL accelerator locks for exclusive test $TEST_BINARY..."
   for j in $(seq 0 $((TORCH_TPU_TESTS_PER_ACCELERATOR-1))); do
     for i in $(seq 0 $((TORCH_TPU_ACCELERATOR_COUNT-1))); do
-      exec {fd}>/var/lock/torch_tpu_accelerator_lock_${i}_${j} || exit 1
+      exec {fd}>"/var/lock/torch_tpu_accelerator_lock_${i}_${j}" || exit 1
       flock "$fd" || exit 1
     done
   done
-  (
-    export TPU_VISIBLE_CHIPS="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
-    "$TEST_BINARY" "$@"
-  )
+  export TPU_VISIBLE_CHIPS="$(seq -s, 0 $((TORCH_TPU_ACCELERATOR_COUNT-1)))"
+  "$TEST_BINARY" "$@" &
+  TEST_PID=$!
+  wait "$TEST_PID"
   return_code=$?
   exit $return_code
 fi
@@ -81,19 +100,18 @@ fi
 while true; do
   for j in `seq 0 $((TORCH_TPU_TESTS_PER_ACCELERATOR-1))`; do
     for i in `seq 0 $((TORCH_TPU_ACCELERATOR_COUNT-1))`; do
-      exec {lock_fd}>/var/lock/torch_tpu_accelerator_lock_${i}_${j} || exit 1
-      if flock -n "$lock_fd";
-      then
-        (
-          # This export only works within the brackets, so it is isolated to one
-          # single command.
-          export TPU_VISIBLE_CHIPS=$i
-          echo "Running test $TEST_BINARY $* on accelerator $i"
-          "$TEST_BINARY" $@
-        )
+      exec {lock_fd}>"/var/lock/torch_tpu_accelerator_lock_${i}_${j}" || exit 1
+      if flock -n "$lock_fd"; then
+        export TPU_VISIBLE_CHIPS=$i
+        echo "Running test $TEST_BINARY $* on accelerator $i"
+        "$TEST_BINARY" "$@" &
+        TEST_PID=$!
+        wait "$TEST_PID"
         return_code=$?
-        # flock locks are automatically released when the FD is closed.
         exit $return_code
+      else
+        # Close file descriptor immediately to prevent FD leak during polling.
+        exec {lock_fd}>&-
       fi
     done
   done

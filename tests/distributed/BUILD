@@ -730,7 +730,12 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_collective_ops_test",
     srcs = ["split_collective_ops_test.py"],
-    notest_oss = "TODO(b/537411907): Re-enable in OSS once fixed.",
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        "PYTHONFAULTHANDLER": "1",
+        "GLOG_minloglevel": "0",
+        "TPU_STDERR_LOG_LEVEL": "0",
+    },
     tags = if_oss(
         ["exclusive"],
         [],

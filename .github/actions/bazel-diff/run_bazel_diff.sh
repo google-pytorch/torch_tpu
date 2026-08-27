@@ -125,7 +125,7 @@ if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   # as a hard error -- unlike the wildcard //... runs everywhere else, which
   # skip it. --skip_incompatible_explicit_targets restores the wildcard
   # behavior, so config-gated tests are skipped rather than failing presubmit.
-  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS --skip_incompatible_explicit_targets --target_pattern_file="$WORKSPACE_DIR/impacted_targets.txt"
+  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS --runs_per_test=20 --skip_incompatible_explicit_targets --target_pattern_file="$WORKSPACE_DIR/impacted_targets.txt"
   BAZEL_EXIT_CODE=$?
 
   # Re-enable "exit on error"
