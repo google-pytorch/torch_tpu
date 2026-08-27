@@ -24,18 +24,20 @@ from torch_tpu._internal.distributed import torchcomm_tpu
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests.distributed import distributed_utils
+import torchcomms
 
 
 def _run_with_torchcomms(
-    fn: Callable[[torchcomm_tpu.TorchCommsTPU, int, int], None],
+    fn: Callable[[torchcomms.TorchComm, int, int], None],
 ) -> None:
-  """Worker wrapper that initializes TPU distributed PG and creates communicator via create_torchcomms_tpu."""
+  """Worker wrapper that initializes TPU distributed PG and creates communicator via torchcomms.new_comm."""
+  torchcomm_tpu.register_torchcomms_tpu()
   dist.init_process_group(backend="tpu_dist")
   rank = dist.get_rank()
   world_size = dist.get_world_size()
   dev = torch.device("tpu", torch.tpu.current_device())
 
-  comm = torchcomm_tpu.create_torchcomms_tpu(
+  comm = torchcomms.new_comm(
       "tpu",
       device=dev,
       name=f"tpu_comm_world_{world_size}",
@@ -44,27 +46,30 @@ def _run_with_torchcomms(
   try:
     fn(comm, rank, world_size)
   finally:
+    if not comm.get_backend_impl().is_finalized():
+      comm.finalize()
     if dist.is_initialized():
       dist.barrier()
       dist.destroy_process_group()
 
 
 def _worker_test_comm_attributes(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
-  assert comm.rank == rank
-  assert comm.size == world_size
   assert comm.get_rank() == rank
   assert comm.get_size() == world_size
-  assert not comm.is_finalized()
+  assert comm.get_backend() == "tpu"
+  assert not comm.get_backend_impl().is_finalized()
   logging.info("Rank %d/%d verified communicator attributes.", rank, world_size)
 
 
 def _worker_test_all_reduce(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
   tensor = torch.tensor([float(rank + 1)], dtype=torch.float32, device="tpu")
-  comm.all_reduce(tensor, op=dist.ReduceOp.SUM)
+  work = comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
+  work.wait()
+  assert work.is_completed()
 
   expected_sum = float(world_size * (world_size + 1) // 2)
   actual_val = tensor.item()
@@ -75,7 +80,7 @@ def _worker_test_all_reduce(
 
 
 def _worker_test_all_gather(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
   in_tensor = torch.tensor(
       [float(rank * 10 + 1)], dtype=torch.float32, device="tpu"
@@ -84,7 +89,9 @@ def _worker_test_all_gather(
       torch.zeros(1, dtype=torch.float32, device="tpu")
       for _ in range(world_size)
   ]
-  comm.all_gather(tensor_list, in_tensor)
+  work = comm.all_gather(tensor_list, in_tensor, async_op=False)
+  work.wait()
+  assert work.is_completed()
 
   for i in range(world_size):
     expected_val = float(i * 10 + 1)
@@ -99,11 +106,13 @@ def _worker_test_all_gather(
 
 
 def _worker_test_all_gather_single(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
   in_tensor = torch.tensor([float(rank)], dtype=torch.float32, device="tpu")
   out_tensor = torch.zeros(world_size, dtype=torch.float32, device="tpu")
-  comm.all_gather_single(out_tensor, in_tensor)
+  work = comm.all_gather_single(out_tensor, in_tensor, async_op=False)
+  work.wait()
+  assert work.is_completed()
 
   for i in range(world_size):
     actual_val = out_tensor[i].item()
@@ -115,14 +124,16 @@ def _worker_test_all_gather_single(
 
 
 def _worker_test_broadcast(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
   if rank == 0:
     tensor = torch.tensor([123.456, 789.0], dtype=torch.float32, device="tpu")
   else:
     tensor = torch.zeros(2, dtype=torch.float32, device="tpu")
 
-  comm.broadcast(tensor, src=0)
+  work = comm.broadcast(tensor, root=0, async_op=False)
+  work.wait()
+  assert work.is_completed()
 
   assert abs(tensor[0].item() - 123.456) < 1e-3
   assert abs(tensor[1].item() - 789.0) < 1e-3
@@ -130,19 +141,22 @@ def _worker_test_broadcast(
 
 
 def _worker_test_barrier(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
-  comm.barrier()
+  work = comm.barrier(async_op=False)
+  work.wait()
+  assert work.is_completed()
   logging.info("Rank %d: barrier completed successfully.", rank)
 
 
 def _worker_test_finalize(
-    comm: torchcomm_tpu.TorchCommsTPU, rank: int, world_size: int
+    comm: torchcomms.TorchComm, rank: int, world_size: int
 ) -> None:
-  assert not comm.is_finalized()
+  backend_impl = comm.get_backend_impl()
+  assert not backend_impl.is_finalized()
   comm.finalize()
-  assert comm.is_finalized()
-  assert comm.get_backend() is None
+  assert backend_impl.is_finalized()
+  assert backend_impl.get_backend() is None
   logging.info("Rank %d: finalize completed successfully.", rank)
 
 

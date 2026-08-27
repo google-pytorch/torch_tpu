@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for TorchCommsTPU communicator and backend registration."""
+"""Unit tests for TorchTPU integration using TorchComm directly."""
 
+import datetime
 import os
 from unittest import mock
 from absl.testing import absltest
@@ -23,198 +24,387 @@ import torch.distributed.distributed_c10d as c10d
 from torch_tpu import _loader
 from torch_tpu._internal.distributed import torchcomm_tpu
 from tests import seed_test_utils
+import torchcomms
 
 _loader._init_device("tpu")
 
 
 class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
 
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    torchcomm_tpu.register_torchcomms_tpu()
+
   def test_communicator_properties(self):
-    dev = torch.device("tpu:0")
-    comm = torchcomm_tpu.TorchCommsTPU(
-        backend_name="tpu",
-        device=dev,
+    """Verifies communicator attributes, rank, size, device, and backend name."""
+    comm = torchcomms.new_comm(
+        "tpu",
+        torch.device("cpu"),
         name="test_comm_0",
-        group_rank=2,
-        group_size=8,
     )
-
-    self.assertEqual(comm.rank, 2)
-    self.assertEqual(comm.size, 8)
-    self.assertEqual(comm.device, dev)
-    self.assertEqual(comm.name, "test_comm_0")
-
-    self.assertEqual(comm.get_rank(), 2)
-    self.assertEqual(comm.get_size(), 8)
-    self.assertEqual(comm.get_device(), dev)
+    self.assertIsInstance(comm, torchcomms.TorchComm)
+    self.assertEqual(comm.get_rank(), 0)
+    self.assertEqual(comm.get_size(), 1)
+    self.assertEqual(comm.get_device(), torch.device("cpu"))
     self.assertEqual(comm.get_name(), "test_comm_0")
-    self.assertFalse(comm.is_finalized())
+    self.assertEqual(comm.get_backend(), "tpu")
+
+    # Verify that get_backend_impl() returns the underlying TorchCommsTPU backend
+    backend_impl = comm.get_backend_impl()
+    self.assertIsInstance(backend_impl, torchcomm_tpu.TorchCommsTPU)
+    self.assertFalse(backend_impl.is_finalized())
+
+    comm.finalize()
+    self.assertTrue(backend_impl.is_finalized())
 
   def test_env_var_configuration(self):
+    """Verifies rank and size initialization from TORCHCOMM_* environment variables."""
     env_patch = {
         "TORCHCOMM_RANK": "3",
         "TORCHCOMM_SIZE": "16",
     }
     with mock.patch.dict(os.environ, env_patch):
-      comm = torchcomm_tpu.TorchCommsTPU()
-      self.assertEqual(comm.rank, 3)
-      self.assertEqual(comm.size, 16)
+      comm = torchcomms.new_comm(
+          "tpu",
+          torch.device("cpu"),
+          name="test_env_comm",
+      )
+      self.assertEqual(comm.get_rank(), 3)
+      self.assertEqual(comm.get_size(), 16)
+      comm.finalize()
 
   def test_rank_size_fallback_to_rank_world_size(self):
+    """Verifies fallback to standard RANK and WORLD_SIZE environment variables."""
     env_patch = {
         "RANK": "1",
         "WORLD_SIZE": "4",
     }
-    # Clear TORCHCOMM_* if set
     with mock.patch.dict(os.environ, env_patch, clear=False), mock.patch.dict(
         os.environ, {"TORCHCOMM_RANK": "", "TORCHCOMM_SIZE": ""}
     ):
       os.environ.pop("TORCHCOMM_RANK", None)
       os.environ.pop("TORCHCOMM_SIZE", None)
-      comm = torchcomm_tpu.TorchCommsTPU()
-      self.assertEqual(comm.rank, 1)
-      self.assertEqual(comm.size, 4)
+      comm = torchcomms.new_comm(
+          "tpu",
+          torch.device("cpu"),
+          name="test_fallback_comm",
+      )
+      self.assertEqual(comm.get_rank(), 1)
+      self.assertEqual(comm.get_size(), 4)
+      comm.finalize()
 
   def test_finalize_lifecycle(self):
-    comm = torchcomm_tpu.TorchCommsTPU(group_rank=0, group_size=1)
-    self.assertFalse(comm.is_finalized())
+    """Verifies communicator finalization lifecycle, idempotency, and post-finalize guard."""
+    comm = torchcomms.new_comm(
+        "tpu",
+        torch.device("cpu"),
+        name="test_fin_comm",
+    )
+    backend_impl = comm.get_backend_impl()
+    self.assertFalse(backend_impl.is_finalized())
 
     comm.finalize()
-    self.assertTrue(comm.is_finalized())
-    self.assertIsNone(comm.get_backend())
+    self.assertTrue(backend_impl.is_finalized())
+    self.assertIsNone(backend_impl.get_backend())
 
     # Finalize should be idempotent
     comm.finalize()
-    self.assertTrue(comm.is_finalized())
+    self.assertTrue(backend_impl.is_finalized())
 
-    # Operations should raise error after finalize
+    # Collectives should raise error after communicator is finalized
     dummy_tensor = torch.tensor([1.0])
     with self.assertRaisesRegex(RuntimeError, "finalized"):
-      comm.all_reduce(dummy_tensor)
-
-    with self.assertRaisesRegex(RuntimeError, "Cannot split"):
-      comm.split(color=1, key=0)
+      comm.all_reduce(dummy_tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
 
   def test_split_subgroup(self):
-    comm = torchcomm_tpu.TorchCommsTPU(
-        name="parent_mesh",
-        group_rank=0,
-        group_size=4,
+    """Verifies splitting a communicator into a subgroup using TorchComm.split."""
+    env_patch = {
+        "TORCHCOMM_RANK": "0",
+        "TORCHCOMM_SIZE": "4",
+    }
+    with mock.patch.dict(os.environ, env_patch):
+      comm = torchcomms.new_comm(
+          "tpu",
+          torch.device("cpu"),
+          name="parent_mesh",
+      )
+      # Split communicator with subset of ranks
+      sub_comm = comm.split([0, 2], name="sub_mesh")
+      self.assertIsInstance(sub_comm, torchcomms.TorchComm)
+      self.assertEqual(sub_comm.get_rank(), 0)
+      self.assertEqual(sub_comm.get_size(), 2)
+      self.assertEqual(sub_comm.get_name(), "sub_mesh")
+      self.assertEqual(sub_comm.get_backend(), "tpu")
+
+      # A rank not present in the split list receives None
+      excluded_comm = comm.split([1, 3], name="other_mesh")
+      self.assertIsNone(excluded_comm)
+
+      comm.finalize()
+      sub_comm.finalize()
+
+  def test_registration_with_real_torchcomms(self):
+    """Verifies that TorchTPU backend registration is correctly reflected in torchcomms."""
+    self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu"))
+    self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu_dist"))
+    self.assertTrue(torchcomms._comms._is_backend_registered("tpu"))
+    self.assertTrue(torchcomms._comms._is_backend_registered("tpu_dist"))
+
+  def test_torchcomms_reduce_op_conversion(self):
+    """Verifies bidirectional conversion between torchcomms.ReduceOp and dist.ReduceOp."""
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.SUM),
+        dist.ReduceOp.SUM,
     )
-    sub_comm = comm.split(color=1, key=2)
-    self.assertEqual(sub_comm.rank, 2)
-    self.assertEqual(sub_comm.size, 4)
-    self.assertEqual(sub_comm.name, "parent_mesh_split_1_2")
-    self.assertFalse(sub_comm.is_finalized())
-
-  def test_create_torchcomm_tpu_factory(self):
-    dev = torch.device("tpu:0")
-    comm = torchcomm_tpu.create_torchcomms_tpu(
-        backend_str="tpu",
-        device=dev,
-        name="factory_comm",
-        hints={"custom_hint": 123},
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.PRODUCT),
+        dist.ReduceOp.PRODUCT,
     )
-    self.assertIsInstance(comm, torchcomm_tpu.TorchCommsTPU)
-    self.assertEqual(comm.name, "factory_comm")
-    self.assertEqual(comm.device, dev)
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.MIN),
+        dist.ReduceOp.MIN,
+    )
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.MAX),
+        dist.ReduceOp.MAX,
+    )
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.BAND),
+        dist.ReduceOp.BAND,
+    )
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.BOR),
+        dist.ReduceOp.BOR,
+    )
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.BXOR),
+        dist.ReduceOp.BXOR,
+    )
+    self.assertEqual(
+        torchcomm_tpu._to_dist_reduce_op(torchcomms.ReduceOp.AVG),
+        dist.ReduceOp.AVG,
+    )
 
-  def test_backend_wrapper_compatibility(self):
-    class FakeBackendWrapper:
+    # Unsupported / unmapped reduction type raises ValueError
+    invalid_op = mock.MagicMock(spec=torchcomms.ReduceOp)
+    invalid_op.type = "UNSUPPORTED_TYPE"
+    with self.assertRaises(ValueError):
+      torchcomm_tpu._to_dist_reduce_op(invalid_op)
 
-      def __init__(self, comm):
-        self._comm = comm
-
-      def get_comm(self):
-        return self._comm
-
-    comm = torchcomm_tpu.TorchCommsTPU(group_rank=0, group_size=1)
-    wrapper = FakeBackendWrapper(comm)
-    self.assertIs(wrapper.get_comm(), comm)
-
-  def test_collectives_delegation(self):
+  def test_torchcomms_all_reduce(self):
+    """Verifies all_reduce collective delegation and TorchWork handle completion."""
+    comm = torchcomms.new_comm(
+        "tpu", torch.device("cpu"), name="test_all_reduce"
+    )
     mock_pg = mock.MagicMock()
-    comm = torchcomm_tpu.TorchCommsTPU(group_rank=0, group_size=2, pg=mock_pg)
+    comm.get_backend_impl()._pg = mock_pg
 
-    self.assertIs(comm.get_backend(), mock_pg)
-    self.assertIs(comm.unsafe_get_backend(), mock_pg)
-
-    t = torch.tensor([1.0, 2.0])
-    out = torch.empty([2, 2])
-
-    # all_reduce
-    comm.all_reduce(t, op=dist.ReduceOp.SUM, async_op=True)
+    tensor = torch.tensor([1.0, 2.0])
+    work = comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.allreduce.called)
-    call_args = mock_pg.allreduce.call_args[0]
-    self.assertTrue(call_args[1].asyncOp)
+    self.assertEqual(
+        mock_pg.allreduce.call_args[0][1].reduceOp, dist.ReduceOp.SUM
+    )
+    comm.finalize()
 
-    # all_gather
-    t_list = [torch.empty_like(t), torch.empty_like(t)]
-    comm.all_gather(t_list, t)
+  def test_torchcomms_broadcast(self):
+    """Verifies broadcast collective delegation and TorchWork handle completion."""
+    comm = torchcomms.new_comm(
+        "tpu", torch.device("cpu"), name="test_broadcast"
+    )
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    tensor = torch.tensor([1.0, 2.0])
+    work = comm.broadcast(tensor, root=0, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
+    self.assertTrue(mock_pg.broadcast.called)
+    comm.finalize()
+
+  def test_torchcomms_all_gather_and_all_gather_v(self):
+    """Verifies standard and vectorized all_gather collective operations."""
+    comm = torchcomms.new_comm(
+        "tpu", torch.device("cpu"), name="test_all_gather"
+    )
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    tensor = torch.tensor([1.0, 2.0])
+    out_list = [torch.empty_like(tensor), torch.empty_like(tensor)]
+
+    # Standard all_gather
+    work = comm.all_gather(out_list, tensor, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.allgather.called)
 
-    # all_gather_single & alias
-    comm.all_gather_single(out, t)
-    self.assertTrue(mock_pg._allgather_base.called)
-    comm.all_gather_into_tensor(out, t)
+    # Vectorized all_gather_v
+    work_v = comm.all_gather_v(out_list, tensor, async_op=False)
+    self.assertIsInstance(work_v, torchcomms.TorchWork)
+    work_v.wait()
+    self.assertTrue(work_v.is_completed())
+    comm.finalize()
 
-    # reduce_scatter
-    comm.reduce_scatter(t, t_list, op=dist.ReduceOp.SUM)
+  def test_torchcomms_all_gather_single(self):
+    """Verifies flattened all_gather_single contiguous tensor collective."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_ags")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    tensor = torch.tensor([1.0, 2.0])
+    out = torch.empty([2, 2])
+    work = comm.all_gather_single(out, tensor, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
+    self.assertTrue(mock_pg._allgather_base.called)
+    comm.finalize()
+
+  def test_torchcomms_reduce_scatter_and_reduce_scatter_v(self):
+    """Verifies standard and vectorized reduce_scatter collective operations."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_rs")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    out = torch.empty([2])
+    in_list = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
+
+    # Standard reduce_scatter
+    work = comm.reduce_scatter(
+        out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+    )
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.reduce_scatter.called)
 
-    # reduce_scatter_single & alias
-    comm.reduce_scatter_single(t, out, op=dist.ReduceOp.SUM)
+    # Vectorized reduce_scatter_v
+    work_v = comm.reduce_scatter_v(
+        out, in_list, op=torchcomms.ReduceOp.SUM, async_op=False
+    )
+    self.assertIsInstance(work_v, torchcomms.TorchWork)
+    work_v.wait()
+    self.assertTrue(work_v.is_completed())
+    comm.finalize()
+
+  def test_torchcomms_reduce_scatter_single(self):
+    """Verifies contiguous single-tensor reduce_scatter_single collective."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_rss")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    out = torch.empty([2])
+    in_t = torch.empty([4])
+    work = comm.reduce_scatter_single(
+        out, in_t, op=torchcomms.ReduceOp.SUM, async_op=False
+    )
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg._reduce_scatter_base.called)
-    comm.reduce_scatter_tensor(t, out, op=dist.ReduceOp.SUM)
+    comm.finalize()
 
-    # broadcast
-    comm.broadcast(t, src=0)
-    self.assertTrue(mock_pg.broadcast.called)
+  def test_torchcomms_barrier(self):
+    """Verifies barrier collective synchronization."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_barrier")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
 
-    # barrier
-    comm.barrier()
+    work = comm.barrier(async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.barrier.called)
+    comm.finalize()
 
-    # send / recv
-    mock_pg.experimental_send = mock.MagicMock()
-    mock_pg.experimental_recv = mock.MagicMock()
-    comm.send(t, dst=1, tag=42)
-    mock_pg.experimental_send.assert_called_once_with([t], 1, 42)
-    comm.recv(t, src=1, tag=42)
-    mock_pg.experimental_recv.assert_called_once_with([t], 1, 42)
+  def test_torchcomms_send_recv(self):
+    """Verifies point-to-point send and recv operations."""
+    env_patch = {
+        "TORCHCOMM_RANK": "0",
+        "TORCHCOMM_SIZE": "2",
+    }
+    with mock.patch.dict(os.environ, env_patch):
+      comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_sr")
+      mock_pg = mock.MagicMock()
+      mock_pg.experimental_send = mock.MagicMock()
+      mock_pg.experimental_recv = mock.MagicMock()
+      comm.get_backend_impl()._pg = mock_pg
 
-    # all_to_all
-    comm.all_to_all(t_list, t_list)
+      tensor = torch.tensor([1.0, 2.0])
+      work_send = comm.send(tensor, dst=1, async_op=False)
+      self.assertIsInstance(work_send, torchcomms.TorchWork)
+      work_send.wait()
+      self.assertTrue(work_send.is_completed())
+      self.assertTrue(mock_pg.experimental_send.called)
+
+      work_recv = comm.recv(tensor, src=1, async_op=False)
+      self.assertIsInstance(work_recv, torchcomms.TorchWork)
+      work_recv.wait()
+      self.assertTrue(work_recv.is_completed())
+      self.assertTrue(mock_pg.experimental_recv.called)
+      comm.finalize()
+
+  def test_torchcomms_all_to_all(self):
+    """Verifies all_to_all collective operation with tensor lists."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_a2a")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    t_list = [torch.tensor([1.0]), torch.tensor([2.0])]
+    work = comm.all_to_all(t_list, t_list, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.alltoall.called)
+    comm.finalize()
 
-    # all_to_all_single
-    comm.all_to_all_single(out, out, [1, 1], [1, 1])
+  def test_torchcomms_all_to_all_single_and_v(self):
+    """Verifies all_to_all_single and split-based all_to_all_v_single."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_a2as")
+    mock_pg = mock.MagicMock()
+    comm.get_backend_impl()._pg = mock_pg
+
+    out = torch.empty([2, 2])
+    work = comm.all_to_all_single(out, out, async_op=False)
+    self.assertIsInstance(work, torchcomms.TorchWork)
+    work.wait()
+    self.assertTrue(work.is_completed())
     self.assertTrue(mock_pg.alltoall_base.called)
 
-  def test_registration_with_torchcomms(self):
-    fake_torchcomms = mock.MagicMock()
-    registered_backends = {}
+    work_v = comm.all_to_all_v_single(
+        out,
+        out,
+        output_split_sizes=[1, 1],
+        input_split_sizes=[1, 1],
+        async_op=False,
+    )
+    self.assertIsInstance(work_v, torchcomms.TorchWork)
+    work_v.wait()
+    self.assertTrue(work_v.is_completed())
+    comm.finalize()
 
-    def fake_register(name, creator, devices):
-      registered_backends[name] = (creator, devices)
+  def test_torchcomms_set_timeout(self):
+    """Verifies setting operation timeout on the communicator."""
+    comm = torchcomms.new_comm(
+        "tpu", torch.device("cpu"), name="test_set_timeout"
+    )
+    comm.set_timeout(datetime.timedelta(milliseconds=4500))
 
-    fake_torchcomms.register_backend = fake_register
-    fake_torchcomms.is_backend_registered = lambda n: n in registered_backends
-
-    with mock.patch.dict("sys.modules", {"torchcomms": fake_torchcomms}):
-      registered = torchcomm_tpu.register_torchcomms_tpu()
-      self.assertTrue(registered)
-      self.assertIn("tpu", registered_backends)
-      self.assertIn("tpu_dist", registered_backends)
-      self.assertEqual(registered_backends["tpu"][1], ["tpu"])
-
-      # Test new_comm creation via registered creator
-      creator, _ = registered_backends["tpu"]
-      comm = creator("tpu", torch.device("tpu:0"), name="tc_tpu")
-      self.assertIsInstance(comm, torchcomm_tpu.TorchCommTPU)
+    backend_impl = comm.get_backend_impl()
+    self.assertEqual(
+        backend_impl._timeout, datetime.timedelta(milliseconds=4500)
+    )
+    comm.finalize()
 
   def test_torchcomms_handles_backend_routing(self):
-    # Verify that PyTorch c10d _torchcomms_handles_backend recognizes tpu
+    """Verifies c10d._torchcomms_handles_backend recognizes tpu and tpu_dist."""
     with mock.patch.multiple(
         c10d,
         _TORCHCOMM_AVAILABLE=True,
@@ -229,6 +419,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
       self.assertFalse(c10d._torchcomms_handles_backend("unknown_backend"))
 
   def test_c10d_backend_availability(self):
+    """Verifies backend availability registration with PyTorch c10d."""
     mock_distributed = mock.MagicMock()
     with mock.patch(
         "torch_tpu._internal.distributed.torchcomm_tpu.tpu_distributed",
@@ -241,156 +432,80 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
           dist.Backend.default_device_backend_map.get("tpu"), "tpu"
       )
 
-  def test_torchcomms_new_comm_standard_initialization(self):
-    fake_torchcomms = mock.MagicMock()
-    registered_backends = {}
-
-    def fake_register(name, creator, devices):
-      registered_backends[name] = (creator, devices)
-
-    def fake_new_comm(backend_str, *args, **kwargs):
-      if backend_str not in registered_backends:
-        raise ValueError(f"Backend {backend_str} not registered")
-      creator, _ = registered_backends[backend_str]
-      return creator(backend_str, *args, **kwargs)
-
-    fake_torchcomms.register_backend = fake_register
-    fake_torchcomms.is_backend_registered = lambda n: n in registered_backends
-    fake_torchcomms.new_comm = fake_new_comm
-
-    with mock.patch.dict("sys.modules", {"torchcomms": fake_torchcomms}):
-      torchcomm_tpu.register_torchcomms_tpu()
-      # Call standard torchcomms.new_comm entry point
-      comm = fake_torchcomms.new_comm(
-          "tpu",
-          device=torch.device("tpu:0"),
-          name="std_tpu_comm",
-      )
-      self.assertIsInstance(comm, torchcomm_tpu.TorchCommTPU)
-      self.assertEqual(comm.name, "std_tpu_comm")
-      self.assertEqual(comm.device, torch.device("tpu:0"))
-
-  def test_is_torchcomms_registered(self):
-    # 1. When torchcomms is not available
-    with mock.patch.dict("sys.modules", {"torchcomms": None}):
-      self.assertFalse(torchcomm_tpu.is_torchcomms_registered("tpu"))
-
-    # 2. When torchcomms has _is_backend_registered
-    fake_torchcomms_1 = mock.MagicMock(spec=["_is_backend_registered"])
-    fake_torchcomms_1._is_backend_registered = lambda backend: backend in (
-        "tpu",
-        "tpu_dist",
-    )
-    with mock.patch.dict("sys.modules", {"torchcomms": fake_torchcomms_1}):
-      self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu"))
-      self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu_dist"))
-      self.assertFalse(torchcomm_tpu.is_torchcomms_registered("nccl"))
-
-    # 3. When torchcomms has is_backend_registered
-    fake_torchcomms_2 = mock.MagicMock(spec=["is_backend_registered"])
-    fake_torchcomms_2.is_backend_registered = lambda backend: backend == "tpu"
-    with mock.patch.dict("sys.modules", {"torchcomms": fake_torchcomms_2}):
-      self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu"))
-      self.assertFalse(torchcomm_tpu.is_torchcomms_registered("cuda"))
-
-    # 4. When torchcomms has is_backend_built
-    fake_torchcomms_3 = mock.MagicMock(spec=["is_backend_built"])
-    fake_torchcomms_3.is_backend_built = lambda backend: backend == "tpu"
-    with mock.patch.dict("sys.modules", {"torchcomms": fake_torchcomms_3}):
-      self.assertTrue(torchcomm_tpu.is_torchcomms_registered("tpu"))
-      self.assertFalse(torchcomm_tpu.is_torchcomms_registered("gloo"))
-
   def test_unsupported_stubs_raise_not_implemented(self):
-    mock_pg = mock.MagicMock()
-    comm = torchcomm_tpu.TorchCommTPU(
-        backend_name="tpu",
-        device=torch.device("tpu:0"),
-        pg=mock_pg,
-        group_rank=0,
-        group_size=2,
-    )
+    """Verifies that unsupported collective or communicator features raise NotImplementedError."""
+    comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_stubs")
+    backend = comm.get_backend_impl()
     t = torch.zeros(4, device="cpu")
 
-    self.assertEqual(comm.backend_name, "tpu")
-    self.assertEqual(comm.get_backend_name(), "tpu")
-    self.assertEqual(comm.device_type, "tpu")
-    self.assertEqual(comm.hints, {})
-    self.assertIsNone(comm.store)
-    self.assertIsNotNone(comm.timeout)
+    self.assertEqual(backend.backend_name, "tpu")
+    self.assertEqual(backend.get_backend_name(), "tpu")
+    self.assertIn(backend.device_type, ("cpu", "tpu"))
+    self.assertEqual(backend.hints, {})
+    self.assertIsNone(backend.store)
+    self.assertIsNotNone(backend.timeout)
 
     with self.assertRaises(NotImplementedError):
-      comm.create_pair_comm(1)
+      backend.create_pair_comm(1)
 
     with self.assertRaises(NotImplementedError):
-      comm.split_group([0, 1])
+      backend.split_group([0, 1])
 
     with self.assertRaises(NotImplementedError):
-      comm.reconfigure(ranks=[0, 1], size=2)
+      backend.reconfigure(ranks=[0, 1], size=2)
 
     with self.assertRaises(NotImplementedError):
-      comm.create_window(t)
+      backend.create_window(t)
 
     with self.assertRaises(NotImplementedError):
-      comm.map_remote_tensor(t, peer_rank=1)
+      backend.map_remote_tensor(t, peer_rank=1)
 
     with self.assertRaises(NotImplementedError):
-      comm.create_batch()
+      backend.create_batch()
 
     with self.assertRaises(NotImplementedError):
-      comm.all_reduce_coalesced([t])
+      backend.all_reduce_coalesced([t])
 
     with self.assertRaises(NotImplementedError):
-      comm.all_gather_coalesced([[t]], [t])
+      backend.all_gather_coalesced([[t]], [t])
 
     with self.assertRaises(NotImplementedError):
-      comm.reduce_scatter_coalesced([t], [[t]])
+      backend.reduce_scatter_coalesced([t], [[t]])
 
     with self.assertRaises(NotImplementedError):
-      comm.all_to_all_coalesced([[t]], [[t]])
+      backend.all_to_all_coalesced([[t]], [[t]])
 
     with self.assertRaises(NotImplementedError):
-      comm.reduce(t, dst=0)
+      backend.reduce(t, dst=0)
 
     with self.assertRaises(NotImplementedError):
-      comm.gather(input_tensor=t, dst=0)
+      backend.gather(input_tensor=t, dst=0)
 
     with self.assertRaises(NotImplementedError):
-      comm.scatter(output_tensor=t, src=0)
+      backend.scatter(output_tensor=t, src=0)
 
     with self.assertRaises(NotImplementedError):
-      comm.monitored_barrier()
+      backend.monitored_barrier()
 
     with self.assertRaises(NotImplementedError):
-      comm.register_flight_recorder_hook(mock.MagicMock())
+      backend.register_flight_recorder_hook(mock.MagicMock())
 
     with self.assertRaises(NotImplementedError):
-      comm.get_flight_recorder_traces()
+      backend.get_flight_recorder_traces()
 
     with self.assertRaises(NotImplementedError):
-      comm.broadcast_object_list([1, 2, 3])
+      backend.broadcast_object_list([1, 2, 3])
 
     with self.assertRaises(NotImplementedError):
-      comm.all_gather_object([], {"a": 1})
+      backend.all_gather_object([], {"a": 1})
 
     with self.assertRaises(NotImplementedError):
-      comm.gather_object({"a": 1})
+      backend.gather_object({"a": 1})
 
     with self.assertRaises(NotImplementedError):
-      comm.scatter_object_list([])
+      backend.scatter_object_list([])
 
-  def test_context_manager_finalization(self):
-    mock_pg = mock.MagicMock()
-    comm = torchcomm_tpu.TorchCommsTPU(
-        backend_name="tpu",
-        device=torch.device("tpu:0"),
-        pg=mock_pg,
-        group_rank=0,
-        group_size=2,
-    )
-    with comm as c:
-      self.assertIs(c, comm)
-      self.assertFalse(c.is_finalized())
-    self.assertTrue(comm.is_finalized())
+    comm.finalize()
 
 
 # Alias for backward compatibility

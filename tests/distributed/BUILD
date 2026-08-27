@@ -77,11 +77,14 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchcomm_tpu_test",
     srcs = ["torchcomm_tpu_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
+    nobuild_oss = "torchcomms is not yet available in OSS",
     tags = [
         "requires-tpu-v5lite",
     ],
-    deps = [
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
@@ -94,7 +97,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "torchcomm_multi_tpu_test",
     srcs = ["torchcomm_multi_tpu_test.py"],
-    notest_oss = "fix hang in OSS",  # TODO
+    nobuild_oss = "torchcomms is not yet available in OSS",
     shard_count = 7,
     tags = if_oss(
         ["exclusive"],
@@ -105,7 +108,10 @@ torch_tpu_py_test(
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
         "requires-tpu-v5lite:8",
     ],
-    deps = [
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
         ":distributed_utils",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",

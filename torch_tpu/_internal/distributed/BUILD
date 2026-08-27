@@ -14,6 +14,7 @@
 
 load(
     "//build_files:build_defs.bzl",
+    "if_oss",
     "oss_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -101,7 +102,10 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "torchcomm_tpu",
     srcs = ["torchcomm_tpu.py"],
-    deps = [
+    deps = if_oss(
+        [],
+        ["@pypi//torchcomms"],
+    ) + [
         ":tpu_distributed",  # buildcleaner: keep
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",

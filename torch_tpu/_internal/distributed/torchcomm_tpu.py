@@ -28,14 +28,54 @@ from absl import logging
 import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
+from torch_tpu._internal.distributed import tpu_distributed
 
 try:
-  from torch_tpu._internal.distributed import tpu_distributed
-except ImportError:
-  tpu_distributed = None  # pyrefly: ignore[assignment]
+  import torchcomms  # pyrefly: ignore[missing-import]
+
+  _TorchCommBackendBase = torchcomms.TorchCommBackend  # pyrefly: ignore[invalid-inheritance]
+except Exception:
+  _TorchCommBackendBase = object
 
 
-class TorchCommsTPU:
+def _to_dist_reduce_op(op: Any) -> Any:
+  """Converts torchcomms.ReduceOp or dist.ReduceOp to dist.ReduceOp.
+
+  torchcomms defines its own C++ ReduceOp enum/class. When collectives like
+  all_reduce or reduce_scatter are dispatched through the torchcomms.TorchComm
+  wrapper, op is passed as a torchcomms.ReduceOp instance. The underlying
+  PyTorch ProcessGroup (c10d options) requires torch.distributed.ReduceOp,
+  so this translates between the two reduction types while preserving
+  backwards compatibility for raw dist.ReduceOp inputs.
+  """
+  if isinstance(op, (dist.ReduceOp.RedOpType, dist.ReduceOp)):
+    return op
+  try:
+    import torchcomms  # pyrefly: ignore[missing-import]
+
+    if isinstance(op, torchcomms.ReduceOp):
+      # Map torchcomms.RedOpType enum variants to PyTorch dist.ReduceOp equivalents
+      mapping = {
+          torchcomms.RedOpType.SUM: dist.ReduceOp.SUM,
+          torchcomms.RedOpType.PRODUCT: dist.ReduceOp.PRODUCT,
+          torchcomms.RedOpType.MIN: dist.ReduceOp.MIN,
+          torchcomms.RedOpType.MAX: dist.ReduceOp.MAX,
+          torchcomms.RedOpType.BAND: dist.ReduceOp.BAND,
+          torchcomms.RedOpType.BOR: dist.ReduceOp.BOR,
+          torchcomms.RedOpType.BXOR: dist.ReduceOp.BXOR,
+          torchcomms.RedOpType.AVG: dist.ReduceOp.AVG,
+      }
+      if op.type in mapping:
+        return mapping[op.type]
+      raise ValueError(f"Unsupported torchcomms ReduceOp: {op.type}")
+  except ValueError:
+    raise
+  except Exception:
+    pass
+  return op
+
+
+class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritance]
   """TorchComms communicator implementation for TPU devices.
 
   Wraps the underlying `ProcessGroupTpu` backend and satisfies the TorchComms /
@@ -55,6 +95,8 @@ class TorchCommsTPU:
       pg: dist.ProcessGroup | None = None,
       timeout: datetime.timedelta | None = None,
   ):
+    if _TorchCommBackendBase is not object:
+      super().__init__()
     self._backend_name = str(backend_name).lower()
 
     # Resolve device
@@ -124,6 +166,42 @@ class TorchCommsTPU:
         self._pg = None
     else:
       self._pg = None
+
+  def init(
+      self,
+      device: torch.device | str | None = None,
+      name: str | None = None,
+      options: Any = None,
+  ) -> None:
+    """Initializes the backend when instantiated via torchcomms.register_backend.
+
+    This implements the pure virtual `TorchCommBackend::init` method called by
+    the C++ `torchcomms.new_comm()` factory immediately after instantiating the
+    registered Python backend class.
+    """
+    if device is not None:
+      if isinstance(device, str):
+        try:
+          self._device = torch.device(device)
+        except RuntimeError:
+          # Fall back to privateuseone device type if the 'tpu' backend alias is uninitialized
+          self._device = torch.device(
+              device.replace("tpu", "privateuseone")
+              if "tpu" in device
+              else device
+          )
+      else:
+        self._device = device
+    if name is not None:
+      self._name = str(name)
+
+  def get_comm_name(self) -> str:
+    """Returns the communicator name."""
+    return self._name
+
+  def set_timeout(self, timeout: datetime.timedelta) -> None:
+    """Sets the communicator timeout."""
+    self._timeout = timeout
 
   @property
   def rank(self) -> int:
@@ -215,19 +293,45 @@ class TorchCommsTPU:
   def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
     self.finalize()
 
-  def split(self, color: int, key: int) -> TorchCommsTPU:
-    """Create a new subgroup communicator based on color and key."""
+  def split(
+      self,
+      ranks_or_color: Any = None,
+      name_or_key: Any = None,
+      options: Any = None,
+      *,
+      color: int | None = None,
+      key: int | None = None,
+  ) -> TorchCommsTPU:
+    """Creates a new subgroup communicator."""
     if self._finalized:
       raise RuntimeError("Cannot split a finalized communicator.")
-    subgroup_name = f"{self._name}_split_{color}_{key}"
+
+    if color is not None and key is not None:
+      sub_rank = key
+      sub_size = self._size
+      sub_name = f"{self._name}_split_{color}_{key}"
+    elif isinstance(ranks_or_color, list):
+      ranks = ranks_or_color
+      if self._rank not in ranks:
+        return None
+      sub_name = str(name_or_key or f"{self._name}_sub")
+      sub_rank = ranks.index(self._rank)
+      sub_size = len(ranks)
+    else:
+      sub_color = ranks_or_color if ranks_or_color is not None else 0
+      sub_key = name_or_key if name_or_key is not None else self._rank
+      sub_rank = int(sub_key)
+      sub_size = self._size
+      sub_name = f"{self._name}_split_{sub_color}_{sub_key}"
+
     return TorchCommsTPU(
         backend_name=self._backend_name,
         device=self._device,
-        name=subgroup_name,
+        name=sub_name,
         store=self._store,
         hints=self._hints,
-        group_rank=key,
-        group_size=self._size,
+        group_rank=sub_rank,
+        group_size=sub_size,
     )
 
   def _check_not_finalized(self) -> None:
@@ -241,7 +345,7 @@ class TorchCommsTPU:
   def all_reduce(
       self,
       tensor: torch.Tensor,
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: Any = dist.ReduceOp.SUM,
       async_op: bool = False,
   ) -> Any:
     self._check_not_finalized()
@@ -250,7 +354,7 @@ class TorchCommsTPU:
           "Underlying ProcessGroupTpu is not initialized on TorchCommTPU."
       )
     opts = c10d.AllreduceOptions()
-    opts.reduceOp = op
+    opts.reduceOp = _to_dist_reduce_op(op)
     opts.asyncOp = async_op
     return self._pg.allreduce([tensor], opts)
 
@@ -268,6 +372,15 @@ class TorchCommsTPU:
     opts = c10d.AllgatherOptions()
     opts.asyncOp = async_op
     return self._pg.allgather([tensor_list], [tensor], opts)
+
+  def all_gather_v(
+      self,
+      tensor_list: list[torch.Tensor],
+      tensor: torch.Tensor,
+      async_op: bool = False,
+  ) -> Any:
+    """Vectorized all_gather for variable-size tensors."""
+    return self.all_gather(tensor_list, tensor, async_op=async_op)
 
   def all_gather_single(
       self,
@@ -297,7 +410,7 @@ class TorchCommsTPU:
       self,
       output: torch.Tensor,
       tensor_list: list[torch.Tensor],
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: Any = dist.ReduceOp.SUM,
       async_op: bool = False,
   ) -> Any:
     self._check_not_finalized()
@@ -306,15 +419,25 @@ class TorchCommsTPU:
           "Underlying ProcessGroupTpu is not initialized on TorchCommTPU."
       )
     opts = c10d.ReduceScatterOptions()
-    opts.reduceOp = op
+    opts.reduceOp = _to_dist_reduce_op(op)
     opts.asyncOp = async_op
     return self._pg.reduce_scatter([output], [tensor_list], opts)
+
+  def reduce_scatter_v(
+      self,
+      output: torch.Tensor,
+      input_list: list[torch.Tensor],
+      op: Any = dist.ReduceOp.SUM,
+      async_op: bool = False,
+  ) -> Any:
+    """Vectorized reduce_scatter."""
+    return self.reduce_scatter(output, input_list, op=op, async_op=async_op)
 
   def reduce_scatter_single(
       self,
       output: torch.Tensor,
       input: torch.Tensor,
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: Any = dist.ReduceOp.SUM,
       async_op: bool = False,
   ) -> Any:
     self._check_not_finalized()
@@ -323,7 +446,7 @@ class TorchCommsTPU:
           "Underlying ProcessGroupTpu is not initialized on TorchCommTPU."
       )
     opts = c10d.ReduceScatterOptions()
-    opts.reduceOp = op
+    opts.reduceOp = _to_dist_reduce_op(op)
     opts.asyncOp = async_op
     return self._pg._reduce_scatter_base(output, input, opts)
 
@@ -331,7 +454,7 @@ class TorchCommsTPU:
       self,
       output: torch.Tensor,
       input: torch.Tensor,
-      op: dist.ReduceOp = dist.ReduceOp.SUM,
+      op: Any = dist.ReduceOp.SUM,
       async_op: bool = False,
   ) -> Any:
     """Alias for reduce_scatter_single."""
@@ -340,8 +463,9 @@ class TorchCommsTPU:
   def broadcast(
       self,
       tensor: torch.Tensor,
-      src: int = 0,
+      root: int = 0,
       async_op: bool = False,
+      src: int | None = None,
   ) -> Any:
     self._check_not_finalized()
     if self._pg is None:
@@ -349,7 +473,7 @@ class TorchCommsTPU:
           "Underlying ProcessGroupTpu is not initialized on TorchCommTPU."
       )
     opts = c10d.BroadcastOptions()
-    opts.rootRank = src
+    opts.rootRank = src if src is not None else root
     opts.asyncOp = async_op
     return self._pg.broadcast([tensor], opts)
 
@@ -367,7 +491,13 @@ class TorchCommsTPU:
         return dist.barrier()
       raise
 
-  def send(self, tensor: torch.Tensor, dst: int, tag: int = 0) -> Any:
+  def send(
+      self,
+      tensor: torch.Tensor,
+      dst: int,
+      async_op: bool = False,
+      tag: int = 0,
+  ) -> Any:
     self._check_not_finalized()
     if self._pg is None:
       raise RuntimeError(
@@ -377,7 +507,13 @@ class TorchCommsTPU:
       return self._pg.experimental_send([tensor], dst, tag)
     raise NotImplementedError("P2P send is not supported on this TPU backend.")
 
-  def recv(self, tensor: torch.Tensor, src: int, tag: int = 0) -> Any:
+  def recv(
+      self,
+      tensor: torch.Tensor,
+      src: int,
+      async_op: bool = False,
+      tag: int = 0,
+  ) -> Any:
     self._check_not_finalized()
     if self._pg is None:
       raise RuntimeError(
@@ -419,6 +555,27 @@ class TorchCommsTPU:
     opts.asyncOp = async_op
     return self._pg.alltoall_base(
         output, input, output_split_sizes or [], input_split_sizes or [], opts
+    )
+
+  def all_to_all_v_single(
+      self,
+      output: torch.Tensor,
+      input: torch.Tensor,
+      output_split_sizes: list[int] | None = None,
+      input_split_sizes: list[int] | None = None,
+      async_op: bool = False,
+      output_splits: list[int] | None = None,
+      input_splits: list[int] | None = None,
+  ) -> Any:
+    """Vectorized all_to_all_single."""
+    out_splits = output_split_sizes if output_splits is None else output_splits
+    in_splits = input_split_sizes if input_splits is None else input_splits
+    return self.all_to_all_single(
+        output,
+        input,
+        output_split_sizes=out_splits,
+        input_split_sizes=in_splits,
+        async_op=async_op,
     )
 
   # ---------------- Stubs for Unsupported / Future APIs ---------------- #
@@ -675,10 +832,8 @@ def register_torchcomms_tpu() -> bool:
     import torchcomms  # pylint: disable=g-import-not-at-top # pytype: disable=import-error # pyrefly: ignore[missing-import]
 
     if hasattr(torchcomms, "register_backend"):
-      torchcomms.register_backend("tpu", create_torchcomm_tpu, devices=["tpu"])
-      torchcomms.register_backend(
-          "tpu_dist", create_torchcomm_tpu, devices=["tpu"]
-      )
+      torchcomms.register_backend("tpu", TorchCommsTPU)
+      torchcomms.register_backend("tpu_dist", TorchCommsTPU)
       registered = True
   # TODO: b/537290986 - Fix API mismatch/version skew between torch_tpu and
   # internal torchcomms. Handled TypeError silently to restore legacy behavior
@@ -711,6 +866,10 @@ def is_torchcomms_registered(backend_name: str = "tpu") -> bool:
 
     if hasattr(torchcomms, "_is_backend_registered"):
       return torchcomms._is_backend_registered(backend_name)
+    if hasattr(torchcomms, "_comms") and hasattr(
+        torchcomms._comms, "_is_backend_registered"
+    ):
+      return torchcomms._comms._is_backend_registered(backend_name)
     if hasattr(torchcomms, "is_backend_registered"):
       return torchcomms.is_backend_registered(backend_name)
     if hasattr(torchcomms, "is_backend_built"):
