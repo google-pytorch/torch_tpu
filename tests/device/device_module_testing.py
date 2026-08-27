@@ -21,6 +21,7 @@ import threading
 from typing import Final
 from unittest import mock
 from absl.testing import absltest
+from absl.testing import parameterized
 import torch
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.device import _device_module
@@ -31,8 +32,14 @@ from tests import seed_test_utils
 _DEVICE_LOCK: Final[threading.Lock] = threading.Lock()
 
 
+class _DeviceModuleBaseMeta(parameterized.TestGeneratorMetaclass, abc.ABCMeta):
+  pass
+
+
 # pylint: disable=protected-access
-class DeviceModuleBase(seed_test_utils.RepeatableTest):
+class DeviceModuleBase(
+    seed_test_utils.RepeatableTest, metaclass=_DeviceModuleBaseMeta
+):
   """Abstract base class containing tests for the device module."""
 
   @property

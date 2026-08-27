@@ -108,7 +108,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/profiler:xprof_adapter",
         "//torch_tpu/_internal/sync",

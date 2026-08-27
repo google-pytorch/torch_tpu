@@ -680,7 +680,10 @@ def register_torchcomms_tpu() -> bool:
           "tpu_dist", create_torchcomm_tpu, devices=["tpu"]
       )
       registered = True
-  except (ImportError, AttributeError):
+  # TODO: b/537290986 - Fix API mismatch/version skew between torch_tpu and
+  # internal torchcomms. Handled TypeError silently to restore legacy behavior
+  # unblocked by src/layout migration.
+  except (ImportError, AttributeError, TypeError):
     pass
 
   # 2. Register with PyTorch c10d Backend

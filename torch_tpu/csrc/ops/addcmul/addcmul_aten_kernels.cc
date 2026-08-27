@@ -1,0 +1,112 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "torch_tpu/csrc/ops/addcmul/addcmul_aten_kernels.h"
+
+#include <utility>
+
+#include "ATen/core/ATen_fwd.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/dtype.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/fixed_size_span.h"
+#include "torch_tpu/csrc/common/to_string.h"
+#include "torch_tpu/csrc/common/utils.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
+#include "torch_tpu/csrc/eager/op_dispatcher.h"
+#include "torch_tpu/csrc/eager/tensor_to_buffer.h"
+#include "torch_tpu/csrc/ops/binary.h"
+#include "torch_tpu/csrc/ops/macros/kernel.h"
+#include "torch_tpu/csrc/ops/op_builder_utils.h"
+#include "torch_tpu/csrc/ops/op_names.h"
+#include "torch_tpu/csrc/ops/resize/resize_aten_kernels.h"
+
+namespace torch_tpu {
+namespace {
+
+absl::StatusOr<mlir::MlirOp> BuildAddcmulShlo(mlir::MlirOp self,
+                                              mlir::MlirOp tensor1,
+                                              mlir::MlirOp tensor2,
+                                              mlir::MlirOp value) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype, GetElementType(self));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(out_dtype));
+
+  TT_ASSIGN_OR_RETURN(self, CastIfNeeded(self, compute_dtype));
+  TT_ASSIGN_OR_RETURN(tensor1, CastIfNeeded(tensor1, compute_dtype));
+  TT_ASSIGN_OR_RETURN(tensor2, CastIfNeeded(tensor2, compute_dtype));
+  TT_ASSIGN_OR_RETURN(value, CastIfNeeded(value, compute_dtype));
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mul, BuildMulShlo(tensor1, tensor2));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp value_mul, BuildMulShlo(value, mul));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp result, BuildAddShlo(self, value_mul));
+  return CastIfNeeded(result, out_dtype);
+}
+
+}  // namespace
+
+at::Tensor& AtenAddcmulOut(const at::Tensor& self, const at::Tensor& tensor1,
+                           const at::Tensor& tensor2, const at::Scalar& value,
+                           at::Tensor& out) {
+  auto promoted_value = PromoteScalar(value);
+  TT_KERNEL(
+      OpName::kAddcmulOut, _, (self, tensor1, tensor2, promoted_value, out), {
+        TT_ASSIGN_OR_THROW(auto t1_t2_size,
+                           InferSize(tensor1.sizes(), tensor2.sizes()));
+        TT_ASSIGN_OR_THROW(auto expected_size,
+                           InferSize(self.sizes(), t1_t2_size));
+        TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, expected_size));
+
+        TT_ASSIGN_OR_THROW(at::Tensor value_tensor, promoted_value.GetTensor());
+        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
+                           tensor1.scalar_type() != at::ScalarType::Bool &&
+                           tensor2.scalar_type() != at::ScalarType::Bool,
+                       error::kInvalidArgument)
+            << "expected no input tensor dtype to be bool, "
+            << "got input: " << ToString(self.scalar_type())
+            << ", tensor1: " << ToString(tensor1.scalar_type())
+            << ", tensor2: " << ToString(tensor2.scalar_type());
+
+        // Build the op.
+        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 4> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [self_op, tensor1_op, tensor2_op, value_op] = inputs;
+          return BuildAddcmulShlo(self_op, tensor1_op, tensor2_op, value_op);
+        };
+
+        TT_ASSIGN_OR_THROW(mlir::ElementType out_dtype,
+                           ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_ASSIGN_OR_THROW(
+            auto result_buffer,
+            DispatchOp<4>(std::move(op_builder),
+                          {self, tensor1, tensor2, value_tensor},
+                          {.out_dtype = out_dtype,
+                           .out_dims = CopyIntVector(out.sizes()),
+                           .op_param_cache_keys = OpParamCacheKeys::Empty()}));
+        TT_THROW_IF_ERROR(
+            AssignBufferToAtTensor(std::move(result_buffer), out));
+        return out;
+      });
+}
+
+}  // namespace torch_tpu

@@ -32,7 +32,7 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
         "@pypi//portpicker",
     ],
 )
@@ -52,7 +52,7 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/profiler:profiler_config",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
     ],
 )
 
@@ -68,7 +68,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/profiler",
+        "//torch_tpu/_internal/profiler:_profiler_backend",
         "@pypi//portpicker",
     ],
 )
@@ -80,8 +80,8 @@ torch_tpu_cc_test(
         "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/_internal/profiler:xprof_callback_handler",
-        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/internal/profiler:xprof_callback_handler",
     ],
 )
 
@@ -94,9 +94,9 @@ torch_tpu_cc_test(
     requires_libtpu = True,
     deps = [
         "//shims/torch:kineto",
-        "//torch_tpu/_internal/profiler:tpu_profiler_plugin_cc",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:oss_test_main",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/internal/profiler:tpu_profiler_plugin_cc",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:string_view",
         "@tsl//tsl/profiler/protobuf:profiler_options_proto_cc",

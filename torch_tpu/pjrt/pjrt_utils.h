@@ -23,17 +23,19 @@
 #include <string>
 #include <vector>
 
+// clang-format off
 #include "ATen/core/TensorBody.h"
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/compilation.h"
-#include "torch_tpu/eager/device_buffer.h"
+#include "torch_tpu/csrc/common/compilation.h"
+#include "torch_tpu/csrc/eager/device_buffer.h"
 #include "xla/future.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/xla_data.pb.h"
+// clang-format on
 
 namespace torch_tpu {
 

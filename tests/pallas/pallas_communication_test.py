@@ -32,7 +32,6 @@ from torch_tpu._internal.distributed import multiprocessing
 from tests import seed_test_utils
 from tests.distributed import distributed_utils
 
-
 P = jax.sharding.PartitionSpec
 
 

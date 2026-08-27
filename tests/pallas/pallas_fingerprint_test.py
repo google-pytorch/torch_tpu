@@ -24,6 +24,7 @@ from jax.experimental import pallas as pl
 import torch
 from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import seed_test_utils
 
 _MOCK_MLIR_MODULE_SERIALIZED = b"mock_mlir_module_serialized"
@@ -87,10 +88,10 @@ class PallasFingerprintTest(seed_test_utils.RepeatableTest):
     # hardware kernel execution.
     with (
         mock.patch.object(
-            pallas.tpu_torch_pallas, "register_custom_kernel"
+            tpu_torch_pallas, "register_custom_kernel"
         ) as mock_register,
         mock.patch.object(
-            pallas.tpu_torch_pallas,
+            tpu_torch_pallas,
             "call_custom_kernel",
             return_value=[torch.zeros_like(x)],
         ) as mock_call,

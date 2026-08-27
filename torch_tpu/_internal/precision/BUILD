@@ -12,32 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
-
-licenses(["notice"])
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
-)
-
-pybind_extension(
-    name = "precision_impl",
-    srcs = ["precision_impl.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//shims/torch:aten_headers",
-        "//shims/torch:torch_headers",
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
-        "//torch_tpu/ops:precision_context",
-        "@stablehlo//:stablehlo_ops",
-    ],
 )
 
 # We use py_library_providing_imports_info with precision.modspec.json to explicitly
@@ -63,19 +44,26 @@ torch_tpu_py_library(
     srcs = [
         "precision.py",
     ],
+    allow_multiple_srcs = True,
     deps = [
         ":precision_impl",
         "//torch_tpu/_internal/utils:annotations",
     ],
 )
 
-# This library is not used directly, but is needed for go/cclean.
-torch_tpu_cc_library(
-    name = "precision_impl_build",
-    srcs = ["precision_impl.cc"],
+pybind_extension(
+    name = "precision_impl",
+    srcs = ["//torch_tpu/csrc/internal/precision:precision_impl.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    wrap_py_init = True,
     deps = [
-        "//shims/pybind11",
-        "//torch_tpu/ops:precision_context",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
+        "//torch_tpu/csrc/ops:precision_context",
         "@stablehlo//:stablehlo_ops",
     ],
 )

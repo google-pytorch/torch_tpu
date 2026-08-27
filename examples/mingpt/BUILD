@@ -45,7 +45,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils:test_utils",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
         "@pypi//jax",
         "@pypi//numpy",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
@@ -133,7 +133,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/eager:tpu_aten_kernels",
+        "//torch_tpu/csrc/eager:tpu_aten_kernels",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
     ],
 )
