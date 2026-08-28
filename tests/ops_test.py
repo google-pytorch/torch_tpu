@@ -963,6 +963,9 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
         torch.uint8: {"rtol": 4.4e-6},
     },
+    "floor_divide": {
+        torch.bfloat16: {"rtol": 2.1e-1},
+    },
     "ldexp": {
         torch.complex64: {"rtol": 4.4e-6},
         torch.float32: {"rtol": 4.1e-6},
@@ -1132,6 +1135,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 5.6e-6},
     },
     "remainder": {
+        torch.bfloat16: {"rtol": 1.3, "atol": 4.8e-1},
         torch.float16: {"rtol": 2.4e-3, "atol": 4.4e-3},
     },
     "sigmoid": {
@@ -2446,7 +2450,6 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "cpu": (torch.bfloat16, torch.float16),
             "gpu": (
-                torch.bfloat16,
                 torch.float16,
                 torch.float8_e4m3fn,
                 torch.float8_e5m2,
@@ -2456,7 +2459,6 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_inplace_dtypes={
             "cpu": (torch.bfloat16, torch.float16),
             "gpu": (
-                torch.bfloat16,
                 torch.float16,
                 torch.float8_e4m3fn,
                 torch.float8_e5m2,
@@ -2618,9 +2620,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_div(self):
     self.do_test_op(
         "_foreach_div",
-        # TODO: CPU returns nans but TPU returns 0.
         # TODO(b/485291373): fix _foreach_div() failing with complex dtypes.
-        exclude_dtypes=(torch.bool,) + COMPLEX_DTYPES,
+        exclude_dtypes={
+            "cpu": (torch.bool,) + COMPLEX_DTYPES,
+            "gpu": COMPLEX_DTYPES,
+        },
         # TODO: CPU returns nans but TPU returns 0.
         # TODO(b/485291373): fix _foreach_div_() failing with integral and
         # complex dtypes.
@@ -2631,7 +2635,6 @@ class TestOps(op_testing.OpInfoTestBase):
                     torch.uint8,
                     torch.int8,
                     torch.int16,
-                    torch.bool,
                 )
                 + COMPLEX_DTYPES
             ),
@@ -3824,8 +3827,12 @@ class TestOps(op_testing.OpInfoTestBase):
         "remainder",
         # bfloat16 remainder is unstable at division boundaries: quotient
         # rounding flips shift the result by a full divisor vs CPU and GPU.
-        exclude_dtypes=(torch.bfloat16,),
-        exclude_inplace_dtypes=(torch.bfloat16,),
+        exclude_dtypes={
+            "cpu": (torch.bfloat16,),
+        },
+        exclude_inplace_dtypes={
+            "cpu": (torch.bfloat16,),
+        },
     )
 
   def test_repeat(self):
