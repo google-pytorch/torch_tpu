@@ -61,7 +61,7 @@ absl::StatusOr<TopKOutputs> BuildTopKShlo(mlir::MlirOp input_op, int64_t k,
 
   // Call chlo::TopK along the innermost dimension (rank - 1).
   llvm::SmallVector<mlir::MlirOp, 2> outputs =
-      chlo::TopK(sort_input, static_cast<uint64_t>(k));
+      chlo::TopK(sort_input, static_cast<uint64_t>(k), /*is_stable=*/false);
   mlir::MlirOp topk_values = outputs[0];
   mlir::MlirOp topk_indices = outputs[1];
 
