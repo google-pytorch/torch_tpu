@@ -67,3 +67,13 @@ runs:
         gcloud storage cp "$WHEEL_PATH" "$GCS_PATH"
         echo "gcs_wheel_path=$GCS_PATH" >> $GITHUB_OUTPUT
         echo "gcs_wheel_dir=gs://torch-tpu-ci-transient/artifacts/${{ github.workflow }}/${{ github.run_number }}/${{ github.run_attempt }}/" >> $GITHUB_OUTPUT
+    - name: Publish Python 3.12 diagnostic wheel
+      if: inputs.python_version == '3.12'
+      shell: bash
+      run: |
+        uv run --isolated \
+          --with twine \
+          --with keyrings.google-artifactregistry-auth \
+          twine upload --non-interactive \
+          --repository-url https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-testing-registry/ \
+          dist/*.whl
