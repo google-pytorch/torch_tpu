@@ -25,7 +25,6 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/strings/numbers.h"
-#include "c10/util/Exception.h"
 #include "csrc/common/constexpr_map.h"
 #include "csrc/common/symbol_stage.h"
 #include "csrc/common/warnings.h"
@@ -229,6 +228,9 @@ inline constexpr char kTpuLaunchBlocking[] =
     "TPU_LAUNCH_BLOCKING";  // Similar to CUDA_LAUNCH_BLOCKING, used enable
                             // EagerMode::kDeferNeverAndLaunchBlocking by
                             // default.
+// Specifies the filesystem path to the libtpu shared library. Read by PJRT
+// dynamic plugin loader.
+inline constexpr char kTpuLibraryPathEnvVar[] = "TPU_LIBRARY_PATH";
 inline constexpr char kTpuPremappedBufferSizeEnvVar[] =
     "TPU_PREMAPPED_BUFFER_SIZE";  // Premapped buffer size in bytes for PjRt
                                   // client.
@@ -239,13 +241,16 @@ inline constexpr char kTpuProcessPortEnvVar[] =
     "TPU_PROCESS_PORT";  // Read by Google Cloud.
 // The output directory for TPU profiler XPlane files.
 inline constexpr char kTpuProfilerOutputDirEnvVar[] = "TPU_PROFILER_OUTPUT_DIR";
-// Specifies which TPU chips are visible to this process. Read by libtpu.
-// Note: TPU_VISIBLE_DEVICES is the source of truth for device visibility in
-// TorchTPU. TPU_VISIBLE_CHIPS is overwritten to match TPU_VISIBLE_DEVICES
-// because libtpu prioritizes non-empty TPU_VISIBLE_CHIPS over
-// TPU_VISIBLE_DEVICES.
+// Specifies which TPU chips are visible to this process. Written by TorchTPU
+// and read by libtpu.
+// Note: TPU_VISIBLE_DEVICES (set by the user or launcher) is the input source
+// of truth for device visibility in TorchTPU. TorchTPU resolves the target
+// chip and writes it to TPU_VISIBLE_CHIPS (without modifying
+// TPU_VISIBLE_DEVICES) because libtpu prioritizes non-empty TPU_VISIBLE_CHIPS
+// over TPU_VISIBLE_DEVICES.
 inline constexpr char kTpuVisibleChipsEnvVar[] = "TPU_VISIBLE_CHIPS";
-// Specifies which TPU devices are visible to this process. Read by libtpu.
+// Specifies which TPU devices are visible to this process. Set by the user or
+// launcher and read by TorchTPU.
 inline constexpr char kTpuVisibleDevicesEnvVar[] = "TPU_VISIBLE_DEVICES";
 // The hostnames of every worker in a multi-host job, comma separated.
 inline constexpr char kTpuWorkerHostnamesEnvVar[] =
@@ -340,6 +345,7 @@ inline constexpr auto kEnvVarToStage =
         {kTpuDeferAndFuse, std::nullopt},
         {kTpuHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuLaunchBlocking, std::nullopt},
+        {kTpuLibraryPathEnvVar, SymbolStage::Stable()},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.

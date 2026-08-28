@@ -24,7 +24,11 @@ load(
 )
 load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
-load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
+load(
+    "//shims/build_files:build_defs.bzl",
+    "configure_tpu_env",
+    "process_accelerator_tags",
+)
 load("//shims/build_files:torch_version.bzl", "is_backend_dep", "reset_torch_config")
 load("//shims/py_platform_test:py_platform_test.bzl", "py_platform_test")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_contrib_test", "pytype_strict_library")
@@ -782,15 +786,24 @@ def torch_tpu_cc_test(
     # in a test target's `args` field, or by passing
     # `--test_arg=--nosuppress_failure_output` on the bazel command line.
     #
-    # Note that we add this arg before the user-provided args so that the
-    # user can override it in the `args` field (the last arg wins).
+    # We also pass `--tcmalloc_guarded_sample_parameter=-1` to disable
+    # TCMalloc's GWP-ASan guarded page allocator in Google3 tests, because
+    # dynamically loaded `libtpu.so` has internal buffer allocations that
+    # trigger false-positive GWP-ASan buffer underflow crashes when sampled.
+    #
+    # Note that we add these args before the user-provided args so that the
+    # user can override them in the `args` field (the last arg wins).
     if not is_oss():
-        args = ["--suppress_failure_output"] + args
+        args = ["--suppress_failure_output", "--tcmalloc_guarded_sample_parameter=-1"] + args
     tags = tags or []
     _fail_on_generic_requires_tpu_tag(tags)
     data = kwargs.pop("data", [])
     if is_oss():
         data.append("@bazel_tools//tools/bash/runfiles")
+    else:
+        cc_env = kwargs.pop("env", {})
+        configure_tpu_env(data, cc_env)
+        kwargs["env"] = cc_env
     kwargs["data"] = data
 
     cc_test_name = name
@@ -1097,18 +1110,19 @@ def torch_tpu_py_test(
         # Shuffle test cases to avoid test ordering dependencies.
         args = args + ["--test_randomize_ordering_seed=random"]
 
-    # See the comment about suppress_failure_output in torch_tpu_cc_test
-    # for more details.
+    # See the comments about suppress_failure_output and
+    # tcmalloc_guarded_sample_parameter in torch_tpu_cc_test for more details.
     if not is_oss():
         # Python tests in OSS don't support flags, so we only do this for the
         # internal build.
-        args = ["--suppress_failure_output"] + args
+        args = ["--suppress_failure_output", "--tcmalloc_guarded_sample_parameter=-1"] + args
     tags = tags or []
     _fail_on_generic_requires_tpu_tag(tags)
     data = kwargs.pop("data", [])
     if is_wheel_test:
         if ":torch_tpu_wheel" not in data:
             data.append(":torch_tpu_wheel")
+    is_gpu = any([t for t in tags if "gpu" in t or "cuda" in t]) or kwargs.get("platform") == "gpu"
     if is_oss():
         data.append("@bazel_tools//tools/bash/runfiles")
     kwargs["data"] = data
@@ -1174,8 +1188,9 @@ def torch_tpu_py_test(
             "../local_torch/site-packages",
         ]
 
-        # 2. Build environment variants starting from base environment
         base_env = existing_env
+        if not is_oss() and not is_gpu:
+            configure_tpu_env(data, base_env)
 
         # Apply LeakSanitizer suppressions (propagates to copies)
         lsan_opts = [base_env.get("LSAN_OPTIONS", "")]
@@ -1360,10 +1375,23 @@ def torch_tpu_py_test(
         target_kwargs["env"] = test_env
         _add_rbe_exec_properties(target_kwargs, target_tags, result.tpu_generation)
 
+        test_args = list(args)
+        if not is_oss() and not is_gpu:
+            # In Google3 TPU tests, heap profiling samples frequently under default TCMalloc settings,
+            # adding CPU overhead and fragmentation. Setting the sample parameter to 1GB disables
+            # periodic sampling overhead during tests.
+            has_tcmalloc_sample = False
+            for arg in test_args:
+                if arg == "--tcmalloc_sample_parameter" or arg.startswith("--tcmalloc_sample_parameter="):
+                    has_tcmalloc_sample = True
+                    break
+            if not has_tcmalloc_sample:
+                test_args.append("--tcmalloc_sample_parameter=1073741824")
+
         rule(
             name = target_name,
             srcs = srcs,
-            args = args,
+            args = test_args,
             size = size,
             timeout = timeout,
             deps = all_deps,

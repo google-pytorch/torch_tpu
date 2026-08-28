@@ -2,7 +2,6 @@ load("@rules_license//rules:license.bzl", "license")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")  # copybara:comment(oss-only)
 load(
     "//build_files:build_defs.bzl",
-    "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -112,13 +111,11 @@ py_library_providing_imports_info(
         # copybara:uncomment "@pypi//torch_tpu_embedding:__subpackages__",
         "//shims/torchtitan:__subpackages__",
     ] + TT_FRIENDS,
-    deps = if_oss(
-        ["//shims/libtpu"],
-        [],
-    ) + [
-        ":_loader",
+    deps = [
+        ":_loader",  # buildcleaner: keep
         ":_tcmalloc_check",
         ":_versioned_so_loader",
+        "//shims/libtpu",  # buildcleaner: keep
         "//src/torch_tpu/_internal:testing",  # buildcleaner: keep
     ],
 )

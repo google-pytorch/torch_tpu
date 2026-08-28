@@ -655,15 +655,20 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "uneven_sharding_test",
     srcs = ["uneven_sharding_test.py"],
-    args = [
-        "--xla_tpu_collect_sflag_wait_stats_trace=true",
-        "--xla_tpu_debug_sflag_wait_shalt_on_detection=true",
-        "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000",
-        "--xla_tpu_debug_sflag_wait_timeout_ms=10000",
-    ],
-    notest_oss = True,  # XLA timeout flags not available.
+    # Dynamic libtpu requires passing XLA flags via LIBTPU_INIT_ARGS rather than args.
+    env = {
+        "LIBTPU_INIT_ARGS": (
+            "--xla_tpu_collect_sflag_wait_stats_trace=true " +
+            "--xla_tpu_debug_sflag_wait_shalt_on_detection=true " +
+            "--xla_tpu_debug_sc_sflag_wait_timeout_ms=10000 " +
+            "--xla_tpu_debug_sflag_wait_timeout_ms=10000"
+        ),
+    },
     shard_count = 8,
-    tags = [
+    tags = if_oss(
+        ["exclusive"],
+        [],
+    ) + [
         "noasan",  # Disabled due to b/497035517.
         "nomsan",  # Disabled due to b/516945438.
         "notsan",  # Disabled due to b/497035517.
@@ -684,20 +689,11 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "fairscale_tp_test",
     srcs = ["fairscale_tp_test.py"],
-    # TODO(b/549484939): Clean this up once we switch to dynamically linked libtpu.
-    # The flag --xla_jf_conv_full_precision is a registered C++ flag parsed via argv to enforce full
-    # precision matmuls. In OSS, libtpu is loaded dynamically and the flag is not registered in
-    # Python's absl.flags, causing absltest to crash on unknown CLI flags. Thus, we comment it out
-    # in OSS and pass it through LIBTPU_INIT_ARGS instead to maintain numerical parity across both
-    # environments.
-    args = [
-        # Use highest precision for matmuls for tests only.
-        # copybara:uncomment "--xla_jf_conv_full_precision",
-    ],
-    env = if_oss(
-        {"LIBTPU_INIT_ARGS": "--xla_jf_conv_full_precision=true"},
-        {},
-    ),
+    # Dynamic libtpu loads at runtime and does not parse CLI args; pass the
+    # full precision flag via LIBTPU_INIT_ARGS in both Google3 and OSS.
+    env = {
+        "LIBTPU_INIT_ARGS": "--xla_jf_conv_full_precision=true",
+    },
     main = "fairscale_tp_test.py",
     tags = if_oss(
         ["exclusive"],

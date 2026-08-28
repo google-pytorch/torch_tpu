@@ -111,27 +111,42 @@ class UnevenShardingTest(seed_test_utils.MultiProcessRepeatableTest):
         pass_shape_stride=True,
     )
 
+  # Under dynamic libtpu loading, 1D collective calls across ranks may either
+  # fail early on a host-side tensor shape mismatch or hit the collective
+  # sflag wait timeout depending on execution order; accept either failure mode.
   @parameterized.named_parameters(
-      ("1d_compiled_fail_small", 1, True, 4, "Tensor shape mismatch"),
+      (
+          "1d_compiled_fail_small",
+          1,
+          True,
+          4,
+          r"(Tensor shape mismatch|Wait timeout on sflag)",
+      ),
       (
           "1d_eager_fail_small",
           1,
           False,
           4,
           (
-              "Tensor shape mismatch|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
+              r"(Tensor shape mismatch|dimension size of operand at"
+              r" 'all_gather_dim' cannot be zero|Wait timeout on sflag)"
           ),
       ),
-      ("1d_compiled_fail_uneven", 1, True, 12, "Tensor shape mismatch"),
+      (
+          "1d_compiled_fail_uneven",
+          1,
+          True,
+          12,
+          r"(Tensor shape mismatch|Wait timeout on sflag)",
+      ),
       (
           "1d_eager_fail_uneven",
           1,
           False,
           12,
           (
-              "Tensor shape mismatch|dimension size of operand at"
-              " 'all_gather_dim' cannot be zero"
+              r"(Tensor shape mismatch|dimension size of operand at"
+              r" 'all_gather_dim' cannot be zero|Wait timeout on sflag)"
           ),
       ),
       ("2d_compiled_fail_small", 2, True, 4, "Wait timeout on sflag"),

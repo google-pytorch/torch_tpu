@@ -31,6 +31,7 @@ load(
     "tpu_gen",
     # go/keep-sorted end
 )
+load("//shims/build_files:build_defs.bzl", "LIBTPU_TARGET")
 
 _TagsInfo = provider(
     "Provider for extracting rule attributes during analysis tests.",
@@ -58,6 +59,7 @@ def _test_macro_tags(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         nobuild = "Analysis test subject",
         nolocal = "Analysis test subject",
         notap = "Analysis test subject",
@@ -320,6 +322,7 @@ def _test_requires_libtpu_inferred(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["requires-tpu-v5lite"],
         nobuild = "Analysis test subject",
         nolocal = "Analysis test subject",
@@ -339,7 +342,24 @@ def _test_requires_libtpu_explicit_true_impl(env, targets):
     # even when no 'requires-tpu' hardware tags are present on the target.
     info = targets.subject[_TagsInfo]
     env.expect.that_str(info.rule_kind).equals("sh_test" if is_oss() else "cc_test")
-    env.expect.that_dict(info.env).contains_exactly({"TEST_ENV": "1"})
+
+    # In Google3, torch_tpu_cc_test automatically injects the dynamic libtpu
+    # runtime environment variables into the cc_test env attribute, pointing
+    # TPU_LIBRARY_PATH to the runfiles location of LIBTPU_TARGET.
+    # In OSS, these environment variables are not injected into the Bazel rule's
+    # env attribute because libtpu is loaded from python site-packages or
+    # configured via the sh_test test wrapper script rather than a Google3
+    # runfiles target.
+    expected_env = (
+        {"TEST_ENV": "1"} if is_oss() else {
+            "ALLOW_MULTIPLE_LIBTPU_LOAD": "1",
+            "TEST_ENV": "1",
+            "TPU_LIBRARY_PATH": "$(location %s)" % LIBTPU_TARGET,
+            "TPU_LOAD_LIBRARY": "1",
+            "TPU_SKIP_MDS_QUERY": "true",
+        }
+    )
+    env.expect.that_dict(info.env).contains_exactly(expected_env)
 
     # In OSS (when rule_kind is sh_test), cpp_link.mem is filtered out from exec_properties
     # so that sh_test does not crash with non-existent exec group errors.
@@ -352,6 +372,7 @@ def _test_requires_libtpu_explicit_true(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         requires_libtpu = True,
         env = {"TEST_ENV": "1"},
         exec_properties = {"cpp_link.mem": "20g", "test.pool": "tpu-pool"},
@@ -378,6 +399,7 @@ def _test_requires_libtpu_explicit_false(name):
     torch_tpu_cc_test(
         name = name + "_subject",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         requires_libtpu = False,
         tags = ["requires-tpu-v5lite"],
         nobuild = "Analysis test subject",
@@ -920,6 +942,12 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
         _V5_RBE_EXEC_PROPERTIES | {"test.Pool": "custom_pool", "test.mem": "32g"}
     ) if is_oss() else {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"}
     caller_env = {"CUSTOM_VAR": "1", "TPU_ACCELERATOR_TYPE": "custom"}
+    internal_cc_tpu_env = {
+        "ALLOW_MULTIPLE_LIBTPU_LOAD": "1",
+        "TPU_LIBRARY_PATH": "$(location %s)" % LIBTPU_TARGET,
+        "TPU_LOAD_LIBRARY": "1",
+        "TPU_SKIP_MDS_QUERY": "true",
+    }
 
     env.expect.that_dict(targets.py_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
     env.expect.that_dict(targets.py_v5[_TagsInfo].env).contains_exactly({})
@@ -947,13 +975,17 @@ def _test_rbe_macro_exec_properties_impl(env, targets):
     env.expect.that_dict(targets.py_v7[_TagsInfo].env).contains_exactly({})
 
     env.expect.that_dict(targets.cc_v5[_TagsInfo].exec_properties).contains_exactly(expected_v5)
-    env.expect.that_dict(targets.cc_v5[_TagsInfo].env).contains_exactly({})
+    env.expect.that_dict(targets.cc_v5[_TagsInfo].env).contains_exactly(
+        {} if is_oss() else internal_cc_tpu_env,
+    )
     env.expect.that_int(targets.cc_v5[_TagsInfo].shard_count).equals(1 if is_oss() else 4)
 
     env.expect.that_dict(targets.cc_override[_TagsInfo].exec_properties).contains_exactly(
         expected_cc_override,
     )
-    env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(caller_env)
+    env.expect.that_dict(targets.cc_override[_TagsInfo].env).contains_exactly(
+        caller_env if is_oss() else (internal_cc_tpu_env | caller_env),
+    )
 
     if is_oss():
         env.expect.that_dict(targets.rbe_py_v5[_TagsInfo].env).contains_exactly(_V5_RBE_ENV)
@@ -1019,6 +1051,7 @@ def _test_rbe_macro_exec_properties(name):
     torch_tpu_cc_test(
         name = name + "_cc_v5",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["exclusive", "requires-tpu-v5lite"],
         shard_count = 4,
         nobuild = "Analysis test subject",
@@ -1028,6 +1061,7 @@ def _test_rbe_macro_exec_properties(name):
     torch_tpu_cc_test(
         name = name + "_cc_override",
         srcs = [],
+        deps = ["//csrc/common:oss_test_main"],
         tags = ["requires-tpu-v5lite"],
         env = caller_env,
         exec_properties = {"cpp_link.mem": "20g", "test.Pool": "custom_pool", "test.mem": "32g"},

@@ -41,7 +41,6 @@
 #include "csrc/common/env_vars.h"
 #include "csrc/common/environment.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/utils.h"
 #include "csrc/distributed/slicebuilder/discovery.h"
 #include "csrc/pjrt/pjrt_client.h"
 #include "tsl/profiler/lib/profiler_factory.h"
@@ -54,6 +53,7 @@
 #include "xla/pjrt/host_memory_allocator.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/plugin/dynamic_registration.h"
 #include "xla/pjrt/plugin/plugin_names.h"
 #include "xla/tsl/framework/allocator.h"
 
@@ -70,41 +70,10 @@ void TryExpandRankInEnvVar(std::string_view rank) {
 }
 
 // Creates a PluginTracer instance to collect TPU profile metrics.
-// Returns nullptr in environments where libtpu is statically linked to prevent
-// TSL global mutex deadlocks.
-std::unique_ptr<tsl::profiler::ProfilerInterface> absl_nullable
+std::unique_ptr<tsl::profiler::ProfilerInterface> absl_nonnull
 CreateTpuProfiler(const PLUGIN_Profiler_Api* absl_nonnull profiler_api,
                   const tensorflow::ProfileOptions& opts) {
-#if TT_IS_INTERNAL_TORCH_TPU
-  // In Google-internal TorchTPU builds, libtpu is linked statically into the
-  // torch_tpu binary. When the framework starts tracing, it calls
-  // `tsl::profiler::CreateProfilers`, which acquires a global non-recursive
-  // mutex in TSL.
-  //
-  // 1. Framework acquires Global Mutex A.
-  // 2. Calls this factory lambda to create `PluginTracer`.
-  // 3. `PluginTracer` constructor calls libtpu.
-  // 4. libtpu attempts to initialize its own profilers by calling
-  //    `tsl::profiler::CreateProfilers` again (nested call).
-  // 5. The nested call tries to acquire Global Mutex A and deadlocks!
-  //
-  // This is not a problem when libtpu is linked dynamically, in which case
-  // the dynamic library has its own copy of the TSL global mutex.
-  //
-  // Since we cannot modify TSL (to make it re-entrant safe or using
-  // recursive mutexes) and we cannot modify libtpu (to stop it
-  // from calling out), the only safe solution in this statically-linked
-  // environment is to SKIP creating the `PluginTracer`.
-  //
-  // TODO(b/549484939): Remove this workaround when libtpu is no longer linked
-  // statically.
-  ABSL_LOG(WARNING)
-      << "Skipping PluginTracer when libtpu is statically linked to avoid "
-         "shared TSL mutex deadlock.";
-  return nullptr;
-#else
   return std::make_unique<xla::profiler::PluginTracer>(profiler_api, opts);
-#endif
 }
 
 // Dynamically discovers the PJRT Profiler Extension within the given plugin
@@ -136,6 +105,26 @@ void MaybeRegisterProfiler(std::string_view plugin_name) {
     return true;
   }();
   static_cast<void>(factory_registered);  // VOID_CAST_OK=dummy result.
+}
+
+absl::Status InitializeTpuPlugin() {
+  if (const auto& world_size_or =
+          GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
+      world_size_or.ok()) {
+    TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
+    TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
+        << "failed to initialize distributed environment: ";
+  } else {
+    TT_RETURN_IF_ERROR(InitializeSingleDeviceEnvironment()).SetPrepend()
+        << "failed to initialize single device environment: ";
+  }
+
+  absl::Status reg_status =
+      ::RegisterDynamicPjrtPlugin(kTpuPjrtName, kTpuLibraryPathEnvVar);
+  if (absl::IsAlreadyExists(reg_status)) {
+    return absl::OkStatus();
+  }
+  return reg_status;
 }
 
 std::optional<int64_t> GetIntAttribute(const xla::PjRtDevice* device,
@@ -226,14 +215,7 @@ absl::Status PjrtBackend::InitializeInternal() {
   if (options_.device_type == "tpu") {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
-
-    if (const auto& world_size_or =
-            GetRequiredIntegerEnvOnce<int, kWorldSizeEnvVar>();
-        world_size_or.ok()) {
-      TT_ASSIGN_OR_RETURN(auto config, GetDistributedWorkerConfiguration());
-      TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
-          << "failed to initialize distributed environment: ";
-    }
+    TT_RETURN_IF_ERROR(InitializeTpuPlugin());
   } else {
     return TT_ERROR(error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;

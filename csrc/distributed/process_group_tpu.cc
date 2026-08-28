@@ -890,7 +890,7 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
 
   const auto* const pjrt_client = PjrtBackend::GetInstance().GetClient();
   TT_CHECK_THROW(pjrt_client != nullptr, error::kInternal)
-      << "PjRtClient is not initialized.";
+      << "PjRtClient is not initialized";
   ABSL_CHECK(pjrt_client != nullptr);  // CRASH_OK
 
   const int64_t world_size = pjrt_client->devices().size();

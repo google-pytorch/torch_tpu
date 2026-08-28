@@ -32,6 +32,7 @@ and its removal go through the deprecation process.
 *   `RANK`
 *   `TMPDIR`
 *   `TORCH_DEVICE_BACKEND_AUTOLOAD`
+*   `TPU_LIBRARY_PATH`
 *   `TPU_PREMAPPED_BUFFER_SIZE`
 *   `TPU_VISIBLE_DEVICES`
 *   `WORLD_SIZE`

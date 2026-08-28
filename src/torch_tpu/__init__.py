@@ -25,9 +25,9 @@ from torch_tpu import _versioned_so_loader
 _versioned_so_loader.install_hook(pathlib.Path(__file__).parent)
 
 try:
-  import libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
+  import libtpu as _libtpu  # pylint: disable=g-import-not-at-top # pytype: disable=import-error
 
-  libtpu.configure_library_path()
+  _libtpu.configure_library_path()
 except ImportError:
   print("libtpu not found.")
   pass

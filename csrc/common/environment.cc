@@ -177,35 +177,6 @@ absl::Status InitializeDistributedEnvironment(
            << "RANK " << config.rank << " is out of bounds (negative)";
   }
   std::vector<std::string> addresses = absl::StrSplit(config.sb_addrs, ',');
-  const int slice_rank = config.rank % static_cast<int>(addresses.size());
-  SetEnv<kCloudTpuTaskIdEnvVar>(absl::StrCat(slice_rank));
-
-  // TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-  // Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-  // non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-  // TPU_VISIBLE_DEVICES so that external settings do not override device
-  // selection.
-  const auto& visible_devices_env = GetEnvOnce<kTpuVisibleDevicesEnvVar>();
-  const std::string target_dev = (visible_devices_env.has_value() &&
-                                  IsSingleDeviceSpecified(*visible_devices_env))
-                                     ? *visible_devices_env
-                                     : absl::StrCat(config.local_rank);
-  SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
-
-  const std::vector<std::string> topology_dims =
-      absl::StrSplit(config.topology, ',');
-  const std::string chips_bounds =
-      (topology_dims.size() == 4) ? "1,1,1,1" : "1,1,1";
-
-  SetEnv<kTpuHostBoundsEnvVar>(config.topology);
-  SetEnv<kTpuChipsPerHostBoundsEnvVar>(chips_bounds);
-  SetEnv<kTpuProcessBoundsEnvVar>(config.topology);
-  SetEnv<kTpuChipsPerProcessBoundsEnvVar>(chips_bounds);
-
-  // The free slicebuilder port of this process.
-  SetEnv<kTpuProcessPortEnvVar>(config.sb_port);
-
   const bool use_slicebuilder_insecure_grpc =
       IsLibtpuVersionAtLeast(kMinLibtpuVersionWithSlicebuilderInsecureGrpc);
   if (use_slicebuilder_insecure_grpc) {
@@ -223,11 +194,9 @@ absl::Status InitializeDistributedEnvironment(
     }
   }
 
-  // The addresses of all other workers in the slice.
-  SetEnv<kTpuProcessAddressesEnvVar>(absl::StrJoin(addresses, ","));
-
-  // Avoid multi-process libtpu lock in GCP init, see b/487769788.
-  SetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
+  ConfigureDistributedTopologyEnv(
+      config.rank, config.local_rank, config.topology,
+      absl::StrJoin(addresses, ","), config.sb_port);
 
   const std::string libtpu_init_args_str =
       ConfigureLibtpuInitArgs(GetEnvOnce<kLibtpuInitArgsEnvVar>().value_or(""),
@@ -237,18 +206,7 @@ absl::Status InitializeDistributedEnvironment(
 }
 
 absl::Status InitializeSingleDeviceEnvironment() {
-  // TPU_VISIBLE_DEVICES is our source of truth for device visibility.
-  // Because libtpu prioritizes TPU_VISIBLE_CHIPS over TPU_VISIBLE_DEVICES when
-  // non-empty, we explicitly overwrite TPU_VISIBLE_CHIPS to match
-  // TPU_VISIBLE_DEVICES so that external settings do not override device
-  // selection.
-  const auto& visible_devices_env = GetEnvOnce<kTpuVisibleDevicesEnvVar>();
-  const std::string target_dev = (visible_devices_env.has_value() &&
-                                  IsSingleDeviceSpecified(*visible_devices_env))
-                                     ? *visible_devices_env
-                                     : "0";
-  SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
-  SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+  ConfigureVisibleDevice("0");
   return absl::OkStatus();
 }
 
