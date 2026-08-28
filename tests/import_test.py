@@ -45,6 +45,13 @@ _OPTIONAL_EXTERNAL_DEPS: Final[frozenset[str]] = frozenset({
 # modules under the assumption that modules are not likely to be removed.
 _MIN_EXPECTED_MODULES: Final[int] = 20
 
+# Non-Python shared libraries inside the `torch_tpu` package that
+# `pkgutil.walk_packages()` reports as modules because of their `.so` suffix.
+_NON_PYTHON_SHARED_LIBRARIES: Final[frozenset[str]] = frozenset({
+    # The libtpu shared library of Google3 builds, loaded via TPU_LIBRARY_PATH.
+    "torch_tpu.google.shims.libtpu._libtpu",
+})
+
 
 def _is_missing_optional_dep(exc: BaseException) -> bool:
   """Returns True if `exc` was caused by an uninstalled optional package."""
@@ -76,7 +83,7 @@ def _discover_torch_tpu_modules(package: types.ModuleType) -> Set[str]:
       onerror=_on_error,
   ):
     module_names.add(info.name)
-  return module_names
+  return module_names - _NON_PYTHON_SHARED_LIBRARIES
 
 
 def _worker_import_torch_tpu(q):

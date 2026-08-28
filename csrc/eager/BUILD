@@ -247,7 +247,6 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/types:span",
         "@stablehlo//stablehlo/integrations/cpp/builder:attr_type_builder_util",
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
@@ -708,7 +707,6 @@ torch_tpu_cc_library(
         "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
     ],
 )
 
@@ -986,8 +984,8 @@ torch_tpu_cc_library(
         ":tensor_to_buffer",
         "//csrc/common:cache_key",
         "//csrc/common:device_type",
+        "//csrc/common:device_utils",
         "//csrc/common:dtype",
-        "//csrc/common:environment",
         "//csrc/common:error_utils",
         "//csrc/common:macro_utils",
         "//csrc/common:tpu_hardware",

@@ -16,6 +16,7 @@
 
 #include "csrc/common/env_vars.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -152,11 +153,27 @@ static void ExpandRankInEnvVar(const int rank) {
   SafeSetEnv<env_var_name>(new_val);
 }
 
+namespace {
+
+// The function set by SetLibtpuInitArgsFinalizer().
+constinit std::atomic<void (*)()> libtpu_init_args_finalizer = nullptr;
+
+}  // namespace
+
+void SetLibtpuInitArgsFinalizer(void (*const finalizer)()) {
+  libtpu_init_args_finalizer.store(finalizer, std::memory_order_relaxed);
+}
+
 void EnsureRankIsExpandedInEnvVars() {
   static const bool done = [] {
     const int rank = GetIntegerEnvOnce<kRankEnvVar>().value_or(0);
     ExpandRankInEnvVar<kXlaFlagsEnvVar>(rank);
     ExpandRankInEnvVar<kLibtpuInitArgsEnvVar>(rank);
+    if (void (*const finalizer)() =
+            libtpu_init_args_finalizer.load(std::memory_order_relaxed);
+        finalizer != nullptr) {
+      finalizer();
+    }
     return true;
   }();
   static_cast<void>(done);  // VOID_CAST_OK=unused variable, ensures the

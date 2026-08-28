@@ -197,11 +197,9 @@ torch_tpu_py_library(
     srcs = ["oss_utils.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//shims/libtpu",  # buildcleaner: keep
         "//src/torch_tpu/_internal/utils",
-    ] + if_oss(
-        ["//shims/libtpu"],
-        [],
-    ),
+    ],
 )
 
 torch_tpu_py_test(
