@@ -20,6 +20,7 @@ import torch
 import torch.export
 from torch_tpu._internal.export import export as torch_tpu_export
 from tests import seed_test_utils
+from tests import utils
 
 
 class SimpleModule(torch.nn.Module):
@@ -143,6 +144,59 @@ class ExportTest(seed_test_utils.RepeatableTest):
     mlir_text = torch_tpu_export.exported_to_mlir(exported).serialize_text()
 
     self.assertIn("-> (tensor<2xf32>, tensor<2xf32>)", mlir_text)
+
+  def test_eager_like_fx_interpreter_non_contiguous_view(self):
+    """Tests that EagerLikeFxInterpreter handles non-contiguous aten.view and aten._unsafe_view."""
+    graph = torch.fx.Graph()
+    x_node = graph.placeholder("x")
+    t_node = graph.call_function(torch.ops.aten.transpose.int, (x_node, 0, 1))
+    v1_node = graph.call_function(torch.ops.aten.view.default, (t_node, [8]))
+    v2_node = graph.call_function(
+        torch.ops.aten._unsafe_view.default, (t_node, [8])
+    )
+    graph.output((v1_node, v2_node))
+    gm = torch.fx.GraphModule({}, graph)
+
+    x = torch.randn(2, 4)
+    self.assertFalse(x.transpose(0, 1).is_contiguous())
+
+    interpreter = torch_tpu_export.EagerLikeFxInterpreter(gm)
+    out1, out2 = interpreter.run(x)
+    expected = x.transpose(0, 1).contiguous().view(8)
+    utils.assert_close(out1, expected)
+    utils.assert_close(out2, expected)
+
+  def test_export_fx_to_mlir_non_contiguous_view(self):
+    """Tests that fx_to_mlir handles non-contiguous view in an FX graph."""
+    graph = torch.fx.Graph()
+    x_node = graph.placeholder("x")
+    t_node = graph.call_function(torch.ops.aten.transpose.int, (x_node, 0, 1))
+    v_node = graph.call_function(torch.ops.aten.view.default, (t_node, [8]))
+    graph.output(v_node)
+    gm = torch.fx.GraphModule({}, graph)
+
+    device = torch.accelerator.current_accelerator()
+    x = torch.randn(2, 4, device=device)
+    mlir = torch_tpu_export.fx_to_mlir(gm.to(device), (x,))
+    mlir_text = mlir.serialize_text()
+    self.assertIn("tensor<8xf32>", mlir_text)
+
+  def test_export_fx_to_mlir_non_contiguous_unsafe_view(self):
+    """Tests that fx_to_mlir handles non-contiguous _unsafe_view in an FX graph."""
+    graph = torch.fx.Graph()
+    x_node = graph.placeholder("x")
+    t_node = graph.call_function(torch.ops.aten.transpose.int, (x_node, 0, 1))
+    v_node = graph.call_function(
+        torch.ops.aten._unsafe_view.default, (t_node, [8])
+    )
+    graph.output(v_node)
+    gm = torch.fx.GraphModule({}, graph)
+
+    device = torch.accelerator.current_accelerator()
+    x = torch.randn(2, 4, device=device)
+    mlir = torch_tpu_export.fx_to_mlir(gm.to(device), (x,))
+    mlir_text = mlir.serialize_text()
+    self.assertIn("tensor<8xf32>", mlir_text)
 
   def test_module_traceback_disabled(self):
     sample_input = (
