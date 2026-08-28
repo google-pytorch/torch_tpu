@@ -191,6 +191,19 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
     """(Override) Run a single node in the FX graph, adding source locations."""
 
     def dispatch_fx_node(node):
+      if node.op == "call_function" and node.target in (
+          torch.ops.aten.view.default,
+          torch.ops.aten._unsafe_view.default,
+      ):
+        with self._set_current_node(node):
+          args, kwargs = self.fetch_args_kwargs_from_env(node)
+          if (
+              args
+              and isinstance(args[0], torch.Tensor)
+              and not args[0].is_contiguous()
+          ):
+            args = (args[0].contiguous(),) + tuple(args[1:])
+          return node.target(*args, **kwargs)
       return super(EagerLikeFxInterpreter, self).run_node(node)
 
     self._set_func_code_to_node_source_locations(dispatch_fx_node, node)

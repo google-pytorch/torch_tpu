@@ -175,20 +175,19 @@ class SGD(Optimizer):
 
     device = next(iter(params.values())).device
 
-    opt_state_m = (
-        {
-            name: torch.zeros_like(
-                param,
-                memory_format=torch.preserve_format,
-                device=device,
-            )
-            for name, param in params.items()
-        }
-        if self.momentum != 0.0
-        else {}
-    )
+    if self.momentum != 0.0:
+      opt_state_m = {
+          name: torch.zeros_like(
+              param,
+              memory_format=torch.preserve_format,
+              device=device,
+          )
+          for name, param in params.items()
+      }
+    else:
+      opt_state_m = {}
     opt_steps = {
-        name: torch.tensor(1.0, dtype=torch.float32, device=device)
+        name: torch.tensor(0.0, dtype=torch.float32, device=device)
         for name in params.keys()
     }
 
@@ -209,50 +208,85 @@ class SGD(Optimizer):
 class ReferenceAdamw(AdamW):
   """Reference pure PyTorch implementation of AdamW."""
 
-  def _reference_adamw_update(
-      self,
-      param: torch.Tensor,
-      grad: torch.Tensor,
-      m: torch.Tensor,
-      v: torch.Tensor,
-      step: float | torch.Tensor = 1.0,
-  ) -> None:
-    """Performs an in-place reference AdamW update on param, m, and v."""
-    if self.weight_decay != 0.0:
-      p_decayed = param * (1.0 - self.lr * self.weight_decay)
-    else:
-      p_decayed = param
-
-    bias_correction1 = 1.0 - (self.beta1**step)
-    bias_correction2 = 1.0 - (self.beta2**step)
-    sqrt_bc2 = bias_correction2**0.5
-    step_size = (self.lr / bias_correction1) * sqrt_bc2
-    scaled_eps = self.eps * sqrt_bc2
-
-    new_m = self.beta1 * m + (1.0 - self.beta1) * grad
-    new_v = self.beta2 * v + (1.0 - self.beta2) * (grad * grad)
-    denom = torch.sqrt(new_v) + scaled_eps
-    new_p = p_decayed - (step_size * new_m) / denom
-
-    param.copy_(new_p)
-    m.copy_(new_m)
-    v.copy_(new_v)
-
   def step(
       self, param_group: AdamW.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> AdamW.ParamGroup:
     """Reference pure PyTorch implementation of AdamW step."""
+    if not param_group.params:
+      return param_group
+
+    # Mathematical formulation of AdamW optimizer step:
+    # -------------------------------------------------------------
+    # For each parameter p_t with gradient g_t at step t:
+    #   1. Weight decay:
+    #        p_decayed = p_{t-1} * (1 - lr * weight_decay)
+    #   2. First and second momentum moment estimates:
+    #        m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
+    #        v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+    #   3. Bias corrections:
+    #        \hat{m}_t = m_t / (1 - beta1^t)
+    #        \hat{v}_t = v_t / (1 - beta2^t)
+    #   4. Parameter update:
+    #        p_t = p_decayed - lr * \hat{m}_t / (\sqrt{\hat{v}_t} + eps)
+    #
+    # Scaled equivalent formulation (hoisting scalar operations outside loop):
+    #   effective_step_size = (lr / (1 - beta1^t)) * \sqrt{1 - beta2^t}
+    #   scaled_epsilon = eps * \sqrt{1 - beta2^t}
+    #   p_t = p_decayed - (m_t * effective_step_size) / (\sqrt{v_t} + scaled_epsilon)
+    # -------------------------------------------------------------
+    first_step = next(iter(param_group.opt_steps.values()))
+    new_step = first_step + 1.0
+
+    bias_correction1 = 1.0 - (self.beta1**new_step)
+    bias_correction2 = 1.0 - (self.beta2**new_step)
+    sqrt_bias_correction2 = (
+        bias_correction2**0.5
+        if isinstance(new_step, (int, float))
+        else torch.sqrt(bias_correction2)
+    )
+    effective_step_size = (self.lr / bias_correction1) * sqrt_bias_correction2
+    scaled_epsilon = self.eps * sqrt_bias_correction2
+
+    weight_decay_factor = (
+        1.0 - self.lr * self.weight_decay if self.weight_decay != 0.0 else 1.0
+    )
+    beta1 = self.beta1
+    one_minus_beta1 = 1.0 - self.beta1
+    beta2 = self.beta2
+    one_minus_beta2 = 1.0 - self.beta2
+
+    new_params = {}
+    new_opt_state_m = {}
+    new_opt_state_v = {}
+    new_opt_steps = {}
+
     for name, param in param_group.params.items():
-      step_tensor = param_group.opt_steps[name]
-      step_tensor.add_(1.0)
-      self._reference_adamw_update(
-          param=param,
-          grad=grads[name],
-          m=param_group.opt_state_m[name],
-          v=param_group.opt_state_v[name],
-          step=step_tensor,
+      grad = grads[name]
+      momentum = param_group.opt_state_m[name]
+      variance = param_group.opt_state_v[name]
+
+      param_decayed = (
+          param * weight_decay_factor if weight_decay_factor != 1.0 else param
       )
-    return param_group
+      new_momentum = momentum * beta1 + grad * one_minus_beta1
+      new_variance = variance * beta2 + (grad * grad) * one_minus_beta2
+      denominator = torch.sqrt(new_variance) + scaled_epsilon
+      new_param = (
+          param_decayed - (new_momentum * effective_step_size) / denominator
+      )
+
+      new_params[name] = new_param.to(dtype=param.dtype)
+      new_opt_state_m[name] = new_momentum.to(dtype=momentum.dtype)
+      new_opt_state_v[name] = new_variance.to(dtype=variance.dtype)
+      new_opt_steps[name] = param_group.opt_steps[name] + 1.0
+
+    return self.ParamGroup(
+        params=new_params,
+        opt_state_m=new_opt_state_m,
+        opt_state_v=new_opt_state_v,
+        opt_steps=new_opt_steps,
+        extra_state=param_group.extra_state,
+    )
 
 
 class FusedAdamw(AdamW):
@@ -297,43 +331,83 @@ class ReferenceSgd(SGD):
       self,
       param: torch.Tensor,
       grad: torch.Tensor,
-      m: torch.Tensor | None = None,
+      momentum_buffer: torch.Tensor | None = None,
       step: float | torch.Tensor = 1.0,
-  ) -> None:
-    """Performs an in-place reference SGD update on param and momentum buffer m."""
+  ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Performs functional reference SGD update on param and momentum buffer."""
+    # Mathematical formulation of SGD with momentum and weight decay:
+    # -------------------------------------------------------------
+    #   1. Weight decay:
+    #        d_p = grad + weight_decay * param
+    #   2. Momentum buffer:
+    #        if step == 1:
+    #          b_1 = d_p
+    #        else:
+    #          b_t = momentum * b_{t-1} + (1 - dampening) * d_p
+    #   3. Nesterov momentum:
+    #        d_p = d_p + momentum * b_t  (if nesterov)
+    #        d_p = b_t                   (otherwise)
+    #   4. Parameter update:
+    #        param_t = param_{t-1} - lr * d_p
+    # -------------------------------------------------------------
     if self.weight_decay != 0.0:
-      d_p = grad + self.weight_decay * param
+      grad_with_weight_decay = grad + self.weight_decay * param
     else:
-      d_p = grad
+      grad_with_weight_decay = grad
 
-    if self.momentum != 0.0 and m is not None:
-      new_m = torch.where(
-          step == 1.0, d_p, self.momentum * m + (1.0 - self.dampening) * d_p
+    new_momentum_buffer = None
+    if self.momentum != 0.0 and momentum_buffer is not None:
+      new_momentum_buffer = torch.where(
+          step == 1.0,
+          grad_with_weight_decay,
+          self.momentum * momentum_buffer
+          + (1.0 - self.dampening) * grad_with_weight_decay,
       )
       if self.nesterov:
-        d_p = d_p + self.momentum * new_m
+        grad_with_weight_decay = (
+            grad_with_weight_decay + self.momentum * new_momentum_buffer
+        )
       else:
-        d_p = new_m
-      m.copy_(new_m)
+        grad_with_weight_decay = new_momentum_buffer
 
-    new_p = param - self.lr * d_p
-    param.copy_(new_p)
+    new_param = param - self.lr * grad_with_weight_decay
+    return new_param, new_momentum_buffer
 
   def step(
       self, param_group: SGD.ParamGroup, grads: dict[str, torch.Tensor]
   ) -> SGD.ParamGroup:
     """Reference pure PyTorch implementation of SGD step."""
+    if not param_group.params:
+      return param_group
+
+    new_params = {}
+    new_opt_state_m = {}
+    new_opt_steps = {}
+
     for name, param in param_group.params.items():
-      step_tensor = param_group.opt_steps[name]
-      m = param_group.opt_state_m.get(name, None)
-      self._reference_sgd_update(
+      step_tensor = param_group.opt_steps[name] + 1.0
+      momentum_buffer = param_group.opt_state_m.get(name, None)
+      new_param, new_momentum_buffer = self._reference_sgd_update(
           param=param,
           grad=grads[name],
-          m=m,
+          momentum_buffer=momentum_buffer,
           step=step_tensor,
       )
-      step_tensor.add_(1.0)
-    return param_group
+      new_params[name] = new_param.to(dtype=param.dtype)
+      if new_momentum_buffer is not None and momentum_buffer is not None:
+        new_opt_state_m[name] = new_momentum_buffer.to(
+            dtype=momentum_buffer.dtype
+        )
+      elif new_momentum_buffer is not None:
+        new_opt_state_m[name] = new_momentum_buffer
+      new_opt_steps[name] = step_tensor
+
+    return self.ParamGroup(
+        params=new_params,
+        opt_state_m=new_opt_state_m,
+        opt_steps=new_opt_steps,
+        extra_state=param_group.extra_state,
+    )
 
 
 class FusedSgd(SGD):
@@ -383,7 +457,8 @@ def _adam_param_group_flatten(group: AdamW.ParamGroup):
   return children, None
 
 
-def _adam_param_group_unflatten(children, _context):
+def _adam_param_group_unflatten(children, context):
+  del context  # Unused.
   return AdamW.ParamGroup(
       params=children[0],
       opt_state_m=children[1],
@@ -410,7 +485,8 @@ def _sgd_param_group_flatten(group: SGD.ParamGroup):
   return children, None
 
 
-def _sgd_param_group_unflatten(children, _context):
+def _sgd_param_group_unflatten(children, context):
+  del context  # Unused.
   return SGD.ParamGroup(
       params=children[0],
       opt_state_m=children[1],

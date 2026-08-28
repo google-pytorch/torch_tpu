@@ -184,6 +184,12 @@ class AdamWOptimizersTest(parameterized.TestCase):
     )
     self._validate_opt_step(opt, lr=1e-3, weight_decay=1e-2)
 
+  def test_reference_adamw_compiled_linear_train_step(self):
+    opt = optimizers.ReferenceAdamw(
+        lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
+    )
+    _validate_compiled_linear_train_step(self, opt, self.device)
+
   def test_fused_adamw_compiled_linear_train_step(self):
     opt = optimizers.FusedAdamw(
         lr=1e-3, weight_decay=1e-2, use_bfloat16_moments=False
