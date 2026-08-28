@@ -31,10 +31,12 @@ Example usage:
 
 import argparse
 from collections.abc import Mapping, Sequence
+import json
 import os
 import pathlib
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -399,6 +401,127 @@ def _get_matrix_entries(job: Mapping[str, Any]) -> list[dict[str, Any]]:
   return entries
 
 
+# A generated matrix is spelled `${{ fromJSON(needs.<job>.outputs.<key>) }}`.
+_MATRIX_NEEDS_RE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
+
+# The producing step echoes `<key>=$(<command>)` into $GITHUB_OUTPUT. The step's
+# `run` value is an opaque shell command, so this still needs a regex.
+_OUTPUT_COMMAND_TEMPLATE = r"{key}=\$\(([^()]+)\)"
+
+_MATRIX_GENERATOR_TIMEOUT_S = 60
+
+
+def _get_output_command(job: Mapping[str, Any], output_key: str) -> str:
+  """Returns the command whose stdout a job publishes as a named output.
+
+  Args:
+    job: A single job definition taken from a workflow's `jobs` mapping.
+    output_key: The name the job publishes the command's stdout under.
+
+  Returns:
+    The command, or the empty string if no step produces that output.
+  """
+  steps = job.get("steps")
+  if not isinstance(steps, list):
+    return ""
+  pattern = re.compile(
+      _OUTPUT_COMMAND_TEMPLATE.format(key=re.escape(output_key))
+  )
+  for step in steps:
+    if not isinstance(step, dict):
+      continue
+    command = step.get("run")
+    if not isinstance(command, str):
+      continue
+    match = pattern.search(command)
+    if match:
+      return match.group(1).strip()
+  return ""
+
+
+def _run_matrix_generator(
+    command: str, repo_root: pathlib.Path
+) -> list[dict[str, Any]]:
+  """Runs a matrix generator script and returns the entries it prints.
+
+  Args:
+    command: The command the workflow runs, relative to the repository root.
+    repo_root: Repository root the generator runs from.
+
+  Returns:
+    The matrix entries, or an empty list if the generator cannot be run or
+    prints something other than a JSON list of mappings.
+  """
+  argv = shlex.split(command)
+  if not argv:
+    return []
+  root = repo_root.resolve()
+  script = (root / argv[0]).resolve()
+  # Only run a generator that the repository itself ships.
+  if not script.is_file() or not script.is_relative_to(root):
+    return []
+  try:
+    result = subprocess.run(
+        [str(script), *argv[1:]],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=_MATRIX_GENERATOR_TIMEOUT_S,
+        check=True,
+    )
+    entries = json.loads(result.stdout)
+  except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    return []
+  if not isinstance(entries, list):
+    return []
+  return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _get_generated_matrix_entries(
+    workflow: Mapping[str, Any],
+    job: Mapping[str, Any],
+    repo_root: pathlib.Path,
+) -> list[dict[str, Any]]:
+  """Returns the matrix entries a job builds at run time.
+
+  `presubmit.yml` builds its matrix in a setup job instead of spelling it out
+  in YAML, so a plain read of the file finds no entries at all. Following the
+  reference back to the script that prints them keeps this tool reporting what
+  CI actually dispatches.
+
+  Args:
+    workflow: The parsed workflow the job belongs to.
+    job: A single job definition taken from that workflow's `jobs` mapping.
+    repo_root: Repository root the generator runs from.
+
+  Returns:
+    The generated matrix entries, in declaration order.
+  """
+  strategy = job.get("strategy")
+  if not isinstance(strategy, dict):
+    return []
+  matrix = strategy.get("matrix")
+  if not isinstance(matrix, dict):
+    return []
+  jobs = workflow.get("jobs")
+  if not isinstance(jobs, dict):
+    return []
+  entries = []
+  for value in matrix.values():
+    if not isinstance(value, str):
+      continue
+    reference = _MATRIX_NEEDS_RE.search(value)
+    if not reference:
+      continue
+    producer = jobs.get(reference.group(1))
+    if not isinstance(producer, dict):
+      continue
+    command = _get_output_command(producer, reference.group(2))
+    if command:
+      entries.extend(_run_matrix_generator(command, repo_root))
+  return entries
+
+
 def _get_literal(mapping: Mapping[str, Any], key: str) -> str:
   """Returns mapping[key] if it is a literal string, or '' if it is not."""
   value = mapping.get(key)
@@ -451,7 +574,9 @@ def parse_workflow_machine_types(
   """Parses CI job runner and machine type definitions from workflows.
 
   Extracts the runner and machine type mapping directly from the actual CI
-  workflow definitions to guarantee the tool remains synchronized with CI.
+  workflow definitions to guarantee the tool remains synchronized with CI. A
+  job whose matrix is generated at run time gets that generator run, since
+  reading the YAML alone would find no entries for it.
 
   Args:
     workflows_dir: Path to the .github/workflows directory, if available.
@@ -462,14 +587,19 @@ def parse_workflow_machine_types(
   job_machines: dict[str, JobMachineInfo] = {}
   if not workflows_dir or not workflows_dir.is_dir():
     return job_machines
+  repo_root = workflows_dir.parent.parent
 
   for wf_path in sorted(workflows_dir.glob("*.y*ml")):
-    jobs = _get_jobs(_load_workflow(wf_path))
+    workflow = _load_workflow(wf_path)
+    jobs = _get_jobs(workflow)
 
     # Matrix entries are authoritative: each one pairs a config with the exact
     # runner that config is dispatched to.
     for job in jobs:
-      for entry in _get_matrix_entries(job):
+      entries = _get_matrix_entries(job) + _get_generated_matrix_entries(
+          workflow, job, repo_root
+      )
+      for entry in entries:
         runner = _get_literal(entry, "runner")
         machine_type = _resolve_machine_type(
             _get_literal(entry, "machine_type"),
@@ -478,8 +608,15 @@ def parse_workflow_machine_types(
         )
         for key in _CONFIG_KEYS:
           config = _get_literal(entry, key)
-          if config:
-            job_machines[config] = JobMachineInfo(machine_type, runner)
+          if not config:
+            continue
+          # The same config can appear in a job that pins a runner and in one
+          # that hands the work to RBE and so names none. The pinned runner is
+          # the more useful answer, so don't let a runner-less entry drop it.
+          known = job_machines.get(config)
+          if known and known.runner and not runner:
+            continue
+          job_machines[config] = JobMachineInfo(machine_type, runner)
 
     # A config hardcoded in a step command only tells us which job runs it, so
     # it falls back to the job's runner and never overrides a matrix entry.

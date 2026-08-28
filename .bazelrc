@@ -335,7 +335,16 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
 common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
-common:ci_tpu_base --spawn_strategy=standalone,local
+# Only the test actions have to run here. They need the TPU chips physically
+# attached to this runner, so they cannot go to an RBE worker.
+#
+# This is deliberately --strategy=TestRunner rather than --spawn_strategy.
+# --spawn_strategy sets the default for *every* spawn, which also pinned
+# compilation to the TPU host: with `--spawn_strategy=standalone,local` a spawn
+# reports runner=local, with this flag it reports runner=remote, tests
+# excepted. Compiling on a ct5lp while its eight chips sit idle is the most
+# expensive way to build C++ we have.
+common:ci_tpu_base --strategy=TestRunner=local
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
@@ -365,6 +374,34 @@ common:ci_tpu_v5 --local_test_jobs=8
 
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
 common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
+
+# The opt-in path in .github/workflows/test_rbe_opt_in.yml, where the tests
+# themselves run on RBE workers with TPU chips instead of on the runner.
+#
+# ci_tpu_base pins TestRunner to the local machine, which is right for the
+# relay and wrong here, so this overrides it. Setting only --spawn_strategy
+# would not do it: --strategy names a mnemonic and beats the default list.
+common:ci_tpu_v5_full_rbe --config=ci_tpu_v5
+common:ci_tpu_v5_full_rbe --config=remote_execution_readonly
+common:ci_tpu_v5_full_rbe --extra_execution_platforms=//bazel/platforms:rbe_tpu_v5e
+common:ci_tpu_v5_full_rbe --modify_execution_info=TestRunner=
+common:ci_tpu_v5_full_rbe --strategy=TestRunner=remote,worker,local
+common:ci_tpu_v5_full_rbe --spawn_strategy=remote,worker,local
+common:ci_tpu_v5_full_rbe --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
+
+# The SSH relay path in .github/workflows/test_rbe_opt_in.yml. Compile actions
+# go out to RBE; test actions stay local, where the --run_under wrapper that
+# scripts/run_presubmit_v5_relay.sh installs ships each one to a Cloud TPU v5e
+# VM over SSH. ci_tpu_base's --strategy=TestRunner=local is already right, so
+# there is nothing to override there.
+#
+# The one thing that has to change is --remote_download_minimal, which `ci`
+# sets. ci/tools/stage_relay_base.sh reads the runfiles trees off bazel-bin to
+# build the base cache; with minimal downloads those trees are never
+# materialised, staging finds nothing, and every test dies on the VM looking for
+# an interpreter that was never shipped.
+common:ci_tpu_v5_relay --config=ci_tpu_v5_presubmit
+common:ci_tpu_v5_relay --remote_download_outputs=all
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base

@@ -58,7 +58,15 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
 
     self._run_mock_test(tpus, hardware._V6E_TOPOLOGY[8])
 
-  def _run_mock_test(self, tpus, expected_topology):
+  def test_v5e_container_no_vfio(self):
+    tpus = []
+    for i in range(4):
+      addr = f"0000:03:01.{i}"
+      tpus.append({"addr": addr, "id": "0x0063", "vfio_group": str(146 + i)})
+
+    self._run_mock_test(tpus, hardware._V5E_TOPOLOGY[4], vfio_exists=False)
+
+  def _run_mock_test(self, tpus, expected_topology, vfio_exists=True):
     # Map of path strings to mock Path objects
     path_mocks = {}
     real_path_cls = pathlib.Path
@@ -98,10 +106,12 @@ class TpuTopologyMockTest(seed_test_utils.RepeatableTest):
 
         # Handle /dev/vfio
         if path_str == "/dev/vfio":
-          m.exists.return_value = True
+          m.exists.return_value = vfio_exists
         elif path_str.startswith("/dev/vfio/"):
           group_id = path_str.split("/")[-1]
-          m.exists.return_value = any(d["vfio_group"] == group_id for d in tpus)
+          m.exists.return_value = vfio_exists and any(
+              d["vfio_group"] == group_id for d in tpus
+          )
 
         path_mocks[path_str] = m
       return path_mocks[path_str]

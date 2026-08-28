@@ -300,12 +300,14 @@ def _scan_pci_tpus() -> tuple[int, Mapping[int, str] | None]:
 
         if device_id in _TOPOLOGY_BY_TPU_PCI_DEVICE_ID:
           # Some devices have multiple tensorcores sharing the same bus.
-          # We count only those that are exposed via VFIO.
-          try:
-            group_id = (device_path / "iommu_group").readlink().name
-            (pathlib.Path("/dev/vfio") / group_id).stat()
-          except (OSError, IOError):
-            continue
+          # Count those exposed via VFIO when /dev/vfio is present.
+          vfio_path = pathlib.Path("/dev/vfio")
+          if vfio_path.exists():
+            try:
+              group_id = (device_path / "iommu_group").readlink().name
+              (vfio_path / group_id).stat()
+            except (OSError, IOError):
+              continue
 
           count += 1
           # Use the first matching device's topology map.

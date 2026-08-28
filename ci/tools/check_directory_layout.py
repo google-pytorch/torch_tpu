@@ -37,6 +37,7 @@ EXPECTED_ROOT_DIRS: Final[frozenset[str]] = frozenset([
     "docs",
     "examples",
     "requirements",
+    "scripts",
     "shims",
     "src",
     "tests",

@@ -26,3 +26,9 @@ dist/
 # Vim undo files.
 *.un~
 .*.un~
+
+# Relay presubmit run output.
+presubmit_reports/
+relay_reports/
+# Agent scratch state.
+.agents/

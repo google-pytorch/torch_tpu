@@ -26,6 +26,10 @@ on:
         options:
           - 'yes'
           - 'no'
+      bypass-tpu-v5:
+        description: 'Bypass TPU v5 presubmit tests?'
+        type: boolean
+        default: false
       override_base_sha:
         description: 'Override Base SHA for bazel-diff (optional)'
         required: false
@@ -37,6 +41,7 @@ on:
   pull_request:
     branches:
       - main
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -45,41 +50,102 @@ permissions:
 
 # Cancel old jobs when they are replaced by new runs
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Labels that don't change what CI runs (triage, release tags) still fire a
+  # `labeled` event. Park those runs in a group of their own so they can't
+  # cancel a presubmit that is already running and throw away its results.
+  # Keep this list in sync with the `if:` on the setup job below.
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
+    github.event.action == 'labeled'
+    && !contains(fromJSON('["ci:bypass-tpu-v5", "ci:replace-tpu-v5", "ci:disable-bazel-diff"]'), github.event.label.name)
+    && format('-ignored-label-{0}', github.run_id) || '' }}
   # Don't cancel in-progress jobs for main branch
   cancel-in-progress: ${{ github.ref != 'main' }}
 
 jobs:
+  setup:
+    name: "Presubmit Setup"
+    # Only react to a label if that label changes what CI does. Without this,
+    # every triage label would re-run the whole presubmit for nothing.
+    # Keep this list in sync with the concurrency group above.
+    if: >-
+      github.event.action != 'labeled'
+      || contains(fromJSON('["ci:bypass-tpu-v5", "ci:replace-tpu-v5", "ci:disable-bazel-diff"]'), github.event.label.name)
+    runs-on: ubuntu-latest
+    outputs:
+      job_matrix: ${{ steps.set-matrix.outputs.job_matrix }}
+      tpu_v5_bypassed: ${{ steps.set-matrix.outputs.tpu_v5_bypassed }}
+      tpu_v5_replaced: ${{ steps.set-matrix.outputs.tpu_v5_replaced }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - id: set-matrix
+        env:
+          # Both labels take TPU v5 out of the matrix. `ci:replace-tpu-v5` also
+          # promotes the SSH relay run in test_rbe_opt_in.yml to a gating check,
+          # so the hardware still gets covered; `ci:bypass-tpu-v5` skips it
+          # outright and is meant for runner outages.
+          REPLACE_TPU_V5: >-
+            ${{ contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5') }}
+          BYPASS_TPU_V5: >-
+            ${{ inputs.bypass-tpu-v5
+            || contains(github.event.pull_request.labels.*.name, 'ci:bypass-tpu-v5')
+            || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5') }}
+        run: |
+          {
+            echo "job_matrix=$(ci/tools/presubmit_job_matrix.sh)"
+            echo "tpu_v5_bypassed=${BYPASS_TPU_V5}"
+            echo "tpu_v5_replaced=${REPLACE_TPU_V5}"
+          } >> "$GITHUB_OUTPUT"
+
+  tpu_v5_bypass_notice:
+    # Reports the required check under the runner's own name so branch
+    # protection stays satisfied while the real runner sits this one out.
+    # GitHub publishes a check run for a skipped job too, so a fixed name here
+    # would put two check runs named after the TPU v5 runner on every run that
+    # is not bypassed. The skipped one reads as a failure to anything gating on
+    # that check. Only claim the name when this job is standing in for it.
+    #
+    # `ci:replace-tpu-v5` is the one case where it must not: there a Googler
+    # runs the relay from a workstation and posts the verdict as a commit
+    # status under that name. Claiming it here too would put an always-green
+    # check next to it and hide a red relay run.
+    name: >-
+      ${{ needs.setup.outputs.tpu_v5_bypassed == 'true'
+      && needs.setup.outputs.tpu_v5_replaced != 'true'
+      && 'Presubmit on linux-x86-ct5lp-224-8tpu'
+      || 'TPU v5 Bypass Notice' }}
+    needs: setup
+    if: needs.setup.outputs.tpu_v5_bypassed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report TPU v5 Bypass Notice
+        run: |
+          cat <<'NOTICE'
+          ========================================================================
+          NOTICE: TPU v5 (linux-x86-ct5lp-224-8tpu) presubmit was skipped
+          ========================================================================
+          A bypass label or workflow input took the self-hosted TPU v5 runner out
+          of this run's job matrix.
+
+          If the PR carries `ci:replace-tpu-v5`, TPU v5 coverage moves to the
+          SSH relay, which a Googler runs from a corp workstation with
+          scripts/relay_presubmit_pr.sh. That run posts its verdict as a commit
+          status under this runner's check name, so this PR stays blocked until
+          it reports green.
+
+          See docs/CI_PRESUBMIT_AND_RBE_GUIDE.md.
+          ========================================================================
+          NOTICE
+
   run_tests:
+    needs: setup
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     # Available self-hosted runners.
     strategy:
       fail-fast: false
       matrix:
-        job_info: [
-          {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
-          {
-            runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_v5_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          },
-          # TODO(gunhyun): Re-enable once we have more quota.
-          # {
-          #   runner: "linux-x86-ct6e-180-8tpu",
-          #   config: "ci_tpu_v6_presubmit",
-          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          # },
-          {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
-        ]
+        job_info: ${{ fromJSON(needs.setup.outputs.job_matrix) }}
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
     # workflow is required.
     # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.

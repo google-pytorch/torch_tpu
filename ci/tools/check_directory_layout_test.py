@@ -90,6 +90,16 @@ class CheckDirectoryLayoutTest(
         check_directory_layout.validate_directory_layout(self.repo_root)
     )
 
+  def test_scripts_is_an_expected_root_directory(self):
+    self.assertIn("scripts", check_directory_layout.EXPECTED_ROOT_DIRS)
+
+  def test_missing_scripts_directory_fails(self):
+    self._create_valid_layout()
+    (self.repo_root / "scripts").rmdir()
+    self.assertFalse(
+        check_directory_layout.validate_directory_layout(self.repo_root)
+    )
+
   def test_missing_src_directory_fails(self):
     self._create_valid_layout()
     (self.repo_root / "src" / "torch_tpu" / "ops").rmdir()

@@ -38,7 +38,7 @@ import sys
 import time
 import traceback
 import typing
-from typing import Any, Final, IO, TypeGuard
+from typing import Any, Final, TypeGuard
 import unittest
 
 from absl import flags
@@ -1457,6 +1457,12 @@ class GoldenGpuData:
         str,
         dict[str, dict[str, list[tuple["OpInput", "OpOutput"]]]],
     ] = {}
+    # Same shape, but the samples are still in their encoded plistlib form.
+    # `merge_plistlib_pytree` drops them here and `get_samples` decodes a key
+    # the first time something asks for it. A golden file holds ~167k samples
+    # and each one costs ~400us to build, so decoding the whole file up front
+    # burns ~65s in a process that only reads a few hundred keys.
+    self._unparsed_data: dict[str, dict[str, dict[str, list[Any]]]] = {}
 
   def add(
       self,
@@ -1482,6 +1488,7 @@ class GoldenGpuData:
   ) -> Sequence[tuple["OpInput", "OpOutput"]]:
     """Returns the recorded samples for the key, or an empty list if absent."""
     key = _golden_dtype_key(dtype, out_dtype_override)
+    self._materialize(test_case_name, variant.value, key)
     return (
         self._data.get(test_case_name, {}).get(variant.value, {}).get(key, [])
     )
@@ -1489,16 +1496,53 @@ class GoldenGpuData:
   def clear(self) -> None:
     """Removes all recorded golden data."""
     self._data.clear()
+    self._unparsed_data.clear()
 
   def _samples_for(
       self, test_case_name: str, variant_name: str, dtype_key: str
   ) -> list[tuple["OpInput", "OpOutput"]]:
     """Returns the mutable sample list for the key, creating it if needed."""
+    self._materialize(test_case_name, variant_name, dtype_key)
+    return self._mutable_samples(test_case_name, variant_name, dtype_key)
+
+  def _mutable_samples(
+      self, test_case_name: str, variant_name: str, dtype_key: str
+  ) -> list[tuple["OpInput", "OpOutput"]]:
+    """Returns the mutable sample list without decoding anything pending."""
     return (
         self._data.setdefault(test_case_name, {})
         .setdefault(variant_name, {})
         .setdefault(dtype_key, [])
     )
+
+  def _materialize(
+      self, test_case_name: str, variant_name: str, dtype_key: str
+  ) -> None:
+    """Decodes any samples still pending for the key and appends them."""
+    encoded_samples = (
+        self._unparsed_data.get(test_case_name, {})
+        .get(variant_name, {})
+        .pop(dtype_key, None)
+    )
+    if not encoded_samples:
+      return
+    samples = self._mutable_samples(test_case_name, variant_name, dtype_key)
+    for encoded_op_input, encoded_op_output in encoded_samples:
+      samples.append((
+          OpInput.from_plistlib_pytree(encoded_op_input),
+          OpOutput.from_plistlib_pytree(encoded_op_output),
+      ))
+
+  def _materialize_all(self) -> None:
+    """Decodes every sample still pending, for callers that walk `_data`."""
+    pending = [
+        (test_case_name, variant_name, dtype_key)
+        for test_case_name, variant_to_dt in self._unparsed_data.items()
+        for variant_name, dt_to_samples in variant_to_dt.items()
+        for dtype_key in dt_to_samples
+    ]
+    for key in pending:
+      self._materialize(*key)
 
   def to_plistlib_pytree(self) -> _pytree.PyTree:
     """Encodes the golden data into a plistlib-compatible pytree."""
@@ -1509,18 +1553,17 @@ class GoldenGpuData:
     def is_leaf(x: Any) -> bool:
       return isinstance(x, (OpInput, OpOutput))
 
+    self._materialize_all()
     return _pytree.tree_map(leaf_func, self._data, is_leaf=is_leaf)
 
   def merge_plistlib_pytree(self, encoded_data: _pytree.PyTree) -> None:
-    """Decodes a plistlib-compatible pytree and merges it into this data."""
+    """Files a plistlib-compatible pytree away for decoding on first read."""
     for test_case_name, variant_to_dt in encoded_data.items():
       for variant_name, dt_to_encoded_samples in variant_to_dt.items():
         for dtype_name, encoded_samples in dt_to_encoded_samples.items():
-          samples = self._samples_for(test_case_name, variant_name, dtype_name)
-          for encoded_op_input, encoded_op_output in encoded_samples:
-            op_input = OpInput.from_plistlib_pytree(encoded_op_input)
-            op_output = OpOutput.from_plistlib_pytree(encoded_op_output)
-            samples.append((op_input, op_output))
+          self._unparsed_data.setdefault(test_case_name, {}).setdefault(
+              variant_name, {}
+          ).setdefault(dtype_name, []).extend(encoded_samples)
 
 
 # Collects the golden GPU results for each op test. See GoldenGpuData for the
@@ -4338,12 +4381,15 @@ def _load_golden_files() -> None:
         f" {golden_file}",
         flush=True,
     )
+    # Decompress in one shot. The binary plist parser reads a few bytes at a
+    # time and seeks backwards constantly, and a gzip stream has to re-inflate
+    # to answer a backwards seek, so parsing straight off the file costs ~18s
+    # per golden and ~0.7s from memory.
     with gzip.open(golden_file, "rb") as f:
-      # TODO(pganssle): Figure out why this is required
-      f = typing.cast(IO[bytes], f)
-      plist_ptree = plistlib.load(
-          f, fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY)
-      )
+      raw = f.read()
+    plist_ptree = plistlib.loads(
+        raw, fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY)
+    )
     _GOLDEN_GPU_DATA.merge_plistlib_pytree(plist_ptree)
 
 

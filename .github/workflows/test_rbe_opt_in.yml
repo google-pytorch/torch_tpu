@@ -1,0 +1,258 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runs the presubmit test suite on TPU hardware that is not the shared
+# self-hosted ct5lp runner. Two paths live here:
+#
+#   relay     Bazel keeps the test actions local and a --run_under wrapper ships
+#             each one over SSH to a single-chip Cloud TPU v5e VM leased from a
+#             standing fleet in rbe-tpu-oss. This is the path that works today,
+#             but it cannot run here: a hierarchical firewall above rbe-tpu-oss
+#             denies port 22 from 0.0.0.0/0, so no GitHub runner can reach the
+#             fleet. A Googler drives it from a corp workstation with
+#             scripts/relay_presubmit_pr.sh, which reports the verdict back to
+#             the PR as a commit status. The relay_handoff job below publishes
+#             that pending status and the exact command to run.
+#   full RBE  Bazel sends the test actions to RBE workers that have TPU chips
+#             attached. Needs worker pools that do not exist yet. The CPU leg of
+#             this path does work, on the same self-hosted runner and the same
+#             application default credentials the normal presubmits use.
+#
+# Opt in per PR with a label:
+#
+#   ci:relay-tpu-v5    Marks the PR for an advisory relay run. Never blocks.
+#   run-rbe            Runs the full-RBE path. Advisory.
+#   ci:replace-tpu-v5  Takes TPU v5 out of presubmit.yml's matrix and gates the
+#                      PR on the relay instead. The required ct5lp check stays
+#                      pending until a Googler runs the relay and reports it.
+#
+# See docs/CI_PRESUBMIT_AND_RBE_GUIDE.md.
+
+name: RBE Hardware TPU Tests (Opt-In)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'shadow = advisory, replacement = gates the PR'
+        type: choice
+        default: 'shadow'
+        options:
+          - 'shadow'
+          - 'replacement'
+      hardware_path:
+        description: 'relay = SSH to Cloud TPU VMs, full-rbe = TPU-attached RBE workers'
+        type: choice
+        default: 'relay'
+        options:
+          - 'relay'
+          - 'full-rbe'
+      test_suite:
+        description: 'Test suite to execute'
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - 'tpu_v5e_only'
+          - 'cpu_only'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Labels unrelated to RBE still fire a `labeled` event. Park those runs in a
+  # group of their own so they can't cancel an RBE run already in flight.
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
+    github.event.action == 'labeled'
+    && !contains(fromJSON('["run-rbe", "ci:relay-tpu-v5", "ci:replace-tpu-v5"]'), github.event.label.name)
+    && format('-ignored-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+env:
+  # RBE streams results over its own gRPC channel; the Build Event Service
+  # upload just adds latency here.
+  RBE_BAZEL_FLAGS: --bes_backend=
+
+  # Targets that don't yet run under full RBE. Each needs more than the single
+  # chip an RBE worker exposes, or reaches the network mid-test.
+  # TODO(jonathanskim): Tag these `no-rbe` in BUILD files and filter on the tag
+  # so this list can't go stale.
+  RBE_EXCLUDED_TARGETS: >-
+    -//tests:fp4_test
+    -//tests:ops_unit_test
+    -//tests:async_transfer_test
+    -//tests:ops_unit_test_tier3_cache
+    -//tests:ops_unit_test_tier3_cache_no_backup
+    -//tests/compile:activation_checkpointing_mem_test
+    -//tests/distributed:single_tpu_pg_test
+
+jobs:
+  run_tests:
+    name: "${{ matrix.job_info.name }}"
+    # ci:replace-tpu-v5 deliberately does not appear here. That label gates the
+    # PR, and full RBE needs TPU worker pools that do not exist yet, so a gating
+    # run on this path would block every PR that asked for it.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.hardware_path == 'full-rbe')
+      || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+    continue-on-error: >-
+      ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'replacement') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job_info:
+          - name: "CPU Presubmit Tests"
+            config: "ci_cpu_presubmit"
+            suite: "cpu_only"
+            extra_flags: ""
+          - name: "TPU v5e Tests (Full RBE)"
+            # The tests land on RBE workers, not on this runner, so name the
+            # hardware explicitly.
+            machine_type: "TPU v5e (RBE)"
+            config: "ci_tpu_v5_full_rbe"
+            suite: "tpu_v5e_only"
+            extra_flags: "--test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild"
+    # The same Google-operated runner and container the normal presubmits use.
+    # It carries application default credentials for RBE, so there is nothing to
+    # authenticate here and no credential for an outside system to mint.
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
+      options: --ipc=host
+    permissions:
+      contents: read
+    # The container's default shell is `sh`, which has no [[ ]] and no
+    # /dev/tcp. Anything written as bash silently misbehaves without this.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Run Test Suite
+        if: >-
+          inputs.test_suite == null
+          || inputs.test_suite == 'all'
+          || inputs.test_suite == matrix.job_info.suite
+        env:
+          BAZEL_CONFIG: ${{ matrix.job_info.config }}
+          EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
+        run: |
+          # EXTRA_FLAGS, RBE_BAZEL_FLAGS and RBE_EXCLUDED_TARGETS are
+          # space-separated lists that have to word-split into separate Bazel
+          # arguments.
+          # shellcheck disable=SC2086
+          bazel test \
+            "--config=${BAZEL_CONFIG}" \
+            --nocache_test_results \
+            --test_output=errors \
+            ${RBE_BAZEL_FLAGS} \
+            ${EXTRA_FLAGS} \
+            -- //tests/... ${RBE_EXCLUDED_TARGETS}
+
+  relay_handoff:
+    name: "TPU v5e Relay Handoff"
+    # The relay itself runs on a Googler's workstation. All this job does is
+    # say so on the PR, so nobody is left waiting on a check that no machine
+    # here is going to report.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.hardware_path == 'relay')
+      || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To publish the pending ct5lp status that a replacement run will later
+      # resolve. Fork PRs get a read-only token, so the step below is gated on
+      # the PR coming from this repository.
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      IS_REPLACEMENT: >-
+        ${{ contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+        || (github.event_name == 'workflow_dispatch' && inputs.mode == 'replacement') }}
+      IS_INTERNAL: >-
+        ${{ github.event_name == 'workflow_dispatch'
+        || github.event.pull_request.head.repo.full_name == github.repository }}
+      GATING_CONTEXT: "Presubmit on linux-x86-ct5lp-224-8tpu"
+
+    steps:
+      # A replacement run leaves the required ct5lp check unclaimed until
+      # somebody runs the relay. Publishing it as pending turns "no check here
+      # yet" into "waiting on a person, and here is what they have to type".
+      - name: Hold the required check open
+        if: env.IS_REPLACEMENT == 'true' && env.IS_INTERNAL == 'true'
+        run: |
+          # Don't stomp on a verdict somebody already reported for this commit.
+          # A later `labeled` event fires on the same SHA and would otherwise
+          # knock a finished run back to pending.
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
+            --jq ".statuses[] | select(.context == \"${GATING_CONTEXT}\") | .state" \
+            2>/dev/null | tail -1)
+          if [[ "${existing}" == "success" || "${existing}" == "failure" ]]; then
+            echo "${GATING_CONTEXT} is already '${existing}' for ${HEAD_SHA}; leaving it alone."
+            exit 0
+          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f "state=pending" \
+            -f "context=${GATING_CONTEXT}" \
+            -f "description=waiting for a Googler to run the TPU v5e relay" \
+            -f "target_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > /dev/null
+          echo "Published a pending ${GATING_CONTEXT} for ${HEAD_SHA}."
+
+      - name: Explain what has to happen next
+        run: |
+          if [[ "${IS_REPLACEMENT}" == "true" ]]; then
+            mode="replacement"
+            effect="This PR cannot merge until that command reports green."
+          else
+            mode="shadow"
+            effect="Results are advisory and will not block this PR."
+          fi
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## TPU v5e relay: ${mode} run
+
+          The relay runs the \`presubmit-v5\` single-chip targets on Cloud TPU
+          v5e VMs in \`rbe-tpu-oss\`. It cannot run on a GitHub runner: a
+          hierarchical firewall above that project denies port 22 from the open
+          internet, and corp workstations get in through \`corp-ssh-helper\`.
+
+          A Googler on \`torchtpu-dev@\` or \`cloud-tpus-dev-team@\` runs it from
+          a corp workstation:
+
+          \`\`\`bash
+          git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
+          scripts/relay_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode}
+          \`\`\`
+
+          ${effect}
+
+          See \`docs/CI_PRESUBMIT_AND_RBE_GUIDE.md\` section 5.
+          SUMMARY
+
+          if [[ "${IS_INTERNAL}" != "true" ]]; then
+            echo "::warning::This PR is from a fork, so the pending check could" \
+              "not be published. A maintainer has to run the relay and report it."
+          fi

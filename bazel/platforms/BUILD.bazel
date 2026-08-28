@@ -61,3 +61,39 @@ platform(
     parents = ["@ml_build_config_platform//:platform"],
     visibility = ["//visibility:public"],
 )
+
+# RBE platform for TPU v5e (ct5lp-hightpu-1t) remote execution.
+platform(
+    name = "rbe_tpu_v5e",
+    exec_properties = {
+        "Pool": "ci_tpu_v5_full_rbe",
+        "MachineType": "ct5lp-hightpu-1t",
+        "container-image": "docker://us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:ea67e8453d8b09c2ba48853da5e79efef4b65804b4a48dfae4b4da89ffd38405",
+    },
+    parents = ["@ml_build_config_platform//:platform"],
+    visibility = ["//visibility:public"],
+)
+
+# RBE platform for TPU v6e (ct6e-standard-1t) remote execution.
+platform(
+    name = "rbe_tpu_v6e",
+    exec_properties = {
+        "Pool": "linux-tpu6e-pool",
+        "MachineType": "ct6e-standard-1t",
+        "container-image": "docker://us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:ea67e8453d8b09c2ba48853da5e79efef4b65804b4a48dfae4b4da89ffd38405",
+    },
+    parents = ["@ml_build_config_platform//:platform"],
+    visibility = ["//visibility:public"],
+)
+
+# RBE platform for TPU v7x (tpu7x-standard-1t) remote execution.
+platform(
+    name = "rbe_tpu_v7x",
+    exec_properties = {
+        "Pool": "linux-tpu7x-pool",
+        "MachineType": "tpu7x-standard-1t",
+        "container-image": "docker://us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:ea67e8453d8b09c2ba48853da5e79efef4b65804b4a48dfae4b4da89ffd38405",
+    },
+    parents = ["@ml_build_config_platform//:platform"],
+    visibility = ["//visibility:public"],
+)

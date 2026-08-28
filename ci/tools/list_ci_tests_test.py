@@ -590,6 +590,143 @@ jobs:
           parsed["ci_tpu_nightly"].runner, "linux-x86-ct6e-180-8tpu"
       )
 
+  def _write_generated_matrix_repo(self, root, generator_body):
+    """Builds a repo whose presubmit matrix comes from a generator script.
+
+    Args:
+      root: Directory to build the repository in.
+      generator_body: Shell body for ci/tools/fake_matrix.sh.
+
+    Returns:
+      The .github/workflows directory.
+    """
+    workflows_dir = root / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    generator = root / "ci" / "tools" / "fake_matrix.sh"
+    generator.parent.mkdir(parents=True)
+    generator.write_text(generator_body, encoding="utf-8")
+    generator.chmod(0o755)
+    (workflows_dir / "presubmit.yml").write_text(
+        textwrap.dedent("""\
+            jobs:
+              setup:
+                runs-on: ubuntu-latest
+                outputs:
+                  job_matrix: ${{ steps.set-matrix.outputs.job_matrix }}
+                steps:
+                  - id: set-matrix
+                    run: |
+                      echo "job_matrix=$(ci/tools/fake_matrix.sh)" >> "$GITHUB_OUTPUT"
+              run_tests:
+                needs: setup
+                strategy:
+                  matrix:
+                    job_info: ${{ fromJSON(needs.setup.outputs.job_matrix) }}
+                runs-on: ${{ matrix.job_info.runner }}
+            """),
+        encoding="utf-8",
+    )
+    return workflows_dir
+
+  def test_parse_workflow_machine_types_generated_matrix(self):
+    """A matrix printed by a setup job is expanded by running the generator."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      workflows_dir = self._write_generated_matrix_repo(
+          pathlib.Path(temp_dir),
+          '#!/bin/sh\necho \'[{"config": "ci_cpu_presubmit", "runner":'
+          ' "linux-x86-n4-16"}, {"config": "ci_tpu_v5_presubmit", "runner":'
+          ' "linux-x86-ct5lp-224-8tpu"}]\'\n',
+      )
+
+      parsed = list_ci_tests.parse_workflow_machine_types(workflows_dir)
+
+      self.assertEqual(parsed["ci_cpu_presubmit"].machine_type, "CPU")
+      self.assertEqual(parsed["ci_cpu_presubmit"].runner, "linux-x86-n4-16")
+      self.assertEqual(parsed["ci_tpu_v5_presubmit"].machine_type, "TPU v5e")
+      self.assertEqual(
+          parsed["ci_tpu_v5_presubmit"].runner, "linux-x86-ct5lp-224-8tpu"
+      )
+
+  def test_parse_workflow_machine_types_generator_failure_is_ignored(self):
+    """A generator that fails or prints junk yields nothing, and never raises."""
+    for body in (
+        "#!/bin/sh\nexit 1\n",
+        "#!/bin/sh\necho 'not json'\n",
+        '#!/bin/sh\necho \'{"config": "ci_cpu_presubmit"}\'\n',
+    ):
+      with self.subTest(body=body):
+        with tempfile.TemporaryDirectory() as temp_dir:
+          workflows_dir = self._write_generated_matrix_repo(
+              pathlib.Path(temp_dir), body
+          )
+
+          parsed = list_ci_tests.parse_workflow_machine_types(workflows_dir)
+
+          self.assertNotIn("ci_cpu_presubmit", parsed)
+
+  def test_parse_workflow_machine_types_generator_must_be_in_repo(self):
+    """A generator path that escapes the repository root is not run."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      root = pathlib.Path(temp_dir) / "repo"
+      workflows_dir = self._write_generated_matrix_repo(
+          root, '#!/bin/sh\necho \'[{"config": "ci_cpu_presubmit"}]\'\n'
+      )
+      outside = pathlib.Path(temp_dir) / "outside.sh"
+      outside.write_text(
+          '#!/bin/sh\necho \'[{"config": "escaped", "runner":'
+          ' "linux-x86-n4-16"}]\'\n',
+          encoding="utf-8",
+      )
+      outside.chmod(0o755)
+      presubmit = workflows_dir / "presubmit.yml"
+      presubmit.write_text(
+          presubmit.read_text(encoding="utf-8").replace(
+              "ci/tools/fake_matrix.sh", "../outside.sh"
+          ),
+          encoding="utf-8",
+      )
+
+      parsed = list_ci_tests.parse_workflow_machine_types(workflows_dir)
+
+      self.assertNotIn("escaped", parsed)
+
+  def test_parse_workflow_machine_types_pinned_runner_wins(self):
+    """A config named by two jobs keeps the runner, whichever file sorts first."""
+    pinned = textwrap.dedent("""\
+        jobs:
+          run_tests:
+            strategy:
+              matrix:
+                job_info:
+                  - config: "ci_cpu_presubmit"
+                    runner: "linux-x86-n4-16"
+        """)
+    # The RBE job hands the work to a remote pool, so it pins no runner.
+    runnerless = textwrap.dedent("""\
+        jobs:
+          run_tests:
+            runs-on: ubuntu-latest
+            strategy:
+              matrix:
+                job_info:
+                  - config: "ci_cpu_presubmit"
+                    name: "CPU Presubmit Tests"
+        """)
+    for pinned_name, runnerless_name in (
+        ("a_pinned.yml", "b_rbe.yml"),
+        ("a_rbe.yml", "b_pinned.yml"),
+    ):
+      with self.subTest(first=min(pinned_name, runnerless_name)):
+        with tempfile.TemporaryDirectory() as temp_dir:
+          temp_path = pathlib.Path(temp_dir)
+          (temp_path / pinned_name).write_text(pinned, encoding="utf-8")
+          (temp_path / runnerless_name).write_text(runnerless, encoding="utf-8")
+
+          parsed = list_ci_tests.parse_workflow_machine_types(temp_path)
+
+          self.assertEqual(parsed["ci_cpu_presubmit"].runner, "linux-x86-n4-16")
+          self.assertEqual(parsed["ci_cpu_presubmit"].machine_type, "CPU")
+
   def test_find_workflows_dir(self):
     """Verifies that get_workflows_dir locates .github/workflows."""
     with tempfile.TemporaryDirectory() as temp_dir:

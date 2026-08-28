@@ -41,6 +41,20 @@ _REQUIRES_GPU_SM90 = "requires-gpu-sm90"
 # TODO: change this back to 16 after the OSS v5 worker pool is back to normal.
 _OSS_SAMPLE_LIMIT = "--max_samples_per_op_dtype=5"
 
+# Shard counts below are written as if_oss(oss, internal).
+#
+# OSS and internal run very different amounts of work per test. OSS caps
+# samples per op/dtype (see _OSS_SAMPLE_LIMIT) while internal samples 20, so an
+# OSS shard often finishes in seconds. Meanwhile every shard pays a fixed
+# startup: about 79s for anything running ops_test.py in vs-gpu mode (loading
+# the golden input/output pairs), 14-31s for the rest. Past the point where the
+# startup costs more than the work, extra shards only add machine time.
+#
+# The OSS numbers were picked from per-action timings measured on v5e, aiming
+# for the longest shard to land near the total work divided by the fleet size.
+# Re-measure before changing them; `TORCH_TPU_RELAY_TIMING=1` on the relay
+# presubmit prints the per-phase breakdown.
+
 # Knob for controlling how many tests to include in the OSS presubmit build.
 # Set this to True to skip less important tests in OSS presubmit (they
 # will still run in postsubmit).
@@ -389,7 +403,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 35,
+    shard_count = if_oss(16, 35),
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
@@ -542,7 +556,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 40,
+    shard_count = if_oss(8, 40),
     tags = [
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
@@ -584,7 +598,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 50,
+    shard_count = if_oss(12, 50),
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
@@ -628,7 +642,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 50,
+    shard_count = if_oss(20, 50),
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
@@ -712,6 +726,9 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
+    # Sharding does not help here. Bazel splits by test method, and one method
+    # holds nearly all the work: at 4 shards one of them ran 221.2s against
+    # 223.3s unsharded, so the other three only paid relay overhead.
     shard_count = 1,
     tags = [
         "noasan",  # This test times out in asan mode.
@@ -796,7 +813,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 32,
+    shard_count = if_oss(8, 32),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
@@ -929,7 +946,7 @@ torch_tpu_py_test(
         "requires-tpu-v6e",
         "requires-tpu-v5lite",
     ],
-    shard_count = 20,
+    shard_count = if_oss(10, 20),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
@@ -1064,7 +1081,7 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/my_cache",
     },
     main = "ops_unit_test.py",
-    shard_count = 30,
+    shard_count = if_oss(12, 30),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
@@ -1103,7 +1120,7 @@ torch_tpu_py_test(
         "TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK": "0",
     },
     main = "ops_unit_test.py",
-    shard_count = 30,
+    shard_count = if_oss(12, 30),
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
