@@ -36,6 +36,7 @@ load(
     "//shims/build_files:torch_version.bzl",
     "xla_base_filter",
 )
+load("//shims/py_rules:pytype.bzl", "pytype_strict_binary")
 load(
     "//shims/pybind11:pybind.bzl",
     "backend_probe_labels",
@@ -1536,6 +1537,42 @@ torch_tpu_cc_library(
     deps = [
         "//shims/torch:torch_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+    ],
+)
+
+pytype_strict_binary(
+    name = "generate_tpu_info",
+    srcs = ["generate_tpu_info.py"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//shims/jax:pallas_tpu",
+        "@pypi//jax",  # buildcleaner: keep
+    ],
+)
+
+genrule(
+    name = "tpu_info_data",
+    outs = ["tpu_info_data.inc"],
+    cmd = "generate_tpu_info --output=$(OUTS)",
+    tools = ["generate_tpu_info"],
+    visibility = ["//visibility:private"],
+)
+
+torch_tpu_cc_library(
+    name = "tpu_info",
+    srcs = ["tpu_info.cc"],
+    hdrs = ["tpu_info.h"],
+    textual_hdrs = [":tpu_info_data"],
+)
+
+torch_tpu_cc_test(
+    name = "tpu_info_test",
+    srcs = ["tpu_info_test.cc"],
+    deps = [
+        ":tpu_info",
+        "//torch_tpu/common:oss_test_main",
     ],
 )
 
