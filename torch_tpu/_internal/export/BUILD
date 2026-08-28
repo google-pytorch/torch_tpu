@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
 package(
@@ -33,6 +34,7 @@ py_library_providing_imports_info(
     module_specs = [
         "export.modspec.json",
     ],
+    visibility = ["//:__subpackages__"] + TT_FRIENDS,
     deps = [
         ":export_lib",
     ],

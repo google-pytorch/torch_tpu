@@ -17,6 +17,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -125,6 +126,9 @@ pybind_extension(
     py_deps = [
         "//shims/torch:pytorch",
     ],
+    visibility = [
+        "//:__subpackages__",
+    ] + TT_FRIENDS,
     wrap_py_init = True,
     deps = [
         "//shims/torch",
