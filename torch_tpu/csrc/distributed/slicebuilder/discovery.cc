@@ -19,7 +19,6 @@
 #include <string>
 #include <vector>
 
-#include "absl/base/no_destructor.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,39 +31,39 @@
 namespace torch_tpu {
 
 // Helper function to get a required environment variable or return an error.
+// We dynamically read the environment variable on each call instead of
+// memoizing to accommodate OSS multi-processing workflows which mutate
+// os.environ in child processes after the parent process has already
+// initialized PyTorch/libtpu.
 template <const char* env_name>
-const absl::StatusOr<std::string>& GetRequiredEnvOnce() {
-  static const absl::NoDestructor<absl::StatusOr<std::string>> env_var(
-      []() -> absl::StatusOr<std::string> {
-        const auto& env_val = GetEnvOnce<env_name>();
-        TT_RET_CHECK(env_val.has_value(), error::kFailedPrecondition)
-            << "the " << env_name << " environment variable is not set";
-        return *env_val;
-      }());
-  return *env_var;
+absl::StatusOr<std::string> GetRequiredEnv() {
+  const auto env_val = GetEnv<env_name>();
+  TT_RET_CHECK(env_val.has_value(), error::kFailedPrecondition)
+      << "the " << env_name << " environment variable is not set";
+  return *env_val;
 }
 
 static absl::Status CheckRequiredDistributedEnvVars() {
   std::vector<std::string> missing_vars;
-  if (!GetEnvOnce<kRankEnvVar>().has_value()) {
+  if (!GetEnv<kRankEnvVar>().has_value()) {
     missing_vars.push_back(kRankEnvVar);
   }
-  if (!GetEnvOnce<kLocalRankEnvVar>().has_value()) {
+  if (!GetEnv<kLocalRankEnvVar>().has_value()) {
     missing_vars.push_back(kLocalRankEnvVar);
   }
-  if (!GetEnvOnce<kWorldSizeEnvVar>().has_value()) {
+  if (!GetEnv<kWorldSizeEnvVar>().has_value()) {
     missing_vars.push_back(kWorldSizeEnvVar);
   }
-  if (!GetEnvOnce<kMasterAddrEnvVar>().has_value()) {
+  if (!GetEnv<kMasterAddrEnvVar>().has_value()) {
     missing_vars.push_back(kMasterAddrEnvVar);
   }
-  if (!GetEnvOnce<kMasterPortEnvVar>().has_value()) {
+  if (!GetEnv<kMasterPortEnvVar>().has_value()) {
     missing_vars.push_back(kMasterPortEnvVar);
   }
-  if (!GetEnvOnce<kTpuSlicebuilderAddressesEnvVar>().has_value()) {
+  if (!GetEnv<kTpuSlicebuilderAddressesEnvVar>().has_value()) {
     missing_vars.push_back(kTpuSlicebuilderAddressesEnvVar);
   }
-  if (!GetEnvOnce<kTpuTopologyEnvVar>().has_value()) {
+  if (!GetEnv<kTpuTopologyEnvVar>().has_value()) {
     missing_vars.push_back(kTpuTopologyEnvVar);
   }
 
@@ -81,7 +80,7 @@ GetDistributedWorkerConfiguration() {
   TT_RETURN_IF_ERROR(CheckRequiredDistributedEnvVars());
 
   int rank = -1;
-  TT_ASSIGN_OR_RETURN(std::string env_rank, GetRequiredEnvOnce<kRankEnvVar>());
+  TT_ASSIGN_OR_RETURN(std::string env_rank, GetRequiredEnv<kRankEnvVar>());
   if (!absl::SimpleAtoi(env_rank, &rank)) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Failed to parse RANK: " << env_rank;
@@ -89,7 +88,7 @@ GetDistributedWorkerConfiguration() {
 
   int local_rank = -1;
   TT_ASSIGN_OR_RETURN(std::string env_local_rank,
-                      GetRequiredEnvOnce<kLocalRankEnvVar>());
+                      GetRequiredEnv<kLocalRankEnvVar>());
   if (!absl::SimpleAtoi(env_local_rank, &local_rank)) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Failed to parse LOCAL_RANK: " << env_local_rank;
@@ -98,20 +97,20 @@ GetDistributedWorkerConfiguration() {
   // Get the master address and port from the environment variables.
   std::string master_addr;
   int master_port;
-  TT_ASSIGN_OR_RETURN(master_addr, GetRequiredEnvOnce<kMasterAddrEnvVar>());
+  TT_ASSIGN_OR_RETURN(master_addr, GetRequiredEnv<kMasterAddrEnvVar>());
   TT_ASSIGN_OR_RETURN(std::string env_master_port,
-                      GetRequiredEnvOnce<kMasterPortEnvVar>());
+                      GetRequiredEnv<kMasterPortEnvVar>());
   if (!absl::SimpleAtoi(env_master_port, &master_port)) {
     return TT_ERROR(error::kFailedPrecondition)
            << "Failed to parse MASTER_PORT: " << env_master_port;
   }
 
   // Get the world size from the environment variables.
-  TT_ASSIGN_OR_RETURN(const int world_size, GetWorldSizeFromEnvOnce());
+  TT_ASSIGN_OR_RETURN(const int world_size, GetWorldSizeFromEnv());
 
   // Get the slice builder addresses from the environment variables.
   TT_ASSIGN_OR_RETURN(std::string sb_addrs,
-                      GetRequiredEnvOnce<kTpuSlicebuilderAddressesEnvVar>());
+                      GetRequiredEnv<kTpuSlicebuilderAddressesEnvVar>());
 
   if (sb_addrs.empty()) {
     return TT_ERROR(error::kFailedPrecondition)
@@ -136,7 +135,7 @@ GetDistributedWorkerConfiguration() {
 
   // Get the topology from the environment variables.
   TT_ASSIGN_OR_RETURN(std::string topology,
-                      GetRequiredEnvOnce<kTpuTopologyEnvVar>());
+                      GetRequiredEnv<kTpuTopologyEnvVar>());
 
   auto distributed_worker_config = DistributedWorkerConfiguration{
       .rank = rank,
@@ -158,21 +157,20 @@ GetDistributedWorkerConfiguration() {
   return distributed_worker_config;
 }
 
-const absl::StatusOr<int>& GetWorldSizeFromEnvOnce() {
-  static const absl::NoDestructor<absl::StatusOr<int>> world_size(
-      []() -> absl::StatusOr<int> {
-        const auto& env_world_size = GetEnvOnce<kWorldSizeEnvVar>();
-        TT_RET_CHECK(env_world_size.has_value(), error::kFailedPrecondition)
-            << "the " << kWorldSizeEnvVar << " environment variable is not set";
-        int world_size;
-        TT_RET_CHECK(absl::SimpleAtoi(*env_world_size, &world_size),
-                     error::kFailedPrecondition)
-            << "the " << kWorldSizeEnvVar
-            << " environment variable is not a valid integer: "
-            << *env_world_size;
-        return world_size;
-      }());
-  return *world_size;
+// We dynamically read the WORLD_SIZE environment variable instead of memoizing
+// to accommodate OSS multi-processing workflows which mutate os.environ in
+// child processes after the parent process has already initialized
+// PyTorch/libtpu.
+absl::StatusOr<int> GetWorldSizeFromEnv() {
+  const auto env_world_size = GetEnv<kWorldSizeEnvVar>();
+  TT_RET_CHECK(env_world_size.has_value(), error::kFailedPrecondition)
+      << "the " << kWorldSizeEnvVar << " environment variable is not set";
+  int world_size;
+  TT_RET_CHECK(absl::SimpleAtoi(*env_world_size, &world_size),
+               error::kFailedPrecondition)
+      << "the " << kWorldSizeEnvVar
+      << " environment variable is not a valid integer: " << *env_world_size;
+  return world_size;
 }
 
 }  // namespace torch_tpu

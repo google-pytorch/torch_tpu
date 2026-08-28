@@ -85,5 +85,25 @@ TEST(EnvVarsTest, Tier2CompilationCacheWarnsOnce) {
   EXPECT_EQ(warnings.messages().size(), 1);
 }
 
+// Tests that GetEnv dynamically reflects environment variable updates without
+// memoization.
+TEST(EnvVarsTest, GetEnvDynamicEvaluation) {
+  unsetenv(kWorldSizeEnvVar);
+  EXPECT_FALSE(GetEnv<kWorldSizeEnvVar>().has_value());
+
+  setenv(kWorldSizeEnvVar, "4", 1);
+  auto val = GetEnv<kWorldSizeEnvVar>();
+  ASSERT_TRUE(val.has_value());
+  EXPECT_EQ(*val, "4");
+
+  setenv(kWorldSizeEnvVar, "8", 1);
+  val = GetEnv<kWorldSizeEnvVar>();
+  ASSERT_TRUE(val.has_value());
+  EXPECT_EQ(*val, "8");
+
+  unsetenv(kWorldSizeEnvVar);
+  EXPECT_FALSE(GetEnv<kWorldSizeEnvVar>().has_value());
+}
+
 }  // namespace
 }  // namespace torch_tpu

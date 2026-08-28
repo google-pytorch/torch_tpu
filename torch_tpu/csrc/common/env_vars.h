@@ -223,15 +223,15 @@ void SetEnv(const std::string& value) {
 
 // Returns the value of the environment variable with the given name, or
 // std::nullopt if it is not set.
-//
-// This function is memoized, so the environment variable is only read once.
-//
-// We make the name a template parameter so that different env vars are
-// memoized separately and the TORCH_WARN_ONCE() call works for each env var
-// individually. The name must be one of the kFooEnvVar variables defined in
-// this file.
+// Note: We deliberately do not memoize these environment variables (e.g. via
+// absl::NoDestructor). In OSS multi-processing workflows (such as mp.spawn),
+// child processes dynamically construct their topology environment variables
+// (WORLD_SIZE, RANK) via os.environ after PyTorch imports in the main process.
+// Memoizing them eagerly in the parent process would force child workers to
+// inherit stale values, breaking distributed initialization.
+// This function reads the environment variable freshly on each invocation.
 template <const char* name>
-const std::optional<std::string>& GetEnvOnce() {
+std::optional<std::string> GetEnv() {
   static_assert(kEnvVarToStage.contains(name),
                 "Unknown environment variable. All env vars used by TorchTPU "
                 "must be registered in kEnvVarToStage.");
@@ -243,30 +243,41 @@ const std::optional<std::string>& GetEnvOnce() {
         "TorchTPU can only write to them. If TorchTPU really needs to "
         "read this env var, its stage in kEnvVarToStage must be changed.");
   }
-  static const absl::NoDestructor<std::optional<std::string>> env_var(
-      [maybe_stage]() -> std::optional<std::string> {
-        const char* const env_var =  //
-            std::getenv(name);       // GETENV_OK=implementing GetEnvOnce().
-        if (env_var == nullptr) return std::nullopt;
-        if (env_var[0] == '\0') return std::string();
+  const char* const env_var =
+      std::getenv(name);  // GETENV_OK=Dynamic multiprocessing re-evaluation
+  if (env_var == nullptr) return std::nullopt;
+  if (env_var[0] == '\0') return std::string();
 
-        // The env var is set to a non-empty string. Warn the user if the env
-        // var is experimental or deprecated.
-        if (maybe_stage.has_value()) {
-          if (maybe_stage->is_experimental()) {
-            TORCH_WARN_ONCE("the ", name,
-                            " environment variable is an experimental feature "
-                            "and may change or be removed without notice.");
-          } else if (maybe_stage->is_deprecated()) {
-            const auto deprecated_since = maybe_stage->version();
-            TORCH_WARN_ONCE(
-                "the ", name,
-                " environment variable is deprecated since TorchTPU v",
-                deprecated_since, " and will be removed in a future release.");
-          }
-        }
-        return std::string(env_var);
-      }());
+  // The env var is set to a non-empty string. Warn the user if the env
+  // var is experimental or deprecated.
+  if (maybe_stage.has_value()) {
+    if (maybe_stage->is_experimental()) {
+      TORCH_WARN_ONCE("the ", name,
+                      " environment variable is an experimental feature "
+                      "and may change or be removed without notice.");
+    } else if (maybe_stage->is_deprecated()) {
+      const auto deprecated_since = maybe_stage->version();
+      TORCH_WARN_ONCE(
+          "the ", name, " environment variable is deprecated since TorchTPU v",
+          deprecated_since, " and will be removed in a future release.");
+    }
+  }
+  return std::string(env_var);
+}
+
+// Returns the value of the environment variable with the given name, or
+// std::nullopt if it is not set.
+//
+// This function is memoized, so the environment variable is only read once.
+//
+// We make the name a template parameter so that different env vars are
+// memoized separately and the TORCH_WARN_ONCE() call works for each env var
+// individually. The name must be one of the kFooEnvVar variables defined in
+// this file.
+template <const char* name>
+const std::optional<std::string>& GetEnvOnce() {
+  static const absl::NoDestructor<std::optional<std::string>> env_var(
+      GetEnv<name>());
   return *env_var;
 }
 

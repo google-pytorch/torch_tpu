@@ -57,8 +57,7 @@ GetDistributedWorkerConfiguration();
 // piggyback on to determine if we're running in single-device mode or
 // distributed mode when it is set.
 //
-// This function is memoized, so the environment variable is only read once.
-const absl::StatusOr<int>& GetWorldSizeFromEnvOnce();
+absl::StatusOr<int> GetWorldSizeFromEnv();
 
 }  // namespace torch_tpu
 
