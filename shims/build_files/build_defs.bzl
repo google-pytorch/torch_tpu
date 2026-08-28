@@ -39,4 +39,10 @@ def process_accelerator_tags(tags):
     if has_gpu and "requires-gpu" not in tags:
         tags.append("requires-gpu")
 
+# No-op in OSS; Google3-specific environment setup is only applied to internal test targets.
+LIBTPU_TARGET = ""
+
+def configure_tpu_env(*_args, **_kwargs):
+    pass
+
 TT_FRIENDS = []

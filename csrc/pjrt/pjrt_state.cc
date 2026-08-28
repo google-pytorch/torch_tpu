@@ -16,9 +16,12 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -34,6 +37,7 @@
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "csrc/common/contain.h"
@@ -133,6 +137,65 @@ void MaybeRegisterProfiler(std::string_view plugin_name) {
     return true;
   }();
   static_cast<void>(factory_registered);  // VOID_CAST_OK=dummy result.
+}
+
+// Returns the libtpu path in `TPU_LIBRARY_PATH`, resolving a relative path
+// against the runfiles trees in `TEST_SRCDIR` and `RUNFILES_DIR` (e.g. the
+// `$(rootpath ...)` that Blaze test targets set) rather than the current
+// directory or the dynamic linker's search path, from which libtpu must not
+// be loaded.
+absl::StatusOr<std::string> GetTpuLibraryPath() {
+  // Read with std::getenv() rather than GetEnvOnce<>(): the libtpu shim sets
+  // the env var when torch_tpu is imported.
+  const char* const library_path =
+      std::getenv(kTpuLibraryPathEnvVar);  // GETENV_OK=set by the libtpu shim.
+  if (library_path == nullptr || library_path[0] == '\0') {
+    return TT_ERROR(  // ERROR_COV_INFEASIBLE=covered in C++ pjrt_init_test.
+               error::kFailedPrecondition)
+           << "the " << kTpuLibraryPathEnvVar
+           << " environment variable must be set to the path of the libtpu "
+              "shared library, which `import torch_tpu` does";
+  }
+  if (library_path[0] == '/') {
+    return std::string(library_path);
+  }
+  const char* const workspace =
+      std::getenv("TEST_WORKSPACE");  // GETENV_OK=set by Blaze/Bazel.
+  for (const char* const runfiles_env_var : {"TEST_SRCDIR", "RUNFILES_DIR"}) {
+    const char* const runfiles_dir =
+        std::getenv(runfiles_env_var);  // GETENV_OK=set by Blaze/Bazel.
+    if (runfiles_dir == nullptr || runfiles_dir[0] != '/') {
+      continue;
+    }
+    std::string candidate = absl::StrCat(
+        runfiles_dir, "/", workspace != nullptr ? workspace : "google3", "/",
+        library_path);
+    struct stat info;
+    if (stat(candidate.c_str(), &info) == 0 && S_ISREG(info.st_mode)) {
+      return candidate;
+    }
+  }
+  return TT_ERROR(  // ERROR_COV_INFEASIBLE=covered in C++ pjrt_init_test.
+             error::kFailedPrecondition)
+         << "the " << kTpuLibraryPathEnvVar << " environment variable ("
+         << library_path
+         << ") must be an absolute path or a path relative to the runfiles "
+            "directory of the binary";
+}
+
+// Loads libtpu from `TPU_LIBRARY_PATH` and registers it as the TPU PJRT plugin,
+// unless it is already registered.
+absl::Status RegisterTpuPlugin() {
+  TT_ASSIGN_OR_RETURN(const std::string library_path, GetTpuLibraryPath());
+  const absl::Status status =
+      pjrt::LoadPjrtPlugin(kTpuPjrtName, library_path).status();
+  if (absl::IsAlreadyExists(status)) {
+    return absl::OkStatus();
+  }
+  TT_RETURN_IF_ERROR(status).SetPrepend()
+      << "failed to load libtpu from " << library_path << ", the path in the "
+      << kTpuLibraryPathEnvVar << " environment variable: ";
+  return absl::OkStatus();
 }
 
 std::optional<int64_t> GetIntAttribute(const xla::PjRtDevice* device,
@@ -270,7 +333,6 @@ absl::Status PjrtBackend::InitializeInternal() {
     device_type = PjRtDeviceType::kTpu;
     plugin_name = kTpuPjrtName;
 
-    ApplyTpuVisibleDevices();
     // When WORLD_SIZE is not set (or is 1), TorchTPU defaults to single-device
     // mode.
     const auto& world_size_or = GetRequiredIntegerEnvOnce<kWorldSizeEnvVar>();
@@ -288,6 +350,8 @@ absl::Status PjrtBackend::InitializeInternal() {
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "failed to initialize distributed environment: ";
     }
+    // Load libtpu only after configuring its environment above.
+    TT_RETURN_IF_ERROR(RegisterTpuPlugin());
   } else {
     return TT_ERROR(error::kInvalidArgument)
            << "unsupported device type: " << options_.device_type;
