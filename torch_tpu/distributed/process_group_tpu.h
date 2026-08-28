@@ -42,12 +42,12 @@
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Store.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
-#include "torch_tpu/common/macro_utils.h"
+#include "torch_tpu/csrc/common/macro_utils.h"
 #if TT_TORCH_VERSION_GE(2, 14)
 #include "torch/csrc/distributed/c10d/Window.hpp"
 #endif
 #include "torch/csrc/distributed/c10d/Work.hpp"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/to_string.h"
 #include "torch_tpu/distributed/types.h"
 #include "torch_tpu/eager/device_buffer.h"
 #include "torch_tpu/ops/op_names.h"

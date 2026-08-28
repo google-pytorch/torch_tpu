@@ -39,7 +39,7 @@ import zipfile
 from absl.testing import absltest
 
 # The single shared, version-independent XLA/MLIR base library.
-_XLA_BASE: Final[str] = "torch_tpu/common/libxla_base.so"
+_XLA_BASE: Final[str] = "torch_tpu/csrc/common/libxla_base.so"
 
 # A concrete, non-inline XLA symbol that lives in the shared base library.
 _XLA_SYMBOL: Final[str] = "ShapeUtil"

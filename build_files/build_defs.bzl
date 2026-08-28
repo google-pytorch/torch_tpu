@@ -843,7 +843,7 @@ def torch_tpu_py_test(
         shuffle_tests = True,
         autoload = True,
         is_wheel_test = False,
-        extra_pywrap_deps = ["//torch_tpu/common:pywrap_torch_tpu"],
+        extra_pywrap_deps = ["//torch_tpu/csrc/common:pywrap_torch_tpu"],
         strict = False,
         size = None,
         timeout = None,

@@ -26,8 +26,8 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
-#include "torch_tpu/common/env_vars.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/env_vars.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 
 namespace torch_tpu {
 

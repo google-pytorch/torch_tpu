@@ -26,7 +26,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/to_string.h"
 #include "torch_tpu/ops/view_decomposition/strided_layout.h"
 
 // Utilities for reporting errors for view decomposition.

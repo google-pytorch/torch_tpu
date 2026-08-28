@@ -24,7 +24,7 @@
 #include "absl/base/no_destructor.h"
 #include "absl/base/nullability.h"
 #include "absl/synchronization/mutex.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 
 namespace torch_tpu {
 

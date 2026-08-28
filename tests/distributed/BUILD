@@ -810,7 +810,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",
+        "//torch_tpu/_internal/compile",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",  # buildcleaner: keep
         "//torch_tpu/_internal/distributed:handshake",
         "//torch_tpu/_internal/distributed:multiprocessing",
         "@pypi//portpicker",

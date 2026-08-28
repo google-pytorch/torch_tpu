@@ -23,7 +23,7 @@
 #include <ostream>
 #include <vector>
 
-#include "torch_tpu/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/fingerprint_utils.h"
 
 namespace torch_tpu {
 

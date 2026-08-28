@@ -1226,11 +1226,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal:testing",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
@@ -1296,11 +1294,9 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal:testing",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",
-        "//torch_tpu/_internal/pallas",
         "//torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
         "//torch_tpu/eager:tpu_aten_kernels",
     ],
@@ -1679,6 +1675,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/precision",
+        "//torch_tpu/_internal/precision:precision_impl",  # buildcleaner: keep
         "//torch_tpu/_internal/utils",
     ],
 )
@@ -2252,9 +2249,9 @@ torch_tpu_py_test(
     name = "pybind_error_utils_test",
     srcs = ["pybind_error_utils_test.py"],
     deps = [
+        ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal:testing",
     ],

@@ -47,6 +47,7 @@ from torch_tpu._internal.distributed import handshake
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
 
+
 ProcessGroupId = handshake.ProcessGroupId
 RankCollectiveCounts = handshake.RankCollectiveCounts
 AsyncCompiledArtifact = torch_tpu_compiled_executable.AsyncCompiledArtifact
@@ -122,7 +123,6 @@ def _submit_handshake(
       )
 
   return result
-
 
 def _get_unique_wait_tensor_producer(
     node: torch.fx.Node,

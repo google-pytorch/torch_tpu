@@ -25,7 +25,7 @@ torch_tpu_cc_library(
     hdrs = ["count_nonzero_aten_kernels.h"],
     deps = [
         "//shims/torch:aten_headers",
-        "//torch_tpu/common:dimension_types",
+        "//torch_tpu/csrc/common:dimension_types",
         "//torch_tpu/eager:op_dispatcher",
         "//torch_tpu/eager:tensor_to_buffer",
         "//torch_tpu/ops:op_builder_utils",

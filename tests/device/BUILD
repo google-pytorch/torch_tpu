@@ -25,6 +25,7 @@ torch_tpu_py_library(
     srcs = ["device_module_testing.py"],
     deps = [
         "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//tests:oss_utils",
         "//tests:seed_test_utils",

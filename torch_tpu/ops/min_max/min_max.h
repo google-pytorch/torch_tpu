@@ -22,7 +22,7 @@
 #include "absl/status/statusor.h"
 #include "c10/util/Optional.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 
 namespace torch_tpu {

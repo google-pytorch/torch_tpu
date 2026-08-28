@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
@@ -36,11 +40,20 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "_tpu_backend_config",
+    srcs = ["_tpu_backend_config.py"],
+    deps = [
+        ":_device_ops_backend",
+        "//torch_tpu/_internal/utils:annotations",
+    ],
+)
+
 pybind_extension(
     name = "_device_ops_backend",
-    srcs = ["device_rt.cc"],
+    srcs = ["//torch_tpu/csrc/internal/device:device_rt.cc"],
     common_lib_packages = [
-        "torch_tpu/common",
+        "torch_tpu/csrc/common",
     ],
     py_deps = [
         "//shims/torch:pytorch",
@@ -52,14 +65,15 @@ pybind_extension(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
-        "//torch_tpu/common:cache_key",
-        "//torch_tpu/common:compilation",
-        "//torch_tpu/common:compilation_cache",
-        "//torch_tpu/common:device_type",
-        "//torch_tpu/common:discovery",
-        "//torch_tpu/common:env_vars",
-        "//torch_tpu/common:error_utils",
-        "//torch_tpu/common:excess_precision",
+        "//torch_tpu/csrc/common:cache_key",
+        "//torch_tpu/csrc/common:compilation",
+        "//torch_tpu/csrc/common:compilation_cache",
+        "//torch_tpu/csrc/common:device_type",
+        "//torch_tpu/csrc/common:discovery",
+        "//torch_tpu/csrc/common:env_vars",
+        "//torch_tpu/csrc/common:error_utils",
+        "//torch_tpu/csrc/common:excess_precision",
+        "//torch_tpu/csrc/internal/sync:sync_cc",
         "//torch_tpu/distributed/slicebuilder:discovery",
         "//torch_tpu/eager:current_stream",
         "//torch_tpu/eager:device_buffer",
@@ -77,15 +91,6 @@ pybind_extension(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/time",
         "@xla//xla/pjrt:pjrt_client",
-    ],
-)
-
-torch_tpu_py_library(
-    name = "_tpu_backend_config",
-    srcs = ["_tpu_backend_config.py"],
-    deps = [
-        ":_device_ops_backend",
-        "//torch_tpu/_internal/utils:annotations",
     ],
 )
 

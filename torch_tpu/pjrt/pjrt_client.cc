@@ -22,7 +22,7 @@
 
 #include "absl/base/nullability.h"
 #include "absl/status/statusor.h"
-#include "torch_tpu/common/error_utils.h"
+#include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/distributed/slicebuilder/discovery.h"
 #include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"

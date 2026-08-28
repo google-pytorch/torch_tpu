@@ -20,12 +20,12 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu._internal.precision as p
+from torch_tpu._internal.precision import precision_impl as p_impl
 from torch_tpu._internal.utils import utils
 from tests import seed_test_utils
 
 precision = p.precision
 Precision = p.Precision
-p_impl = p.precision_impl
 
 
 class PrecisionTest(seed_test_utils.RepeatableTest):

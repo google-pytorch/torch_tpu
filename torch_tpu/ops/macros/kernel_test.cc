@@ -28,9 +28,9 @@
 #include "c10/util/StringUtil.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/fingerprint_utils.h"
 #include "torch_tpu/eager/op_dispatcher.h"
 #include "torch_tpu/ops/op_names.h"
 

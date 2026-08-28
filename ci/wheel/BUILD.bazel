@@ -78,11 +78,11 @@ pytype_strict_binary(
 remap_pywrap_binaries(
     name = "remapped_pywrap_binaries",
     srcs = [
-        "@torch_tpu_glues//torch_tpu/common/glue_{}:binaries".format(version_suffix(v))
+        "@torch_tpu_glues//torch_tpu/csrc/common/glue_{}:binaries".format(version_suffix(v))
         for v in WHEEL_TORCH_VERSIONS
     ] + select({
         "//:nightly_glue_included": [
-            "@torch_tpu_glues//torch_tpu/common/glue_{}:binaries".format(
+            "@torch_tpu_glues//torch_tpu/csrc/common/glue_{}:binaries".format(
                 version_suffix(NIGHTLY_TORCH_VERSION),
             ),
         ],

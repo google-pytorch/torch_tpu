@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "absl/log/absl_check.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/to_string.h"
 
 namespace torch_tpu {
 namespace internal {

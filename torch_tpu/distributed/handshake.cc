@@ -18,7 +18,7 @@
 
 #include "absl/log/absl_log.h"
 #include "absl/strings/numbers.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 
 namespace torch_tpu {
 

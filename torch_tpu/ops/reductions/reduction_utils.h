@@ -24,8 +24,8 @@
 #include "absl/status/statusor.h"
 #include "c10/util/OptionalArrayRef.h"
 #include "torch/headeronly/core/ScalarType.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/dimension_types.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/ops/reductions/reductions.h"
 
 namespace torch_tpu {

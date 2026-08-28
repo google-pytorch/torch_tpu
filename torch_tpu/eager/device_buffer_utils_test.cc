@@ -23,9 +23,9 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "torch_tpu/common/cache_key.h"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/cache_key.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/fingerprint_utils.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {

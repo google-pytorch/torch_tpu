@@ -36,9 +36,9 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
-#include "torch_tpu/common/dimension_types.h"
-#include "torch_tpu/common/error_utils.h"
-#include "torch_tpu/common/to_string.h"
+#include "torch_tpu/csrc/common/dimension_types.h"
+#include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/common/to_string.h"
 #include "torch_tpu/ops/convolution/convolution_checks.h"
 #include "torch_tpu/ops/op_builder_utils.h"
 

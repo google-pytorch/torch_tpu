@@ -35,23 +35,6 @@ torch_tpu_py_library(
     ],
 )
 
-pybind_extension(
-    name = "annotations_py",
-    srcs = ["annotations_py.cc"],
-    common_lib_packages = [
-        "torch_tpu/common",
-    ],
-    wrap_py_init = True,
-    deps = [
-        "//torch_tpu/common:context_manager",
-        "//torch_tpu/common:context_states",
-        "//torch_tpu/common:error_utils",
-        "@com_google_absl//absl/status:statusor",
-        "@xla//xla:shape_util",
-        "@xla//xla/hlo/parser:hlo_parser",
-    ],
-)
-
 torch_tpu_py_test(
     name = "annotations_test",
     srcs = ["annotations_test.py"],
@@ -64,7 +47,24 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
+        "//torch_tpu/_internal/compile:tpu_torch_compile",
+    ],
+)
+
+pybind_extension(
+    name = "annotations_py",
+    srcs = ["//torch_tpu/csrc/internal/device_utils:annotations_py.cc"],
+    common_lib_packages = [
+        "torch_tpu/csrc/common",
+    ],
+    wrap_py_init = True,
+    deps = [
+        "//torch_tpu/csrc/common:context_manager",
+        "//torch_tpu/csrc/common:context_states",
+        "//torch_tpu/csrc/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla:shape_util",
+        "@xla//xla/hlo/parser:hlo_parser",
     ],
 )
 

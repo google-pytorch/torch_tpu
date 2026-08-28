@@ -19,9 +19,9 @@
 #include <atomic>
 
 #include "absl/log/absl_log.h"
-#include "torch_tpu/common/context_manager.h"
-#include "torch_tpu/common/context_states.h"
-#include "torch_tpu/common/env_vars.h"
+#include "torch_tpu/csrc/common/context_manager.h"
+#include "torch_tpu/csrc/common/context_states.h"
+#include "torch_tpu/csrc/common/env_vars.h"
 
 namespace torch_tpu {
 
