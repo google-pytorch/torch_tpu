@@ -5,11 +5,14 @@ initializing a TorchTPU process. Most of these variables are set by torchrun
 when launching local processes:
 
 ```bash
-export TORCH_TPU_SLICEBUILDER_ADDRESSES=...
-export TORCH_TPU_TOPOLOGY=...
+eval "$(python -m torch_tpu._internal.distributed.launchers.singlehost_wrapper | sed 's/^/export /')"
 
 torchrun --nproc_per_node=8 script.py
 ```
+
+The wrapper discovers the host topology and selects the local SliceBuilder
+ports. Its output is shell assignments, so prefix them with `export` before
+evaluating them to make the variables available to `torchrun` workers.
 
 *   `WORLD_SIZE`: The number of participating processes
 *   `RANK`: The individual process' id in the world
