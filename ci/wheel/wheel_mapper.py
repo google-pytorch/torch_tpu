@@ -67,16 +67,39 @@ def main():
     else:
       clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
 
+    # Re-root compiled C++ glue binaries from csrc/common/ to torch_tpu/common/ inside the wheel
+    clean_dest_path = clean_dest_path.replace(
+        "torch_tpu/csrc/common/", "torch_tpu/common/"
+    )
+    if clean_dest_path.startswith("csrc/common/"):
+      clean_dest_path = (
+          "torch_tpu/common/" + clean_dest_path[len("csrc/common/") :]
+      )
+
+    # Re-root compiled Python extension binaries from src/torch_tpu/ to torch_tpu/ inside the wheel
+    if clean_dest_path.startswith("src/torch_tpu/"):
+      clean_dest_path = clean_dest_path[len("src/") :]
+
     dest = os.path.join(args.out_dir, clean_dest_path)
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.exists(dest):
       os.remove(dest)
 
-    try:
-      os.link(src, dest)
-    except OSError:
-      shutil.copy2(src, dest)
+    if dest.endswith(".py"):
+      with open(src, "r") as f:
+        content = f.read()
+      # Replace csrc path with the correct flat namespace path inside the wheel python loaders
+      content = content.replace("csrc.common", "torch_tpu.common").replace(
+          "torch_tpu.csrc", "torch_tpu"
+      )
+      with open(dest, "w") as f:
+        f.write(content)
+    else:
+      try:
+        os.link(src, dest)
+      except OSError:
+        shutil.copy2(src, dest)
 
 
 if __name__ == "__main__":

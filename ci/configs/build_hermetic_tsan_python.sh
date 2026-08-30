@@ -109,7 +109,7 @@ mkdir -p "${DST_DIR}"
 echo "1. Forcing Bazel to fetch the LLVM toolchain..."
 # Fetch a specific test target rather than //... to avoid parsing the entire
 # repository and potentially failing on broken, unrelated targets.
-bazel fetch //torch_tpu/_internal/utils:hardware_test || true
+bazel fetch //src/torch_tpu/_internal/utils:hardware_test || true
 
 # Find Bazel's hidden cache directory where external dependencies are stored.
 OUTPUT_BASE=$(bazel info output_base)

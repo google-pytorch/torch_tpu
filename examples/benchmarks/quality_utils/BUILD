@@ -31,7 +31,7 @@ torch_tpu_py_library(
         ":init",  # build_cleaner: keep
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//src/torch_tpu/_internal/utils:log_utils",
     ],
 )
 

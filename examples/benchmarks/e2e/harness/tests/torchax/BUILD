@@ -30,8 +30,8 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness:target",
         "//examples/benchmarks/e2e/harness/torchax:torchax_device_ops",
         "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "//torch_tpu",
     ],
 )
 
@@ -47,8 +47,8 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness/torchax:torchax_step",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "//torch_tpu",
         "@pypi//flax",  # buildcleaner: keep
         "@pypi//torchax",
     ],
@@ -61,8 +61,8 @@ torch_tpu_py_test(
         "//examples/benchmarks/e2e/harness/torchax:optimizer",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "//torch_tpu",
         "@pypi//optax",
     ],
 )

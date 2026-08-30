@@ -29,7 +29,7 @@ single shared `libxla_base.so` (via a `common_lib_filters` entry fed by the
 `_backend_probe` targets emitted here) and keeps that version's torch-touching
 code in its own default common. All versions' `libxla_base.so` are byte-identical
 and map to the same wheel path, so the wheel ships one copy. Bazel-only builds
-are unaffected (they use `//torch_tpu/csrc/common:pywrap_torch_tpu`).
+are unaffected (they use `//csrc/common:pywrap_torch_tpu`).
 """
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
@@ -44,11 +44,11 @@ load(
 
 # Package of the shared XLA base common library (libxla_base.so). Every
 # per-version pywrap_library factors the backend into this one wheel location.
-XLA_BASE_PACKAGE = "torch_tpu/csrc/common"
+XLA_BASE_PACKAGE = "torch_tpu/common"
 
 def glue_common_package(version):
     """Package (and wheel location) of a version's torch-touching common lib."""
-    return "torch_tpu/csrc/common/glue_{}".format(version_suffix(version))
+    return "torch_tpu/common/glue_{}".format(version_suffix(version))
 
 def pybind_extension(name, **kwargs):
     """Creates a pybind11 extension.
@@ -57,6 +57,15 @@ def pybind_extension(name, **kwargs):
       name: The name of the pybind extension.
       **kwargs: Additional keyword arguments to pass to the underlying pybind_extension.
     """
+
+    # Add explicit wheel rpaths to locate libxla_base.so and glue libraries inside the installed wheel
+    linkopts = kwargs.get("linkopts", [])
+    linkopts.append("-Wl,-rpath,'$$ORIGIN/../../common'")
+    for version in GLUE_TORCH_VERSIONS:
+        linkopts.append(
+            "-Wl,-rpath,'$$ORIGIN/../../common/glue_{}'".format(version_suffix(version)),
+        )
+    kwargs["linkopts"] = linkopts
 
     # On OSS we have not needed any python dependencies for these. If that
     # changes we will need to incorporate these dependencies.
@@ -67,6 +76,14 @@ def pybind_extension(name, **kwargs):
     # renamed after the target `name`. The dispatch loader relies on the
     # unversioned symbol being present in each versioned `.so`.
     kwargs["wrap_py_init"] = False
+
+    # Remap legacy common_lib_packages from torch_tpu/common to csrc/common
+    common_lib_packages = kwargs.get("common_lib_packages", [])
+    if common_lib_packages:
+        kwargs["common_lib_packages"] = [
+            pkg.replace("torch_tpu/common", "csrc/common")
+            for pkg in common_lib_packages
+        ]
 
     # Base extension: the version-agnostic target every existing reference
     # (bazel tests via extra_pywrap_deps, and the ~6 direct label refs) resolves.
@@ -136,8 +153,8 @@ def backend_probe_labels(extension_labels):
 def versioned_glue_labels_for(extension_labels, version):
     """Glue labels for a single PyTorch version.
 
-    e.g. (["//torch_tpu/_internal:env"], "2.11.0") ->
-        ["//torch_tpu/_internal:env_2_11_0_glue"]
+    e.g. (["//src/torch_tpu/_internal:env"], "2.11.0") ->
+        ["//src/torch_tpu/_internal:env_2_11_0_glue"]
     """
     return [
         "{}_{}_glue".format(label, version_suffix(version))

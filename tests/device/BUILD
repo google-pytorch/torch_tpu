@@ -27,10 +27,10 @@ torch_tpu_py_library(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/device:_device_module",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//tests:oss_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu/_internal/device:_device_module",
-        "//torch_tpu/_internal/device:_device_ops_backend",
     ],
 )
 
@@ -45,8 +45,8 @@ torch_tpu_py_test(
         ":device_module_testing",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
     ],
 )
 
@@ -64,7 +64,7 @@ torch_tpu_py_test(
         ":device_module_testing",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu",
+        "//src/torch_tpu",
         "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
         "@xla//xla/stream_executor:cuda_platform",
     ],
@@ -82,7 +82,7 @@ torch_tpu_py_test(
         ":device_module_testing",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
-        "//torch_tpu",
+        "//src/torch_tpu",
     ],
 )
 

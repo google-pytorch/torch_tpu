@@ -51,6 +51,63 @@ jobs:
         shell: "bash"
         run: |
           go run github.com/google/addlicense@v1.1.1 -check -s=only .
+      - name: "Validate Directory Layout"
+        shell: "bash"
+        run: |
+          # TODO (b/554114867): Implement symlink-based src folder setup and remove this manifest check.
+
+          # List of expected directories inside src/torch_tpu
+          EXPECTED_SRC_DIRS=(
+            "_internal"
+            "eager"
+            "ops"
+          )
+
+          # List of expected directories at repository root
+          EXPECTED_ROOT_DIRS=(
+            "bazel"
+            "build_files"
+            "ci"
+            "csrc"
+            "docker"
+            "docs"
+            "examples"
+            "requirements"
+            "shims"
+            "src"
+            "tests"
+          )
+
+          # Compare src/torch_tpu directories
+          actual_src=$(ls -d src/torch_tpu/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null | sort)
+          expected_src=$(printf "%s\n" "${EXPECTED_SRC_DIRS[@]}" | sort)
+
+          if [ "$actual_src" != "$expected_src" ]; then
+            echo "::error::Unexpected directories found in src/torch_tpu/"
+            echo "Expected:"
+            echo "$expected_src"
+            echo "Actual:"
+            echo "$actual_src"
+            echo "Please update EXPECTED_SRC_DIRS in .github/workflows/lint.yml if this is intentional."
+            exit 1
+          fi
+
+          # Compare root directories (excluding hidden ones)
+          actual_root=$(find . -maxdepth 1 -type d -not -name '.*' -not -name '.' | xargs -n1 basename | sort)
+          expected_root=$(printf "%s\n" "${EXPECTED_ROOT_DIRS[@]}" | sort)
+
+          if [ "$actual_root" != "$expected_root" ]; then
+            echo "::error::Unexpected directories found at repository root"
+            echo "Expected:"
+            echo "$expected_root"
+            echo "Actual:"
+            echo "$actual_root"
+            echo "Please update EXPECTED_ROOT_DIRS in .github/workflows/lint.yml if this is intentional."
+            exit 1
+          fi
+
+          echo "Directory layout validated successfully."
+
       - name: "Validate Commit Messages"
         if: (success() || failure()) && github.event_name == 'pull_request'
         shell: "bash"

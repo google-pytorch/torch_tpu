@@ -21,22 +21,38 @@ load("//:visibility.bzl", "BZL_VISIBILITY")
 
 visibility(BZL_VISIBILITY)
 
+def _add_src_imports(kwargs):
+    package = native.package_name()
+    if package.startswith("src/"):
+        depth = len(package.split("/"))
+        root_rel = "/".join([".." for _ in range(depth)])
+        imports = list(kwargs.get("imports", []))
+        if root_rel:
+            imports.append(root_rel + "/src")
+        else:
+            imports.append("src")
+        kwargs["imports"] = imports
+
 def pytype_strict_binary(**kwargs):
+    _add_src_imports(kwargs)
     py_binary(**kwargs)
 
 def pytype_strict_library(**kwargs):  # PY_LIBRARY_OK=OSS pytype stub macro definition
+    _add_src_imports(kwargs)
     py_library(
         # PY_LIBRARY_OK=OSS pytype stub macro
         **kwargs
     )
 
 def pytype_library(**kwargs):  # PY_LIBRARY_OK=OSS pytype stub macro definition
+    _add_src_imports(kwargs)
     py_library(
         # PY_LIBRARY_OK=OSS pytype stub macro
         **kwargs
     )
 
 def pytype_strict_contrib_test(**kwargs):
+    _add_src_imports(kwargs)
     py_test(
         # PY_TEST_OK=oss
         **kwargs
