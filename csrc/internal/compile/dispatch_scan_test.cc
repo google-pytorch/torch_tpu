@@ -83,6 +83,50 @@ static constexpr std::string_view kAddStepMlir = R"mlir(
   }
 )mlir";
 
+// MLIR step-function that calls a private helper rather than doing the work
+// inline, the shape a JAX-exported kernel lowers to. The callee is a sibling
+// of @main in the body module and has to be carried into the destination
+// module for the cloned `func.call` to resolve.
+//
+// mlir signature:
+//   func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>)
+//       -> (tensor<1xi32>, tensor<1xi32>)
+static constexpr std::string_view kCalleeStepMlir = R"mlir(
+  module {
+    func.func private @scan_body_add(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = stablehlo.add %a, %b : tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>) -> (tensor<1xi32>, tensor<1xi32>) {
+      %0 = func.call @scan_body_add(%x, %carry) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0, %0 : tensor<1xi32>, tensor<1xi32>
+    }
+  }
+)mlir";
+
+// MLIR step-function whose helper calls a second helper, so the rename of the
+// inner callee has to reach the outer one before either is cloned.
+//
+// mlir signature:
+//   func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>)
+//       -> (tensor<1xi32>, tensor<1xi32>)
+static constexpr std::string_view kNestedCalleeStepMlir = R"mlir(
+  module {
+    func.func private @scan_body_inner(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = stablehlo.add %a, %b : tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func private @scan_body_outer(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = func.call @scan_body_inner(%a, %b) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>) -> (tensor<1xi32>, tensor<1xi32>) {
+      %0 = func.call @scan_body_outer(%x, %carry) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0, %0 : tensor<1xi32>, tensor<1xi32>
+    }
+  }
+)mlir";
+
 // MLIR step-function with multiple carries (%c1, %c2) and a single input slice
 // (%x): next_c1 = c1 + x, next_c2 = c2 + x, output = c1 + x.
 //
@@ -315,6 +359,45 @@ TEST_F(DispatchScanTest, With1D) {
 
   SCOPED_TRACE("With1D");
   LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2);
+}
+
+TEST_F(DispatchScanTest, StepFunctionCalleeIsImported) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs(kCalleeStepMlir);
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 2);
+
+  SCOPED_TRACE("StepFunctionCalleeIsImported");
+  std::string lowered_mlir;
+  LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/1, &lowered_mlir);
+
+  // The definition travels with the call: without the import the module still
+  // lowers structurally but the callee is a dangling symbol reference.
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.call @scan_body_add"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_add"));
+}
+
+TEST_F(DispatchScanTest, NestedStepFunctionCalleesAreImported) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs(kNestedCalleeStepMlir);
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 2);
+
+  SCOPED_TRACE("NestedStepFunctionCalleesAreImported");
+  std::string lowered_mlir;
+  LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/1, &lowered_mlir);
+
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_outer"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_inner"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.call @scan_body_inner"));
 }
 
 TEST_F(DispatchScanTest, With2D) {
