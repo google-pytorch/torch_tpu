@@ -1796,7 +1796,16 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nn.functional.adaptive_avg_pool3d",
         exclude_dtypes={
-            "gpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
+            "gpu": (
+                (
+                    torch.uint8,
+                    torch.int8,
+                    torch.int16,
+                    torch.int32,
+                    torch.int64,
+                )
+                + COMPLEX_DTYPES
+            ),
         },
     )
 

@@ -266,7 +266,12 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
     const int64_t out_w, const int64_t spatial_dim_count) {
   const mlir::ElementType orig_dtype = GetElementTypeOrDie(input_op);
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
-                      InferComputationDtype(orig_dtype));
+                      [&]() -> absl::StatusOr<mlir::ElementType> {
+                        if (orig_dtype == mlir::ElementType::PRED) {
+                          return mlir::ElementType::F32;
+                        }
+                        return InferComputationDtype(orig_dtype);
+                      }());
   TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
 
   // Create a batch input
@@ -299,6 +304,9 @@ absl::StatusOr<mlir::MlirOp> BuildAdaptiveAvgPool3dShlo(
 
   auto result = RemoveTrivialBatch(w_op, batch_input_info.original_dim_size,
                                    spatial_dim_count);
+  if (orig_dtype == mlir::ElementType::PRED) {
+    return mlir::stablehlo::ConvertElementType(result, orig_dtype);
+  }
   return CastIfNeeded(result, orig_dtype);
 }
 
@@ -645,16 +653,15 @@ at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
                                      at::Tensor& out) {
   TT_KERNEL(
       OpName::kAdaptiveAvgPool3dOut, param_keys, (self, output_size, out), {
-        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool &&
-                           self.scalar_type() != at::ScalarType::Byte &&
+        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Byte &&
                            self.scalar_type() != at::ScalarType::Char &&
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::Long &&
                            self.scalar_type() != at::ScalarType::ComplexFloat,
                        error::kInvalidArgument)
-            << "expected input dtype to be none of (bool, uint8, int8, "
-               "int16, int32, int64, complex64), got "
+            << "expected input dtype to be none of (uint8, int8, int16, "
+               "int32, int64, complex64), got "
             << torch_tpu::ToString(self.scalar_type());
 
         const int64_t spatial_dim_count = 3;
@@ -686,9 +693,10 @@ at::Tensor& AtenAdaptiveAvgPool3dOut(const at::Tensor& self,
         // is mathematically equivalent to a standard average pool with:
         // Stride = Input / Output
         // Kernel = Input - (Output - 1) * Stride
-        const bool use_std_avg_pool = in_d >= out_d && in_h >= out_h &&
-                                      in_w >= out_w && in_d % out_d == 0 &&
-                                      in_h % out_h == 0 && in_w % out_w == 0;
+        const bool use_std_avg_pool =
+            self.scalar_type() != at::ScalarType::Bool && in_d >= out_d &&
+            in_h >= out_h && in_w >= out_w && in_d % out_d == 0 &&
+            in_h % out_h == 0 && in_w % out_w == 0;
         ABSL_CHECK_OK(  // CRASH_OK
             param_keys.SetParam("std_avg_pool", use_std_avg_pool));
         if (use_std_avg_pool) {
