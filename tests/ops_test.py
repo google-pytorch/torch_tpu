@@ -2082,8 +2082,6 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("cat")
 
   def test_cdist(self):
-    # TODO: b/470453016 look into the high relative error for bfloat16.
-    # torch.bfloat16: {"rtol": 3.1, "atol": 3.9e-1}
     self.do_test_op(
         "cdist",
         # TODO: look into sometimes tests will fall into certain
@@ -2187,7 +2185,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_cumprod(self):
     self.do_test_op("cumprod")
 
-  # TODO(b/529376045): Scan HLO lowering failing on GitHub
   # def test_cummax(self):
   #   self.do_test_op("cummax")
 
@@ -2263,7 +2260,6 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  # TODO(b/529376045): Scan HLO lowering failing on GitHub
   # def test_embedding_bag(self):
   #   self.do_test_op(
   #       "nn.functional.embedding_bag",
@@ -2456,9 +2452,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_add(self):
     self.do_test_op(
         "_foreach_add",
-        # TODO(b/485291373): fix _foreach_add() failing with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
-        # TODO(b/485291373): fix _foreach_add_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
     )
 
@@ -2466,10 +2460,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_addcdiv(self):
     self.do_test_op(
         "_foreach_addcdiv",
-        # TODO(b/485291373): fix _foreach_addcdiv() failing with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
-        # TODO(b/485291373): fix _foreach_addcdiv_() failing with complex
-        # dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
         check_dynamism=False,  # TODO(b/488338235): dynamism is flaky
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
@@ -2489,8 +2480,6 @@ class TestOps(op_testing.OpInfoTestBase):
     # TODO(b/494218929): Fix the high tolerance of 1e-2.
     self.do_test_op(
         "_foreach_addcmul",
-        # TODO(b/485291373): fix _foreach_addcmul_() failing with complex
-        # dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
         # TODO(b/552441831): Skip legacy GPU golden samples with 'scalars' in kwargs
         # and calls where 'value' is a list of scalars (PyTorch OpInfo passes
@@ -2573,14 +2562,11 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_div(self):
     self.do_test_op(
         "_foreach_div",
-        # TODO(b/485291373): fix _foreach_div() failing with complex dtypes.
         exclude_dtypes={
             "cpu": (torch.bool,) + COMPLEX_DTYPES,
             "gpu": COMPLEX_DTYPES,
         },
         # TODO: CPU returns nans but TPU returns 0.
-        # TODO(b/485291373): fix _foreach_div_() failing with integral and
-        # complex dtypes.
         exclude_inplace_dtypes={
             "cpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
             "gpu": (
@@ -2628,7 +2614,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_lerp(self):
     self.do_test_op(
         "_foreach_lerp",
-        # TODO(b/485291373): fix _foreach_lerp_() failing with complex dtypes.
         exclude_inplace_dtypes=(torch.complex64,),
     )
 
@@ -2659,7 +2644,6 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_max(self):
-    # TODO(b/485291373): fix _foreach_max() failing with complex dtypes.
     self.do_test_op("_foreach_max", exclude_dtypes=COMPLEX_DTYPES)
 
   @category("foreach")
@@ -2698,9 +2682,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_foreach_mul(self):
     self.do_test_op(
         "_foreach_mul",
-        # TODO(b/485291373): fix _foreach_mul() failing with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
-        # TODO(b/485291373): fix _foreach_mul_() failing with complex dtypes.
         exclude_inplace_dtypes=COMPLEX_DTYPES,
     )
 
@@ -2733,7 +2715,6 @@ class TestOps(op_testing.OpInfoTestBase):
 
     self.do_test_op(
         "_foreach_norm",
-        # TODO(b/485291373): fix _foreach_norm() failing with complex dtypes.
         exclude_dtypes={
             "cpu": COMPLEX_DTYPES,
             "gpu": (
@@ -2961,7 +2942,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_linalg_lu_factor_ex(self):
     self.do_test_op(
         "linalg.lu_factor_ex",
-        # TODO(b/528412744): Unskip float64 and complex128 when libtpu has been upreved.
         exclude_dtypes=(  # EXCLUDE_DTYPES_OK=unsupported 64-bit dtypes in older libtpu
             torch.float64,
             torch.complex128,
@@ -3061,7 +3041,6 @@ class TestOps(op_testing.OpInfoTestBase):
             ),
             "gpu": INTEGRAL_DTYPES + (torch.half, torch.bfloat16),
         },
-        # TODO(b/495521055): linalg.inv fails with complex64 with compile.
         skip_if=lambda device, variant, op_input: (
             op_testing.is_compiled_mode()
             and op_input.input_value.dtype in COMPLEX_DTYPES
@@ -3164,7 +3143,6 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_logical_not(self):
     self.do_test_op("logical_not")
 
-  # TODO(b/529376045): Scan HLO lowering failing on GitHub
   # def test_masked_scatter(self):
   #   self.do_test_op("masked_scatter")
 
@@ -3361,8 +3339,6 @@ class TestOps(op_testing.OpInfoTestBase):
   # TODO(b/535650392): re-enable this test in OSS.
   @oss_utils.skip_in_oss()
   def test_native_group_norm(self):
-    # TODO: b/470451730 look into the high errors for bfloat16.
-    # torch.bfloat16: {"rtol": 4.1, "atol": 4.0},
     self.do_test_op(
         "nn.functional.group_norm",
         # TODO: fix native_group_norm() succeeding with integral and
@@ -3594,8 +3570,6 @@ class TestOps(op_testing.OpInfoTestBase):
     )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
   @op_testing.skip_if_torch_tpu_vs_gpu_mode
   @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_math(self):
@@ -3607,8 +3581,6 @@ class TestOps(op_testing.OpInfoTestBase):
       )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
   @op_testing.skip_if_torch_tpu_vs_gpu_mode
   @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_overrideable(self):
@@ -3626,8 +3598,6 @@ class TestOps(op_testing.OpInfoTestBase):
       )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
   @op_testing.skip_if_torch_tpu_vs_gpu_mode
   @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_efficient(self):
@@ -3641,8 +3611,6 @@ class TestOps(op_testing.OpInfoTestBase):
       )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  # TODO: b/476147793 association of (inputs, outputs) pairs with the op name
-  # and dtype only causes comparison of outputs of different tests.
   @op_testing.skip_if_torch_tpu_vs_gpu_mode
   @oss_utils.skip_in_oss()
   def test_nn_functional_scaled_dot_product_attention_flash(self):

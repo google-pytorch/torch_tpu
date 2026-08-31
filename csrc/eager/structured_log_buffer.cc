@@ -42,8 +42,6 @@ void StructuredLogBuffer::Push(
   absl::MutexLock lock(mu_);
   if (events_.size() >= kMaxEvents) {
     // We evict the oldest event to prevent memory bloat.
-    // TODO - b/491210752: Replace drop-on-overflow with a C++-triggered drain
-    // or flag configurable threshold.
     events_.pop_front();
     ++dropped_since_last_drain_;
   }

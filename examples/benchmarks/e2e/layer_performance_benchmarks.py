@@ -526,7 +526,6 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
         config, _GELU_ACTIVATION_BENCHMARK_NAME, microbenchmark_name
     )
 
-  # TODO(b/484415655): Known bert training issue.
   @parameterized.named_parameters(
       test_utils.generate_layer_test_configs(
           _ALL_RUN_MODES, (False,), layer_configs.BERT_LAYER_CONFIGS

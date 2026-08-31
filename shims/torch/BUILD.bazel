@@ -124,8 +124,6 @@ _CUDA_PYPI_DEPS = [
     "@pypi_cuda//triton",
 ]
 
-# TODO: b/457858115 - Bazel likely enforces strict dependencies and requires optional dependencies
-# to be explicitly listed in deps if they are used.
 # Python Rules: Depend on PyPI torch by default, but skip it for local builds
 # (because local builds assume torch is already in the environment)
 py_library(

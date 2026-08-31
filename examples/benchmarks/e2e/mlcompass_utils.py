@@ -36,7 +36,6 @@ def get_mlcompass_test_name(
   return f"{TEAM_NAME}/{platform.value}/{test_method_name}/{benchmark_name}"
 
 
-# TODO(b/470090396): Export to MLCompass for quality benchmarking as well.
 def export_to_mlcompass(
     platform: common.Platform,
     metrics: metrics_lib.MetricsInterface | None,

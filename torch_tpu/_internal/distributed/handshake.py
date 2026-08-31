@@ -363,8 +363,6 @@ def should_handshake(
   world_size = dist.get_world_size()
   global_pg = ProcessGroupId(range(world_size), world_size=world_size)
 
-  # TODO(b/542976786): We currently Handshake only on global process
-  # groups.
   if len(pg_to_num_collectives) != 1 or global_pg not in pg_to_num_collectives:
     logging.warning(
         "We do not support non global PG handshakes: expected only the global"
@@ -393,8 +391,6 @@ class CollectiveHandshakeRequest:
       executable_fingerprint: str,
       rank: int,
   ) -> None:
-    # TODO(b/542976786): We currently Handshake only on global process
-    # groups.
     if rank < 0:
       raise ValueError(f"rank must be non-negative, got {rank}.")
 
@@ -1143,8 +1139,6 @@ class _HandshakeServer(_HandshakeBackend):
       received_msgs: dict[int, CollectiveHandshakeRequest],
   ) -> None:
     """Exhausts queues for ranks that have collective count < max collective count."""
-    # TODO(b/542976786): The handshake currently supports only the global
-    # process group. There is an explicit check against this in the invocation of the `Handshake.submit` function.
     # The reason we do not iterate pg_collective_counts here is that this exhaustion algorithm won't be applicable to non-global process groups.
     global_pg = ProcessGroupId(
         range(self._world_size), world_size=self._world_size

@@ -20,7 +20,6 @@ from absl.testing import parameterized
 import torch
 from torch.utils import _pytree
 from torch.utils import checkpoint
-from torch_tpu._internal import env
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -155,14 +154,6 @@ class RandomOpsTest(seed_test_utils.RepeatableTest):
     self.assert_random_outputs(runner)
 
   def test_checkpoint_rng_compile(self):
-    # TODO: b/496168350 - Remove test skip once generic graphsafe RNG is
-    # available in OSS PyTorch release.
-    if not env.IS_INTERNAL_TORCH_TPU:
-      self.skipTest(
-          "Pending https://github.com/pytorch/pytorch/pull/182391 to be"
-          " available in OSS PyTorch."
-      )
-
     # Arrange
     device = torch.device("tpu")
 

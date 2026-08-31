@@ -93,9 +93,6 @@ class Flux1SmokeTest(seed_test_utils.RepeatableTest):
     # Trivial assert, this smoke test just tests this doesn't crash.
     self.assertIsNotNone(image)
 
-  # TODO(b/503472873): Fix the "tensor does not have a device" error
-  # triggered by elementwise_affine=False in LayerNorm on TPU.
-  @absltest.skip("Fails with tensor does not have a device")
   def test_flux1_training_mini(self):
     # Model miniaturization
     config = diffusers.FluxTransformer2DModel.load_config(

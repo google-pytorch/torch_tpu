@@ -314,8 +314,6 @@ benchmarks {
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
-# TODO(b/512109815): Re-add gemma_3_270m compile-mode training benchmark
-# (test_gemma_3_270m_train_1_step_compiled-hf_gemma_3_270m) after fix.
 benchmarks {
   name: "test_gemma_2_2b_forward_eager_default-hf_gemma_2_2b"
   description: "Eager default forward pass benchmark for HuggingFace Gemma-2-2B model."

@@ -62,7 +62,6 @@ class ContextManagerGraphBreakTest(seed_test_utils.RepeatableTest):
     # TorchDynamo cannot symbolically execute the opaque pybind11 calls inside
     # TorchTPU context managers. Consequently, it abandons the whole frame and
     # runs it eagerly: zero graphs captured.
-    # TODO(b/537815330): update graph count to 1 after the fix.
     self.assertEqual(explanation.graph_count, 0)
 
   def test_torch_tpu_ctx_trace_fullgraph_raises(self):
@@ -72,8 +71,6 @@ class ContextManagerGraphBreakTest(seed_test_utils.RepeatableTest):
     compiled = torch.compile(
         _torch_tpu_ctx_matmul, backend="eager", fullgraph=True
     )
-    # TODO(b/537815330): remove the expected exception after TorchTPU context
-    # managers become traceable.
     with self.assertRaises(torch._dynamo.exc.Unsupported):
       compiled(torch.randn(2, 2), torch.randn(2, 2))
 

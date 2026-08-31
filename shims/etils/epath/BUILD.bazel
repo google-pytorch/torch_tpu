@@ -17,8 +17,6 @@ load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
 
-# TODO: b/457858115 - Bazel likely enforces strict dependencies and requires all transitive deps to
-# be explicitly listed in deps.
 # See https://github.com/bazel-contrib/rules_python/issues/3352
 alias(
     name = "epath",

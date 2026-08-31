@@ -435,10 +435,6 @@ REGISTRATION_OVERRIDES = frozenset([
     # The loop is copy_ -> MathOpFallback::fallback_impl -> clone -> copy_...
     # Registering copy_ as an alias for _copy_from breaks this loop.
     'copy_',
-    # TODO: b/513607161 - revert once upstream PyTorch bug is fixed.
-    # ctc_loss and ctc_loss.Tensor are registered because we provide a custom
-    # StableHLO lowering and autograd implementation, bypassing the default
-    # decomposition in order to workaround a bug in PyTorch core.
     'ctc_loss',
     'ctc_loss.Tensor',
     'gather',

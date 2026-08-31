@@ -2391,8 +2391,6 @@ def _resolve_enum_class(mod_name: str, class_name: str) -> Any:
 
 def _deserialize_exception(payload: Any) -> Exception:
   """Deserializes an Exception object from a serialized "$$exception" payload."""
-  # TODO(b/542331196): remove this check once exceptions are consistently in dict
-  # format after golden updates.
   if not isinstance(payload, dict):
     return Exception(payload or "")
 

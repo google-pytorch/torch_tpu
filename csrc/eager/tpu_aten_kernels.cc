@@ -443,8 +443,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kCtcLoss>(m, AtenCtcLoss);
   ImplStable<OpName::kCtcLossBackward>(m, AtenCtcLossBackward);
   ImplStable<OpName::kCtcLossBackwardTensor>(m, AtenCtcLossBackwardTensor);
-  // TODO(b/513607161): remove CtcLossPublic overrides once upstream PyTorch bug
-  // is fixed.
   // This is a workaround for a bug in PyTorch core's ctc_loss implementation
   // when used in combination with the privateuse1 backend and bf16 dtype. PT's
   // ctc_loss impl attempts to initialize a tensor on CPU with bf16 and triggers
@@ -1102,8 +1100,6 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // All entries should be registered via ImplStable as we don't want to
   // generate a warning for standard aten ops.
   // go/keep-sorted start
-  // TODO(b/513607161): remove CtcLossPublic overrides once upstream PyTorch bug
-  // is fixed.
   // Because we override the public ctc_loss in PrivateUse1, we bypass its
   // default decomposition into _ctc_loss. Since the public ctc_loss is normally
   // a composite op that relies on this decomposition for autograd, bypassing

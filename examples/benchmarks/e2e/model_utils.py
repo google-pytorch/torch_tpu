@@ -2456,7 +2456,6 @@ def timm_model_builder(
   return ModelAndInput(model=model, example_inputs=example_inputs)
 
 
-# TODO(b/505851863): use model registry to get the model and inputs for all categories.
 def huggingface_diffuser_model_builder(
     model_and_input_args: Any,
     device: torch.device,

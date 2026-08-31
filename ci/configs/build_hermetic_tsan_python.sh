@@ -51,7 +51,6 @@
 #      (e.g., libssl.so.1.1) were replaced with dynamic resolution to allow
 #      execution on newer runner images (like Ubuntu 22.04 with libssl.so.3).
 #
-# TODO: b/512474130 - Automate this process and/or make it config-based.
 # Investigate building a reusable solution as a shared utility across projects.
 # USAGE:
 #   ONLY modify and run this script in the following scenarios:

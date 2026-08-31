@@ -252,8 +252,6 @@ class KVCacheDynamismTest(seed_test_utils.RepeatableTest):
       dynamism.mark_dynamic(k_cache, 2, seq_len, max_seq_len)
       k_cache = torch.cat([k_cache, new_k_list[step]], dim=2)
       add_k = torch.add(k_cache, k_cache)
-      # TODO(b/478357255): uncomment the line below and remove the line after.
-      # add_k.to("cpu")
       del add_k  # Suppress "unused variable" warning.
 
 

@@ -135,7 +135,6 @@ absl::StatusOr<mlir::MlirOp> BuildBucketizeShlo(mlir::MlirOp self_op,
                                                 mlir::MlirOp boundaries_op,
                                                 mlir::ElementType out_dtype,
                                                 bool right) {
-  // TODO(b/499034385): Current, only the "compare all" algorithm is supported.
   // In the future, we would like to implement search-based bucketing as well,
   // similar to jax.numpy.searchsorted.
   return BuildCompareAllShlo(self_op, boundaries_op, out_dtype, right);

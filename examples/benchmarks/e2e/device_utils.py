@@ -261,7 +261,6 @@ def synchronize(
     if tensor_to_sync is None:
       torch.accelerator.synchronize()
     else:
-      # TODO(b/507181043): Investigate why sync(None, wait=True) doesn't work.
       tensors = _collect_tensors(tensor_to_sync)
       # TODO(lukeboyer): Flip to global sync after cl/964180694.
       tpu_sync.synchronize(tensors, wait=True)

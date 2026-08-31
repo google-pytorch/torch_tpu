@@ -120,8 +120,6 @@ using LoadedExecutableBuilder = absl::AnyInvocable<
         xla::PjRtClient& client, UniqueCompileOptions compile_options) &&>;
 
 // An MLIR module, with the MLIR context it requires.
-// TODO(b/487928705): Remove this class and use `MaybeOwningMlirModule`
-// directly.
 class ContextedModule {
  public:
   explicit ContextedModule(std::unique_ptr<mlir::MLIRContext> context,

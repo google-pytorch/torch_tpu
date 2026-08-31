@@ -1246,7 +1246,6 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           "expected target dtype to be Long or Byte, but got Int"
       )
     else:
-      # TODO: b/533385796 - Change this back to a string later.
       tpu_error_message = re.compile(
           r"^(expected target dtype to be Long or Byte, but got Int|"
           r"nll_loss_forward\(\): expected the target dtype to be either int64"

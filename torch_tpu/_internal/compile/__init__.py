@@ -43,10 +43,7 @@ def _initialize_graphsafe_rng():
   # pylint: enable=protected-access
 
 
-# TODO: b/496168350 - Remove if-condition once generic graphsafe RNG is
-# available in OSS PyTorch release.
-if hasattr(aot_utils, "register_graphsafe_rng_device_type"):
-  _initialize_graphsafe_rng()
+_initialize_graphsafe_rng()
 
 
 # New Dynamo flag that enables tracing through the `backward` function call.

@@ -84,7 +84,6 @@ class PerplexityMetric(quality_benchmark_model.MetricProducer):
 
     if total_tokens == 0:
       # Raise error if no tokens were processed to avoid hiding incorrect behavior.
-      # TODO(b/499309732): Revert to raising an error after finding a solution
       logging.warning("No tokens processed for perplexity calculation.")
       return torch.tensor(float("inf"))
 

@@ -449,14 +449,11 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
     # canonical default generator for their device. This aligns with PyTorch's
     # observed CUDA behavior where graphsafe RNG ops always mutate the global
     # generator's state, making `torch.manual_seed()` work for compiled graphs.
-    # TODO(b/501205098): Confirm the intended behavior and right implementation.
     generators = [
         device_module.default_generators[gen.device.index] for gen in generators
     ]
 
     # Lock all generators to prevent race conditions when updating their states.
-    # TODO: b/501205098 - Generators are not locked during export.py. Address
-    # this in a follow-up.
     with tpu_torch_compile.MultiGeneratorLocker(generators):
       device_state_tensors = [
           tpu_torch_compile.get_device_state_tensor(gen) for gen in generators
