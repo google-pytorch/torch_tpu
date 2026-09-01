@@ -24,7 +24,7 @@ def get_zip_relpath(path: pathlib.Path) -> str:
   """Calculates the relative path for a file in the output ZIP.
 
   Standardizes and strips paths to ensure they are relative to 'site-packages/'
-  if that marker exists.
+  if that marker exists, or strips leading 'src/' if present.
 
   Args:
     path: The original path of the file.
@@ -35,6 +35,8 @@ def get_zip_relpath(path: pathlib.Path) -> str:
   parts = path.parts
   if "site-packages" in parts:
     return str(pathlib.Path(*parts[parts.index("site-packages") + 1 :]))
+  if parts and parts[0] == "src":
+    return str(pathlib.Path(*parts[1:]))
   return str(path)
 
 

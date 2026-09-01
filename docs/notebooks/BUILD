@@ -18,7 +18,7 @@ load("//build_files:build_defs.bzl", "torch_tpu_package_end")
 
 package(
     default_applicable_licenses = ["//:license"],
-    default_visibility = ["//torch_tpu/docs/notebooks:__subpackages__"],
+    default_visibility = ["//src/torch_tpu/docs/notebooks:__subpackages__"],
 )
 
 # Make BUILD file maintenance tools ignore all *.py files as we don't

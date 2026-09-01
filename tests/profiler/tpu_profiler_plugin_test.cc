@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "torch_tpu/csrc/internal/profiler/tpu_profiler_plugin.h"
+#include "csrc/internal/profiler/tpu_profiler_plugin.h"
 
 // clang-format off
 #include <memory>
@@ -30,7 +30,7 @@
 #include <kineto/ActivityType.h>
 #include <kineto/Config.h>
 #include <kineto/IActivityProfiler.h>
-#include "torch_tpu/csrc/common/error_utils.h"
+#include "csrc/common/error_utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
 // clang-format on
 

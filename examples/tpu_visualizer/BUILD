@@ -31,11 +31,11 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/utils:hardware",
         "//tests/distributed:distributed_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/distributed:tpu_distributed",
-        "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
-        "//torch_tpu/_internal/utils:hardware",
     ],
 )
 
@@ -53,9 +53,9 @@ torch_tpu_py_test(
         ":tpu_visualizer",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
 
