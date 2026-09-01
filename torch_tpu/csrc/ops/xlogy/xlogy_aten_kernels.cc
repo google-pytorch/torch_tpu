@@ -28,6 +28,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
 #include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/csrc/common/dtype.h"
 #include "torch_tpu/csrc/common/error_utils.h"
@@ -48,8 +49,8 @@ namespace {
 
 absl::StatusOr<mlir::MlirOp> BuildXlogyShlo(
     mlir::MlirOp x, mlir::MlirOp y, mlir::ElementType computation_dtype) {
-  x = mlir::stablehlo::ConvertElementType(x, computation_dtype);
-  y = mlir::stablehlo::ConvertElementType(y, computation_dtype);
+  TT_ASSIGN_OR_RETURN(x, CastIfNeeded(x, computation_dtype));
+  TT_ASSIGN_OR_RETURN(y, CastIfNeeded(y, computation_dtype));
 
   TT_ASSIGN_OR_RETURN((auto [x_bcst, y_bcst]), ApplyBroadcastIfNeeded(x, y));
 
@@ -88,8 +89,10 @@ at::Tensor& AtenXlogyOutTensor(const at::Tensor& self, const at::Tensor& other,
     if (c10::isIntegralType(promoted_scalar_type, /*includeBool=*/true)) {
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
-    TT_ASSIGN_OR_THROW(auto computation_dtype,
+    TT_ASSIGN_OR_THROW(const auto raw_dtype,
                        ConvertTo<mlir::ElementType>(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                       InferComputationDtype(raw_dtype));
 
     auto op_builder = [computation_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
         -> absl::StatusOr<mlir::MlirOp> {

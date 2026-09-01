@@ -106,8 +106,7 @@ absl::StatusOr<mlir::MlirOp> BuildLogitShlo(mlir::MlirOp input_op,
   mlir::MlirOp one_minus_y = mlir::stablehlo::Subtract(k_one, y);
   mlir::MlirOp fraction = mlir::stablehlo::Div(y, one_minus_y);
   mlir::MlirOp log_out = mlir::stablehlo::Log(fraction);
-
-  return mlir::stablehlo::ConvertElementType(log_out, output_dtype);
+  return CastIfNeeded(log_out, output_dtype);
 }
 
 absl::StatusOr<DeviceBufferRef> BuildLogitBuffer(const at::Tensor& self,

@@ -939,36 +939,8 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "erfinv": {
         torch.float32: {"rtol": 1.6e-5, "atol": 1.7e-5},
     },
-    "exp": {
-        torch.complex64: {"rtol": 2.8e-6},
-        torch.float32: {"rtol": 4.6e-6},
-        torch.int16: {"rtol": 3.1e-6, "atol": 7.9e-7},
-        torch.int32: {"rtol": 3.1e-6, "atol": 7.9e-7},
-        torch.int64: {"rtol": 3.1e-6, "atol": 7.9e-7},
-        torch.int8: {"rtol": 3.1e-6, "atol": 7.9e-7},
-        torch.uint8: {"rtol": 4.4e-6},
-    },
-    "exp2": {
-        torch.bfloat16: {"rtol": 2.4e-2, "atol": 2.4e-3},
-        torch.complex64: {"rtol": 3.3e-6},
-        torch.float16: {"rtol": 2.3e-3, "atol": 5.9e-4},
-        torch.float32: {"rtol": 2.4e-6},
-    },
-    "expm1": {
-        torch.complex64: {"rtol": 4.7e-6},
-        torch.float32: {"rtol": 6.9e-6},
-        torch.int16: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int32: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int64: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.uint8: {"rtol": 4.4e-6},
-    },
     "floor_divide": {
         torch.bfloat16: {"rtol": 2.1e-1},
-    },
-    "ldexp": {
-        torch.complex64: {"rtol": 4.4e-6},
-        torch.float32: {"rtol": 4.1e-6},
     },
     "lgamma": {
         torch.bfloat16: {"rtol": 2.6e-2, "atol": 1.6e-4},
@@ -1002,42 +974,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
         torch.uint8: {"rtol": 4.1e-1},
     },
-    "log": {
-        torch.complex64: {"rtol": 4.7e-5},
-        torch.float32: {"rtol": 4.9e-5, "atol": 4.3e-5},
-        torch.int16: {"rtol": 6.9e-5},
-        torch.int32: {"rtol": 6.9e-5},
-        torch.int64: {"rtol": 6.9e-5},
-        torch.int8: {"rtol": 6.9e-5},
-        torch.uint8: {"rtol": 6.9e-5},
-    },
-    "log10": {
-        torch.complex64: {"rtol": 1.4e-5, "atol": 2.2e-5},
-        torch.float32: {"atol": 3.3e-5},
-        torch.int16: {"atol": 3.3e-5},
-        torch.int32: {"atol": 3.3e-5},
-        torch.int64: {"atol": 3.3e-5},
-        torch.int8: {"atol": 3.3e-5},
-        torch.uint8: {"atol": 3.3e-5},
-    },
-    "log1p": {
-        torch.complex64: {"rtol": 3.3e-5, "atol": 3.7e-5},
-        torch.float32: {"rtol": 1.1e-4, "atol": 1.2e-4},
-        torch.int16: {"rtol": 6.9e-5},
-        torch.int32: {"rtol": 6.9e-5},
-        torch.int64: {"rtol": 6.9e-5},
-        torch.int8: {"rtol": 6.9e-5},
-        torch.uint8: {"rtol": 6.9e-5},
-    },
-    "log2": {
-        torch.complex64: {"rtol": 4.5e-5},
-        torch.float32: {"rtol": 5.6e-5, "atol": 2.8e-5},
-        torch.int16: {"rtol": 6.9e-5},
-        torch.int32: {"rtol": 6.9e-5},
-        torch.int64: {"rtol": 6.9e-5},
-        torch.int8: {"rtol": 6.9e-5},
-        torch.uint8: {"rtol": 6.9e-5},
-    },
     "log_softmax": {
         torch.bfloat16: {"atol": 6.5e-3},
         torch.float16: {"rtol": 1.2e-3, "atol": 6.3e-4},
@@ -1047,16 +983,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.bfloat16: {"atol": 3.7e-5},
         torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
         torch.float32: {"rtol": 5e-5, "atol": 3.2e-5},
-    },
-    "logit": {
-        torch.bool: {"atol": 7.5e-5},
-        torch.float16: {"atol": 5.9e-4},
-        torch.float32: {"rtol": 7.5e-5, "atol": 8.3e-5},
-        torch.int16: {"atol": 7.5e-5},
-        torch.int32: {"atol": 7.5e-5},
-        torch.int64: {"atol": 7.5e-5},
-        torch.int8: {"atol": 7.5e-5},
-        torch.uint8: {"atol": 7.5e-5},
     },
     "matmul": {
         torch.bfloat16: {"rtol": 1.2e-1, "atol": 1.9e-1},
@@ -1178,14 +1104,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "var": {
         torch.float16: {"rtol": 1.5e-3},
     },
-    "xlogy": {
-        torch.float32: {"rtol": 3.2e-4, "atol": 3e-4},
-        torch.int16: {"rtol": 6.9e-5},
-        torch.int32: {"rtol": 6.9e-5},
-        torch.int64: {"rtol": 6.9e-5},
-        torch.int8: {"rtol": 6.9e-5},
-        torch.uint8: {"rtol": 6.9e-5},
-    },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU
 
@@ -1283,24 +1201,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "erfinv": {
         torch.float32: {"rtol": 1.6e-5, "atol": 1.7e-5},
     },
-    "exp": {
-        torch.complex64: {"rtol": 2.8e-6},
-    },
-    "exp2": {
-        torch.complex64: {"rtol": 3.3e-6},
-    },
-    "expm1": {
-        torch.complex64: {"rtol": 4.7e-6},
-        torch.float32: {"rtol": 6.9e-6},
-        torch.int16: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int32: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int64: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.int8: {"rtol": 4.4e-6, "atol": 7.9e-7},
-        torch.uint8: {"rtol": 4.4e-6},
-    },
-    "ldexp": {
-        torch.complex64: {"rtol": 4.4e-6},
-    },
     "linalg.lu_factor_ex": {
         torch.complex64: {"rtol": 5.4, "atol": 19},
     },
@@ -1317,38 +1217,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
         torch.uint8: {"rtol": 4.1e-1},
     },
-    "log": {
-        torch.complex64: {"rtol": 4.7e-5},
-    },
-    "log10": {
-        torch.complex64: {"rtol": 1.4e-5, "atol": 2.2e-5},
-    },
-    "log1p": {
-        torch.complex64: {"rtol": 3.3e-5, "atol": 3.7e-5},
-        torch.float32: {"rtol": 1.1e-4, "atol": 1.2e-4},
-        torch.int16: {"rtol": 6.9e-5},
-        torch.int32: {"rtol": 6.9e-5},
-        torch.int64: {"rtol": 6.9e-5},
-        torch.int8: {"rtol": 6.9e-5},
-        torch.uint8: {"rtol": 6.9e-5},
-    },
-    "log2": {
-        torch.complex64: {"rtol": 4.5e-5},
-    },
     "logcumsumexp": {
         torch.bfloat16: {"atol": 3.7e-5},
         torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
         torch.float32: {"rtol": 5e-5, "atol": 3.2e-5},
-    },
-    "logit": {
-        torch.bool: {"atol": 7.5e-5},
-        torch.float16: {"atol": 5.9e-4},
-        torch.float32: {"rtol": 7.5e-5, "atol": 8.3e-5},
-        torch.int16: {"atol": 7.5e-5},
-        torch.int32: {"atol": 7.5e-5},
-        torch.int64: {"atol": 7.5e-5},
-        torch.int8: {"atol": 7.5e-5},
-        torch.uint8: {"atol": 7.5e-5},
     },
     "matmul": {
         torch.complex64: {"rtol": 5.2e-2},
@@ -1592,6 +1464,10 @@ ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
                 torch.float16: {"rtol": 1.2e-1, "atol": 1.1e-3},
                 torch.float32: {"rtol": 3.8e-1, "atol": 6.6e-5},
             },
+            "torch.ops.aten._safe_softmax.default": {
+                torch.bfloat16: {"rtol": 1e-3, "atol": 5.8e-3},
+                torch.float16: {"rtol": 1e-3, "atol": 1.1e-3},
+            },
             "var": {
                 torch.bfloat16: {"rtol": 3e-1, "atol": 2e-2},
             },
@@ -1807,35 +1683,10 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("add")
 
   def test_addcdiv(self):
-    self.do_test_op(
-        "addcdiv",
-        exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
-        },
-    )
+    self.do_test_op("addcdiv")
 
   def test_addcmul(self):
-    self.do_test_op(
-        "addcmul",
-        exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
-        },
-        exclude_inplace_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
-        },
-    )
+    self.do_test_op("addcmul")
 
   def test_addmm(self):
     self.do_test_op(
@@ -2229,16 +2080,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("digamma")
 
   def test_div(self):
-    self.do_test_op(
-        "div",
-        exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
-        },
-    )
+    self.do_test_op("div")
 
   def test_dot(self):
     self.do_test_op(
@@ -2284,6 +2126,7 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": COMPLEX_DTYPES,
             "gpu": (
                 *COMPLEX_DTYPES,
+                # TODO(b/555391048): support float8 golden data sampling.
                 torch.float8_e4m3fn,
                 torch.float8_e5m2,
                 torch.float4_e2m1fn_x2,
@@ -2452,21 +2295,11 @@ class TestOps(op_testing.OpInfoTestBase):
         # TODO: cpu does incorrect rounding for bfloat16 and float16.
         exclude_dtypes={
             "cpu": (torch.bfloat16, torch.float16),
-            "gpu": (
-                torch.float16,
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
+            "gpu": (torch.float16,),
         },
         exclude_inplace_dtypes={
             "cpu": (torch.bfloat16, torch.float16),
-            "gpu": (
-                torch.float16,
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
+            "gpu": (torch.float16,),
         },
     )
 
@@ -2480,15 +2313,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("fmin")
 
   def test_fmod(self):
-    self.do_test_op(
-        "fmod",
-        exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-            ),
-        },
-    )
+    self.do_test_op("fmod")
 
   @category("foreach")
   def test_foreach_abs(self):
@@ -3130,6 +2955,7 @@ class TestOps(op_testing.OpInfoTestBase):
         "norm",
         exclude_dtypes={
             "gpu": (
+                # TODO(b/555391048): support float4 golden data sampling.
                 torch.float4_e2m1fn_x2,
                 torch.int4,
             ),
@@ -3484,12 +3310,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "nonzero",
         exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-                torch.int4,
-            ),
+            "gpu": (torch.int4,),
         },
     )
 
@@ -3897,16 +3718,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op("select_scatter")
 
   def test_safe_softmax(self):
-    self.do_test_op(
-        "torch.ops.aten._safe_softmax.default",
-        exclude_dtypes={
-            "gpu": (
-                torch.float8_e4m3fn,
-                torch.float8_e5m2,
-                torch.float4_e2m1fn_x2,
-            ),
-        },
-    )
+    self.do_test_op("torch.ops.aten._safe_softmax.default")
 
   def test_scalar_tensor(self):
     self.do_test_op("scalar_tensor")
@@ -3919,6 +3731,7 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": COMPLEX_DTYPES,
             "gpu": (
                 *COMPLEX_DTYPES,
+                # TODO(b/555391048): support float8 golden data sampling.
                 torch.float8_e4m3fn,
                 torch.float8_e5m2,
                 torch.float4_e2m1fn_x2,

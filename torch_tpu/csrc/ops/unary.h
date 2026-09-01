@@ -65,8 +65,6 @@ TT_UNARY_BUILDER_FP_ONLY_(BuildCosShlo, mlir::stablehlo::Cosine);
 TT_UNARY_BUILDER_FP_ONLY_(BuildCoshShlo, mlir::chlo::Cosh);
 TT_UNARY_BUILDER_FP_ONLY_(BuildErfInvShlo, mlir::chlo::ErfInv);
 TT_UNARY_BUILDER_FP_ONLY_(BuildErfShlo, mlir::chlo::Erf);
-TT_UNARY_BUILDER_FP_ONLY_(BuildExpShlo, mlir::stablehlo::Exp);
-TT_UNARY_BUILDER_FP_ONLY_(BuildExpm1Shlo, mlir::stablehlo::Expm1);
 TT_UNARY_BUILDER_FP_ONLY_(BuildLgammaShlo, mlir::chlo::Lgamma);
 TT_UNARY_BUILDER_FP_ONLY_(BuildRsqrtShlo, mlir::stablehlo::Rsqrt);
 TT_UNARY_BUILDER_FP_ONLY_(BuildSinShlo, mlir::stablehlo::Sine);
@@ -93,12 +91,16 @@ absl::StatusOr<mlir::MlirOp> BuildSignShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildTruncShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildLiftFreshShlo(mlir::MlirOp input_op);
+absl::StatusOr<mlir::MlirOp> BuildExpShlo(mlir::MlirOp input_op,
+                                          mlir::ElementType default_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildExp2Shlo(mlir::MlirOp input_op,
                                            mlir::ElementType default_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildExpm1Shlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildLogShlo(mlir::MlirOp input_op,
-                                          mlir::ElementType default_dtype);
-absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(mlir::MlirOp input_op,
-                                            mlir::ElementType default_dtype);
+                                          mlir::ElementType default_mlir_type);
+absl::StatusOr<mlir::MlirOp> BuildLog1pShlo(
+    mlir::MlirOp input_op, mlir::ElementType default_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildLog2Shlo(mlir::MlirOp input_op,
                                            mlir::ElementType default_mlir_type);
 absl::StatusOr<mlir::MlirOp> BuildLog10Shlo(

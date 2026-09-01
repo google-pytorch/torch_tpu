@@ -1295,6 +1295,25 @@ def _sample_inputs_scaled_mm_v2(
   )
 
 
+def _sample_inputs_safe_softmax(
+    opinfo: Any,
+    device: str | torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> collections.abc.Iterator[core.SampleInput]:
+  """Custom sample generator for torch.ops.aten._safe_softmax.default supporting quantized dtypes."""
+  # The upstream impl adds float32 masks to input tensors, which raises a type
+  # promotion error if sampled directly on float8 tensors. To work it around,
+  # generate samples in float32 and cast them to the requested dtype.
+  for sample in common_methods_invocations.sample_inputs_safe_softmax(
+      opinfo, device, torch.float32, requires_grad, **kwargs
+  ):
+    if isinstance(sample.input, torch.Tensor):
+      sample.input = sample.input.to(dtype)
+    yield sample
+
+
 # Ops not included in the list of tested ops for pytorch.
 _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
@@ -1393,6 +1412,19 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         supports_out=False,
+    ),
+    OpInfo(
+        "torch.ops.aten._safe_softmax.default",
+        dtypes=common_dtype.all_types_and(
+            torch.half, torch.bfloat16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_safe_softmax,
+        assert_jit_shape_analysis=True,
+        assert_autodiffed=True,
+        supports_forward_ad=True,
+        supports_fwgrad_bwgrad=True,
+        supports_out=False,
+        supports_cow_input_no_materialize_backward=False,
     ),
 ]
 for _op_info in _ADDITIONAL_TORCH_TPU_OPS:
@@ -1552,7 +1584,8 @@ _DTYPE_EXCLUSIONS: MutableMapping[str, dict[str, set[str]]] = {}
 
 # The full list of known ops. We will test a subset of these.
 _KNOWN_OPS: Final[Sequence[OpInfo]] = (
-    _masked.op_db
+    typing.cast(list[OpInfo], _ADDITIONAL_TORCH_TPU_OPS)
+    + _masked.op_db
     + autograd_function_db.autograd_function_db
     + common_methods_invocations.foreach_binary_op_db
     + common_methods_invocations.foreach_other_op_db
@@ -1564,7 +1597,6 @@ _KNOWN_OPS: Final[Sequence[OpInfo]] = (
     + fft.op_db
     + hop_db.hop_db
     + linalg.op_db
-    + typing.cast(list[OpInfo], _ADDITIONAL_TORCH_TPU_OPS)
 )
 
 

@@ -815,6 +815,12 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
                 .getElementType()
           : self_type.getElementType();
 
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType float_elem_type,
+                      ConvertTo<mlir::ElementType>(float_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(float_elem_type));
+  const mlir::Type comp_type = getElementType(builder.getContext(), comp_dtype);
+
   // Decompose base into real (a) and imaginary (b) components.
   mlir::MlirOp a =
       self_is_complex ? mlir::stablehlo::Real(self_bcst) : self_bcst;
@@ -823,38 +829,29 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
                        : MakeConstantLike(self_bcst, 0.0, float_type);
 
   // Decompose exponent into real (c) and imaginary (d) components.
-  const mlir::MlirOp c =
+  mlir::MlirOp c =
       other_is_complex ? mlir::stablehlo::Real(other_bcst) : other_bcst;
-  const mlir::MlirOp d = other_is_complex
-                             ? mlir::stablehlo::Imag(other_bcst)
-                             : MakeConstantLike(other_bcst, 0.0, float_type);
+  mlir::MlirOp d = other_is_complex
+                       ? mlir::stablehlo::Imag(other_bcst)
+                       : MakeConstantLike(other_bcst, 0.0, float_type);
 
-  // Determine the maximum safe exponent range depending on precision limits.
-  auto get_max_exp = [](mlir::Type type) -> absl::StatusOr<double> {
-    if (type.isF64()) {
-      return 1000.0;
-    }
-    if (type.isF32() || type.isBF16()) {
-      return 120.0;
-    }
-    if (type.isF16()) {
-      return 14.0;
-    }
-    return TT_ERROR(error::kInvalidArgument)
-           << "unsupported float type for complex ldexp: " << ToString(type);
-  };
-  TT_ASSIGN_OR_RETURN(const double max_exp, get_max_exp(float_type));
+  TT_ASSIGN_OR_RETURN(a, CastIfNeeded(a, comp_dtype));
+  TT_ASSIGN_OR_RETURN(b, CastIfNeeded(b, comp_dtype));
+  TT_ASSIGN_OR_RETURN(c, CastIfNeeded(c, comp_dtype));
+  TT_ASSIGN_OR_RETURN(d, CastIfNeeded(d, comp_dtype));
 
-  const auto min_exp_const = MakeScalarConstant(builder, -max_exp, float_type);
-  const auto max_exp_const = MakeScalarConstant(builder, max_exp, float_type);
-  const auto two = MakeScalarConstant(builder, 2.0, float_type);
+  const double max_exp = comp_dtype == mlir::ElementType::F64 ? 1000.0 : 120.0;
+
+  const auto min_exp_const = MakeScalarConstant(builder, -max_exp, comp_type);
+  const auto max_exp_const = MakeScalarConstant(builder, max_exp, comp_type);
+  const auto two = MakeScalarConstant(builder, 2.0, comp_type);
 
   // 1. Compute the complex rotation factor (rotation = cos(theta) +
   // i*sin(theta)) where theta = d * ln(2).
   const auto ln2 =
-      MakeScalarConstant(builder, 0.693147180559945309417, float_type);
+      MakeScalarConstant(builder, 0.693147180559945309417, comp_type);
   TT_ASSIGN_OR_RETURN(mlir::MlirOp angle, BuildMulShlo(d, ln2));
-  const auto one = MakeScalarConstant(builder, 1.0, float_type);
+  const auto one = MakeScalarConstant(builder, 1.0, comp_type);
   TT_ASSIGN_OR_RETURN(auto rotation, BuildPolarShlo(one, angle));
 
   // 2. Perform rotation: base_rot = base * rotation
@@ -873,7 +870,14 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpComplexShlo(
       mlir::MlirOp imag_scaled,
       Scale3Steps(imag_rot, c, min_exp_const, max_exp_const, two));
 
-  return mlir::MlirOp(mlir::stablehlo::Complex(real_scaled, imag_scaled));
+  mlir::MlirOp result_complex =
+      mlir::stablehlo::Complex(real_scaled, imag_scaled);
+  const auto target_complex_type = self_is_complex
+                                       ? self_type.getElementType()
+                                       : mlir::ComplexType::get(float_type);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType target_complex_elem_type,
+                      ConvertTo<mlir::ElementType>(target_complex_type));
+  return CastIfNeeded(result_complex, target_complex_elem_type);
 }
 
 // Build StableHLO for the ldexp operator.
@@ -911,29 +915,30 @@ absl::StatusOr<mlir::MlirOp> BuildLdexpShlo(mlir::MlirOp self_op,
   }
 
   // Real-only path:
-  auto element_type = self_type.getElementType();
+  const auto element_type = self_type.getElementType();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType elem_dtype,
+                      ConvertTo<mlir::ElementType>(element_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(elem_dtype));
+  TT_ASSIGN_OR_RETURN(self_op, CastIfNeeded(self_op, comp_dtype));
+  TT_ASSIGN_OR_RETURN(other_op, CastIfNeeded(other_op, comp_dtype));
+
   auto& builder = self_op.getBuilder();
 
   TT_ASSIGN_OR_RETURN((auto [self_bcst, other_bcst]),
                       ApplyBroadcastIfNeeded(self_op, other_op));
 
-  double max_exp = 120.0;
-  if (element_type.isF64()) {
-    max_exp = 1000.0;
-  } else if (element_type.isF32() || element_type.isBF16()) {
-    max_exp = 120.0;
-  } else if (element_type.isF16()) {
-    max_exp = 14.0;
-  } else {
-    return TT_ERROR(error::kInvalidArgument)
-           << "unsupported element type for ldexp: " << ToString(element_type);
-  }
+  const mlir::Type comp_type = getElementType(builder.getContext(), comp_dtype);
+  const double max_exp = comp_dtype == mlir::ElementType::F64 ? 1000.0 : 120.0;
 
-  auto min_exp_const = MakeScalarConstant(builder, -max_exp, element_type);
-  auto max_exp_const = MakeScalarConstant(builder, max_exp, element_type);
-  auto two = MakeScalarConstant(builder, 2.0, element_type);
+  auto min_exp_const = MakeScalarConstant(builder, -max_exp, comp_type);
+  auto max_exp_const = MakeScalarConstant(builder, max_exp, comp_type);
+  auto two = MakeScalarConstant(builder, 2.0, comp_type);
 
-  return Scale3Steps(self_bcst, other_bcst, min_exp_const, max_exp_const, two);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp result,
+      Scale3Steps(self_bcst, other_bcst, min_exp_const, max_exp_const, two));
+  return CastIfNeeded(result, elem_dtype);
 }
 
 }  // namespace
