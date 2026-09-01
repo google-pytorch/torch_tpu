@@ -490,6 +490,59 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           t, [10, 10], False, None, None, out=out
       )
 
+  def test_upsample_bilinear2d_aa_invalid_rank(self):
+    t = torch.ones(1, 2, 3, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""It is expected input_size equals to 4, but got size 3""",
+        gpu="""It is expected input_size equals to 4, but got size 3""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa(t, [10, 10], False)
+
+  def test_upsample_bilinear2d_aa_invalid_output_size(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""It is expected output_size equals to 2, but got size 1""",
+        gpu="""It is expected output_size equals to 2, but got size 1""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa(t, [10], False)
+
+  def test_upsample_bilinear2d_aa_dtype_mismatch(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 10, 10, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bilinear2d_aa(): expected out dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa.out(
+          t, [10, 10], False, None, None, out=out
+      )
+
+  def test_upsample_bilinear2d_aa_unsupported_dtype(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""upsample_bilinear2d_aa(): expected the input dtype to be floating point, got int32""",
+        gpu=""""upsample_bilinear2d_out_frame" not implemented for 'Int'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa(t, [10, 10], False)
+
+  def test_upsample_bilinear2d_aa_complex_dtype(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.complex64)
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""upsample_bilinear2d_aa(): expected the input dtype to be floating point, got complex64""",
+        gpu=""""upsample_bilinear2d_out_frame" not implemented for 'ComplexFloat'""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten._upsample_bilinear2d_aa(t, [10, 10], False)
+
   def test_upsample_linear1d_invalid_rank(self):
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     out = torch.empty(2, 10, device=et.device(), dtype=torch.float32)

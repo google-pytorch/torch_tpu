@@ -3616,6 +3616,198 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
 
+  def test_upsample_bilinear2d_aa_downsample(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.float32, torch.float64]:
+      x = (
+          torch.arange(2 * 3 * 64 * 64, dtype=dtype).reshape(2, 3, 64, 64)
+          / 100.0
+      )
+      x_tpu = x.to(tpu_device)
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x, output_size=[16, 16], align_corners=False
+      )
+      out_tpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu, output_size=[16, 16], align_corners=False
+      )
+      atol = 1.0 if dtype == torch.float32 else None
+      rtol = 1e-2 if dtype == torch.float32 else None
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
+  def test_upsample_bilinear2d_aa_upsample(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.float32, torch.float64]:
+      x = (
+          torch.arange(2 * 3 * 16 * 16, dtype=dtype).reshape(2, 3, 16, 16)
+          / 100.0
+      )
+      x_tpu = x.to(tpu_device)
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x, output_size=[32, 48], align_corners=False
+      )
+      out_tpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu, output_size=[32, 48], align_corners=False
+      )
+      atol = 1.0 if dtype == torch.float32 else None
+      rtol = 1e-2 if dtype == torch.float32 else None
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
+  def test_upsample_bilinear2d_aa_align_corners_and_scales(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.float32, torch.float64]:
+      x = (
+          torch.arange(2 * 4 * 25 * 30, dtype=dtype).reshape(2, 4, 25, 30)
+          / 100.0
+      )
+      x_tpu = x.to(tpu_device)
+
+      # align_corners=True
+      out_cpu_ac = torch.ops.aten._upsample_bilinear2d_aa(
+          x, output_size=[50, 60], align_corners=True
+      )
+      out_tpu_ac = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu, output_size=[50, 60], align_corners=True
+      )
+      atol = 1.0 if dtype == torch.float32 else None
+      rtol = 1e-2 if dtype == torch.float32 else None
+      self.assert_close(
+          golden_result=out_cpu_ac,
+          torch_tpu_result=out_tpu_ac.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
+      # with scales_h and scales_w
+      out_cpu_scales = torch.ops.aten._upsample_bilinear2d_aa(
+          x,
+          output_size=[12, 15],
+          align_corners=False,
+          scales_h=0.5,
+          scales_w=0.5,
+      )
+      out_tpu_scales = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu,
+          output_size=[12, 15],
+          align_corners=False,
+          scales_h=0.5,
+          scales_w=0.5,
+      )
+      self.assert_close(
+          golden_result=out_cpu_scales,
+          torch_tpu_result=out_tpu_scales.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
+  def test_upsample_bilinear2d_aa_empty_tensor(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.float32, torch.bfloat16, torch.float16, torch.float64]:
+      x = torch.empty(0, 3, 16, 16, dtype=dtype)
+      x_tpu = x.to(tpu_device)
+      x_cpu = x if dtype in [torch.float32, torch.float64] else x.float()
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_cpu, output_size=[32, 32], align_corners=False
+      ).to(dtype)
+      out_tpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu, output_size=[32, 32], align_corners=False
+      )
+      self.assertEqual(out_tpu.shape, torch.Size([0, 3, 32, 32]))
+      self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
+
+  def test_upsample_bilinear2d_aa_non_contiguous(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.float32, torch.float64]:
+      x = (
+          torch.arange(2 * 6 * 32 * 32, dtype=dtype).reshape(2, 6, 32, 32)
+          / 100.0
+      )
+      # Create non-contiguous strided slice
+      x_strided = x[:, ::2, :, :]
+      self.assertFalse(x_strided.is_contiguous())
+      x_tpu_strided = x.to(tpu_device)[:, ::2, :, :]
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_strided, output_size=[16, 16], align_corners=False
+      )
+      out_tpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu_strided, output_size=[16, 16], align_corners=False
+      )
+      atol = 1.0 if dtype == torch.float32 else None
+      rtol = 1e-2 if dtype == torch.float32 else None
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
+  def test_upsample_bilinear2d_aa_low_precision(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [torch.bfloat16, torch.float16]:
+      x = torch.linspace(0.1, 10.0, 2 * 3 * 16 * 16, dtype=dtype).reshape(
+          2, 3, 16, 16
+      )
+      x_tpu = x.to(tpu_device)
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x.float(), output_size=[32, 48], align_corners=False
+      ).to(dtype)
+      out_tpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_tpu, output_size=[32, 48], align_corners=False
+      )
+      self.assertEqual(out_tpu.shape, torch.Size([2, 3, 32, 48]))
+      self.assertEqual(out_tpu.dtype, dtype)
+      self.assertTrue(torch.all(torch.isfinite(out_tpu.cpu())))
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=1e-2,
+          rtol=1e-2,
+      )
+
+  def test_upsample_bilinear2d_aa_out(self):
+    tpu_device = torch.device("tpu")
+    for dtype in [
+        torch.float32,
+        torch.bfloat16,
+        torch.float16,
+        torch.float64,
+    ]:
+      x = (
+          torch.arange(2 * 3 * 16 * 16, dtype=dtype).reshape(2, 3, 16, 16)
+          / 100.0
+      )
+      x_tpu = x.to(tpu_device)
+      out_tpu = torch.empty(2, 3, 32, 32, dtype=dtype, device=tpu_device)
+      ret = torch.ops.aten._upsample_bilinear2d_aa.out(
+          x_tpu, output_size=[32, 32], align_corners=False, out=out_tpu
+      )
+      self.assertIs(ret, out_tpu)
+      x_cpu = x if dtype in [torch.float32, torch.float64] else x.float()
+      out_cpu = torch.ops.aten._upsample_bilinear2d_aa(
+          x_cpu, output_size=[32, 32], align_corners=False
+      ).to(dtype)
+      atol = (
+          1.0
+          if dtype == torch.float32
+          else (1e-2 if dtype in [torch.bfloat16, torch.float16] else None)
+      )
+      rtol = 1e-2 if dtype != torch.float64 else None
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=atol,
+          rtol=rtol,
+      )
+
   def test_upsample_linear1d_align_corners(self):
     tpu_device = torch.device("tpu")
     for align_corners in (True, False):

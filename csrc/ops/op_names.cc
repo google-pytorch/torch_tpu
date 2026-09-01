@@ -1571,6 +1571,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "upsample_bicubic2d_backward.grad_input";
     case OpName::kUpsampleBicubic2dOut:
       return "upsample_bicubic2d.out";
+    case OpName::kUpsampleBilinear2dAaOut:
+      return "_upsample_bilinear2d_aa.out";
     case OpName::kUpsampleBilinear2dBackwardGradInput:
       return "upsample_bilinear2d_backward.grad_input";
     case OpName::kUpsampleBilinear2dOut:

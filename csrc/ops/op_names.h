@@ -797,6 +797,7 @@ enum class OpName {
   kUntypedStorageResize_,
   kUpsampleBicubic2dBackwardGradInput,
   kUpsampleBicubic2dOut,
+  kUpsampleBilinear2dAaOut,
   kUpsampleBilinear2dBackwardGradInput,
   kUpsampleBilinear2dOut,
   kUpsampleLinear1dOut,
