@@ -1135,6 +1135,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     dim0, dim1 = 8, 64
     x = torch.randn(dim0, dim1, dtype=torch.bfloat16, device='tpu')
 
+    # THIS IS A TEST
     # Tensor 1 created with default layout [1, 0]
     t_default = torch.randn(dim0, dim1, dtype=torch.bfloat16, device='cpu').to(
         device=torch.device('tpu')
