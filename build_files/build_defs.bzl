@@ -1534,7 +1534,10 @@ def _define_py_wheel_test_site_packages(name):
     native.filegroup(
         name = "wheel_test_site_packages",
         srcs = native.glob(
-            ["**/*.py"],
+            [
+                "**/*.py",
+                "**/*.pin",
+            ],
             exclude = [
                 "**/*_test.py",
                 "**/*_tests.py",

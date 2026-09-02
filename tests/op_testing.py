@@ -29,7 +29,6 @@ import importlib
 import itertools
 import logging  # PYTHON_LOGGING_OK=Setting module log level for compile testing
 import os
-import pathlib
 import plistlib
 import random
 import re
@@ -38,7 +37,7 @@ import sys
 import time
 import traceback
 import typing
-from typing import Any, Final, IO, TypeGuard
+from typing import Any, Final, TypeGuard
 import unittest
 
 from absl import flags
@@ -65,6 +64,7 @@ from torch_tpu._internal.utils import utils
 from tests import dynamism_test_utils
 from tests import quantize_utils
 from tests import seed_test_utils
+from tests import test_utils as tests_test_utils
 import yaml
 
 # In this file, we use the following naming convention for variables:
@@ -5704,51 +5704,16 @@ def _save_golden_file() -> None:
 
 def _load_golden_files() -> None:
   """Loads the checked in golden files into _GOLDEN_GPU_DATA."""
-  golden_file_pattern = f"{_golden_file_prefix()}*.gz"
-  candidate_dirs: list[pathlib.Path] = []
-
-  # 1. User-specified directory via flag.
-  if _GOLDEN_DATA_BASE_DIR.value:
-    candidate_dirs.append(pathlib.Path(_GOLDEN_DATA_BASE_DIR.value))
-
-  # 2. Directory of __file__ (standard source test mode).
-  candidate_dirs.append(pathlib.Path(__file__).parent)
-
-  # 3. Specific runfiles directories when executing under Bazel or unpacked wheel.
-  candidate_dirs.append(pathlib.Path.cwd() / "tests")
-  if "TEST_SRCDIR" in os.environ:
-    test_srcdir = pathlib.Path(os.environ["TEST_SRCDIR"])
-    candidate_dirs.extend([
-        test_srcdir / "_main" / "tests",
-        test_srcdir / "torch_tpu" / "tests",
-    ])
-
-  golden_files: list[pathlib.Path] = []
-  for candidate_dir in candidate_dirs:
-    if candidate_dir.is_dir():
-      golden_files = list(candidate_dir.glob(golden_file_pattern))
-      if golden_files:
-        break
-
-  if not golden_files:
-    raise ValueError(
-        f"No golden files found matching the pattern: {golden_file_pattern} in"
-        f" candidate directories: {[str(d) for d in candidate_dirs]}"
-    )
-
+  prefix = _golden_file_prefix()
+  candidate_dirs = tests_test_utils.goldens_candidate_local_dirs(
+      base_dir=_GOLDEN_DATA_BASE_DIR.value
+  )
+  plist_ptrees = tests_test_utils.load_golden_files(
+      prefix=prefix,
+      candidate_dirs=candidate_dirs,
+  )
   _GOLDEN_GPU_DATA.clear()
-  for golden_file in golden_files:
-    print(
-        "Loading the collected input/output pairs for each op from"
-        f" {golden_file}",
-        flush=True,
-    )
-    with gzip.open(golden_file, "rb") as f:
-      # TODO(pganssle): Figure out why this is required
-      f = typing.cast(IO[bytes], f)
-      plist_ptree = plistlib.load(
-          f, fmt=typing.cast(plistlib.PlistFormat, plistlib.FMT_BINARY)
-      )
+  for plist_ptree in plist_ptrees:
     _GOLDEN_GPU_DATA.merge_plistlib_pytree(plist_ptree)
 
 
