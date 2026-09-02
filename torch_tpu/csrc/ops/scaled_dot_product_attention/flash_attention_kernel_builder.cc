@@ -72,6 +72,7 @@
 #include "torch_tpu/csrc/ops/scaled_dot_product_attention/helpers.h"
 #include "torch_tpu/csrc/ops/scaled_dot_product_attention/util.h"
 #include "torch_tpu/csrc/ops/view_decomposition/contiguous_to_view.h"
+#include "torch_tpu/csrc/pjrt/pjrt_state.h"
 
 namespace torch_tpu {
 
@@ -143,24 +144,93 @@ int64_t RoundUpToTileSize(int64_t seq_len, int64_t tile_size) {
   return llvm::divideCeil(seq_len, tile_size) * tile_size;
 }
 
-mlir::torch_tpu::Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len) {
-  constexpr int64_t kMinTileSize = 128;
-  int64_t qt = std::min(mlir::torch_tpu::kDefaultQTileSize,
-                        RoundUpToTileSize(q_seq_len, kMinTileSize));
-  int64_t kt = std::min(mlir::torch_tpu::kDefaultKTileSize,
-                        RoundUpToTileSize(k_seq_len, kMinTileSize));
-  return {
-      .qt = std::max(kMinTileSize, qt),
-      .kt = std::max(kMinTileSize, kt),
-  };
+// Returns the VMEM capacity per TensorCore based on the attached TPU
+// device_kind. See jax/_src/tpu_info.py for reference mappings.
+int64_t GetDeviceVmemCapacityBytes() {
+  auto attrs_or = PjrtBackend::GetInstance().GetDeviceAttributes();
+  if (!attrs_or.ok()) {
+    return 16 * 1024 * 1024;  // Fallback default: 16 MiB (TPU v2/v3/v4)
+  }
+  const std::string& device_kind = attrs_or->device_kind;
+  if (device_kind == "TPU v6e" || device_kind == "TPU v6 lite" ||
+      device_kind == "TPU v5e" || device_kind == "TPU v5 lite") {
+    return 128 * 1024 * 1024;  // 128 MiB per core
+  }
+  if (device_kind == "TPU v5" || device_kind == "TPU v5p" ||
+      device_kind == "TPU7" || device_kind == "TPU7x" ||
+      device_kind == "TPU8i" || device_kind == "TPU8t") {
+    return 64 * 1024 * 1024;  // 64 MiB per core
+  }
+  return 16 * 1024 * 1024;  // 16 MiB per core (TPU v4, v3, v2)
 }
 
-mlir::torch_tpu::Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key) {
+// Estimates the peak VMEM footprint (in bytes) of a given tile configuration.
+int64_t EstimateTileVmemBytes(int64_t qt, int64_t kt, int64_t head_dim,
+                              bool is_backward = false) {
+  // Tile buffers allocated in VMEM:
+  // Q, K, V, Oi (BF16, 2 bytes/elem): qt*d*2 + 2*kt*d*2 + qt*d*2
+  // O_scratch, Mi, Li (F32, 4 bytes/elem): qt*d*4 + 2*qt*128*4
+  // Sij, Pij (F32, 4 bytes/elem): 2 * qt * kt * 4
+  // With 2x multiplier for DMA double-buffering and compiler scratch space:
+  int64_t linear_bytes = qt * head_dim * 10 + kt * head_dim * 4 + qt * 1024;
+  int64_t quadratic_bytes = 8 * qt * kt;
+  int64_t total_bytes = 2 * (linear_bytes + quadratic_bytes);
+  if (is_backward) {
+    total_bytes *= 2;
+  }
+  return total_bytes;
+}
+
+mlir::torch_tpu::Tiling CreateTiling(int64_t q_seq_len, int64_t k_seq_len,
+                                     int64_t head_dim,
+                                     bool is_backward = false) {
+  if (head_dim <= 0) {
+    return {.qt = std::min(128l, q_seq_len), .kt = std::min(128l, k_seq_len)};
+  }
+
+  constexpr int64_t kMinTileSize = 128;
+  const int64_t vmem_capacity = GetDeviceVmemCapacityBytes();
+  // 80% safety margin of total VMEM capacity
+  constexpr double kSafetyMargin = 0.80;
+  const int64_t max_usable_vmem =
+      static_cast<int64_t>(vmem_capacity * kSafetyMargin);
+
+  // Candidate tile sizes in descending order to maximize VMEM utilization
+  const std::array<int64_t, 6> candidate_sizes = {4096, 2048, 1024,
+                                                  512,  256,  128};
+
+  for (int64_t candidate : candidate_sizes) {
+    int64_t max_q = (q_seq_len > 0) ? RoundUpToTileSize(q_seq_len, kMinTileSize)
+                                    : candidate;
+    int64_t max_k = (k_seq_len > 0) ? RoundUpToTileSize(k_seq_len, kMinTileSize)
+                                    : candidate;
+    int64_t qt = std::min(max_q, candidate);
+    int64_t kt = std::min(max_k, candidate);
+    qt = std::max(kMinTileSize, qt);
+    kt = std::max(kMinTileSize, kt);
+
+    // In self-attention (equal sequence lengths), keep square tiles
+    if (q_seq_len == k_seq_len) {
+      qt = kt = std::min(qt, kt);
+    }
+
+    if (EstimateTileVmemBytes(qt, kt, head_dim, is_backward) <=
+        max_usable_vmem) {
+      return {.qt = qt, .kt = kt};
+    }
+  }
+
+  return {.qt = kMinTileSize, .kt = kMinTileSize};
+}
+
+mlir::torch_tpu::Tiling CreateTiling(mlir::MlirOp query, mlir::MlirOp key,
+                                     bool is_backward) {
   auto query_type = GetTensorTypeOrDie(query);
   auto key_type = GetTensorTypeOrDie(key);
   int64_t q_seq_len = query_type.getShape()[query_type.getRank() - 2];
   int64_t k_seq_len = key_type.getShape()[key_type.getRank() - 2];
-  return CreateTiling(q_seq_len, k_seq_len);
+  int64_t head_dim = query_type.getShape()[query_type.getRank() - 1];
+  return CreateTiling(q_seq_len, k_seq_len, head_dim, is_backward);
 }
 
 absl::StatusOr<mlir::torch_tpu::FlashAttnConfig> CreateFlashAttnConfig(
@@ -329,7 +399,7 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
     std::optional<mlir::MlirOp> attn_bias_mlir =
         inputs.size() == 4 ? std::make_optional(inputs[3]) : std::nullopt;
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir);
+    const auto tiling = CreateTiling(query_mlir, key_mlir, return_lse);
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,
@@ -501,7 +571,7 @@ CreateFlashAttentionBackwardKernel(
     std::optional<mlir::MlirOp> attn_bias_mlir =
         inputs.size() == 7 ? std::make_optional(inputs[6]) : std::nullopt;
 
-    const auto tiling = CreateTiling(query_mlir, key_mlir);
+    const auto tiling = CreateTiling(query_mlir, key_mlir, true);
     TT_ASSIGN_OR_RETURN(
         mlir::torch_tpu::FlashAttnConfig config,
         CreateFlashAttnConfig(query_mlir, key_mlir, value_mlir, attn_bias_mlir,

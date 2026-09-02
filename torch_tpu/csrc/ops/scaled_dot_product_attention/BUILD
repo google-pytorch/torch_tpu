@@ -252,6 +252,7 @@ torch_tpu_cc_library(
         "//torch_tpu/csrc/ops/reductions",
         "//torch_tpu/csrc/ops/reductions:sum",
         "//torch_tpu/csrc/ops/view_decomposition:contiguous_to_view",
+        "//torch_tpu/csrc/pjrt:pjrt_state",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
