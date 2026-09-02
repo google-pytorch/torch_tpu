@@ -25,14 +25,27 @@ from absl.testing import parameterized
 import torch
 from torch.autograd import profiler
 from torch_tpu._internal import sync as tpu_sync
-from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
+from torch_tpu._internal.profiler import profiler_config
 from tests import seed_test_utils
 
-# pylint: disable=g-direct-tensorflow-import
-from tsl.profiler.protobuf import profiler_options_pb2
-from tsl.profiler.protobuf import xplane_pb2
+try:
+  # pylint: disable=g-import-not-at-top,g-direct-tensorflow-import
+  from tsl.profiler.protobuf import profiler_options_pb2
+  from tsl.profiler.protobuf import xplane_pb2
+  # pylint: enable=g-import-not-at-top,g-direct-tensorflow-import
+except (ModuleNotFoundError, ImportError):
+  try:
+    # pylint: disable=g-import-not-at-top
+    from tensorboard_plugin_profile.protobuf import profiler_options_pb2
+    from tensorboard_plugin_profile.protobuf import xplane_pb2
+    # pylint: enable=g-import-not-at-top
+  except (ModuleNotFoundError, ImportError):
+    # pylint: disable=g-import-not-at-top
+    from tensorflow.tsl.profiler.protobuf import profiler_options_pb2
+    from tensorflow.tsl.profiler.protobuf import xplane_pb2
+    # pylint: enable=g-import-not-at-top
 
-# pylint: enable=g-direct-tensorflow-import
+TpuProfilerConfig = profiler_config.TpuProfilerConfig
 
 # Set TMPDIR to TEST_TMPDIR so TorchTPU's profiler writes artifacts into the
 # test's temporary directory instead of falling back to system /tmp.
@@ -143,7 +156,6 @@ class ProfilerIntegrationTest(seed_test_utils.RepeatableTest):
 
     # Data processing and setup logic
     traces = list(pathlib.Path(output_dir).glob("*.pt.trace.json"))
-
     trace_data = {}
     if traces:
       trace_path = traces[0]
