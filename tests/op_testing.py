@@ -4186,8 +4186,10 @@ class OpInfoTestBase(
           # If this dtype is the input dtype of the allowed cast pair, run an additional
           # out-variant test with out_dtype_override set to the target upcast dtype to verify
           # that TorchTPU correctly supports out-variant promotional upcasting.
+          # In golden generation mode, always capture golden data regardless of whether
+          # the op is known to fail on TPU.
           if (
-              test_out_casting
+              (_gen_gpu_golden_mode() or test_out_casting)
               and cast_pairs.allowed_pair is not None
               and dtype == cast_pairs.allowed_pair[0]
           ):
@@ -4212,7 +4214,7 @@ class OpInfoTestBase(
           # out-variant test with out_dtype_override set to the target downcast dtype to verify
           # that TorchTPU raises the same RuntimeError (exception parity) as PyTorch/GPU.
           if (
-              test_out_casting
+              (_gen_gpu_golden_mode() or test_out_casting)
               and cast_pairs.illegal_pair is not None
               and dtype == cast_pairs.illegal_pair[0]
           ):
