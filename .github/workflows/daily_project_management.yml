@@ -1,0 +1,135 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Daily Project Management Automation
+
+on:
+  schedule:
+    # Run every day at 16:00 UTC (9:00 AM PDT, 8:00 AM PST).
+    - cron: "0 16 * * *"
+  # Manual runs default to a dry run so a human operator can inspect what
+  # the workflow would do before letting it take actual actions.
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Log intended actions without updating any issue or PR"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Concurrent executions would leave duplicate comments on the same backlog
+# item, so let an in-flight run finish rather than cancelling it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    name: "Mark and close stale issues and pull requests"
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: "Apply staleness policy"
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93  # https://github.com/actions/stale/releases/tag/v11.0.0
+        with:
+          stale-issue-label: stale
+          stale-pr-label: stale
+
+          # Inactivity durations for marking staleness and closure.
+          # Note that `days-before-close` counts from the moment the
+          # `stale` label is applied, not from the last activity. Thus,
+          # the total silence needed to close an item is 30 + 14 = 44 days.
+          days-before-stale: 30
+          days-before-close: 14
+
+          # Closed as "not planned" to align with GitHub UI options.
+          close-issue-reason: not_planned
+
+          # For fairness, unassigned issues and pull requests are exempted
+          # since they result from ineffective triaging.
+          #
+          # Besides, this works around the workflow limitation to exempt by
+          # PR author to exclude Copybara-generated PRs.
+          # See https://github.com/actions/stale/issues/933.
+          include-only-assigned: true
+
+          # Any comment, push, or edit clears the label and restarts the
+          # staleness clock.
+          remove-stale-when-updated: true
+
+          # Work through the least recently updated items first, so the
+          # longest-ignored items are always handled even if a run hits the
+          # GitHub rate limits.
+          sort-by: updated
+          ascending: true
+          operations-per-run: 100
+
+          enable-statistics: true
+
+          debug-only: ${{ inputs.dry-run || false }}
+
+          # These bodies are posted as GitHub comments, where every newline
+          # renders as a hard line break. Folded blocks (`>-`) rejoin the
+          # wrapped lines into one paragraph. Paragraphs are separated by TWO
+          # blank lines because YAML folds n line breaks into n-1, so a single
+          # blank line would yield a break inside the paragraph instead.
+          stale-issue-message: >-
+            This issue has had no activity for 30 days, so it is labeled
+            `stale`. If nothing changes, it will be closed in 14 days.
+
+
+            Cleaning up stale issues helps us stay focused on active work.
+            If this issue should stay open, please update it regularly with
+            comments or pull requests.
+
+
+            The workflow will remove the `stale` label on its next daily run
+            after any update.
+
+          close-issue-message: >-
+            This issue is being closed because it received no activity in the
+            past 14 days after it was labeled `stale`.
+
+
+            It is an automated cleanup, not a rejection. If the problem persists,
+            make a comment here and reopen the issue, or open a new issue
+            with up-to-date details following the
+            [guidance](https://github.com/google-pytorch/torch_tpu/blob/main/CONTRIBUTING.md#what-makes-a-great-bug-report).
+
+          stale-pr-message: >-
+            This pull request has had no activity for 30 days, so it is
+            labeled `stale`. If nothing changes, it will be closed in 14 days.
+
+
+            Cleaning up stale pull requests helps us stay focused on active
+            work. If this pull request should stay open, please update it
+            regularly with new comments or commits. Reach out to the reviewers
+            directly if they are not responsive in code reviews.
+
+
+            The workflow will remove the `stale` label on its next daily run
+            after any update.
+
+          close-pr-message: >-
+            This pull request is being closed because it received no activity
+            in the past 14 days after it was labeled `stale`.
+
+
+            It is an automated cleanup, not a judgment on the code change. The
+            branch and commits are preserved, and a closed pull request can be
+            reopened at any time.
