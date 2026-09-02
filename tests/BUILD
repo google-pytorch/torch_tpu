@@ -34,6 +34,24 @@ package(
 # architecture tag.
 _REQUIRES_GPU_SM90 = "requires-gpu-sm90"
 
+# Set this to True ONLY when OSS v5 workers are saturated in presubmit.
+# Change it back to False when the situation improves.
+_PREFER_V7_IN_PRESUBMIT = True
+
+_OPS_TEST_PRESUBMIT_TPU_GEN = tpu_gen(
+    "v7",
+    reason = "Load balancing",
+) if _PREFER_V7_IN_PRESUBMIT else None
+
+_OPS_TEST_RUN_ON_ACCELERATORS = [] if _PREFER_V7_IN_PRESUBMIT else [
+    "requires-tpu-v6e",
+    "requires-tpu-v5lite",
+]
+
+_OPS_TEST_TAGS = ["requires-tpu-v5lite"] if _PREFER_V7_IN_PRESUBMIT else [
+    "ok-to-wait-for-v6e-in-presubmit",
+]
+
 torch_tpu_py_library(
     name = "oss_utils",
     testonly = True,
@@ -306,17 +324,14 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 35,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -346,17 +361,14 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 15,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -386,17 +398,14 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -426,17 +435,14 @@ torch_tpu_py_test(
         ["--max_samples_per_op_dtype=20"],
     ),
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 1,
     tags = [
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -464,17 +470,14 @@ torch_tpu_py_test(
         "ops_test_gpu_golden_compiled2.gz",
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 40,
     tags = [
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -506,17 +509,14 @@ torch_tpu_py_test(
         "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 50,
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -548,17 +548,14 @@ torch_tpu_py_test(
         "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 10,
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -586,17 +583,14 @@ torch_tpu_py_test(
         "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 1,  # This test has only 1 test case.
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -628,17 +622,14 @@ torch_tpu_py_test(
         "ops_test_gpu_golden2.gz",
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 1,
     tags = [
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -712,16 +703,13 @@ torch_tpu_py_test(
         "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
     ],
     main = "ops_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 32,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
@@ -845,16 +833,13 @@ torch_tpu_py_test(
     srcs = ["ops_unit_test.py"],
     args = ["--test_mode=torch_tpu_vs_cpu"],
     main = "ops_unit_test.py",
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
+    oss_presubmit_tpu_generation = _OPS_TEST_PRESUBMIT_TPU_GEN,
+    run_on_accelerators = _OPS_TEST_RUN_ON_ACCELERATORS,
     shard_count = 20,
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
-    ],
+    ] + _OPS_TEST_TAGS,
     deps = [
         ":op_testing",
         ":ops_test_data",
