@@ -31,6 +31,7 @@ import torch
 from torch._dynamo.utils import dynamo_timed
 from torch._functorch._aot_autograd.schemas import AOTDispatchCompiler
 from torch._inductor.fx_passes import post_grad
+from torch._inductor.fx_passes import reinplace
 from torch._inductor.utils import InputType
 from torch._logging import trace_structured
 from torch._logging._internal import trace_log
@@ -47,6 +48,8 @@ from torch_tpu._internal.compile.fx_passes import fold_gqa
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
+from torch_tpu._internal.compile.fx_passes import roll_nested_regions
+from torch_tpu._internal.compile.fx_passes import sink_communication_ops
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
@@ -327,7 +330,7 @@ class StaticCompiler(Compiler):
       example_inputs: Sequence[InputType],
       is_fwd: bool = True,
       bounds: Sequence[Any] | None = None,
-      argument_layouts: Sequence[Any] | None = None,
+      argument_layouts: Sequence[Sequence[int]] | None = None,
       dynamic_outputs: Sequence[bool] | None = None,
       donated_inputs: Sequence[int] | None = None,
       module_name: str | None = None,
@@ -459,6 +462,7 @@ class StaticCompiler(Compiler):
     This method performs the steps below. Steps 4-7 are executed asynchronously
     if `StaticCompiler` was initialized with `async_compile=True`:
     1.  Applies pre-compilation graph transformations:
+        -   Prepares auto functionalized ops and auto-detects donated inputs.
         -   Decomposes auto functionalized operations.
         -   Marks embedded constants.
     2.  Lints and recompiles the graph module.
@@ -491,6 +495,12 @@ class StaticCompiler(Compiler):
       `async_compiled=True`, otherwise `AsyncCompiledArtifact`), which can be
       called to execute the compiled graph on TPU.
     """  # fmt: skip
+    # Run PyTorch Inductor's reinplace pass to determine which mutable ops can
+    # safely execute in-place without defensive copies.
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "reinplace_inplaceable_ops"
+    ).apply_graph_pass(reinplace.reinplace_inplaceable_ops_core)
+
     # Decompose auto functionalized ops, we need to explicitly do this because
     # the default behaviour inserts flatten and unflatten ops at the boundaries
     # which then blocks buffer donation.
@@ -514,6 +524,12 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "sink_communication_ops"
+    ).apply_graph_pass(sink_communication_ops.apply)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "roll_nested_regions"
+    ).apply_graph_pass(roll_nested_regions.apply)
     if not is_fwd:
       graph_transform_observer.GraphTransformObserver(
           graph_module, "mark_activation_checkpoints"

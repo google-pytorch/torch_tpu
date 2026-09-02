@@ -49,19 +49,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "mark_embedded_constants_test",
-    srcs = ["mark_embedded_constants_test.py"],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
-        "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_test(
     name = "backend_serialization_test",
     srcs = ["backend_serialization_test.py"],
     oss_presubmit_tpu_generation = tpu_gen(
@@ -78,27 +65,6 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/utils:test_utils",
-        "//tests:seed_test_utils",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "fx_output_reconstructor_test",
-    srcs = ["fx_output_reconstructor_test.py"],
-    oss_presubmit_tpu_generation = tpu_gen(
-        "v7",
-        reason = "Offload heavy TorchDynamo/Inductor compilation suites to TPU v7",
-    ),
-    tags = [
-        "requires-net:external",
-        "requires-tpu-v5lite",
-    ],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",  # buildcleaner: keep
-        "//src/torch_tpu/_internal/export",
         "//tests:seed_test_utils",
     ],
 )
@@ -136,7 +102,6 @@ torch_tpu_py_test(
         reason = "Offload heavy TorchDynamo/Inductor compilation suites to TPU v7",
     ),
     tags = [
-        "requires-mem:28g",
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
@@ -286,6 +251,80 @@ torch_tpu_py_test(
         "//tests:oss_utils",
         "//tests:seed_test_utils",
         "//tests/distributed:distributed_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "nested_compile_region_distributed_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["nested_compile_region_distributed_test.py"],
+    notest_oss = "Disabled in OSS due to infra limitations on distributed tests",
+    tags = [
+        "noasan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "nomsan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "notsan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "requires-accel-hbm",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/device:_device_module",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//tests:seed_test_utils",
+        "//tests/distributed:distributed_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "nested_compile_region_comm_compute_overlap_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["nested_compile_region_comm_compute_overlap_test.py"],
+    notest_oss = "Disabled in OSS due to infra limitations on distributed tests",
+    tags = [
+        "noasan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "nomsan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "notsan",  # TODO(b/497035517): *san disabled due to issues with distributed tests
+        "requires-accel-hbm",
+        "requires-tpu-v5lite:8",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/device:_device_module",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+        "//tests/distributed:distributed_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "nested_compile_region_memory_scaling_test",
+    srcs = ["nested_compile_region_memory_scaling_test.py"],
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
     ],
 )
 
@@ -616,6 +655,30 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "sink_communication_ops_test",
+    srcs = ["sink_communication_ops_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:sink_communication_ops",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "roll_nested_regions_test",
+    srcs = ["roll_nested_regions_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:roll_nested_regions",
         "//tests:seed_test_utils",
     ],
 )
