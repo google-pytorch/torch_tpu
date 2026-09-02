@@ -328,11 +328,14 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
                               dummy_worker_rank);
 }
 
-namespace {
-
 // Resolves the base output directory for profiling artifacts.
 std::string GetBaseOutputDir(std::string_view run_dir) {
-  const auto& env_output_dir_opt = GetEnvOnce<kTpuProfilerOutputDirEnvVar>();
+  const auto& env_output_dir_opt_public =
+      GetEnvOnce<kTorchTpuProfilerOutputDirEnvVar>();
+  const auto& env_output_dir_opt =
+      env_output_dir_opt_public.has_value()
+          ? env_output_dir_opt_public
+          : GetEnvOnce<kTpuProfilerOutputDirEnvVar>();
   if (env_output_dir_opt.has_value() && !env_output_dir_opt->empty()) {
     return *env_output_dir_opt;
   }
@@ -350,6 +353,8 @@ std::string GetBaseOutputDir(std::string_view run_dir) {
   return base_dir;
 }
 
+namespace {
+
 // Helper to determine the output path for the XPlane file.
 // It follows the TensorBoard XProf convention used in TensorFlow/XLA to save
 // data under <run_dir>/plugins/profile/<timestamp>/<hostname>.xplane.pb.
@@ -357,7 +362,9 @@ std::string GetBaseOutputDir(std::string_view run_dir) {
 // matching XLA's behavior.
 //
 // The base directory is determined in order of priority:
-// 1. TPU_PROFILER_OUTPUT_DIR environment variable (if set and non-empty).
+// 1. TORCH_TPU_PROFILER_OUTPUT_DIR or TPU_PROFILER_OUTPUT_DIR environment
+//    variable (if set and non-empty). TORCH_TPU_PROFILER_OUTPUT_DIR takes
+//    precedence.
 // 2. The provided `run_dir` (if not empty and not "/tmp").
 // 3. TMPDIR environment variable (if set).
 // 4. Default to "/tmp".

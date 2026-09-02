@@ -108,6 +108,8 @@ class TpuProfiler : public libkineto::IActivityProfiler {
   }
 };
 
+std::string GetBaseOutputDir(std::string_view run_dir);
+
 absl::Status UpdateProfileOptions(std::string_view custom_config,
                                   tensorflow::ProfileOptions& opts,
                                   std::string& out_run_dir,

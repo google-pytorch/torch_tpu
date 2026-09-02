@@ -110,6 +110,11 @@ inline constexpr char
 // via XLA_FLAGS.
 inline constexpr char kTorchTpuInternalXlaOptionsEnvVar[] =
     "TORCH_TPU_INTERNAL_XLA_OPTIONS";
+// The output directory for TPU profiler XPlane files.
+// If both TORCH_TPU_PROFILER_OUTPUT_DIR and TPU_PROFILER_OUTPUT_DIR are set,
+// TORCH_TPU_PROFILER_OUTPUT_DIR takes precedence.
+inline constexpr char kTorchTpuProfilerOutputDirEnvVar[] =
+    "TORCH_TPU_PROFILER_OUTPUT_DIR";
 // The name of the tier-2 compilation cache. The special name "disabled" can be
 // used to disable the tier-2 cache. If not set, TorchTPU decides whether to use
 // the tier-2 cache or not based on the world size: if the world size is 1, the
@@ -189,6 +194,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
          std::nullopt},
         {kTorchTpuInternalXlaOptionsEnvVar, std::nullopt},
+        {kTorchTpuProfilerOutputDirEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
