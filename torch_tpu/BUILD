@@ -57,6 +57,14 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "server",
+    srcs = ["server.py"],
+    deps = [
+        "//torch_tpu/_internal/profiler:_impl",
+    ],
+)
+
+torch_tpu_py_library(
     name = "_loader",
     srcs = ["_loader.py"],
     data = [
@@ -64,6 +72,7 @@ torch_tpu_py_library(
     ],
     deps = [
         ":profiler",
+        ":server",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal:env",
         "//torch_tpu/_internal:native_scan",

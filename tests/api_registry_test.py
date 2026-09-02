@@ -20,11 +20,13 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
+from torch_tpu import _loader  # build_cleaner: keep
+from torch_tpu._internal.profiler._impl import start_server as internal_start_server
+from torch_tpu._internal.profiler._impl import stop_server as internal_stop_server
 from torch_tpu._internal.profiler.profiler_config import (
     TpuProfilerConfig as InternalTpuProfilerConfig,
 )
 from torch_tpu._internal.utils import annotations
-import torch_tpu._loader as _loader  # build_cleaner: keep
 from tests import seed_test_utils
 
 
@@ -95,6 +97,68 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
     self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
     self.assertEqual(dir(torch_tpu.profiler), ["TpuProfilerConfig"])
+
+  def test_server_accessibility(self):
+    """Verifies start_server and stop_server are accessible via public modules."""
+    self.assertTrue(hasattr(torch, "tpu"))
+    self.assertTrue(hasattr(torch.tpu, "server"))
+    self.assertTrue(hasattr(torch.tpu.server, "start_server"))
+    self.assertTrue(hasattr(torch.tpu.server, "stop_server"))
+    self.assertTrue(hasattr(torch_tpu.server, "start_server"))
+    self.assertTrue(hasattr(torch_tpu.server, "stop_server"))
+    self.assertIs(sys.modules.get("torch.tpu.server"), torch_tpu.server)
+
+  def test_server_identity(self):
+    """Verifies identity between public export and internal function definitions."""
+    self.assertIs(torch.tpu.server.start_server, internal_start_server)
+    self.assertIs(torch.tpu.server.stop_server, internal_stop_server)
+    self.assertIs(torch_tpu.server.start_server, internal_start_server)
+    self.assertIs(torch_tpu.server.stop_server, internal_stop_server)
+
+  def test_server_invalid_attribute_raises(self):
+    """Verifies accessing non-existent attributes raises AttributeError."""
+    with self.assertRaises(AttributeError):
+      _ = getattr(torch_tpu.server, "non_existent_attribute")
+
+  def test_server_metadata(self):
+    """Verifies lifecycle stage metadata attached to start_server and stop_server."""
+    for fn, name in [
+        (torch.tpu.server.start_server, "start_server"),
+        (torch.tpu.server.stop_server, "stop_server"),
+    ]:
+      self.assertEqual(
+          getattr(fn, annotations.TT_API_STAGE, None),
+          annotations.Stage.EXPERIMENTAL.value,
+      )
+      self.assertEqual(
+          getattr(fn, annotations.TT_API_STAGE_REASON, None),
+          f"torch.tpu.server.{name} is experimental and subject to change.",
+      )
+
+  def test_server_warning(self):
+    """Verifies calling server APIs triggers UserWarning."""
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      with self.assertRaises(ValueError):
+        torch.tpu.server.stop_server()
+      self.assertNotEmpty(w)
+      experimental_warnings = [
+          item for item in w if issubclass(item.category, UserWarning)
+      ]
+      self.assertLen(experimental_warnings, 1)
+      self.assertIn(
+          "stop_server is experimental",
+          str(experimental_warnings[0].message),
+      )
+
+  def test_server_module_dir(self):
+    """Verifies dir(torch.tpu.server) returns public symbol list."""
+    self.assertEqual(
+        sorted(dir(torch.tpu.server)), ["start_server", "stop_server"]
+    )
+    self.assertEqual(
+        sorted(dir(torch_tpu.server)), ["start_server", "stop_server"]
+    )
 
 
 if __name__ == "__main__":

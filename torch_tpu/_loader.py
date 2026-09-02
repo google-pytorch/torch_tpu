@@ -241,6 +241,13 @@ def _init_device_impl(device: str) -> torch.device:
   sys.modules["torch.tpu.profiler"] = profiler
   setattr(device_module, "profiler", profiler)
 
+  # Expose the public server module under 'torch.tpu.server' in sys.modules
+  # and attach it to the 'torch.tpu' device module for attribute access.
+  from torch_tpu import server  # pylint: disable=g-import-not-at-top
+
+  sys.modules["torch.tpu.server"] = server
+  setattr(device_module, "server", server)
+
   # Configure native scan gate for cumulative ops.
   _configure_native_scan_gate()
 

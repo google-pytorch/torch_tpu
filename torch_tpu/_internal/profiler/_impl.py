@@ -25,6 +25,7 @@ from torch_tpu._internal.profiler._profiler_backend import start_profiler_server
 from torch_tpu._internal.profiler._profiler_backend import start_trace as start_trace_backend
 from torch_tpu._internal.profiler._profiler_backend import stop_profiler_server
 from torch_tpu._internal.profiler._profiler_backend import stop_trace as stop_trace_backend
+from torch_tpu._internal.utils import annotations
 
 
 _profiler_server = None
@@ -39,7 +40,10 @@ class ProfileOptions:
   python_tracer_level: int | None = None
 
 
-def start_server(port: int):
+@annotations.experimental(
+    'torch.tpu.server.start_server is experimental and subject to change.'
+)
+def start_server(port: int) -> int:
   """Starts the profiler server on port `port`.
 
   Using the "TensorFlow profiler" feature in `TensorBoard
@@ -64,7 +68,10 @@ def start_server(port: int):
   return port
 
 
-def stop_server():
+@annotations.experimental(
+    'torch.tpu.server.stop_server is experimental and subject to change.'
+)
+def stop_server() -> None:
   """Stops the running profiler server.
 
   Raises:

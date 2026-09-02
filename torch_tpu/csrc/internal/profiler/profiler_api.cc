@@ -29,6 +29,7 @@
 #include "torch_tpu/csrc/common/context_manager.h"
 #include "torch_tpu/csrc/common/context_states.h"
 #include "torch_tpu/csrc/common/error_utils.h"
+#include "torch_tpu/csrc/internal/profiler/xprof_callback_handler.h"
 #include "tsl/platform/path.h"
 #include "tsl/profiler/lib/profiler_session.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
@@ -110,6 +111,7 @@ absl::Status TpuProfilerServer::Start(int port) ABSL_LOCKS_EXCLUDED(mutex_) {
   absl::MutexLock lock(mutex_);
   TT_RET_CHECK(server_ == nullptr, error::kFailedPrecondition)
       << "the profiler server has already been started";
+  torch_tpu::XProfCallbackHandler::Register();
   server_ = std::make_unique<tsl::profiler::ProfilerServer>();
   server_->StartProfilerServer(port);
   return absl::OkStatus();

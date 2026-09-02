@@ -73,6 +73,7 @@ torch_tpu_py_library(
     deps = [
         ":_profiler_backend",
         "//shims/absl_py/logging",
+        "//torch_tpu/_internal/utils:annotations",
     ],
 )
 
