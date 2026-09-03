@@ -178,6 +178,7 @@ torch_tpu_cc_library(
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/csrc/common:aten_utils",
         "//torch_tpu/csrc/common:cache_key",
         "//torch_tpu/csrc/common:dimension_types",
         "//torch_tpu/csrc/common:dtype",

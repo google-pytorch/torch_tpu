@@ -1124,10 +1124,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 1.2e-3, "atol": 1.5e-4},
         torch.float32: {"rtol": 1.3e-5, "atol": 7.2e-5},
     },
-    "norm": {
-        torch.complex64: {"rtol": 5.7e-6},
-        torch.float32: {"rtol": 5.7e-6},
-    },
     "polygamma": {
         torch.float32: {"rtol": 1.1e-5},
     },
@@ -1178,9 +1174,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     "torch.ops.aten._safe_softmax.default": {
         torch.float16: {"atol": 5.9e-4},
-    },
-    "var": {
-        torch.float16: {"rtol": 1.5e-3},
     },
     "xlogy": {
         torch.float32: {"rtol": 3.2e-4, "atol": 3e-4},
@@ -1397,10 +1390,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "nn.functional.nll_loss": {
         torch.bfloat16: {"rtol": 2.3e-2, "atol": 5.9e-3},
         torch.float16: {"rtol": 3e-3, "atol": 2.4e-3},
-    },
-    "norm": {
-        torch.complex64: {"rtol": 5.7e-6},
-        torch.float32: {"rtol": 5.7e-6},
     },
     "polygamma": {
         torch.float32: {"rtol": 1.1e-5},

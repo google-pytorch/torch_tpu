@@ -38,6 +38,7 @@
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
 #include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/dtype.h"
@@ -70,26 +71,25 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, correction_op] = inputs;
     mlir::MlirBuilder& builder = self_op.getBuilder();
-    mlir::Type type = GetTensorTypeOrDie(self_op).getElementType();
+
+    TT_ASSIGN_OR_RETURN(mlir::ElementType comp_elem_type,
+                        InferComputationDtype(scalar_dtype_mlir));
+    TT_ASSIGN_OR_RETURN(auto self_comp, CastIfNeeded(self_op, comp_elem_type));
+    TT_ASSIGN_OR_RETURN(auto correction_comp,
+                        CastIfNeeded(correction_op, comp_elem_type));
 
     // sum_tensor = ReduceSum(self, dim, keep_dims=true)
     TT_ASSIGN_OR_RETURN(
-        auto sum_op, BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims));
+        auto sum_op, BuildSumShlo(self_comp, dim_vec, ReductionMode::kKeepDims,
+                                  comp_elem_type));
 
     // mean = sum_tensor / reduction_size
-    mlir::MlirOp reduction_size_const;
-    if (llvm::isa<mlir::ComplexType>(type)) {
-      reduction_size_const = MakeScalarConstant(
-          builder,
-          std::complex<double>(static_cast<double>(reduction_size), 0.0), type);
-    } else {
-      reduction_size_const = MakeScalarConstant(
-          builder, static_cast<double>(reduction_size), type);
-    }
+    auto reduction_size_const = MakeScalarConstant(
+        builder, static_cast<double>(reduction_size), comp_elem_type);
     TT_ASSIGN_OR_RETURN(auto mean, BuildDivShlo(sum_op, reduction_size_const));
 
     // diff = self - mean
-    TT_ASSIGN_OR_RETURN(auto diff, BuildSubShlo(self_op, mean));
+    TT_ASSIGN_OR_RETURN(auto diff, BuildSubShlo(self_comp, mean));
 
     // conj_diff = conj(diff)
     TT_ASSIGN_OR_RETURN(auto conj_diff, BuildConjPhysicalShlo(diff));
@@ -100,19 +100,17 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
     // sum_sq_tensor = ReduceSum(squared_diff, dim, keep_dims=keep_dim)
     TT_ASSIGN_OR_RETURN(
         auto sum_sq_op,
-        BuildSumShlo(squared_diff, dim_vec, reduction_mode, scalar_dtype_mlir));
+        BuildSumShlo(squared_diff, dim_vec, reduction_mode, comp_elem_type));
 
     // denom = max(reduction_size - correction, 0)
-    mlir::Type corr_type = GetTensorTypeOrDie(correction_op).getElementType();
-    auto reduction_size_const_corr = MakeScalarConstant(
-        builder, static_cast<double>(reduction_size), corr_type);
     TT_ASSIGN_OR_RETURN(auto denom_diff,
-                        BuildSubShlo(reduction_size_const_corr, correction_op));
-    auto zero = MakeScalarConstant(builder, 0.0, corr_type);
+                        BuildSubShlo(reduction_size_const, correction_comp));
+    auto zero = MakeScalarConstant(builder, 0.0, comp_elem_type);
     TT_ASSIGN_OR_RETURN(auto denom, BuildMaximumShlo(denom_diff, zero));
 
     // res = sum_sq_tensor / denom
-    return BuildDivShlo(sum_sq_op, denom);
+    TT_ASSIGN_OR_RETURN(auto var_comp, BuildDivShlo(sum_sq_op, denom));
+    return CastIfNeeded(var_comp, scalar_dtype_mlir);
   };
 }
 

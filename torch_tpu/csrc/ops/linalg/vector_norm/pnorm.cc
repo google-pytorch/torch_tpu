@@ -54,14 +54,42 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
   auto compute_mlir_type =
       mlir::getElementType(builder.getContext(), compute_dtype);
 
+  // 0-norm is taken care outside of this function
+  ABSL_CHECK(ord != 0);  // CRASH_OK
+
+  if (ord == 2.0) {
+    // 2-norm is sqrt(sum(abs(x)^2)).
+    mlir::MlirOp mag_sq;
+    if (IsComplexType(GetTensorTypeOrDie(input_op))) {
+      mlir::MlirOp real = mlir::stablehlo::Real(input_op);
+      mlir::MlirOp imag = mlir::stablehlo::Imag(input_op);
+      TT_ASSIGN_OR_RETURN(real, CastIfNeeded(real, compute_dtype));
+      TT_ASSIGN_OR_RETURN(imag, CastIfNeeded(imag, compute_dtype));
+      mlir::MlirOp real_sq = mlir::stablehlo::Mul(real, real);
+      mlir::MlirOp imag_sq = mlir::stablehlo::Mul(imag, imag);
+      mag_sq = mlir::stablehlo::Add(real_sq, imag_sq);
+    } else {
+      TT_ASSIGN_OR_RETURN(mlir::MlirOp input_comp,
+                          CastIfNeeded(input_op, compute_dtype));
+      mag_sq = mlir::stablehlo::Mul(input_comp, input_comp);
+    }
+    mlir::MlirOp init_val = MakeScalarConstant(builder, 0.0, compute_dtype);
+    auto reduce_fn = [compute_mlir_type](mlir::RegionBuilder& rb) {
+      mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+          compute_mlir_type, rb.getRegion(), rb.getOpBuilder());
+    };
+    mlir::MlirOp reduction_res =
+        BuildReductionShlo(mag_sq, reduce_dims, compute_mlir_type, init_val,
+                           reduce_fn, reduction_mode);
+    mlir::MlirOp sqrt_res = mlir::stablehlo::Sqrt(reduction_res);
+    return CastIfNeeded(sqrt_res, out_type);
+  }
+
   input_op = mlir::stablehlo::Abs(input_op);
   TT_ASSIGN_OR_RETURN(input_op, CastIfNeeded(input_op, compute_dtype));
   TT_ASSIGN_OR_RETURN(ord_op, CastIfNeeded(ord_op, compute_dtype));
 
   mlir::MlirOp init_val = MakeScalarConstant(builder, 0.0, compute_dtype);
-
-  // 0-norm is taken care outside of this function
-  ABSL_CHECK(ord != 0);  // CRASH_OK
 
   if (ord == INFINITY) {
     // Inf-norm is max(abs(x)).
@@ -95,18 +123,6 @@ absl::StatusOr<mlir::MlirOp> BuildPNormShlo(
         BuildReductionShlo(input_op, reduce_dims, compute_mlir_type, init_val,
                            reduce_fn, reduction_mode);
     return CastIfNeeded(reduction_res, out_type);
-  } else if (ord == 2.0) {
-    // 2-norm is sqrt(sum(abs(x)^2)).
-    input_op = mlir::stablehlo::Mul(input_op, input_op);
-    auto reduce_fn = [compute_mlir_type](mlir::RegionBuilder& rb) {
-      mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-          compute_mlir_type, rb.getRegion(), rb.getOpBuilder());
-    };
-    mlir::MlirOp reduction_res =
-        BuildReductionShlo(input_op, reduce_dims, compute_mlir_type, init_val,
-                           reduce_fn, reduction_mode);
-    mlir::MlirOp sqrt_res = mlir::stablehlo::Sqrt(reduction_res);
-    return CastIfNeeded(sqrt_res, out_type);
   } else {
     // The general p-norm is sum(abs(x)^ord)^(1/ord).
     TT_ASSIGN_OR_RETURN(input_op, BuildPowShlo(input_op, ord_op));
