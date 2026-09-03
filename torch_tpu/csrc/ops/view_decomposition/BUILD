@@ -418,6 +418,7 @@ torch_tpu_cc_test(
     },
     requires_libtpu = True,
     deps = [
+        ":bitcast_primitive",
         ":decomposition",
         ":strided_layout",
         ":view_sequence",
@@ -429,6 +430,7 @@ torch_tpu_cc_test(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@stablehlo//:attr_type_builder_util",
+        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

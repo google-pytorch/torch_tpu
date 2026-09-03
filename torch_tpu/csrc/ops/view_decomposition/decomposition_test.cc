@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <variant>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -28,8 +29,10 @@
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/csrc/common/to_string.h"
+#include "torch_tpu/csrc/ops/view_decomposition/bitcast_primitive.h"
 #include "torch_tpu/csrc/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/csrc/ops/view_decomposition/view_sequence.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -561,6 +564,31 @@ TEST(DecomposeIntoViewSequence, Conjugate_RealBase_RealView) {
   StridedLayout view_layout = MakeContiguousBaseLayout(contiguous_base_shape);
   DecompositionTest(contiguous_base_shape, view_layout, mlir::ElementType::F32,
                     mlir::ElementType::F32, /*is_conj=*/true);
+}
+
+// When a strided view on a complex base has even strides, previously only the
+// real part was extracted. As a regression test, verify that when view_dtype is
+// complex, it decomposes using kViewAsReal rather than kReal, preserving both
+// real and imaginary parts.
+TEST(DecomposeIntoViewSequence,
+     ComplexViewWithEvenStridesPreservesImaginaryComponent) {
+  const Dimensions contiguous_base_shape = {4, 4};
+  // Layout where all strides are even numbers:
+  const StridedLayout view_layout = {
+      .strided_dims = {{.size = 2, .stride = 4}, {.size = 2, .stride = 2}},
+      .storage_offset = 0,
+  };
+  TF_ASSERT_OK_AND_ASSIGN(
+      const ViewSequence sequence,
+      DecomposeIntoViewSequence(contiguous_base_shape,
+                                mlir::ElementType::COMPLEXF64, view_layout,
+                                mlir::ElementType::COMPLEXF32));
+  ASSERT_FALSE(sequence.empty());
+
+  // Must be kViewAsReal (unpacking [real, imag]), NOT kReal (which drops imag).
+  const auto* bitcast = std::get_if<ComplexToRealBitcast>(&sequence[0]);
+  ASSERT_NE(bitcast, nullptr);
+  EXPECT_EQ(bitcast->bitcast_type, ComplexToRealBitcastType::kViewAsReal);
 }
 
 void GetContiguousBaseShapeTest(const StridedLayout& view_layout,

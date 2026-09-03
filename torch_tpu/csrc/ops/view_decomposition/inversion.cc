@@ -562,13 +562,6 @@ ViewSequence GetBitcastSequenceToWritable(mlir::ElementType from_dtype,
     return result;
   }
 
-  // to_dtype should never be COMPLEX64 here.
-  // COMPLEX64 is the largest dtype, so to_dtype = COMPLEX64 &&
-  // bitwdith(from_dtype) >= bitwidth(to_dtype) is only satisfied if
-  // from_dtype == to_dtype, which is covered by the == check at the start of
-  // this function.
-  ABSL_CHECK_NE(to_dtype, mlir::ElementType::COMPLEXF64);  // CRASH_OK
-
   // If to_dtype is COMPLEXF32 which has a bitwidth of 64, then from_dtype
   // must be either COMPLEX64 or a 64-bit element type (like UI64).
   // If from_dtype was COMPLEX64, then we should have added a ViewAsReal
@@ -582,8 +575,12 @@ ViewSequence GetBitcastSequenceToWritable(mlir::ElementType from_dtype,
   ABSL_CHECK(!layout.strided_dims.empty());             // CRASH_OK
   ABSL_CHECK_EQ(layout.strided_dims.back().size, 2);    // CRASH_OK
   ABSL_CHECK_EQ(layout.strided_dims.back().stride, 1);  // CRASH_OK
-  auto view_as_complex =
-      ViewAsComplex{.complex_element_type = ComplexElementType::kComplexFloat};
+
+  const ComplexElementType complex_type =
+      (to_dtype == mlir::ElementType::COMPLEXF64)
+          ? ComplexElementType::kComplexDouble
+          : ComplexElementType::kComplexFloat;
+  auto view_as_complex = ViewAsComplex{.complex_element_type = complex_type};
   UpdateLayout(layout, view_as_complex);
   result.push_back(std::move(view_as_complex));
 

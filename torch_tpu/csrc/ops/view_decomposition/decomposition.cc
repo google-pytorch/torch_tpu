@@ -374,7 +374,8 @@ SlicePrimitive BuildHeadSliceToViewWindow(const StridedLayout& head_layout,
 // Returns the (real) element type after the complex-to-real bitcast.
 mlir::ElementType MaybeAddComplexToRealBitcast(
     ViewSequence& result, StridedLayout& head_layout,
-    const mlir::ElementType contiguous_base_dtype, StridedLayout& tail_layout) {
+    const mlir::ElementType contiguous_base_dtype, StridedLayout& tail_layout,
+    const mlir::ElementType view_dtype) {
   if (contiguous_base_dtype != mlir::ElementType::COMPLEXF32 &&
       contiguous_base_dtype != mlir::ElementType::COMPLEXF64) {
     // Base type is not complex, no complex-to-real bitcast is needed.
@@ -390,8 +391,11 @@ mlir::ElementType MaybeAddComplexToRealBitcast(
           ? mlir::ElementType::F32
           : mlir::ElementType::F64;
 
+  const bool is_complex_view = (view_dtype == mlir::ElementType::COMPLEXF32 ||
+                                view_dtype == mlir::ElementType::COMPLEXF64);
+
   // Check if we can apply this as "real()" or "imag()".
-  bool is_half_of_complex = true;
+  bool is_half_of_complex = !is_complex_view;
   for (const auto& dim : tail_layout.strided_dims) {
     if (dim.stride % 2 != 0) {
       is_half_of_complex = false;
@@ -591,7 +595,7 @@ ViewSequence BuildHeadBitcast(StridedLayout& head_layout,
   // which can happen with a ComplexFloat <-> ComplexDouble cast.
   ViewSequence result;
   mlir::ElementType head_real_element_type = MaybeAddComplexToRealBitcast(
-      result, head_layout, contiguous_base_dtype, tail_layout);
+      result, head_layout, contiguous_base_dtype, tail_layout, view_dtype);
   mlir::ElementType view_real_element_type = MaybeAddRealToRealBitcast(
       result, head_layout, head_real_element_type, tail_layout, view_dtype);
   MaybeAddViewAsComplex(result, head_layout, view_real_element_type,
