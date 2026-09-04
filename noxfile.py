@@ -94,6 +94,12 @@ def buildifier(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def actionlint(session: nox.Session) -> None:
+  """Runs static checkers on GitHub Actions workflows with actionlint."""
+  session.run("ci/tools/actionlint.sh", external=True)
+
+
+@nox.session(venv_backend="none")
 def test_ci_tools(session: nox.Session) -> None:
   """Run unit tests for CI base SHA resolution and diff isolation scripts."""
   session.run(

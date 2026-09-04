@@ -104,6 +104,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: uvx nox -s lint
 
+      - name: "Run actionlint via Nox"
+        # Runs even when the step above fails to report as many lint errors as possible.
+        if: success() || failure()
+        run: uvx nox -s actionlint
+
   test_ci_tools:
     name: "Test CI tools"
     runs-on: ubuntu-latest
