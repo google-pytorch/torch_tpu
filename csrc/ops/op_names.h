@@ -596,6 +596,7 @@ enum class OpName {
   kNormalTensorTensor,
   kNormalTensorTensorOut,
   kNormal_,
+  kPadRealToStatic,
   kPadUninitialized_,
   kPaddedDenseToJaggedForward,
   kPdistBackward,
