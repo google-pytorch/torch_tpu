@@ -39,6 +39,13 @@ _RESOLVE_BASE_SHA_SCRIPT: Final[pathlib.Path] = (
 _CHECK_WHEEL_DIFF_SCRIPT: Final[pathlib.Path] = (
     _REPO_ROOT / "ci" / "check_wheel_diff.sh"
 )
+_CHECK_PRESUBMIT_DIFF_SCRIPT: Final[pathlib.Path] = (
+    _REPO_ROOT / "ci" / "check_presubmit_diff.sh"
+)
+_CHECK_DIFF_TRIAGE_SCRIPT: Final[pathlib.Path] = (
+    _CI_TOOLS_DIR / "check_diff_triage.sh"
+)
+_SEMANTIC_DIFF_SCRIPT: Final[pathlib.Path] = _CI_TOOLS_DIR / "semantic_diff.py"
 
 
 class ResolveBaseShaTest(  #
@@ -309,6 +316,10 @@ class ResolveBaseShaTest(  #
       shutil.copy(
           str(_RESOLVE_BASE_SHA_SCRIPT), os.path.join(td, "ci", "tools")
       )
+      shutil.copy(
+          str(_CHECK_DIFF_TRIAGE_SCRIPT), os.path.join(td, "ci", "tools")
+      )
+      shutil.copy(str(_SEMANTIC_DIFF_SCRIPT), os.path.join(td, "ci", "tools"))
       shutil.copy(str(_CHECK_WHEEL_DIFF_SCRIPT), os.path.join(td, "ci"))
 
       # Commit A on main
@@ -383,6 +394,105 @@ class ResolveBaseShaTest(  #
       with open(gh_output) as f:
         out = f.read()
       self.assertIn("should_build=true", out)
+
+  def test_check_presubmit_diff_semantic_diff_integration(self):
+    """check_presubmit_diff.sh skips presubmit tests on pure comment/formatting changes."""
+    with tempfile.TemporaryDirectory() as td:
+      self._init_repo(td)
+
+      # Copy ci directory structure into test repo so relative script paths resolve
+      os.makedirs(os.path.join(td, "ci", "tools"), exist_ok=True)
+      shutil.copy(
+          str(_RESOLVE_BASE_SHA_SCRIPT), os.path.join(td, "ci", "tools")
+      )
+      shutil.copy(
+          str(_CHECK_DIFF_TRIAGE_SCRIPT), os.path.join(td, "ci", "tools")
+      )
+      shutil.copy(str(_SEMANTIC_DIFF_SCRIPT), os.path.join(td, "ci", "tools"))
+      shutil.copy(str(_CHECK_PRESUBMIT_DIFF_SCRIPT), os.path.join(td, "ci"))
+
+      # Commit A on main: base source files
+      py_file = pathlib.Path(td) / "model.py"
+      py_file.write_text("# Initial comment\ndef run(): return 42\n")
+      cc_file = pathlib.Path(td) / "kernel.cc"
+      cc_file.write_text("// Initial comment\nint compute() { return 10; }\n")
+      self._run_git(td, "add", "model.py", "kernel.cc")
+      self._run_git(td, "commit", "-m", "Base commit")
+      base_sha = self._run_git(td, "rev-parse", "HEAD")
+
+      # Branch PR 1: pure comment changes in .py and .cc
+      self._run_git(td, "checkout", "-b", "comment-only-branch")
+      py_file.write_text("# Updated comment\ndef run(): return 42\n")
+      cc_file.write_text(
+          "/* Updated comment */\nint compute() { return 10; }\n"
+      )
+      self._run_git(td, "add", "model.py", "kernel.cc")
+      self._run_git(td, "commit", "-m", "Comment edits")
+      comment_sha = self._run_git(td, "rev-parse", "HEAD")
+
+      gh_output = os.path.join(td, "gh_output.txt")
+      env = self.git_env.copy()
+      env["HEAD_SHA"] = comment_sha
+      env["BASE_SHA"] = base_sha
+      env["GITHUB_OUTPUT"] = gh_output
+      env["EVENT_NAME"] = "pull_request"
+      env["FORCE_RUN"] = "false"
+
+      # 1. Pure comment change in .py / .cc -> emits should_run_tests=false
+      subprocess.run(
+          ["bash", os.path.join(td, "ci", "check_presubmit_diff.sh")],
+          cwd=td,
+          env=env,
+          check=True,
+      )
+      with open(gh_output) as f:
+        out = f.read()
+      self.assertIn("should_run_tests=false", out)
+
+      # Branch PR 2: code change in .py
+      self._run_git(td, "checkout", "main")
+      self._run_git(td, "checkout", "-b", "code-change-branch")
+      py_file.write_text("# Comment\ndef run(): return 43\n")
+      self._run_git(td, "add", "model.py")
+      self._run_git(td, "commit", "-m", "Code change")
+      code_sha = self._run_git(td, "rev-parse", "HEAD")
+
+      pathlib.Path(gh_output).unlink()
+      env["HEAD_SHA"] = code_sha
+
+      # 2. Code change in .py -> emits should_run_tests=true
+      subprocess.run(
+          ["bash", os.path.join(td, "ci", "check_presubmit_diff.sh")],
+          cwd=td,
+          env=env,
+          check=True,
+      )
+      with open(gh_output) as f:
+        out = f.read()
+      self.assertIn("should_run_tests=true", out)
+
+      # Branch PR 3: BUILD.bazel change
+      self._run_git(td, "checkout", "main")
+      self._run_git(td, "checkout", "-b", "build-change-branch")
+      build_file = pathlib.Path(td) / "BUILD.bazel"
+      build_file.write_text("py_library(name = 'model')\n")
+      self._run_git(td, "add", "BUILD.bazel")
+      self._run_git(td, "commit", "-m", "BUILD change")
+      build_sha = self._run_git(td, "rev-parse", "HEAD")
+
+      pathlib.Path(gh_output).unlink()
+      env["HEAD_SHA"] = build_sha
+
+      # 3. BUILD.bazel change -> emits should_run_tests=true
+      subprocess.run(
+          ["bash", os.path.join(td, "ci", "check_presubmit_diff.sh")],
+          cwd=td,
+          env=env,
+          check=True,
+      )
+      with open(gh_output) as f:
+        out = f.read()
+      self.assertIn("should_run_tests=true", out)
 
 
 if __name__ == "__main__":

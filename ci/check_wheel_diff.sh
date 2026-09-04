@@ -38,41 +38,5 @@
 
 set -euo pipefail
 
-# Push to main, scheduled nightly, workflow_dispatch, or override labels always build.
-if [[ "${EVENT_NAME}" != "pull_request" || "${FORCE_BUILD}" == "true" ]]; then
-  echo "Non-PR event or force-build label detected. Triggering full build."
-  echo "should_build=true" >> "$GITHUB_OUTPUT"
-  exit 0
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DIFF_BASE="$("${SCRIPT_DIR}/tools/resolve_base_sha.sh" "${HEAD_SHA}" "${BASE_SHA:-}")"
-
-if [[ -z "${DIFF_BASE}" ]]; then
-  echo "No base SHA available. Defaulting to build."
-  echo "should_build=true" >> "$GITHUB_OUTPUT"
-  exit 0
-fi
-
-CHANGED_FILES=$(git diff --name-only "${DIFF_BASE}" "${HEAD_SHA}")
-
-if [[ -z "${CHANGED_FILES}" ]]; then
-  echo "No changed files detected. Defaulting to build."
-  echo "should_build=true" >> "$GITHUB_OUTPUT"
-  exit 0
-fi
-
-echo "Changed files in PR:"
-echo "${CHANGED_FILES}"
-
-# Filter out files that do not affect the wheel build or testing
-NON_DOC_FILES=$(echo "${CHANGED_FILES}" | grep -v -E '(\.md$|^docs/|(^|/)OWNERS|^LICENSE|^\.clang|^\.gitignore|^\.vscode/)' || true)
-
-if [[ -z "${NON_DOC_FILES}" ]]; then
-  echo "All modified files are documentation or repo metadata. Skipping wheel build."
-  echo "should_build=false" >> "$GITHUB_OUTPUT"
-else
-  echo "Found changes requiring wheel build:"
-  echo "${NON_DOC_FILES}"
-  echo "should_build=true" >> "$GITHUB_OUTPUT"
-fi
+exec bash "${SCRIPT_DIR}/tools/check_diff_triage.sh" "${FORCE_BUILD:-}" "should_build" "wheel build"

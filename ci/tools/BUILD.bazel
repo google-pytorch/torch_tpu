@@ -13,6 +13,10 @@
 # limitations under the License.
 
 exports_files(
-    ["run_cc_tpu_test.sh"],
+    [
+        "check_diff_triage.sh",
+        "run_cc_tpu_test.sh",
+        "semantic_diff.py",
+    ],
     visibility = ["//visibility:public"],
 )

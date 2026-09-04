@@ -50,7 +50,25 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'main' }}
 
 jobs:
+  setup:
+    name: "Triage PR Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      should_run_tests: ${{ steps.check_diff.outputs.should_run_tests }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: Inspect PR diff for test-affecting changes
+        id: check_diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ inputs.override_base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.override_current_sha || github.sha }}
+          FORCE_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') || contains(github.event.pull_request.labels.*.name, 'ci:force-presubmit') }}
+        run: bash ci/check_presubmit_diff.sh
+
   run_tests:
+    needs: setup
+    if: needs.setup.outputs.should_run_tests == 'true'
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     # Available self-hosted runners.
     strategy:
