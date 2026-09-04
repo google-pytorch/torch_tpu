@@ -94,7 +94,7 @@ jobs:
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
             TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
           fi
-          echo "tpu_versions=${TPU_VERS}" >> $GITHUB_OUTPUT
+          echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
 
   # TODO(pganssle): Migrate to cibuildwheel
   build_wheels:

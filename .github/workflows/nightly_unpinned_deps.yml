@@ -136,7 +136,7 @@ jobs:
       - name: Get current date
         id: date
         if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
       - name: Check whether one of the jobs failed
         if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0

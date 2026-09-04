@@ -198,7 +198,10 @@ jobs:
 
       - name: Install SSH
         run: |
-          apt-get update && apt-get install -y openssh-client || true
+          # Best-effort: the image usually already carries openssh-client, and
+          # the deploy-key checkout below fails loudly if it does not.
+          apt-get update || true
+          apt-get install -y openssh-client || true
 
       - name: Checkout vllm-torchtpu
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
@@ -229,8 +232,12 @@ jobs:
         run: |
           cd vllm-torchtpu
 
-          WHEEL_FILE=$(ls ../dist/*.whl | head -n 1)
-          if [ -z "$WHEEL_FILE" ]; then
+          # Runs under `sh`, which has no arrays: `set --` puts the glob
+          # matches in the positional parameters, so "$1" is the wheel. An
+          # unmatched glob stays literal, hence the -f test below.
+          set -- ../dist/*.whl
+          WHEEL_FILE="$1"
+          if [ ! -f "$WHEEL_FILE" ]; then
             echo "Error: No wheel found in ../dist/"
             exit 1
           fi
@@ -240,7 +247,7 @@ jobs:
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           VLLM_TARGET_DEVICE=empty \
           SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_TORCHTPU=0.0.0 \
-          uv --no-config pip install .[test,benchmarking] \
+          uv --no-config pip install ".[test,benchmarking]" \
             --index "https://oauth2accesstoken:${ACCESS_TOKEN}@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" \
             --extra-index-url https://pypi.org/simple \
             --index-strategy unsafe-best-match \
@@ -272,7 +279,7 @@ jobs:
       - name: Get current date
         id: date
         if: (contains(needs.run_tests.result, 'failure') || contains(needs.build_wheels.result, 'failure') || contains(needs.vllm_perf_eval.result, 'failure')) && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
       - name: Check whether one of the jobs failed
         if: (contains(needs.run_tests.result, 'failure') || contains(needs.build_wheels.result, 'failure') || contains(needs.vllm_perf_eval.result, 'failure')) && github.event_name != 'pull_request'
         uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0

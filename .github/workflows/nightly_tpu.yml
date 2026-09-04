@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   run_tests:
-    name: "Nightly on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    name: "Nightly on ${{ matrix.job_info.runner }}"
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:tpu-nightly')
@@ -91,6 +91,9 @@ jobs:
           # `--test_tag_filters` to get tests tagged with `nonightly` is not enough as there are
           # some tests implicitly getting the `manual` tag from `notap` or `nolocal`.
           TEST_TARGETS=$(bazel query 'tests(//...) except attr("tags", "nonightly", tests(//...))' | tr '\n' ' ')
+          # TEST_TARGETS is a space-separated target list that must word-split,
+          # and this runs under `sh`, so a bash array is not an option.
+          # shellcheck disable=SC2086
           bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
 
   notify_failure:
@@ -104,7 +107,7 @@ jobs:
       - name: Get current date
         id: date
         if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
       - name: Check whether one of the jobs failed
         if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
         uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0

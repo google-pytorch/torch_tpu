@@ -115,7 +115,7 @@ jobs:
           set +e
           bazel test //... \
             --config=${{ matrix.job_info.config }} \
-            --override_repository=pytorch=$GITHUB_WORKSPACE/pytorch \
+            --override_repository="pytorch=$GITHUB_WORKSPACE/pytorch" \
             ${{ matrix.job_info.extra_flags }}
 
           BAZEL_EXIT_CODE=$?
@@ -138,4 +138,4 @@ jobs:
             echo '```json'
             echo "$EVENT_JSON"
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
