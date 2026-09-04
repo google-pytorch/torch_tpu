@@ -24,25 +24,45 @@ namespace torch_tpu {
 using Precision = mlir::stablehlo::Precision;
 mlir::stablehlo::Precision PyUnsafeGetPrecision();
 
-PYBIND11_MODULE(precision_impl, m) {
-  pybind11::enum_<Precision>(m, "Precision")
-      .value("DEFAULT",
-             Precision::DEFAULT)  // EXPLICIT_PRECISION_OK=root usage
-      .value("HIGH",
-             Precision::HIGH)  // EXPLICIT_PRECISION_OK=root usage
-      .value("HIGHEST",
-             Precision::HIGHEST)  // EXPLICIT_PRECISION_OK=root usage
-      .export_values();
+namespace {
 
-  m.def("_get_precision", &PyUnsafeGetPrecision,
-        "Internal get for context manager");
-  m.def("_push_precision", &PyPushPrecision,
-        "Internal push for context manager");
+Precision ToPrecision(pybind11::object obj) {
+  if (pybind11::hasattr(obj, "value")) {
+    return static_cast<Precision>(obj.attr("value").cast<int>());
+  }
+  return static_cast<Precision>(obj.cast<int>());
+}
+
+pybind11::object ToPyPrecision(Precision precision) {
+  pybind11::object precision_cls =
+      pybind11::module_::import("torch_tpu._internal.precision")
+          .attr("Precision");
+  return precision_cls(static_cast<int>(precision));
+}
+
+}  // namespace
+
+PYBIND11_MODULE(precision_impl, m) {
+  m.def(
+      "_get_precision", []() { return ToPyPrecision(PyUnsafeGetPrecision()); },
+      "Internal get for context manager");
+  // The explicit arg name future-proofs the `substitute_in_graph` polyfill in
+  // precision.py: torch compares parameter *names* when the original's
+  // signature is introspectable. Today pybind11 exposes none (the check is
+  // skipped); if that ever changes, "mode" must match the polyfill.
+  m.def(
+      "_push_precision",
+      [](pybind11::object mode) { PyPushPrecision(ToPrecision(mode)); },
+      pybind11::arg("mode"), "Internal push for context manager");
   m.def("_pop_precision", &PyPopPrecision, "Internal pop for context manager");
-  m.def("_set_global_precision", &PySetGlobalPrecision,
-        "Set global float32 matmul precision");
-  m.def("_get_global_precision", &PyGetGlobalPrecision,
-        "Get global float32 matmul precision");
+  m.def(
+      "_set_global_precision",
+      [](pybind11::object mode) { PySetGlobalPrecision(ToPrecision(mode)); },
+      pybind11::arg("mode"), "Set global float32 matmul precision");
+  m.def(
+      "_get_global_precision",
+      []() { return ToPyPrecision(PyGetGlobalPrecision()); },
+      "Get global float32 matmul precision");
 }
 
 }  // namespace torch_tpu

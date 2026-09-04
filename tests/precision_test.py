@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import concurrent.futures
+import enum
+import json
 import threading
 import unittest
 import warnings
@@ -519,6 +521,42 @@ class PrecisionTest(seed_test_utils.RepeatableTest):
 
     finally:
       torch.set_float32_matmul_precision("medium")
+
+  def test_precision_dynamo_compatibility(self):
+    # 1. Verify standard Python enum properties and object identity.
+    self.assertIsInstance(Precision.DEFAULT, enum.IntEnum)
+    self.assertEqual(Precision.DEFAULT, 0)
+    self.assertIs(p_impl._get_precision(), Precision.DEFAULT)
+    self.assertIs(p_impl._get_precision(), p_impl._get_precision())
+
+    # 2. Verify TorchDynamo tracing with Precision as argument.
+    def branch_on_precision(x, mode):
+      if mode == Precision.HIGHEST:
+        return x + 1.0
+      return x * 2.0
+
+    opt_branch = torch.compile(branch_on_precision, backend="eager")
+    x = torch.tensor([1.0, 2.0])
+    self.assertTrue(torch.equal(opt_branch(x, Precision.HIGHEST), x + 1.0))
+    self.assertTrue(torch.equal(opt_branch(x, Precision.DEFAULT), x * 2.0))
+
+    # 3. Verify TorchDynamo iteration over Enum class.
+    def iterate_enum():
+      return [item.value for item in Precision]
+
+    opt_iter = torch.compile(iterate_enum, backend="eager")
+    self.assertEqual(opt_iter(), [0, 1, 2])
+
+    # 4. Verify TorchDynamo constructor constant-folding.
+    def construct_enum(val):
+      return Precision(val).name
+
+    opt_construct = torch.compile(construct_enum, backend="eager")
+    self.assertEqual(opt_construct(1), "HIGH")
+
+    # 5. Verify PyTree EnumEncoder compatibility.
+    encoded = json.dumps(Precision.HIGH, cls=torch.utils._pytree.EnumEncoder)
+    self.assertIn("HIGH", encoded)
 
 
 if __name__ == "__main__":

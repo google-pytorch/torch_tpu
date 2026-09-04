@@ -15,6 +15,7 @@
 """Op precision context manager."""
 
 import contextlib
+import enum
 from typing import Generator
 
 from torch_tpu._internal.precision import precision_impl
@@ -28,13 +29,12 @@ __all__ = ["precision", "Precision"]
 # For explicit definitions of 'DEFAULT', 'HIGH', and 'HIGHEST', please see the
 # StableHLO documentation for 'dot_general':
 # https://openxla.org/stablehlo/spec#dot_general
-#
-# Note: Precision is a pybind11 C++ class imported from precision_impl.
-# Because Python syntax does not allow @decorator syntax on variable assignments,
-# we annotate it functionally via experimental(...)(precision_impl.Precision).
-Precision = experimental("StableHLO precision configuration.")(
-    precision_impl.Precision
-)
+@experimental("StableHLO precision configuration.")
+class Precision(enum.IntEnum):
+  DEFAULT = 0
+  HIGH = 1
+  HIGHEST = 2
+
 
 _VALID_PRECISIONS = (
     Precision.DEFAULT,

@@ -182,7 +182,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/precision:precision_impl",
+        "//torch_tpu/_internal/precision",
     ],
 )
 

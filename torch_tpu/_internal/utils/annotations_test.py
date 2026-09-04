@@ -22,10 +22,11 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu  # pylint: disable=unused-import  # noqa: F401
-from torch_tpu._internal.precision.precision_impl import Precision
+import torch_tpu._internal.precision as precision_mod
 from torch_tpu._internal.utils import annotations
-from tests import seed_test_utils
 
+Precision = precision_mod.Precision
+from tests import seed_test_utils
 
 experimental = annotations.experimental
 stable = annotations.stable
@@ -51,6 +52,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_first_call_triggers_warning(self):
     """Verifies that calling an experimental function triggers a UserWarning."""
+
     @experimental("Testing experimental feature.")
     def sample_func(a: int, b: int) -> int:
       return a + b
@@ -72,6 +74,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_subsequent_calls_suppress_warning(self):
     """Verifies that subsequent function calls suppress warnings."""
+
     @experimental("Testing experimental feature.")
     def sample_func(a: int, b: int) -> int:
       return a + b
@@ -88,6 +91,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_multiple_functions_independent_warnings(self):
     """Verifies that multiple experimental functions trigger warnings independently."""
+
     @experimental("First experimental feature.")
     def func_one(x: int) -> int:
       return x + 1
@@ -109,6 +113,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_stable_metadata_no_warning(self):
     """Verifies that stable functions attach metadata and trigger no warnings."""
+
     @stable("Production ready.")
     def stable_func(x: int) -> int:
       return x * 2
@@ -126,6 +131,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_deprecated_metadata_and_warning(self):
     """Verifies that calling a deprecated function triggers a DeprecationWarning."""
+
     @deprecated(version="2.13", reason="Use new_api() instead.")
     def legacy_func(x: int) -> int:
       return x + 10

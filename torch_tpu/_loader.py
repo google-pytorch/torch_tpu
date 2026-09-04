@@ -252,17 +252,17 @@ def _init_device_impl(device: str) -> torch.device:
 
   # Monkey patch torch.set_float32_matmul_precision and
   # torch.get_float32_matmul_precision to maintain global precision state.
-  from torch_tpu._internal.precision import precision_impl  # pylint: disable=g-import-not-at-top
+  from torch_tpu._internal.precision import Precision, precision_impl  # pylint: disable=g-import-not-at-top
 
   @functools.wraps(torch.set_float32_matmul_precision)
   def _tpu_set_precision(precision: str) -> None:
     match precision:
       case "medium":
-        precision_impl._set_global_precision(precision_impl.Precision.DEFAULT)
+        precision_impl._set_global_precision(Precision.DEFAULT)
       case "high":
-        precision_impl._set_global_precision(precision_impl.Precision.HIGH)
+        precision_impl._set_global_precision(Precision.HIGH)
       case "highest":
-        precision_impl._set_global_precision(precision_impl.Precision.HIGHEST)
+        precision_impl._set_global_precision(Precision.HIGHEST)
       case _:
         raise ValueError(
             "expected to be one of 'highest', 'high', or 'medium', got"
@@ -273,11 +273,11 @@ def _init_device_impl(device: str) -> torch.device:
   def _tpu_get_precision() -> str:
     global_precision = precision_impl._get_global_precision()
     match global_precision:
-      case precision_impl.Precision.DEFAULT:
+      case Precision.DEFAULT:
         return "medium"
-      case precision_impl.Precision.HIGH:
+      case Precision.HIGH:
         return "high"
-      case precision_impl.Precision.HIGHEST:
+      case Precision.HIGHEST:
         return "highest"
       case _:
         raise ValueError(
