@@ -60,9 +60,9 @@
 #include "stablehlo/transforms/Passes.h"
 #include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/csrc/common/native_scan_support.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "torch_tpu/csrc/ops/op_builder_utils.h"
 #include "torch_tpu/csrc/ops/scan_builder.h"
-#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -379,7 +379,7 @@ TEST_P(ScanBuilderTest, EmptyTensor) {
   const mlir::MlirOp carry_init =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(builder(), input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -401,7 +401,7 @@ TEST_P(ScanBuilderTest, StaticShape1D) {
   // Carry initialized with shape [1] (slice along dim 0).
   const mlir::MlirOp carry_init = MakeConstant(function_builder, 0, i32, {1});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -432,7 +432,7 @@ TEST_P(ScanBuilderTest, NativeScanUnsupportedFallsBackToWhileLoop) {
   const mlir::MlirOp carry_init = MakeConstant(function_builder, 0, i32, {1});
 
   // Request the native scan emitter explicitly; the gate must downgrade it.
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults result,
       BuildScanShlo(function_builder, input, /*dim=*/0, {carry_init},
                     {output_init}, CreateAddBodyBuilder(),
@@ -467,7 +467,7 @@ TEST_P(ScanBuilderTest, StaticShape2D) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -496,7 +496,7 @@ TEST_P(ScanBuilderTest, StaticShape2D_ScanDim1) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {2, 1});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/1, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -527,7 +527,7 @@ TEST_P(ScanBuilderTest, StaticShape3D) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {2, 2, 1});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/2, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -636,7 +636,7 @@ TEST_P(ScanBuilderTest, DynamicShapeScanDim) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -663,7 +663,7 @@ TEST_P(ScanBuilderTest, DynamicShapeNonScanDim) {
   const mlir::MlirOp carry_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults result,
                           Scan(function_builder, input, /*dim=*/0, {carry_init},
                                {output_init}, CreateAddBodyBuilder()));
   ASSERT_EQ(result.size(), 1);
@@ -821,7 +821,7 @@ TEST_P(MultiScanBuilderTest, EmptyTensor) {
   const mlir::MlirOp carry_init =
       MakeConstant(builder(), 0, op_builder().getI32Type(), {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults result,
       Scan(builder(), {input}, /*dim=*/0, /*num_scan_inputs=*/1, {carry_init},
            {output_init}, CreateIdentityBodyBuilder()));
@@ -847,7 +847,7 @@ TEST_P(MultiScanBuilderTest, StaticShape1D) {
   const mlir::MlirOp output1_init = MakeConstant(function_builder, 0, i32, {4});
   const mlir::MlirOp output2_init = MakeConstant(function_builder, 0, i32, {4});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/0,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -884,7 +884,7 @@ TEST_P(MultiScanBuilderTest, StaticShape2D) {
   const mlir::MlirOp output2_init =
       MakeConstant(function_builder, 0, i32, {2, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/0,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -921,7 +921,7 @@ TEST_P(MultiScanBuilderTest, StaticShape2D_ScanDim1) {
   const mlir::MlirOp output2_init =
       MakeConstant(function_builder, 0, i32, {2, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/1,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -957,7 +957,7 @@ TEST_P(MultiScanBuilderTest, StaticShape3D) {
   const mlir::MlirOp output2_init =
       MakeConstant(function_builder, 0, i32, {2, 2, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/2,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -986,7 +986,7 @@ TEST_P(MultiScanBuilderTest, ReverseScan) {
   // Output accumulator of shape [4].
   const mlir::MlirOp output_init = MakeConstant(function_builder, 0, i32, {4});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
            {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
@@ -1039,7 +1039,7 @@ TEST_P(MultiScanBuilderTest, SqueezeScan) {
   const mlir::MlirOp output_init =
       MakeConstant(function_builder, 0, i32, {2, 2});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
            {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),
@@ -1090,7 +1090,7 @@ TEST_P(MultiScanBuilderTest, WithStaticInput) {
     return ScanBodyResults{{new_c}, {new_c}};
   };
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input, static_val}, /*dim=*/0,
            /*num_scan_inputs=*/1, {carry_init}, {output_init}, body_builder));
@@ -1143,7 +1143,7 @@ TEST_P(MultiScanBuilderTest, MismatchedInitsAllowed) {
     return ScanBodyResults{{new_c1, new_c2}, {new_c1}};
   };
 
-  TF_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults results,
+  TT_ASSERT_OK_AND_ASSIGN(const DynamicMlirOpResults results,
                           Scan(function_builder, {input}, /*dim=*/0,
                                /*num_scan_inputs=*/1, {carry_init, carry_init},
                                {output_init}, mismatched_inits_body_builder));
@@ -1187,7 +1187,7 @@ TEST_P(MultiScanBuilderTest, DynamicShapeScanDim) {
   const mlir::MlirOp carry2_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/0,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -1224,7 +1224,7 @@ TEST_P(MultiScanBuilderTest, DynamicShapeNonScanDim) {
   const mlir::MlirOp carry2_init =
       MakeConstant(function_builder, 0, i32, {1, 5});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input1, input2}, /*dim=*/0,
            /*num_scan_inputs=*/2, {carry1_init, carry2_init},
@@ -1279,7 +1279,7 @@ TEST_P(MultiScanBuilderTest, Squeeze1DTo0DTensor) {
   // Output accumulator of shape [4] (since we don't squeeze the accumulator).
   const mlir::MlirOp output_init = MakeConstant(function_builder, 0, i32, {4});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const DynamicMlirOpResults results,
       Scan(function_builder, {input}, /*dim=*/0, /*num_scan_inputs=*/1,
            {carry_init}, {output_init}, CreateMultiAddBodyBuilder(),

@@ -31,13 +31,13 @@
 #include "torch_tpu/csrc/common/compilation_spec.h"
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/shape.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "torch_tpu/csrc/eager/device_buffer.h"
 #include "torch_tpu/csrc/eager/structured_log_buffer.h"
 #include "torch_tpu/csrc/ops/op_builder_utils.h"
 #include "torch_tpu/csrc/ops/op_names.h"
 #include "torch_tpu/csrc/ops/python_context.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -57,19 +57,19 @@ class TraversalTest : public testing::Test {
 };
 
 TEST_F(TraversalTest, ReadableString) {
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs_a,
       DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
                                        OpParamCacheKeys::Empty(), {shape_}));
   auto ref_a = refs_a[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs_b,
       DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {ref_a},
                                        OpParamCacheKeys::Empty(), {shape_}));
   auto ref_b = refs_b[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto traversal,
       Traversal::Create({ref_b}, {ref_a.device_buffer_list().get()}));
   traversal->SortByCreationOrder();
@@ -85,12 +85,12 @@ TEST_F(TraversalTest, ReadableString) {
 }
 
 TEST_F(TraversalTest, ReadableStringMultiOutput) {
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs, DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder,
                                                   {}, OpParamCacheKeys::Empty(),
                                                   {shape_, shape_}));
 
-  TF_ASSERT_OK_AND_ASSIGN(auto traversal,
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal,
                           Traversal::Create({refs[0], refs[1]}));
   traversal->SortByCreationOrder();
 
@@ -104,12 +104,12 @@ TEST_F(TraversalTest, ReadableStringMultiOutput) {
 }
 
 TEST_F(TraversalTest, ReadableStringReasons) {
-  TF_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+  TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
                                          OpName::kAdd, DummyBuilder, {},
                                          OpParamCacheKeys::Empty(), {shape_}));
   auto ref = refs[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create({ref}));
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create({ref}));
 
   std::string readable =
       traversal->ReadableString(MaterializationReason::kCpuTransfer);
@@ -121,31 +121,31 @@ TEST_F(TraversalTest, ReadableStringReasons) {
 }
 
 TEST_F(TraversalTest, ReadableStringComplexGraph) {
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs_a,
       DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
                                        OpParamCacheKeys::Empty(), {shape_}));
   auto ref_a = refs_a[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs_b,
       DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {ref_a},
                                        OpParamCacheKeys::Empty(), {shape_}));
   auto ref_b = refs_b[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto refs_c,
       DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {ref_a},
                                        OpParamCacheKeys::Empty(), {shape_}));
   auto ref_c = refs_c[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(auto refs_d,
+  TT_ASSERT_OK_AND_ASSIGN(auto refs_d,
                           DeviceBufferList::CreateDeferred(
                               OpName::kAdd, DummyBuilder, {ref_b, ref_c},
                               OpParamCacheKeys::Empty(), {shape_}));
   auto ref_d = refs_d[0];
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       auto traversal,
       Traversal::Create({ref_d}, {ref_a.device_buffer_list().get()}));
   traversal->SortByCreationOrder();
@@ -168,11 +168,11 @@ TEST_F(TraversalTest, ReadableStringWithTraceback) {
 
   ScopedPythonContextCapturer::SetTracebackForTesting(traceback);
 
-  TF_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
+  TT_ASSERT_OK_AND_ASSIGN(auto refs, DeviceBufferList::CreateDeferred(
                                          OpName::kAdd, DummyBuilder, {},
                                          OpParamCacheKeys::Empty(), {shape_}));
 
-  TF_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create({refs[0]}));
+  TT_ASSERT_OK_AND_ASSIGN(auto traversal, Traversal::Create({refs[0]}));
 
   std::string readable =
       traversal->ReadableString(MaterializationReason::kUnknown);

@@ -135,6 +135,7 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/common:error_utils",
         "//torch_tpu/csrc/common:native_scan_support",
         "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/common:status_test_utils",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status:status_matchers",
@@ -154,7 +155,6 @@ torch_tpu_cc_test(
         "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -170,6 +170,7 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/common:dtype",
         "//torch_tpu/csrc/common:error_utils",
         "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/common:status_test_utils",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
@@ -187,7 +188,6 @@ torch_tpu_cc_test(
         "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

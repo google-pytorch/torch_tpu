@@ -213,6 +213,7 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/common:error_utils",
         "//torch_tpu/csrc/common:fingerprint_utils",
         "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/common:status_test_utils",
         "//torch_tpu/csrc/eager:device_buffer",
         "//torch_tpu/csrc/eager:eager_mode",
         "//torch_tpu/csrc/eager:tensor_to_buffer",
@@ -231,7 +232,6 @@ torch_tpu_cc_test(
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla/mlir/utils:error_util",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

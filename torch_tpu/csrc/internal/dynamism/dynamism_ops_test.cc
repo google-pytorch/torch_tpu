@@ -29,7 +29,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/shape.h"
-#include "xla/tsl/platform/statusor.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 
 namespace torch_tpu {
 namespace {
@@ -78,7 +78,7 @@ TEST(DynamismOpsTest, GetPadModuleDocstringExample) {
       {.dimension = 0, .lower_bound = 0, .upper_bound = 10}};
   shapes.push_back(Shape(dims4, mlir::ElementType::F32, dynamic_dims4));
 
-  TF_ASSERT_OK_AND_ASSIGN(auto module, GetPadModule(context, shapes));
+  TT_ASSERT_OK_AND_ASSIGN(auto module, GetPadModule(context, shapes));
   ASSERT_TRUE(module);
 
   std::string module_str;
@@ -101,7 +101,7 @@ TEST(DynamismOpsTest, GetSliceModuleDocstringExample) {
   std::vector<mlir::ElementType> input_dtypes = {mlir::ElementType::F32,
                                                  mlir::ElementType::F32};
 
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
+  TT_ASSERT_OK_AND_ASSIGN(auto module,
                           GetSliceModule(context, dimensions_vec,
                                          padded_dimensions_vec, input_dtypes));
   ASSERT_TRUE(module);

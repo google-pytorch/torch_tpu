@@ -53,12 +53,12 @@
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/csrc/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "torch_tpu/csrc/eager/device_buffer.h"
 #include "torch_tpu/csrc/eager/eager_mode.h"
 #include "torch_tpu/csrc/eager/tensor_to_buffer.h"
 #include "torch_tpu/csrc/ops/scan_builder.h"
 #include "xla/mlir/utils/error_util.h"
-#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -276,7 +276,7 @@ class DispatchScanTest : public testing::Test {
                       int64_t output_buffer_index = 1,
                       std::string* lowered_mlir_out = nullptr) {
     ASSERT_EQ(results.size(), expected_results_size);
-    TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+    TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                             GetBuffer(results[output_buffer_index]));
     const std::shared_ptr<DeferredOp> deferred_op = outputs_buf.deferred_op();
     ASSERT_TRUE(deferred_op != nullptr);
@@ -305,9 +305,9 @@ TEST_F(DispatchScanTest, With1D) {
       {dummy_output}, /*num_scan_inputs=*/1);
   ASSERT_EQ(results.size(), 2);
 
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef carry_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef carry_buf,
                           GetBuffer(results[0]));
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                           GetBuffer(results[1]));
 
   EXPECT_THAT(carry_buf.shape().dimensions(), ElementsAre(1));
@@ -329,9 +329,9 @@ TEST_F(DispatchScanTest, With2D) {
       {carry_init}, {input}, body_module, ScanDirection::kForward,
       {dummy_output}, /*num_scan_inputs=*/1);
 
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef carry_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef carry_buf,
                           GetBuffer(results[0]));
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                           GetBuffer(results[1]));
 
   EXPECT_THAT(carry_buf.shape().dimensions(), ElementsAre(3));
@@ -418,7 +418,7 @@ TEST_F(DispatchScanTest, VerifyCacheKeys) {
       {dummy_output}, /*num_scan_inputs=*/1);
   ASSERT_EQ(results.size(), 2);
 
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                           GetBuffer(results[1]));
   const std::shared_ptr<DeferredOp> deferred_op = outputs_buf.deferred_op();
   ASSERT_TRUE(deferred_op != nullptr);
@@ -539,7 +539,7 @@ TEST_F(DispatchScanTest, MismatchedInputsDuringLowering) {
   const std::vector<at::Tensor> results = PyCreateScanOp(
       {carry_init}, {input}, body_module, ScanDirection::kForward,
       {dummy_output}, /*num_scan_inputs=*/1);
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                           GetBuffer(results[1]));
   const std::shared_ptr<DeferredOp> deferred_op = outputs_buf.deferred_op();
 
@@ -563,7 +563,7 @@ TEST_F(DispatchScanTest, DtypeMismatchError) {
   const std::vector<at::Tensor> results = PyCreateScanOp(
       {carry_init_f32}, {input}, body_module, ScanDirection::kForward,
       {dummy_output}, /*num_scan_inputs=*/1);
-  TF_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
+  TT_ASSERT_OK_AND_ASSIGN(const DeviceBufferRef outputs_buf,
                           GetBuffer(results[1]));
   const std::shared_ptr<DeferredOp> deferred_op = outputs_buf.deferred_op();
 

@@ -24,6 +24,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/csrc/common/shape.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "torch_tpu/csrc/eager/device_buffer.h"
 #include "torch_tpu/csrc/eager/materialize.h"
 #include "torch_tpu/csrc/eager/structured_log_buffer.h"
@@ -33,7 +34,6 @@
 #include "torch_tpu/csrc/ops/op_names.h"
 #include "torch_tpu/csrc/ops/python_context.h"
 #include "torch_tpu/csrc/pjrt/pjrt_state.h"
-#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -60,7 +60,7 @@ TEST(ShutdownTest, E2EShutdownCompletes) {
         BuildFillUninitialized(builder, shape.dtype(), shape.dimensions())};
   };
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       std::vector<DeviceBufferRef> refs,
       DeviceBufferList::CreateDeferred(OpName::kEmpty, builder,
                                        /*inputs=*/{}, OpParamCacheKeys::Empty(),

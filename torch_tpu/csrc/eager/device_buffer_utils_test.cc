@@ -26,7 +26,7 @@
 #include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/fingerprint_utils.h"
-#include "xla/tsl/platform/statusor.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 
 namespace torch_tpu {
 namespace {
@@ -40,7 +40,7 @@ TEST(DeviceBufferUtilsTest,
   const Dimensions dims = {2, 3};
   const auto dtype = mlir::ElementType::F32;
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const OpParamCacheKeys keys,
       internal::ComputeConstantDeviceBufferRefOpParamCacheKeys(data, dims,
                                                                dtype));

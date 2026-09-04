@@ -30,6 +30,7 @@
 #include "torch_tpu/csrc/common/cache_key.h"
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/fingerprint_utils.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "torch_tpu/csrc/ops/view_decomposition/bitcast_primitive.h"
 #include "torch_tpu/csrc/ops/view_decomposition/broadcast_primitive.h"
 #include "torch_tpu/csrc/ops/view_decomposition/conj_primitive.h"
@@ -39,7 +40,6 @@
 #include "torch_tpu/csrc/ops/view_decomposition/strided_layout.h"
 #include "torch_tpu/csrc/ops/view_decomposition/transpose_primitive.h"
 #include "torch_tpu/csrc/ops/view_decomposition/unfold_primitive.h"
-#include "xla/tsl/platform/statusor.h"
 
 namespace torch_tpu {
 namespace {
@@ -316,14 +316,14 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
   auto param_keys = OpParamCacheKeys::Empty();
   ViewSequence flatten = {
       ReshapePrimitive{.base_sizes = {2, 2}, .new_sizes = {4}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys, ViewSequenceCacheKey(flatten, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
               ElementsAre(Pair("view", Fingerprint("reshape:flatten"))));
 
   ViewSequence collapse = {
       ReshapePrimitive{.base_sizes = {2, 3, 4}, .new_sizes = {6, 4}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(collapse, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -332,7 +332,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
 
   ViewSequence squeeze = {
       ReshapePrimitive{.base_sizes = {1, 4, 1, 4, 1}, .new_sizes = {4, 4}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys, ViewSequenceCacheKey(squeeze, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
       param_keys,
@@ -340,7 +340,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
 
   ViewSequence unsqueeze = {
       ReshapePrimitive{.base_sizes = {4, 4}, .new_sizes = {1, 4, 1, 4, 1}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(unsqueeze, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -350,7 +350,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
 
   ViewSequence scalar_unsqueeze = {
       ReshapePrimitive{.base_sizes = {}, .new_sizes = {1}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(scalar_unsqueeze, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -359,7 +359,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
 
   ViewSequence scalar_squeeze = {
       ReshapePrimitive{.base_sizes = {1}, .new_sizes = {}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(scalar_squeeze, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -371,7 +371,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
   //  {6} => {2,3} or {3,2}, use suffix `d0=2,d1=3`
   ViewSequence unflatten = {
       ReshapePrimitive{.base_sizes = {6, 4}, .new_sizes = {2, 3, 4}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(unflatten, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -380,7 +380,7 @@ TEST(SymbolicViewPrimitive, ReshapeViewCacheKeys) {
 
   ViewSequence transpose_like = {
       ReshapePrimitive{.base_sizes = {1, 4, 6}, .new_sizes = {4, 1, 6}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(transpose_like, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -395,7 +395,7 @@ TEST(SymbolicViewPrimitive, TransposeViewCacheKeys) {
 
   auto param_keys = OpParamCacheKeys::Empty();
   ViewSequence transpose = {TransposePrimitive{.permutation = {1, 0}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(transpose, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -408,13 +408,13 @@ TEST(SymbolicViewPrimitive, CastingViewCacheKeys) {
 
   auto param_keys = OpParamCacheKeys::Empty();
   ViewSequence conj = {ConjPrimitive{true}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys, ViewSequenceCacheKey(conj, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys, ElementsAre(Pair("view", Fingerprint("conj:1"))));
 
   ViewSequence view_as_complex = {
       ViewAsComplex{ComplexElementType::kComplexFloat}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(view_as_complex, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -422,7 +422,7 @@ TEST(SymbolicViewPrimitive, CastingViewCacheKeys) {
 
   ViewSequence real_to_real_bitcast = {RealToRealBitcast{
       .from_type = mlir::ElementType::F32, .to_type = mlir::ElementType::UI32}};
-  TF_ASSERT_OK_AND_ASSIGN(param_keys,
+  TT_ASSERT_OK_AND_ASSIGN(param_keys,
                           ViewSequenceCacheKey(real_to_real_bitcast,
                                                *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -433,7 +433,7 @@ TEST(SymbolicViewPrimitive, CastingViewCacheKeys) {
   ViewSequence complex_to_real_bitcast = {ComplexToRealBitcast{
       .complex_element_type = ComplexElementType::kComplexFloat,
       .bitcast_type = ComplexToRealBitcastType::kViewAsReal}};
-  TF_ASSERT_OK_AND_ASSIGN(param_keys,
+  TT_ASSERT_OK_AND_ASSIGN(param_keys,
                           ViewSequenceCacheKey(complex_to_real_bitcast,
                                                *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -450,7 +450,7 @@ TEST(SymbolicViewPrimitive, PadViewCacheKeys) {
   ViewSequence pad = {PadPrimitive{
       .pad_dims = {
           {.low_padding = 0, .high_padding = 0, .interior_padding = 0}}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys, ViewSequenceCacheKey(pad, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
               ElementsAre(Pair("view", Fingerprint("pad:[{l0,h0,i0}]"))));
@@ -463,7 +463,7 @@ TEST(SymbolicViewPrimitive, BroadcastViewCacheKeys) {
   auto param_keys = OpParamCacheKeys::Empty();
   ViewSequence bcast_size_one = {BroadcastPrimitive{
       .base_shape{1, 1}, .new_sizes = {2, 2}, .broadcast_dimensions = {0, 1}}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(bcast_size_one, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -471,7 +471,7 @@ TEST(SymbolicViewPrimitive, BroadcastViewCacheKeys) {
 
   ViewSequence bcast_expand_replicate = {BroadcastPrimitive{
       .base_shape{4}, .new_sizes = {4, 2, 1}, .broadcast_dimensions = {0}}};
-  TF_ASSERT_OK_AND_ASSIGN(param_keys,
+  TT_ASSERT_OK_AND_ASSIGN(param_keys,
                           ViewSequenceCacheKey(bcast_expand_replicate,
                                                *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -487,7 +487,7 @@ TEST(SymbolicViewPrimitive, MultipleViewCacheKeys) {
       ReshapePrimitive{.base_sizes = {2, 2, 2}, .new_sizes = {4, 2}},
       TransposePrimitive{.permutation = {1, 0}},
   };
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(reshape_transpose, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(
@@ -499,7 +499,7 @@ TEST(SymbolicViewPrimitive, MultipleViewCacheKeys) {
       TransposePrimitive{{1, 0}},
       TransposePrimitive{{1, 0}},
   };
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys,
       ViewSequenceCacheKey(transpose_transpose, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
@@ -518,7 +518,7 @@ TEST(SymbolicViewPrimitive, UnsupportedViewCacheKeys) {
                                          .limit_index = 9,
                                          .window_stride = 999,
                                          .window_size = 9}};
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       param_keys, ViewSequenceCacheKey(unfold, *tensor.unsafeGetTensorImpl()));
   EXPECT_THAT(param_keys,
               ElementsAre(Pair("storage_offset", 0),

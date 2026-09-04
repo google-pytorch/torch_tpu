@@ -1492,6 +1492,7 @@ torch_tpu_cc_test(
         ":dynamism_utils",
         ":error_utils",
         ":shape",
+        ":status_test_utils",
         "//torch_tpu/csrc/common:oss_test_main",
         "//torch_tpu/csrc/eager:device_buffer",
         "//torch_tpu/csrc/eager:traversal",
@@ -1506,7 +1507,6 @@ torch_tpu_cc_test(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:register",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -1559,6 +1559,25 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/pjrt:pjrt_state",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/log:absl_check",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "status_test_utils",
+    testonly = True,
+    hdrs = ["status_test_utils.h"],
+    deps = ["@com_google_googletest//:gtest"],
+)
+
+torch_tpu_cc_test(
+    name = "status_test_utils_test",
+    srcs = ["status_test_utils_test.cc"],
+    deps = [
+        ":error_utils",
+        ":status_test_utils",
+        "//torch_tpu/csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 

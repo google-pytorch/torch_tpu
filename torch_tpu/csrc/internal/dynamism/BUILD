@@ -90,13 +90,13 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/common:dimension_types",
         "//torch_tpu/csrc/common:oss_test_main",
         "//torch_tpu/csrc/common:shape",
+        "//torch_tpu/csrc/common:status_test_utils",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:register",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 

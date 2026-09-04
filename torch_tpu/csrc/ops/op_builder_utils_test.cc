@@ -53,7 +53,7 @@
 #include "torch_tpu/csrc/common/dimension_types.h"
 #include "torch_tpu/csrc/common/dtype.h"
 #include "torch_tpu/csrc/common/error_utils.h"
-#include "xla/tsl/platform/statusor.h"
+#include "torch_tpu/csrc/common/status_test_utils.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -100,7 +100,7 @@ TEST(OpBuilderUtils, ConvertIfIntegers_TwoOperands_Int) {
   mlir::MlirOp op1 = MakeScalarConstant(builder, 1, mlir::ElementType::I32);
   mlir::MlirOp op2 = MakeScalarConstant(builder, 1, mlir::ElementType::I32);
 
-  TF_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
+  TT_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
                           ConvertIfIntegers(op1, op2, default_mlir_type));
 
   mlir::RankedTensorType default_type = mlir::RankedTensorType::get(
@@ -125,7 +125,7 @@ TEST(OpBuilderUtils, ConvertIfIntegers_TwoOperands_Float) {
   mlir::MlirOp op1 = MakeScalarConstant(builder, 1, mlir::ElementType::F64);
   mlir::MlirOp op2 = MakeScalarConstant(builder, 1, mlir::ElementType::F64);
 
-  TF_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
+  TT_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
                           ConvertIfIntegers(op1, op2, default_mlir_type));
   EXPECT_EQ(ops.op1.getType(), type);
   EXPECT_EQ(ops.op2.getType(), type);
@@ -150,7 +150,7 @@ TEST(OpBuilderUtils, ConvertIfIntegers_TwoOperands_Int_Float) {
   mlir::MlirOp op2 =
       MakeScalarConstant(builder, 1, float_type.getElementType());
 
-  TF_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
+  TT_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
                           ConvertIfIntegers(op1, op2, default_mlir_type));
   EXPECT_EQ(ops.op1.getType(), float_type);
   EXPECT_EQ(ops.op2.getType(), float_type);
@@ -175,7 +175,7 @@ TEST(OpBuilderUtils, ConvertIfIntegers_TwoOperands_Float_Int) {
       MakeScalarConstant(builder, 1, float_type.getElementType());
   mlir::MlirOp op2 = MakeScalarConstant(builder, 1, int_type.getElementType());
 
-  TF_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
+  TT_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
                           ConvertIfIntegers(op1, op2, default_mlir_type));
   EXPECT_EQ(ops.op1.getType(), float_type);
   EXPECT_EQ(ops.op2.getType(), float_type);
@@ -199,7 +199,7 @@ TEST(OpBuilderUtils, ConvertIfIntegers_TwoIntegerOperands) {
   mlir::MlirOp op1 = MakeScalarConstant(builder, 1, int_type.getElementType());
   mlir::MlirOp op2 = MakeScalarConstant(builder, 1, int_type.getElementType());
 
-  TF_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
+  TT_ASSERT_OK_AND_ASSIGN(ConvertedOps ops,
                           ConvertIfIntegers(op1, op2, default_mlir_type));
   EXPECT_EQ(ops.op1.getType(), float_type);
   EXPECT_EQ(ops.op2.getType(), float_type);
@@ -220,7 +220,7 @@ TEST(OpBuilderUtils, ConvertIfInteger_OneOperand_Int) {
       mlir::RankedTensorType::get({}, op_builder.getI32Type());
   mlir::MlirOp op = MakeScalarConstant(builder, 1, type.getElementType());
 
-  TF_ASSERT_OK_AND_ASSIGN(mlir::MlirOp converted_op,
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp converted_op,
                           ConvertIfInteger(op, default_mlir_type));
 
   mlir::RankedTensorType default_type = mlir::RankedTensorType::get(
@@ -243,7 +243,7 @@ TEST(OpBuilderUtils, ConvertIfInteger_OneOperand_Float) {
       mlir::RankedTensorType::get({}, op_builder.getF64Type());
   mlir::MlirOp op = MakeScalarConstant(builder, 1, type.getElementType());
 
-  TF_ASSERT_OK_AND_ASSIGN(mlir::MlirOp converted_op,
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp converted_op,
                           ConvertIfInteger(op, default_mlir_type));
   EXPECT_EQ(converted_op.getType(), type);
 }
@@ -680,7 +680,7 @@ TEST(BroadcastIfNeeded, BroadcastLikeOtherOp) {
   mlir::OpBuilder& op_builder = mb.getOpBuilder();
   mlir::MlirOp cst = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {});
   mlir::MlirOp op = MakeConstant(mb, 2.0f, op_builder.getF32Type(), {2, 2});
-  TF_ASSERT_OK_AND_ASSIGN(mlir::MlirOp cst_bcast, BroadcastIfNeeded(cst, op));
+  TT_ASSERT_OK_AND_ASSIGN(mlir::MlirOp cst_bcast, BroadcastIfNeeded(cst, op));
   mlir::RankedTensorType cst_bcast_type =
       mlir::cast<mlir::RankedTensorType>(cst_bcast.getType());
   EXPECT_THAT(cst_bcast_type.getShape(), ElementsAre(2, 2));
@@ -693,7 +693,7 @@ TEST(ApplyBroadcastIfNeeded, Span) {
   mlir::MlirOp op1 = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {3, 1});
   mlir::MlirOp op2 = MakeConstant(mb, 2.0f, op_builder.getF32Type(), {1, 5});
   std::vector<mlir::MlirOp> ops = {op1, op2};
-  TF_ASSERT_OK_AND_ASSIGN(const auto& bcast,
+  TT_ASSERT_OK_AND_ASSIGN(const auto& bcast,
                           ApplyBroadcastIfNeeded(ops));  // NOLINT
   ASSERT_EQ(bcast.size(), 2);
   auto type1 = mlir::cast<mlir::RankedTensorType>(bcast[0].getType());
@@ -709,7 +709,7 @@ TEST(ApplyBroadcastIfNeeded, DifferentRanks) {
   mlir::MlirOp op1 = MakeConstant(mb, 1.0f, op_builder.getF32Type(), {5});
   mlir::MlirOp op2 = MakeConstant(mb, 2.0f, op_builder.getF32Type(), {2, 3, 1});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const auto& bcast,
       ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{op1, op2}));  // NOLINT
   ASSERT_EQ(bcast.size(), 2);
@@ -735,7 +735,7 @@ TEST(ApplyBroadcastIfNeeded, DynamicShape) {
   // op2 has static shape [1, 4]
   mlir::MlirOp op2 = MakeConstant(mb, 2.0f, op_builder.getF32Type(), {1, 4});
 
-  TF_ASSERT_OK_AND_ASSIGN(
+  TT_ASSERT_OK_AND_ASSIGN(
       const auto& bcast,
       ApplyBroadcastIfNeeded(std::vector<mlir::MlirOp>{op1, op2}));  // NOLINT
   ASSERT_EQ(bcast.size(), 2);

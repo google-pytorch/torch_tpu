@@ -373,10 +373,10 @@ torch_tpu_cc_test(
         "//torch_tpu/csrc/common:dimension_types",
         "//torch_tpu/csrc/common:fingerprint_utils",
         "//torch_tpu/csrc/common:oss_test_main",
+        "//torch_tpu/csrc/common:status_test_utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@stablehlo//:attr_type_builder_util",
-        "@xla//xla/tsl/platform:statusor",
     ],
 )
 
