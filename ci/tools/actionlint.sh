@@ -31,8 +31,6 @@ ACTIONLINT_URL="https://github.com/rhysd/actionlint/releases/download/v${ACTIONL
 
 ACTIONLINT="$(command -v actionlint || true)"
 
-# actionlint delegates `run:` blocks to `shellcheck` when it is on PATH.
-# GitHub-hosted runners with `ubuntu-latest` have shellcheck preinstalled.
 if [ -z "$ACTIONLINT" ]; then
     echo "INFO: actionlint not found in PATH. Downloading v${ACTIONLINT_VERSION}..."
     download_dir="$(mktemp -d)"
@@ -43,6 +41,8 @@ if [ -z "$ACTIONLINT" ]; then
     ACTIONLINT="${download_dir}/actionlint"
 fi
 
+# actionlint delegates `run:` blocks to `shellcheck` when it is on PATH.
+# GitHub-hosted runners with `ubuntu-latest` have shellcheck preinstalled.
 if ! command -v shellcheck &> /dev/null; then
     echo "WARNING: shellcheck not found in PATH. 'run:' blocks will not be checked."
 fi
