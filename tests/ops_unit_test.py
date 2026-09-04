@@ -44,6 +44,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import test_utils as utils
 from tests import op_testing
 from tests import ops_test_data
+from tests import oss_utils
 from tests import quantize_utils
 from tests import seed_test_utils
 
@@ -9842,6 +9843,182 @@ module {
 
     expected = x.cpu()[1:3, 2:5]
     self.assert_close(golden_result=expected, torch_tpu_result=out.cpu())
+
+  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  def test_pad_real_to_static_with_mlir_on_tpu(self):
+    """Tests the PadRealToStatic custom call on TPU using direct MLIR."""
+
+    mlir_program = """
+module {
+  func.func @main(%input: tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>, %d_dim2: tensor<i32>) -> tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>> {
+    %c_dim0 = stablehlo.constant dense<2> : tensor<i32>
+    %c_dim1 = stablehlo.constant dense<4> : tensor<i32>
+
+    %0 = stablehlo.custom_call @PadRealToStatic(%input, %c_dim0, %c_dim1, %d_dim2) : (tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<2x4x1024xi32>
+    %1 = stablehlo.set_dimension_size %0, %d_dim2, dim=2 : (tensor<2x4x1024xi32>, tensor<i32>) -> tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>
+    return %1 : tensor<2x4x?xi32, #stablehlo.bounds<?, ?, 1024>>
+  }
+}
+"""
+    module = tpu_torch_compile.parse_mlir_text(mlir_program)
+    executable_key = tpu_torch_compile.compile_mlir(module)
+
+    device = torch.device("tpu")
+    for dim2 in range(4, 1025):
+      x = (
+          torch.arange(2 * 4 * dim2, device="cpu", dtype=torch.int32)
+          .reshape(2, 4, dim2)
+          .to(device)
+      )
+      x_d2 = torch.tensor(dim2, device="cpu", dtype=torch.int32).to(device)
+
+      result = tpu_torch_compile.execute(
+          executable_key,
+          [x, x_d2],
+          [tpu_torch_compile.OutputShape([2, 4, dim2])],
+      )
+      self.assert_close(
+          golden_result=x.to("cpu"),
+          torch_tpu_result=result[0].cpu(),
+      )
+
+    x = (
+        torch.arange(2 * 4 * 1021, device="cpu", dtype=torch.int32)
+        .reshape(2, 4, 1021)
+        .to(device)
+    )
+    x_d2 = torch.tensor(1021, device="cpu", dtype=torch.int32).to(device)
+
+    result = tpu_torch_compile.execute(
+        executable_key,
+        [x, x_d2],
+        [tpu_torch_compile.OutputShape([2, 4, 1021])],
+    )
+    self.assert_close(
+        golden_result=x.to("cpu"),
+        torch_tpu_result=result[0].cpu(),
+    )
+
+    # feed dynamic output (with prefix metadata) back to the same executable
+    result_new = tpu_torch_compile.execute(
+        executable_key,
+        [result[0], x_d2],
+        [tpu_torch_compile.OutputShape([2, 4, 1021])],
+    )
+    self.assert_close(
+        golden_result=x.to("cpu"),
+        torch_tpu_result=result_new[0].cpu(),
+    )
+
+  @parameterized.parameters(64, 128)
+  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  def test_pad_real_to_static_kv_cache_multi_layout_execution_on_tpu(
+      self, head_dim
+  ):
+    """Tests compiling two executables with layouts {3,2,1,0} and {2,3,1,0},
+
+    caching them, selecting the executable based on
+    get_device_layout_if_materialized, and verifying accuracy against CPU.
+    """
+    mlir_program = f"""
+module {{
+  func.func @main(
+      %key: tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4096, ?>>,
+      %d_seq: tensor<i32>,
+      %new_key: tensor<1x8x1x{head_dim}xf32>
+  ) -> tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4097, ?>> {{
+    %c_b = stablehlo.constant dense<1> : tensor<i32>
+    %c_h = stablehlo.constant dense<8> : tensor<i32>
+    %c_d = stablehlo.constant dense<{head_dim}> : tensor<i32>
+
+    %0 = stablehlo.custom_call @PadRealToStatic(%key, %c_b, %c_h, %d_seq, %c_d)
+        : (tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4096, ?>>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<1x8x4096x{head_dim}xf32>
+    %1 = stablehlo.set_dimension_size %0, %d_seq, dim=2
+        : (tensor<1x8x4096x{head_dim}xf32>, tensor<i32>) -> tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4096, ?>>
+    %2 = stablehlo.concatenate %1, %new_key, dim=2
+        : (tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4096, ?>>, tensor<1x8x1x{head_dim}xf32>) -> tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4097, ?>>
+    return %2 : tensor<1x8x?x{head_dim}xf32, #stablehlo.bounds<?, ?, 4097, ?>>
+  }}
+}}
+"""
+    # Compile executables with layouts {3,2,1,0}, {2,3,1,0}, and {3,1,2,0} and cache them
+    module_3210 = tpu_torch_compile.parse_mlir_text(mlir_program)
+    executable_3210 = tpu_torch_compile.compile_mlir(
+        module_3210, argument_layouts=[[3, 2, 1, 0], [], []]
+    )
+
+    module_2310 = tpu_torch_compile.parse_mlir_text(mlir_program)
+    executable_2310 = tpu_torch_compile.compile_mlir(
+        module_2310, argument_layouts=[[2, 3, 1, 0], [], []]
+    )
+
+    module_3120 = tpu_torch_compile.parse_mlir_text(mlir_program)
+    executable_3120 = tpu_torch_compile.compile_mlir(
+        module_3120, argument_layouts=[[3, 1, 2, 0], [], []]
+    )
+
+    cached_executables = {
+        (3, 2, 1, 0): executable_3210,
+        (2, 3, 1, 0): executable_2310,
+        (3, 1, 2, 0): executable_3120,
+    }
+
+    device = torch.device("tpu")
+    seq_len = 2048
+    key_cpu = torch.randn(1, 8, seq_len, head_dim, dtype=torch.float32)
+    key = key_cpu.clone().to(device)
+    d_seq = torch.tensor(seq_len, device="cpu", dtype=torch.int32).to(device)
+    new_key_cpu = torch.randn(1, 8, 1, head_dim, dtype=torch.float32)
+    new_key = new_key_cpu.clone().to(device)
+
+    # Prefill step on CPU
+    golden_cpu_key = torch.cat([key_cpu, new_key_cpu], dim=2)
+
+    # Prefill step on TPU: check input layout and select executable
+    layout_info = tpu_torch_compile.get_device_layout_if_materialized(key)
+    self.assertIsNotNone(layout_info)
+    minor_to_major = tuple(layout_info[0])
+    self.assertIn(minor_to_major, cached_executables)
+
+    result = tpu_torch_compile.execute(
+        cached_executables[minor_to_major],
+        [key, d_seq, new_key],
+        [tpu_torch_compile.OutputShape([1, 8, seq_len + 1, head_dim])],
+    )
+    current_key = result[0]
+    self.assertEqual(list(current_key.shape), [1, 8, seq_len + 1, head_dim])
+    self.assert_close(
+        golden_result=golden_cpu_key,
+        torch_tpu_result=current_key.cpu(),
+    )
+
+    # Decode steps: 10 decode iterations
+    for _ in range(10):
+      seq_len += 1
+      d_seq = torch.tensor(seq_len, device="cpu", dtype=torch.int32).to(device)
+      new_key_cpu = torch.randn(1, 8, 1, head_dim, dtype=torch.float32)
+      new_key = new_key_cpu.clone().to(device)
+      golden_cpu_key = torch.cat([golden_cpu_key, new_key_cpu], dim=2)
+
+      # Check layout of the input to the decode step
+      layout_info = tpu_torch_compile.get_device_layout_if_materialized(
+          current_key
+      )
+      self.assertIsNotNone(layout_info)
+      minor_to_major = tuple(layout_info[0])
+      self.assertIn(minor_to_major, cached_executables)
+
+      executable = cached_executables[minor_to_major]
+      result = tpu_torch_compile.execute(
+          executable,
+          [current_key, d_seq, new_key],
+          [tpu_torch_compile.OutputShape([1, 8, seq_len + 1, head_dim])],
+      )
+      current_key = result[0]
+      self.assert_close(
+          golden_result=golden_cpu_key,
+          torch_tpu_result=current_key.cpu(),
+      )
 
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],

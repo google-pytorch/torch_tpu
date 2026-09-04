@@ -941,6 +941,7 @@ torch_tpu_py_test(
     deps = [
         ":op_testing",
         ":ops_test_data",
+        ":oss_utils",
         ":quantize_utils",
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -1056,6 +1057,7 @@ torch_tpu_py_test(
     deps = [
         ":op_testing",
         ":ops_test_data",
+        ":oss_utils",
         ":quantize_utils",
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -1093,6 +1095,7 @@ torch_tpu_py_test(
     deps = [
         ":op_testing",
         ":ops_test_data",
+        ":oss_utils",
         ":quantize_utils",
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
