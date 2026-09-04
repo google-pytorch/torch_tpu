@@ -29,6 +29,7 @@ load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
 licenses(["notice"])
 
+# TESTING
 package(
     default_applicable_licenses = [":license"],
     default_visibility = ["//:__subpackages__"],
@@ -39,7 +40,11 @@ license(
     package_name = "torch_tpu",
 )
 
-exports_files(["LICENSE"])
+exports_files([
+    "LICENSE",
+    "something.py",
+    "__init__.py",
+])
 
 py_dist_info(
     name = "torch_tpu_dist_info",
