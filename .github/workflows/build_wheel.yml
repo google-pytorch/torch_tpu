@@ -45,6 +45,7 @@ on:
 # Prevent "overly broad permissions" Zizmor finding.
 permissions:
   contents: read
+  pull-requests: read
 
 # Cancel old jobs when they are replaced by new runs
 concurrency:
@@ -63,21 +64,37 @@ jobs:
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
       default_python_version: "3.12"
       latest_python_version: "3.14"
-      should_build: ${{ steps.check_diff.outputs.should_build }}
+      should_build: ${{ steps.set_build.outputs.should_build }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           # Keep the current commit's first parent fetchable
           # to resolve the base branch tip at CI runtime.
           fetch-depth: 2
+      - name: Check PR gate
+        id: check_gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/tools/check_pr_gate.py
       - name: Inspect PR diff for wheel-affecting changes
         id: check_diff
+        if: steps.check_gate.outputs.should_run == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ inputs.override_base_sha }}
           HEAD_SHA: ${{ inputs.override_current_sha || github.sha }}
           FORCE_BUILD: ${{ contains(github.event.pull_request.labels.*.name, 'ci:force-wheel-build') || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
         run: ci/check_wheel_diff.sh
+      - id: set_build
+        run: |
+          if [[ "${{ steps.check_gate.outputs.should_run }}" == "true" && "${{ steps.check_diff.outputs.should_build }}" == "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: set
         env:
           EVENT_NAME: ${{ github.event_name }}

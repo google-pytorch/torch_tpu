@@ -95,12 +95,13 @@ def buildifier(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def test_ci_tools(session: nox.Session) -> None:
-  """Run unit tests for CI base SHA resolution and diff isolation scripts."""
+  """Run unit tests for CI scripts and automation workflows."""
   session.run(
       "python3",
       "-m",
       "unittest",
       "ci/tools/test_resolve_base_sha.py",
+      "ci/tools/test_check_pr_gate.py",
       external=True,
   )
 

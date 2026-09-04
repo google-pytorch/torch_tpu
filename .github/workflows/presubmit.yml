@@ -50,8 +50,26 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'main' }}
 
 jobs:
+  gate:
+    name: "Pre-flight Gate Check"
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check_gate.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: Evaluate PR state
+        id: check_gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/tools/check_pr_gate.py
+
   run_tests:
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     # Available self-hosted runners.
     strategy:
       fail-fast: false
