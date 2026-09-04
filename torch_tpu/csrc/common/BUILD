@@ -1562,4 +1562,23 @@ torch_tpu_cc_test(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "status_test_utils",
+    testonly = True,
+    hdrs = ["status_test_utils.h"],
+    deps = ["@com_google_googletest//:gtest"],
+)
+
+torch_tpu_cc_test(
+    name = "status_test_utils_test",
+    srcs = ["status_test_utils_test.cc"],
+    deps = [
+        ":error_utils",
+        ":status_test_utils",
+        "//torch_tpu/csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
 torch_tpu_package_end()
