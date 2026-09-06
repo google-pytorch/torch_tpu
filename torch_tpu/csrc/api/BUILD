@@ -48,6 +48,10 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/types:span",
         "@xla//xla/pjrt:pjrt_client",
     ],
+    # Nothing inside torch_tpu calls this API; without alwayslink the linker
+    # drops tensor_buffer.o from the wheel's common library and the
+    # exported symbols external plugins bind to disappear.
+    alwayslink = True,
 )
 
 torch_tpu_cc_test(

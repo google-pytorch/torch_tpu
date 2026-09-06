@@ -60,11 +60,20 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/time",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        # Exports the external-plugin buffer API from the common library
+        # (see alwayslink on the target).
+        "//torch_tpu/csrc/api:tensor_buffer",
         "//torch_tpu/csrc/common:cache_key",
         "//torch_tpu/csrc/common:compilation",
         "//torch_tpu/csrc/common:compilation_cache",
@@ -85,12 +94,6 @@ pybind_extension(
         "//torch_tpu/csrc/eager:tpu_hooks",
         "//torch_tpu/csrc/internal/sync:sync_cc",
         "//torch_tpu/csrc/pjrt:pjrt_state",
-        "@com_google_absl//absl/base:nullability",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/time",
         "@xla//xla/pjrt:pjrt_client",
     ],
 )
