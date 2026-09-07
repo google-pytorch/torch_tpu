@@ -23,11 +23,13 @@ inputs:
     required: false
     default: ''
   current_sha:
-    description: 'Current commit SHA'
-    required: true
+    description: 'The current or head commit SHA (used in all and calculate modes).'
+    required: false
+    default: ${{ github.sha }}
   bazel_config:
-    description: 'Bazel --config flag to use'
-    required: true
+    description: 'Bazel --config flag to use (required for test execution)'
+    required: false
+    default: ''
   extra_bazel_flags:
     description: 'Additional flags for the Bazel test command'
     required: false
@@ -37,11 +39,55 @@ inputs:
       Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
+  impacted_targets_file:
+    description: 'Path to precomputed impacted_targets.txt file (optional)'
+    required: false
+    default: ''
+  mode:
+    description: 'Execution mode: calculate (only compute diff), test (only run tests), or all (compute and run)'
+    required: false
+    default: 'all'
+  download_impacted_targets:
+    description: >-
+      Set to true to download the impacted_targets artifact published by an
+      earlier calculate job before running tests.
+    required: false
+    default: 'false'
+  workflow_file:
+    description: >-
+      Path (relative to workspace) to a GitHub Actions workflow YAML file
+      from which candidate Bazel configs are extracted.
+    required: false
+    default: ''
+
+outputs:
+  has_impacted_targets:
+    description: 'True if impacted targets were detected or full run requested.'
+    value: ${{ steps.bazel_diff_exec.outputs.has_impacted_targets }}
+  is_full_run:
+    description: 'True if global build configuration changed or diffing is bypassed.'
+    value: ${{ steps.bazel_diff_exec.outputs.is_full_run }}
+  impacted_configs:
+    description: >-
+      JSON array of Bazel configs that have at least one impacted test, e.g.
+      '["ci_cpu_presubmit"]'. Empty string when the set could not be determined,
+      in which case callers must run every config.
+    value: ${{ steps.bazel_diff_exec.outputs.impacted_configs }}
 
 runs:
   using: 'composite'
   steps:
+    - name: Download Impacted Targets Artifact
+      if: inputs.download_impacted_targets == 'true'
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+      with:
+        name: impacted-targets
+        path: .
+
     - name: Execute bazel-diff script
+      id: bazel_diff_exec
+      env:
+        PYTHONPATH: ${{ github.workspace }}
       run: >-
         uv run "$GITHUB_WORKSPACE/ci/tools/run_bazel_diff.py"
         --workspace-dir="$GITHUB_WORKSPACE"
@@ -50,4 +96,7 @@ runs:
         --bazel-config="${{ inputs.bazel_config }}"
         --extra-bazel-flags="${{ inputs.extra_bazel_flags }}"
         --test-all="${{ inputs.test_all }}"
+        --mode="${{ inputs.mode }}"
+        --impacted-targets-file="${{ inputs.impacted_targets_file }}"
+        --workflow-file="${{ inputs.workflow_file }}"
       shell: bash

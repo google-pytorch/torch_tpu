@@ -52,73 +52,72 @@ concurrency:
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
+  compute_diff:
+    name: "Compute Impacted Targets"
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --ipc=host
+    outputs:
+      has_impacted_targets: ${{ steps.bazel_diff.outputs.has_impacted_targets }}
+      is_full_run: ${{ steps.bazel_diff.outputs.is_full_run }}
+      impacted_configs: ${{ steps.bazel_diff.outputs.impacted_configs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace inside this ephemeral container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Calculate Impacted Targets via bazel-diff
+        id: bazel_diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          mode: calculate
+          base_sha: ${{ inputs.override_base_sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          workflow_file: .github/workflows/presubmit.yml
+      - name: Upload Impacted Targets Artifact
+        if: steps.bazel_diff.outputs.has_impacted_targets == 'true' && steps.bazel_diff.outputs.is_full_run != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: impacted-targets
+          path: impacted_targets.txt
+          retention-days: 1
+
   run_tests:
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
-    # Available self-hosted runners.
+    needs: compute_diff
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
-        job_info: [
-          {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu_presubmit",
-            extra_flags: "",
-          },
-          {
-            runner: "linux-x86-ct5lp-224-8tpu",
-            config: "ci_tpu_v5_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          },
+        job_info:
+          - name: CPU
+            runner: linux-x86-n4-16
+            config: ci_cpu_presubmit
+            extra_flags: ''
+          - runner: linux-x86-ct5lp-224-8tpu
+            config: ci_tpu_v5_presubmit
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
           # TODO(gunhyun): Re-enable once we have more quota.
-          # {
-          #   runner: "linux-x86-ct6e-180-8tpu",
-          #   config: "ci_tpu_v6_presubmit",
-          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          # },
-          {
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7_presubmit",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"',
-          }
-        ]
-    # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
-    # workflow is required.
-    # See go/ml-github-actions/getting_started/using_runners.md#supported-runner-scale-set.
-    runs-on: ${{ matrix.job_info.runner }}
-    container:
-      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
-      # Disable ipc isolation to prevent shm limit issues.
-      options: --ipc=host
-
-    steps:
-      # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
-      # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
-      # will return "total 0").
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # Keep the current commit's first parent fetchable
-          # to resolve bazel-diff base SHA below.
-          fetch-depth: 2
-
-      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
-      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
-      # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
-      # container.
-      - name: Fix Git Workspace Ownership
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # Enable remote connections. Add a waiting step.
-      # See go/ml-github-actions:connect#add-waiting-step.
-      - name: Wait For Connection
-        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
-        with:
-          halt-dispatch-input: ${{ inputs.halt-for-connection }}
-      - name: Run Impacted Tests via bazel-diff
-        uses: ./.github/actions/bazel-diff
-        with:
-          base_sha: ${{ inputs.override_base_sha }}
-          current_sha: ${{ inputs.override_current_sha || github.sha }}
-          bazel_config: ${{ matrix.job_info.config }}
-          extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
-          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          # - runner: linux-x86-ct6e-180-8tpu
+          #   config: ci_tpu_v6_presubmit
+          #   extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+          - runner: linux-x86-tpu7x-224-4tpu
+            config: ci_tpu_v7_presubmit
+            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"'
+    uses: ./.github/workflows/presubmit_runner.yml
+    with:
+      runner: ${{ matrix.job_info.runner }}
+      bazel_config: ${{ matrix.job_info.config }}
+      extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
+      should_run: ${{ needs.compute_diff.result == 'failure' || (needs.compute_diff.result == 'success' && needs.compute_diff.outputs.has_impacted_targets == 'true' && (needs.compute_diff.outputs.impacted_configs == '' || contains(fromJSON(needs.compute_diff.outputs.impacted_configs || '[]'), matrix.job_info.config))) }}
+      use_precomputed: ${{ needs.compute_diff.result == 'success' && needs.compute_diff.outputs.is_full_run != 'true' }}
+      test_all: ${{ needs.compute_diff.outputs.is_full_run == 'true' || contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+      halt_for_connection: ${{ inputs.halt-for-connection }}
+      base_sha: ${{ inputs.override_base_sha }}
+      current_sha: ${{ inputs.override_current_sha || github.sha }}

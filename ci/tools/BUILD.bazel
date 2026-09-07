@@ -43,6 +43,14 @@ py_test(
     ],
 )
 
+py_library(
+    name = "list_ci_tests_lib",
+    srcs = ["list_ci_tests.py"],
+    deps = [
+        "@pypi//pyyaml",
+    ],
+)
+
 py_binary(
     name = "delete_cancelled_pr_runs",
     srcs = ["delete_cancelled_pr_runs.py"],
@@ -65,7 +73,7 @@ py_binary(
         "//:github_workflows",
     ],
     deps = [
-        "@pypi//pyyaml",
+        ":list_ci_tests_lib",
     ],
 )
 
@@ -77,13 +85,18 @@ py_test(
         "//:github_workflows",
     ],
     deps = [
-        ":list_ci_tests",
+        ":list_ci_tests_lib",
     ],
 )
 
 py_binary(
     name = "run_bazel_diff",
     srcs = ["run_bazel_diff.py"],
+    deps = [
+        # Reuses .bazelrc tag-filter parsing to decide which CI configs have an
+        # impacted test.
+        ":list_ci_tests_lib",
+    ],
 )
 
 py_test(

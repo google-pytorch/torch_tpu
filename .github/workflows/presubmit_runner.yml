@@ -1,0 +1,94 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Presubmit Runner
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label for runs-on'
+        required: true
+        type: string
+      bazel_config:
+        description: 'Bazel --config name'
+        required: true
+        type: string
+      extra_bazel_flags:
+        description: 'Extra flags for bazel test'
+        required: false
+        default: ''
+        type: string
+      should_run:
+        description: 'Whether this runner has impacted tests to execute'
+        required: true
+        type: boolean
+      use_precomputed:
+        description: 'Whether to download and use the precomputed impacted_targets.txt artifact'
+        required: true
+        type: boolean
+      test_all:
+        description: 'Whether to bypass bazel-diff and run all tests'
+        required: false
+        default: false
+        type: boolean
+      halt_for_connection:
+        description: 'Value for the remote connection waiting step'
+        required: false
+        default: ''
+        type: string
+      base_sha:
+        description: 'Override Base SHA for bazel-diff fallback'
+        required: false
+        default: ''
+        type: string
+      current_sha:
+        description: 'Override Current SHA for bazel-diff fallback'
+        required: false
+        default: ''
+        type: string
+jobs:
+  test:
+    name: "Run tests"
+    if: ${{ inputs.should_run }}
+    runs-on: ${{ inputs.runner }}
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+      # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
+      # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
+      # Tell Git explicitly to trust the workspace inside this ephemeral container.
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # Enable remote connections. Add a waiting step.
+      # See go/ml-github-actions:connect#add-waiting-step.
+      - name: Wait For Connection
+        if: inputs.halt_for_connection != ''
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt_for_connection }}
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          mode: ${{ inputs.use_precomputed && 'test' || (inputs.test_all && 'test' || 'all') }}
+          base_sha: ${{ inputs.base_sha }}
+          current_sha: ${{ inputs.current_sha || github.sha }}
+          bazel_config: ${{ inputs.bazel_config }}
+          extra_bazel_flags: ${{ inputs.extra_bazel_flags }}
+          test_all: ${{ inputs.test_all }}
+          download_impacted_targets: ${{ inputs.use_precomputed }}
+          impacted_targets_file: ${{ inputs.use_precomputed && 'impacted_targets.txt' || '' }}

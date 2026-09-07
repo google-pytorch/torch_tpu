@@ -14,21 +14,27 @@
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["pyyaml"]
 # ///
 
 """Calculates impacted Bazel tests using bazel-diff and runs them."""
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 import dataclasses
+import json
 import os
 import pathlib
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from typing import Final
+
+# Reused for the .bazelrc `--test_tag_filters` parsing and Bazel's tag filter
+# semantics, so the per-config skip decision cannot drift from `list_ci_tests`.
+from ci.tools import list_ci_tests
 
 _BAZEL_DIFF_VERSION: Final[str] = "v46.1.0"
 _BAZEL_DIFF_URL: Final[str] = (
@@ -36,6 +42,21 @@ _BAZEL_DIFF_URL: Final[str] = (
     "bazel-diff_deploy.jar"
 )
 _BAZEL_DIFF_JAR: Final[pathlib.Path] = pathlib.Path("/tmp/bazel-diff.jar")
+
+# Execution modes. `calculate` and `test` split the work across two GitHub
+# Actions jobs so the expensive diff is computed once on a cheap CPU runner,
+# and scarce accelerator runners are only claimed when there is work for them.
+# `all` keeps the original single-job behavior for local runs and postsubmits.
+MODE_CALCULATE: Final[str] = "calculate"
+MODE_TEST: Final[str] = "test"
+MODE_ALL: Final[str] = "all"
+
+# Config used for `cquery` graph hashing when no runner-specific config is
+# given (i.e. the central `calculate` job). `ci` only sets execution, caching
+# and output flags -- it adds no `--build_tag_filters`/`--test_tag_filters` --
+# so the configured target graph stays un-pruned while still reusing the shared
+# remote analysis cache.
+_DEFAULT_CQUERY_CONFIG: Final[str] = "ci"
 
 # Global Bazel configuration file patterns (one regex per entry). Files matching
 # these patterns represent Bazel configuration; if these change, the whole cache
@@ -76,6 +97,7 @@ _GLOBAL_BAZEL_CONFIGS_REGEX: Final[re.Pattern[str]] = re.compile(
 SHARED_CI_PATHS: Final[Sequence[str]] = (
     # go/keep-sorted start
     r"\.github/actions/.*",
+    r"\.github/workflows/presubmit_runner\.yml",
     # go/keep-sorted end
 )
 _SHARED_CI_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
@@ -138,6 +160,10 @@ class BazelDiffOptions:
   extra_bazel_flags: str
   test_all: bool
   workflow_ref: str
+  mode: str = MODE_ALL
+  impacted_targets_file: str = ""
+  candidate_configs: Sequence[str] = ()
+  workflow_file: str = ""
 
 
 def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
@@ -186,7 +212,45 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
           " $GITHUB_WORKFLOW_REF, which GitHub Actions sets automatically."
       ),
   )
+  parser.add_argument(
+      "--mode",
+      default=MODE_ALL,
+      choices=(MODE_CALCULATE, MODE_TEST, MODE_ALL),
+      help=(
+          "Execution mode: 'calculate' only computes impacted targets and"
+          " reports them via $GITHUB_OUTPUT, 'test' only runs tests from a"
+          " precomputed targets file, and 'all' does both in one invocation."
+      ),
+  )
+  parser.add_argument(
+      "--impacted-targets-file",
+      default="",
+      help=(
+          "Path (relative to the workspace) of a precomputed impacted targets"
+          " file to test instead of recomputing the diff."
+      ),
+  )
+  parser.add_argument(
+      "--candidate-configs",
+      default="",
+      help=(
+          "Comma-separated list of Bazel configs to evaluate when computing"
+          " impacted_configs."
+      ),
+  )
+  parser.add_argument(
+      "--workflow-file",
+      default="",
+      help=(
+          "Path (relative to workspace) to a GitHub Actions workflow YAML file"
+          " from which candidate Bazel configs are extracted via"
+          " list_ci_tests.extract_workflow_configs()."
+      ),
+  )
   ns = parser.parse_args(argv)
+  candidate_configs = tuple(
+      c.strip() for c in str(ns.candidate_configs).split(",") if c.strip()
+  )
   return BazelDiffOptions(
       workspace_dir=pathlib.Path(ns.workspace_dir),
       base_sha=ns.base_sha,
@@ -195,6 +259,10 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
       extra_bazel_flags=ns.extra_bazel_flags,
       test_all=(str(ns.test_all).lower() == "true"),
       workflow_ref=ns.workflow_ref,
+      mode=ns.mode,
+      impacted_targets_file=ns.impacted_targets_file,
+      candidate_configs=candidate_configs,
+      workflow_file=ns.workflow_file,
   )
 
 
@@ -283,6 +351,206 @@ def read_targets_file(path: pathlib.Path) -> Sequence[str]:
           None, map(str.strip, path.read_text(encoding="utf-8").splitlines())
       )
   )
+
+
+def normalize_label(label: str) -> str:
+  """Strips bazel-diff's main-repo prefix so the label is query-friendly.
+
+  bazel-diff emits fully canonical labels such as `@@//ci/tools:foo`, which
+  `bazel query` in the main repository expects as plain `//ci/tools:foo`.
+
+  Args:
+    label: A target label as emitted by bazel-diff.
+
+  Returns:
+    The label without a leading main-repository prefix.
+  """
+  for prefix in ("@@//", "@//"):
+    if label.startswith(prefix):
+      return label[len(prefix) - 2 :]
+  return label
+
+
+def query_impacted_tests(
+    impacted_targets: Sequence[str],
+) -> Sequence[list_ci_tests.TestTarget] | None:
+  """Narrows impacted targets to test rules and reads their tags.
+
+  bazel-diff reports every impacted target, including source files, filegroups
+  and binaries, so the raw count says nothing about whether any test would
+  actually run. `tests(...)` keeps only test rules (expanding test suites).
+
+  This is a loading-phase query: it needs no configuration, no analysis and no
+  accelerator, so it is safe and cheap to run on the CPU runner.
+
+  Args:
+    impacted_targets: Labels emitted by `bazel-diff get-impacted-targets`.
+
+  Returns:
+    The impacted test targets with their tags (possibly empty if none of the
+    impacted targets is a test), or None if the query could not be completed.
+  """
+  if not impacted_targets:
+    return []
+  labels = " ".join(f'"{normalize_label(t)}"' for t in impacted_targets)
+  # The query goes through --query_file rather than argv: a large PR can impact
+  # thousands of targets, and Linux caps a single argument at 128 KiB
+  # (MAX_ARG_STRLEN), which the joined label list would blow past.
+  with tempfile.TemporaryDirectory() as td:
+    query_file = pathlib.Path(td) / "query.txt"
+    query_file.write_text(f"tests(set({labels}))", encoding="utf-8")
+    res = subprocess.run(
+        [
+            "bazel",
+            "query",
+            f"--query_file={os.fspath(query_file)}",
+            "--output=xml",
+            "--keep_going",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+  # Exit code 3 means "partial success with errors" under --keep_going (e.g. a
+  # target was deleted in the PR); the XML emitted so far is still usable. Any
+  # target that failed to resolve has no test left to run anyway.
+  if res.returncode not in (0, 3):
+    print(f"bazel query failed with exit code {res.returncode}.")
+    if res.stderr:
+      print(res.stderr)
+    return None
+  if not res.stdout.strip():
+    return []
+  try:
+    return list_ci_tests.parse_bazel_query_xml(res.stdout)
+  except ValueError as e:
+    print(f"Could not parse bazel query output: {e}")
+    return None
+
+
+def resolve_impacted_configs(
+    impacted_targets: Sequence[str],
+    bazelrc_path: pathlib.Path,
+    allowed_configs: Collection[str] | None = None,
+    impacted_tests: Sequence[list_ci_tests.TestTarget] | None = None,
+) -> Sequence[str] | None:
+  """Determines which CI configurations have at least one test to run.
+
+  Each presubmit runner applies its own `--test_tag_filters`, so an impacted
+  target set can be non-empty overall while a given runner has nothing to do.
+  Resolving that up front lets the workflow skip the job before it claims a
+  scarce accelerator.
+
+  This relies on every CI config declaring its own `--test_tag_filters` line in
+  `.bazelrc` rather than inheriting one via `--config=`, because
+  `parse_bazelrc_tag_filters` does not resolve config inheritance. A config
+  that only inherits its filters is absent from the mapping and would never be
+  reported as impacted. `list_ci_tests` already depends on the same invariant.
+
+  Args:
+    impacted_targets: Labels emitted by `bazel-diff get-impacted-targets`.
+    bazelrc_path: Path to the repository `.bazelrc`.
+    allowed_configs: The subset of configurations to evaluate (e.g. active
+      presubmit configs extracted from a workflow). Non-matching configs in
+      `.bazelrc` are ignored. If None, evaluates all configs in `.bazelrc`.
+    impacted_tests: Pre-queried test targets with their tags, or None to query
+      `impacted_targets` via `query_impacted_tests`.
+
+  Returns:
+    The sorted config names with at least one impacted test, or None if the
+    set could not be determined and callers must conservatively run everything.
+  """
+  if impacted_tests is None:
+    impacted_tests = query_impacted_tests(impacted_targets)
+  if impacted_tests is None:
+    print("Could not determine impacted tests; assuming all configs impacted.")
+    return None
+
+  print(f"Impacted test target(s): {len(impacted_tests)}")
+  if not impacted_tests:
+    return []
+
+  try:
+    tag_filters = list_ci_tests.parse_bazelrc_tag_filters(bazelrc_path)
+  except OSError as e:
+    print(
+        f"Could not read {bazelrc_path} ({e}); assuming all configs impacted."
+    )
+    return None
+
+  impacted_configs = sorted(
+      config
+      for config, filters in tag_filters.items()
+      if (allowed_configs is None or config in allowed_configs)
+      and any(
+          list_ci_tests.matches_tag_filters(test.tags, filters)
+          for test in impacted_tests
+      )
+  )
+  print(f"Configurations with impacted tests: {impacted_configs}")
+  return impacted_configs
+
+
+def resolve_mode(opts: BazelDiffOptions) -> str:
+  """Derives the effective execution mode from the requested options.
+
+  An explicit `--mode=calculate` always wins. Otherwise a missing
+  `--bazel-config` means we cannot run tests at all, so we degrade to
+  `calculate`. An explicit `--mode=test` runs tests directly. A precomputed
+  targets file (and no `--test-all` override) means the diff was already
+  computed upstream, so we only need to run the tests.
+
+  Args:
+    opts: The parsed command-line options.
+
+  Returns:
+    One of MODE_CALCULATE, MODE_TEST or MODE_ALL.
+  """
+  if opts.mode == MODE_CALCULATE or not opts.bazel_config:
+    return MODE_CALCULATE
+  if opts.mode == MODE_TEST:
+    return MODE_TEST
+  if opts.impacted_targets_file and not opts.test_all:
+    return MODE_TEST
+  return MODE_ALL
+
+
+def write_github_output(
+    has_impacted_targets: bool,
+    is_full_run: bool,
+    impacted_configs: Sequence[str] | None = None,
+) -> None:
+  """Reports the diff outcome to downstream jobs via `$GITHUB_OUTPUT`.
+
+  `has_impacted_targets` lets the workflow skip claiming accelerator runners
+  entirely, and `is_full_run` tells them to test `//...` instead of downloading
+  a targets artifact that was never uploaded.
+
+  `impacted_configs` refines this per runner. It is deliberately left unset
+  when the value is None, because an unset output reads back as the empty
+  string in a workflow expression, which the gate treats as "unknown, run
+  everything". That keeps the conservative fallback in one place instead of
+  encoding a sentinel value that both sides must agree on.
+
+  Args:
+    has_impacted_targets: Whether any target needs to be tested.
+    is_full_run: Whether downstream runners must test everything.
+    impacted_configs: Bazel configs with at least one impacted test, or None if
+      the set could not be determined.
+  """
+  github_output = os.environ.get("GITHUB_OUTPUT")
+  print(
+      f"has_impacted_targets={str(has_impacted_targets).lower()},"
+      f" is_full_run={str(is_full_run).lower()},"
+      f" impacted_configs={impacted_configs}"
+  )
+  if not github_output:
+    return
+  with open(github_output, "a", encoding="utf-8") as f:
+    f.write(f"has_impacted_targets={str(has_impacted_targets).lower()}\n")
+    f.write(f"is_full_run={str(is_full_run).lower()}\n")
+    if impacted_configs is not None:
+      f.write(f"impacted_configs={json.dumps(list(impacted_configs))}\n")
 
 
 def resolve_base_sha(
@@ -375,6 +643,58 @@ def _run_bazel_test(
   return res.returncode
 
 
+def _run_precomputed_targets(
+    opts: BazelDiffOptions, workspace_dir: pathlib.Path
+) -> int:
+  """Runs tests from a targets file computed by an upstream `calculate` job.
+
+  Args:
+    opts: The parsed command-line options.
+    workspace_dir: The resolved repository workspace directory.
+
+  Returns:
+    The exit code of the Bazel test command, or 0 if there is nothing to test.
+  """
+  if opts.test_all:
+    print("Full test run requested in test mode. Running all tests.")
+    return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
+
+  if not opts.impacted_targets_file:
+    print(
+        "No impacted targets file specified in test mode. Skipping Bazel"
+        " entirely!"
+    )
+    return 0
+
+  targets_path = workspace_dir / opts.impacted_targets_file
+  impacted_targets = (
+      read_targets_file(targets_path) if targets_path.is_file() else []
+  )
+  if not impacted_targets:
+    print(
+        f"Precomputed impacted targets file ({opts.impacted_targets_file}) is"
+        " empty or missing. Skipping Bazel entirely!"
+    )
+    return 0
+
+  print(
+      f"Using precomputed impacted targets from {opts.impacted_targets_file}"
+      f" ({len(impacted_targets)} target(s))."
+  )
+  print("--- Impacted Targets List ---")
+  for target in impacted_targets:
+    print(target)
+  print("-----------------------------")
+  return _run_bazel_test(
+      opts.bazel_config,
+      opts.extra_bazel_flags,
+      [
+          "--skip_incompatible_explicit_targets",
+          f"--target_pattern_file={os.fspath(targets_path)}",
+      ],
+  )
+
+
 def main(argv: Sequence[str]) -> int:
   sys.stdout.reconfigure(line_buffering=True)
   opts = parse_args(argv)
@@ -384,6 +704,14 @@ def main(argv: Sequence[str]) -> int:
     raise ValueError(f"Workspace directory does not exist: {workspace_dir}")
   workspace_dir = workspace_dir.resolve()
   os.chdir(workspace_dir)
+
+  mode = resolve_mode(opts)
+  print(f"Running bazel-diff in '{mode}' mode.")
+
+  # The diff was already computed by an upstream job, so skip straight to
+  # testing the targets it handed us.
+  if mode == MODE_TEST:
+    return _run_precomputed_targets(opts, workspace_dir)
 
   # Resolve effective base SHA via centralized helper. If CURRENT_SHA is a merge
   # commit (synthetic PR merge), resolves to CURRENT_SHA^1 to isolate PR
@@ -409,14 +737,14 @@ def main(argv: Sequence[str]) -> int:
       print("Forcing a full test run to ensure global configuration validity.")
       test_all = True
 
-    if is_ci_definition_modified(changed_files, opts.workflow_ref):
-      print("CI definitions for this job modified.")
-      print(
-          "Forcing a full test run: bazel-diff sees no impacted targets for a"
-          " CI-only change, so this job would otherwise pass without running"
-          " any tests."
-      )
-      test_all = True
+    # if is_ci_definition_modified(changed_files, opts.workflow_ref):
+    #   print("CI definitions for this job modified.")
+    #   print(
+    #       "Forcing a full test run: bazel-diff sees no impacted targets for a"
+    #       " CI-only change, so this job would otherwise pass without running"
+    #       " any tests."
+    #   )
+    #   test_all = True
 
     # Check if all modified files are documentation, images, or repo metadata.
     # If so, they do not affect any build or test targets, so we can skip Bazel
@@ -426,6 +754,8 @@ def main(argv: Sequence[str]) -> int:
       print(
           "No test targets impacted by these changes. Skipping Bazel entirely!"
       )
+      if mode == MODE_CALCULATE:
+        write_github_output(has_impacted_targets=False, is_full_run=False)
       return 0
 
     run_ops_tests = should_run_ops_tests(changed_files)
@@ -441,6 +771,10 @@ def main(argv: Sequence[str]) -> int:
         " global configuration files modified. Skipping bazel-diff and running"
         " all tests."
     )
+    if mode == MODE_CALCULATE:
+      print("Signaling a full test run to downstream runners.")
+      write_github_output(has_impacted_targets=True, is_full_run=True)
+      return 0
     return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
 
   print("Downloading bazel-diff...")
@@ -459,11 +793,10 @@ def main(argv: Sequence[str]) -> int:
 
   print(f"Computing impacted targets between {base_sha} and {current_sha}...")
 
-  cquery_args = (
-      (f"--cqueryCommandOptions=--config={opts.bazel_config}",)
-      if opts.bazel_config
-      else ()
-  )
+  # The central `calculate` job runs without a runner-specific config, so fall
+  # back to the shared `ci` base config for graph hashing.
+  cquery_config = opts.bazel_config or _DEFAULT_CQUERY_CONFIG
+  cquery_args = (f"--cqueryCommandOptions=--config={cquery_config}",)
 
   print("--- Generating Base Hashes ---")
   print(f"PR detected. Fetching exact base SHA: {base_sha}")
@@ -474,18 +807,22 @@ def main(argv: Sequence[str]) -> int:
   )
   subprocess.run(["git", "checkout", base_sha], check=True)
   base_hashes = workspace_dir / "base_hashes.json"
-  run_bazel_diff(
-      "generate-hashes",
-      "-w",
-      workspace_dir,
-      base_hashes,
-      "--useCquery",
-      *cquery_args,
-  )
+  try:
+    run_bazel_diff(
+        "generate-hashes",
+        "-w",
+        workspace_dir,
+        base_hashes,
+        "--useCquery",
+        *cquery_args,
+    )
+  finally:
+    # Never leave the checkout parked on the base SHA; a later job step (or a
+    # local run) would otherwise operate on the wrong tree.
+    print(f"Checking out current SHA: {current_sha}")
+    subprocess.run(["git", "checkout", current_sha], check=True)
 
   print("--- Generating PR Hashes ---")
-  print(f"Checking out current SHA: {current_sha}")
-  subprocess.run(["git", "checkout", current_sha], check=True)
   pr_hashes = workspace_dir / "pr_hashes.json"
   run_bazel_diff(
       "generate-hashes",
@@ -539,7 +876,6 @@ def main(argv: Sequence[str]) -> int:
           encoding="utf-8",
       )
 
-  print("--- Running Impacted Bazel Tests ---")
   if impacted_targets:
     print(f"Found {len(impacted_targets)} impacted target(s).")
     print("--- Impacted Targets List ---")
@@ -547,22 +883,80 @@ def main(argv: Sequence[str]) -> int:
       print(target)
     print("-----------------------------")
 
-    # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
-    # an explicitly requested target whose target_compatible_with is unsatisfied
-    # as a hard error -- unlike the wildcard //... runs everywhere else, which
-    # skip it. --skip_incompatible_explicit_targets restores the wildcard
-    # behavior, so config-gated tests are skipped rather than failing presubmit.
-    return _run_bazel_test(
-        opts.bazel_config,
-        opts.extra_bazel_flags,
-        [
-            "--skip_incompatible_explicit_targets",
-            f"--target_pattern_file={os.fspath(impacted_targets_file)}",
-        ],
+  if mode == MODE_CALCULATE:
+    # Query for the test rules among impacted targets to drop non-test targets
+    # (source files, cc_library, py_library) and deleted targets (exit code 3
+    # under --keep_going). If the query succeeds, update impacted_targets.txt
+    # on disk so downstream runners receive only valid, resolved test targets.
+    impacted_tests = query_impacted_tests(impacted_targets)
+    if impacted_tests is not None:
+      test_labels = [t.label for t in impacted_tests]
+      impacted_targets_file.write_text(
+          "\n".join(test_labels) + ("\n" if test_labels else ""),
+          encoding="utf-8",
+      )
+    # bazel-diff reports source files, filegroups and binaries alongside test
+    # rules, so a non-empty target set does not mean every runner has work.
+    # Narrowing to the configs that actually match lets the workflow skip a
+    # runner before it claims an accelerator it would hold for seconds.
+    assume_all_impacted: bool = False
+    if opts.candidate_configs:
+      allowed_configs = frozenset(opts.candidate_configs)
+    elif opts.workflow_file:
+      wf_path = workspace_dir / opts.workflow_file
+      extracted = (
+          list_ci_tests.extract_workflow_configs(wf_path)
+          if wf_path.is_file()
+          else []
+      )
+      if not extracted:
+        print(
+            f"Could not extract candidate configs from {opts.workflow_file};"
+            " assuming all configs impacted."
+        )
+        assume_all_impacted = True
+        allowed_configs = None
+      else:
+        allowed_configs = frozenset(extracted)
+    else:
+      allowed_configs = None
+
+    if assume_all_impacted:
+      impacted_configs = None
+    else:
+      impacted_configs = resolve_impacted_configs(
+          impacted_targets,
+          workspace_dir / ".bazelrc",
+          allowed_configs=allowed_configs,
+          impacted_tests=impacted_tests,
+      )
+    if impacted_configs is not None and not impacted_configs:
+      print("No impacted target is a test in any CI configuration.")
+    write_github_output(
+        has_impacted_targets=impacted_configs is None or bool(impacted_configs),
+        is_full_run=False,
+        impacted_configs=impacted_configs,
     )
-  else:
+    return 0
+
+  if not impacted_targets:
     print("No tests impacted by these changes. Skipping Bazel entirely!")
     return 0
+
+  print("--- Running Impacted Bazel Tests ---")
+  # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
+  # an explicitly requested target whose target_compatible_with is unsatisfied
+  # as a hard error -- unlike the wildcard //... runs everywhere else, which
+  # skip it. --skip_incompatible_explicit_targets restores the wildcard
+  # behavior, so config-gated tests are skipped rather than failing presubmit.
+  return _run_bazel_test(
+      opts.bazel_config,
+      opts.extra_bazel_flags,
+      [
+          "--skip_incompatible_explicit_targets",
+          f"--target_pattern_file={os.fspath(impacted_targets_file)}",
+      ],
+  )
 
 
 if __name__ == "__main__":

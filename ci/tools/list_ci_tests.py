@@ -449,6 +449,21 @@ def _get_step_configs(job: Mapping[str, Any]) -> list[str]:
   return configs
 
 
+def extract_workflow_configs(workflow_path: pathlib.Path) -> Sequence[str]:
+  """Returns the Bazel config names declared in a workflow file."""
+  configs: list[str] = []
+  for job in _get_jobs(_load_workflow(workflow_path)):
+    for entry in _get_matrix_entries(job):
+      for key in _CONFIG_KEYS:
+        config = _get_literal(entry, key)
+        if config and config not in configs:
+          configs.append(config)
+    for config in _get_step_configs(job):
+      if config not in configs:
+        configs.append(config)
+  return configs
+
+
 def parse_workflow_machine_types(
     workflows_dir: pathlib.Path | None,
 ) -> dict[str, JobMachineInfo]:

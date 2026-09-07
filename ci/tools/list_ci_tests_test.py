@@ -721,6 +721,39 @@ jobs:
     # is available, so it must not be reported as a job that runs tests.
     self.assertNotIn("ci_tpu_v6_presubmit", job_machines)
 
+  def test_extract_workflow_configs_presubmit(self):
+    """Verifies extracting Bazel configs from the real presubmit.yml."""
+    workflows_dir = list_ci_tests.get_workflows_dir(self.repo_root)
+    self.assertIsNotNone(workflows_dir)
+    presubmit_path = workflows_dir / "presubmit.yml"
+    configs = list_ci_tests.extract_workflow_configs(presubmit_path)
+    self.assertEqual(
+        configs,
+        ["ci_cpu_presubmit", "ci_tpu_v5_presubmit", "ci_tpu_v7_presubmit"],
+    )
+
+  def test_extract_workflow_configs_matrix_and_steps(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = pathlib.Path(temp_dir)
+      mock_workflow = temp_path / "mock.yml"
+      mock_workflow.write_text(
+          textwrap.dedent("""\
+              jobs:
+                matrix_job:
+                  strategy:
+                    matrix:
+                      job_info:
+                        - config: "config_a"
+                        - bazel_config: "config_b"
+                step_job:
+                  steps:
+                    - run: bazel test --config=config_c //...
+          """),
+          encoding="utf-8",
+      )
+      configs = list_ci_tests.extract_workflow_configs(mock_workflow)
+      self.assertEqual(configs, ["config_a", "config_b", "config_c"])
+
   def test_format_output_with_machine_info(self):
     """Verifies output formatters incorporate machine type details."""
     targets = [
