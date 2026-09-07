@@ -14,6 +14,8 @@
 # limitations under the License.
 # ==============================================================================
 #
+# CI Benchmark S3: TPU accelerator execution script change.
+#
 # Coordinates access to TPU accelerators between concurrent Bazel tests.
 #
 # Assigns each test an accelerator and ensures that tests are evenly distributed
