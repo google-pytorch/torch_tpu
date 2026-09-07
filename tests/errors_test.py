@@ -2180,11 +2180,23 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_index_put_decompose_with_mask_mask_shape_mismatch(self):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
+    if env.IS_INTERNAL_TORCH_TPU:
+      err_type = IndexError
+      tpu_error_msg = (
+          "The shape of the mask [3, 5] at index 0 does not match the shape of"
+          " the indexed tensor [2, 5] at index 0"
+      )
+    else:
+      err_type = RuntimeError if et.is_on_tpu() else IndexError
+      tpu_error_msg = (
+          "index_put_(): expected the shape of the mask at index 0 to match"
+          " the shape of the indexed tensor at index 0, got mask shape [3, 5]"
+          " and indexed tensor shape [2, 5]"
+      )
     with et.assert_raises_message(
         err_type,
         gpu="""The shape of the mask [3, 5] at index 0 does not match the shape of the indexed tensor [2, 5] at index 0""",
-        tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 0, got mask shape [3, 5] and indexed tensor shape [2, 5]""",
+        tpu=tpu_error_msg,
     ):
       tensor = torch.arange(10).view(2, 5).to(et.device())
       tensor_other = torch.arange(15).view(3, 5).to(et.device())
@@ -2207,11 +2219,23 @@ Device-side assertion tracking was not enabled by user.""",
       )
 
   def test_index_put_decompose_with_multiple_mask_error(self):
-    err_type = RuntimeError if et.is_on_tpu() else IndexError
+    if env.IS_INTERNAL_TORCH_TPU:
+      err_type = IndexError
+      tpu_error_msg = (
+          "The shape of the mask [3] at index 0 does not match the shape of the"
+          " indexed tensor [2, 3, 5, 9] at index 2"
+      )
+    else:
+      err_type = RuntimeError if et.is_on_tpu() else IndexError
+      tpu_error_msg = (
+          "index_put_(): expected the shape of the mask at index 0 to match the"
+          " shape of the indexed tensor at index 2, got mask shape [3] and"
+          " indexed tensor shape [2, 3, 5, 9]"
+      )
     with et.assert_raises_message(
         err_type,
         gpu="""The shape of the mask [3] at index 0 does not match the shape of the indexed tensor [2, 3, 5, 9] at index 2""",
-        tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 2, got mask shape [3] and indexed tensor shape [2, 3, 5, 9]""",
+        tpu=tpu_error_msg,
     ):
       tensor = torch.arange(270).view(2, 3, 5, 9).to(et.device())
       boolean_mask_dim1 = tensor[0, :, 0, 0] % 2 != 0
