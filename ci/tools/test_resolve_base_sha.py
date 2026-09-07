@@ -14,6 +14,8 @@
 
 """Unit tests for CI base SHA resolution and diff isolation scripts.
 
+CI Benchmark S2: Targeted CPU code modification test.
+
 These tests verify that `ci/tools/resolve_base_sha.sh`,
 `ci/check_wheel_diff.sh`,
 and `.github/actions/bazel-diff/run_bazel_diff.sh` correctly isolate pull
