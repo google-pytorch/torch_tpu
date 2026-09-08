@@ -83,7 +83,7 @@ for this purpose.
     *   See the image below for how the domain expert and quality champion roles
         map to the GitHub UI.
 
-        <img src="docs/developers/images/pr_roles.png" alt="PR Roles" width="400px">
+        <img src="docs/developers/images/pr_roles.png" alt="PR Roles" width="450px">
 1.  The **Google quality champion** reviews the PR, focusing on style and
     quality, approves it, and then applies the `pull ready` label to the PR.
 1.  The `pull ready` label triggers the bot to generate a CL from the PR:
