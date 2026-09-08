@@ -13,10 +13,17 @@
 # limitations under the License.
 """Pallas API for Torch-TPU."""
 
-from torch_tpu._internal.pallas import pallas
+import importlib
 
-custom_jax_kernel = pallas.custom_jax_kernel
-jax_op = pallas.jax_op
+
+def __getattr__(name):
+  if name in ("_compat", "export", "pallas", "tpu_torch_pallas"):
+    return importlib.import_module(f"{__name__}.{name}")
+  if name in ("custom_jax_kernel", "jax_op"):
+    pallas = importlib.import_module(f"{__name__}.pallas")
+
+    return getattr(pallas, name)
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
@@ -24,5 +31,6 @@ __all__ = [
     # go/keep-sorted start
     "custom_jax_kernel",
     "jax_op",
+    "pallas",
     # go/keep-sorted end
 ]

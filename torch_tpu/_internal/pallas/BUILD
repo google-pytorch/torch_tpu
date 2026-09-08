@@ -45,6 +45,7 @@ py_library_providing_imports_info(
         "pallas.modspec.json",
     ],
     deps = [
+        ":pallas_export",
         ":pallas_lib",
         # The "pallas" library doesn't work without this dependency, but it's not obvious
         # from the import. Therefore we have to tell build_cleaner to keep it.
@@ -57,6 +58,16 @@ py_library_providing_imports_info(
 torch_tpu_py_library(
     name = "pallas_compat",
     srcs = ["_compat.py"],
+)
+
+torch_tpu_py_library(
+    name = "pallas_export",
+    srcs = ["export.py"],
+    deps = [
+        "//torch_tpu/_internal/utils:hardware",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
 )
 
 torch_tpu_py_library(
