@@ -36,6 +36,7 @@ import contextlib
 import dataclasses
 import functools
 import hashlib
+import pathlib
 import re
 import threading
 from typing import Any, TypeAlias
@@ -494,6 +495,29 @@ def _sanitize_module_name(name: str) -> str:
   return _VALID_SYMBOL_REGEX.sub("_", name)
 
 
+def _get_first_node_trace(
+    graph_module: torch.fx.GraphModule,
+) -> torch.fx.graph._ParsedStackTrace | None:
+  """Returns the parsed stack trace of the first node that has one."""
+  for node in graph_module.graph.nodes:
+    if node.stack_trace:
+      trace = torch.fx.graph._parse_stack_trace(node.stack_trace)
+      if trace and trace.file:
+        return trace
+  return None
+
+
+def _infer_default_base_name(graph_module: torch.fx.GraphModule) -> str:
+  """Infers default module name from the FX graph stack trace: <filename>_L<line>."""
+  try:
+    trace = _get_first_node_trace(graph_module)
+    if trace and trace.file:
+      return f"{pathlib.Path(trace.file).stem}_L{trace.lineno}"
+  except Exception:  # pylint: disable=broad-exception-caught
+    pass
+  return "module"
+
+
 def _get_module_name(
     custom_module_name: str | None,
     is_fwd: bool,
@@ -559,10 +583,15 @@ class TpuBackend:
 
     _log_gm_and_inputs("__call__", "Pre", graph_module, example_inputs)
     _guard_input_storage_offsets(graph_module)
+
     custom_module_name = (
-        options.get("custom_module_name") or options.get("name")
-        if options
-        else None
+        kwargs.get("name")
+        or (
+            options.get("custom_module_name") or options.get("name")
+            if options
+            else None
+        )
+        or _infer_default_base_name(graph_module)
     )
 
     compiler_instance = make_backend_compiler(
@@ -662,7 +691,7 @@ class TpuBackend:
       compiler_instance: Responsible for compiling the graph module.
       is_fwd: Indicates whether the forward or backward pass is being compiled.
       custom_module_name: The base custom module name provided in backend
-        options, if any.
+        options or inferred from the FX graph, if any.
       graph_module: The FX graph module to compile.
       example_inputs: Example inputs to the FX graph for tracing (not the actual
         inputs).

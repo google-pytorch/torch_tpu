@@ -539,7 +539,64 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     self.assertEqual(out.item(), 32.0)
     execs = tpu_backend._compiled_executables
     self.assertNotEmpty(execs)
-    self.assertRegex(execs[0].mlir_texts[0], r"module\s+@tt_jit")
+    self.assertRegex(
+        execs[0].mlir_texts[0], r"module\s+@small_graph_test_L\d+_split0_fwd"
+    )
+
+  def test_hlo_naming_default_without_options(self):
+    """Tests default module naming when no custom name or options are provided."""
+
+    def func(a, b):
+      return (a * b).sum()
+
+    a = torch.tensor([1.0, 2.0, 3.0], device="tpu", requires_grad=True)
+    b = torch.tensor([4.0, 5.0, 6.0], device="tpu", requires_grad=True)
+    tpu_backend = compile_lib.TpuBackend(debug=True)
+    compiled = torch.compile(func, backend=tpu_backend)
+    out = compiled(a, b)
+    out.backward()
+    execs = tpu_backend._compiled_executables
+    self.assertGreaterEqual(len(execs), 2)
+    self.assertRegex(
+        execs[0].mlir_texts[0], r"module\s+@small_graph_test_L\d+_split0_fwd"
+    )
+    self.assertRegex(
+        execs[1].mlir_texts[0], r"module\s+@small_graph_test_L\d+_split1_bwd"
+    )
+
+  def test_hlo_naming_default_with_graph_break(self):
+    """Tests default module naming when a graph break occurs."""
+
+    def func(a, b):
+      x = a / (torch.abs(a) + 1)
+      if b.sum() < 0:
+        b = b * -1
+      return x * b
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5], device="tpu"),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6], device="tpu"),
+    ]
+
+    tpu_backend = compile_lib.TpuBackend(debug=True)
+    compiled = torch.compile(func, backend=tpu_backend)
+    _ = compiled(*inputs_val)
+    execs = tpu_backend._compiled_executables
+    self.assertLen(execs, 2)
+    self.assertRegex(
+        execs[0].mlir_texts[0], r"module\s+@small_graph_test_L\d+_split0_fwd"
+    )
+    self.assertRegex(
+        execs[1].mlir_texts[0], r"module\s+@small_graph_test_L\d+_split1_fwd"
+    )
+
+  def test_hlo_naming_default_fallback_on_exception(self):
+    """Tests that an exception during stack trace inspection safely falls back to 'module'."""
+    bad_gm = mock.MagicMock()
+    bad_gm.graph.nodes = mock.PropertyMock(
+        side_effect=RuntimeError("Simulated node traversal failure")
+    )
+    self.assertEqual(_backend._infer_default_base_name(bad_gm), "module")
 
   def test_data_dependent_dynamic_op(self):
     """Test that a dynamo will break on data dependent ops.

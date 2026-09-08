@@ -254,6 +254,9 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     self.compiler_fn = compiler_fn
     self.fake_mode = fake_mode
     self.base_module_name = base_module_name
+    self.has_multiple_submods = (
+        sum(1 for n in module.graph.nodes if n.op == "call_module") > 1
+    )
 
   # This logic is copied from torch/_functorch/_aot_autograd/frontend_utils.py
   def _convert_to_fake_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -299,7 +302,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
 
     input_mod.recompile()
     full_submod_name = self.base_module_name
-    if self.base_module_name and submod_name:
+    if self.base_module_name and submod_name and self.has_multiple_submods:
       full_submod_name = f"{self.base_module_name}_{submod_name}"
 
     compiled_submod_real = self.compiler_fn(
