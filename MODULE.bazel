@@ -1,3 +1,4 @@
+# CI Benchmark S4: Global configuration change test
 module(
     name = "torch_tpu",
     version = "0.1.1",
