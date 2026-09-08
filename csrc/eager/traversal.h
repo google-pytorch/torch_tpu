@@ -133,7 +133,8 @@ class Traversal {
 
   CompilationCacheKey GetCacheKey(
       CompileOptionsKey compile_options_key,
-      absl::Span<const CustomLayout> argument_layouts = {}) const {
+      absl::Span<const CustomLayout> argument_layouts = {},
+      absl::Span<const int64_t> donated_inputs = {}) const {
     if (graph_key_ == std::nullopt) {
       graph_key_ = BuildGraphKey();
     }
@@ -141,6 +142,19 @@ class Traversal {
                        ? *graph_key_
                        : AnnotateGraphKeyWithArgumentLayouts(*graph_key_,
                                                              argument_layouts);
+    if (!donated_inputs.empty()) {
+      std::vector<int64_t> normalized_donated_inputs(donated_inputs.begin(),
+                                                     donated_inputs.end());
+      std::sort(normalized_donated_inputs.begin(),
+                normalized_donated_inputs.end());
+      normalized_donated_inputs.erase(
+          std::unique(normalized_donated_inputs.begin(),
+                      normalized_donated_inputs.end()),
+          normalized_donated_inputs.end());
+      key = GraphKey(ShapelessKey(FingerprintCat(key.shapeless_key().key(),
+                                                 normalized_donated_inputs)),
+                     key.dimensions_key());
+    }
     return CompilationCacheKey(key, compile_options_key);
   }
 

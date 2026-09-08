@@ -770,7 +770,7 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   std::vector<Shape> output_shapes = GetShapes(outputs_);
 
   CompilationCacheKey compilation_cache_key =
-      GetCacheKey(spec.compile_options_key, argument_layouts);
+      GetCacheKey(spec.compile_options_key, argument_layouts, donated_inputs);
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
   return CompilationCache::GetInstance().GetOrCompile(

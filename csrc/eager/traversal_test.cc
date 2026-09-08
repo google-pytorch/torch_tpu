@@ -162,6 +162,45 @@ TEST_F(TraversalTest, ReadableStringComplexGraph) {
             "return %3\n");
 }
 
+TEST_F(TraversalTest, TopLevelDonationChangesCacheKey) {
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_a,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape_}));
+  DeviceBufferRef ref_a = refs_a[0];
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::vector<DeviceBufferRef> refs_b,
+      DeviceBufferList::CreateDeferred(OpName::kAdd, DummyBuilder, {},
+                                       OpParamCacheKeys::Empty(), {shape_}));
+  DeviceBufferRef ref_b = refs_b[0];
+  TT_ASSERT_OK_AND_ASSIGN(std::vector<DeviceBufferRef> refs_c,
+                          DeviceBufferList::CreateDeferred(
+                              OpName::kAdd, DummyBuilder, {ref_a, ref_b},
+                              OpParamCacheKeys::Empty(), {shape_}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Traversal> traversal,
+      Traversal::Create({refs_c[0]}, {ref_a.device_buffer_list().get(),
+                                      ref_b.device_buffer_list().get()}));
+
+  const CompileOptionsKey kCompileOptionsKey(0);
+  EXPECT_NE(traversal->GetCacheKey(kCompileOptionsKey),
+            traversal->GetCacheKey(kCompileOptionsKey,
+                                   /*argument_layouts=*/{},
+                                   /*donated_inputs=*/{0}));
+  EXPECT_NE(traversal->GetCacheKey(kCompileOptionsKey,
+                                   /*argument_layouts=*/{},
+                                   /*donated_inputs=*/{0}),
+            traversal->GetCacheKey(kCompileOptionsKey,
+                                   /*argument_layouts=*/{},
+                                   /*donated_inputs=*/{1}));
+  EXPECT_EQ(traversal->GetCacheKey(kCompileOptionsKey,
+                                   /*argument_layouts=*/{},
+                                   /*donated_inputs=*/{0, 1}),
+            traversal->GetCacheKey(kCompileOptionsKey,
+                                   /*argument_layouts=*/{},
+                                   /*donated_inputs=*/{1, 0, 1}));
+}
+
 TEST_F(TraversalTest, ReadableStringWithTraceback) {
   auto traceback = std::make_shared<PythonTraceback>();
   traceback->frames.push_back({"/path/to/user_code.py", "my_function", 42});
