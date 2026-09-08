@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load(
+    "//build_files:build_defs.bzl",
+    "if_oss",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -42,7 +48,12 @@ torch_tpu_py_test(
     main = "singlehost_wrapper_test.py",
     nopresubmit = "long Forge queue",
     strict = True,
-    tags = [
+    tags = if_oss(
+        # The test spawns one worker per device, thus it needs
+        # every accelerator slot.
+        ["exclusive"],
+        [],
+    ) + [
         "nosan",  # TODO(b/556238269): OOM
         "requires-tpu-v7x:4",  # Must use for testing v7x.
     ],
@@ -62,7 +73,12 @@ torch_tpu_py_test(
     srcs = ["singlehost_wrapper_test.py"],
     main = "singlehost_wrapper_test.py",
     strict = True,
-    tags = [
+    tags = if_oss(
+        # The test spawns one worker per device, thus it needs
+        # every accelerator slot.
+        ["exclusive"],
+        [],
+    ) + [
         "nosan",  # TODO(b/556238269): OOM
         "requires-tpu-v5lite:8",
     ],
