@@ -30,6 +30,7 @@ ReferenceAdamw = optimizers.ReferenceAdamw
 TorchAdamw = optimizers.TorchAdamw
 ReferenceSgd = optimizers.ReferenceSgd
 TorchSgd = optimizers.TorchSgd
+NoOpOptimizer = optimizers.NoOpOptimizer
 
 
 class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
@@ -38,7 +39,7 @@ class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
   def __init__(
       self,
       model: torch.nn.Module,
-      optimizer: Any,
+      optimizer: Any = None,
       backend_compiler: compiler.StaticCompiler | None = None,
   ):
     super().__init__(model=model, optimizer=optimizer)
@@ -54,12 +55,19 @@ class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
     if compile_fn is None:
 
       def default_compile_fn(graph_module, flat_inputs):
-        flat_param_group, _ = _pytree.tree_flatten(self.param_group)
-        donated_inputs = [
-            i
-            for i, x in enumerate(flat_param_group)
-            if isinstance(x, torch.Tensor)
-        ]
+        donated_inputs = None
+        # Only donate parameter buffers when an optimizer updates parameters in-place.
+        # Without an optimizer (or when input donation is explicitly disabled),
+        # donating parameters would invalidate them across repeated training iterations.
+        if self.optimizer is not None and getattr(
+            self.optimizer, "donate_inputs", True
+        ):
+          flat_param_group, _ = _pytree.tree_flatten(self.param_group)
+          donated_inputs = [
+              i
+              for i, x in enumerate(flat_param_group)
+              if isinstance(x, torch.Tensor)
+          ]
         return self.backend_compiler(
             graph_module,
             flat_inputs,

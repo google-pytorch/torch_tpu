@@ -492,3 +492,60 @@ _pytree.register_pytree_node(
     _sgd_param_group_flatten,
     _sgd_param_group_unflatten,
 )
+
+
+class NoOpOptimizer(Optimizer):
+  """No-op optimizer that does not update parameters.
+
+  Provides a no-op state container compatible with the Optimizer interface
+  without mutating parameters. Note: For pure forward+backward benchmarking
+  where gradients must be preserved as graph outputs against dead-code
+  elimination (DCE) and set on model parameters for device synchronization,
+  SingleTraceTrainer(optimizer=None) is the designated mechanism.
+  """
+
+  donate_inputs: bool = False
+
+  @dataclasses.dataclass
+  class ParamGroup:
+    """Holds model parameters without optimizer state."""
+
+    params: dict[str, torch.Tensor]
+    extra_state: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+  def init_param_group(
+      self, params: dict[str, torch.Tensor] | torch.nn.Module
+  ) -> ParamGroup:
+    """Initializes ParamGroup from model parameters or nn.Module."""
+    if isinstance(params, torch.nn.Module):
+      params = {
+          name.replace(".", "_"): param.detach()
+          for name, param in params.named_parameters()
+      }
+    return self.ParamGroup(params=params)
+
+  def step(
+      self, param_group: ParamGroup, grads: dict[str, torch.Tensor]
+  ) -> ParamGroup:
+    """Performs no-op step, returning param_group unchanged."""
+    del grads
+    return param_group
+
+
+def _noop_param_group_flatten(group: NoOpOptimizer.ParamGroup):
+  children = (group.params, group.extra_state)
+  return children, None
+
+
+def _noop_param_group_unflatten(children, _context):
+  return NoOpOptimizer.ParamGroup(
+      params=children[0],
+      extra_state=children[1],
+  )
+
+
+_pytree.register_pytree_node(
+    NoOpOptimizer.ParamGroup,
+    _noop_param_group_flatten,
+    _noop_param_group_unflatten,
+)

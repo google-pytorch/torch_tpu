@@ -376,14 +376,22 @@ def get_train_factory(
     **eager_kwargs: Any,
 ) -> Callable[..., Any]:
   """Returns a training step runner factory for the given run mode."""
+  if eager_fact == simple_train_factory:
+    # For simple layer benchmarks (evaluating forward + backward without optimizer
+    # updates), compiled mode uses SingleTraceTrainer with optimizer=None to capture
+    # FWD + BWD in a unified executable and populate gradients for device sync.
+    if run_mode == common.RunMode.COMPILED:
+      return functools.partial(
+          functional_train_factory,
+          optimizer=None,
+      )
+    return eager_fact
   if run_mode == common.RunMode.COMPILED:
     return functools.partial(
         functional_train_factory,
         grad_accumulation_steps=1,
         optimizer=optimizers.ReferenceAdamw(),
     )
-  if eager_fact == simple_train_factory:
-    return eager_fact
   return functools.partial(
       eager_fact,
       grad_accumulation_steps=1,

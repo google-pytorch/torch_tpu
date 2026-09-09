@@ -35,7 +35,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e:performance_utils",
         "//examples/benchmarks/e2e/harness:metrics",
         "//shims/absl_py/logging",
-        "//shims/torch",
         "//shims/torch:pytorch",
         "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/utils:log_utils",

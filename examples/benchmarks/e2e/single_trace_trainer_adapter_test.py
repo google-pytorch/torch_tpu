@@ -356,5 +356,60 @@ class SingleTraceTrainerAdapterTiedWeightsTest(seed_test_utils.RepeatableTest):
       self.assertIs(model.embed.weight, model.lm_head.weight)
 
 
+class SingleTraceTrainerAdapterFwdBwdOnlyTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    torch.manual_seed(42)
+    self.device = torch.device("tpu")
+
+  def test_linear_layer_fwd_bwd_only_compiled_vs_eager(self):
+    model = ToyLinearModule().to(device=self.device)
+    model.train()
+    model_eager = copy.deepcopy(model)
+    model_eager.train()
+
+    trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
+        model, optimizer=None
+    )
+
+    x = torch.randn((32, 128), device=self.device)
+
+    train_step = trainer.make_compiled_train_step(x)
+
+    # Compiled step
+    loss_comp = train_step(x)
+
+    # Eager step
+    out_eager = model_eager(x)
+    loss_eager = torch.mean(out_eager)
+    loss_eager.backward()
+
+    torch.accelerator.synchronize()
+    test_utils.assert_close(loss_comp, loss_eager, rtol=1e-4, atol=1e-4)
+
+    # Check gradients match
+    for name, param in model.named_parameters():
+      param_eager = dict(model_eager.named_parameters())[name]
+      self.assertIsNotNone(param.grad)
+      self.assertIsNotNone(param_eager.grad)
+      test_utils.assert_close(
+          param.grad, param_eager.grad, rtol=1e-4, atol=1e-4
+      )
+
+  def test_parameterless_module_compiled(self):
+    model = torch.nn.Tanh().to(device=self.device)
+    trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
+        model, optimizer=None
+    )
+
+    x = torch.randn((32, 128), device=self.device)
+    train_step = trainer.make_compiled_train_step(x)
+    loss = train_step(x)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+
+
 if __name__ == "__main__":
   absltest.main()

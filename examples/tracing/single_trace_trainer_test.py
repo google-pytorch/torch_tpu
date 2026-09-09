@@ -91,6 +91,54 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(loss)
     self.assertFalse(torch.isnan(loss))
 
+  def test_torch_compile_no_optimizer(self):
+    model = ToyLinearModule().to(device=self.device)
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=None,
+        compile_fn=torch.compile,
+    )
+
+    x = torch.randn((16, 128), device=self.device)
+    train_step = trainer.make_compiled_train_step(x)
+    loss = train_step(x)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+    for param in model.parameters():
+      self.assertIsNotNone(param.grad)
+      self.assertFalse(torch.isnan(param.grad).any())
+
+  def test_torch_compile_noop_optimizer(self):
+    model = ToyLinearModule().to(device=self.device)
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=optimizers.NoOpOptimizer(),
+        compile_fn=torch.compile,
+    )
+
+    x = torch.randn((16, 128), device=self.device)
+    train_step = trainer.make_compiled_train_step(x)
+    loss = train_step(x)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+
+  def test_torch_compile_parameterless_module(self):
+    model = torch.nn.Tanh().to(device=self.device)
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=None,
+        compile_fn=torch.compile,
+    )
+
+    x = torch.randn((16, 128), device=self.device)
+    train_step = trainer.make_compiled_train_step(x)
+    loss = train_step(x)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+
 
 if __name__ == "__main__":
   absltest.main()

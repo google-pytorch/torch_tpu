@@ -22,7 +22,6 @@ from torch.utils import _pytree
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.utils import test_utils
 from examples.tracing import optimizers
-from torch_tpu._internal.benchmarks import xprof_adapter
 from tests import seed_test_utils
 
 
@@ -75,24 +74,17 @@ def _validate_compiled_linear_train_step(test_case, custom_opt, device):
   unified_graph = make_fx(flattened_stateless_train_step)(*flat_inputs)
   compiled_executable = StaticCompiler()(unified_graph, flat_inputs)
 
-  session = xprof_adapter.XprofSession()
-  session.start_session(host_trace_level=3, enable_python_tracer=True)
-  try:
-    with xprof_adapter.TraceMe("ExecuteCompiledStep"):
-      # Step 1
-      flat_inputs, _ = _pytree.tree_flatten((pg, x, target))
-      result = compiled_executable(*flat_inputs)
-      loss, new_pg = _pytree.tree_unflatten(result, out_spec)
+  # Step 1
+  flat_inputs, _ = _pytree.tree_flatten((pg, x, target))
+  result = compiled_executable(*flat_inputs)
+  loss, new_pg = _pytree.tree_unflatten(result, out_spec)
 
-      # Step 2
-      flat_inputs, _ = _pytree.tree_flatten((new_pg, x, target))
-      result = compiled_executable(*flat_inputs)
-      loss, new_pg = _pytree.tree_unflatten(result, out_spec)
+  # Step 2
+  flat_inputs, _ = _pytree.tree_flatten((new_pg, x, target))
+  result = compiled_executable(*flat_inputs)
+  loss, new_pg = _pytree.tree_unflatten(result, out_spec)
 
-      torch.accelerator.synchronize()
-  finally:
-    xprof_url = session.end_session_and_get_url()
-    print(f"Xprof URL: {xprof_url}")
+  torch.accelerator.synchronize()
 
   test_case.assertIsNotNone(loss)
   test_case.assertFalse(torch.isnan(loss))

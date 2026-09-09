@@ -188,7 +188,9 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
   ):
     if config.is_training:
       config.sync_params = True
-      config.train_factory = benchmark_function_db.simple_train_factory
+      config.train_factory = benchmark_function_db.get_train_factory(
+          config.run_mode, benchmark_function_db.simple_train_factory
+      )
     else:
       config.eval_factory = benchmark_function_db.simple_eval_factory
     if performance_utils.BOUNDED_DYNAMIC.value:
@@ -201,14 +203,6 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
             f"Layer {model_name} (benchmark {benchmark_name}) is currently"
             f" blocked in dynamic execution mode: {skip_reason}"
         )
-    if self._is_torchax_backend():
-      # Layer specific skips.
-      if config.is_training:
-        batch_size = config.model_and_input_args.batch_size or 1
-        seq_len = config.model_and_input_args.sequence_length or 1
-        effective_seq_len = batch_size * seq_len
-        if effective_seq_len >= 262144:
-          self.skipTest("Benchmark would likely OOM for TorchAX on Forge.")
 
     super().run_performance_benchmark_test(
         config, benchmark_name, microbenchmark_name

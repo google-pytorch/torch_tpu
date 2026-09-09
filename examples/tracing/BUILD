@@ -36,10 +36,14 @@ torch_tpu_py_test(
     name = "optimizers_test",
     srcs = ["optimizers_test.py"],
     main = "optimizers_test.py",
+    nobuild_oss = "slow example",
+    nopresubmit = "slow example",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
+        "requires-tpu",
         "requires-tpu-v5lite",
+        "wheel_test_excluded",
     ],
     deps = [
         ":optimizers",
@@ -48,7 +52,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/compile:compiler",
         "//torch_tpu/_internal/utils:test_utils",
     ],
@@ -67,10 +70,14 @@ torch_tpu_py_test(
     name = "single_trace_trainer_test",
     srcs = ["single_trace_trainer_test.py"],
     main = "single_trace_trainer_test.py",
+    nobuild_oss = "slow example",
+    nopresubmit = "slow example",
     tags = [
         "requires-accel-hbm",
         "requires-net:external",
+        "requires-tpu",
         "requires-tpu-v5lite",
+        "wheel_test_excluded",
     ],
     deps = [
         ":optimizers",
