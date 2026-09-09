@@ -918,10 +918,12 @@ mlir::MlirOp GetNumElements(mlir::MlirOp input, mlir::Type element_type,
 }
 
 mlir::ModuleOp GetModuleOp(mlir::MlirBuilder& builder) {
-  return builder.getOpBuilder()
-      .getBlock()
-      ->getParentOp()
-      ->getParentOfType<mlir::ModuleOp>();
+  mlir::Operation* parent = builder.getOpBuilder().getBlock()->getParentOp();
+  // The insertion block may belong to the module itself rather than to a
+  // function nested in it. getParentOfType only walks strict ancestors, so it
+  // returns null in that case; check the parent op first.
+  if (auto module = mlir::dyn_cast<mlir::ModuleOp>(parent)) return module;
+  return parent->getParentOfType<mlir::ModuleOp>();
 }
 
 absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim) {
