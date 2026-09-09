@@ -100,6 +100,9 @@ absl::StatusOr<mlir::MlirOp> BuildComplexShlo(mlir::MlirOp real_op,
 absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
                                                         mlir::MlirOp rhs_op);
 
+absl::StatusOr<mlir::MlirOp> BuildRemainderShlo(mlir::MlirOp self_op,
+                                                mlir::MlirOp other_op);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_BINARY_H_

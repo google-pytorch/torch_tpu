@@ -279,6 +279,7 @@ torch_tpu_cc_library(
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
+        "//torch_tpu/csrc/common:aten_utils",
         "//torch_tpu/csrc/common:dtype",
         "//torch_tpu/csrc/common:error_utils",
         "//torch_tpu/csrc/common:macro_utils",
@@ -390,6 +391,9 @@ torch_tpu_cc_library(
     deps = [
         ":op_builder_utils",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
+        "//torch_tpu/csrc/common:aten_utils",
+        "//torch_tpu/csrc/common:dtype",
         "//torch_tpu/csrc/common:error_utils",
         "//torch_tpu/csrc/common:macro_utils",
         "@com_google_absl//absl/status:statusor",

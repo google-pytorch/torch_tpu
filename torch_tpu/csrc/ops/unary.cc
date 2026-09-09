@@ -30,6 +30,7 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
 #include "torch_tpu/csrc/common/dtype.h"
 #include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/csrc/common/to_string.h"
@@ -355,10 +356,32 @@ absl::StatusOr<mlir::MlirOp> BuildErfcShlo(mlir::MlirOp input,
   return mlir::chlo::Erfc(op);
 };
 
+absl::StatusOr<mlir::MlirOp> BuildErfInvShlo(mlir::MlirOp input_op,
+                                             mlir::ElementType out_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, out_mlir_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(out_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op_comp, CastIfNeeded(op, comp_dtype));
+  mlir::MlirOp erfinv_comp = mlir::chlo::ErfInv(op_comp);
+  return CastIfNeeded(erfinv_comp, out_mlir_type);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildFracShlo(mlir::MlirOp input) {
   // PyTorch defines frac(x) = x - trunc(x)
   TT_ASSIGN_OR_RETURN(mlir::MlirOp trunc_val, BuildTruncShlo(input));
   return mlir::stablehlo::Subtract(input, trunc_val);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildLgammaShlo(mlir::MlirOp input_op,
+                                             mlir::ElementType out_mlir_type) {
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
+                      ConvertIfInteger(input_op, out_mlir_type));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(out_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op_comp, CastIfNeeded(op, comp_dtype));
+  mlir::MlirOp lgamma_comp = mlir::chlo::Lgamma(op_comp);
+  return CastIfNeeded(lgamma_comp, out_mlir_type);
 }
 
 }  // namespace torch_tpu

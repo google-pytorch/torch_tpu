@@ -43,17 +43,24 @@ absl::StatusOr<mlir::MlirOp> BuildDigammaShlo(mlir::MlirOp input_op,
                                               mlir::ElementType out_mlir_type) {
   TT_ASSIGN_OR_RETURN(mlir::MlirOp op,
                       ::torch_tpu::ConvertIfInteger(input_op, out_mlir_type));
-  mlir::MlirOp digamma_op = mlir::chlo::Digamma(op);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(out_mlir_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op_comp, CastIfNeeded(op, comp_dtype));
 
-  auto zero_cst = MakeConstantLike(op, 0.0);
+  mlir::MlirOp digamma_op = mlir::chlo::Digamma(op_comp);
+
+  auto zero_cst = MakeConstantLike(op_comp, 0.0);
   auto is_zero = mlir::stablehlo::Compare(
-      op, zero_cst, mlir::stablehlo::ComparisonDirection::EQ);
+      op_comp, zero_cst, mlir::stablehlo::ComparisonDirection::EQ);
 
   auto neginf_cst =
-      MakeConstantLike(op, -std::numeric_limits<double>::infinity());
+      MakeConstantLike(op_comp, -std::numeric_limits<double>::infinity());
 
   // Return -inf if input is 0, else return digamma(input)
-  return mlir::stablehlo::Select(is_zero, neginf_cst, digamma_op);
+  mlir::MlirOp result_comp =
+      mlir::stablehlo::Select(is_zero, neginf_cst, digamma_op);
+
+  return CastIfNeeded(result_comp, out_mlir_type);
 }
 
 at::Tensor& AtenDigammaOut(const at::Tensor& self, at::Tensor& out) {

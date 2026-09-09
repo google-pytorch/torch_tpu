@@ -1587,9 +1587,10 @@ at::Tensor& AtenPowScalarOut(const at::Scalar& self, const at::Tensor& exponent,
   TT_KERNEL(OpName::kPowScalarOut, _, (promoted_self, exponent, out), {
     TT_THROW_IF_ERROR(ValidatePowInputs(self, exponent));
     // Can't use reverse_operands here because a^b != b^a.
-    // Cast to out tensor dtype to be consistent with PyTorch.
+    const at::ScalarType promoted_scalar_type =
+        at::result_type(promoted_self.scalar(), exponent);
     TT_ASSIGN_OR_THROW(at::Tensor self_tensor,
-                       promoted_self.GetTensor(out.scalar_type()));
+                       promoted_self.GetTensor(promoted_scalar_type));
     TT_THROW_IF_ERROR(
         BinaryOpOut(self_tensor, exponent, out, BuildPowShlo,
                     // Use kPowOut for cache key as the builder logic is the
@@ -1606,9 +1607,10 @@ at::Tensor& AtenPowTensorScalarOut(const at::Tensor& self,
   auto promoted_exponent = PromoteScalar(exponent);
   TT_KERNEL(OpName::kPowTensorScalarOut, _, (self, promoted_exponent, out), {
     TT_THROW_IF_ERROR(ValidatePowInputs(self, exponent));
-    // Cast to self dtype to be consistent with PyTorch.
+    const at::ScalarType promoted_scalar_type =
+        at::result_type(self, promoted_exponent.scalar());
     TT_ASSIGN_OR_THROW(const at::Tensor exponent_tensor,
-                       promoted_exponent.GetTensor(self.scalar_type()));
+                       promoted_exponent.GetTensor(promoted_scalar_type));
     TT_THROW_IF_ERROR(
         BinaryOpOut(self, exponent_tensor, out, BuildPowShlo,
                     // Use kPowOut for cache key as the builder logic is the
@@ -1636,19 +1638,6 @@ at::Tensor AtenRemainderScalarTensor(const at::Scalar& self,
   auto promoted_self = PromoteScalar(self);
   TT_KERNEL(OpName::kRemainderScalarTensor, _, (promoted_self, other), {
     TT_THROW_IF_ERROR(ValidateRemainderInputs(self, other));
-    TT_ASSIGN_OR_THROW(auto div_opts, GetDivOpOptionsFloorMode());
-
-    auto remainder_builder =
-        [div_opts = std::move(div_opts)](
-            mlir::MlirOp self_op,
-            mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-      TT_ASSIGN_OR_RETURN((auto [cast_self_op, cast_other_op]),
-                          ApplyBroadcastIfNeeded(self_op, other_op));
-      TT_ASSIGN_OR_RETURN(auto div_op,
-                          div_opts.op_builder(cast_self_op, cast_other_op));
-      auto mul_op = stablehlo::Mul(div_op, cast_other_op);
-      return stablehlo::Subtract(cast_self_op, mul_op);
-    };
 
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
     TT_ASSIGN_OR_THROW(const at::Tensor self_tensor,
@@ -1656,7 +1645,7 @@ at::Tensor AtenRemainderScalarTensor(const at::Scalar& self,
 
     TT_ASSIGN_OR_THROW(
         auto result,
-        BinaryOp(self_tensor, other, std::move(remainder_builder),
+        BinaryOp(self_tensor, other, BuildRemainderShlo,
                  {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
     return result;
   });
@@ -1666,21 +1655,9 @@ at::Tensor& AtenRemainderTensorOut(const at::Tensor& self,
                                    const at::Tensor& other, at::Tensor& out) {
   TT_KERNEL(OpName::kRemainderOut, _, (self, other, out), {
     TT_THROW_IF_ERROR(ValidateRemainderInputs(self, other));
-    TT_ASSIGN_OR_THROW(auto div_opts, GetDivOpOptionsFloorMode());
 
-    auto remainder_builder =
-        [div_opts = std::move(div_opts)](
-            mlir::MlirOp self_op,
-            mlir::MlirOp other_op) -> absl::StatusOr<mlir::MlirOp> {
-      TT_ASSIGN_OR_RETURN((auto [cast_self_op, cast_other_op]),
-                          ApplyBroadcastIfNeeded(self_op, other_op));
-      TT_ASSIGN_OR_RETURN(auto div_op,
-                          div_opts.op_builder(cast_self_op, cast_other_op));
-      auto mul_op = stablehlo::Mul(div_op, cast_other_op);
-      return stablehlo::Subtract(cast_self_op, mul_op);
-    };
     TT_THROW_IF_ERROR(
-        BinaryOpOut(self, other, out, std::move(remainder_builder),
+        BinaryOpOut(self, other, out, BuildRemainderShlo,
                     {.op_param_cache_keys = OpParamCacheKeys::Empty()}));
     return out;
   });

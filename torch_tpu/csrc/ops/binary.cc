@@ -17,10 +17,13 @@
 #include "torch_tpu/csrc/ops/binary.h"
 
 #include "absl/status/statusor.h"
+#include "c10/core/ScalarType.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/DebugStringHelper.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch_tpu/csrc/common/aten_utils.h"
+#include "torch_tpu/csrc/common/dtype.h"
 #include "torch_tpu/csrc/common/error_utils.h"
 #include "torch_tpu/csrc/ops/op_builder_utils.h"
 
@@ -118,7 +121,24 @@ absl::StatusOr<mlir::MlirOp> BuildPowShlo(mlir::MlirOp base_op,
     return stablehlo::Or(broadcasted_base_op, broadcasted_exp_op);
   }
 
-  return stablehlo::Pow(broadcasted_base_op, broadcasted_exp_op);
+  const mlir::ElementType base_elem = GetElementTypeOrDie(broadcasted_base_op);
+  const mlir::ElementType exp_elem = GetElementTypeOrDie(broadcasted_exp_op);
+  mlir::ElementType common_elem = base_elem;
+  if (base_elem != exp_elem) {
+    at::ScalarType base_st = ConvertTo<at::ScalarType>(base_elem);
+    at::ScalarType exp_st = ConvertTo<at::ScalarType>(exp_elem);
+    at::ScalarType promoted_st = c10::promoteTypes(base_st, exp_st);
+    TT_ASSIGN_OR_RETURN(common_elem, ConvertTo<mlir::ElementType>(promoted_st));
+  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(common_elem));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp base_comp,
+                      CastIfNeeded(broadcasted_base_op, comp_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp exp_comp,
+                      CastIfNeeded(broadcasted_exp_op, comp_dtype));
+
+  mlir::MlirOp pow_comp = stablehlo::Pow(base_comp, exp_comp);
+  return CastIfNeeded(pow_comp, common_elem);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
@@ -130,6 +150,48 @@ absl::StatusOr<mlir::MlirOp> BuildBitwiseRightShiftShlo(mlir::MlirOp lhs_op,
     return stablehlo::ShiftRightLogical(lhs, rhs);
   }
   return stablehlo::ShiftRightArithmetic(lhs, rhs);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildRemainderShlo(mlir::MlirOp self_op,
+                                                mlir::MlirOp other_op) {
+  TT_ASSIGN_OR_RETURN((auto [cast_self_op, cast_other_op]),
+                      ApplyBroadcastIfNeeded(self_op, other_op));
+  const mlir::ElementType self_elem = GetElementTypeOrDie(cast_self_op);
+  const mlir::ElementType other_elem = GetElementTypeOrDie(cast_other_op);
+  mlir::ElementType common_elem = self_elem;
+  if (self_elem != other_elem) {
+    at::ScalarType self_st = ConvertTo<at::ScalarType>(self_elem);
+    at::ScalarType other_st = ConvertTo<at::ScalarType>(other_elem);
+    at::ScalarType promoted_st = c10::promoteTypes(self_st, other_st);
+    TT_ASSIGN_OR_RETURN(common_elem, ConvertTo<mlir::ElementType>(promoted_st));
+  }
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType comp_dtype,
+                      InferComputationDtype(common_elem));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp self_comp,
+                      CastIfNeeded(cast_self_op, comp_dtype));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp other_comp,
+                      CastIfNeeded(cast_other_op, comp_dtype));
+
+  // stablehlo::Rem computes IEEE-754 round-to-zero remainder (fmod)
+  mlir::MlirOp mod = mlir::stablehlo::Rem(self_comp, other_comp);
+
+  // If mod != 0 and signs_differ(other, mod), mod = mod + other
+  auto zero = GetTensorTypeOrDie(mod).getElementType().isInteger()
+                  ? MakeConstantLike(mod, 0)
+                  : MakeConstantLike(mod, 0.0);
+  auto mod_ne_zero = mlir::stablehlo::Compare(
+      mod, zero, mlir::stablehlo::ComparisonDirection::NE);
+  auto mod_lt_zero = mlir::stablehlo::Compare(
+      mod, zero, mlir::stablehlo::ComparisonDirection::LT);
+  auto other_lt_zero = mlir::stablehlo::Compare(
+      other_comp, zero, mlir::stablehlo::ComparisonDirection::LT);
+  auto signs_differ = mlir::stablehlo::Compare(
+      mod_lt_zero, other_lt_zero, mlir::stablehlo::ComparisonDirection::NE);
+  auto need_adjust = mlir::stablehlo::And(mod_ne_zero, signs_differ);
+  auto adjusted = mlir::stablehlo::Add(mod, other_comp);
+  auto result_comp = mlir::stablehlo::Select(need_adjust, adjusted, mod);
+
+  return CastIfNeeded(result_comp, common_elem);
 }
 
 }  // namespace torch_tpu

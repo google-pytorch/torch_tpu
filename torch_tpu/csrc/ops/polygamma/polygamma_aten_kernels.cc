@@ -303,7 +303,7 @@ absl::StatusOr<mlir::MlirOp> BuildPolygammaShlo(
   }
 
   if (n == 0) {  // Digamma
-    return BuildDigammaShlo(self_op, out_mlir_type);
+    return BuildDigammaShlo(input_op, out_mlir_type);
   }
 
   mlir::MlirBuilder& builder = input_op.getBuilder();
@@ -426,8 +426,10 @@ at::Tensor& AtenPolygammaOut(int64_t n, const at::Tensor& self,
 
     TT_ASSIGN_OR_THROW(auto out_dtype,
                        ConvertTo<mlir::ElementType>(out.scalar_type()));
-    TT_ASSIGN_OR_THROW(auto computation_mlir_type,
+    TT_ASSIGN_OR_THROW(auto input_mlir_type,
                        ConvertTo<mlir::ElementType>(computation_type));
+    TT_ASSIGN_OR_THROW(auto computation_mlir_type,
+                       InferComputationDtype(input_mlir_type));
 
     auto op_builder =
         [n, out_dtype](mlir::MlirOp self_op) -> absl::StatusOr<mlir::MlirOp> {
