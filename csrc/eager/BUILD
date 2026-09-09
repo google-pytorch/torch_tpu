@@ -65,8 +65,8 @@ torch_tpu_cc_test(
     # Route to OSS TPU runners and exclude from OSS CPU runners
     # (running on CPU took 600+ sec due to emulated device init).
     tags = if_oss([
-        "presubmit-v5",
-        "presubmit-v7",
+        "requires-tpu-v5lite",
+        "requires-tpu-v7x",
         "requires-tpu",
     ]),
     deps = [
