@@ -26,7 +26,7 @@ import numpy as np
 from examples.benchmarks.e2e.harness import device_ops as device_ops_lib
 from examples.benchmarks.e2e.harness import metrics
 from examples.benchmarks.e2e.harness import step_lib
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 MAX_WARMUP_STEPS = flags.DEFINE_integer(
     "max_warmup_steps", 20, "Maximum number of warmup steps.", lower_bound=0

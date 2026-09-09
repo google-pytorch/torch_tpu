@@ -17,7 +17,8 @@
 import os
 
 from absl import logging
-from tests import seed_test_utils
+
+from absl.testing import absltest
 
 _DRY_RUN_OUTPUT_FILE = "test_targets.txt"
 
@@ -31,7 +32,7 @@ def _get_output_dir(key: str) -> str:
     )
 
 
-class BaseBenchmarkTest(seed_test_utils.RepeatableTest):
+class BaseBenchmarkTest(absltest.TestCase):
   """Base test class for benchmark tests."""
 
   def setUp(self):

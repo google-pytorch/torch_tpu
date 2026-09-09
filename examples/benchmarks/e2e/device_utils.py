@@ -16,21 +16,22 @@
 
 import json
 import os
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TYPE_CHECKING
 
 from absl import logging
 import psutil
 import torch
 from torch.utils._pytree import tree_flatten
-from torch_tpu._internal import sync as tpu_sync
-from torch_tpu._internal.profiler import xprof_adapter
+
+if TYPE_CHECKING:
+  from torch_tpu._internal.benchmarks import xprof_adapter
 
 _BYTES_IN_MB = 1024 * 1024
 
 
 def _get_peak_hbm_memory_mb(
     session_id: str | None = None,
-    client: xprof_adapter.XprofAnalysisClient | None = None,
+    client: "xprof_adapter.XprofAnalysisClient | None" = None,
 ) -> float:
   """Get peak HBM usage in MB from Xprof memory profile.
 
@@ -96,7 +97,7 @@ def _get_peak_hbm_memory_mb(
 
 def get_max_total_device_time(
     session_id: str | None = None,
-    client: xprof_adapter.XprofAnalysisClient | None = None,
+    client: "xprof_adapter.XprofAnalysisClient | None" = None,
 ) -> float:
   """Gets the max total device time across all devices running the model.
 
@@ -180,7 +181,7 @@ def get_max_total_device_time(
 def get_peak_memory_hbm(
     device,
     session_id: str | None = None,
-    xprof_client: xprof_adapter.XprofAnalysisClient | None = None,
+    xprof_client: "xprof_adapter.XprofAnalysisClient | None" = None,
 ) -> float:
   """Get peak memory usage for the specified device.
 
@@ -247,6 +248,8 @@ def synchronize(
       # TODO(b/507181043): Investigate why sync(None, wait=True) doesn't work.
       tensors = _collect_tensors(tensor_to_sync)
       # TODO(lukeboyer): Flip to global sync after cl/964180694.
+      from torch_tpu._internal import sync as tpu_sync  # pylint: disable=g-import-not-at-top
+
       tpu_sync.synchronize(tensors, wait=True)
   else:
     raise ValueError(f'Unsupported device: {device}')

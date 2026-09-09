@@ -20,26 +20,36 @@ import functools
 import gc
 import os
 import sys
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeAlias, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING
 
 from absl import flags
 from absl import logging
 from tensorboardX import writer
 import torch
-from torch_tpu._internal import execution_mode
-from torch_tpu._internal import optim
-from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from examples.benchmarks.e2e import benchmark_utils
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
-from torch_tpu._internal.profiler import xprof_adapter
 from tests.distributed import distributed_utils
 
-EagerMode: TypeAlias = execution_mode.EagerMode
+if TYPE_CHECKING:
+  from torch_tpu._internal.benchmarks import xprof_adapter
+
+# Maps a run mode onto the name of the TorchTPU eager mode it selects, or None
+# where the run mode leaves the eager mode alone. Held as attribute names
+# rather than enum members so that validating a run mode does not have to
+# import torch_tpu.
+_EAGER_MODE_NAME_BY_RUN_MODE = {
+    common.RunMode.EAGER_DEFAULT: "DEFER_NEVER",
+    common.RunMode.EAGER_OPTIMIZED: "DEFER_AND_FUSE",
+    common.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING: (
+        "DEFER_NEVER_AND_LAUNCH_BLOCKING"
+    ),
+    common.RunMode.COMPILED: None,
+}
 
 
 WEIGHTS_DTYPE = flags.DEFINE_string(
@@ -92,11 +102,13 @@ DISTRIBUTED_PLATFORMS = (
 
 
 @functools.lru_cache(maxsize=None)
-def get_xprof_client() -> xprof_adapter.XprofAnalysisClient | None:
+def get_xprof_client() -> "xprof_adapter.XprofAnalysisClient | None":
   """Returns the xprof analysis client.
 
   This function caches the client to avoid creating multiple connections.
   """
+  from torch_tpu._internal.benchmarks import xprof_adapter  # pylint: disable=g-import-not-at-top
+
   return xprof_adapter.XprofAnalysisClient()
 
 
@@ -189,37 +201,36 @@ def _run_mode_context(
   Yields:
     None
   """
-  original_eager_mode = execution_mode.eager_mode
-  new_eager_mode = None
+  if run_mode not in _EAGER_MODE_NAME_BY_RUN_MODE:
+    raise ValueError(f"Unexpected run mode: {run_mode}")
 
-  match run_mode:
-    case common.RunMode.EAGER_DEFAULT:
-      new_eager_mode = EagerMode.DEFER_NEVER
+  # Eager execution modes are a TorchTPU concept, so the module (and with it
+  # the whole torch_tpu package) is only imported on TorchTPU devices.
+  is_torch_tpu = common.is_torch_tpu_device(device)
+  execution_mode = None
+  original_eager_mode = None
+  if is_torch_tpu:
+    from torch_tpu._internal import execution_mode  # pylint: disable=g-import-not-at-top
 
-    case common.RunMode.EAGER_OPTIMIZED:
-      new_eager_mode = EagerMode.DEFER_AND_FUSE
-
-    case common.RunMode.EAGER_DEFER_NEVER_AND_LAUNCH_BLOCKING:
-      new_eager_mode = EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
-
-    case common.RunMode.COMPILED:
-      pass  # Explicitly do nothing
-
-    case _:
-      raise ValueError(f"Unexpected run mode: {run_mode}")
-
-  if new_eager_mode is not None:
-    execution_mode.eager_mode = new_eager_mode
+    original_eager_mode = execution_mode.eager_mode
+    new_eager_mode_name = _EAGER_MODE_NAME_BY_RUN_MODE[run_mode]
+    if new_eager_mode_name is not None:
+      execution_mode.eager_mode = getattr(
+          execution_mode.EagerMode, new_eager_mode_name
+      )
 
   try:
     yield
   finally:
     # Change back to the original value.
-    execution_mode.eager_mode = original_eager_mode
+    if execution_mode is not None:
+      execution_mode.eager_mode = original_eager_mode
     # pylint: disable=protected-access
     if clear_device_cache and device.type != "cpu":
       device_utils.clear_cache(device.type)
       if device.type == "tpu":
+        from torch_tpu._internal import testing as tt_testing  # pylint: disable=g-import-not-at-top
+
         tt_testing.reset_eager_state()
     if common.is_torch_compile(run_mode):
       torch._dynamo.reset()
@@ -233,6 +244,7 @@ def _setup_absl() -> None:
   """
   if not flags.FLAGS.is_parsed():
     flags.FLAGS(sys.argv, known_only=True)
+  common.setup_stderr_logging()
   logging.use_absl_handler()
 
 
@@ -338,6 +350,8 @@ def run_single_process_benchmark(
   # eliminate internal graph breaks (such as state initialization control flow)
   # during torch.compile tracing.
   if PATCH_OPTIMIZER_GRAPH_BREAKS.value:
+    from torch_tpu._internal import optim  # pylint: disable=g-import-not-at-top
+
     optim.patch_optimizer_graph_breaks()
 
   optim_type = OPTIM.value if OPTIM.value is not None else config.optim
@@ -474,6 +488,9 @@ def run_torch_tpu_task(
     extra_worker_func_args: Tuple[Any, ...],
 ) -> None:
   rank = os.environ.get("RANK", "0")
+  # Spawned workers start from a fresh interpreter with autoload disabled, so
+  # each one registers the backend before "tpu_dist" can be resolved.
+  common.load_torch_tpu(common.PLATFORM.value)
   logging.info("Process %s initializing process group...", rank)
   torch.distributed.init_process_group(backend="tpu_dist")
   logging.info("Process %s process group initialized.", rank)
@@ -526,6 +543,8 @@ def _run_distributed_benchmark(
         ),
     )
   elif platform == common.Platform.GFC_1X1X1:
+    from torch_tpu._internal.distributed.launchers import singlehost_wrapper  # pylint: disable=g-import-not-at-top
+
     singlehost_wrapper.prepare_tpu_environment(world_size=2)
     distributed_utils.dist_run(
         2,
@@ -539,6 +558,8 @@ def _run_distributed_benchmark(
         ),
     )
   elif platform == common.Platform.GFC_2X2X1:
+    from torch_tpu._internal.distributed.launchers import singlehost_wrapper  # pylint: disable=g-import-not-at-top
+
     singlehost_wrapper.prepare_tpu_environment(world_size=8)
     distributed_utils.dist_run(
         8,
@@ -608,6 +629,8 @@ def _get_optimizer(
     return None
 
   if optim_type == "tpu_adamw":
+    from torch_tpu._internal import optim  # pylint: disable=g-import-not-at-top
+
     optimizer = optim.AdamW
   elif optim_type == "adamw":
     optimizer = torch.optim.AdamW

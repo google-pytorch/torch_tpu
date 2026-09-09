@@ -410,7 +410,6 @@ def _precompute_attention_mask(
         attention_mask=None,
         past_key_values=None,
         position_ids=position_ids,
-        layer_idx=None,
     )
 
     if precomputed_4d_mask is None:
@@ -499,7 +498,7 @@ def huggingface_llm_model_builder(
 
   if model_and_input_args.custom_kwargs.get("precompute_attention_mask", False):
     example_inputs["attention_mask"] = _precompute_attention_mask(
-        model_cpu.config, example_inputs, device, weights_dtype
+        model_cpu.config, example_inputs, device, weights_dtype, device
     )
     device_utils.synchronize(device.type, example_inputs["attention_mask"])
 

@@ -25,7 +25,7 @@ from absl import flags
 import torch
 from torch_tpu._internal import dynamism
 from torch_tpu._internal.utils import test_utils as utils
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 import transformers
 from transformers.cache_utils import DynamicCache, DynamicLayer
 from transformers.models.qwen3 import modeling_qwen3

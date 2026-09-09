@@ -124,8 +124,59 @@ class RunMode(enum.Enum):
   COMPILED = "compiled"  # Run the model with torch.compile.
 
 
+# Device types served by the TorchTPU PrivateUse1 backend. Platforms that map
+# to anything else (cuda, cpu) must never import torch_tpu: the import claims
+# the single PrivateUse1 slot that TorchAX also wants.
+_TORCH_TPU_DEVICES = frozenset({"tpu", "xla_cpu", "xla_cuda"})
+
+_stderr_logging_configured = False
+
+
+def is_torch_tpu_device(device: torch.device | str) -> bool:
+  """Returns whether `device` is served by the TorchTPU backend."""
+  device_type = device if isinstance(device, str) else device.type
+  return device_type in _TORCH_TPU_DEVICES
+
+
+def needs_torch_tpu(platform: Platform) -> bool:
+  """Returns whether this run needs the TorchTPU backend registered."""
+  return BACKEND.value == Backend.TORCH_TPU and is_torch_tpu_device(
+      PLATFORM_DEVICE_MAP[platform]
+  )
+
+
+def load_torch_tpu(platform: Platform) -> None:
+  """Registers the TorchTPU backend, for TorchTPU platforms only.
+
+  Autoload is disabled for these targets (`autoload = False` in the BUILD
+  file), so nothing registers the backend at `import torch`. `load()` is
+  idempotent, so callers on any code path that needs a TPU device may call
+  this freely; spawned workers each need their own call.
+
+  Args:
+    platform: The platform the benchmark is running on.
+  """
+  if not needs_torch_tpu(platform):
+    return
+  from torch_tpu import _loader  # pylint: disable=g-import-not-at-top
+
+  _loader.load()
+
+
+def setup_stderr_logging() -> None:
+  """Routes logs to stderr, once per process."""
+  global _stderr_logging_configured
+  if _stderr_logging_configured:
+    return
+  from torch_tpu._internal.utils import log_utils  # pylint: disable=g-import-not-at-top
+
+  log_utils.log_to_stderr()
+  _stderr_logging_configured = True
+
+
 def get_torch_device(platform: Platform) -> torch.device:
   """Returns the torch device for the given platform."""
+  load_torch_tpu(platform)
   return torch.device(PLATFORM_DEVICE_MAP[platform])
 
 

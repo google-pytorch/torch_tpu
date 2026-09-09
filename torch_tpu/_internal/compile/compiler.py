@@ -48,7 +48,7 @@ from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompi
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import TorchTpuCompiledExecutable
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 
 @dataclasses.dataclass

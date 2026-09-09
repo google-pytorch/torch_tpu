@@ -14,7 +14,6 @@
 
 load(
     "//build_files:build_defs.bzl",
-    "oss_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -74,12 +73,6 @@ torch_tpu_py_library(
         ":_profiler_backend",
         "//shims/absl_py/logging",
     ],
-)
-
-oss_target(
-    torch_tpu_py_library,
-    name = "xprof_adapter",
-    srcs = ["xprof_adapter.py"],
 )
 
 pybind_extension(

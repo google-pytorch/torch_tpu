@@ -22,7 +22,6 @@ import torch
 import torch.func as func
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.utils import _pytree
-from torch_tpu._internal.compile import compiler
 from examples.benchmarks import optimizers
 
 # Re-export optimizer classes for simple_trainer
@@ -183,6 +182,8 @@ class SingleTraceTrainer:
     donated_inputs = [
         i for i, x in enumerate(flat_param_group) if isinstance(x, torch.Tensor)
     ]
+
+    from torch_tpu._internal.compile import compiler  # pylint: disable=g-import-not-at-top
 
     backend_compiler = compiler.StaticCompiler()
 

@@ -34,7 +34,7 @@ from torch_tpu._internal import dynamism
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal.utils import log_utils
 from examples import paths
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 import transformers
 from transformers import Qwen3VLForConditionalGeneration
 

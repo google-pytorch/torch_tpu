@@ -18,20 +18,37 @@ import contextlib
 import dataclasses
 import enum
 import time
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, TYPE_CHECKING
 
 from absl import flags
 from absl import logging
 import numpy as np
 import torch
 from torch.utils import _pytree as pytree
-from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.quality_utils import quality_benchmark_model
-from torch_tpu._internal.profiler import xprof_adapter
 
-log_utils.log_to_stderr()
+if TYPE_CHECKING:
+  from torch_tpu._internal.benchmarks import xprof_adapter
+
+
+def _trace_me(name: str, step: int, enabled: bool):
+  """Returns a TorchTPU TraceMe span, or a no-op when not profiling.
+
+  The import is deferred so that a run on a non-TorchTPU platform, which never
+  profiles, does not import torch_tpu.
+
+  Args:
+    name: The name of the span.
+    step: The step number the span covers.
+    enabled: Whether a profiling session is collecting this span.
+  """
+  if not enabled:
+    return contextlib.nullcontext()
+  from torch_tpu._internal.benchmarks import xprof_adapter  # pylint: disable=g-import-not-at-top
+
+  return xprof_adapter.TraceMe(name, step_num=step)
 
 
 MAX_WARMUP_STEPS = flags.DEFINE_integer(
@@ -165,6 +182,8 @@ class XprofContext:
 
   def __enter__(self):
     if self.enable_xprof:
+      from torch_tpu._internal.benchmarks import xprof_adapter  # pylint: disable=g-import-not-at-top
+
       self.session = xprof_adapter.XprofSession()
       kwargs = {}
       host_trace_level = 3
@@ -305,7 +324,7 @@ def _warmup_run(
       "warmup_run", enable_xprof, trace_only_host=True
   ) as warmup_run_context:
     for step in range(MAX_WARMUP_STEPS.value):
-      with xprof_adapter.TraceMe("Warmup", step_num=step):
+      with _trace_me("Warmup", step, enable_xprof):
         step_input = example_inputs[step] if is_sequence else example_inputs
         start_time = time.perf_counter()
         _run_step(
@@ -353,7 +372,7 @@ def _post_warmup_run(
     *,
     optimizer: torch.optim.Optimizer | None = None,
     enable_xprof: bool = False,
-    xprof_client: xprof_adapter.XprofAnalysisClient | None = None,
+    xprof_client: "xprof_adapter.XprofAnalysisClient | None" = None,
     sync_params: bool = False,
 ) -> metrics_lib.PostWarmupRunResult:
   """Runs the model once after the warmup is complete.
@@ -391,11 +410,7 @@ def _post_warmup_run(
 
   def run_single_step(step, is_profiling_run: bool):
     nonlocal num_cache_misses, xprof_timings, non_xprof_timings
-    ctx = (
-        xprof_adapter.TraceMe("Eval", step_num=step)
-        if is_profiling_run
-        else contextlib.nullcontext()
-    )
+    ctx = _trace_me("Eval", step, is_profiling_run)
     with ctx:
       step_input = example_inputs[step] if is_sequence else example_inputs
       start_time = time.perf_counter()
@@ -540,7 +555,7 @@ def run_performance_benchmark(
     *,
     enable_xprof: bool = False,
     optimizer: torch.optim.Optimizer | None = None,
-    xprof_client: xprof_adapter.XprofAnalysisClient | None = None,
+    xprof_client: "xprof_adapter.XprofAnalysisClient | None" = None,
     sync_params: bool = False,
     is_bounded_dynamic: bool = False,
 ) -> metrics_lib.PerformanceMetrics:

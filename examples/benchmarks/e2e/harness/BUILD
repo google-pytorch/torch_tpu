@@ -33,7 +33,6 @@ torch_tpu_py_library(
     srcs = ["base_test.py"],
     deps = [
         "//shims/absl_py/logging",
-        "//tests:seed_test_utils",
     ],
 )
 
@@ -81,7 +80,7 @@ torch_tpu_py_library(
         ":step_lib",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "@pypi//numpy",
     ],
 )
@@ -177,7 +176,7 @@ torch_tpu_py_test(
         "--post_warmup_steps=0",
     ],
     env = {
-        "BENCHMARK_PLATFORM": "v5e_1x1",
+        "BENCHMARK_PLATFORM": "b200_1",
     },
     nolocal = "user requested to run this manually",
     notest_oss = "requires huggingface configs from internal infra",
@@ -185,6 +184,59 @@ torch_tpu_py_test(
     tags = [
         "requires-net:external",
         "requires-tpu-v5lite",
+    ],
+    deps = [
+        ":base_test",
+        ":cases",
+        ":compile",
+        ":context",
+        ":discovery",
+        ":export",
+        ":flags",
+        ":measure",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+    ],
+)
+
+# Registry-driven variant of :torch_benchmark_test, used by the benchmark
+# suite in examples/benchmarks/harness_benchmark_registry.pbtxt.
+#
+# It deliberately declares neither `args` nor `env`, because both would defeat
+# the registry:
+#   * a baked "--run_scope=presubmit" arg lands in sys.argv ahead of the
+#     runtime flags, and models/gen_benchmarks.py scans sys.argv literally for
+#     it -- the generated benchmarks would silently not register, leaving only
+#     the hand-written specs;
+#   * a rule `env` entry takes precedence over --test_env, so BENCHMARK_PLATFORM
+#     could not be varied per environment_config.
+# Both are therefore supplied per environment by the registry instead. Sharding
+# likewise comes from --test_env (TEST_TOTAL_SHARDS/TEST_SHARD_INDEX), so no
+# shard_count is declared here: `bazel run` refuses a target whose shard_count
+# exceeds one.
+torch_tpu_py_test(
+    name = "torch_benchmark_full",
+    timeout = "eternal",
+    srcs = ["torch_benchmark_test.py"],
+    main = "torch_benchmark_test.py",
+    nolocal = "Full-scope benchmark sweep; run from the benchmark registry.",
+    notest_oss = "Benchmarks have a separate workflow.",
+    tags = [
+        "nofastbuild",  # Benchmark.
+        # Needed for getting xprof links
+        "requires-net:external",
     ],
     deps = [
         ":base_test",
@@ -269,6 +321,23 @@ pytype_strict_binary(
 alias(
     name = "multihost_runner",
     actual = ":multihost_runner_bin",
+)
+
+# Diagnostic: reports which shared objects each of the harness's torch_tpu
+# extension imports maps, to establish whether TpuDeviceGuardImpl's dlopen-time
+# registrar is reached. Not part of any test suite.
+torch_tpu_py_test(
+    name = "guard_impl_probe",
+    srcs = ["guard_impl_probe.py"],
+    main = "guard_impl_probe.py",
+    deps = [
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+        "//torch_tpu/_internal/benchmarks:export_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
+        "//torch_tpu/_internal/device:_device_ops_backend",
+        "//torch_tpu/_internal:testing",
+    ],
 )
 
 torch_tpu_package_end()

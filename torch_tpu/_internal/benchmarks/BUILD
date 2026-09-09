@@ -39,4 +39,10 @@ oss_target(
     srcs = ["export_adapter.py"],
 )
 
+oss_target(
+    torch_tpu_py_library,
+    name = "xprof_adapter",
+    srcs = ["xprof_adapter.py"],
+)
+
 torch_tpu_package_end()

@@ -22,7 +22,7 @@ from torch.utils import _pytree
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.utils import test_utils
 from examples.benchmarks import optimizers
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 
 def _make_dummy_params(device: torch.device):
