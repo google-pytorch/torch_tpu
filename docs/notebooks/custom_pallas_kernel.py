@@ -200,7 +200,7 @@ def _(jax, pallas, pl, torch):
   print(f"Input x:  {x_inf.cpu()}")
   print(f"Input y:  {y_inf.cpu()}")
   print(f"Result:   {res_compiled.cpu()}")
-  return (mul_vectors_op,)
+  return
 
 
 @app.cell(hide_code=True)
@@ -384,14 +384,14 @@ def _(jax, pallas, pl, torch):
   print(f"Input:    {test_input.cpu()}")
   print(f"Output:   {test_output.cpu()}")
   print(f"Expected: {expected}")
-  print("\n? Verification complete: Pallas integration functional")
+  print("\n✅ Verification complete: Pallas integration functional")
   return
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ### ??? Summary
+    ### 🛠️ Summary
 
     | Concept | Key Takeaway |
     | :--- | :--- |

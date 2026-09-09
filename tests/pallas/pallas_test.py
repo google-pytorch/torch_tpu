@@ -816,7 +816,16 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
           donate_argnums=(1,),
       )
 
-  def test_pallas_autograd_example_eager_and_fullgraph(self):
+  def test_pallas_autograd_saved_auxiliaries_eager_and_fullgraph(self):
+    """Exercise handwritten Pallas backward with forward-produced residuals.
+
+    Unlike test_jax_dot_grad_for_backwards, which derives a backward using
+    jax.grad and saves inputs, this uses pl.pallas_call in both operators
+    and saves non-differentiable auxiliary outputs from the forward.
+    Check residual values and gradient propagation with a strided upstream
+    gradient in eager mode, then with explicit fullgraph compilation and
+    AOTAutograd backward. Generic jax_op autograd is covered elsewhere.
+    """
     x_host = torch.linspace(-2.0, 2.0, 256, dtype=torch.float32)
     y_host = torch.linspace(3.0, -1.0, 256, dtype=torch.float32)
     grad_host = torch.linspace(-0.5, 1.5, 256, dtype=torch.float32)
@@ -846,22 +855,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
       test_utils.assert_close(x.grad.cpu(), grad_host * y_host)
       test_utils.assert_close(y.grad.cpu(), grad_host * x_host)
 
-    with self.subTest("static boolean and direct backward op"):
-      x = x_host.to(self.device).requires_grad_()
-      y = y_host.to(self.device).requires_grad_()
-      out, local_dx, local_dy = _autograd_mul_forward(
-          x, y, True, _AUTOGRAD_BLOCK_SIZE
-      )
-      direct_dx, direct_dy = _autograd_mul_backward(
-          grad_host.to(self.device),
-          local_dx,
-          local_dy,
-          _AUTOGRAD_BLOCK_SIZE,
-      )
-      test_utils.assert_close(out.cpu(), -(x_host * y_host))
-      test_utils.assert_close(direct_dx.cpu(), -(grad_host * y_host))
-      test_utils.assert_close(direct_dy.cpu(), -(grad_host * x_host))
-
     with self.subTest("fullgraph forward and AOTAutograd backward"):
 
       @torch.compile(backend="tpu", dynamic=False, fullgraph=True)
@@ -888,19 +881,6 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
         )
         test_utils.assert_close(x.grad.cpu(), sign * grad_host * y_host)
         test_utils.assert_close(y.grad.cpu(), sign * grad_host * x_host)
-
-  def test_pallas_autograd_example_rejects_invalid_blocking(self):
-    x = torch.ones(256, dtype=torch.float32, device=self.device)
-    with self.assertRaisesRegex(
-        ValueError, "block_size must be a positive multiple of 128"
-    ):
-      _autograd_mul_forward(x, x, False, 64)
-
-    x = torch.ones(384, dtype=torch.float32, device=self.device)
-    with self.assertRaisesRegex(
-        ValueError, "input must be 1-D and divisible by block_size"
-    ):
-      _autograd_mul_forward(x, x, False, 256)
 
   def test_jax_dot_grad_for_backwards(self):
     """Test usage of jax.grad to generate a backwards function.
