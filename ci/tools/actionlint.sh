@@ -24,7 +24,7 @@
 # non-zero codes from `set -e` if the download or checksum verification fails.
 #
 # Usage:
-#   # Run from the respository root with no arguments.
+#   # Run from the repository root with no arguments.
 #   $ ci/tools/actionlint.sh
 #
 # See .github/actionlint.yaml for additional configurations.
