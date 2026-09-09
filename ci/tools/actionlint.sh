@@ -18,6 +18,15 @@
 # Unlike other linters, actionlint always examines all workflow files under .github/.
 # It runs blazing fast and takes well under a second.
 #
+# The script outputs progress to stdout, and one actionlint diagnostic per
+# violation (file, line, column, rule name) followed by self-serve fix instructions.
+# It exits with 0 when no findings, 1 when actionlint reports any violation, and
+# non-zero codes from `set -e` if the download or checksum verification fails.
+#
+# Usage:
+#   # Run from the respository root with no arguments.
+#   $ ci/tools/actionlint.sh
+#
 # See .github/actionlint.yaml for additional configurations.
 
 set -euo pipefail
