@@ -31,7 +31,7 @@ import torch._inductor.config as inductor_config
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
 from examples import paths
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 import transformers
 
 log_utils.log_to_stderr()

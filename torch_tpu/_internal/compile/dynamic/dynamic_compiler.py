@@ -531,15 +531,17 @@ class DynamicCompiler(compiler.Compiler):
   def __init__(
       self,
       compilation_context: compiler.CompilationContext | None = None,
-      debug: bool = False,
+      *,
+      debug: bool | compiler.TpuCompileDebug | None = None,
   ):
     """Initializes the DynamicCompiler instance.
 
     Args:
       compilation_context: A `compiler.CompilationContext` instance used for
         maintaining compilation state.
-      debug: A `bool` that, when `True`, enables debug logging and artifact
-        generation.
+      debug: Optional TpuCompileDebug container or bool for recording
+        compilation debug artifacts. Note: Passing a bool is deprecated; pass a
+        TpuCompileDebug container instead.
     """
     if compilation_context is None:
       compilation_context = compiler.CompilationContext()

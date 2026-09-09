@@ -34,7 +34,7 @@ from examples.benchmarks.e2e import performance_utils as pt_performance_utils
 import torchax
 from torchax import interop  # pylint: disable=unused-import  # noqa: F401
 from torchax import train  # pylint: disable=unused-import  # noqa: F401
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 # Monkeypatch torchax.tensor.Environment._to_copy to handle raw Python scalars (int, float, bool)
 # passed during functorch/vmap tracing, converting them to PyTorch tensors on the fly.

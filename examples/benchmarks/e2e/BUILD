@@ -48,7 +48,7 @@ torch_tpu_py_library(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/utils:log_utils",
         "@pypi//numpy",
     ],
@@ -82,10 +82,10 @@ torch_tpu_py_library(
         "//shims/torch",
         "//shims/torch:pytorch",
         "//tests/distributed:distributed_utils",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//torch_tpu/_internal/execution_mode",
         "//torch_tpu/_internal/optim",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
         "@pypi//tensorboardx",
     ],
 )
@@ -273,7 +273,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//torch_tpu",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/utils:log_utils",
     ],
 )
@@ -593,7 +593,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/sync",
         "@pypi//psutil",
     ],
@@ -613,7 +613,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-        "//torch_tpu/_internal/profiler:xprof_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
     ],
 )
 

@@ -105,6 +105,51 @@ class PropagateSymintsTest(seed_test_utils.RepeatableTest):
     self.assertLen(submod_placeholders, 2)
     self.assertEqual(call_submod.args, (p_s0, p_x))
 
+  def test_propagate_symints_from_stride(self):
+    shape_env = torch.fx.experimental.symbolic_shapes.ShapeEnv()
+    symint_s0 = shape_env.create_symintnode(
+        shape_env.create_symbol(
+            1024, torch._dynamo.source.ConstantSource("s0")
+        ),
+        hint=1024,
+    )
+
+    fake_mode = torch._subclasses.fake_tensor.FakeTensorMode(
+        shape_env=shape_env
+    )
+    with fake_mode:
+      base_tensor = torch.empty((16, 8, symint_s0, 8), dtype=torch.float32)
+      view_tensor = base_tensor[:, :, :127, :]
+
+    # view_tensor has static shape (16, 8, 127, 8) and dynamic stride (8*s0, s0, 8, 1)
+    sub_graph = Graph()
+    sub_x = sub_graph.placeholder("x")
+    sub_x.meta["val"] = view_tensor
+    sub_out = sub_graph.call_function(torch.ops.aten.add.Tensor, (sub_x, sub_x))
+    sub_graph.output(sub_out)
+    submod = GraphModule(torch.nn.Module(), sub_graph)
+
+    parent_graph = Graph()
+    p_s0 = parent_graph.placeholder("s0")
+    p_s0.meta["val"] = symint_s0
+    p_x = parent_graph.placeholder("x")
+    p_x.meta["val"] = view_tensor
+    call_submod = parent_graph.call_module("submod_0", (p_x,))
+    parent_graph.output(call_submod)
+
+    parent_gm = GraphModule({"submod_0": submod}, parent_graph)
+
+    propagate_symints.apply(parent_gm)
+
+    submod_placeholders = [
+        n for n in submod.graph.nodes if n.op == "placeholder"
+    ]
+    self.assertLen(submod_placeholders, 2)
+    self.assertEqual(submod_placeholders[0].name, f"sym_{str(symint_s0)}")
+    self.assertEqual(submod_placeholders[0].meta["val"], symint_s0)
+    self.assertEqual(submod_placeholders[1].name, "x")
+    self.assertEqual(call_submod.args, (p_s0, p_x))
+
 
 if __name__ == "__main__":
   absltest.main()

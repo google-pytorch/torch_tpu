@@ -29,7 +29,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal import sync
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.utils import log_utils
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 EagerMode: TypeAlias = execution_mode.EagerMode
 

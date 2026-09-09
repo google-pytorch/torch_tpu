@@ -31,7 +31,7 @@ from torch._inductor.utils import clear_caches
 from torch.compiler._cache import CacheArtifactManager
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import testing as tt_testing
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 from tests import module_registry
 from tests import seed_test_utils
 

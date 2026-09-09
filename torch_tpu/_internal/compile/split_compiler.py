@@ -23,7 +23,7 @@ import copy
 import functools
 import operator
 import threading
-from typing import Any, List
+from typing import Any
 
 from absl import logging
 import torch
@@ -46,7 +46,6 @@ from torch_tpu._internal.distributed import collective_ops
 from torch_tpu._internal.distributed import handshake
 from torch_tpu._internal.distributed import process_group_utils
 from torch_tpu._internal.distributed import spmd_util
-
 
 ProcessGroupId = handshake.ProcessGroupId
 RankCollectiveCounts = handshake.RankCollectiveCounts
@@ -118,11 +117,19 @@ def _submit_handshake(
         pg_to_num_collectives,
     )
     if graph_module:
-      logging.debug(
-          "Handshake failed on rank %d for graph module: %s", rank, graph_module
+      logging.warning(
+          "Handshake failed on rank %d for graph module:\n"
+          "--- [BEGIN GRAPH MODULE: %s] ---\n"
+          "%s\n"
+          "--- [END GRAPH MODULE: %s] ---",
+          rank,
+          executable_fingerprint,
+          graph_module.print_readable(print_output=False),
+          executable_fingerprint,
       )
 
   return result
+
 
 def _get_unique_wait_tensor_producer(
     node: torch.fx.Node,
@@ -352,61 +359,83 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
 
 
 class _SplitCompiledExecutable(CompiledArtifact):
-  """A CompiledArtifact supporting split submodules."""
+  """A CompiledArtifact supporting split submodules.
+
+  Supports two structural modes:
+  1. Leaf Mode (num_partitions <= 1): Holds a single CompiledArtifact.
+     Bypasses split_module to eliminate FX parameter upgrading and HBM OOM.
+     Does NOT have a `_split_gm` attribute.
+  2. Composite Mode (num_partitions > 1): Holds a partitioned GraphModule
+     stitching compiled submodules across collective operations.
+  """
 
   def __init__(
       self,
-      split_gm: torch.fx.GraphModule,
+      target: torch.fx.GraphModule | CompiledArtifact,
       recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
       pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
+      graph_module: torch.fx.GraphModule | None = None,
   ):
     """Initializes a _SplitCompiledExecutable.
 
     Args:
-      split_gm: The split GraphModule containing compiled and eager submodules.
+      target: The split GraphModule or compiled leaf artifact.
       recompile_fn: Optional callable for recompiling the graph.
       pg_to_num_collectives: Mapping of ProcessGroupId to collective counts for
         this executable.
+      graph_module: The optional unpartitioned graph module for logging.
     """
-    self._split_gm = split_gm
+    super().__init__()
     self.recompile_fn = recompile_fn
     self.pg_to_num_collectives = (
         pg_to_num_collectives if pg_to_num_collectives else {}
     )
+    self._graph_module = graph_module
 
-  def _maybe_handshake_and_recompile(self):
+    if isinstance(target, torch.fx.GraphModule):
+      self._split_gm = target
+      self._leaf_executable: CompiledArtifact | None = None
+    elif isinstance(target, CompiledArtifact):
+      self._leaf_executable = target
+      # Note: self._split_gm is deliberately NOT set in Leaf Mode
+    else:
+      raise TypeError(
+          "Expected torch.fx.GraphModule or CompiledArtifact, got"
+          f" {type(target)}"
+      )
+
+  def _maybe_handshake_and_recompile(self) -> None:
+    """Verifies rank consensus on dispatch when running in DISPATCH_STAGE."""
     if self.recompile_fn is None:
       return
 
-    compiled_execs = [
-        module.submod
-        for module in self._split_gm.modules()
-        if isinstance(module, _WrapperModule)
-        and isinstance(
-            module.submod, (TorchTpuCompiledExecutable, AsyncCompiledArtifact)
-        )
-    ]
-    assert len(compiled_execs) == 1, (
-        "Expected split_gm to contain exactly one TorchTpuCompiledExecutable"
-        f" or AsyncCompiledArtifact, found {len(compiled_execs)}."
-    )
-    executable_fingerprint = compiled_execs[0].fingerprint()
+    self.resolve()
+    executable_fingerprint = self.fingerprint()
+    if not executable_fingerprint:
+      return
+
     fingerprints_match = _submit_handshake(
         executable_fingerprint,
         self.pg_to_num_collectives,
+        self._graph_module,
     )
-    if fingerprints_match:
-      return
 
-    new_exec = self.recompile_fn()
-    self.__dict__.update(new_exec.__dict__)
+    if not fingerprints_match:
+      assert self.recompile_fn is not None
+      new_exec = self.recompile_fn()
+      new_exec.resolve()
+      self.__dict__.clear()
+      self.__dict__.update(new_exec.__dict__)
 
-  def __call__(self, *args: Any) -> Any:
+  def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    if self.recompile_fn is not None:
+      self._maybe_handshake_and_recompile()
+
+    if self._leaf_executable is not None:
+      return self._leaf_executable(*args, **kwargs)
+
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]  # pyrefly: ignore[bad-assignment]
-
-    self._maybe_handshake_and_recompile()
-
     return self._split_gm(*args)
 
   def __reduce__(self) -> tuple[Callable[..., Any], tuple[Any, ...]]:
@@ -416,71 +445,66 @@ class _SplitCompiledExecutable(CompiledArtifact):
     containing:
       1. A callable (_unpickle_split_compiled_executable) that can be called to
          recreate the object.
-      2. A tuple of arguments containing the parent GraphModule split_gm.
+      2. A tuple of arguments containing target, recompile_fn,
+         pg_to_num_collectives, and graph_module.
 
     Returns:
       A tuple (callable, args_tuple) used by the pickle module to
       serialize the object.
     """
+    target = self._leaf_executable if self.is_leaf_mode else self._split_gm
     return (
         _unpickle_split_compiled_executable,
         (
-            self._split_gm,
+            target,
             self.recompile_fn,
             self.pg_to_num_collectives,
+            self._graph_module,
         ),
     )
 
   @property
-  def graph_module_debug_strs(self) -> List[str]:
-    """List of string representations of the FX graph module's code for each submodule."""
-    graph_module_debug_strs = []
-    for module in self._split_gm.modules():
-      if isinstance(module, _WrapperModule):
-        graph_module_debug_strs.append(
-            module.submod.graph_module_debug_str  # pyrefly: ignore[missing-attribute]
-        )
-    return graph_module_debug_strs
+  def is_leaf_mode(self) -> bool:
+    return self._leaf_executable is not None
 
   @property
-  def mlir_texts(self) -> List[str]:
+  def compiled_executables(self) -> Sequence[CompiledArtifact]:
+    """Returns the list of underlying compiled executables."""
+    if self._leaf_executable is not None:
+      return [self._leaf_executable]
+    return [
+        module.submod
+        for module in self._split_gm.children()
+        if isinstance(module, _WrapperModule)
+        and isinstance(module.submod, CompiledArtifact)
+    ]
+
+  @property
+  def graph_module_debug_strs(self) -> Sequence[str]:
+    """List of string representations of the FX graph module's code for each submodule."""
+    return [
+        s
+        for exe in self.compiled_executables
+        for s in exe.graph_module_debug_strs
+    ]
+
+  @property
+  def mlir_texts(self) -> Sequence[str]:
     """List of MLIR text representations of the compiled submodule's code."""
-
-    mlir_texts = []
-    for module in self._split_gm.modules():
-      if isinstance(module, _WrapperModule):
-        mlir_texts.append(
-            module.submod.mlir_text  # pyrefly: ignore[missing-attribute]
-        )
-    return mlir_texts
-
-  def post_compile(
-      self,
-      example_inputs: Sequence[Any],
-      constants: Any,
-      graph_kwargs: Any,
-  ) -> None:
-    pass
-
-  def prepare_for_serialization(self) -> None:
-    pass
+    return [
+        text for exe in self.compiled_executables for text in exe.mlir_texts
+    ]
 
   def updates_default_generator_state(self) -> bool:
     return any(
-        module.submod.updates_default_generator_state()  # pyrefly: ignore[missing-attribute]
-        for module in self._split_gm.modules()
-        if isinstance(module, _WrapperModule)
+        exe.updates_default_generator_state()
+        for exe in self.compiled_executables
     )
 
   def resolve(self) -> None:
     """Waits for any pending background compilation in submodules to complete."""
-    for module in self._split_gm.modules():
-      if isinstance(module, _WrapperModule):
-        resolve_fn = getattr(module.submod, "resolve", None) or getattr(
-            module.submod, "_resolve", None
-        )
-        if callable(resolve_fn):
-          resolve_fn()
+    for exe in self.compiled_executables:
+      exe.resolve()
 
   def _resolve(self) -> None:
     self.resolve()
@@ -488,35 +512,40 @@ class _SplitCompiledExecutable(CompiledArtifact):
   @property
   def is_resolved(self) -> bool:
     """Returns True if all submodule compilations are resolved."""
-    return all(
-        getattr(module.submod, "is_resolved", True)
-        for module in self._split_gm.modules()
-        if isinstance(module, _WrapperModule)
-    )
+    return all(exe.is_resolved for exe in self.compiled_executables)
+
+  def fingerprint(self) -> str:
+    fps = [
+        e.fingerprint() for e in self.compiled_executables if e.fingerprint()
+    ]
+    return ":".join(fps)
 
 
 def _unpickle_split_compiled_executable(
-    split_gm: torch.fx.GraphModule,
-    recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
+    target: torch.fx.GraphModule | CompiledArtifact,
+    recompile_fn: Callable[[], Any] | None = None,
     pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
-) -> "_SplitCompiledExecutable":
-  """Reconstructs a _SplitCompiledExecutable from a split GraphModule.
+    graph_module: torch.fx.GraphModule | None = None,
+) -> _SplitCompiledExecutable:
+  """Reconstructs a _SplitCompiledExecutable from target.
 
   This function is used as the callable in the tuple returned by
   _SplitCompiledExecutable.__reduce__, enabling the object to be unpickled.
 
   Args:
-    split_gm: The split GraphModule containing compiled and eager submodules.
+    target: The split GraphModule or compiled leaf artifact.
     recompile_fn: Callable for recompiling the graph.
     pg_to_num_collectives: The mapping of process groups to collective counts.
+    graph_module: The optional unpartitioned graph module.
 
   Returns:
     A deserialized _SplitCompiledExecutable instance.
   """
   return _SplitCompiledExecutable(
-      split_gm,
+      target=target,
       recompile_fn=recompile_fn,
       pg_to_num_collectives=pg_to_num_collectives,
+      graph_module=graph_module,
   )
 
 
@@ -617,6 +646,21 @@ class SplitCompiler(compiler.Compiler):
         num_partitions,
     )
 
+    if num_partitions <= 1:
+      logging.info(
+          "Skipping split because there is only %d partition", num_partitions
+      )
+      leaf_exec = self.base_compiler(
+          graph_module,
+          example_inputs,
+          is_fwd=is_fwd,
+          module_name=module_name,
+          **kwargs,
+      )
+      return _SplitCompiledExecutable(
+          target=leaf_exec, graph_module=graph_module
+      )
+
     split_gm = split_module(
         graph_module,
         None,  # type: ignore[arg-type]
@@ -652,7 +696,7 @@ class SplitCompiler(compiler.Compiler):
     with torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing():  # pylint: disable=protected-access
       submod_compiler.run(*example_inputs)
     split_gm.recompile()
-    return _SplitCompiledExecutable(split_gm)
+    return _SplitCompiledExecutable(target=split_gm, graph_module=graph_module)
 
   def __call__(
       self,

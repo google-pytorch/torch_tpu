@@ -2287,6 +2287,113 @@ def ml_layer_model_builder(
         ),
     )
 
+  elif model_name == "nn.LSTM":
+    input_size = kwargs["input_size"]
+    hidden_size = kwargs["hidden_size"]
+    num_layers = kwargs.get("num_layers", 1)
+    bias = kwargs.get("bias", True)
+    batch_first = kwargs.get("batch_first", True)
+    bidirectional = kwargs.get("bidirectional", False)
+
+    class LstmModel(torch.nn.Module):
+
+      def __init__(
+          self,
+          input_size,
+          hidden_size,
+          num_layers,
+          bias,
+          batch_first,
+          bidirectional,
+          dtype,
+      ):
+        super().__init__()
+        self.lstm = torch.nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+            dtype=dtype,
+        )
+
+      def forward(self, x):
+        return self.lstm(x)[0]
+
+    model = LstmModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=bias,
+        batch_first=batch_first,
+        bidirectional=bidirectional,
+        dtype=weights_dtype,
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randn(
+            (bs, seq, input_size) if batch_first else (seq, bs, input_size),
+            dtype=weights_dtype,
+            device=device,
+            requires_grad=is_training,
+        ),
+    )
+
+  elif model_name == "nn.GRU":
+    input_size = kwargs["input_size"]
+    hidden_size = kwargs["hidden_size"]
+    num_layers = kwargs.get("num_layers", 1)
+    bias = kwargs.get("bias", True)
+    batch_first = kwargs.get("batch_first", True)
+    bidirectional = kwargs.get("bidirectional", False)
+
+    class GruModel(torch.nn.Module):
+
+      def __init__(
+          self,
+          input_size,
+          hidden_size,
+          num_layers,
+          bias,
+          batch_first,
+          bidirectional,
+          dtype,
+      ):
+        super().__init__()
+        self.gru = torch.nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+            dtype=dtype,
+        )
+
+      def forward(self, x):
+        return self.gru(x)[0]
+
+    model = GruModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=bias,
+        batch_first=batch_first,
+        bidirectional=bidirectional,
+        dtype=weights_dtype,
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randn(
+            (bs, seq, input_size) if batch_first else (seq, bs, input_size),
+            dtype=weights_dtype,
+            device=device,
+            requires_grad=is_training,
+        ),
+    )
   else:
     raise ValueError(f"Unknown ML layer model: {model_name}")
 

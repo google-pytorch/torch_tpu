@@ -806,25 +806,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.aten._add_relu_.Tensor(t, s, alpha=1j)
 
-  # Why do we run this test only on TPU (and not on CPU)?
-  # This test should be run only on TPU because there are no other available
-  # devices on CPU runs, other than CPU.
-  @parameterized.named_parameters(
-      {"testcase_name": "min", "op_name": "min", "op": torch.min},
-      {"testcase_name": "max", "op_name": "max", "op": torch.max},
-  )
-  @et.why_tpu_only("Can only test device mismatch on TPU.")
-  def test_min_max_unary_invalid_output_device(self, op_name: str, op: Any):
-    tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
-    out = torch.tensor(0.0, device="cpu", dtype=torch.float32)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu=f"""{op_name}(): expected output tensor to be on tpu, got cpu""",
-        message_reviewed_by="gunhyun",
-    ):
-      op(tensor, out=out)
-
   # CPU kernel runs successfully, broadcasting the inputs.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")
   def test_lu_solve_rank_mismatch(self):
@@ -1240,18 +1221,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
-  @et.why_tpu_only("TODO: investigate why this is TPU-only.")
-  def test_leaky_relu_backward_negative_slope_with_self_is_result(self):
-    grad_output = torch.ones(2, device=et.device())
-    self_or_result = torch.ones(2, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""In-place leakyReLu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead. File an issue at https://github.com/pytorch/pytorch if you do require supporting in-place leakRelu backward calculation with negative slope""",
-    ):
-      torch.ops.aten.leaky_relu_backward(
-          grad_output, self_or_result, negative_slope=-1.0, self_is_result=True
-      )
-
   @et.why_tpu_only(
       "TODO: support float16 dtype for `view_as_complex()` on TPU."
   )
@@ -1415,6 +1384,19 @@ Please use clone() or contiguous() to copy the tensor before writing""",
               tpu_torch_compile.OutputShape([5]),
           ],
       )
+
+  @et.why_tpu_only("For testing compiled mode argument count validation.")
+  def test_execute_argument_count_mismatch(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(10, device="cpu").to(device=et.device())
+      z = x + x
+
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x, x])
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""execute(): failed to prepare compiled mode arguments: number of argument tensors (1) does not match compiled argument indices (2)""",
+    ):
+      tpu_torch_compile.execute(compile_result.executable, [x])
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
@@ -2729,6 +2711,92 @@ module {
     ):
       torch.ops.tpu.sparse_gather(row_pointers, indices_wrong_len, operand, 8)
 
+  @et.why_tpu_only("Custom op sparse_gather is TPU only.")
+  def test_sparse_gather_unsupported_device_without_sparse_core(self):
+    device = et.device()
+    row_pointers = torch.tensor([0, 8], dtype=torch.int32, device=device)
+    indices = torch.tensor([0] * 16, dtype=torch.int32, device=device)
+    operand = torch.ones(10, 8, dtype=torch.float32, device=device)
+
+    # Valid inputs executed on a TPU device without SparseCore support
+    # (e.g., TPU v5 lite) should raise an error.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather(): sparse_gather requires a TPU device with SparseCore support""",
+    ):
+      torch.ops.tpu.sparse_gather(row_pointers, indices, operand, 8)
+
+  @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
+  def test_sparse_gather_backward_invalid_grad_output_dim(self):
+    device = et.device()
+    grad_output_1d = torch.ones(8, dtype=torch.float32, device=device)
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device=device)
+    grad_operand = torch.zeros(10, 8, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather_backward(): expected grad_output to be a 2D tensor, got a 1D tensor of shape [8]""",
+    ):
+      torch.ops.tpu.sparse_gather_backward(
+          grad_output_1d, indices, grad_operand
+      )
+
+  @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
+  def test_sparse_gather_backward_invalid_indices_dim(self):
+    device = et.device()
+    grad_output = torch.ones(8, 8, dtype=torch.float32, device=device)
+    indices_2d = torch.tensor([[0] * 8], dtype=torch.int32, device=device)
+    grad_operand = torch.zeros(10, 8, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather_backward(): expected indices to be a 1D tensor, got a 2D tensor of shape [1, 8]""",
+    ):
+      torch.ops.tpu.sparse_gather_backward(
+          grad_output, indices_2d, grad_operand
+      )
+
+  @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
+  def test_sparse_gather_backward_invalid_grad_operand_dim(self):
+    device = et.device()
+    grad_output = torch.ones(8, 8, dtype=torch.float32, device=device)
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device=device)
+    grad_operand_1d = torch.zeros(10, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather_backward(): expected grad_operand to be a 2D tensor, got a 1D tensor of shape [10]""",
+    ):
+      torch.ops.tpu.sparse_gather_backward(
+          grad_output, indices, grad_operand_1d
+      )
+
+  @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
+  def test_sparse_gather_backward_invalid_batch_size(self):
+    device = et.device()
+    grad_output = torch.ones(7, 8, dtype=torch.float32, device=device)
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device=device)
+    grad_operand = torch.zeros(10, 8, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather_backward(): expected indices length (8) to match grad_output batch size, got 7""",
+    ):
+      torch.ops.tpu.sparse_gather_backward(grad_output, indices, grad_operand)
+
+  @et.why_tpu_only("Custom op sparse_gather_backward is TPU only.")
+  def test_sparse_gather_backward_invalid_embedding_dim(self):
+    device = et.device()
+    grad_output = torch.ones(8, 4, dtype=torch.float32, device=device)
+    indices = torch.tensor([0] * 8, dtype=torch.int32, device=device)
+    grad_operand = torch.zeros(10, 8, dtype=torch.float32, device=device)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_gather_backward(): expected embedding dimension to match (8), got 4""",
+    ):
+      torch.ops.tpu.sparse_gather_backward(grad_output, indices, grad_operand)
+
   @et.why_tpu_only("TPU-specific C++ kernel argument validation")
   def test_scaled_mm_v2_invalid_contraction_dim_size(self):
     (
@@ -2802,14 +2870,6 @@ module {
         message_reviewed_by="wan",
     ):
       torch.sparse_coo_tensor(indices, values, (2, 3), device="tpu")
-
-  @et.why_tpu_only("Stream ID behaviors are device specific")
-  def test_create_stream_with_out_of_bounds_device_index(self):
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""device index must be in the range [0, 8), but got: 8""",
-    ):
-      torch.tpu.Stream(8)
 
   @et.why_tpu_only("PReLU weight shape broadcastability check on TPU.")
   def test_prelu_kernel_weight_shape_not_broadcastable(self):
@@ -2903,36 +2963,6 @@ module {
           a, b, scale_a, scale_b, scale_result=scale_result, offs=offs
       )
 
-  @et.why_tpu_only("Verify mask dimension check on TPU.")
-  def test_native_multi_head_attention_invalid_mask_dim(self):
-    query = torch.ones(2, 4, 8, device=et.device())
-    key = torch.ones(2, 4, 8, device=et.device())
-    value = torch.ones(2, 4, 8, device=et.device())
-    qkv_weight = torch.ones(24, 8, device=et.device())
-    qkv_bias = torch.ones(24, device=et.device())
-    proj_weight = torch.ones(8, 8, device=et.device())
-    proj_bias = torch.ones(8, device=et.device())
-    mask = torch.ones(2, 2, 4, 4, 4, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D or 4-D mask, got 5-D tensor""",
-    ):
-      torch.ops.aten._native_multi_head_attention(
-          query,
-          key,
-          value,
-          8,
-          2,
-          qkv_weight,
-          qkv_bias,
-          proj_weight,
-          proj_bias,
-          mask,
-          True,
-          True,
-          None,
-      )
-
   @et.why_tpu_only("GPU linear allows broadcastable 2-D bias.")
   def test_native_multi_head_attention_invalid_proj_bias_dim(self):
     query = torch.ones(2, 4, 8, device=et.device())
@@ -2950,25 +2980,8 @@ module {
           query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
       )
 
-  @et.why_tpu_only("GPU lacks explicit positive embed_dim check.")
-  def test_native_multi_head_attention_invalid_embed_dim(self):
-    query = torch.ones(2, 4, 8, device=et.device())
-    key = torch.ones(2, 4, 8, device=et.device())
-    value = torch.ones(2, 4, 8, device=et.device())
-    qkv_weight = torch.ones(24, 8, device=et.device())
-    qkv_bias = torch.ones(24, device=et.device())
-    proj_weight = torch.ones(8, 8, device=et.device())
-    proj_bias = torch.ones(8, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""native_multi_head_attention(): expected embed_dim to be positive, got 0""",
-    ):
-      torch.ops.aten._native_multi_head_attention(
-          query, key, value, 0, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
-      )
-
-  @et.why_tpu_only("GPU divides by zero on num_head=0 causing SIGFPE.")
-  def test_native_multi_head_attention_invalid_num_head(self):
+  @et.why_tpu_only("GPU doesn't check if num_head >= 0.")
+  def test_native_multi_head_attention_non_positive_num_head(self):
     query = torch.ones(2, 4, 8, device=et.device())
     key = torch.ones(2, 4, 8, device=et.device())
     value = torch.ones(2, 4, 8, device=et.device())
@@ -2982,23 +2995,6 @@ module {
     ):
       torch.ops.aten._native_multi_head_attention(
           query, key, value, 8, 0, qkv_weight, qkv_bias, proj_weight, proj_bias
-      )
-
-  @et.why_tpu_only("GPU kernel fails in GEMM dispatch for mismatched dtypes.")
-  def test_native_multi_head_attention_dtypes_mismatch(self):
-    query = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
-    key = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float16)
-    value = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
-    qkv_weight = torch.ones(24, 8, device=et.device(), dtype=torch.float32)
-    qkv_bias = torch.ones(24, device=et.device(), dtype=torch.float32)
-    proj_weight = torch.ones(8, 8, device=et.device(), dtype=torch.float32)
-    proj_bias = torch.ones(8, device=et.device(), dtype=torch.float32)
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""native_multi_head_attention(): expected query, key, value, qkv_weight, qkv_bias, proj_weight, and proj_bias to have matching dtypes, got float32, float16, float32, float32, float32, float32, float32""",
-    ):
-      torch.ops.aten._native_multi_head_attention(
-          query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
       )
 
   @et.why_tpu_only("Optimization Barrier requires non-empty list input")
@@ -3059,35 +3055,12 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_jagged_offsets_multiple_lists(self):
-    values = torch.randn(5, 4, device=et.device())
-    o1 = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
-    o2 = torch.tensor([0, 3, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        NotImplementedError,
-        tpu="""jagged_to_padded_dense_forward(): expected only 1 offset tensor (only 1 jagged dim is supported for now), got 2 offset tensors""",
-    ):
-      torch.ops.aten._jagged_to_padded_dense_forward(values, [o1, o2], [3], 0.0)
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_jagged_offsets_2d(self):
     values = torch.randn(5, 4, device=et.device())
     offsets = torch.tensor([[0, 2, 5]], dtype=torch.int64, device=et.device())
     with et.assert_raises_message(
         RuntimeError,
         tpu="""jagged_to_padded_dense_forward(): expected offsets to have only 1 dimension, got 2""",
-    ):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets], [3], 0.0
-      )
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_jagged_offsets_empty(self):
-    values = torch.randn(5, 4, device=et.device())
-    offsets = torch.tensor([], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""jagged_to_padded_dense_forward(): expected offsets tensors to have size >= 1, got 0""",
     ):
       torch.ops.aten._jagged_to_padded_dense_forward(
           values, [offsets], [3], 0.0
@@ -3142,30 +3115,6 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_jagged_to_padded_multiple_max_lengths(self):
-    values = torch.randn(5, 4, device=et.device())
-    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""jagged_to_padded_dense_forward(): expected max_lengths to have only 1 element, got 2""",
-    ):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets], [3, 4], 0.0
-      )
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_jagged_to_padded_negative_max_length(self):
-    values = torch.randn(5, 4, device=et.device())
-    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""jagged_to_padded_dense_forward(): expected max_lengths[0] to be >= 0, got -1""",
-    ):
-      torch.ops.aten._jagged_to_padded_dense_forward(
-          values, [offsets], [-1], 0.0
-      )
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_jagged_to_padded_offsets_out_of_bounds(self):
     values = torch.randn(3, 4, device=et.device())
     offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
@@ -3178,16 +3127,6 @@ module {
       )
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_padded_to_jagged_dense_1d(self):
-    dense = torch.randn(10, device=et.device())
-    offsets = torch.tensor([0, 5, 10], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""padded_dense_to_jagged_forward(): expected dense to have >= 2 dimensions, got 1""",
-    ):
-      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 10)
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_padded_to_jagged_total_l_mismatch(self):
     dense = torch.randn(2, 5, 4, device=et.device())
     offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
@@ -3196,16 +3135,6 @@ module {
         tpu="""padded_dense_to_jagged_forward(): expected the last offset to match total_L (6), got 5""",
     ):
       torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 6)
-
-  @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
-  def test_padded_to_jagged_batch_size_mismatch(self):
-    dense = torch.randn(2, 5, 4, device=et.device())
-    offsets = torch.tensor([0, 2, 3, 5], dtype=torch.int64, device=et.device())
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""padded_dense_to_jagged_forward(): expected dense first dimension size to match the batch size inferred from the offsets (3), got 2""",
-    ):
-      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 5)
 
   @et.why_tpu_only("Custom eager input validation in TorchTPU jagged kernels")
   def test_padded_to_jagged_segment_exceeds_max_length(self):
@@ -3319,6 +3248,549 @@ module {
         tpu=expected_error,
     ):
       torch.ops.tpu.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
+
+  def _default_lstm_input_args(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 32, device=device)
+    c0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(128, 16, device=device)
+    w_hh = torch.randn(128, 32, device=device)
+    b_ih = torch.randn(128, device=device)
+    b_hh = torch.randn(128, device=device)
+    params = [w_ih, w_hh, b_ih, b_hh]
+    return x, [h0, c0], params
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_invalid_input_dim(self):
+    _, hx, params = self._default_lstm_input_args()
+    x_2d = torch.randn(10, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected input to be a 3D tensor, got 2D""",
+    ):
+      torch.ops.aten.lstm.input(
+          x_2d, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_invalid_hx_size(self):
+    x, hx, params = self._default_lstm_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected hx to contain exactly 2 tensors (h_0, c_0), got 1""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0]], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_zero_seq_len(self):
+    _, hx, params = self._default_lstm_input_args()
+    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected sequence length to be larger than 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.lstm.input(
+          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_zero_batch_size(self):
+    _, hx, params = self._default_lstm_input_args()
+    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected batch size > 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.lstm.input(
+          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_zero_num_layers(self):
+    x, hx, params = self._default_lstm_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected num_layers > 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 0, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_invalid_dropout(self):
+    x, hx, params = self._default_lstm_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected dropout to be in range [0, 1], got -0.5""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params, True, 1, -0.5, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_h0_not_3d(self):
+    x, hx, params = self._default_lstm_input_args()
+    h0_2d = torch.randn(1, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected h_0 to be a 3D tensor [num_layers * num_directions, batch, out_size], got 2D""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_2d, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_c0_not_3d(self):
+    x, hx, params = self._default_lstm_input_args()
+    c0_2d = torch.randn(1, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected c_0 to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_2d], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_h0_layer_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    h0_bad_layers = torch.randn(2, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected h_0 size(0) to match num_layers * num_directions (1), got 2""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_bad_layers, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_h0_batch_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    h0_bad_batch = torch.randn(1, 4, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected h_0 size(1) to match batch (3), got 4""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_bad_batch, hx[1]], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_c0_layer_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    c0_bad_layers = torch.randn(2, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected c_0 size(0) to match num_layers * num_directions (1), got 2""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_bad_layers], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_c0_batch_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    c0_bad_batch = torch.randn(1, 4, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected c_0 size(1) to match batch (3), got 4""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [hx[0], c0_bad_batch], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_h0_out_size_exceeds_c0(self):
+    x, _, params = self._default_lstm_input_args()
+    h0_large_out = torch.randn(1, 3, 64, device=et.device())
+    c0 = torch.randn(1, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): h_0 size(2) (64) cannot exceed c_0 size(2) (32)""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0_large_out, c0], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_params_count_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): expected 4 parameters, got 3""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, params[:3], True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_w_ih_shape_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    w_ih_bad = torch.randn(127, 16, device=et.device())
+    bad_params = [w_ih_bad, params[1], params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): w_ih layer 0 dir 0 expected shape [128, 16], got [127, 16]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_w_hh_shape_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    w_hh_bad = torch.randn(128, 31, device=et.device())
+    bad_params = [params[0], w_hh_bad, params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): w_hh layer 0 dir 0 expected shape [128, 32], got [128, 31]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_b_ih_shape_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    b_ih_bad = torch.randn(127, device=et.device())
+    bad_params = [params[0], params[1], b_ih_bad, params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): b_ih layer 0 dir 0 expected shape [128], got [127]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_b_hh_shape_mismatch(self):
+    x, hx, params = self._default_lstm_input_args()
+    b_hh_bad = torch.randn(127, device=et.device())
+    bad_params = [params[0], params[1], params[2], b_hh_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): b_hh layer 0 dir 0 expected shape [128], got [127]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_w_hr_shape_mismatch_with_bias(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 16, device=device)
+    c0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(128, 16, device=device)
+    w_hh = torch.randn(128, 16, device=device)
+    b_ih = torch.randn(128, device=device)
+    b_hh = torch.randn(128, device=device)
+    w_hr_bad = torch.randn(15, 32, device=device)
+    params = [w_ih, w_hh, b_ih, b_hh, w_hr_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): w_hr layer 0 dir 0 expected shape [16, 32], got [15, 32]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0, c0], params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.lstm.input error validations on TPU")
+  def test_lstm_input_w_hr_shape_mismatch_without_bias(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 16, device=device)
+    c0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(128, 16, device=device)
+    w_hh = torch.randn(128, 16, device=device)
+    w_hr_bad = torch.randn(15, 32, device=device)
+    params = [w_ih, w_hh, w_hr_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""lstm(): w_hr layer 0 dir 0 expected shape [16, 32], got [15, 32]""",
+    ):
+      torch.ops.aten.lstm.input(
+          x, [h0, c0], params, False, 1, 0.0, False, False, False
+      )
+
+  def _default_gru_input_args(self):
+    device = et.device()
+    x = torch.randn(10, 3, 16, device=device)
+    h0 = torch.randn(1, 3, 32, device=device)
+    w_ih = torch.randn(96, 16, device=device)
+    w_hh = torch.randn(96, 32, device=device)
+    b_ih = torch.randn(96, device=device)
+    b_hh = torch.randn(96, device=device)
+    params = [w_ih, w_hh, b_ih, b_hh]
+    return x, h0, params
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_invalid_input_dim(self):
+    """Verifies that non-3D input tensor raises RuntimeError.
+
+    What is being tested:
+      - Passing a 2D tensor of shape [10, 3] as input x instead of expected 3D
+      tensor.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected input to be a 3D tensor, got 2D'
+    """
+    _, hx, params = self._default_gru_input_args()
+    x_2d = torch.randn(10, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected input to be a 3D tensor, got 2D""",
+    ):
+      torch.ops.aten.gru.input(
+          x_2d, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_zero_seq_len(self):
+    """Verifies that sequence length of zero raises RuntimeError.
+
+    What is being tested:
+      - Passing an input tensor with seq_len=0 (shape [0, 3, 16]).
+
+    Expected result:
+      - RuntimeError: 'gru(): expected sequence length to be larger than 0 in
+      RNN, got 0'
+    """
+    _, hx, params = self._default_gru_input_args()
+    x_zero_seq = torch.randn(0, 3, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected sequence length to be larger than 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.gru.input(
+          x_zero_seq, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_zero_batch_size(self):
+    """Verifies that batch size of zero raises RuntimeError.
+
+    What is being tested:
+      - Passing an input tensor with batch_size=0 (shape [10, 0, 16]).
+
+    Expected result:
+      - RuntimeError: 'gru(): expected batch size > 0 in RNN, got 0'
+    """
+    _, hx, params = self._default_gru_input_args()
+    x_zero_batch = torch.randn(10, 0, 16, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected batch size > 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.gru.input(
+          x_zero_batch, hx, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_zero_num_layers(self):
+    """Verifies that num_layers=0 raises RuntimeError.
+
+    What is being tested:
+      - Passing num_layers=0 to aten.gru.input.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected num_layers > 0 in RNN, got 0'
+    """
+    x, hx, params = self._default_gru_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected num_layers > 0 in RNN, got 0""",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 0, 0.0, False, False, False)
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_invalid_dropout(self):
+    """Verifies that dropout probability out of range [0, 1] raises RuntimeError.
+
+    What is being tested:
+      - Passing dropout=2.0 (outside [0, 1]).
+
+    Expected result:
+      - RuntimeError: 'gru(): expected dropout to be in range [0, 1], got 2'
+    """
+    x, hx, params = self._default_gru_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected dropout to be in range [0, 1], got 2""",
+    ):
+      torch.ops.aten.gru.input(x, hx, params, True, 1, 2.0, False, False, False)
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_hx_not_3d(self):
+    """Verifies that non-3D initial hidden state hx raises RuntimeError.
+
+    What is being tested:
+      - Passing a 2D tensor of shape [1, 3] as hx.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected hx to be a 3D tensor [num_layers *
+      num_directions, batch, hidden_size], got 2D'
+    """
+    x, _, params = self._default_gru_input_args()
+    hx_2d = torch.randn(1, 3, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected hx to be a 3D tensor [num_layers * num_directions, batch, hidden_size], got 2D""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_2d, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_hx_layer_mismatch(self):
+    """Verifies that layer count mismatch between hx and num_layers raises RuntimeError.
+
+    What is being tested:
+      - Passing hx with size(0)=2 when num_layers * num_directions = 1.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected hx size(0) to match num_layers *
+      num_directions (1), got 2'
+    """
+    x, _, params = self._default_gru_input_args()
+    hx_bad_layers = torch.randn(2, 3, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected hx size(0) to match num_layers * num_directions (1), got 2""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_bad_layers, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_hx_batch_mismatch(self):
+    """Verifies that batch mismatch between hx and input x raises RuntimeError.
+
+    What is being tested:
+      - Passing hx with batch=4 when input x has batch=3.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected hx size(1) to match batch (3), got 4'
+    """
+    x, _, params = self._default_gru_input_args()
+    hx_bad_batch = torch.randn(1, 4, 32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected hx size(1) to match batch (3), got 4""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx_bad_batch, params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_params_count_mismatch(self):
+    """Verifies that parameter count mismatch raises RuntimeError.
+
+    What is being tested:
+      - Providing 3 parameter tensors instead of 4 for a single-layer biased
+      GRU.
+
+    Expected result:
+      - RuntimeError: 'gru(): expected 4 parameters, got 3'
+    """
+    x, hx, params = self._default_gru_input_args()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): expected 4 parameters, got 3""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, params[:3], True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_w_ih_shape_mismatch(self):
+    """Verifies that mismatched w_ih shape raises RuntimeError.
+
+    What is being tested:
+      - Providing w_ih with shape [95, 16] instead of expected [96, 16] (3 *
+      hidden).
+
+    Expected result:
+      - RuntimeError: 'gru(): w_ih layer 0 dir 0 expected shape [96, 16], got
+      [95, 16]'
+    """
+    x, hx, params = self._default_gru_input_args()
+    w_ih_bad = torch.randn(95, 16, device=et.device())
+    bad_params = [w_ih_bad, params[1], params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): w_ih layer 0 dir 0 expected shape [96, 16], got [95, 16]""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_w_hh_shape_mismatch(self):
+    """Verifies that mismatched w_hh shape raises RuntimeError.
+
+    What is being tested:
+      - Providing w_hh with shape [96, 31] instead of expected [96, 32].
+
+    Expected result:
+      - RuntimeError: 'gru(): w_hh layer 0 dir 0 expected shape [96, 32], got
+      [96, 31]'
+    """
+    x, hx, params = self._default_gru_input_args()
+    w_hh_bad = torch.randn(96, 31, device=et.device())
+    bad_params = [params[0], w_hh_bad, params[2], params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): w_hh layer 0 dir 0 expected shape [96, 32], got [96, 31]""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_b_ih_shape_mismatch(self):
+    """Verifies that mismatched b_ih shape raises RuntimeError.
+
+    What is being tested:
+      - Providing b_ih with shape [95] instead of expected [96].
+
+    Expected result:
+      - RuntimeError: 'gru(): b_ih layer 0 dir 0 expected shape [96], got [95]'
+    """
+    x, hx, params = self._default_gru_input_args()
+    b_ih_bad = torch.randn(95, device=et.device())
+    bad_params = [params[0], params[1], b_ih_bad, params[3]]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): b_ih layer 0 dir 0 expected shape [96], got [95]""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
+
+  @et.why_tpu_only("torch.ops.aten.gru.input error validations on TPU")
+  def test_gru_input_b_hh_shape_mismatch(self):
+    """Verifies that mismatched b_hh shape raises RuntimeError.
+
+    What is being tested:
+      - Providing b_hh with shape [95] instead of expected [96].
+
+    Expected result:
+      - RuntimeError: 'gru(): b_hh layer 0 dir 0 expected shape [96], got [95]'
+    """
+    x, hx, params = self._default_gru_input_args()
+    b_hh_bad = torch.randn(95, device=et.device())
+    bad_params = [params[0], params[1], params[2], b_hh_bad]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""gru(): b_hh layer 0 dir 0 expected shape [96], got [95]""",
+    ):
+      torch.ops.aten.gru.input(
+          x, hx, bad_params, True, 1, 0.0, False, False, False
+      )
 
 
 if __name__ == "__main__":

@@ -53,15 +53,15 @@ torch_tpu_py_test(
 
 pybind_extension(
     name = "annotations_py",
-    srcs = ["//torch_tpu/csrc/internal/device_utils:annotations_py.cc"],
+    srcs = ["//csrc/internal/device_utils:annotations_py.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
-        "//torch_tpu/csrc/common:context_manager",
-        "//torch_tpu/csrc/common:context_states",
-        "//torch_tpu/csrc/common:error_utils",
+        "//csrc/common:context_manager",
+        "//csrc/common:context_states",
+        "//csrc/common:error_utils",
         "@com_google_absl//absl/status:statusor",
         "@xla//xla:shape_util",
         "@xla//xla/hlo/parser:hlo_parser",

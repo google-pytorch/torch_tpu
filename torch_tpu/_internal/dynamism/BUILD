@@ -37,7 +37,7 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "_tpu_torch_dynamism",
-    srcs = ["//torch_tpu/csrc/internal/dynamism:dynamism_py.cc"],
+    srcs = ["//csrc/internal/dynamism:dynamism_py.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
@@ -46,12 +46,12 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:device_type",
+        "//csrc/common:error_utils",
+        "//csrc/common:shape",
+        "//csrc/internal/dynamism:dynamism_cc",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:device_type",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/common:shape",
-        "//torch_tpu/csrc/internal/dynamism:dynamism_cc",
     ],
 )
 

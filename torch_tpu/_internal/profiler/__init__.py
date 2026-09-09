@@ -17,10 +17,12 @@
 # pylint: disable=g-importing-member
 # (This rule conflicts with the purpose of an __init__.py file, which is to
 # make symbols available at the package level.)
-from torch_tpu._internal.profiler.profiler_api import profile
-from torch_tpu._internal.profiler.profiler_api import ProfilerActivity
-from torch_tpu._internal.profiler.profiler_api import register_kineto_backend
-from torch_tpu._internal.profiler.profiler_api import xprof_trace_handler
+from torch_tpu._internal.profiler._api import profile
+from torch_tpu._internal.profiler._api import ProfilerActivity
+from torch_tpu._internal.profiler._api import register_kineto_backend
+from torch_tpu._internal.profiler._api import xprof_trace_handler
+from torch_tpu._internal.profiler._impl import start_server
+from torch_tpu._internal.profiler._impl import stop_server
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 
 __all__ = [
@@ -29,6 +31,8 @@ __all__ = [
     'TpuProfilerConfig',
     'profile',
     'register_kineto_backend',
+    'start_server',
+    'stop_server',
     'xprof_trace_handler',
     # go/keep-sorted end
 ]

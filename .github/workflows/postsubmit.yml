@@ -268,22 +268,5 @@ jobs:
           ./scripts/vllm/benchmarking/run_benchmarks.sh --config qwen3-coder-30b-fp8-tp8-ep --results-dir /tmp/perf_eval_qwen3
           python3 scripts/vllm/benchmarking/check_regression.py --mode perf --results-dir /tmp/perf_eval_qwen3 --baseline scripts/vllm/benchmarking/baselines/perf/qwen3-coder-30b-fp8-tp8-ep.baseline.json
 
-  notify_failure:
-    name: Notify Failed Runs
-    needs: [run_tests, build_wheels, vllm_perf_eval]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Get current date
-        id: date
-        if: (contains(needs.run_tests.result, 'failure') || contains(needs.build_wheels.result, 'failure') || contains(needs.vllm_perf_eval.result, 'failure')) && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - name: Check whether one of the jobs failed
-        if: (contains(needs.run_tests.result, 'failure') || contains(needs.build_wheels.result, 'failure') || contains(needs.vllm_perf_eval.result, 'failure')) && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label-name: "ci:tpu-postsubmit-failed"
-          title-template: "Failed Postsubmit on TPU (${{ steps.date.outputs.date }})"
+# TODO(b/558939987): consider re-enabling failure notifications
+# once OSS builds stabilize.

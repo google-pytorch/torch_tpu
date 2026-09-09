@@ -19,7 +19,7 @@ from unittest import mock
 from absl.testing import absltest
 import torch
 from examples.benchmarks.e2e import device_utils
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 from tests import seed_test_utils
 
 

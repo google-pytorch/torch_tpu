@@ -38,7 +38,7 @@ Example usage:
   $ ./setup_clangd.py --no-build
 
   # Refresh for specific combined target patterns.
-  $ ./setup_clangd.py //torch_tpu/csrc/common/... //torch_tpu/ops/...
+  $ ./setup_clangd.py //csrc/common/... //torch_tpu/ops/...
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ _UNSUPPORTED_ARGS: Final[frozenset[str]] = frozenset([
     "-fno-canonical-system-headers",
 ])
 
-_DEFAULT_TARGET_PATTERN: Final[str] = "//torch_tpu/..."
+_DEFAULT_TARGET_PATTERN: Final[str] = "//..."
 _REPO_ROOT: Final[pathlib.Path] = pathlib.Path(__file__).resolve().parent
 
 

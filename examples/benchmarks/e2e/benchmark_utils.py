@@ -29,7 +29,7 @@ from torch_tpu._internal.utils import log_utils
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.quality_utils import quality_benchmark_model
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 log_utils.log_to_stderr()
 

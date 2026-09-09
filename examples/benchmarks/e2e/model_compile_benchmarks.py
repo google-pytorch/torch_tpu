@@ -32,7 +32,7 @@ from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e import performance_utils
 from examples.benchmarks.e2e import test_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 log_utils.log_to_stderr()
 

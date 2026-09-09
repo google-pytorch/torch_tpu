@@ -234,11 +234,7 @@ def run_compile_no_splits_when_env_zero_test():
   assert isinstance(
       wrapper, _SplitCompiledExecutable
   ), f"Expected _SplitCompiledExecutable, got {type(wrapper)}"
-
-  num_submodules = len(list(wrapper._split_gm.named_children()))
-  assert (
-      num_submodules == 1
-  ), f"Expected exactly 1 submodule, got {num_submodules}"
+  assert len(wrapper.compiled_executables) == 1
 
 
 def run_compile_two_collectives_test():

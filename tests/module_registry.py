@@ -34,10 +34,11 @@ import enum
 from importlib import resources
 from importlib.resources import abc as resources_abc
 import inspect
+import json
 import os
 import pathlib
 import tempfile
-from typing import Any, Iterator
+from typing import Any, Iterator, overload
 import uuid
 
 from absl import flags
@@ -83,8 +84,13 @@ _AUDIO_MODEL_TYPES = (
     "audio-flamingo",
     "audio-spectrogram-transformer",
     "audio_flamingo",
+    "bark",
     "clap",
+    "csm",
+    "dac",
     "data2vec-audio",
+    "dia",
+    "encodec",
     "fastspeech",
     "fastspeech2",
     "gemma3naudio",
@@ -92,61 +98,118 @@ _AUDIO_MODEL_TYPES = (
     "granite-speech",
     "granite_speech",
     "hubert",
+    "lasr_ctc",
+    "mimi",
+    "moonshine",
+    "moonshine_streaming",
+    "moshi",
     "musicgen",
     "omnitoken2wav",
+    "parakeet_ctc",
+    "parakeet_encoder",
+    "parakeet_rnnt",
     "pe-a-frame",
     "pe-audio",
     "pe_audio",
     "pe_audio_encoder",
+    "pop2piano",
     "qwen2-audio",
     "qwen2_audio",
     "scail",
+    "sew",
+    "sew-d",
     "speech",
     "speecht5",
     "unispeech-sat",
+    "univnet",
+    "vibevoice_acoustic_tokenizer",
+    "vibevoice_asr",
     "vits",
+    "voxtral",
+    "voxtral_realtime",
     "wav2vec2",
     "wav2vec2-conformer",
     "wavlm",
     "whisper",
+    "xcodec2",
     # go/keep-sorted end
 )
 _VISION_MODEL_TYPES = (
     # go/keep-sorted start
     "beit",
+    "bit",
     "clip",
     "convnext",
     "convnextv2",
+    "cvt",
+    "d_fine",
     "data2vec-vision",
+    "deimv2",
     "deit",
     "depth",
     "depth_anything",
     "depth_pro",
     "detr",
+    "dinat",
     "dino",
     "dinov2",
     "dinov2_with_registers",
     "dinov3",
     "dinov3_vit",
     "dpt",
+    "efficientloftr",
+    "efficientnet",
     "eomt",
+    "focalnet",
     "glpn",
+    "hgnet_v2",
+    "hiera",
     "ijepa",
     "lightglue",
     "manga-ocr",
     "mask2former",
     "maskformer",
+    "mgp-str",
     "mobilenet",
     "mobilenetv2",
     "oneformer",
+    "owlv2",
+    "pixio",
+    "poolformer",
+    "pp_doclayout_v3",
+    "pp_formulanet",
+    "pp_ocrv5_mobile_rec",
+    "pp_ocrv6_small_rec",
+    "pvt",
+    "pvt_v2",
+    "qianfan_ocr",
+    "regnet",
     "resnet",
+    "sam",
+    "sam2",
+    "sam2_video",
+    "sam3_lite_text",
+    "sam3_video",
+    "sam_hq",
+    "sapiens2",
     "segformer",
-    "siglip",
+    "slanet",
+    "superglue",
     "superpoint",
+    "swiftformer",
+    "swin",
     "swin2sr",
+    "swinv2",
     "table-transformer",
+    "textnet",
+    "timesformer",
+    "timm_backbone",
     "timm_wrapper",
     "trocr",
+    "tvp",
+    "upernet",
+    "videomae",
+    "videoprism",
     "vision",
     "vit",
     "vitpose",
@@ -159,23 +222,54 @@ _VISION_MODEL_TYPES = (
 _TEXT_MODEL_TYPES = (
     # go/keep-sorted start
     "albert",
+    "autoformer",
     "bert",
+    "big_bird",
+    "blt",
+    "bros",
     "camembert",
+    "canine",
     "convbert",
     "data2vec-text",
     "deberta",
     "deberta-v2",
     "distilbert",
+    "dpr",
     "electra",
+    "esm",
+    "fnet",
     "funnel",
+    "informer",
+    "jina_embeddings_v3",
+    "layoutlm",
+    "layoutlmv2",
+    "layoutlmv3",
+    "lilt",
+    "longformer",
+    "luke",
+    "markuplm",
     "megatron-bert",
     "mobilebert",
     "modernbert",
+    "mpnet",
+    "mra",
+    "nystromformer",
+    "openai_privacy_filter",
+    "patchtsmixer",
+    "patchtst",
+    "perceiver",
+    "reformer",
     "roberta",
+    "roformer",
+    "splinter",
     "tapas",
+    "time_series_transformer",
     "xlm",
+    "xlm-prophetnet",
     "xlm-roberta",
     "xlnet",
+    "xmod",
+    "yoso",
     # go/keep-sorted end
 )
 _CAUSAL_LM_MODEL_TYPES = (
@@ -191,7 +285,9 @@ _CAUSAL_LM_MODEL_TYPES = (
     "cohere",
     "cohere2",
     "cpmant",
+    "ctrl",
     "dbrx",
+    "decision_transformer",
     "deepseek",
     "deepseek_v2",
     "deepseek_v3",
@@ -210,6 +306,8 @@ _CAUSAL_LM_MODEL_TYPES = (
     "gemma2",
     "gemma3",
     "gemma3_text",
+    "gemma3n",
+    "gemma3n_text",
     "gemma4",
     "gemma4_assistant",
     "gemma4_text",
@@ -262,6 +360,7 @@ _CAUSAL_LM_MODEL_TYPES = (
     "olmo_hybrid",
     "openai-gpt",
     "opt",
+    "perception_lm",
     "persimmon",
     "phi",
     "phi3",
@@ -282,6 +381,7 @@ _CAUSAL_LM_MODEL_TYPES = (
     "solar_open",
     "stablelm",
     "starcoder2",
+    "timesfm2_5",
     "vaultgemma",
     "xglm",
     "xlstm",
@@ -293,45 +393,95 @@ _CAUSAL_LM_MODEL_TYPES = (
 _SEQ2SEQ_MODEL_TYPES = (
     # go/keep-sorted start
     "bart",
+    "blenderbot",
+    "blenderbot-small",
     "encoder-decoder",
+    "fsmt",
+    "led",
     "m2m",
     "m2m_100",
     "marian",
     "mbart",
     "mt5",
+    "mvp",
     "nllb",
     "pegasus",
+    "prophetnet",
+    "rag",
+    "seamless_m4t",
+    "seamless_m4t_v2",
+    "switch_transformers",
     "t5",
     "whisper",
     # go/keep-sorted end
 )
 _VISION_LANGUAGE_MODEL_TYPES = (
     # go/keep-sorted start
+    "align",
     "audio-flamingo",
     "audio_flamingo",
     "blip",
     "blip-2",
     "blip_2",
+    "bridgetower",
+    "chameleon",
+    "chameleon_vqgan",
+    "chmv2",
     "clip",
+    "clvp",
+    "colpali",
     "cosmos3",
+    "donut-swin",
+    "emu3",
+    "fast_vlm",
+    "flava",
+    "florence2",
+    "got_ocr2",
     "grounding-dino",
     "grounding_dino",
     "groundingdino",
+    "groupvit",
     "holo",
+    "hunyuan_vl",
+    "idefics",
+    "idefics2",
+    "idefics3",
     "instructblip",
+    "internvl",
+    "janus",
+    "kosmos-2",
+    "kosmos-2.5",
+    "lighton_ocr",
     "llav",
     "llava",
     "llmdet",
     "llmdet-swin",
     "llmdet_swin",
+    "lxmert",
+    "mimo_v2_flash",
+    "minicpmv4_6",
     "mllama",
+    "musicflamingo",
     "oneformer",
+    "ovis2",
+    "owlv2",
+    "owlvit",
     "paligemma",
+    "pix2struct",
     "qformer",
     "qwen2-audio",
+    "qwen2_5_vl",
     "qwen2_audio",
+    "qwen2_vl",
     "qwen3_vl",
     "qwen3_vl_moe",
+    "sam3",
+    "sam3_lite_text",
+    "siglip",
+    "smolvlm",
+    "udop",
+    "vilt",
+    "xclip",
     # go/keep-sorted end
 )
 # Multimodal is the union of all multimodal subtypes
@@ -644,8 +794,16 @@ class TorchvisionProvider(BaseProvider):
           {},
       )
 
+    def _model_factory():
+      try:
+        return torchvision.models.get_model(
+            name, weights=None, weights_backbone=None
+        )
+      except TypeError:
+        return torchvision.models.get_model(name, weights=None)
+
     return ModuleSpec(
-        lambda: torchvision.models.get_model(name),
+        _model_factory,
         _torchvision_input_factory,
         modality=Modality.VISION,
     )
@@ -764,9 +922,47 @@ class TimmProvider(BaseProvider):
     )
 
 
-def _get_max_seq_len(
-    config: transformers.AutoConfig, default: int = 512
-) -> int:
+@overload
+def _safe_int(
+    val: Any, default: None = None, min_val: int | None = None
+) -> int | None:
+  ...
+
+
+@overload
+def _safe_int(val: Any, default: int = 0, min_val: int | None = None) -> int:
+  ...
+
+
+def _safe_int(
+    val: Any, default: int | None = 0, min_val: int | None = None
+) -> int | None:
+  """Safely converts a value to int, defaulting if invalid or a boolean."""
+  if (
+      val is None
+      or isinstance(val, bool)
+      or not isinstance(val, (int, float, str))
+  ):
+    return default
+  try:
+    res = int(val)
+    if min_val is not None and res < min_val:
+      return default
+    return res
+  except (ValueError, TypeError):
+    return default
+
+
+def _get_config_attr(config: Any, attr: str, default: Any = None) -> Any:
+  """Extracts attribute or dict key from config object or dictionary."""
+  if config is None:
+    return default
+  if isinstance(config, dict):
+    return config.get(attr, default)
+  return getattr(config, attr, default)
+
+
+def _get_max_seq_len(config: Any, default: int = 512) -> int:
   """Heuristically determines the maximum sequence length from a config.
 
   Checks multiple attributes (e.g., `max_position_embeddings`, `n_positions`)
@@ -781,31 +977,24 @@ def _get_max_seq_len(
     The determined maximum sequence length.
   """
   configs_to_check = [config]
-  if hasattr(config, "text_config") and config.text_config is not None:
-    configs_to_check.append(config.text_config)
+  text_cfg = _get_config_attr(config, "text_config")
+  if text_cfg is not None:
+    configs_to_check.append(text_cfg)
 
   for cfg in configs_to_check:
-    for attr in [
+    for attr in (
         "max_text_len",
         "max_position_embeddings",
         "max_target_positions",
         "n_positions",
         "seq_length",
         "max_seq_len",
-    ]:
-      if hasattr(cfg, attr):
-        value = getattr(cfg, attr)
-        # Some configs have this set to huge numbers (e.g. integer limit)
-        # or None. We cap it to an arbitrary value.
-        if value is not None and value < _MAX_SEQ_LEN_HEURISTIC_CAP:
-          return value
-
-    # Check tokenizer-specific max length if available in config
-    # (Sometimes 'model_max_length' is injected into config).
-    if hasattr(cfg, "model_max_length"):
-      value = cfg.model_max_length
-      if value is not None and value < _MAX_SEQ_LEN_HEURISTIC_CAP:
-        return value
+        "model_max_length",
+    ):
+      raw_val = _get_config_attr(cfg, attr)
+      val = _safe_int(raw_val, default=0, min_val=1)
+      if 0 < val < _MAX_SEQ_LEN_HEURISTIC_CAP:
+        return val
 
   # Fallback for relative position models (T5, etc.) or missing data.
   return default
@@ -875,6 +1064,8 @@ def _is_audio(model_type: str, arch_name: str) -> bool:
       or "speech" in arch_name
       or "whisper" in arch_name
       or "wav2vec2" in arch_name
+      or "asr" in arch_name
+      or "asr" in model_type
   )
 
 
@@ -976,6 +1167,13 @@ def _determine_modality(config: Any) -> Modality:
     has_vocab_size = False
 
   arch_name = archs[0].lower() if archs else ""
+  base_name = model_name.lower().split("/")[-1]
+  if (
+      arch_name.endswith(("textmodel", "text_model"))
+      or base_name.endswith(("-text", "_text"))
+  ) and not has_vision_cfg:
+    return Modality.TEXT
+
   if _is_diffusion(model_type, class_name, arch_name, model_name):
     return Modality.DIFFUSION
   if _is_multimodal(model_type, arch_name, has_text_cfg, has_vision_cfg):
@@ -998,36 +1196,37 @@ def _determine_modality(config: Any) -> Modality:
 
 def _parse_image_size(config: Any, default_size: int = 224) -> int:
   """Extracts image_size as an integer from config or vision_config or encoder."""
-  vision_config = getattr(config, "vision_config", None)
-  if vision_config is None:
-    vision_config = getattr(config, "encoder", None)
-
-  val = None
-  if isinstance(vision_config, dict):
-    val = vision_config.get("image_size")
-  elif vision_config is not None:
-    val = getattr(vision_config, "image_size", None)
+  vision_config = _get_config_attr(config, "vision_config") or _get_config_attr(
+      config, "encoder"
+  )
+  raw_val = _get_config_attr(vision_config, "image_size")
+  if isinstance(raw_val, (list, tuple)) and raw_val:
+    raw_val = raw_val[0]
+  val = _safe_int(raw_val, default=None, min_val=1)
   if val is None:
-    val = getattr(config, "image_size", default_size)
+    raw_val = _get_config_attr(config, "image_size")
+    if isinstance(raw_val, (list, tuple)) and raw_val:
+      raw_val = raw_val[0]
+    val = _safe_int(raw_val, default=default_size, min_val=1)
 
-  if isinstance(val, (list, tuple)) and val:
-    return val[0]
-  elif isinstance(val, int):
-    return val
-  return default_size
+  return val
 
 
 def _get_num_channels(config: Any, default_channels: int = 3) -> int:
   """Extracts num_channels from config or vision_config or encoder."""
-  vision_config = getattr(config, "vision_config", None)
-  if vision_config is None:
-    vision_config = getattr(config, "encoder", None)
-
-  if isinstance(vision_config, dict):
-    return vision_config.get("num_channels", default_channels)
-  elif vision_config is not None:
-    return getattr(vision_config, "num_channels", default_channels)
-  return getattr(config, "num_channels", default_channels)
+  vision_config = _get_config_attr(config, "vision_config") or _get_config_attr(
+      config, "encoder"
+  )
+  val = _safe_int(
+      _get_config_attr(vision_config, "num_channels"), default=None, min_val=1
+  )
+  if val is None:
+    val = _safe_int(
+        _get_config_attr(config, "num_channels"),
+        default=default_channels,
+        min_val=1,
+    )
+  return val
 
 
 def _generate_gemma4_inputs(
@@ -1193,11 +1392,14 @@ def _generate_transformers_inputs(
   if modality == Modality.MULTIMODAL:
     safe_seq_len = min(_get_max_seq_len(config), 512)
     actual_shape = shape if shape is not None else (1, safe_seq_len)
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
+    vocab_size = _safe_int(
+        _get_config_attr(config, "vocab_size")
+        or _get_config_attr(
+            _get_config_attr(config, "text_config"), "vocab_size"
+        ),
+        default=32000,
+        min_val=1,
+    )
 
     input_kwargs["input_ids"] = torch.randint(
         0, vocab_size, actual_shape, generator=g, dtype=torch.long
@@ -1215,14 +1417,15 @@ def _generate_transformers_inputs(
       image_size = _parse_image_size(config)
       num_channels = _get_num_channels(config)
       batch_size = shape[0] if shape else 1
-      vision_config = getattr(config, "vision_config", None)
+      vision_config = _get_config_attr(config, "vision_config")
 
       if "mllama" in model_type:
         num_images = 1
-        if isinstance(vision_config, dict):
-          num_tiles = vision_config.get("max_num_tiles", 4)
-        else:
-          num_tiles = getattr(vision_config, "max_num_tiles", 4)
+        num_tiles = _safe_int(
+            _get_config_attr(vision_config, "max_num_tiles"),
+            default=4,
+            min_val=1,
+        )
         dummy_img = torch.randn(
             batch_size,
             num_images,
@@ -1249,37 +1452,223 @@ def _generate_transformers_inputs(
         ).to(device)
         input_kwargs["pixel_values"] = dummy_img
 
-        num_image_tokens = getattr(config, "image_seq_length", None)
-        if num_image_tokens is None:
-          patch_size = 14
-          if vision_config:
-            if isinstance(vision_config, dict):
-              patch_size = vision_config.get("patch_size", 14)
-            else:
-              patch_size = getattr(vision_config, "patch_size", 14)
-          num_image_tokens = (image_size // patch_size) ** 2
-
-        image_token_id = (
-            getattr(config, "image_token_id", None)
-            or getattr(config, "image_token_index", None)
-            or 32000
+        is_dual_encoder = any(
+            k in model_type
+            for k in [
+                "clip",
+                "align",
+                "altclip",
+                "chinese_clip",
+                "clap",
+                "flava",
+                "groupvit",
+                "bridgetower",
+                "siglip",
+            ]
         )
+        if (
+            not is_dual_encoder
+            and "pix2struct" not in model_type
+            and "instructblip" not in model_type
+        ):
+          num_image_tokens = _safe_int(
+              _get_config_attr(config, "image_seq_length"),
+              default=None,
+              min_val=1,
+          )
+          if num_image_tokens is None:
+            patch_size = _safe_int(
+                _get_config_attr(vision_config, "patch_size"),
+                default=14,
+                min_val=1,
+            )
+            num_image_tokens = (image_size // patch_size) ** 2
 
-        seq_len = input_kwargs["input_ids"].shape[1]
-        if seq_len < num_image_tokens:
-          new_seq_len = num_image_tokens + 16
-          input_kwargs["input_ids"] = torch.randint(
-              0,
-              vocab_size,
-              (batch_size, new_seq_len),
-              generator=g,
-              dtype=torch.long,
-          ).to(device)
-          input_kwargs["attention_mask"] = torch.ones(
-              (batch_size, new_seq_len), device=device, dtype=torch.long
+          image_token_id = _safe_int(
+              _get_config_attr(config, "image_token_id")
+              or _get_config_attr(config, "image_token_index"),
+              default=32000,
           )
 
-        input_kwargs["input_ids"][:, :num_image_tokens] = image_token_id
+          seq_len = input_kwargs["input_ids"].shape[1]
+          if seq_len < num_image_tokens:
+            max_allowed = _get_max_seq_len(config)
+            new_seq_len = min(num_image_tokens + 16, max_allowed)
+            input_kwargs["input_ids"] = torch.randint(
+                0,
+                vocab_size,
+                (batch_size, new_seq_len),
+                generator=g,
+                dtype=torch.long,
+            ).to(device)
+            input_kwargs["attention_mask"] = torch.ones(
+                (batch_size, new_seq_len), device=device, dtype=torch.long
+            )
+
+          inject_tokens = min(
+              num_image_tokens, input_kwargs["input_ids"].shape[1]
+          )
+          input_kwargs["input_ids"][:, :inject_tokens] = image_token_id
+
+        if any(k in model_type for k in ["idefics", "smolvlm"]):
+          num_images = 1
+          input_kwargs["pixel_values"] = torch.randn(
+              batch_size,
+              num_images,
+              num_channels,
+              image_size,
+              image_size,
+              generator=g,
+          ).to(device)
+          if "idefics2" in model_type or "smolvlm" in model_type:
+            input_kwargs["pixel_attention_mask"] = torch.ones(
+                (batch_size, num_images, 1, image_size, image_size),
+                device=device,
+                dtype=torch.bool,
+            )
+          elif "idefics" in model_type:
+            input_kwargs["image_attention_mask"] = torch.ones(
+                (batch_size, input_kwargs["input_ids"].shape[1], 1),
+                device=device,
+                dtype=torch.bool,
+            )
+
+        if any(k in model_type for k in ["videoprism", "videomt"]):
+          num_frames = _safe_int(
+              _get_config_attr(config, "num_frames"), default=8, min_val=1
+          )
+          input_kwargs["pixel_values_videos"] = torch.randn(
+              batch_size,
+              num_frames,
+              num_channels,
+              image_size,
+              image_size,
+              generator=g,
+          ).to(device)
+          input_kwargs.pop("pixel_values", None)
+
+        if any(
+            k in model_type
+            for k in [
+                "llava_next",
+                "llava_onevision",
+                "llava-v1.6",
+                "llava-next",
+            ]
+        ):
+          input_kwargs["image_sizes"] = torch.tensor(
+              [[image_size, image_size]], device=device, dtype=torch.long
+          )
+
+        if "qformer" in model_type:
+          num_query_tokens = _safe_int(
+              _get_config_attr(config, "num_query_tokens"),
+              default=32,
+              min_val=1,
+          )
+          hidden_size = _safe_int(
+              _get_config_attr(config, "hidden_size"),
+              default=768,
+              min_val=1,
+          )
+          input_kwargs["query_embeds"] = torch.randn(
+              batch_size,
+              num_query_tokens,
+              hidden_size,
+              generator=g,
+              device=device,
+          )
+
+        if "oneformer" in model_type:
+          input_kwargs["task_inputs"] = torch.tensor(
+              [[0]], device=device, dtype=torch.long
+          )
+
+        if "instructblip" in model_type:
+          input_kwargs["qformer_input_ids"] = input_kwargs["input_ids"]
+          input_kwargs["qformer_attention_mask"] = input_kwargs[
+              "attention_mask"
+          ]
+
+        if "blip" in model_type:
+          input_kwargs["decoder_input_ids"] = torch.tensor(
+              [[1]], device=device, dtype=torch.long
+          )
+
+        if "lxmert" in model_type:
+          input_kwargs["visual_feats"] = torch.randn(
+              batch_size, 10, 2048, generator=g, device=device
+          )
+          input_kwargs["visual_pos"] = torch.zeros(
+              batch_size, 10, 4, device=device
+          )
+
+        if "udop" in model_type:
+          input_kwargs["bbox"] = torch.zeros(
+              (*input_kwargs["input_ids"].shape, 4),
+              device=device,
+              dtype=torch.long,
+          )
+          input_kwargs["decoder_input_ids"] = torch.tensor(
+              [[1]], device=device, dtype=torch.long
+          )
+
+        if "pix2struct" in model_type:
+          max_patches = min(
+              _safe_int(
+                  _get_config_attr(config, "max_patches"),
+                  default=2048,
+                  min_val=1,
+              ),
+              32,
+          )
+          text_cfg = _get_config_attr(config, "text_config", config)
+          patch_hidden_size = _safe_int(
+              _get_config_attr(text_cfg, "hidden_size"),
+              default=768,
+              min_val=1,
+          )
+          input_kwargs.pop("pixel_values", None)
+          input_kwargs["flattened_patches"] = torch.randn(
+              batch_size,
+              max_patches,
+              patch_hidden_size + 2,
+              generator=g,
+              device=device,
+          )
+          input_kwargs["attention_mask"] = torch.ones(
+              batch_size, max_patches, device=device, dtype=torch.long
+          )
+          input_kwargs["decoder_input_ids"] = torch.tensor(
+              [[1]], device=device, dtype=torch.long
+          )
+
+        if any(
+            k in model_type
+            for k in ["qwen2_vl", "qwen3_vl", "holo", "qwen2_5_vl"]
+        ):
+          grid_h = image_size // 14
+          grid_w = image_size // 14
+          input_kwargs["image_grid_thw"] = torch.tensor(
+              [[1, grid_h, grid_w]], device=device, dtype=torch.long
+          )
+
+        if "xclip" in model_type:
+          num_frames = _safe_int(
+              _get_config_attr(config, "num_frames"), default=8, min_val=1
+          )
+          input_kwargs["pixel_values"] = torch.randn(
+              batch_size,
+              num_frames,
+              num_channels,
+              image_size,
+              image_size,
+              generator=g,
+          ).to(device)
+
+        if any(k in model_type for k in ["beingvl", "vq"]):
+          input_kwargs.pop("input_ids", None)
+          input_kwargs.pop("attention_mask", None)
 
   elif modality == Modality.VISION:
     image_size = _parse_image_size(config)
@@ -1302,11 +1691,155 @@ def _generate_transformers_inputs(
         image_size = processor.size["shortest_edge"]
 
     batch_size = shape[0] if shape else 1
-    num_channels = getattr(config, "num_channels", 3)
-    dummy_img = torch.randn(
-        batch_size, num_channels, image_size, image_size, generator=g
-    ).to(device)
-    input_kwargs["pixel_values"] = dummy_img
+    num_channels = _get_num_channels(
+        config, default_channels=4 if "vitmatte" in type_str else 3
+    )
+
+    if any(
+        k in type_str
+        for k in [
+            "videomae",
+            "vivit",
+            "timesformer",
+            "videoprism",
+            "videomt",
+            "vjepa2",
+            "xclip",
+        ]
+    ):
+      num_frames = _safe_int(
+          _get_config_attr(config, "num_frames"), default=8, min_val=1
+      )
+      dummy_video = torch.randn(
+          batch_size,
+          num_frames,
+          num_channels,
+          image_size,
+          image_size,
+          generator=g,
+      ).to(device)
+      input_kwargs["pixel_values"] = dummy_video
+      if "vjepa2" in type_str:
+        input_kwargs["pixel_values_videos"] = dummy_video
+      elif "videomt" in type_str or "videoprism" in type_str:
+        input_kwargs["pixel_values_videos"] = dummy_video
+        input_kwargs.pop("pixel_values", None)
+    elif any(
+        k in type_str for k in ["efficientloftr", "lightglue", "superglue"]
+    ):
+      dummy_loftr = torch.randn(
+          batch_size, 2, num_channels, image_size, image_size, generator=g
+      ).to(device)
+      input_kwargs["pixel_values"] = dummy_loftr
+    elif "vitpose" in type_str:
+      img_size = _get_config_attr(config, "image_size", [256, 192])
+      h, w = (
+          (img_size[0], img_size[1])
+          if isinstance(img_size, (list, tuple)) and len(img_size) == 2
+          else (256, 192)
+      )
+      input_kwargs["pixel_values"] = torch.randn(
+          batch_size, num_channels, h, w, generator=g
+      ).to(device)
+    else:
+      dummy_img = torch.randn(
+          batch_size, num_channels, image_size, image_size, generator=g
+      ).to(device)
+      input_kwargs["pixel_values"] = dummy_img
+
+    if "seggpt" in type_str:
+      input_kwargs["prompt_pixel_values"] = torch.randn(
+          batch_size,
+          num_channels,
+          image_size,
+          image_size,
+          generator=g,
+          device=device,
+      )
+      input_kwargs["prompt_masks"] = torch.zeros(
+          (batch_size, 1, image_size, image_size), device=device
+      )
+
+    if "qwen3" in type_str and "vision" in type_str:
+      patch_size = _safe_int(
+          _get_config_attr(config, "patch_size"), default=14, min_val=1
+      )
+      grid_h = image_size // patch_size
+      grid_w = image_size // patch_size
+      num_patches = grid_h * grid_w
+      in_channels = _safe_int(
+          _get_config_attr(config, "in_channels"),
+          default=num_channels,
+          min_val=1,
+      )
+      input_kwargs["hidden_states"] = torch.randn(
+          batch_size,
+          num_patches,
+          in_channels * patch_size * patch_size,
+          generator=g,
+          device=device,
+      )
+      input_kwargs["grid_thw"] = torch.tensor(
+          [[1, grid_h, grid_w]], device=device, dtype=torch.long
+      )
+      input_kwargs.pop("pixel_values", None)
+
+    if "videomae" in type_str:
+      patch_size = _safe_int(
+          _get_config_attr(config, "patch_size"), default=16, min_val=1
+      )
+      tubelet_size = _safe_int(
+          _get_config_attr(config, "tubelet_size"), default=2, min_val=1
+      )
+      num_frames = _safe_int(
+          _get_config_attr(config, "num_frames"), default=8, min_val=1
+      )
+      num_patches = ((image_size // patch_size) ** 2) * (
+          num_frames // tubelet_size
+      )
+      input_kwargs["bool_masked_pos"] = torch.zeros(
+          (batch_size, num_patches), device=device, dtype=torch.bool
+      )
+
+    if "vitpose" in type_str:
+      input_kwargs["dataset_index"] = torch.tensor(
+          [0] * batch_size, device=device, dtype=torch.long
+      )
+
+    if "siglip2" in type_str:
+      input_kwargs["pixel_attention_mask"] = torch.ones(
+          (batch_size, image_size, image_size), device=device, dtype=torch.bool
+      )
+      patch_size = _safe_int(
+          _get_config_attr(config, "patch_size"), default=16, min_val=1
+      )
+      num_patches = image_size // patch_size
+      input_kwargs["spatial_shapes"] = torch.tensor(
+          [[num_patches, num_patches]], device=device, dtype=torch.long
+      )
+
+    if "oneformer" in type_str:
+      input_kwargs["task_inputs"] = torch.tensor(
+          [[0]], device=device, dtype=torch.long
+      )
+
+    if "gemma4" in type_str and "vision" in type_str:
+      patch_size = _safe_int(
+          _get_config_attr(config, "patch_size"), default=16, min_val=1
+      )
+      num_patches = (image_size // patch_size) ** 2
+      input_kwargs["pixel_position_ids"] = torch.arange(
+          num_patches, device=device, dtype=torch.long
+      ).unsqueeze(0)
+
+    if "safety_checker" in type_str or "safety-checker" in type_str:
+      input_kwargs["clip_input"] = torch.randn(
+          batch_size, num_channels, image_size, image_size, generator=g
+      ).to(device)
+      input_kwargs["images"] = torch.zeros(
+          (batch_size, image_size, image_size, num_channels),
+          device=device,
+      )
 
     if any(
         k in model_type
@@ -1317,11 +1850,11 @@ def _generate_transformers_inputs(
             "visionencoderdecoder",
         ]
     ):
-      decoder_config = getattr(config, "decoder", None)
-      vocab_size = (
-          getattr(decoder_config, "vocab_size", 50265)
-          if decoder_config
-          else 50265
+      decoder_config = _get_config_attr(config, "decoder")
+      vocab_size = _safe_int(
+          _get_config_attr(decoder_config, "vocab_size"),
+          default=50265,
+          min_val=1,
       )
       input_kwargs["decoder_input_ids"] = torch.randint(
           0, vocab_size, (batch_size, 8), generator=g, dtype=torch.long
@@ -1330,12 +1863,16 @@ def _generate_transformers_inputs(
   elif modality == Modality.AUDIO:
     batch_size = shape[0] if shape else 1
     if "whisper" in model_type:
-      num_mel = getattr(config, "num_mel_bins", 80)
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
+      )
       input_kwargs["input_features"] = torch.randn(
           batch_size, num_mel, 3000, generator=g
       ).to(device)
     elif "clap" in model_type:
-      num_mel = getattr(config, "num_mel_bins", 64)
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins"), default=64, min_val=1
+      )
       input_kwargs["input_features"] = torch.randn(
           batch_size, 1, 1001, num_mel, generator=g
       ).to(device)
@@ -1344,29 +1881,190 @@ def _generate_transformers_inputs(
       )
       safe_seq_len = min(_get_max_seq_len(config), 512)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = getattr(config, "vocab_size", 32000)
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size"), default=32000, min_val=1
+      )
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
       input_kwargs["attention_mask"] = torch.ones(
           actual_shape, device=device, dtype=torch.long
       )
+      if "audio_encoder" in type_str or "audioencoder" in type_str:
+        input_kwargs.pop("input_ids", None)
+        input_kwargs.pop("attention_mask", None)
     elif (
         model_type in ["ast", "audio-spectrogram-transformer"]
         or "audio-spectrogram-transformer" in model_type
     ):
-      max_length = getattr(config, "max_length", 1024)
-      num_mel = getattr(config, "num_mel_bins", 128)
+      max_length = _safe_int(
+          _get_config_attr(config, "max_length"), default=1024, min_val=1
+      )
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins"), default=128, min_val=1
+      )
       input_kwargs["input_values"] = torch.randn(
           batch_size, max_length, num_mel, generator=g
       ).to(device)
+    elif any(
+        k in type_str
+        for k in [
+            "w2v-bert",
+            "wav2vec2-bert",
+            "lasr_ctc",
+            "parakeet",
+            "gemma4audio",
+            "qwen2_audio",
+            "qwen2-audio",
+            "qwen2audio",
+            "qwen2a",
+        ]
+    ):
+      enc_cfg = _get_config_attr(
+          config, "encoder_config", _get_config_attr(config, "encoder", config)
+      )
+      num_mel = _safe_int(
+          _get_config_attr(config, "feature_projection_input_dim")
+          or _get_config_attr(enc_cfg, "num_mel_bins")
+          or _get_config_attr(enc_cfg, "input_feat_per_channel")
+          or _get_config_attr(enc_cfg, "feature_size"),
+          default=80,
+          min_val=1,
+      )
+      input_kwargs["input_features"] = torch.randn(
+          batch_size, 128, num_mel, generator=g
+      ).to(device)
+      if "nemotron" in type_str:
+        input_kwargs["input_lengths"] = torch.tensor(
+            [128] * batch_size, device=device, dtype=torch.long
+        )
+    elif any(k in type_str for k in ["gemma3n", "usm"]):
+      input_kwargs["audio_mel"] = torch.randn(
+          batch_size, 128, 128, generator=g
+      ).to(device)
+      input_kwargs["audio_mel_mask"] = torch.ones(
+          (batch_size, 128), device=device, dtype=torch.bool
+      )
+    elif any(k in type_str for k in ["omnitoken2wav", "scail"]):
+      input_kwargs["mel_spectrogram"] = torch.randn(
+          batch_size, 80, 128, generator=g
+      ).to(device)
+    elif any(k in type_str for k in ["s2t", "speech2text", "speech_to_text"]):
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
+      )
+      input_kwargs["input_features"] = torch.randn(
+          batch_size, 100, num_mel, generator=g
+      ).to(device)
+      input_kwargs["decoder_input_ids"] = torch.tensor(
+          [[1]], device=device, dtype=torch.long
+      )
+    elif "univnet" in type_str:
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins")
+          or _get_config_attr(config, "input_dim"),
+          default=80,
+          min_val=1,
+      )
+      input_kwargs["input_features"] = torch.randn(
+          batch_size, num_mel, 128, generator=g
+      ).to(device)
+    elif "xcodec2" in type_str:
+      seq_len = shape[1] if shape and len(shape) > 1 else 16000
+      input_kwargs["input_features"] = torch.randn(
+          batch_size, 1, seq_len, generator=g
+      ).to(device)
+    elif any(
+        k in type_str
+        for k in [
+            "dac",
+            "encodec",
+            "mimi",
+            "vibevoice_acoustic_tokenizer",
+        ]
+    ):
+      seq_len = shape[1] if shape and len(shape) > 1 else 16000
+      input_kwargs["input_values"] = torch.randn(
+          batch_size, 1, seq_len, generator=g
+      ).to(device)
+    elif "musicgen" in type_str:
+      safe_seq_len = min(_get_max_seq_len(config), 16)
+      text_cfg = _get_config_attr(config, "text_encoder", config)
+      vocab_size = _safe_int(
+          _get_config_attr(text_cfg, "vocab_size"), default=32000, min_val=1
+      )
+      input_kwargs["input_ids"] = torch.randint(
+          0,
+          vocab_size,
+          (batch_size, safe_seq_len),
+          generator=g,
+          dtype=torch.long,
+      ).to(device)
+      input_kwargs["attention_mask"] = torch.ones(
+          (batch_size, safe_seq_len), device=device, dtype=torch.long
+      )
+      dec_cfg = _get_config_attr(config, "decoder", config)
+      num_codebooks = _safe_int(
+          _get_config_attr(dec_cfg, "num_codebooks"), default=4, min_val=1
+      )
+      audio_vocab_size = _safe_int(
+          _get_config_attr(dec_cfg, "vocab_size"), default=2048, min_val=1
+      )
+      input_kwargs["decoder_input_ids"] = torch.randint(
+          0,
+          audio_vocab_size,
+          (batch_size, num_codebooks, 1),
+          generator=g,
+          dtype=torch.long,
+      ).to(device)
+    elif "bark" in type_str:
+      safe_seq_len = min(_get_max_seq_len(config), 64)
+      actual_shape = (batch_size, safe_seq_len)
+      sem_cfg = _get_config_attr(
+          config,
+          "semantic_config",
+          _get_config_attr(config, "text_config", config),
+      )
+      vocab_size = _safe_int(
+          _get_config_attr(sem_cfg, "vocab_size"), default=10048, min_val=1
+      )
+      input_kwargs["input_ids"] = torch.randint(
+          0, vocab_size, actual_shape, generator=g, dtype=torch.long
+      ).to(device)
+      input_kwargs["attention_mask"] = torch.ones(
+          actual_shape, device=device, dtype=torch.long
+      )
+    elif any(
+        k in type_str for k in ["csm", "voxtral", "dia", "audio2hero", "higgs"]
+    ):
+      safe_seq_len = min(_get_max_seq_len(config), 32)
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size"), default=32000, min_val=1
+      )
+      input_kwargs["input_ids"] = torch.randint(
+          0,
+          vocab_size,
+          (batch_size, safe_seq_len),
+          generator=g,
+          dtype=torch.long,
+      ).to(device)
+      input_kwargs["attention_mask"] = torch.ones(
+          (batch_size, safe_seq_len), device=device, dtype=torch.long
+      )
     elif "speecht5" in model_type:
       safe_seq_len = min(_get_max_seq_len(config), 8)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = getattr(config, "vocab_size", 81)
-      max_vocab = max(3, vocab_size - 1)
-      num_mel = getattr(config, "num_mel_bins", 80)
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size"), default=81, min_val=4
+      )
+      max_vocab = vocab_size - 1
+      num_mel = _safe_int(
+          _get_config_attr(config, "num_mel_bins"), default=80, min_val=1
+      )
       dec_seq_len = 8
+      input_kwargs["input_values"] = torch.randn(
+          batch_size, 16000, generator=g
+      ).to(device)
       input_kwargs["input_ids"] = torch.randint(
           2, max_vocab, actual_shape, generator=g, dtype=torch.long
       ).to(device)
@@ -1375,6 +2073,13 @@ def _generate_transformers_inputs(
       )
       input_kwargs["speaker_embeddings"] = torch.randn(
           batch_size, 512, generator=g
+      ).to(device)
+      input_kwargs["decoder_input_ids"] = torch.randint(
+          2,
+          max_vocab,
+          (batch_size, dec_seq_len),
+          generator=g,
+          dtype=torch.long,
       ).to(device)
       input_kwargs["labels"] = torch.randn(
           batch_size, dec_seq_len, num_mel, generator=g
@@ -1385,8 +2090,10 @@ def _generate_transformers_inputs(
     elif "vits" in model_type:
       safe_seq_len = min(_get_max_seq_len(config), 8)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = getattr(config, "vocab_size", 38)
-      max_vocab = max(3, min(vocab_size, 38))
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size"), default=38, min_val=4
+      )
+      max_vocab = min(vocab_size, 38)
       input_kwargs["input_ids"] = torch.randint(
           2, max_vocab, actual_shape, generator=g, dtype=torch.long
       ).to(device)
@@ -1397,20 +2104,21 @@ def _generate_transformers_inputs(
       input_kwargs["speaking_rate"] = 1e15
     elif "granite" in model_type:
       batch_size = shape[0] if shape else 1
-      encoder_cfg = getattr(
-          config, "encoder", getattr(config, "speech_config", None)
+      encoder_cfg = _get_config_attr(
+          config, "encoder", _get_config_attr(config, "speech_config")
       )
-      num_mel = (
-          getattr(
-              encoder_cfg,
-              "input_dim",
-              getattr(encoder_cfg, "num_mel_bins", 160),
-          )
-          if encoder_cfg
-          else 160
+      num_mel = _safe_int(
+          _get_config_attr(encoder_cfg, "input_dim")
+          or _get_config_attr(encoder_cfg, "num_mel_bins"),
+          default=160,
+          min_val=1,
       )
-      window_size = getattr(config, "window_size", 15)
-      downsample_rate = getattr(config, "downsample_rate", 5)
+      window_size = _safe_int(
+          _get_config_attr(config, "window_size"), default=15, min_val=1
+      )
+      downsample_rate = _safe_int(
+          _get_config_attr(config, "downsample_rate"), default=5, min_val=1
+      )
       audio_len = window_size  # nblocks = 1
 
       input_kwargs["input_features"] = torch.randn(
@@ -1418,8 +2126,10 @@ def _generate_transformers_inputs(
       ).to(device)
       # Calculate exact number of audio tokens expected by GraniteSpeech
       num_audio_tokens = window_size // downsample_rate
-      audio_token_id = getattr(
-          config, "audio_token_id", getattr(config, "audio_token_index", 49152)
+      audio_token_id = _safe_int(
+          _get_config_attr(config, "audio_token_id")
+          or _get_config_attr(config, "audio_token_index"),
+          default=49152,
       )
 
       input_kwargs["input_ids"] = torch.full(
@@ -1434,10 +2144,13 @@ def _generate_transformers_inputs(
     elif any(k in type_str for k in ["fastspeech", "fastspeech2"]):
       safe_seq_len = min(_get_max_seq_len(config), 16)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = getattr(config, "vocab_size", None)
-      if vocab_size is None and hasattr(config, "model_config"):
-        vocab_size = getattr(config.model_config, "vocab_size", None)
-      vocab_size = vocab_size or 38
+      model_cfg = _get_config_attr(config, "model_config")
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size")
+          or _get_config_attr(model_cfg, "vocab_size"),
+          default=38,
+          min_val=1,
+      )
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
@@ -1447,22 +2160,21 @@ def _generate_transformers_inputs(
     elif any(k in type_str for k in ["pe_audio", "pe-audio", "pe-a-frame"]):
       safe_seq_len = min(_get_max_seq_len(config), 16)
       actual_shape = (batch_size, safe_seq_len)
-      vocab_size = getattr(config, "vocab_size", None)
-      if vocab_size is None and hasattr(config, "text_config"):
-        vocab_size = getattr(config.text_config, "vocab_size", None)
-      if vocab_size is None:
-        vocab_size = 32000
+      text_cfg = _get_config_attr(config, "text_config")
+      vocab_size = _safe_int(
+          _get_config_attr(config, "vocab_size")
+          or _get_config_attr(text_cfg, "vocab_size"),
+          default=32000,
+          min_val=1,
+      )
       input_kwargs["input_ids"] = torch.randint(
           0, vocab_size, actual_shape, generator=g, dtype=torch.long
       ).to(device)
-      hop_length = 1920
-      audio_cfg = getattr(config, "audio_config", None)
-      if audio_cfg and hasattr(audio_cfg, "dac_config"):
-        dac_cfg = audio_cfg.dac_config
-        if isinstance(dac_cfg, dict):
-          hop_length = dac_cfg.get("hop_length", 1920)
-        else:
-          hop_length = getattr(dac_cfg, "hop_length", 1920)
+      audio_cfg = _get_config_attr(config, "audio_config")
+      dac_cfg = _get_config_attr(audio_cfg, "dac_config")
+      hop_length = _safe_int(
+          _get_config_attr(dac_cfg, "hop_length"), default=1920, min_val=1
+      )
       audio_len = safe_seq_len * hop_length
       input_kwargs["input_values"] = torch.randn(
           batch_size, 1, audio_len, generator=g
@@ -1476,11 +2188,14 @@ def _generate_transformers_inputs(
   else:  # text_default, causal_lm, seq2seq
     safe_seq_len = min(_get_max_seq_len(config), 512)
     actual_shape = shape if shape is not None else (1, safe_seq_len)
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
+    batch_size = actual_shape[0]
+    text_cfg = _get_config_attr(config, "text_config")
+    vocab_size = _safe_int(
+        _get_config_attr(config, "vocab_size")
+        or _get_config_attr(text_cfg, "vocab_size"),
+        default=32000,
+        min_val=1,
+    )
 
     input_kwargs["input_ids"] = torch.randint(
         0,
@@ -1493,7 +2208,118 @@ def _generate_transformers_inputs(
         actual_shape, device=device, dtype=torch.long
     )
 
-    if model_type == "tapas":
+    eos_token_id = _get_config_attr(config, "eos_token_id", 2)
+    if isinstance(eos_token_id, (list, tuple)):
+      eos_token_id = eos_token_id[0] if eos_token_id else 2
+    eos_token_id = _safe_int(eos_token_id, default=2)
+    if 0 <= eos_token_id < vocab_size:
+      input_kwargs["input_ids"][:, -1] = eos_token_id
+
+    if any(
+        k in type_str
+        for k in [
+            "autoformer",
+            "informer",
+            "time_series_transformer",
+            "time-series-transformer",
+            "patchtst",
+            "patchtsmixer",
+            "timesfm",
+        ]
+    ):
+      context_length = _safe_int(
+          _get_config_attr(config, "context_length")
+          or _get_config_attr(config, "seq_length"),
+          default=64,
+          min_val=1,
+      )
+      input_size = _safe_int(
+          _get_config_attr(config, "input_size")
+          or _get_config_attr(config, "num_input_channels"),
+          default=1,
+          min_val=1,
+      )
+      num_time_features = _safe_int(
+          _get_config_attr(config, "num_time_features"),
+          default=4,
+          min_val=1,
+      )
+      batch_size = actual_shape[0]
+      input_kwargs.pop("input_ids", None)
+      input_kwargs.pop("attention_mask", None)
+      if "timesfm" in type_str:
+        input_kwargs["past_values"] = torch.randn(
+            batch_size, context_length, generator=g
+        ).to(device)
+        input_kwargs["freq"] = torch.zeros(
+            batch_size, device=device, dtype=torch.long
+        )
+      else:
+        lags_sequence = _get_config_attr(
+            config, "lags_sequence", [1, 2, 3, 4, 5, 6, 7]
+        )
+        max_lag = max(lags_sequence) if lags_sequence else 0
+        context_length = max(context_length, max_lag + 1, 64)
+        input_kwargs["past_values"] = torch.randn(
+            batch_size, context_length, input_size, generator=g
+        ).to(device)
+        input_kwargs["past_time_features"] = torch.randn(
+            batch_size, context_length, num_time_features, generator=g
+        ).to(device)
+        input_kwargs["past_observed_mask"] = torch.ones(
+            (batch_size, context_length, input_size),
+            device=device,
+            dtype=torch.bool,
+        )
+    elif "decision_transformer" in type_str:
+      input_kwargs.pop("input_ids", None)
+      state_dim = _safe_int(
+          _get_config_attr(config, "state_dim"), default=17, min_val=1
+      )
+      act_dim = _safe_int(
+          _get_config_attr(config, "act_dim"), default=4, min_val=1
+      )
+      seq_len = actual_shape[1]
+      input_kwargs["states"] = torch.randn(
+          batch_size, seq_len, state_dim, generator=g, device=device
+      )
+      input_kwargs["actions"] = torch.randn(
+          batch_size, seq_len, act_dim, generator=g, device=device
+      )
+      input_kwargs["returns_to_go"] = torch.randn(
+          batch_size, seq_len, 1, generator=g, device=device
+      )
+      input_kwargs["timesteps"] = torch.arange(
+          seq_len, device=device, dtype=torch.long
+      ).repeat(batch_size, 1)
+      input_kwargs["attention_mask"] = torch.ones(
+          (batch_size, seq_len), device=device, dtype=torch.long
+      )
+    elif "luke" in type_str:
+      input_kwargs["entity_ids"] = torch.zeros(
+          (actual_shape[0], 1), device=device, dtype=torch.long
+      )
+      input_kwargs["entity_attention_mask"] = torch.ones(
+          (actual_shape[0], 1), device=device, dtype=torch.long
+      )
+      input_kwargs["entity_position_ids"] = torch.zeros(
+          (actual_shape[0], 1, 14), device=device, dtype=torch.long
+      )
+    elif "bros" in type_str:
+      input_kwargs["bbox"] = torch.zeros(
+          (*actual_shape, 4), device=device, dtype=torch.long
+      )
+    elif "lxmert" in type_str:
+      feat_dim = _safe_int(
+          _get_config_attr(config, "visual_feat_dim"), default=2048, min_val=1
+      )
+      input_kwargs["visual_feats"] = torch.randn(
+          actual_shape[0], 36, feat_dim, generator=g
+      ).to(device)
+      input_kwargs["visual_pos"] = torch.zeros(
+          actual_shape[0], 36, 4, device=device
+      )
+    elif model_type == "tapas":
       config.reset_position_index_per_cell = False
       config.init_cell_selection_weights_to_zero = False
 
@@ -1514,23 +2340,86 @@ def _generate_transformers_inputs(
           actual_shape, device=device, dtype=torch.long
       )
 
-    if modality == Modality.SEQ2SEQ and getattr(
+    elif "rag" in type_str:
+      n_docs = _safe_int(
+          _get_config_attr(config, "n_docs"), default=5, min_val=1
+      )
+      q_cfg = _get_config_attr(
+          config,
+          "question_encoder",
+          _get_config_attr(config, "question_encoder_config"),
+      )
+      q_vocab_size = _safe_int(
+          _get_config_attr(q_cfg, "vocab_size"), default=30522, min_val=1
+      )
+      input_kwargs["input_ids"] = torch.randint(
+          0, q_vocab_size, actual_shape, generator=g, dtype=torch.long
+      ).to(device)
+      gen_cfg = _get_config_attr(
+          config, "generator", _get_config_attr(config, "generator_config")
+      )
+      gen_vocab_size = _safe_int(
+          _get_config_attr(gen_cfg, "vocab_size"), default=50265, min_val=1
+      )
+      input_kwargs["context_input_ids"] = torch.randint(
+          0,
+          gen_vocab_size,
+          (batch_size * n_docs, actual_shape[1]),
+          generator=g,
+          dtype=torch.long,
+      ).to(device)
+      input_kwargs["context_attention_mask"] = torch.ones(
+          (batch_size * n_docs, actual_shape[1]),
+          device=device,
+          dtype=torch.long,
+      )
+      input_kwargs["doc_scores"] = torch.randn(
+          batch_size, n_docs, generator=g, device=device
+      )
+    elif "perceiver" in type_str:
+      if arch_name == "perceivermodel":
+        input_kwargs.pop("input_ids", None)
+        input_kwargs.pop("attention_mask", None)
+        d_model = _safe_int(
+            _get_config_attr(config, "d_model"), default=768, min_val=1
+        )
+        input_kwargs["inputs"] = torch.randn(
+            batch_size, actual_shape[1], d_model, generator=g
+        ).to(device)
+
+    if modality == Modality.SEQ2SEQ and _get_config_attr(
         config, "is_encoder_decoder", False
     ):
       pass  # Handled below for all modalities
 
-  if getattr(config, "is_encoder_decoder", False) and (
+  if _get_config_attr(config, "is_encoder_decoder", False) is True and (
       modality != Modality.VISION and model_type not in ("speecht5", "vits")
   ):
-    vocab_size = getattr(config, "vocab_size", None)
-    if vocab_size is None and hasattr(config, "text_config"):
-      vocab_size = getattr(config.text_config, "vocab_size", None)
-    if vocab_size is None:
-      vocab_size = 32000
+    text_cfg = _get_config_attr(config, "text_config")
+    gen_cfg = _get_config_attr(
+        config, "generator", _get_config_attr(config, "generator_config")
+    )
+    vocab_size = _safe_int(
+        _get_config_attr(gen_cfg, "vocab_size")
+        if "rag" in type_str
+        else (
+            _get_config_attr(config, "vocab_size")
+            or _get_config_attr(text_cfg, "vocab_size")
+        ),
+        default=32000,
+        min_val=1,
+    )
 
     max_len = _get_max_seq_len(config)
-    if "whisper" in model_type or hasattr(config, "max_target_positions"):
-      max_len = min(max_len, getattr(config, "max_target_positions", 448))
+    if "whisper" in model_type:
+      max_len = min(max_len, 448)
+    max_target_pos = _safe_int(
+        _get_config_attr(config, "max_target_positions"),
+        default=None,
+        min_val=1,
+    )
+    if max_target_pos is not None:
+      max_len = min(max_len, max_target_pos)
     seq_limit = shape[1] if shape and len(shape) > 1 else 512
     safe_seq_len = min(max_len, seq_limit)
     # Use first dimension of shape or 1 for batch size
@@ -1777,6 +2666,39 @@ class TransformersProvider(BaseProvider):
     )
 
 
+_DIFFUSERS_SUBFOLDER_PRIORITY: tuple[str, ...] = (
+    "transformer",
+    "unet",
+    "prior",
+    "controlnet",
+    "movq",
+    "vae",
+    "vqvae",
+)
+
+_DEFAULT_DIFFUSERS_SUBFOLDERS: tuple[str | None, ...] = (
+    "transformer",
+    "unet",
+    None,
+    "vae",
+    "vqvae",
+    "movq",
+)
+
+
+def _extract_diffusers_subfolder_candidates(
+    index_dict: dict[str, Any],
+) -> list[str]:
+  """Extracts prioritized candidate subfolders from a diffusers model_index.json."""
+  candidates = []
+  for key in _DIFFUSERS_SUBFOLDER_PRIORITY:
+    val = index_dict.get(key)
+    if val and isinstance(val, (list, tuple)) and val[0] is not None:
+      candidates.append(key)
+      break
+  return candidates
+
+
 class DiffusersProvider(BaseProvider):
   """Provider for Hugging Face Diffusers models.
 
@@ -1835,13 +2757,40 @@ class DiffusersProvider(BaseProvider):
 
     raw_config = None
 
+    # Candidate subfolders for diffusers pipelines and standalone models
+    if subfolder:
+      candidate_subfolders = [subfolder]
+    else:
+      candidate_subfolders = []
+      if self.has_cache_dir:
+        model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
+        if model_path.exists():
+          index_path = model_path / "model_index.json"
+          if index_path.exists():
+            try:
+              with open(index_path, "r") as fp:
+                candidate_subfolders.extend(
+                    _extract_diffusers_subfolder_candidates(json.load(fp))
+                )
+            except Exception:  # pylint: disable=broad-except
+              pass
+      for cand in _DEFAULT_DIFFUSERS_SUBFOLDERS:
+        if cand not in candidate_subfolders:
+          candidate_subfolders.append(cand)
+
     if self.has_cache_dir:
       model_path = self._base_path / name  # pyrefly: ignore[unsupported-operation]
       try:
         if model_path.exists():
-          raw_config = auto_model.AutoModel.load_config(
-              str(model_path), subfolder=subfolder
-          )
+          for cand in candidate_subfolders:
+            try:
+              raw_config = auto_model.AutoModel.load_config(
+                  str(model_path), subfolder=cand
+              )
+              subfolder = cand
+              break
+            except Exception:  # pylint: disable=broad-except
+              pass
       except Exception as exc:  # pylint: disable=broad-except
         logging.warning(
             "Failed to access %s in cache, falling back to local resources."
@@ -1850,27 +2799,83 @@ class DiffusersProvider(BaseProvider):
             exc,
         )
 
-    if raw_config is None:  # Fallback to local resources
-      if load_weights:
-        # Pretrained weights are not available in local resources.
-        raise ValueError(
-            f"load_weights cannot be set to True for {name} when falling back"
-            " to local configuration resources."
-        )
+    if raw_config is None and not load_weights:  # Fallback to local resources
       model_dir = pathlib.Path(name)
-      if subfolder:
-        model_dir = model_dir / subfolder
+      local_candidates = list(candidate_subfolders)
+      index_file = self._FILES.joinpath(str(model_dir / "model_index.json"))
       try:
-        with resources.as_file(
-            self._FILES.joinpath(str(model_dir / "config.json"))
-        ) as f:
-          raw_config = auto_model.AutoModel.load_config(str(f.parent))
-      except Exception as exc:  # pylint: disable=broad-exception-caught
+        with resources.as_file(index_file) as f:
+          if f.is_file():
+            with open(f, "r") as fp:
+              for key in _extract_diffusers_subfolder_candidates(json.load(fp)):
+                if key not in local_candidates:
+                  local_candidates.insert(0, key)
+      except Exception:  # pylint: disable=broad-except
+        pass
+
+      for cand in local_candidates:
+        target_rel = (
+            model_dir / cand / "config.json"
+            if cand
+            else model_dir / "config.json"
+        )
+        try:
+          with resources.as_file(self._FILES.joinpath(str(target_rel))) as f:
+            if f.is_file():
+              raw_config = auto_model.AutoModel.load_config(str(f.parent))
+              subfolder = cand
+              break
+        except Exception:  # pylint: disable=broad-except
+          pass
+
+    if (
+        raw_config is None and not load_weights
+    ):  # Fallback to downloading from GCS
+      gcs_candidates = []
+      dest_index = self.fetch_gcs_file(f"{name}/model_index.json")
+      if dest_index and dest_index.exists():
+        try:
+          with open(dest_index, "r") as fp:
+            gcs_candidates.extend(
+                _extract_diffusers_subfolder_candidates(json.load(fp))
+            )
+        except Exception:  # pylint: disable=broad-except
+          pass
+      for cand in candidate_subfolders:
+        if cand not in gcs_candidates:
+          gcs_candidates.append(cand)
+
+      for cand in gcs_candidates:
+        gcs_rel = (
+            f"{name}/{cand}/config.json" if cand else f"{name}/config.json"
+        )
+        dest_config = self.fetch_gcs_file(gcs_rel)
+        if dest_config and dest_config.exists():
+          try:
+            raw_config = auto_model.AutoModel.load_config(
+                str(dest_config.parent)
+            )
+            subfolder = cand
+            break
+          except Exception as exc:  # pylint: disable=broad-except
+            logging.warning(
+                "Failed to load GCS diffusers config from %s: %s",
+                dest_config.parent,
+                exc,
+            )
+
+    if raw_config is None:
+      if load_weights:
+        # Pretrained weights are not available in local resources or GCS.
         raise ValueError(
-            f"Model config for '{name}' is missing in local resources "
-            f"({self._FILES.joinpath(str(model_dir / 'config.json'))}) "
-            "and could not be loaded from cache."
-        ) from exc
+            f"load_weights cannot be set to True for {name} when model is"
+            " not available in cache."
+        )
+      raise ValueError(
+          f"Model config for '{name}' is missing in local resources "
+          f"({self._FILES.joinpath(str(pathlib.Path(name) / 'config.json'))}) "
+          "and could not be loaded from cache or GCS."
+      )
 
     if modify_config_hook is not None:
       if load_weights:
@@ -1890,9 +2895,22 @@ class DiffusersProvider(BaseProvider):
       else:
         class_name = config_dict.get("_class_name")
         if not class_name:
-          raise ValueError(f"Config for {name} is missing '_class_name'.")
-        model_cls = getattr(diffusers, class_name)
-        return model_cls.from_config(config_dict).to(d_type)
+          if "transformer" in name.lower() or "cosmos" in name.lower():
+            class_name = "Transformer2DModel"
+          else:
+            class_name = "UNet2DConditionModel"
+        model_cls = getattr(diffusers, class_name, None)
+        if model_cls is None:
+          logging.warning(
+              "Could not find diffusers model class %s, falling back to"
+              " UNet2DConditionModel.",
+              class_name,
+          )
+          model_cls = diffusers.UNet2DConditionModel
+        model = model_cls.from_config(config_dict)
+        if isinstance(model, tuple):
+          model = model[0]
+        return model.to(d_type)  # pyrefly: ignore[missing-attribute]
 
     def _input_factory(shape=None, device="cpu"):
       g = torch.Generator(device="cpu").manual_seed(42)
@@ -1936,11 +2954,41 @@ class DiffusersProvider(BaseProvider):
           0, 1000, (batch_size,), generator=g, dtype=torch.long
       ).to(device)
 
-      # Fallback to text_dim if cross_attention_dim is not specified in config
-      # (e.g. for Wan2.2)
-      cross_attention_dim = cfg.get("cross_attention_dim")
+      # Dynamically get the model class to inspect its signature
+      class_name = cfg.get("_class_name")
+      if not class_name:
+        if "transformer" in name.lower() or "cosmos" in name.lower():
+          class_name = "Transformer2DModel"
+        else:
+          class_name = "UNet2DConditionModel"
+      model_cls = getattr(diffusers, class_name, None)
+      if model_cls is None:
+        logging.warning(
+            "Could not find diffusers model class %s, falling back to"
+            " UNet2DConditionModel.",
+            class_name,
+        )
+        model_cls = diffusers.UNet2DConditionModel
+      forward_params = inspect.signature(model_cls.forward).parameters
+
+      # Fallback to text_dim / joint_attention_dim / encoder_hid_dim if
+      # cross_attention_dim is not specified in config
+      cross_attention_dim = (
+          cfg.get("cross_attention_dim")
+          or cfg.get("joint_attention_dim")
+          or cfg.get("text_dim")
+          or cfg.get("encoder_hid_dim")
+      )
       if cross_attention_dim is None:
-        cross_attention_dim = cfg.get("text_dim", 2048)
+        if (
+            class_name == "UNet2DConditionModel"
+            or "unet" in str(class_name).lower()
+        ):
+          cross_attention_dim = 1280
+        else:
+          cross_attention_dim = 2048
+      if isinstance(cross_attention_dim, (list, tuple)):
+        cross_attention_dim = cross_attention_dim[0]
 
       # Encoder hidden states - These would be per token text embeddings
       # returned by CLIP-ViT/L text encoder
@@ -1949,16 +2997,6 @@ class DiffusersProvider(BaseProvider):
           generator=g,
           dtype=d_type,
       ).to(device)
-
-      # Dynamically get the model class to inspect its signature
-      class_name = cfg.get("_class_name")
-      if not class_name:
-        raise ValueError(
-            f"Config for {name} is missing '_class_name'. Cannot generate"
-            " inputs."
-        )
-      model_cls = getattr(diffusers, class_name)
-      forward_params = inspect.signature(model_cls.forward).parameters
 
       # Dynamically determine the primary input key
       if "sample" in forward_params:

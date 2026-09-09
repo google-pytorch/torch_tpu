@@ -110,6 +110,18 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "view_decomposition",
+    srcs = [
+        "view_decomposition.py",
+    ],
+    deps = [
+        "//shims/absl_py/logging",
+        "//shims/torch:pytorch",
+        "@pypi//sympy",
+    ],
+)
+
+torch_tpu_py_library(
     name = "dynamic_compiler",
     srcs = [
         "dynamic_compiler.py",

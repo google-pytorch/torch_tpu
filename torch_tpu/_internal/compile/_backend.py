@@ -38,7 +38,7 @@ import functools
 import hashlib
 import re
 import threading
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 from absl import logging
 import torch
@@ -55,9 +55,11 @@ from torch._functorch.partitioners import min_cut_rematerialization_partition
 from torch.utils import _pytree
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import split_compiler
+from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.dynamic import dynamic_compiler
+from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.utils import utils
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 _TPU_DECOMPOSITIONS = get_decompositions([
     # We decompose masked_fill to align behavior with GPU (Inductor), where
@@ -343,14 +345,15 @@ def _log_gm_and_inputs(
 def make_backend_compiler(
     example_inputs: Sequence[Any],
     async_compile: bool = False,
-    debug: bool = False,
+    debug: TpuCompileDebug | None = None,
 ) -> split_compiler.SplitCompiler:
   """Creates a SplitCompiler configured for static or dynamic compilation.
 
   Args:
     example_inputs: Example inputs to inspect for dynamic SymInts.
     async_compile: If True, executes XLA compilation asynchronously.
-    debug: If True, enable debug mode on the base compiler.
+    debug: Optional TpuCompileDebug container for recording compilation debug
+      artifacts.
 
   Returns:
     A SplitCompiler instance wrapping either DynamicCompiler or StaticCompiler.
@@ -479,8 +482,12 @@ def _guard_input_storage_offsets(graph_module: torch.fx.GraphModule) -> None:
     if not isinstance(node.meta.get("example_value"), torch.Tensor):
       continue
 
+    source = getattr(node, "_dynamo_source", None)
+    if source is None:
+      continue
+
     offset_source = dynamo_source.TensorPropertySource(
-        node._dynamo_source, dynamo_source.TensorProperty.STORAGE_OFFSET
+        source, dynamo_source.TensorProperty.STORAGE_OFFSET
     )
     guard = offset_source.make_guard(dynamo_guards.GuardBuilder.EQUALS_MATCH)
     dynamo_guards.install_guard(guard)
@@ -510,6 +517,8 @@ def _get_module_name(
 class TpuBackend:
   """TPU backend for torch.compile() integration."""
 
+  # TODO(yho): Delete this ctor once debug, dynamism, and enable_serialization
+  # are removed.
   def __init__(
       self,
       debug: bool = False,
@@ -527,6 +536,12 @@ class TpuBackend:
         True so PyTorch's AOTAutogradCache can save/load compilation artifacts.
         Debug mode disables serialization so debug callers inspect freshly
         compiled artifacts instead of cache hits.
+
+    Note: The `debug`, `dynamism`, and `enable_serialization` arguments are
+    internal flags slated for deprecation. If set on the instance, they will
+    override the corresponding keys passed in the `options` dict to `__call__`.
+    New callers should pass options to `torch.compile(..., backend="tpu",
+      options={...})`.
     """
     self._debug = debug
     self._dynamism = dynamism
@@ -543,9 +558,64 @@ class TpuBackend:
   ) -> Callable[
       [torch.fx.GraphModule, Sequence[torch.Tensor]], Callable[..., Any]
   ]:
-    options = kwargs.get("options") or {}
+    """Compiles the provided `torch.fx.GraphModule` with the XLA compiler.
+
+    Args:
+      graph_module: The graph module to compile.
+      example_inputs: Example inputs.
+      options: Options dict to pass to the backend. Available keys:
+        async_compile: Default False. If True, executes XLA compilation
+          asynchronously.
+        bounded_dynamism: Default False. If True, allows bounded dynamic shapes.
+        serializable: Default True. If True, uses
+          SerializableAOTDispatchCompiler so that .serialize() is attached to
+          compiled functions, which enables PyTorch's AOTAutogradCache to
+          save/load compilation artifacts. If False, serialization disabled so
+          that callers can inspect freshly compiled artifacts instead of cache
+          hits. Ignored and treated as False if symints and bounded dynamism are
+          both present.
+        debug_callback: Callback function to receive debug information. Must
+          accept one arg of type `TpuCompileDebug`. Note: For training graphs
+          with backward passes, the callback is invoked upon forward compilation
+          with a `TpuCompileDebug` object; backward compilation artifacts could
+          be populated into the same object in-place during subsequent backward
+          pass execution (e.g. `loss.backward()`). It is recommended to inspect
+          backward artifacts after backward execution.
+
+    Notes:
+      The options dict to this method replaces removed args to the TpuBackend
+        constructor.
+      The `debug` arg is replaced by the `serializable` and `debug_callback`
+        options.
+    """
+    # Process keys in options dict.
+    options = kwargs.pop("options", {}) or {}
+
     async_compile = options.get("async_compile", False)
-    bounded_dynamism = options.get("bounded_dynamism", self._dynamism)
+    bounded_dynamism = options.get("bounded_dynamism", False)
+    # DynamicCompiler artifacts are not pickleable yet, so only static
+    # compilations can participate in AOTAutogradCache.
+    serializable = cast(
+        bool, options.get("serializable", True)
+    ) and not compiler.has_dynamic_symints(example_inputs)
+
+    debug_callback = options.get("debug_callback", None)
+    if debug_callback is not None and not callable(debug_callback):
+      raise TypeError("'debug_callback' must be callable")
+    debug = TpuCompileDebug() if debug_callback else None
+    if kwargs:
+      raise TypeError("Unexpected keyword arguments: {}".format(kwargs))
+
+    # TODO(yho): The following self._* attributes are slated for deprecation.
+    # Overwrite options if legacy constructor arguments were specified.
+    if self._dynamism:
+      bounded_dynamism = self._dynamism
+    if not self._enable_serialization or self._debug:
+      serializable = self._enable_serialization
+    if self._debug and debug is None:
+      debug = TpuCompileDebug()
+    # self._debug, self._dynamism, and self._enable_serialization should
+    # NOT be accessed after this point.
 
     # Dynamism support is currently experimental.
     if not bounded_dynamism:
@@ -565,19 +635,20 @@ class TpuBackend:
         else None
     )
 
+    if debug is not None:
+      debug.pre_autograd_fx_code.append(graph_module.code)
+      debug.pre_autograd_fx_readable.append(
+          graph_module.print_readable(print_output=False)
+      )
+
     compiler_instance = make_backend_compiler(
-        example_inputs, async_compile=async_compile, debug=self._debug
+        example_inputs, async_compile=async_compile, debug=debug
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
 
-    # DynamicCompiler artifacts are not pickleable yet, so only static
-    # compilations can participate in AOTAutogradCache.
-    enable_serialization = (
-        self._enable_serialization
-        and not compiler.has_dynamic_symints(example_inputs)
-    )
+    compiled_artifacts: list[compiler.CompiledArtifact] = []
 
-    if enable_serialization:
+    if serializable:
       fw_compiler = SerializableAOTDispatchCompiler(
           output_code_ty=compiler.CompiledArtifact,
           compiler_fn=functools.partial(  # pyrefly: ignore[bad-specialization]
@@ -585,6 +656,8 @@ class TpuBackend:
               compiler_instance,
               True,
               custom_module_name,
+              debug,
+              compiled_artifacts,
           ),
       )
     else:
@@ -593,6 +666,8 @@ class TpuBackend:
           compiler_instance,
           True,
           custom_module_name,
+          debug,
+          compiled_artifacts,
       )
 
     bw_compiler = functools.partial(
@@ -600,6 +675,8 @@ class TpuBackend:
         compiler_instance,
         False,
         custom_module_name,
+        debug,
+        compiled_artifacts,
     )
 
     save_context = (
@@ -607,9 +684,7 @@ class TpuBackend:
         if async_compile
         else contextlib.nullcontext()
     )
-    with _serialization_context(
-        example_inputs, enable_serialization
-    ) as captured_entry:
+    with _serialization_context(example_inputs, serializable) as captured_entry:
       with save_context:
         result = aot_autograd(
             fw_compiler=fw_compiler,
@@ -630,11 +705,7 @@ class TpuBackend:
         nonlocal is_warmup_execution
         if async_compile and is_warmup_execution:
           is_warmup_execution = False
-          artifact = (
-              self._compiled_executables[-1]
-              if self._compiled_executables
-              else None
-          )
+          artifact = compiled_artifacts[-1] if compiled_artifacts else None
           raise AsyncCompilationSubmitted(artifact)
         return result(*args, **kwargs)
 
@@ -643,6 +714,32 @@ class TpuBackend:
         result.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
         skip_execution_on_warmup_if_async.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
 
+      if debug is not None:
+        debug.compiled_executables = list(compiled_artifacts)
+
+      # Call the debug callback, or if async, submit a job that waits on the compile futures.
+      if debug is not None and debug_callback is not None:
+        if async_compile:
+          futures = [
+              cast(AsyncCompiledArtifact, e)._future
+              for e in compiled_artifacts
+              if isinstance(e, AsyncCompiledArtifact)
+          ]
+
+          # Ensure callbacks that fail are visible
+          def wait_and_call():
+            try:
+              for f in futures:
+                f.result()
+              debug_callback(debug)
+            except Exception:
+              logging.exception("debug_callback crashed.")
+              raise
+
+          compiler.StaticCompiler._async_compile_executor.submit(wait_and_call)
+        else:
+          debug_callback(debug)
+
       return skip_execution_on_warmup_if_async
 
   def _compile_graph_module(
@@ -650,6 +747,8 @@ class TpuBackend:
       compiler_instance: compiler.Compiler,
       is_fwd: bool,
       custom_module_name: str | None,
+      debug: TpuCompileDebug | None,
+      compiled_artifacts: list[compiler.CompiledArtifact],
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[torch.Tensor],
   ) -> Callable[..., Any]:
@@ -663,6 +762,8 @@ class TpuBackend:
       is_fwd: Indicates whether the forward or backward pass is being compiled.
       custom_module_name: The base custom module name provided in backend
         options, if any.
+      debug: Container for recording compilation debug artifacts.
+      compiled_artifacts: Per-call container tracking compiled artifacts.
       graph_module: The FX graph module to compile.
       example_inputs: Example inputs to the FX graph for tracing (not the actual
         inputs).
@@ -679,14 +780,28 @@ class TpuBackend:
         example_inputs,
     )
 
+    if debug is not None:
+      if is_fwd:
+        debug.post_autograd_fx_forward_code.append(graph_module.code)
+        debug.post_autograd_fx_forward_readable.append(
+            graph_module.print_readable(print_output=False)
+        )
+      else:
+        debug.post_autograd_fx_backward_code.append(graph_module.code)
+        debug.post_autograd_fx_backward_readable.append(
+            graph_module.print_readable(print_output=False)
+        )
+
     split_idx = len(self._compiled_executables)
     module_name = _get_module_name(custom_module_name, is_fwd, split_idx)
 
     executable = compiler_instance(
         graph_module, example_inputs, is_fwd, module_name=module_name
     )
-
+    compiled_artifacts.append(executable)
     self._compiled_executables.append(executable)
+    if debug is not None:
+      debug.compiled_executables = list(compiled_artifacts)
 
     return executable
 

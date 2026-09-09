@@ -58,7 +58,7 @@ class TestErrorsWithCppContext(seed_test_utils.RepeatableTest):
         str(cm.exception),
         re.compile(
             r"\n\nC\+\+ error trace \(starting from the origin\):\n"
-            r".*torch_tpu/.*\.cc:\d+: \w+\(\)\n"
+            r".*(torch_tpu|csrc)/.*\.cc:\d+: \w+\(\)\n"
             r".*\n"
             r"Exception raised from \w+ at .*\.cc:\d+ .*\n"
             r"C\+\+ CapturedTraceback:\n"

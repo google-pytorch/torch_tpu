@@ -288,6 +288,25 @@ class BackendSerializationTest(seed_test_utils.RepeatableTest):
     restored = pickle.loads(pickled).cpu()
     utils.assert_close(restored, torch.tensor(2.0))
 
+  def test_compile_inside_tracing_context_without_dynamo_source(self):
+    def simple(x):
+      return (x + 1,)
+
+    x = torch.randn(4, 4, device="tpu")
+    gm = dynamo_graph_capture_for_export(simple)(x)
+    # Ensure placeholder nodes do not have _dynamo_source attribute (e.g. from
+    # non-Dynamo or piecewise/export frontends like vLLM).
+    for node in gm.graph.find_nodes(op="placeholder"):
+      if hasattr(node, "_dynamo_source"):
+        delattr(node, "_dynamo_source")
+
+    backend = _backend.TpuBackend(enable_serialization=True)
+    tracing_ctx = torch._guards.TracingContext(None)
+    with torch._guards.tracing(tracing_ctx):
+      compiled_fn = backend(gm, [x])
+    res = _backend.to_device(compiled_fn(x), "cpu")
+    utils.assert_close(res[0], x.cpu() + 1)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -21,6 +21,7 @@ from torch_tpu._internal.compile._backend import async_compile
 from torch_tpu._internal.compile._backend import AsyncCompilationSubmitted
 from torch_tpu._internal.compile._backend import resolve_compilations
 from torch_tpu._internal.compile._backend import TpuBackend
+from torch_tpu._internal.compile.debug import TpuCompileDebug
 
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")  # pyrefly: ignore[bad-argument-type]
@@ -71,6 +72,7 @@ __all__ = [
     # go/keep-sorted start
     "AsyncCompilationSubmitted",
     "TpuBackend",
+    "TpuCompileDebug",
     "async_compile",
     "resolve_compilations",
     # go/keep-sorted end

@@ -17,9 +17,9 @@
 #include <string>
 
 #include "absl/flags/flag.h"
+#include "csrc/common/flags.h"
+#include "csrc/internal/profiler/tpu_profiler_plugin.h"
 #include "gtest/gtest.h"
-#include "torch_tpu/csrc/common/flags.h"
-#include "torch_tpu/csrc/internal/profiler/tpu_profiler_plugin.h"
 
 ABSL_FLAG(std::string, expected_output_dir, "",
           "The expected base output directory for profiling artifacts.");

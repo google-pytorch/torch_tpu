@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "torch_tpu/csrc/internal/profiler/xprof_callback_handler.h"
+#include "csrc/internal/profiler/xprof_callback_handler.h"
 
 // clang-format off
 #include <atomic>

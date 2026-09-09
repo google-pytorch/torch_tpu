@@ -14,7 +14,6 @@
 
 load(
     "//build_files:build_defs.bzl",
-    "oss_target",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
@@ -40,9 +39,9 @@ torch_tpu_py_library(
 )
 
 # We use py_library_providing_imports_info with profiler.modspec.json to explicitly
-# re-export the submodules provided by :profiler_lib. This prevents PyStrictDeps
+# re-export the submodules provided by :_api. This prevents PyStrictDeps
 # violations at downstream use sites that import `from torch_tpu._internal.profiler import profiler`
-# without requiring them to directly depend on :profiler_lib.
+# without requiring them to directly depend on :_api.
 py_library_providing_imports_info(
     name = "profiler",
     srcs = [
@@ -53,14 +52,15 @@ py_library_providing_imports_info(
         "profiler.modspec.json",
     ],
     deps = [
+        ":_api",
+        ":_impl",
         ":profiler_config",
-        ":profiler_lib",
     ],
 )
 
 torch_tpu_py_library(
-    name = "profiler_lib",
-    srcs = ["profiler_api.py"],
+    name = "_api",
+    srcs = ["_api.py"],
     deps = [
         ":_impl",
         ":_profiler_backend",
@@ -76,25 +76,19 @@ torch_tpu_py_library(
     ],
 )
 
-oss_target(
-    torch_tpu_py_library,
-    name = "xprof_adapter",
-    srcs = ["xprof_adapter.py"],
-)
-
 pybind_extension(
     name = "_profiler_backend",
-    srcs = ["//torch_tpu/csrc/internal/profiler:profiler_api.cc"],
+    srcs = ["//csrc/internal/profiler:profiler_api.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
-        "//torch_tpu/csrc/common:context_manager",
-        "//torch_tpu/csrc/common:context_states",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/internal/profiler:tpu_profiler_plugin_cc",
-        "//torch_tpu/csrc/internal/profiler:xprof_callback_handler",
+        "//csrc/common:context_manager",
+        "//csrc/common:context_states",
+        "//csrc/common:error_utils",
+        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
+        "//csrc/internal/profiler:xprof_callback_handler",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/base:nullability",

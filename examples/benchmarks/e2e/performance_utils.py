@@ -36,7 +36,7 @@ from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import mlcompass_utils
 from examples.benchmarks.e2e import model_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 from tests.distributed import distributed_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode

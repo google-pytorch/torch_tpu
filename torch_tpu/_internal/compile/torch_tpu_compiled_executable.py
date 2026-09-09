@@ -28,9 +28,11 @@ from torch._inductor.utils import InputType
 from torch_tpu._internal.compile import tpu_torch_compile
 
 _UNSET_GRAPH_HELPER_STR = (
-    "FX/MLIR graph is not recorded by default. To record it, use debug mode:"
-    " from torch_tpu._internal.compile import TpuBackend; "
-    "torch.compile(..., backend=TpuBackend(debug=True))"
+    "FX/MLIR graph is not recorded by default. To record it: "
+    "debugs = []\n"
+    "torch.compile(..., backend='tpu',\n"
+    "              options={'debug_callback': debugs.append})\n"
+    "print(debugs)"
 )
 
 # Callable type for reconstructing the FX graph outputs from TPU execution
@@ -43,6 +45,23 @@ _UNSET_GRAPH_HELPER_STR = (
 _ReconstructFxOutputsFn: TypeAlias = Callable[
     [Sequence[Any], Sequence[torch.Tensor]], Sequence[Any]
 ]
+
+
+def _normalize_output_shape(
+    shape: tpu_torch_compile.OutputShape | tuple[Any, bool] | Sequence[int],
+) -> tpu_torch_compile.OutputShape:
+  """Normalizes user or framework shape specifications to OutputShape."""
+  if isinstance(shape, tpu_torch_compile.OutputShape):
+    return shape
+  if (
+      isinstance(shape, tuple)
+      and len(shape) == 2
+      and isinstance(shape[1], bool)
+  ):
+    return tpu_torch_compile.OutputShape(
+        dimensions=shape[0], is_dynamic=shape[1]
+    )
+  return tpu_torch_compile.OutputShape(dimensions=shape, is_dynamic=False)
 
 
 class CompiledArtifact(abc.ABC, OutputCode):
@@ -82,6 +101,9 @@ class CompiledArtifact(abc.ABC, OutputCode):
     """
     pass
 
+  _mlir_text: str | None = None
+  _graph_module_debug_str: str | None = None
+
   def resolve(self) -> None:
     """Waits for any pending background compilation to complete."""
     pass
@@ -94,6 +116,60 @@ class CompiledArtifact(abc.ABC, OutputCode):
   def updates_default_generator_state(self) -> bool:
     """Returns whether the executable updates the default generator state."""
     return False
+
+  @property
+  def mlir_text(self) -> str | None:
+    if self._mlir_text is not None:
+      return self._mlir_text
+    texts = self.mlir_texts
+    return texts[0] if texts else None
+
+  @mlir_text.setter
+  def mlir_text(self, value: str) -> None:
+    self._mlir_text = value
+
+  @property
+  def mlir_texts(self) -> Sequence[str]:
+    self.resolve()
+    return [self._mlir_text] if self._mlir_text is not None else []
+
+  @property
+  def graph_module_debug_str(self) -> str | None:
+    if self._graph_module_debug_str is not None:
+      return self._graph_module_debug_str
+    strs = self.graph_module_debug_strs
+    return strs[0] if strs else None
+
+  @graph_module_debug_str.setter
+  def graph_module_debug_str(self, value: str) -> None:
+    self._graph_module_debug_str = value
+
+  @property
+  def graph_module_debug_strs(self) -> Sequence[str]:
+    self.resolve()
+    return (
+        [self._graph_module_debug_str]
+        if self._graph_module_debug_str is not None
+        else []
+    )
+
+  def fingerprint(self) -> str:
+    return ""
+
+  @property
+  def compiled_executables(self) -> Sequence["CompiledArtifact"]:
+    return [self]
+
+  def prepare_for_serialization(self) -> None:
+    pass
+
+  def post_compile(
+      self,
+      example_inputs: Sequence[Any],
+      constants: Any,
+      graph_kwargs: Any,
+  ) -> None:
+    pass
 
 
 def _unpickle_compiled_executable(
@@ -194,6 +270,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       ]
     else:
       self._cached_dynamic_output_shapes = None
+    self._has_generator_args: bool | None = None
 
   @property
   def unique_output_indices(self) -> Sequence[int] | None:
@@ -316,10 +393,51 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       are made to match the expected output of the original FX graph,
       potentially after being processed by `reconstruct_fx_outputs_fn`.
     """
-    # aot_autograd with SerializableAOTDispatchCompiler passes args as a
-    # single list: fn([t1, t2, ...]). Unwrap when we detect this pattern.
+    # AOTAutograd with SerializableAOTDispatchCompiler packs runtime arguments
+    # into a single outer list or tuple (i.e., fn([t1, t2, ...])). Unwrap it
+    # here to restore the flat argument sequence expected by the executable.
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]  # pyrefly: ignore[bad-assignment]
+
+    # Fast path: deterministic execution without RNG state mutation.
+    # Dynamo guards guarantee that argument types (including torch.Generator)
+    # are invariant across executions for a given compiled graph artifact.
+    # We cache this check on first invocation to bypass accelerator querying,
+    # generator dictionary lookups, and MultiGeneratorLocker context entry.
+    if self._has_generator_args is None:
+      self._has_generator_args = self._updates_default_generator_state or any(
+          isinstance(arg, torch.Generator) for arg in args
+      )
+
+    if not self._has_generator_args:
+      # Filter non-tensor arguments (e.g. constant scalars captured in MLIR).
+      executable_args = self._take_tensor_args(args)
+
+      # Determine output shapes expected by the C++ dispatch runtime.
+      if output_shapes:
+        # Normalize caller- or tracer-specified output shapes (e.g. dynamic).
+        executable_output_shapes = [
+            _normalize_output_shape(s) for s in output_shapes
+        ]
+      elif self._has_dynamic_outputs and self._cached_dynamic_output_shapes:
+        # Fast reuse of precomputed dynamic output shapes for this executable.
+        executable_output_shapes = self._cached_dynamic_output_shapes
+      else:
+        # Static shape fast path: empty tuple signals C++ runtime to borrow
+        # executable->output_shapes() directly without heap vector copies.
+        executable_output_shapes = ()
+
+      outputs = tpu_torch_compile.execute(
+          self._executable,
+          executable_args,
+          executable_output_shapes,
+      )
+
+      # Reconstruct nested container structures (e.g., tuples, dicts, views)
+      # if required by the original PyTorch FX graph schema.
+      if self._reconstruct_fx_outputs_fn is not None:
+        outputs = self._reconstruct_fx_outputs_fn(args, outputs)
+      return outputs
 
     device = torch.accelerator.current_accelerator()
     device_module = getattr(torch, device.type)
@@ -355,13 +473,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       # outputs from the executable.
       if output_shapes:
         executable_output_shapes = [
-            s
-            if isinstance(s, tpu_torch_compile.OutputShape)
-            else tpu_torch_compile.OutputShape(
-                dimensions=s[0] if isinstance(s, tuple) else s,
-                is_dynamic=s[1] if isinstance(s, tuple) else False,
-            )
-            for s in output_shapes
+            _normalize_output_shape(s) for s in output_shapes
         ] + [
             tpu_torch_compile.OutputShape(
                 dimensions=list(t.shape), is_dynamic=False
@@ -574,14 +686,6 @@ class NoOpCompiledArtifact(CompiledArtifact):
 
   def updates_default_generator_state(self) -> bool:
     return False
-
-  @property
-  def graph_module_debug_str(self) -> str | None:
-    return None
-
-  @property
-  def mlir_text(self) -> str | None:
-    return None
 
   def prepare_for_serialization(self) -> None:
     pass

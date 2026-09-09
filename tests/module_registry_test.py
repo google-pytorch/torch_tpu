@@ -22,6 +22,7 @@ underlying providers (Torchvision, TIMM, and Transformers). It ensures that:
     successfully with their generated sample inputs.
 """
 
+import json
 import pathlib
 import tempfile
 from unittest import mock
@@ -873,6 +874,438 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
           modality=mod,
       )
       self.assertEqual(custom_spec.modality, mod)
+
+  def test_torchvision_weights_backbone_none(self):
+    with mock.patch(
+        "torchvision.models.get_model", return_value=mock.MagicMock()
+    ) as mock_get_model:
+      module_spec = self.module_registry.get_module_spec(
+          "torchvision", "resnet50"
+      )
+      model = module_spec.module_factory()
+      self.assertIsNotNone(model)
+      mock_get_model.assert_called_once_with(
+          "resnet50", weights=None, weights_backbone=None
+      )
+
+  def test_torchvision_weights_backbone_type_error_fallback(self):
+    def fake_get_model(name, weights=None, **kwargs):
+      del name, weights
+      if "weights_backbone" in kwargs:
+        raise TypeError("unexpected keyword argument 'weights_backbone'")
+      return mock.MagicMock()
+
+    with mock.patch(
+        "torchvision.models.get_model", side_effect=fake_get_model
+    ) as mock_get_model:
+      module_spec = self.module_registry.get_module_spec(
+          "torchvision", "simple_model"
+      )
+      model = module_spec.module_factory()
+      self.assertIsNotNone(model)
+      self.assertEqual(mock_get_model.call_count, 2)
+
+  def test_diffusers_dynamic_subfolder_resolution_via_model_index(self):
+    with tempfile.TemporaryDirectory() as temp_dir:
+      with mock.patch("tempfile.gettempdir", return_value=temp_dir):
+        provider = module_registry.DiffusersProvider(base_path="")
+        model_name = "test-diffuser-org/auto-discovered-model"
+
+        model_index_json = json.dumps({
+            "_class_name": "StableDiffusionPipeline",
+            "transformer": ["diffusers", "Transformer2DModel"],
+        }).encode("utf-8")
+
+        config_json = json.dumps({
+            "_class_name": "Transformer2DModel",
+            "sample_size": 32,
+            "in_channels": 4,
+            "cross_attention_dim": 1024,
+        }).encode("utf-8")
+
+        def fake_download(bucket, blob, dest_path):
+          del bucket
+          dest_path.parent.mkdir(parents=True, exist_ok=True)
+          if blob.endswith("model_index.json"):
+            dest_path.write_bytes(model_index_json)
+            return True
+          if blob.endswith("transformer/config.json"):
+            dest_path.write_bytes(config_json)
+            return True
+          return False
+
+        with mock.patch(
+            "torch_tpu.tests.module_registry._download_gcs_blob",
+            side_effect=fake_download,
+        ):
+          spec = provider.get_module_spec(model_name)
+          self.assertIsNotNone(spec)
+          self.assertEqual(spec.config.get("_class_name"), "Transformer2DModel")
+          _, kwargs = spec.sample_inputs_factory()
+          self.assertIn("hidden_states", kwargs)
+          self.assertIn("encoder_hidden_states", kwargs)
+          self.assertEqual(kwargs["hidden_states"].shape, (1, 4, 32, 32))
+          self.assertEqual(kwargs["encoder_hidden_states"].shape, (1, 77, 1024))
+
+  def test_diffusers_video_latent_and_cross_attention_dim_fallbacks(self):
+    # 3D patch_size adds frames dimension
+    def modify_3d(cfg):
+      cfg["patch_size"] = [1, 2, 2]
+      return cfg
+
+    spec_3d = self.module_registry.get_module_spec(
+        "diffusers",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        load_weights=False,
+        subfolder="unet",
+        modify_config_hook=modify_3d,
+    )
+    _, kwargs_3d = spec_3d.sample_inputs_factory()
+    self.assertEqual(len(kwargs_3d["sample"].shape), 5)
+    self.assertEqual(kwargs_3d["sample"].shape[2], 2)
+
+    # Tuple/list cross_attention_dim unrolls
+    def modify_tuple_cross_attn(cfg):
+      cfg["cross_attention_dim"] = [512, 512]
+      return cfg
+
+    spec_tuple = self.module_registry.get_module_spec(
+        "diffusers",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        load_weights=False,
+        subfolder="unet",
+        modify_config_hook=modify_tuple_cross_attn,
+    )
+    _, kwargs_tuple = spec_tuple.sample_inputs_factory()
+    self.assertEqual(kwargs_tuple["encoder_hidden_states"].shape[-1], 512)
+
+    # Fallback joint_attention_dim when cross_attention_dim is None
+    def modify_joint_attn(cfg):
+      cfg.pop("cross_attention_dim", None)
+      cfg["joint_attention_dim"] = 768
+      return cfg
+
+    spec_joint = self.module_registry.get_module_spec(
+        "diffusers",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        load_weights=False,
+        subfolder="unet",
+        modify_config_hook=modify_joint_attn,
+    )
+    _, kwargs_joint = spec_joint.sample_inputs_factory()
+    self.assertEqual(kwargs_joint["encoder_hidden_states"].shape[-1], 768)
+
+  def test_transformers_video_5d_tensor_generation(self):
+    configs = [
+        (
+            "videomae",
+            {
+                "model_type": "videomae",
+                "num_frames": 16,
+                "image_size": 224,
+                "patch_size": 16,
+                "tubelet_size": 2,
+            },
+        ),
+        (
+            "vivit",
+            {"model_type": "vivit", "num_frames": 8, "image_size": 224},
+        ),
+        (
+            "timesformer",
+            {"model_type": "timesformer", "num_frames": 8, "image_size": 224},
+        ),
+        (
+            "vjepa2",
+            {"model_type": "vjepa2", "num_frames": 8, "image_size": 224},
+        ),
+        (
+            "videoprism",
+            {"model_type": "videoprism", "num_frames": 8, "image_size": 224},
+        ),
+    ]
+    for name, cfg_dict in configs:
+      mock_cfg = mock.MagicMock()
+      for k, v in cfg_dict.items():
+        setattr(mock_cfg, k, v)
+      inputs = module_registry._generate_transformers_inputs(
+          mock_cfg, module_registry.Modality.VISION
+      )
+      if name == "videoprism":
+        self.assertIn("pixel_values_videos", inputs, f"Failed for {name}")
+        self.assertEqual(
+            inputs["pixel_values_videos"].shape,
+            (1, 8, 3, 224, 224),
+            f"Failed for {name}",
+        )
+      elif name == "vjepa2":
+        self.assertIn("pixel_values_videos", inputs, f"Failed for {name}")
+        self.assertIn("pixel_values", inputs, f"Failed for {name}")
+        self.assertEqual(
+            inputs["pixel_values"].shape,
+            (1, 8, 3, 224, 224),
+            f"Failed for {name}",
+        )
+      else:
+        self.assertIn("pixel_values", inputs, f"Failed for {name}")
+        self.assertEqual(
+            inputs["pixel_values"].shape,
+            (1, cfg_dict["num_frames"], 3, 224, 224),
+            f"Failed for {name}",
+        )
+      if name == "videomae":
+        self.assertIn("bool_masked_pos", inputs)
+        expected_patches = ((224 // 16) ** 2) * (16 // 2)
+        self.assertEqual(inputs["bool_masked_pos"].shape, (1, expected_patches))
+
+  def test_transformers_audio_3d_codecs_tensor_generation(self):
+    codecs = [
+        "dac",
+        "encodec",
+        "mimi",
+        "vibevoice_acoustic_tokenizer",
+        "xcodec2",
+    ]
+    for codec in codecs:
+      mock_cfg = mock.MagicMock()
+      mock_cfg.model_type = codec
+      mock_cfg.architectures = [codec]
+      inputs = module_registry._generate_transformers_inputs(
+          mock_cfg, module_registry.Modality.AUDIO, shape=(2, 8000)
+      )
+      if codec == "xcodec2":
+        self.assertIn("input_features", inputs, f"Failed for {codec}")
+        self.assertEqual(
+            inputs["input_features"].shape, (2, 1, 8000), f"Failed for {codec}"
+        )
+      else:
+        self.assertIn("input_values", inputs, f"Failed for {codec}")
+        self.assertEqual(
+            inputs["input_values"].shape, (2, 1, 8000), f"Failed for {codec}"
+        )
+
+  def test_transformers_timeseries_tensor_generation(self):
+    ts_models = [
+        "autoformer",
+        "informer",
+        "patchtst",
+        "patchtsmixer",
+        "timesfm",
+    ]
+    for ts in ts_models:
+      mock_cfg = mock.MagicMock()
+      mock_cfg.model_type = ts
+      mock_cfg.architectures = [ts]
+      mock_cfg.context_length = 32
+      mock_cfg.input_size = 1
+      mock_cfg.num_time_features = 4
+      mock_cfg.lags_sequence = [1, 2, 3]
+      inputs = module_registry._generate_transformers_inputs(
+          mock_cfg, module_registry.Modality.CAUSAL_LM, shape=(2, 32)
+      )
+      self.assertNotIn("input_ids", inputs, f"Failed for {ts}")
+      self.assertNotIn("attention_mask", inputs, f"Failed for {ts}")
+      self.assertIn("past_values", inputs, f"Failed for {ts}")
+      if ts == "timesfm":
+        self.assertIn("freq", inputs)
+        self.assertEqual(inputs["past_values"].shape, (2, 32))
+      else:
+        self.assertIn("past_time_features", inputs, f"Failed for {ts}")
+        self.assertIn("past_observed_mask", inputs, f"Failed for {ts}")
+        self.assertEqual(
+            inputs["past_values"].shape, (2, 64, 1), f"Failed for {ts}"
+        )
+        self.assertEqual(
+            inputs["past_time_features"].shape, (2, 64, 4), f"Failed for {ts}"
+        )
+
+  def test_transformers_model_specific_kwargs(self):
+    # SigLIP2
+    cfg_siglip2 = mock.MagicMock(
+        model_type="siglip2",
+        architectures=["Siglip2VisionModel"],
+        image_size=224,
+        patch_size=16,
+    )
+    inputs_siglip2 = module_registry._generate_transformers_inputs(
+        cfg_siglip2, module_registry.Modality.VISION
+    )
+    self.assertIn("pixel_attention_mask", inputs_siglip2)
+    self.assertIn("spatial_shapes", inputs_siglip2)
+    self.assertEqual(inputs_siglip2["spatial_shapes"].tolist(), [[14, 14]])
+
+    # OneFormer
+    cfg_oneformer = mock.MagicMock(
+        model_type="oneformer",
+        architectures=["OneFormerModel"],
+        image_size=224,
+    )
+    inputs_oneformer = module_registry._generate_transformers_inputs(
+        cfg_oneformer, module_registry.Modality.VISION
+    )
+    self.assertIn("task_inputs", inputs_oneformer)
+
+    # VitMatte (4 channels)
+    cfg_vitmatte = mock.MagicMock(
+        model_type="vitmatte",
+        architectures=["VitMatteForImageMatting"],
+        image_size=224,
+        num_channels=4,
+    )
+    inputs_vitmatte = module_registry._generate_transformers_inputs(
+        cfg_vitmatte, module_registry.Modality.VISION
+    )
+    self.assertEqual(inputs_vitmatte["pixel_values"].shape[1], 4)
+
+    # VitPose
+    cfg_vitpose = mock.MagicMock(
+        model_type="vitpose",
+        architectures=["VitPoseModel"],
+        image_size=[256, 192],
+        num_channels=3,
+    )
+    inputs_vitpose = module_registry._generate_transformers_inputs(
+        cfg_vitpose, module_registry.Modality.VISION
+    )
+    self.assertEqual(inputs_vitpose["pixel_values"].shape, (1, 3, 256, 192))
+    self.assertIn("dataset_index", inputs_vitpose)
+
+    # Bros (bbox)
+    cfg_bros = mock.MagicMock(
+        model_type="bros",
+        architectures=["BrosModel"],
+        vocab_size=30522,
+    )
+    inputs_bros = module_registry._generate_transformers_inputs(
+        cfg_bros, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
+    )
+    self.assertIn("bbox", inputs_bros)
+    self.assertEqual(inputs_bros["bbox"].shape, (1, 32, 4))
+
+    # Pix2Struct (flattened_patches)
+    cfg_p2s = mock.MagicMock(
+        model_type="pix2struct",
+        architectures=["Pix2StructForConditionalGeneration"],
+        max_patches=16,
+        text_config=mock.MagicMock(hidden_size=768),
+    )
+    inputs_p2s = module_registry._generate_transformers_inputs(
+        cfg_p2s, module_registry.Modality.MULTIMODAL, shape=(1, 32)
+    )
+    self.assertNotIn("pixel_values", inputs_p2s)
+    self.assertIn("flattened_patches", inputs_p2s)
+    self.assertEqual(inputs_p2s["flattened_patches"].shape, (1, 16, 770))
+    self.assertIn("decoder_input_ids", inputs_p2s)
+
+    # Qwen2-VL / Qwen3-VL / Holo (image_grid_thw)
+    cfg_qwenvl = mock.MagicMock(
+        model_type="qwen2_5_vl",
+        architectures=["Qwen2_5_VLForConditionalGeneration"],
+        image_size=224,
+    )
+    inputs_qwenvl = module_registry._generate_transformers_inputs(
+        cfg_qwenvl, module_registry.Modality.MULTIMODAL
+    )
+    self.assertIn("image_grid_thw", inputs_qwenvl)
+    self.assertEqual(inputs_qwenvl["image_grid_thw"].tolist(), [[1, 16, 16]])
+
+    # InstructBlip / Blip
+    cfg_iblip = mock.MagicMock(
+        model_type="instructblip",
+        architectures=["InstructBlipForConditionalGeneration"],
+        image_size=224,
+    )
+    inputs_iblip = module_registry._generate_transformers_inputs(
+        cfg_iblip, module_registry.Modality.MULTIMODAL
+    )
+    self.assertIn("qformer_input_ids", inputs_iblip)
+    self.assertIn("qformer_attention_mask", inputs_iblip)
+    self.assertIn("decoder_input_ids", inputs_iblip)
+
+    # LXMERT
+    cfg_lxmert = mock.MagicMock(
+        model_type="lxmert",
+        architectures=["LxmertForQuestionAnswering"],
+        vocab_size=30522,
+        visual_feat_dim=2048,
+    )
+    inputs_lxmert = module_registry._generate_transformers_inputs(
+        cfg_lxmert, module_registry.Modality.CAUSAL_LM, shape=(1, 32)
+    )
+    self.assertIn("visual_feats", inputs_lxmert)
+    self.assertIn("visual_pos", inputs_lxmert)
+    self.assertEqual(inputs_lxmert["visual_feats"].shape, (1, 36, 2048))
+    self.assertEqual(inputs_lxmert["visual_pos"].shape, (1, 36, 4))
+
+  def test_transformers_get_max_seq_len_bounds(self):
+    cfg_normal = mock.MagicMock(max_position_embeddings=2048)
+    self.assertEqual(module_registry._get_max_seq_len(cfg_normal), 2048)
+
+    cfg_neg = mock.MagicMock(max_position_embeddings=-1)
+    self.assertEqual(module_registry._get_max_seq_len(cfg_neg), 512)
+
+    cfg_oversized = mock.MagicMock(max_position_embeddings=100000)
+    self.assertEqual(module_registry._get_max_seq_len(cfg_oversized), 512)
+
+    cfg_empty = mock.MagicMock(spec=[])
+    self.assertEqual(module_registry._get_max_seq_len(cfg_empty), 512)
+    self.assertEqual(
+        module_registry._get_max_seq_len(cfg_empty, default=256), 256
+    )
+
+  def test_safe_int(self):
+    self.assertEqual(module_registry._safe_int(42), 42)
+    self.assertEqual(module_registry._safe_int("128"), 128)
+    self.assertEqual(module_registry._safe_int(None, default=10), 10)
+    self.assertEqual(module_registry._safe_int(True, default=5), 5)
+    self.assertEqual(module_registry._safe_int(False, default=5), 5)
+    self.assertEqual(module_registry._safe_int("invalid", default=0), 0)
+    self.assertEqual(module_registry._safe_int(0, default=10, min_val=1), 10)
+    self.assertEqual(module_registry._safe_int(5, default=10, min_val=1), 5)
+    self.assertEqual(
+        module_registry._safe_int(mock.MagicMock(), default=10), 10
+    )
+
+  def test_get_config_attr(self):
+    cfg_dict = {"foo": 1, "bar": "val"}
+    self.assertEqual(module_registry._get_config_attr(cfg_dict, "foo"), 1)
+    self.assertEqual(module_registry._get_config_attr(cfg_dict, "bar"), "val")
+    self.assertIsNone(module_registry._get_config_attr(cfg_dict, "baz"))
+    self.assertEqual(
+        module_registry._get_config_attr(cfg_dict, "baz", default=42), 42
+    )
+
+    cfg_obj = mock.MagicMock(foo=2, bar="obj_val")
+    self.assertEqual(module_registry._get_config_attr(cfg_obj, "foo"), 2)
+    self.assertEqual(
+        module_registry._get_config_attr(cfg_obj, "bar"), "obj_val"
+    )
+    self.assertIsNone(module_registry._get_config_attr(None, "foo"))
+
+  def test_extract_diffusers_subfolder_candidates(self):
+    idx_dict = {
+        "_class_name": "StableDiffusionPipeline",
+        "unet": ["diffusers", "UNet2DConditionModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+    }
+    candidates = module_registry._extract_diffusers_subfolder_candidates(
+        idx_dict
+    )
+    self.assertEqual(candidates, ["unet"])
+
+    idx_transformer = {
+        "_class_name": "FluxPipeline",
+        "transformer": ["diffusers", "FluxTransformer2DModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+    }
+    candidates_transformer = (
+        module_registry._extract_diffusers_subfolder_candidates(idx_transformer)
+    )
+    self.assertEqual(candidates_transformer, ["transformer"])
+
+    self.assertEqual(
+        module_registry._extract_diffusers_subfolder_candidates({}), []
+    )
 
 
 if __name__ == "__main__":

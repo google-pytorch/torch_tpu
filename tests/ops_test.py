@@ -876,10 +876,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 1.5e-2},
         torch.float32: {"rtol": 7.7e-3},
     },
-    "arange": {
-        torch.bfloat16: {"atol": 9.4e-3},
-        torch.float16: {"atol": 5.9e-4},
-    },
     "asin": {
         torch.complex64: {"rtol": 7.9e-5, "atol": 1e-4},
     },
@@ -1000,13 +996,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "linalg.vector_norm": {
         torch.complex64: {"rtol": 4.8e-6},
         torch.float32: {"rtol": 4.8e-6},
-    },
-    "linspace": {
-        torch.int16: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int32: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int64: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.uint8: {"rtol": 4.1e-1},
     },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
@@ -1322,13 +1311,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 4.8e-6},
     },
     "linspace": {
-        torch.bfloat16: {"atol": 9.4e-3},
+        torch.bfloat16: {"rtol": 7.9e-3, "atol": 9.4e-3},
         torch.float16: {"rtol": 1.2e-3, "atol": 1.2e-3},
-        torch.int16: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int32: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int64: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.uint8: {"rtol": 4.1e-1},
     },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
@@ -1440,6 +1424,17 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
+
+# The GPU gradient tolerances are based on the TPU vs GPU forward pass tolerances.
+ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
+    str, dict[torch.dtype, dict[str, float]]
+] = update_dict(
+    copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
+    {
+        # go/keep-sorted start
+        # go/keep-sorted end
+    },
+)
 
 # The gradient tolerances are based on the forward pass tolerances.
 ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
@@ -1783,6 +1778,7 @@ class TestOps(op_testing.OpInfoTestBase):
         if op_testing.is_compiled_mode()
         else ACCURACY_OVERRIDES_VS_GPU,
         grad_overrides=ACCURACY_OVERRIDES_GRAD,
+        grad_gpu_overrides=ACCURACY_OVERRIDES_GRAD_VS_GPU,
     )
     self.set_dynamism_handlers(
         dynamism_test_utils.verify_op_supports_dynamism,
@@ -1818,6 +1814,14 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "gpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
         },
+    )
+
+  @op_testing.skip_if_torch_tpu_vs_gpu_mode
+  def test_adaptive_max_pool2d(self):
+    self.do_test_op(
+        "nn.functional.adaptive_max_pool2d",
+        # TODO: adaptive_max_pool2d_backward is not implemented on TPU yet.
+        check_grad=False,
     )
 
   def test_add(self):
@@ -3076,8 +3080,6 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_norm(self):
     self.do_test_op(
         "norm",

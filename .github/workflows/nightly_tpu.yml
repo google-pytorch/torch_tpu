@@ -96,22 +96,5 @@ jobs:
           # shellcheck disable=SC2086
           bazel test --config=ci_tpu_nightly --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" ${TEST_TARGETS}
 
-  notify_failure:
-    name: Notify Failed Runs
-    needs: [run_tests]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Get current date
-        id: date
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - name: Check whether one of the jobs failed
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label-name: "ci:tpu-nightly-failed"
-          title-template: "Failed Nightly on TPU (${{ steps.date.outputs.date }})"
+# TODO(b/558939987): consider re-enabling failure notifications
+# once OSS builds stabilize.

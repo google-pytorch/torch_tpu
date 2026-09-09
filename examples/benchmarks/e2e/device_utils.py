@@ -23,7 +23,7 @@ import psutil
 import torch
 from torch.utils._pytree import tree_flatten
 from torch_tpu._internal import sync as tpu_sync
-from torch_tpu._internal.profiler import xprof_adapter
+from torch_tpu._internal.benchmarks import xprof_adapter
 
 _BYTES_IN_MB = 1024 * 1024
 

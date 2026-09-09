@@ -30,6 +30,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -394,6 +395,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       expected = torch.tensor([[1, 1, 1, 1, 0, 0, 0, 0]], dtype=torch.int64)
       utils.assert_close(padded_tensor.cpu(), expected)
 
+  # TODO(b/559266072): re-enable the test once fixed in OSS.
+  @oss_utils.skip_in_oss('XLA failure')
   def test_get_or_compile_slice_module(self):
     target_shapes = [[1, 4]]
     padded_shapes = [[1, 8]]

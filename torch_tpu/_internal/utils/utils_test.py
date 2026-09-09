@@ -751,6 +751,27 @@ class AllTest(seed_test_utils.RepeatableTest):
 
     self.assertIs(utils.get_primary_tensor_output(DummyWithSample(t)), t)
 
+    class DummyWithWaveform:
+
+      def __init__(self, waveform):
+        self.waveform = waveform
+
+    self.assertIs(utils.get_primary_tensor_output(DummyWithWaveform(t)), t)
+
+    class DummyWithAudio:
+
+      def __init__(self, audio):
+        self.audio = audio
+
+    self.assertIs(utils.get_primary_tensor_output(DummyWithAudio(t)), t)
+
+    class DummyWithSequences:
+
+      def __init__(self, sequences):
+        self.sequences = sequences
+
+    self.assertIs(utils.get_primary_tensor_output(DummyWithSequences(t)), t)
+
     class DummyWithLossAndLogits:
 
       def __init__(self, loss, logits):
@@ -765,9 +786,21 @@ class AllTest(seed_test_utils.RepeatableTest):
         utils.get_primary_tensor_output({"loss": loss_t, "logits": t}), t
     )
     self.assertIs(
+        utils.get_primary_tensor_output({"loss": loss_t, "waveform": t}), t
+    )
+    self.assertIs(
+        utils.get_primary_tensor_output({"loss": loss_t, "audio": t}), t
+    )
+    self.assertIs(
+        utils.get_primary_tensor_output({"loss": loss_t, "sequences": t}), t
+    )
+    self.assertIs(
         utils.get_primary_tensor_output({"aux_loss": loss_t, "output": t}), t
     )
     self.assertIs(utils.get_primary_tensor_output({"logits": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"waveform": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"audio": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"sequences": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"custom": {"nested": t}}), t)
     self.assertIsNone(utils.get_primary_tensor_output("non_tensor_string"))
     self.assertIsNone(utils.get_primary_tensor_output([]))

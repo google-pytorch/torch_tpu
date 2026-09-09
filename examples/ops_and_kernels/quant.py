@@ -51,7 +51,9 @@ def _pack32(values):
   # Omit size and dtype asserts to avoid compilation errors on TPU
 
   bits = (values == 1.0).to(torch.uint32)
-  bit_patterns = 2 ** torch.arange(32, dtype=torch.uint32, device=values.device)
+  bit_patterns = (
+      2 ** torch.arange(32, dtype=torch.int64, device=values.device)
+  ).to(torch.uint32)
   return torch.sum(bits * bit_patterns, dim=0, dtype=torch.uint32)
 
 

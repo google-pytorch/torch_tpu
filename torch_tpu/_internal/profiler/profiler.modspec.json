@@ -4,7 +4,7 @@
     "type": "PACKAGE"
   },
   {
-    "name": "torch_tpu._internal.profiler.profiler_api",
+    "name": "torch_tpu._internal.profiler._api",
     "type": "MODULE"
   },
   {
