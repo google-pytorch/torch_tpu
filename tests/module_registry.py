@@ -1738,6 +1738,7 @@ class TransformersProvider(BaseProvider):
       target_dtype = _extract_target_dtype(config)
 
       def _create_model():
+        torch.manual_seed(42)
         m = (
             model_cls.from_config(config)
             if hasattr(model_cls, "from_config")
