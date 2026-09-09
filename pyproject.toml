@@ -20,14 +20,14 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 
 dependencies = [
-    "torch>=2.11.0",
+    "torch>=2.13.0",
     "numpy>=2",
     "absl-py>=2",
     # DO NOT change the minimum libtpu version without approval from TorchTPU
     # leads, as doing so could break partners that are stuck with older
     # versions. If you have code that needs a newer libtpu version, please make
     # it conditioned on the version.
-    "libtpu>=0.0.41",
+    "libtpu>=0.0.45",
     "portpicker>=1.6",
     "tensorboard>=2.20",
     "frozendict>=2",

@@ -1,667 +1,403 @@
 # proto-file: https://github.com/google-ml-infra/actions/blob/main/benchmarking/proto/benchmark_registry.proto
 # proto-message: BenchmarkSuite
+
 benchmarks {
-  name: "test_llama_3_2_1b_forward_eager_default-hf_llama_3_2_1b"
-  description: "Eager default forward pass benchmark for HuggingFace Llama 3.2 1B model."
+  name: "torch_benchmarks_shard_00_of_16"
+  description: "Full-scope torch harness benchmarks, shard 0 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=0" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=0" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_llama_3_2_1b_forward_eager_optimized-hf_llama_3_2_1b"
-  description: "Eager optimized forward pass benchmark for HuggingFace Llama 3.2 1B model."
+  name: "torch_benchmarks_shard_01_of_16"
+  description: "Full-scope torch harness benchmarks, shard 1 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-
-benchmarks {
-  name: "test_llama_3_2_1b_forward_compiled-hf_llama_3_2_1b"
-  description: "Compiled forward pass benchmark for HuggingFace Llama 3.2 1B model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=1" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=1" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_llama_3_2_1b_train_1_step_eager_default-hf_llama_3_2_1b"
-  description: "Eager default 1-step training benchmark for HuggingFace Llama 3.2 1B model."
+  name: "torch_benchmarks_shard_02_of_16"
+  description: "Full-scope torch harness benchmarks, shard 2 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=2" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=2" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_llama_3_2_1b_train_1_step_eager_optimized-hf_llama_3_2_1b"
-  description: "Eager optimized 1-step training benchmark for HuggingFace Llama 3.2 1B model."
+  name: "torch_benchmarks_shard_03_of_16"
+  description: "Full-scope torch harness benchmarks, shard 3 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-benchmarks {
-  name: "test_llama_3_2_1b_train_1_step_compiled-hf_llama_3_2_1b"
-  description: "Compiled 1-step training benchmark for HuggingFace Llama 3.2 1B model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=3" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_train_1_step_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=3" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_gemma_3_270m_forward_eager_default-hf_gemma_3_270m"
-  description: "Eager default forward pass benchmark for HuggingFace Gemma-3-270M model."
+  name: "torch_benchmarks_shard_04_of_16"
+  description: "Full-scope torch harness benchmarks, shard 4 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=4" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=4" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_gemma_3_270m_forward_eager_optimized-hf_gemma_3_270m"
-  description: "Eager optimized forward pass benchmark for HuggingFace Gemma-3-270M model."
+  name: "torch_benchmarks_shard_05_of_16"
+  description: "Full-scope torch harness benchmarks, shard 5 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-benchmarks {
-  name: "test_gemma_3_270m_forward_compiled-hf_gemma_3_270m"
-  description: "Compiled forward pass benchmark for HuggingFace Gemma-3-270M model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=5" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=5" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_gemma_3_270m_train_1_step_eager_default-hf_gemma_3_270m"
-  description: "Eager default 1-step training benchmark for HuggingFace Gemma-3-270M model."
+  name: "torch_benchmarks_shard_06_of_16"
+  description: "Full-scope torch harness benchmarks, shard 6 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_train_1_step_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=6" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_train_1_step_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=6" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_gemma_3_270m_train_1_step_eager_optimized-hf_gemma_3_270m"
-  description: "Eager optimized 1-step training benchmark for HuggingFace Gemma-3-270M model."
+  name: "torch_benchmarks_shard_07_of_16"
+  description: "Full-scope torch harness benchmarks, shard 7 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_3_270m_train_1_step_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-# TODO(b/512109815): Re-add gemma_3_270m compile-mode training benchmark
-# (test_gemma_3_270m_train_1_step_compiled-hf_gemma_3_270m) after fix.
-benchmarks {
-  name: "test_gemma_2_2b_forward_eager_default-hf_gemma_2_2b"
-  description: "Eager default forward pass benchmark for HuggingFace Gemma-2-2B model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_2_2b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=7" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_2_2b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=7" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_gemma_2_2b_forward_eager_optimized-hf_gemma_2_2b"
-  description: "Eager optimized forward pass benchmark for HuggingFace Gemma-2-2B model."
+  name: "torch_benchmarks_shard_08_of_16"
+  description: "Full-scope torch harness benchmarks, shard 8 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_2_2b_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-benchmarks {
-  name: "test_gemma_2_2b_forward_compiled-hf_gemma_2_2b"
-  description: "Compiled forward pass benchmark for HuggingFace Gemma-2-2B model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_2_2b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=8" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_gemma_2_2b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=8" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_qwen3_1_7b_forward_eager_default-hf_qwen3_1_7b"
-  description: "Eager default forward pass benchmark for HuggingFace Qwen3-1.7B model."
+  name: "torch_benchmarks_shard_09_of_16"
+  description: "Full-scope torch harness benchmarks, shard 9 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=9" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=9" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_qwen3_1_7b_forward_eager_optimized-hf_qwen3_1_7b"
-  description: "Eager optimized forward pass benchmark for HuggingFace Qwen3-1.7B model."
+  name: "torch_benchmarks_shard_10_of_16"
+  description: "Full-scope torch harness benchmarks, shard 10 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-
-benchmarks {
-  name: "test_qwen3_1_7b_forward_compiled-hf_qwen3_1_7b"
-  description: "Compiled forward pass benchmark for HuggingFace Qwen3-1.7B model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=10" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_qwen3_1_7b_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=10" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_timm_resnet_50_forward_eager_default-timm_resnet_50"
-  description: "Eager default forward pass benchmark for timm ResNet-50 model."
+  name: "torch_benchmarks_shard_11_of_16"
+  description: "Full-scope torch harness benchmarks, shard 11 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=11" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=11" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
 benchmarks {
-  name: "test_timm_resnet_50_forward_eager_optimized-timm_resnet_50"
-  description: "Eager optimized forward pass benchmark for timm ResNet-50 model."
+  name: "torch_benchmarks_shard_12_of_16"
+  description: "Full-scope torch harness benchmarks, shard 12 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-
-benchmarks {
-  name: "test_timm_resnet_50_forward_compiled-timm_resnet_50"
-  description: "Compiled forward pass benchmark for timm ResNet-50 model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=12" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_timm_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=12" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
-
 benchmarks {
-  name: "test_detr_resnet_50_forward_eager_default-detr_resnet_50"
-  description: "Eager default forward pass benchmark for DETR ResNet-50 model."
+  name: "torch_benchmarks_shard_13_of_16"
+  description: "Full-scope torch harness benchmarks, shard 13 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=13" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_eager_default --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=13" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
-
 benchmarks {
-  name: "test_detr_resnet_50_forward_eager_optimized-detr_resnet_50"
-  description: "Eager optimized forward pass benchmark for DETR ResNet-50 model."
+  name: "torch_benchmarks_shard_14_of_16"
+  description: "Full-scope torch harness benchmarks, shard 14 of 16."
   owner: "TorchTPU"
 
   workload {
     action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
   environment_configs {
     id: "tpu-v7"
     runner_label: "linux-x86-tpu7x-224-4tpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_eager_optimized --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
-  }
-
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
-}
-
-benchmarks {
-  name: "test_detr_resnet_50_forward_compiled-detr_resnet_50"
-  description: "Compiled forward pass benchmark for DETR ResNet-50 model."
-  owner: "TorchTPU"
-
-  workload {
-    action: "./ml_actions/actions/workload_executors/bazel"
-    action_inputs { key: "target" value: "//examples/benchmarks/e2e:model_performance_benchmarks" }
-  }
-
-  environment_configs {
-    id: "tpu-v7"
-    runner_label: "linux-x86-tpu7x-224-4tpu"
-    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=14" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
   }
   environment_configs {
     id: "gpu-b200-1"
     runner_label: "linux-x86-a4-224-b200-8gpu"
     container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
-    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --action_env=TESTBRIDGE_TEST_ONLY=test_detr_resnet_50_forward_compiled --test_sharding_strategy=disabled" }
-    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=14" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+  }
+}
+benchmarks {
+  name: "torch_benchmarks_shard_15_of_16"
+  description: "Full-scope torch harness benchmarks, shard 15 of 16."
+  owner: "TorchTPU"
+
+  workload {
+    action: "./ml_actions/actions/workload_executors/bazel"
+    action_inputs { key: "target" value: "//examples/benchmarks/e2e/harness:torch_benchmark_full" }
   }
 
-  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
-  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
-  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=v7_1x1x1 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=15" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+  }
+  environment_configs {
+    id: "gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "bazel_run_flags" value: "-c opt --config=cuda --config=bench --test_sharding_strategy=disabled --test_env=BENCHMARK_PLATFORM=b200_1 --test_env=TORCH_DEVICE_BACKEND_AUTOLOAD=0 --test_env=TEST_TOTAL_SHARDS=16 --test_env=TEST_SHARD_INDEX=15" }
+    workload_action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+  }
 }
