@@ -197,7 +197,7 @@ forwarded):
 
 ```sh
 nox -s refresh_compile_commands -- --no-build
-nox -s refresh_compile_commands -- //torch_tpu/ops/...
+nox -s refresh_compile_commands -- //src/torch_tpu/ops/...
 ```
 
 ## Contributing

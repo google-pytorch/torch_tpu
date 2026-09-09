@@ -121,10 +121,12 @@ def pybind_extension(name, **kwargs):
         ) + ["//shims/torch:torch_python"]
 
         # The glue links two common libs: the shared XLA base and this version's
-        # torch common. common_lib_packages drives the glue's rpath to both.
+        # torch common. Match "src/" prefix so rules_pywrap computes the correct
+        # relative RPATH in the wheel.
+        pkg_prefix = "src/" if native.package_name().startswith("src/") else ""
         per_version_kwargs["common_lib_packages"] = [
-            XLA_BASE_PACKAGE,
-            glue_common_package(version),
+            pkg_prefix + XLA_BASE_PACKAGE,
+            pkg_prefix + glue_common_package(version),
         ]
         _pybind_extension(name = versioned_name, **per_version_kwargs)
         torch_version_glue(
@@ -142,8 +144,8 @@ def backend_probe_labels(extension_labels):
 def versioned_glue_labels_for(extension_labels, version):
     """Glue labels for a single PyTorch version.
 
-    e.g. (["//torch_tpu/_internal:env"], "2.11.0") ->
-        ["//torch_tpu/_internal:env_2_11_0_glue"]
+    e.g. (["//src/torch_tpu/_internal:env"], "2.11.0") ->
+        ["//src/torch_tpu/_internal:env_2_11_0_glue"]
     """
     return [
         "{}_{}_glue".format(label, version_suffix(version))

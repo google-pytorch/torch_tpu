@@ -296,7 +296,7 @@ class Llama321BRandomDataTrainingTest(seed_test_utils.RepeatableTest):
           file=sys.stderr,
       )
       # We return success here to avoid breaking
-      # `blaze test //torch_tpu/...`
+      # `blaze test //src/torch_tpu/...`
       sys.exit(0)
 
     # This abstest flag will always be set to an int.

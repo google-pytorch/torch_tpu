@@ -25,7 +25,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/utils:log_utils",
+        "//src/torch_tpu/_internal/utils:log_utils",
         "@pypi//llama_models",
     ],
 )

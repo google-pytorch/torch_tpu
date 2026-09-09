@@ -30,8 +30,8 @@ torch_tpu_py_test(
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py:app",
         "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
     ],
 )

@@ -34,10 +34,10 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -51,9 +51,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -67,9 +67,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -84,9 +84,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -101,9 +101,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -114,9 +114,9 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:symbol_bounds",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:symbol_bounds",
     ],
 )
 
@@ -126,10 +126,10 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
+        "//src/torch_tpu/_internal/compile/dynamic:sym_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/_internal/compile/dynamic:sym_utils",
     ],
 )
 
@@ -140,11 +140,11 @@ torch_tpu_py_test(
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:graph_transformations",
+        "//src/torch_tpu/_internal/compile/dynamic:sym_shape_manager",
+        "//src/torch_tpu/_internal/compile/dynamic:view_ops_passes",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:graph_transformations",
-        "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
-        "//torch_tpu/_internal/compile/dynamic:view_ops_passes",
     ],
 )
 
@@ -158,10 +158,10 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile:tpu_backend",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 
@@ -171,10 +171,10 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/dynamic:view_decomposition",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile/dynamic:view_decomposition",
-        "//torch_tpu/_internal/utils:test_utils",
         "@pypi//sympy",
     ],
 )

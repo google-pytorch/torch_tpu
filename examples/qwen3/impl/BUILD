@@ -26,7 +26,7 @@ torch_tpu_py_library(
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "//torch_tpu/_internal/utils",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 

@@ -29,7 +29,7 @@ torch_tpu_py_library(
     srcs = ["model.py"],
     deps = [
         "//shims/torch:pytorch",
-        "//torch_tpu/ops:splash_attention",
+        "//src/torch_tpu/ops:splash_attention",
     ],
 )
 
@@ -48,8 +48,8 @@ torch_tpu_py_test(
         ":model_baseline",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "//torch_tpu",
     ],
 )
 
@@ -63,8 +63,8 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
         "//tests:seed_test_utils",
-        "//torch_tpu",
     ],
 )
 
@@ -75,9 +75,9 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
         "@pypi//transformers",
     ],
 )
@@ -92,10 +92,10 @@ torch_tpu_py_test(
         ":model",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//src/torch_tpu/ops:splash_attention",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
-        "//torch_tpu/ops:splash_attention",
     ],
 )
 
@@ -116,9 +116,9 @@ torch_tpu_py_test(
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:log_utils",
-        "//torch_tpu/_internal/utils:test_utils",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:log_utils",
+        "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//transformers",
     ],
 )

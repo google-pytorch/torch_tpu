@@ -65,11 +65,12 @@ def _pinned_nightly_torch() -> str:
 
 @nox.session
 def lint(session: nox.Session) -> None:
-  """Run clang-format check, Python lint (ruff), and Bazel formatting (buildifier) on target branch modifications."""
+  """Run clang-format check, Python lint (ruff), Bazel formatting (buildifier), and directory layout check."""
   session.install("clang-format", "ruff")
   session.run("ci/tools/clang_format.sh", "lint", external=True)
   session.run("ci/tools/ruff_lint.sh", "lint", external=True)
   session.run("ci/tools/buildifier_lint.sh", "lint", external=True)
+  session.run("python3", "ci/tools/check_directory_layout.py", external=True)
 
 
 @nox.session
@@ -93,6 +94,15 @@ def buildifier(session: nox.Session) -> None:
   session.run("ci/tools/buildifier_lint.sh", "format", external=True)
 
 
+# Use venv_backend="none" to allow running the script directly in the host.
+# The script relies exclusively on Python standard libraries, so creating
+# a virtual env adds unnecessary overhead with no benefits.
+@nox.session(venv_backend="none")
+def check_directory_layout(session: nox.Session) -> None:
+  """Validate repository directory layout against expected manifests."""
+  session.run("python3", "ci/tools/check_directory_layout.py", external=True)
+
+
 @nox.session(venv_backend="none")
 def test_ci_tools(session: nox.Session) -> None:
   """Run unit tests for CI base SHA resolution and diff isolation scripts."""
@@ -101,6 +111,7 @@ def test_ci_tools(session: nox.Session) -> None:
       "-m",
       "unittest",
       "ci/tools/test_resolve_base_sha.py",
+      "ci/tools/test_check_directory_layout.py",
       external=True,
   )
 
