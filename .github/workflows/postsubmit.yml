@@ -264,7 +264,9 @@ jobs:
   notify_failure:
     name: Notify Failed Runs
     needs: [run_tests, build_wheels, vllm_perf_eval]
-    if: always()
+    # TODO(b/558939987): consider re-enabling failure notifications
+    # once OSS builds stabilize.
+    if: false
     runs-on: ubuntu-latest
     permissions:
       issues: write
