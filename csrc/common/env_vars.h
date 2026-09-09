@@ -161,6 +161,8 @@ inline constexpr char kTpuLaunchBlocking[] =
     "TPU_LAUNCH_BLOCKING";  // Similar to CUDA_LAUNCH_BLOCKING, used enable
                             // EagerMode::kDeferNeverAndLaunchBlocking by
                             // default.
+inline constexpr char kTpuLibraryPathEnvVar[] =
+    "TPU_LIBRARY_PATH";  // Used to locate libtpu.so for precompilation.
 inline constexpr char kTpuPremappedBufferSizeEnvVar[] =
     "TPU_PREMAPPED_BUFFER_SIZE";  // Premapped buffer size in bytes for PjRt
                                   // client.
@@ -231,6 +233,7 @@ inline constexpr auto kEnvVarToStage =
         {kTpuDeferAndFuse, std::nullopt},
         {kTpuHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuLaunchBlocking, std::nullopt},
+        {kTpuLibraryPathEnvVar, std::nullopt},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.

@@ -17,15 +17,19 @@
 #ifndef TORCH_TPU_CSRC_EAGER_MATERIALIZE_COMMON_H_
 #define TORCH_TPU_CSRC_EAGER_MATERIALIZE_COMMON_H_
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "absl/base/nullability.h"
+#include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
@@ -37,6 +41,23 @@
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
+
+// An optional runner may decline before submission (nullopt), return outputs,
+// or report an execution error. It must never decline after submitting work.
+// Factories inspect after compilation starts, before outputs become pending.
+using PrecompiledExecution =
+    absl::AnyInvocable<absl::StatusOr<std::optional<PjRtBufferPointers>>(
+        const CompiledKernel&, absl::Span<const DeviceBufferRef>) &&>;
+using PrecompiledExecutionFactory = PrecompiledExecution (*)(const Traversal&);
+using PrecompiledCleanup = void (*)();
+// Register at library initialization, before materialization starts.
+void RegisterPrecompiledExecution(PrecompiledExecutionFactory factory,
+                                  PrecompiledCleanup cleanup = nullptr);
+void ClearRegisteredPrecompiledExecution();
+
+// Number of provider executions that returned outputs (not matches or loads).
+// Read back the output before checking this to verify device completion too.
+uint64_t GetPrecompiledExecutionCountForTesting();
 
 // To materialize a tensor's data, we need to execute it on-device.
 // This requires identifying the arguments to the executable, the MLIR for the
@@ -93,11 +114,13 @@ class ExecutionTask {
   explicit ExecutionTask(std::string name,
                          std::vector<DeviceBufferRef> arguments,
                          std::vector<DeviceBufferRef> outputs,
-                         CompiledKernel compiled_kernel)
+                         CompiledKernel compiled_kernel,
+                         PrecompiledExecution precompiled = {})
       : name_(std::move(name)),
         arguments_(std::move(arguments)),
         outputs_(std::move(outputs)),
-        compiled_kernel_(std::move(compiled_kernel)) {}
+        compiled_kernel_(std::move(compiled_kernel)),
+        precompiled_(std::move(precompiled)) {}
 
   // Runs the execution task and early-returns if there is any failure.
   absl::Status RunInternal();
@@ -125,6 +148,7 @@ class ExecutionTask {
   // The compiled kernel; or, more precisely, the futures for the compiled
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
+  PrecompiledExecution precompiled_;
 };
 
 CompilationMode GetCompilationMode(EagerMode eager_mode);

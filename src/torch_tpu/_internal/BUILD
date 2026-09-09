@@ -52,6 +52,7 @@ pybind_extension(
         "//csrc/common:pybind_error_utils",
         "//csrc/eager:device_gen_impl",
         "//csrc/eager:events_queue",
+        "//csrc/eager:materialize_common",
         "//csrc/eager:op_dispatcher",
         "//csrc/eager:repeated_ops_heuristic",
         "//csrc/eager:structured_log_buffer",

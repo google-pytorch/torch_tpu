@@ -78,6 +78,7 @@ pybind_extension(
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/eager:tpu_hooks",
+        "//csrc/experimental/precompiled_kernels:optional_plugin",
         "//csrc/internal/sync:sync_cc",
         "//csrc/pjrt:pjrt_state",
         "//shims/torch",
