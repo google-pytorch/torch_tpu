@@ -65,7 +65,7 @@ jobs:
       latest_python_version: "3.14"
       should_build: ${{ steps.check_diff.outputs.should_build }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Keep the current commit's first parent fetchable
           # to resolve the base branch tip at CI runtime.
@@ -121,7 +121,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
@@ -176,7 +176,7 @@ jobs:
       pull-requests: read
       issues: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Keep the current commit's first parent fetchable
           # to resolve bazel-diff base SHA below.
@@ -234,7 +234,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -268,7 +268,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -320,7 +320,7 @@ jobs:
       pull-requests: read
       issues: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Keep the current commit's first parent fetchable
           # to resolve bazel-diff base SHA below.
@@ -384,7 +384,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral

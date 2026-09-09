@@ -68,7 +68,7 @@ jobs:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"  # Tag infrastructure-public-image-2c74567ee8e0
     steps:
       - name: Checkout TorchTPU
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Wait for Connection
         uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
         with:
@@ -143,7 +143,7 @@ jobs:
     steps:
       # Checkout torch_tpu into its own subdirectory: ${{ github.workspace }}/torch_tpu
       - name: Checkout TorchTPU
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: torch_tpu
 
@@ -220,7 +220,7 @@ jobs:
     steps:
       - name: Check whether one of the jobs failed
         if: contains(needs.build_and_test_wheel.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
+        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930  # v1.3.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           label-name: "ci:local-torch-failed"

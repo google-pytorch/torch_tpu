@@ -41,9 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Check out code"
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: "Set up Go"
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: "1.24"
           cache: false
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Check out PR HEAD"
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: "Fetch Base Commit"
         run: git fetch --no-tags --depth=1 origin ${{ github.event.pull_request.base.sha || 'main' }}
@@ -92,7 +92,7 @@ jobs:
       # interpreter to prevent OS instability. 'uv' natively works around this safely and cleanly by
       # utilizing fully isolated virtual environments under the hood.
       - name: "Setup uv"
-        uses: "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"  # v8.1.0
+        uses: "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"  # v10.0.1
         with:
           enable-cache: true
 
@@ -109,10 +109,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Check out code"
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: "Setup uv"
-        uses: "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"  # v8.1.0
+        uses: "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"  # v10.0.1
         with:
           enable-cache: true
 

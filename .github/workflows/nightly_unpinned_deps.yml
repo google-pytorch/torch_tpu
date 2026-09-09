@@ -81,7 +81,7 @@ jobs:
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
       # accessible for workflow to use.
       - name: Checkout TorchTPU
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories.
       - name: Fix Git Workspace Ownership
@@ -118,7 +118,7 @@ jobs:
 
       # Upload test logs on failure for triage.
       - name: Upload Test Logs on Failure
-        uses: actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392  # v4.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: failure()
         with:
           name: bazel-testlogs-${{ matrix.job_info.runner }}-${{ matrix.python_version }}
@@ -139,7 +139,7 @@ jobs:
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
       - name: Check whether one of the jobs failed
         if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
+        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930  # v1.3.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           label-name: "ci:unpinned-deps-failed"

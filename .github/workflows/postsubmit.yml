@@ -96,7 +96,7 @@ jobs:
       # Clone the GitHub repository to runner's environment $GITHUB_WORKSPACE, making its files
       # accessible for workflow to use. Otherwise, the workflow cannot find the files (e.g. ls -lR
       # will return "total 0").
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Git security patch (CVE-2022-24765) blocks root from operating on runner-owned directories:
       # https://github.blog/open-source/git/git-security-vulnerability-announced/#cve-2022-24765.
       # Tell Git explicitly to trust the workspace `/__w/torch_tpu/torch_tpu` inside this ephemeral
@@ -144,7 +144,7 @@ jobs:
         if: steps.check_superseded.outputs.skip != 'true' && steps.check_superseded_midway.outputs.skip != 'true'
         run: bazel test --config=${{ matrix.job_info.bazel_config }} ${{ matrix.job_info.extra_flags }} //...
       - name: Upload Test Logs on Failure
-        uses: actions/upload-artifact@c7d193f32edcb7bfad88892161225aeda64e9392  # v4.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: failure()
         with:
           name: bazel-testlogs-${{ matrix.job_info.runner }}
@@ -164,7 +164,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
@@ -194,14 +194,14 @@ jobs:
           ln -sfn /tmp/torch_tpu_cache /dev/shm/torch_tpu_cache
 
       - name: Checkout torch_tpu
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install SSH
         run: |
           apt-get update && apt-get install -y openssh-client || true
 
       - name: Checkout vllm-torchtpu
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: vllm-project/vllm-torchtpu
           path: vllm-torchtpu
@@ -209,7 +209,7 @@ jobs:
           ssh-key: ${{ secrets.TORCHTPU_VLLM_DEPLOY_KEY }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@2af22b5b2dcfc0729ee842c635f300f1fc5a9e9a  # v5.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
 
       - name: Setup Virtual Environment
         run: |
