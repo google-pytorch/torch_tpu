@@ -295,6 +295,34 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
   return GraphKey(ShapelessKey(fp), graph_key.dimensions_key());
 }
 
+GraphKey AnnotateGraphKeyWithDonatedInputs(
+    const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs) {
+  if (donated_inputs.empty()) return graph_key;
+  std::vector<int64_t> normalized_donated_inputs(donated_inputs.begin(),
+                                                 donated_inputs.end());
+  std::sort(normalized_donated_inputs.begin(), normalized_donated_inputs.end());
+  normalized_donated_inputs.erase(std::unique(normalized_donated_inputs.begin(),
+                                              normalized_donated_inputs.end()),
+                                  normalized_donated_inputs.end());
+  return GraphKey(ShapelessKey(FingerprintCat(graph_key.shapeless_key().key(),
+                                              normalized_donated_inputs)),
+                  graph_key.dimensions_key());
+}
+
+CompilationCacheKey Traversal::GetCacheKey(
+    CompileOptionsKey compile_options_key,
+    absl::Span<const CustomLayout> argument_layouts,
+    absl::Span<const int64_t> donated_inputs) const {
+  if (graph_key_ == std::nullopt) {
+    graph_key_ = BuildGraphKey();
+  }
+  const GraphKey layout_key =
+      AnnotateGraphKeyWithArgumentLayouts(*graph_key_, argument_layouts);
+  return CompilationCacheKey(
+      AnnotateGraphKeyWithDonatedInputs(layout_key, donated_inputs),
+      compile_options_key);
+}
+
 GraphKey Traversal::BuildGraphKey() const {
   tsl::profiler::TraceMe t("Traversal::BuildGraphKey");
   // We will be building a GraphSignature object as a simplified

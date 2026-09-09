@@ -94,6 +94,12 @@ using RefToOpMap = absl::flat_hash_map<DeviceBufferRef, mlir::MlirOp>;
 GraphKey AnnotateGraphKeyWithArgumentLayouts(
     const GraphKey& graph_key, absl::Span<const CustomLayout> argument_layouts);
 
+// Annotates an existing GraphKey with the set of donated input indices.
+// `donated_inputs` may be unsorted and contain duplicates; both are ignored
+// when forming the cache identity.
+GraphKey AnnotateGraphKeyWithDonatedInputs(
+    const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs);
+
 // A traversed graph of deferred ops, ready to be compiled and (optionally)
 // executed.
 // TODO(bawilson): add tests once at::Tensor dependency is removed from core
@@ -131,32 +137,13 @@ class Traversal {
       absl::Span<const SharedDeviceBufferList> execution_order,
       absl::Span<const SharedDeviceBufferList> nodes_to_materialize);
 
+  // Returns a stable cache key for this graph and all compilation inputs that
+  // affect executable semantics. `donated_inputs` is treated as a set: it may
+  // be unsorted and contain duplicates.
   CompilationCacheKey GetCacheKey(
       CompileOptionsKey compile_options_key,
-      absl::Span<const CustomLayout> argument_layouts = {},
-      absl::Span<const int64_t> donated_inputs = {}) const {
-    if (graph_key_ == std::nullopt) {
-      graph_key_ = BuildGraphKey();
-    }
-    GraphKey key = argument_layouts.empty()
-                       ? *graph_key_
-                       : AnnotateGraphKeyWithArgumentLayouts(*graph_key_,
-                                                             argument_layouts);
-    if (!donated_inputs.empty()) {
-      std::vector<int64_t> normalized_donated_inputs(donated_inputs.begin(),
-                                                     donated_inputs.end());
-      std::sort(normalized_donated_inputs.begin(),
-                normalized_donated_inputs.end());
-      normalized_donated_inputs.erase(
-          std::unique(normalized_donated_inputs.begin(),
-                      normalized_donated_inputs.end()),
-          normalized_donated_inputs.end());
-      key = GraphKey(ShapelessKey(FingerprintCat(key.shapeless_key().key(),
-                                                 normalized_donated_inputs)),
-                     key.dimensions_key());
-    }
-    return CompilationCacheKey(key, compile_options_key);
-  }
+      absl::Span<const CustomLayout> argument_layouts,
+      absl::Span<const int64_t> donated_inputs) const;
 
   // Validates that the provided arguments are a valid reordering of the
   // Traversal's arguments, and if they are, overwrites the previous arguments_

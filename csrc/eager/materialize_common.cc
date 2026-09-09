@@ -296,7 +296,9 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
   }
 
   const CompilationCacheKey compilation_cache_key =
-      traversal.GetCacheKey(compilation_spec.compile_options_key);
+      traversal.GetCacheKey(compilation_spec.compile_options_key,
+                            /*argument_layouts=*/{},
+                            /*donated_inputs=*/{});
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_materialized()) {
       // Argument has either succeeded or failed; check that it didn't fail.

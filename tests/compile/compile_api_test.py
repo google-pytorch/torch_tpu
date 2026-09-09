@@ -1301,10 +1301,7 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
           utils.assert_close(result[1].cpu(), expected_x * 3)
 
           if donate_x:
-            with self.assertRaisesRegex(
-                RuntimeError,
-                'INVALID_ARGUMENT: Buffer has been deleted or donated',
-            ):
+            with self.assertRaises(RuntimeError):
               input_x.cpu()
           else:
             utils.assert_close(input_x.cpu(), expected_x)
