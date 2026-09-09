@@ -141,6 +141,17 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
           "ops_test_gpu_golden_grad0.gz",
           "ops_test_gpu_golden_grad",
       ),
+      ("eager_hopper", "ops_test_gpu_golden_hopper0.gz", "ops_test_gpu_golden"),
+      (
+          "compiled_hopper",
+          "ops_test_gpu_golden_compiled_hopper0.gz",
+          "ops_test_gpu_golden_compiled",
+      ),
+      (
+          "grad_hopper",
+          "ops_test_gpu_golden_grad_hopper0.gz",
+          "ops_test_gpu_golden_grad",
+      ),
   )
   def test_matches_prefix_matches(self, filename: str, prefix: str):
     self.assertTrue(test_utils.matches_prefix(filename, prefix))
@@ -203,7 +214,9 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
     ):
       results = test_utils.load_golden_files("ops_test_gpu_golden")
       mock_urlopen.assert_not_called()
-      self.assertEqual(results, [{}])
+      self.assertEqual(
+          results, [test_utils.LoadedGolden("ops_test_gpu_golden0.gz", {})]
+      )
 
   def test_fallback_missing_local_files_triggers_gcs_download(self):
     temp_dir = pathlib.Path(self.create_tempdir().full_path)
@@ -253,7 +266,9 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
           req.full_url,
           "https://storage.googleapis.com/torchtpu-goldens/ops_test/test/ops_test_gpu_golden0.gz",
       )
-      self.assertEqual(results, [{}])
+      self.assertEqual(
+          results, [test_utils.LoadedGolden("ops_test_gpu_golden0.gz", {})]
+      )
 
   def test_partial_local_files_downloads_only_missing_from_gcs(self):
     temp_dir = pathlib.Path(self.create_tempdir().full_path)
@@ -310,7 +325,10 @@ class TestUtilsTest(seed_test_utils.RepeatableTest):
           req.full_url,
           "https://storage.googleapis.com/torchtpu-goldens/ops_test/test/ops_test_gpu_golden1.gz",
       )
-      self.assertEqual(results, [{}, {}])
+      self.assertEqual(
+          [golden.filename for golden in results],
+          ["ops_test_gpu_golden0.gz", "ops_test_gpu_golden1.gz"],
+      )
 
   def test_no_matching_prefix_in_pinfile_raises(self):
     mock_pin_data = {

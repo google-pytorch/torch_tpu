@@ -3335,6 +3335,79 @@ module {
           contraction_dim=[1],
       )
 
+  @et.why_tpu_only(
+      "CUDA supports float16 output; TPU kernel only implemented support for"
+      " bf16, f32, and fp8_e4m3fn."
+  )
+  def test_scaled_mm_v2_invalid_f16_out_for_128_blockwise(self):
+    self_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to("tpu")
+    )
+    mat2_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to("tpu")
+    )
+    scale_a_tpu = torch.randn(128, 1, dtype=torch.float32).to("tpu")
+    scale_b_tpu = torch.randn(1, 1, dtype=torch.float32).to("tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""scaled_mm_v2(): expected out_dtype to be bfloat16, float32, or float8_e4m3fn for 1x128 and 128x128 blockwise scaling on TPU, got float16""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          [scale_a_tpu],
+          [4],
+          [0],
+          [scale_b_tpu],
+          [5],
+          [0],
+          None,
+          torch.float16,
+      )
+
+  @parameterized.named_parameters(
+      ("1x128_1x128", 4, 4),
+      ("128x128_1x128", 5, 4),
+  )
+  @et.why_tpu_only(
+      "CUDA SM90 implements these recipes; TPU only implements 1x128 x 128x128"
+  )
+  def test_scaled_mm_v2_other_128_blockwise_recipe(self, recipe_a, recipe_b):
+    self_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to("tpu")
+    )
+    mat2_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to("tpu")
+    )
+    scale_a_tpu = torch.randn(128, 1, dtype=torch.float32).to("tpu")
+    scale_b_tpu = torch.randn(1, 1, dtype=torch.float32).to("tpu")
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu=f"""scaled_mm_v2(): expected 128-block scaling to pair BlockWise1x128 scale_a with BlockWise128x128 scale_b, got {recipe_a}, {recipe_b}""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          [scale_a_tpu],
+          [recipe_a],
+          [0],
+          [scale_b_tpu],
+          [recipe_b],
+          [0],
+          None,
+          None,
+      )
+
   @et.why_tpu_only("TPU-specific C++ kernel argument validation")
   def test_scaled_mm_v2_non_standard_contraction_dim(self):
     (

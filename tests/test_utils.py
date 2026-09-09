@@ -15,6 +15,7 @@
 """Test utilities for TorchTPU tests, including locating and loading goldens data."""
 
 from collections.abc import Sequence
+import dataclasses
 import gzip
 import hashlib
 import importlib.resources
@@ -28,6 +29,14 @@ import urllib.request
 
 from absl import flags
 from tests import goldens_pin
+
+
+@dataclasses.dataclass(frozen=True)
+class LoadedGolden:
+  """A golden file's name and its decoded plistlib pytree."""
+
+  filename: str
+  tree: Any
 
 
 def matches_prefix(filename: str, prefix: str) -> bool:
@@ -124,7 +133,7 @@ def load_golden_files(
     prefix: str,
     candidate_dirs: Sequence[pathlib.Path] | None = None,
     pin_path: pathlib.Path | None = None,
-) -> Sequence[Any]:
+) -> Sequence[LoadedGolden]:
   """Loads golden files into plistlib pytrees matching prefix.
 
   The source of truth for the golden files is the tests/goldens.pin file.
@@ -152,7 +161,7 @@ def load_golden_files(
     candidate_dirs = goldens_candidate_local_dirs()
 
   missing_goldens: list[tuple[str, goldens_pin.GoldenPath]] = []
-  results: list[Any] = []
+  results: list[LoadedGolden] = []
 
   # Attempt to locate the golden file in the local candidate directories.
   for fname, finfo in sorted(matching_items):
@@ -185,7 +194,7 @@ def load_golden_files(
         # from it, so need to cast.
         f = typing.cast(IO[bytes], f)
         plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
-      results.append(plist_ptree)
+      results.append(LoadedGolden(fname, plist_ptree))
     else:
       missing_goldens.append((fname, finfo))
 
@@ -214,6 +223,6 @@ def load_golden_files(
       # Cast required: gzip.GzipFile does not inherit from typing.IO[bytes].
       f = typing.cast(IO[bytes], f)
       plist_ptree = plistlib.load(f, fmt=plistlib.FMT_BINARY)
-    results.append(plist_ptree)
+    results.append(LoadedGolden(fname, plist_ptree))
 
   return results

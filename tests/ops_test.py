@@ -63,6 +63,16 @@ def category(*names):
   return decorator
 
 
+def gpu_arch(arch: str):
+  """Decorator to associate a required GPU architecture with a test method."""
+
+  def decorator(func):
+    func.gpu_arch = arch
+    return func
+
+  return decorator
+
+
 def _has_test_filter() -> bool:
   """Returns True if a test filter was specified on the command-line or env.
 
@@ -568,6 +578,13 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"atol": 3.6e-5},
         torch.uint8: {"atol": 3.6e-5},
     },
+    # The Hopper goldens for the 1x128 x 128x128 recipe come from cuBLASLt's
+    # FP8 tensor-core path. Hopper's FP8 WGMMA accumulator keeps only ~14
+    # mantissa bits (vs. 23 for float32); cuBLASLt promotes each 128-wide K
+    # block's partial sum to float32 only when it applies that block's scales.
+    "torch._scaled_mm_v2.128_blockwise": {
+        torch.float8_e4m3fn: {"rtol": 1.8e-2, "atol": 1.7e-2},
+    },
     "torch.ops.aten._safe_softmax.default": {
         torch.float16: {"atol": 5.9e-4},
     },
@@ -835,6 +852,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.int64: {"atol": 3.6e-5},
         torch.int8: {"atol": 3.6e-5},
         torch.uint8: {"atol": 3.6e-5},
+    },
+    # Same reason as overrides in ACCURACY_OVERRIDES_VS_GPU.
+    "torch._scaled_mm_v2.128_blockwise": {
+        torch.float8_e4m3fn: {"rtol": 1.8e-2, "atol": 1.7e-2},
     },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
@@ -1208,6 +1229,32 @@ class TestOps(op_testing.OpInfoTestBase):
         self.skipTest(
             f"Skipping test because category is not included: {test_categories}"
         )
+
+    # When generating GPU goldens, route tests to the matching GPU architecture.
+    if op_testing._gen_gpu_golden_mode():
+      method = getattr(self, self._testMethodName, None)
+      method_gpu_arch = getattr(method, "gpu_arch", None)
+      current_gpu_arch = op_testing.golden_target_gpu_arch()
+
+      if current_gpu_arch == op_testing.GPU_SM90:
+        # On Hopper, only tests tagged @gpu_arch(GPU_SM90) run. Untagged tests
+        # are recorded on Blackwell, so skip them here.
+        if method_gpu_arch != op_testing.GPU_SM90:
+          self.skipTest(
+              f"Skipping {self._testMethodName} during Hopper golden"
+              f" generation: test does not target {op_testing.GPU_SM90}."
+          )
+      else:
+        # On Blackwell, untagged tests run by default. Skip tests tagged for
+        # another architecture.
+        if (
+            method_gpu_arch is not None
+            and method_gpu_arch != op_testing.GPU_SM100
+        ):
+          self.skipTest(
+              f"Skipping {self._testMethodName} during Blackwell golden"
+              f" generation: test targets {method_gpu_arch}."
+          )
 
     self.set_accuracy_overrides(
         tpu_gpu_overrides=ACCURACY_OVERRIDES_VS_GPU_COMPILED
@@ -3462,6 +3509,36 @@ class TestOps(op_testing.OpInfoTestBase):
         check_out_variant=False,
         # Override _OSS_SAMPLE_LIMIT to cover all 8 scaled_mm_v2 test samples.
         max_samples_per_op_dtype=8,
+    )
+
+  # The 1x128 x 128x128 (DeepSeek) recipe is only implemented by cuBLASLt on
+  # Hopper, so its goldens are recorded by the Hopper generators.
+  @gpu_arch(op_testing.GPU_SM90)
+  def test_scaled_mm_v2_128_blockwise(self):
+    if op_testing._gen_gpu_golden_mode():
+      # Older cuBLASLt raises instead of computing the result.
+      cuda_version = tuple(
+          int(x) for x in (torch.version.cuda or "0").split(".")[:2]
+      )
+      if cuda_version < (12, 9):
+        self.skipTest(
+            "the 1x128 x 128x128 _scaled_mm recipe needs CUDA >= 12.9, got"
+            f" {torch.version.cuda}"
+        )
+    if op_testing._COMPUTE_GRAD.value:
+      self.skipTest("torch._scaled_mm_v2 does not support autograd yet")
+    self.do_test_op(
+        "torch._scaled_mm_v2",
+        variant_test_name="128_blockwise",
+        exclude_dtypes={
+            "cpu": ALL_NUMERIC_DTYPES,
+            # This recipe only takes float8_e4m3fn inputs; the goldens for other
+            # dtypes are recorded exceptions.
+            "gpu": tuple(
+                d for d in ALL_NUMERIC_DTYPES if d != torch.float8_e4m3fn
+            ),
+        },
+        check_out_variant=False,
     )
 
   def test_scatter(self):

@@ -9158,7 +9158,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): expected scaling recipe for scale_a to be TensorWise, RowWise, or BlockWise1x32, got 2""",
+        tpu="""scaled_mm_v2(): expected scaling recipe for scale_a to be TensorWise, RowWise, BlockWise1x32, BlockWise1x128, or BlockWise128x128, got 2""",
         gpu=re.compile(
             r".*(Invalid scaling configuration for _scaled_mm_v2: unsupported"
             r" recipe|torch\._scaled_mm is only supported on CUDA"
@@ -9375,7 +9375,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): expected scaling recipe for scale_b to be TensorWise, RowWise, or BlockWise1x32, got 2""",
+        tpu="""scaled_mm_v2(): expected scaling recipe for scale_b to be TensorWise, RowWise, BlockWise1x32, BlockWise1x128, or BlockWise128x128, got 2""",
         gpu=re.compile(
             r".*(Invalid scaling configuration for _scaled_mm_v2: unsupported"
             r" recipe|torch\._scaled_mm is only supported on CUDA"
@@ -9583,6 +9583,270 @@ Device-side assertion tracking was not enabled by user.""",
           None,
           torch.float32,
           out=out,
+      )
+
+  def test_scaled_mm_v2_invalid_inputs_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32).to(torch.float8_e5m2).to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32).to(torch.float8_e5m2).to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.float32, device=dev)
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected float8_e4m3fn inputs for 1x128 and 128x128 blockwise scaling, got float8_e5m2 and float8_e5m2""",
+        # Real SM90 (Hopper) message captured from errors_test_gpu; both TPU and
+        # CUDA reject e5m2 inputs for this recipe.
+        gpu="""Multiplication of two Float8_e5m2 matrices is not supported""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_invalid_scale_dtype_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.bfloat16, device=dev)
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a and scale_b to be float32 for 1x128 and 128x128 blockwise scaling, got bfloat16 and float32""",
+        gpu=re.compile(
+            r".*Invalid scaling"
+            r" configuration.*scale_a\[0\]\.dtype\(\)=BFloat16.*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_invalid_bias_length_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.float32, device=dev)
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    bias = torch.randn(127, dtype=torch.float32, device=dev)  # wrong length
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected bias to have n (128) elements, got 127""",
+        gpu="""Bias must be size 128 but got 127""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          bias,
+          None,
+      )
+
+  def test_scaled_mm_v2_invalid_bias_shape_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.float32, device=dev)
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    bias = torch.randn(128, 128, dtype=torch.float32, device=dev)  # wrong numel
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected bias to have n (128) elements, got 16384""",
+        gpu="""Bias must be size 128 but got 16384""",
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          bias,
+          torch.float32,
+      )
+
+  def test_scaled_mm_v2_invalid_scale_a_shape_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(
+        128, 2, dtype=torch.float32, device=dev
+    )  # wrong shape
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a shape to be [m, ceil(k / 128)] = [128, 1], got [128, 2]""",
+        # CUDA's _scaled_block1x128_block128x128 validates in two layers, and
+        # the first failing layer determines the message:
+        #   1. _check_deepseek_support(): requires SM90 and cuBLASLt >= 12.9.
+        #      TAP's SM90 pool is on CUDA 12.8, so it stops here with
+        #      "requires cublasLt >= 12.9" before looking at any shape.
+        #   2. The per-argument shape checks, reached only with cuBLASLt >=
+        #      12.9: "scale_a must have shape 128 x 1 Float elements, got".
+        # Accept both so the test keeps passing after the CUDA upgrade.
+        gpu=re.compile(
+            r".*(scale_a must have shape .* got|requires cublasLt >="
+            r" 12\.9|torch\._scaled_mm.*is only supported on CUDA devices).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_invalid_scale_b_shape_for_128_blockwise(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.float32, device=dev)
+    scale_b = torch.randn(1, 2, dtype=torch.float32, device=dev)  # wrong shape
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_b shape to be [ceil(k / 128), ceil(n / 128)] = [1, 1] or, with CUDA's row padding, [round_up(ceil(k / 128), 4), ceil(n / 128)] = [4, 1], got [1, 2]""",
+        # Same two CUDA layers as the scale_a test above: the cuBLASLt >= 12.9
+        # gate in _check_deepseek_support() fires first on TAP's CUDA 12.8
+        # pool; with cuBLASLt >= 12.9 the scale_b shape check reports
+        # "scale_b must have shape 4 x 1 Float elements, got".
+        gpu=re.compile(
+            r".*(scale_b must have shape .* got|requires cublasLt >="
+            r" 12\.9|torch\._scaled_mm.*is only supported on CUDA devices).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [4],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_128x128_128x128_recipe(self):
+    dev = et.device()
+    self_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_dev = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = torch.randn(128, 1, dtype=torch.float32, device=dev)
+    scale_b = torch.randn(1, 1, dtype=torch.float32, device=dev)
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected 128-block scaling to pair BlockWise1x128 scale_a with BlockWise128x128 scale_b, got 5, 5""",
+        gpu=re.compile(r".*Invalid scaling configuration.*", re.DOTALL),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_dev,
+          mat2_dev,
+          [scale_a],
+          [5],
+          [0],
+          [scale_b],
+          [5],
+          [0],
+          None,
+          None,
       )
 
   def test_fft_c2c_non_complex_input(self):

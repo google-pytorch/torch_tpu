@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -29,6 +30,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/aten_utils.h"
@@ -40,10 +42,17 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/custom_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_bf16_bias_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_bf16_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_f32_bias_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_f32_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_bias_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_embed.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
@@ -200,6 +209,72 @@ int64_t SwizzledScaleNumel(int64_t outer, int64_t k_logical) {
          at::ceil_div(k_logical, int64_t{4}) * 4;
 }
 
+absl::Status ValidateBlockWise1x128And128x128Inputs(
+    const at::Tensor& self, const at::Tensor& mat2,
+    const at::Tensor& scale_a_tensor, const at::Tensor& scale_b_tensor,
+    const std::optional<at::Tensor>& bias,
+    std::optional<at::ScalarType> out_dtype) {
+  TT_RET_CHECK(self.scalar_type() == at::kFloat8_e4m3fn &&
+                   mat2.scalar_type() == at::kFloat8_e4m3fn,
+               error::kInvalidArgument)
+      << "expected float8_e4m3fn inputs for 1x128 and 128x128 blockwise "
+         "scaling, got "
+      << ToString(self.scalar_type()) << " and "
+      << ToString(mat2.scalar_type());
+  const int64_t k = self.size(1);
+  const int64_t m = self.size(0);
+  const int64_t n = mat2.size(1);
+  // k and n may end in partial tiles; both are zero-padded in kernel.
+  const int64_t blocks_k = at::ceil_div(k, static_cast<int64_t>(128));
+  const int64_t blocks_n = at::ceil_div(n, static_cast<int64_t>(128));
+  // CUDA requires scale_b rows padded to a multiple of 4. Accept that layout
+  // too so CUDA-shaped inputs run unchanged
+  const int64_t padded_blocks_k = at::ceil_div(blocks_k, int64_t{4}) * 4;
+  TT_RET_CHECK(scale_a_tensor.scalar_type() == at::kFloat &&
+                   scale_b_tensor.scalar_type() == at::kFloat,
+               error::kInvalidArgument)
+      << "expected scale_a and scale_b to be float32 for 1x128 and 128x128 "
+         "blockwise scaling, got "
+      << ToString(scale_a_tensor.scalar_type()) << " and "
+      << ToString(scale_b_tensor.scalar_type());
+  const auto scale_a_sizes = scale_a_tensor.sizes();
+  const auto scale_b_sizes = scale_b_tensor.sizes();
+  TT_RET_CHECK(scale_a_sizes.size() == 2 && scale_a_sizes[0] == m &&
+                   scale_a_sizes[1] == blocks_k,
+               error::kInvalidArgument)
+      << "expected scale_a shape to be [m, ceil(k / 128)] = [" << m << ", "
+      << blocks_k << "], got " << ToString(scale_a_sizes);
+  TT_RET_CHECK(scale_b_sizes.size() == 2 &&
+                   (scale_b_sizes[0] == blocks_k ||
+                    scale_b_sizes[0] == padded_blocks_k) &&
+                   scale_b_sizes[1] == blocks_n,
+               error::kInvalidArgument)
+      << "expected scale_b shape to be [ceil(k / 128), ceil(n / 128)] = ["
+      << blocks_k << ", " << blocks_n
+      << "] or, with CUDA's row padding, [round_up(ceil(k / 128), 4), "
+         "ceil(n / 128)] = ["
+      << padded_blocks_k << ", " << blocks_n << "], got "
+      << ToString(scale_b_sizes);
+
+  if (bias.has_value()) {
+    TT_RET_CHECK(bias->numel() == n, error::kInvalidArgument)
+        << "expected bias to have n (" << n << ") elements, got "
+        << bias->numel();
+  }
+  // An unspecified out_dtype defaults to FP8 in AtenScaledMmV2
+  // TODO(yangzhouml): Support float16 output like CUDA. It needs a dedicated
+  // f16 kernel variant, since Mosaic doesn't legalize the in-kernel f32 -> f16
+  // pack on all TPU generations.
+  const at::ScalarType effective_out = out_dtype.value_or(self.scalar_type());
+  TT_RET_CHECK(effective_out == at::kBFloat16 || effective_out == at::kFloat ||
+                   effective_out == at::kFloat8_e4m3fn,
+               error::kPythonNotImplementedError)
+      << "expected out_dtype to be bfloat16, float32, or float8_e4m3fn for "
+         "1x128 and 128x128 blockwise scaling on TPU, got "
+      << ToString(effective_out);
+  return absl::OkStatus();
+}
+
 #if TT_TORCH_VERSION_GE(2, 14)  // See scaled_mm_aten_kernels.h.
 absl::Status ValidateScaledMmV2Inputs(
     const at::Tensor& self, const at::Tensor& mat2,
@@ -268,11 +343,14 @@ absl::Status ValidateScaledMmV2Inputs(
       case at::blas::ScalingType::TensorWise:
       case at::blas::ScalingType::RowWise:
       case at::blas::ScalingType::BlockWise1x32:
+      case at::blas::ScalingType::BlockWise1x128:
+      case at::blas::ScalingType::BlockWise128x128:
         return absl::OkStatus();
       default:
         return TT_ERROR(error::kPythonNotImplementedError)
                << "expected scaling recipe for " << name
-               << " to be TensorWise, RowWise, or BlockWise1x32, got "
+               << " to be TensorWise, RowWise, BlockWise1x32, BlockWise1x128, "
+                  "or BlockWise128x128, got "
                << static_cast<int>(recipe);
     }
   };
@@ -323,6 +401,21 @@ absl::Status ValidateScaledMmV2Inputs(
                  error::kInvalidArgument)
         << "expected bias dtype to be " << ToString(at::kFloat) << " or "
         << ToString(at::kBFloat16) << ", got " << ToString(bias->scalar_type());
+  }
+
+  const auto is_128_block_scaled = [](at::blas::ScalingType scaling) {
+    return scaling == at::blas::ScalingType::BlockWise1x128 ||
+           scaling == at::blas::ScalingType::BlockWise128x128;
+  };
+  if (is_128_block_scaled(scaling_a) || is_128_block_scaled(scaling_b)) {
+    TT_RET_CHECK(scaling_a == at::blas::ScalingType::BlockWise1x128 &&
+                     scaling_b == at::blas::ScalingType::BlockWise128x128,
+                 error::kPythonNotImplementedError)
+        << "expected 128-block scaling to pair BlockWise1x128 scale_a with "
+           "BlockWise128x128 scale_b, got "
+        << static_cast<int>(scaling_a) << ", " << static_cast<int>(scaling_b);
+    TT_RETURN_IF_ERROR(ValidateBlockWise1x128And128x128Inputs(
+        self, mat2, scale_a.front(), scale_b.front(), bias, out_dtype));
   }
 
   if (out_dtype.has_value()) {
@@ -529,6 +622,109 @@ absl::StatusOr<mlir::MlirOp> ApplyScalesAndBias(
   return scaled_result;
 }
 
+// Registers the four precompiled 1x128 / 128x128 kernel variants. The registry
+// keys must match the `out=...`/`bias=...` kwargs that
+// `BuildBlock1x128Block128x128CustomCall` builds below.
+void RegisterBlockWise128KernelsOnce() {
+  [[maybe_unused]] static const bool registered = [] {
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_bf16", "out=bf16",
+        std::string_view(reinterpret_cast<const char*>(
+                             blockwise128_scaled_mm_1x128_128x128_bf16_data),
+                         blockwise128_scaled_mm_1x128_128x128_bf16_len));
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_bf16_bias", "out=bf16,bias=1",
+        std::string_view(
+            reinterpret_cast<const char*>(
+                blockwise128_scaled_mm_1x128_128x128_bf16_bias_data),
+            blockwise128_scaled_mm_1x128_128x128_bf16_bias_len));
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_f32", "out=f32",
+        std::string_view(reinterpret_cast<const char*>(
+                             blockwise128_scaled_mm_1x128_128x128_f32_data),
+                         blockwise128_scaled_mm_1x128_128x128_f32_len));
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_f32_bias", "out=f32,bias=1",
+        std::string_view(
+            reinterpret_cast<const char*>(
+                blockwise128_scaled_mm_1x128_128x128_f32_bias_data),
+            blockwise128_scaled_mm_1x128_128x128_f32_bias_len));
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_f8E4M3FN", "out=f8E4M3FN",
+        std::string_view(
+            reinterpret_cast<const char*>(
+                blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_data),
+            blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_len));
+    RegisterCustomKernel(
+        "blockwise128_scaled_mm_1x128_128x128_f8E4M3FN_bias",
+        "out=f8E4M3FN,bias=1",
+        std::string_view(
+            reinterpret_cast<const char*>(
+                blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_bias_data),
+            blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_bias_len));
+    return true;
+  }();
+}
+
+// Lowers _scaled_mm_v2 with BlockWise1x128 activation scales and
+// BlockWise128x128 weight scales to the precompiled Pallas custom kernel.
+absl::StatusOr<mlir::MlirOp> BuildBlock1x128Block128x128CustomCall(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
+    mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
+    std::optional<mlir::Type> out_dtype) {
+  RegisterBlockWise128KernelsOnce();
+
+  const auto lhs_type = GetTensorTypeOrDie(lhs);
+  const auto rhs_type = GetTensorTypeOrDie(rhs);
+  const int64_t n = rhs_type.getShape()[1];
+
+  // ValidateBlockWise1x128And128x128Inputs guarantees bfloat16, float32, or
+  // float8_e4m3fn out_dtype, matching one of the registered kernel variants.
+  const mlir::Type actual_out =
+      out_dtype.has_value() ? *out_dtype : lhs_type.getElementType();
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_elem_type,
+                      ConvertTo<mlir::ElementType>(actual_out));
+  const std::string_view out_dtype_str = ToShortString(out_elem_type);
+
+  // The kernel expects scale_b as [ceil(k / 128), ceil(n / 128)]. Inputs
+  // prepared for PyTorch CUDA pad scale_b rows up to a multiple of 4
+  const int64_t blocks_k = (lhs_type.getShape()[1] + 127) / 128;
+  const auto scale_b_shape = GetTensorTypeOrDie(scale_b).getShape();
+  if (scale_b_shape[0] > blocks_k) {
+    scale_b = mlir::stablehlo::Slice(scale_b, {0, 0},
+                                     {blocks_k, scale_b_shape[1]}, {1, 1});
+  }
+
+  std::vector<mlir::MlirOp> custom_inputs = {lhs, rhs, scale_a, scale_b};
+  if (bias.has_value()) {
+    // The kernel takes a 1-D [n] bias. Any 2-D bias with numel == n is
+    // normalized to [n] before the kernel call.
+    mlir::MlirOp bias_op = *bias;
+    auto bias_type = GetTensorTypeOrDie(bias_op);
+    if (bias_type.getRank() == 2) {
+      TT_ASSIGN_OR_RETURN(bias_op, ReshapeFromStaticDimensions(
+                                       bias_op,
+                                       Dimensions(bias_type.getShape().begin(),
+                                                  bias_type.getShape().end()),
+                                       {n}));
+    }
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp bias_f32,
+                        CastIfNeeded(bias_op, mlir::ElementType::F32));
+    custom_inputs.push_back(bias_f32);
+  }
+
+  const std::string name =
+      absl::StrCat("blockwise128_scaled_mm_1x128_128x128_", out_dtype_str,
+                   bias.has_value() ? "_bias" : "");
+  const std::string kwargs_str =
+      absl::StrCat("out=", out_dtype_str, bias.has_value() ? ",bias=1" : "");
+
+  TT_ASSIGN_OR_RETURN(
+      auto results,
+      CallCustomKernel(lhs.getBuilder(), custom_inputs, name, kwargs_str));
+  return results.front();
+}
+
 absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
@@ -548,6 +744,12 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     TT_ASSIGN_OR_RETURN(scale_b,
                         BuildUnswizzle(scale_b, Operand::kRhs, rhs_shape[1],
                                        rhs_shape[0] / 32));
+  }
+
+  if (scaling_a == at::blas::ScalingType::BlockWise1x128 &&
+      scaling_b == at::blas::ScalingType::BlockWise128x128) {
+    return BuildBlock1x128Block128x128CustomCall(lhs, rhs, scale_a, scale_b,
+                                                 bias, out_dtype);
   }
 
   mlir::MlirOp lhs_deq = lhs;
@@ -814,6 +1016,17 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
   TT_ASSIGN_OR_RETURN(mlir::ElementType comp_dtype,
                       InferComputationDtype(self_elem_dtype));
 
+  // DispatchOp's computation_dtype drives a framework-level pre-cast of every
+  // operand (CastInputs) that runs before BuildScaledMmV2Shlo. For fp8 inputs
+  // the inferred computation dtype is f32, so leaving it set would upcast the
+  // fp8 lhs/rhs to f32 before they reach the block-scaled custom kernel, which
+  // consumes f8E4M3FN natively. Disable the pre-cast for this recipe.
+  std::optional<mlir::ElementType> dispatch_comp_dtype = comp_dtype;
+  if (scaling_a == at::blas::ScalingType::BlockWise1x128 &&
+      scaling_b == at::blas::ScalingType::BlockWise128x128) {
+    dispatch_comp_dtype = std::nullopt;
+  }
+
   mlir::stablehlo::Precision current_precision =
       use_fast_accum ? mlir::stablehlo::Precision::
                            DEFAULT  // EXPLICIT_PRECISION_OK=use_fast_accum
@@ -856,7 +1069,7 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
       std::move(op_builder), inputs, out,
       {.out_dtype = target_elem_dtype,
        .out_dims = output_dims,
-       .computation_dtype = comp_dtype,
+       .computation_dtype = dispatch_comp_dtype,
        .op_param_cache_keys = std::move(param_keys)});
 }
 

@@ -146,7 +146,7 @@ class ExportSymbolicShapesTest(_TestCase):
   # `float16` result lowers to `tpu.pack_subelements`, which Mosaic cannot
   # legalize on some TPU generations.
   @parameterized.product(
-      out_dtype=(jnp.bfloat16, jnp.float32),
+      out_dtype=(jnp.bfloat16, jnp.float32, jnp.float8_e4m3fn),
       has_bias=(False, True),
   )
   def test_export_mlir_module(self, out_dtype, has_bias):
@@ -168,8 +168,8 @@ class ExportSymbolicShapesTest(_TestCase):
     a, b, scale_a, scale_b = args
     m, k = a.shape
     n = b.shape[1]
-    self.assertEqual(scale_a.shape, (m, k // _BLOCK_SIZE))
-    self.assertEqual(scale_b.shape[0], k // _BLOCK_SIZE)
+    self.assertEqual(scale_a.shape, (m, (k + _BLOCK_SIZE - 1) // _BLOCK_SIZE))
+    self.assertEqual(scale_b.shape[0], (k + _BLOCK_SIZE - 1) // _BLOCK_SIZE)
     self.assertEqual(bias.shape, (n,))
     self.assertEqual(bias.dtype, jnp.float32)
 
@@ -185,7 +185,7 @@ class RecipeRegistryTest(_TestCase):
     self.assertIn("blockwise_128", scaled_mm_generate.get_supported_recipes())
 
   @parameterized.product(
-      out_dtype_name=("bfloat16", "float32"),
+      out_dtype_name=("bfloat16", "float32", "float8_e4m3fn"),
       has_bias=(False, True),
   )
   def test_generate_kernel_module(self, out_dtype_name, has_bias):

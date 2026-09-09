@@ -373,18 +373,9 @@ def get_shapes(
     in_dtype: Any = jnp.float8_e4m3fn,
     has_bias: bool = False,
 ) -> tuple[tuple[jax.ShapeDtypeStruct, ...], jax.ShapeDtypeStruct | None]:
-  """Symbolic input shapes for AOT export, as `(positional_args, bias)`.
-
-  Only K is constrained, to a multiple of `_BLOCK_SIZE`, because that is the
-  sole shape precondition the C++ op enforces. M and N are left free: this
-  kernel zero-pads them up to tile multiples itself and slices the result back
-  down, so the exported module must stay valid for partial trailing tiles.
-  """
-  m, n, k = jax.export.symbolic_shape(
-      "m, n, k",
-      constraints=(f"k >= {_BLOCK_SIZE}", f"mod(k, {_BLOCK_SIZE}) == 0"),
-  )
-  blocks_k = k // _BLOCK_SIZE
+  """Symbolic input shapes for AOT export, as `(positional_args, bias)`."""
+  m, n, k = jax.export.symbolic_shape("m, n, k")
+  blocks_k = (k + _BLOCK_SIZE - 1) // _BLOCK_SIZE
   blocks_n = (n + _BLOCK_SIZE - 1) // _BLOCK_SIZE
   args = (
       jax.ShapeDtypeStruct((m, k), in_dtype),

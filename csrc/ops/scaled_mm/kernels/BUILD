@@ -90,6 +90,29 @@ define_scaled_mm_kernel(
     tile_n = 512,
 )
 
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_f8e4m3fn",
+    block_size = 128,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "float8_e4m3fn",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_f8e4m3fn_bias",
+    block_size = 128,
+    has_bias = True,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "float8_e4m3fn",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
 bzl_library(
     name = "defs_bzl",
     srcs = ["defs.bzl"],

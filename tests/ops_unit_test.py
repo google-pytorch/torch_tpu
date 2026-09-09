@@ -2919,6 +2919,158 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     finally:
       torch.set_float32_matmul_precision(old_precision)
 
+  def test_scaled_mm_v2_block1x128_128x128_2d_bias(self):
+    """Tests that [1, n] and [n, 1] biases are accepted and match the [n] bias result."""
+    m, k, n = 128, 128, 128
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn)
+    mat2_fp8 = torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn)
+    scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+    scale_b = torch.randn(k // 128, n // 128, dtype=torch.float32).abs() + 0.1
+    bias_1d = torch.randn(n, dtype=torch.float32)
+
+    def run(bias):
+      return torch._scaled_mm_v2(
+          self_fp8.to("tpu"),
+          mat2_fp8.to("tpu"),
+          [scale_a.to("tpu")],
+          [4],
+          [0],
+          [scale_b.to("tpu")],
+          [5],
+          [0],
+          bias.to("tpu"),
+          torch.bfloat16,
+      )
+
+    # Both [1, n] row-vector and [n, 1] column-vector forms are normalized to
+    # [n] during lowering, so all must produce identical results.
+    expected = run(bias_1d).cpu()
+    utils.assert_close(
+        actual=run(bias_1d.reshape(1, n)).cpu(),
+        expected=expected,
+    )
+    utils.assert_close(
+        actual=run(bias_1d.reshape(n, 1)).cpu(),
+        expected=expected,
+    )
+
+  @parameterized.named_parameters(
+      # One full 128-wide K block plus a 16-wide partial block.
+      ("k_144", 128, 144, 128),
+      # Partial K block together with partial M (< 128) and partial N blocks.
+      ("k_200_m_64_n_200", 64, 200, 200),
+      # K spans more than one 1024-wide K tile and ends in a partial block.
+      ("k_1100", 128, 1100, 256),
+  )
+  def test_scaled_mm_v2_block1x128_128x128_k_not_divisible_by_128(
+      self, m, k, n
+  ):
+    """Tests K % 128 != 0 against zero-padded K and a CPU reference."""
+    blocks_k = math.ceil(k / 128)
+    blocks_n = math.ceil(n / 128)
+    padded_k = blocks_k * 128
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn)
+    mat2_fp8 = torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn)
+    scale_a = torch.randn(m, blocks_k, dtype=torch.float32).abs() + 0.1
+    scale_b = torch.randn(blocks_k, blocks_n, dtype=torch.float32).abs() + 0.1
+
+    def run(lhs, rhs):
+      return torch._scaled_mm_v2(
+          lhs.to("tpu"),
+          rhs.to("tpu"),
+          [scale_a.to("tpu")],
+          [4],
+          [0],
+          [scale_b.to("tpu")],
+          [5],
+          [0],
+          None,
+          torch.float32,
+      ).cpu()
+
+    out = run(self_fp8, mat2_fp8)
+    self.assertEqual(out.shape, (m, n))
+
+    # Zero-padding K up to a multiple of 128 keeps the same scales and adds
+    # only zero products, so the result must match bit for bit. The float32
+    # round trip is lossless for FP8 values.
+    lhs_padded = torch.nn.functional.pad(
+        self_fp8.float(), (0, padded_k - k)
+    ).to(torch.float8_e4m3fn)
+    rhs_padded = torch.nn.functional.pad(
+        mat2_fp8.float(), (0, 0, 0, padded_k - k)
+    ).to(torch.float8_e4m3fn)
+    utils.assert_close(
+        actual=out, expected=run(lhs_padded, rhs_padded), rtol=0, atol=0
+    )
+
+    # Dequantize with the block scales and multiply in float32. The last,
+    # partial K block uses the same scale as the rest of its block.
+    scale_a_full = scale_a.repeat_interleave(128, dim=1)[:, :k]
+    scale_b_full = scale_b.repeat_interleave(128, dim=0)[:k].repeat_interleave(
+        128, dim=1
+    )[:, :n]
+    expected = (self_fp8.float() * scale_a_full) @ (
+        mat2_fp8.float() * scale_b_full
+    )
+    utils.assert_close(actual=out, expected=expected, rtol=1e-4, atol=1e-4)
+
+  def test_scaled_mm_v2_block1x128_128x128_omitted_out_dtype(self):
+    """Tests that omitted out_dtype defaults to torch.float8_e4m3fn."""
+    m, k, n = 128, 128, 128
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn)
+    mat2_fp8 = torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn)
+    scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+    scale_b = torch.randn(k // 128, n // 128, dtype=torch.float32).abs() + 0.1
+
+    out = torch._scaled_mm_v2(
+        self_fp8.to("tpu"),
+        mat2_fp8.to("tpu"),
+        [scale_a.to("tpu")],
+        [4],
+        [0],
+        [scale_b.to("tpu")],
+        [5],
+        [0],
+        None,
+        None,
+    )
+    self.assertEqual(out.shape, (m, n))
+    self.assertEqual(out.dtype, torch.float8_e4m3fn)
+
+  def test_scaled_mm_v2_block1x128_128x128_scale_b_padding(self):
+    """Tests that CUDA's row-padded scale_b matches the unpadded result."""
+    # k = 256 gives k / 128 = 2 scale_b rows, which CUDA pads to 4.
+    m, k, n = 128, 256, 256
+    self_fp8 = torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn)
+    mat2_fp8 = torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn)
+    scale_a = torch.randn(m, k // 128, dtype=torch.float32).abs() + 0.1
+    scale_b = torch.randn(k // 128, n // 128, dtype=torch.float32).abs() + 0.1
+    # Large padding values would corrupt the result if they reached the kernel.
+    padding = torch.full((2, n // 128), 1e6, dtype=torch.float32)
+    scale_b_padded = torch.cat([scale_b, padding])
+
+    def run(scale_b):
+      return torch._scaled_mm_v2(
+          self_fp8.to("tpu"),
+          mat2_fp8.to("tpu"),
+          [scale_a.to("tpu")],
+          [4],
+          [0],
+          [scale_b.to("tpu")],
+          [5],
+          [0],
+          None,
+          torch.bfloat16,
+      )
+
+    utils.assert_close(
+        actual=run(scale_b_padded).cpu(),
+        expected=run(scale_b).cpu(),
+        rtol=0,
+        atol=0,
+    )
+
   def test_scaled_mm_v2_valid_inputs_pass(self):
     (
         self_tpu,

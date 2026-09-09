@@ -34,6 +34,7 @@ from tests import goldens_pin
 from tests import op_testing
 from tests import test_utils as tests_test_utils
 
+
 op_db = common_methods_invocations.op_db
 
 
@@ -195,19 +196,21 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       target_tests_dir.mkdir(parents=True)
 
       prefix = op_testing._golden_file_prefix()
-      dummy_golden = target_tests_dir / f"{prefix}0.gz"
-      with gzip.open(dummy_golden, "wb") as f:
-        plistlib.dump({}, f, fmt=plistlib.FMT_BINARY)
+      goldens = {}
+      for basename in (
+          f"{prefix}0.gz",
+          f"{prefix}{op_testing._GPU_GOLDEN_HOPPER_SUFFIX}0.gz",
+      ):
+        dummy_golden = target_tests_dir / basename
+        with gzip.open(dummy_golden, "wb") as f:
+          plistlib.dump({}, f, fmt=plistlib.FMT_BINARY)
+        goldens[basename] = goldens_pin.GoldenPath(
+            sha256=hashlib.sha256(dummy_golden.read_bytes()).hexdigest(),
+            gcs_path=f"ops_test/test/{basename}",
+        )
 
       mock_pin_data = goldens_pin.GoldenPathPinFile(
-          version=1,
-          gcs_bucket="torchtpu-goldens",
-          goldens={
-              f"{prefix}0.gz": goldens_pin.GoldenPath(
-                  sha256=hashlib.sha256(dummy_golden.read_bytes()).hexdigest(),
-                  gcs_path=f"ops_test/test/{prefix}0.gz",
-              ),
-          },
+          version=1, gcs_bucket="torchtpu-goldens", goldens=goldens
       )
       mock_golden_data = mock.create_autospec(
           op_testing.GoldenGpuData, instance=True
@@ -230,7 +233,9 @@ class OpTestingTest(op_testing.OpInfoTestBase):
       ):
         op_testing._load_golden_files()
         mock_golden_data.clear.assert_called_once()
-        mock_golden_data.merge_plistlib_pytree.assert_called_once_with({})
+        mock_golden_data.merge_plistlib_pytree.assert_has_calls(
+            [mock.call({}), mock.call({})]
+        )
 
   def test_load_golden_files_candidate_dirs(self):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -311,6 +316,183 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     self.assertEqual(rhs_swizzled.numel(), n_blocks * 128 * k_blocks * 4)
     rhs_restored = op_testing._unswizzle_rhs_scale(rhs_swizzled, k_logical, n)
     test_utils.assert_close(rhs_restored, rhs_scale)
+
+  @parameterized.named_parameters(
+      ("sm90", 9, op_testing.GPU_SM90),
+      ("sm100", 10, op_testing.GPU_SM100),
+  )
+  def test_golden_target_gpu_arch(self, major, expected_target):
+    mock_prop = mock.MagicMock(major=major)
+    with (
+        mock.patch.object(torch.cuda, "is_available", return_value=True),
+        mock.patch.object(
+            torch.cuda, "get_device_properties", return_value=mock_prop
+        ),
+    ):
+      self.assertEqual(op_testing.golden_target_gpu_arch(), expected_target)
+
+  @parameterized.named_parameters(
+      ("no_cuda", False, 0, "CUDA is not available"),
+      (
+          "unsupported_major_11",
+          True,
+          11,
+          "Unsupported GPU compute capability 11",
+      ),
+  )
+  def test_golden_target_gpu_arch_error(
+      self, cuda_available, major, error_regex
+  ):
+    mock_prop = mock.MagicMock(major=major)
+    with (
+        mock.patch.object(
+            torch.cuda, "is_available", return_value=cuda_available
+        ),
+        mock.patch.object(
+            torch.cuda, "get_device_properties", return_value=mock_prop
+        ),
+    ):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing GPU arch validation error.
+          RuntimeError, error_regex
+      ):
+        op_testing.golden_target_gpu_arch()
+
+  @parameterized.named_parameters(
+      ("sm90", op_testing.GPU_SM90, "ops_test_gpu_golden_hopper2.gz"),
+      ("sm100", op_testing.GPU_SM100, "ops_test_gpu_golden2.gz"),
+  )
+  def test_golden_file_basename(self, target_gpu, expected_name):
+    with mock.patch.object(
+        op_testing,
+        "golden_target_gpu_arch",
+        return_value=target_gpu,
+    ):
+      self.assertEqual(op_testing._golden_file_basename(2), expected_name)
+
+  def _write_golden_file(
+      self,
+      directory: pathlib.Path,
+      name: str,
+      values: list[float],
+      test_case_name: str = "test_fake_op",
+  ) -> pathlib.Path:
+    """Writes a golden file holding one sample per entry in `values`."""
+    golden_data = op_testing.GoldenGpuData()
+    for value in values:
+      tensor = torch.full((1,), value)
+      golden_data.add(
+          test_case_name,
+          op_testing.OpVariant.BASE,
+          torch.float32,
+          op_testing.OpInput(FakeSample(f"s{value}", tensor, (), {})),
+          op_testing.OpOutput(tensor),
+      )
+    path = directory / name
+    with gzip.open(path, "wb") as f:
+      f.write(
+          plistlib.dumps(
+              golden_data.to_plistlib_pytree(), fmt=plistlib.FMT_BINARY
+          )
+      )
+    return path
+
+  def _load_goldens_from(
+      self,
+      directory: pathlib.Path,
+      test_case_name: str = "test_fake_op",
+  ) -> list[float]:
+    """Pins and loads the goldens in `directory`; returns one key's values."""
+    pin_data = goldens_pin.GoldenPathPinFile(
+        version=1,
+        gcs_bucket="torchtpu-goldens",
+        goldens={
+            name: goldens_pin.GoldenPath(
+                sha256=hashlib.sha256(
+                    (directory / name).read_bytes()
+                ).hexdigest(),
+                gcs_path=f"ops_test/test/{name}",
+            )
+            for name in (path.name for path in directory.glob("*.gz"))
+        },
+    )
+    golden_data = op_testing.GoldenGpuData()
+    with (
+        flagsaver.flagsaver(golden_data_base_dir=str(directory)),
+        mock.patch.object(op_testing, "_GOLDEN_GPU_DATA", golden_data),
+        mock.patch.object(
+            tests_test_utils.goldens_pin,
+            "parse_goldens_pin",
+            return_value=pin_data,
+        ),
+    ):
+      op_testing._load_golden_files()
+    samples = golden_data.get_samples(
+        test_case_name, op_testing.OpVariant.BASE, torch.float32
+    )
+    return [op_output.output_value.item() for _, op_output in samples]
+
+  def test_load_golden_files_unions_both_architectures(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      self._write_golden_file(directory, "ops_test_gpu_golden0.gz", [1.0])
+      self._write_golden_file(directory, "ops_test_gpu_golden1.gz", [2.0])
+      self._write_golden_file(
+          directory,
+          "ops_test_gpu_golden_hopper0.gz",
+          [3.0],
+          test_case_name="test_fake_op_hopper",
+      )
+
+      self.assertEqual(self._load_goldens_from(directory), [1.0, 2.0])
+      self.assertEqual(
+          self._load_goldens_from(directory, "test_fake_op_hopper"), [3.0]
+      )
+
+  def test_load_golden_files_accepts_empty_hopper_file(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      self._write_golden_file(directory, "ops_test_gpu_golden0.gz", [1.0])
+      self._write_golden_file(directory, "ops_test_gpu_golden_hopper0.gz", [])
+
+      self.assertEqual(self._load_goldens_from(directory), [1.0])
+
+  def test_load_golden_files_ignores_other_prefixes(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      self._write_golden_file(directory, "ops_test_gpu_golden0.gz", [1.0])
+      self._write_golden_file(
+          directory,
+          "ops_test_gpu_golden_hopper0.gz",
+          [2.0],
+          test_case_name="test_fake_op_hopper",
+      )
+      self._write_golden_file(directory, "ops_test_gpu_golden_grad0.gz", [3.0])
+      self._write_golden_file(
+          directory, "ops_test_gpu_golden_grad_hopper0.gz", [4.0]
+      )
+      self._write_golden_file(
+          directory, "ops_test_gpu_golden_compiled0.gz", [5.0]
+      )
+
+      self.assertEqual(self._load_goldens_from(directory), [1.0])
+      self.assertEqual(
+          self._load_goldens_from(directory, "test_fake_op_hopper"), [2.0]
+      )
+
+  def test_load_golden_files_rejects_cross_arch_shared_key(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      directory = pathlib.Path(tmp)
+      self._write_golden_file(directory, "ops_test_gpu_golden0.gz", [1.0])
+      self._write_golden_file(
+          directory, "ops_test_gpu_golden_hopper0.gz", [2.0]
+      )
+
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing duplicate golden keys error.
+          ValueError,
+          "ops_test_gpu_golden0.gz and ops_test_gpu_golden_hopper0.gz both"
+          " hold",
+      ):
+        self._load_goldens_from(directory)
 
 
 if __name__ == "__main__":

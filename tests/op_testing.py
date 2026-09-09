@@ -84,6 +84,14 @@ AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
 FilterFn = Callable[..., str | None]
 MarkDynamicFn = Callable[..., None]
 
+GPU_SM90: Final[str] = "gpu_sm90"
+GPU_SM100: Final[str] = "gpu_sm100"
+
+_GPU_GOLDEN_HOPPER_SUFFIX: Final[str] = "_hopper"
+
+# Identifies a list of golden samples: (test case name, op variant, dtype key).
+_GoldenKey = tuple[str, str, str]
+
 
 def _validate_tolerances(
     rtol: Tolerance | None = None,
@@ -1104,71 +1112,58 @@ def _get_scaled_mm_v2_default_inputs(device="tpu"):
   )
 
 
-def _ref_scaled_mm_v2(
-    self_mat,
-    mat2,
-    scale_a,
-    recipe_a,
-    swizzle_a,
-    scale_b,
-    recipe_b,
-    swizzle_b,
-    bias=None,
-    out_dtype=None,
-    # Unused in CPU ref (defaults to 2D matmul contraction)
-    contraction_dim=None,
-    # Unused in CPU ref (hardware precision hint)
-    use_fast_accum=False,
-):
-  """CPU reference implementation for torch._scaled_mm_v2."""
-  del contraction_dim, use_fast_accum
-  s_f32 = self_mat.float()
-  m_f32 = mat2.float()
-  sa_raw = scale_a[0]
-  sb_raw = scale_b[0]
-  rec_a = recipe_a[0]
-  rec_b = recipe_b[0]
-  swiz_a = swizzle_a[0]
-  swiz_b = swizzle_b[0]
+def _scaled_mm_v2_128_blockwise_samples(make_mat, make_scale):
+  """Yields 1x128 x 128x128 (DeepSeek) samples for torch._scaled_mm_v2.
 
-  if rec_a == 0 or rec_a == 1:
-    s_scaled = s_f32 * sa_raw
-  elif rec_a == 3:
-    m, k = self_mat.shape
-    if swiz_a == 1:
-      sa_logical = _unswizzle_lhs_scale(sa_raw, m, k // 32)
-    else:
-      sa_logical = sa_raw
-    sa_expanded = sa_logical.unsqueeze(-1).expand(m, k // 32, 32).reshape(m, k)
-    s_scaled = s_f32 * sa_expanded
-  else:
-    s_scaled = s_f32 * sa_raw
+  The layouts follow what cuBLASLt requires on Hopper, the only GPU that
+  implements this recipe: column-major mat2 and scales, scale_b rows padded to
+  a multiple of 4, n a multiple of 16, a bfloat16 bias only with bfloat16
+  output, and an explicit out_dtype.
+  """
 
-  if rec_b == 0 or rec_b == 1:
-    m_scaled = m_f32 * sb_raw
-  elif rec_b == 3:
-    k, n = mat2.shape
-    if swiz_b == 1:
-      sb_logical = _unswizzle_rhs_scale(sb_raw, k // 32, n)
-    else:
-      sb_logical = sb_raw
-    sb_expanded = sb_logical.unsqueeze(1).expand(k // 32, 32, n).reshape(k, n)
-    m_scaled = m_f32 * sb_expanded
-  else:
-    m_scaled = m_f32 * sb_raw
+  def make_inputs(m, n, k):
+    mat1 = make_mat((m, k))
+    mat2 = make_mat((n, k)).t()
+    blocks_k = k // 128
+    padded_blocks_k = (blocks_k + 3) // 4 * 4
+    blocks_n = (n + 127) // 128
+    scale_a = make_scale((blocks_k, m)).t()
+    scale_b = make_scale((blocks_n, padded_blocks_k)).t()
+    return mat1, mat2, [scale_a], [scale_b]
 
-  out_f32 = torch.mm(s_scaled, m_scaled)
-  if bias is not None:
-    out_f32 = out_f32 + bias
-  if out_dtype is not None:
-    return out_f32.to(out_dtype)
-  return out_f32
+  m, n, k = 256, 256, 256
+  mat1, mat2, scale_a, scale_b = make_inputs(m, n, k)
+  bias = make_scale((n,)).to(torch.bfloat16)
+  for bias_, out_dtype in (
+      (None, torch.bfloat16),
+      (None, torch.float32),
+      (bias, torch.bfloat16),
+  ):
+    yield core.SampleInput(
+        mat1, mat2, scale_a, [4], [0], scale_b, [5], [0], bias_, out_dtype
+    )
+
+  # Partial N (not a multiple of 128) exercises the trailing-block scale.
+  mat1, mat2, scale_a, scale_b = make_inputs(m, 208, k)
+  yield core.SampleInput(
+      mat1, mat2, scale_a, [4], [0], scale_b, [5], [0], None, torch.bfloat16
+  )
 
 
 def _sample_inputs_scaled_mm_v2(
-    op_info, device, dtype, requires_grad=False, **kwargs
+    variant, op_info, device, dtype, requires_grad=False, **kwargs
 ):
-  """Generates sample inputs for torch._scaled_mm_v2."""
+  """Generates sample inputs for torch._scaled_mm_v2.
+
+  Args:
+    variant: "default" for the base OpInfo, or "128_blockwise" for the 1x128 x
+      128x128 recipe.
+    op_info: The OpInfo being sampled.
+    device: The device to create the samples on.
+    dtype: The FP8 dtype of the input matrices.
+    requires_grad: Unused; the op has no autograd formula.
+    **kwargs: Unused.
+  """
   del op_info, requires_grad, kwargs
   make_mat = (
       lambda shape: torch.randn(*shape, dtype=torch.float32)
@@ -1178,6 +1173,10 @@ def _sample_inputs_scaled_mm_v2(
   make_scale = lambda shape: (
       torch.randn(*shape, dtype=torch.float32).abs() + 0.1
   ).to(device)
+
+  if variant == "128_blockwise":
+    yield from _scaled_mm_v2_128_blockwise_samples(make_mat, make_scale)
+    return
 
   # 1. TensorWise scaling (recipe=0, swizzle=0)
   m, n, k = 16, 16, 16
@@ -2395,12 +2394,27 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
         "torch._scaled_mm_v2",
         op=torch._scaled_mm_v2,  # pylint: disable=protected-access
-        ref=_ref_scaled_mm_v2,
         # Input matrices for _scaled_mm_v2 are quantized FP8 tensors.
         dtypes=common_methods_invocations.float8_types(),
-        sample_inputs_func=_sample_inputs_scaled_mm_v2,
+        sample_inputs_func=functools.partial(
+            _sample_inputs_scaled_mm_v2, "default"
+        ),
         supports_out=True,
         # Inference-only quantized primitive without autograd formula.
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "torch._scaled_mm_v2",
+        variant_test_name="128_blockwise",
+        op=torch._scaled_mm_v2,  # pylint: disable=protected-access
+        # The 1x128 x 128x128 recipe only supports float8_e4m3fn inputs.
+        dtypes=common_dtype._dispatch_dtypes((  # pylint: disable=protected-access
+            torch.float8_e4m3fn,
+        )),
+        sample_inputs_func=functools.partial(
+            _sample_inputs_scaled_mm_v2, "128_blockwise"
+        ),
+        supports_out=True,
         supports_autograd=False,
     ),
     OpInfo(
@@ -2623,7 +2637,6 @@ for _op_info in _ADDITIONAL_TORCH_TPU_OPS:
   if _op_info.name in (
       "_thnn_fused_lstm_cell",
       "_thnn_fused_gru_cell",
-      "torch._scaled_mm_v2",
   ):
     _op_info.use_ref_for_cpu_golden = True
 
@@ -3449,6 +3462,20 @@ def _prepare_zero_element_out_tensors(
 def _gen_gpu_golden_mode() -> bool:
   """Returns true if the test is running in gen_gpu_golden mode."""
   return _TEST_MODE.value == TestMode.GEN_GPU_GOLDEN
+
+
+def golden_target_gpu_arch() -> str:
+  if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available for GPU golden generation.")
+  major = torch.cuda.get_device_properties(0).major
+  if major == 9:
+    return GPU_SM90
+  elif major == 10:
+    return GPU_SM100
+  raise RuntimeError(
+      f"Unsupported GPU compute capability {major} for golden generation: "
+      "requires Hopper (SM90, major=9) or Blackwell (SM100, major=10)."
+  )
 
 
 def _dump_dtype_exclusions_mode() -> bool:
@@ -5069,8 +5096,15 @@ class OpInfoTestBase(
     else:
       accuracy_overrides = self.tpu_gpu_accuracy_overrides
 
-    # Default to the accuracy override for the base op name for _foreach_ ops.
-    accuracy_override = accuracy_overrides.get(op.name, {}).get(dtype, {})
+    # A "<op name>.<variant_test_name>" entry takes precedence over the entry
+    # for the whole op. Default to the base op name for _foreach_ ops.
+    accuracy_override = {}
+    if op.variant_test_name:
+      accuracy_override = accuracy_overrides.get(
+          f"{op.name}.{op.variant_test_name}", {}
+      ).get(dtype, {})
+    if not accuracy_override:
+      accuracy_override = accuracy_overrides.get(op.name, {}).get(dtype, {})
     if not accuracy_override and op.name.startswith("_foreach_"):
       base_op_name = op.name[9:]
       accuracy_override = accuracy_overrides.get(base_op_name, {}).get(
@@ -5627,6 +5661,13 @@ def _golden_file_prefix() -> str:
   )
 
 
+def _golden_file_basename(shard: int) -> str:
+  """Returns the golden file name for `shard` on the current GPU."""
+  if golden_target_gpu_arch() == GPU_SM90:
+    return f"{_golden_file_prefix()}{_GPU_GOLDEN_HOPPER_SUFFIX}{shard}.gz"
+  return f"{_golden_file_prefix()}{shard}.gz"
+
+
 def _save_golden_file() -> None:
   """Saves the golden data to the undeclared outputs directory on Forge.
 
@@ -5643,10 +5684,9 @@ def _save_golden_file() -> None:
      is then gzipped to further reduce its size.
   """
 
-  test_shard = _get_test_shard()
-  golden_file = (
-      os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp")
-      + f"/{_golden_file_prefix()}{test_shard}.gz"
+  golden_file = os.path.join(
+      os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "/tmp"),
+      _golden_file_basename(_get_test_shard()),
   )
   print(
       f"Dumping the collected input/output pairs for each op to {golden_file}",
@@ -5669,19 +5709,58 @@ def _save_golden_file() -> None:
     f.write(bin_data)
 
 
+def _golden_keys(encoded_data: _pytree.PyTree) -> set[_GoldenKey]:
+  """Returns the golden keys `encoded_data` holds samples for."""
+  return {
+      (test_case_name, variant_name, dtype_name)
+      for test_case_name, variant_to_dt in encoded_data.items()
+      for variant_name, dt_to_encoded_samples in variant_to_dt.items()
+      for dtype_name in dt_to_encoded_samples
+  }
+
+
+def _check_no_cross_arch_overlap(
+    filename: str,
+    encoded_data: _pytree.PyTree,
+    hopper_sources: Mapping[_GoldenKey, str],
+) -> None:
+  """Fails if `encoded_data` holds a golden key a Hopper file also holds."""
+  overlap = sorted(_golden_keys(encoded_data) & set(hopper_sources))
+  if not overlap:
+    return
+  test_case_name, variant_name, dtype_name = overlap[0]
+  raise ValueError(
+      f"{filename} and {hopper_sources[overlap[0]]} both hold goldens for"
+      f" {len(overlap)} key(s), including {test_case_name} (variant"
+      f" {variant_name}, dtype {dtype_name}), so it is ambiguous which one"
+      " applies. Each test method must record its goldens on exactly one GPU"
+      f" architecture; check whether {test_case_name} is tagged with"
+      " @gpu_arch(op_testing.GPU_SM90)."
+  )
+
+
 def _load_golden_files() -> None:
-  """Loads the checked in golden files into _GOLDEN_GPU_DATA."""
+  """Loads the pinned Blackwell and Hopper goldens into _GOLDEN_GPU_DATA."""
   prefix = _golden_file_prefix()
   candidate_dirs = tests_test_utils.goldens_candidate_local_dirs(
       base_dir=_GOLDEN_DATA_BASE_DIR.value
   )
-  plist_ptrees = tests_test_utils.load_golden_files(
-      prefix=prefix,
-      candidate_dirs=candidate_dirs,
+  goldens = tests_test_utils.load_golden_files(
+      prefix=prefix, candidate_dirs=candidate_dirs
   )
+  hopper_prefix = f"{prefix}{_GPU_GOLDEN_HOPPER_SUFFIX}"
+  hopper = [g for g in goldens if g.filename.startswith(hopper_prefix)]
+  base = [g for g in goldens if not g.filename.startswith(hopper_prefix)]
+  hopper_sources = {
+      key: golden.filename
+      for golden in hopper
+      for key in _golden_keys(golden.tree)
+  }
   _GOLDEN_GPU_DATA.clear()
-  for plist_ptree in plist_ptrees:
-    _GOLDEN_GPU_DATA.merge_plistlib_pytree(plist_ptree)
+  for golden in base:
+    _check_no_cross_arch_overlap(golden.filename, golden.tree, hopper_sources)
+  for golden in goldens:
+    _GOLDEN_GPU_DATA.merge_plistlib_pytree(golden.tree)
 
 
 def _get_dtype_exclusions(

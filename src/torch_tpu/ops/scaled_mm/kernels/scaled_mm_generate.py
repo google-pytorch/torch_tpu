@@ -106,6 +106,8 @@ def _get_out_dtype(name: str) -> Any:
     return jnp.float32
   elif name == "bfloat16":
     return jnp.bfloat16
+  elif name == "float8_e4m3fn":
+    return jnp.float8_e4m3fn
   else:
     raise ValueError(f"Unsupported out_dtype: {name}")
 
