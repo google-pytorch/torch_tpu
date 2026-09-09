@@ -688,10 +688,6 @@ def torch_tpu_cc_test(
     cc_test_tags = tags
     effective_tags = list(tags)
 
-    if requires_libtpu and is_oss():
-        if "requires-tpu" not in effective_tags:
-            effective_tags.append("requires-tpu")
-
     result = _check_and_adjust_test_tags(
         name = name,
         is_oss = is_oss(),
@@ -898,7 +894,6 @@ def torch_tpu_py_test(
         oss_presubmit_tpu_generation = None,
         run_on_accelerators = None,
         tags = None,
-        requires_libtpu = None,
         **kwargs):
     """Creates a py_test for torch_tpu.
 
@@ -955,14 +950,10 @@ def torch_tpu_py_test(
             `fails-on-tpu-<other_gen>` tags for all other generations in TPU_GENERATION_PREFERENCES
             to prevent postsubmit runs on mismatched TPU runners.
         tags: The tags to add to the test.
-        requires_libtpu: If True, auto-injects TPU presubmit tags in OSS.
         **kwargs: Any additional arguments.
     """
 
     tags = list(tags or [])
-    if requires_libtpu and is_oss() and not run_on_accelerators:
-        if "requires-tpu" not in tags:
-            tags.append("requires-tpu")
 
     if len(srcs) > 1:
         fail("torch_tpu_py_test must contain at most one srcs file. This prevents build bloat " +
