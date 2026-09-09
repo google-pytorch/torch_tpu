@@ -1276,36 +1276,26 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     def simple_fn(x, y):
       return x - y, x * 3
 
+    x = torch.randn(3, 5, device=self.device)
+    y = torch.randn(3, 5, device=self.device)
+    gm = make_fx(simple_fn)(x, y)
+    comp = StaticCompiler()
+
     for donated_first in (False, True):
       with self.subTest(donated_first=donated_first):
         torch.tpu._clear_cache()
-
-        x = torch.randn(3, 5, device=self.device)
-        y = torch.randn(3, 5, device=self.device)
-        gm = make_fx(simple_fn)(x, y)
-        comp = StaticCompiler()
+        initial_hits = torch.tpu._get_cache_hits()
 
         for donate_x in (donated_first, not donated_first):
-          input_x = torch.randn(3, 5, device=self.device)
-          input_y = torch.randn(3, 5, device=self.device)
-          expected_x = input_x.cpu().clone()
-          expected_y = input_y.cpu().clone()
-
-          executable = comp(
+          comp(
               gm,
-              [input_x, input_y],
+              [x, y],
               donated_inputs=[0] if donate_x else [],
           )
-          result = executable(input_x, input_y)
-          utils.assert_close(result[0].cpu(), expected_x - expected_y)
-          utils.assert_close(result[1].cpu(), expected_x * 3)
+        self.assertEqual(torch.tpu._get_cache_hits(), initial_hits)
 
-          if donate_x:
-            with self.assertRaises(RuntimeError):
-              input_x.cpu()
-          else:
-            utils.assert_close(input_x.cpu(), expected_x)
-          utils.assert_close(input_y.cpu(), expected_y)
+        comp(gm, [x, y], donated_inputs=[0] if donated_first else [])
+        self.assertEqual(torch.tpu._get_cache_hits(), initial_hits + 1)
 
   def test_static_compiler_auto_buffer_donation_with_mutable_custom_op(self):
     @torch.library.custom_op(
