@@ -96,7 +96,8 @@ GraphKey AnnotateGraphKeyWithArgumentLayouts(
 
 // Annotates an existing GraphKey with the set of donated input indices.
 // `donated_inputs` may be unsorted and contain duplicates; both are ignored
-// when forming the cache identity.
+// when forming the cache identity. Returns `graph_key` unchanged when
+// `donated_inputs` is empty.
 GraphKey AnnotateGraphKeyWithDonatedInputs(
     const GraphKey& graph_key, absl::Span<const int64_t> donated_inputs);
 
