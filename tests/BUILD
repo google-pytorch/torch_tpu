@@ -925,6 +925,24 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "sparse_dense_matmul_stacking_ops_test",
+    srcs = ["sparse_dense_matmul_stacking_ops_test.py"],
+    main = "sparse_dense_matmul_stacking_ops_test.py",
+    notap = "Requires SparseCore accelerator",
+    tags = [
+        "ok-to-wait-for-v7x-in-presubmit",
+        "requires-tpu-v7x",
+    ],
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//torch_tpu",
+    ],
+)
+
+torch_tpu_py_test(
     name = "eager_device_assignment_test",
     srcs = ["eager_device_assignment_test.py"],
     main = "eager_device_assignment_test.py",

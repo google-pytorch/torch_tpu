@@ -1371,12 +1371,16 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sort.values_stable";
     case OpName::kSparseDenseMatmul:
       return "sparse_dense_matmul";
+    case OpName::kSparseDenseMatmulActivationUnstack:
+      return "sparse_dense_matmul_activation_unstack";
     case OpName::kSparseDenseMatmulGradWithAdagrad:
       return "sparse_dense_matmul_grad_with_adagrad";
     case OpName::kSparseDenseMatmulGradWithAdam:
       return "sparse_dense_matmul_grad_with_adam";
     case OpName::kSparseDenseMatmulGradWithSgd:
       return "sparse_dense_matmul_grad_with_sgd";
+    case OpName::kSparseDenseMatmulGradientStack:
+      return "sparse_dense_matmul_gradient_stack";
     case OpName::kSparseGather:
       return "sparse_gather";
     case OpName::kSplitWithSizesCopyOut:

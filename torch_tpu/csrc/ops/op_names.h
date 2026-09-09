@@ -697,9 +697,11 @@ enum class OpName {
   kSoftplusOut,
   kSortValuesStable,
   kSparseDenseMatmul,
+  kSparseDenseMatmulActivationUnstack,
   kSparseDenseMatmulGradWithAdagrad,
   kSparseDenseMatmulGradWithAdam,
   kSparseDenseMatmulGradWithSgd,
+  kSparseDenseMatmulGradientStack,
   kSparseGather,
   kSplitWithSizesCopyOut,
   kSqrtOut,
@@ -800,9 +802,11 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
 [[nodiscard]] inline bool IsSparseCoreOp(OpName op_name) {
   switch (op_name) {
     case OpName::kSparseDenseMatmul:
+    case OpName::kSparseDenseMatmulActivationUnstack:
     case OpName::kSparseDenseMatmulGradWithAdagrad:
     case OpName::kSparseDenseMatmulGradWithAdam:
     case OpName::kSparseDenseMatmulGradWithSgd:
+    case OpName::kSparseDenseMatmulGradientStack:
     case OpName::kSparseGather:
       return true;
     default:
