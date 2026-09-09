@@ -51,6 +51,7 @@ torch_tpu_py_test(
     tags = if_oss(
         # The test spawns one worker per device, thus it needs
         # every accelerator slot.
+        # TODO(b/559173648): revisit exclusive tests after enabling RBE.
         ["exclusive"],
         [],
     ) + [
@@ -76,6 +77,7 @@ torch_tpu_py_test(
     tags = if_oss(
         # The test spawns one worker per device, thus it needs
         # every accelerator slot.
+        # TODO(b/559173648): revisit exclusive tests after enabling RBE.
         ["exclusive"],
         [],
     ) + [
