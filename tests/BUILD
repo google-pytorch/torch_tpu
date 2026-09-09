@@ -1262,6 +1262,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal:testing",
+        "//torch_tpu/_internal/compile:compiler",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/dynamism",
         "//torch_tpu/_internal/execution_mode",

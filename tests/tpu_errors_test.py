@@ -19,10 +19,12 @@ from typing import Any, TypeAlias
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
 
@@ -73,6 +75,24 @@ def _make_lu_unpack_outputs(
 
 class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
   """Tests error messages on TPU."""
+
+  @et.why_tpu_only("StaticCompiler buffer donation is TPU-specific.")
+  def test_static_compiler_buffer_donation_runtime_error(self):
+    def double(x):
+      return x * 2
+
+    x = torch.randn(3, 5, device=et.device())
+    executable = StaticCompiler()(make_fx(double)(x), [x], donated_inputs=[0])
+    executable(x)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*INVALID_ARGUMENT: Buffer has been deleted or donated.*",
+            re.DOTALL,
+        ),
+    ):
+      x.cpu()
 
   @et.why_tpu_only("TODO: support complex128 dtype on TPU")
   def test_fill_complex128(self):
