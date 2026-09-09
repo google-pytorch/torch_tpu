@@ -299,7 +299,7 @@ def _check_and_adjust_test_tags(
         nopresubmit: If given as a string, the test will be excluded from presubmit, and the
             string will be used as the reason.
         nolocal: By default, we tag a test as "manual" if either notap or nopresubmit is
-            set, so that it is excluded from local `blaze test //torch_tpu/...`
+            set, so that it is excluded from local `blaze test //src/torch_tpu/...`
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
@@ -403,7 +403,7 @@ def _check_and_adjust_test_tags(
 
     # Adjust tags for notap.
     #
-    # Whether to skip the test in local `blaze test //torch_tpu/...` runs.
+    # Whether to skip the test in local `blaze test //src/torch_tpu/...` runs.
     skip_local = False
     if "notap" in tags:  # NOTAP_OK=for implementing notap logic
         fail("notap must be passed as an argument to torch_tpu_cc_test, not as a tag.")
@@ -486,7 +486,7 @@ def _check_and_adjust_test_tags(
     # Adjust tags for nolocal.
     if "manual" in tags:
         fail("Do not use the 'manual' tag to exclude the test from matching pattern " +
-             "wildcards like //torch_tpu/... - notap or nopresubmit already " +
+             "wildcards like //src/torch_tpu/... - notap or nopresubmit already " +
              "implies 'manual'. If you want to force the test to be manual, add a " +
              "'nolocal = \"<reason>\",' argument to torch_tpu_*_test() instead.")
     if nolocal != None:
@@ -497,7 +497,7 @@ def _check_and_adjust_test_tags(
         skip_local = True
     if skip_local:
         # This tag causes the test to be skipped when a user runs
-        # `blaze test //torch_tpu/...`.
+        # `blaze test //src/torch_tpu/...`.
         tags.append("manual")
 
     if "oss_ready_cpu" in tags or "oss_ready_tpu" in tags:
@@ -624,7 +624,7 @@ def torch_tpu_cc_test(
         nopresubmit: If given as a string, the test will be excluded from presubmit, and the
             string will be used as the reason.
         nolocal: By default, we tag a test as "manual" if either notap or nopresubmit is
-            set, so that it is excluded from local `blaze test //torch_tpu/...`
+            set, so that it is excluded from local `blaze test //src/torch_tpu/...`
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
@@ -828,10 +828,10 @@ def torch_tpu_py_library(name, srcs = [], allow_multiple_srcs = False, **kwargs)
     deps = kwargs.pop("deps", [])
     if not is_oss():
         if type(deps) == "list":
-            if "//torch_tpu/_internal:testing" not in deps:
-                deps = deps + ["//torch_tpu/_internal:testing"]
+            if "//src/torch_tpu/_internal:testing" not in deps:
+                deps = deps + ["//src/torch_tpu/_internal:testing"]
         else:
-            deps = deps + ["//torch_tpu/_internal:testing"]
+            deps = deps + ["//src/torch_tpu/_internal:testing"]
     else:
         # In OSS, dynamically route @pypi// dependencies to @pypi_cuda// if --config=cuda is used
         if type(deps) == "list":
@@ -928,7 +928,7 @@ def torch_tpu_py_test(
         nopresubmit: If given as a string, the test will be excluded from presubmit, and the
             string will be used as the reason.
         nolocal: By default, we tag a test as "manual" if either notap or nopresubmit is
-            set, so that it is excluded from local `blaze test //torch_tpu/...`
+            set, so that it is excluded from local `blaze test //src/torch_tpu/...`
             runs. This behavior can be overridden by setting nolocal to a non-empty
             string - that will add a "manual" tag to the test regardless of notap or nopresubmit,
             and the string will be used as the reason.
@@ -997,7 +997,7 @@ def torch_tpu_py_test(
     deps_to_add = []
 
     # For wheel-only tests (is_wheel_test = True), skip enforcing
-    # //torch_tpu dependency and automatic environment setup.
+    # //src/torch_tpu dependency and automatic environment setup.
     if is_wheel_test:
         test_env = existing_env or {}
     else:
@@ -1026,6 +1026,8 @@ def torch_tpu_py_test(
             "../pypi_libtpu/site-packages/libtpu",
             "../rules_python++pip+torch_tpu_pypi_312_libtpu_nightly/site-packages/libtpu",
             "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal",
+            "../torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
+            "torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
             "../_solib_x86_64",
         ]
 
@@ -1079,6 +1081,8 @@ def torch_tpu_py_test(
                 "../pypi_libtpu_{}/site-packages/libtpu".format(v.replace(".", "")),
                 "../rules_python++pip+torch_tpu_pypi_{}_libtpu_nightly/site-packages/libtpu".format(v.replace(".", "")),
                 "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal",
+                "../torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
+                "torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
                 "../_solib_x86_64",
             ]
             _prepend_to_env(env_v, "LD_LIBRARY_PATH", ":".join(std_ld_v))
@@ -1109,8 +1113,8 @@ def torch_tpu_py_test(
 
         test_env = if_oss(select(select_dict), base_env)
 
-        if "//torch_tpu" not in deps:
-            fail("torch_tpu_py_test must include \"//torch_tpu\" in its deps to " +
+        if "//src/torch_tpu" not in deps:
+            fail("torch_tpu_py_test must include \"//src/torch_tpu\" in its deps to " +
                  "ensure that torch_tpu is loaded.")
 
         deps_to_add = []
@@ -1119,10 +1123,10 @@ def torch_tpu_py_test(
 
     if not is_oss():
         if type(deps) == "list":
-            if "//torch_tpu/_internal:testing" not in deps:
-                deps = deps + ["//torch_tpu/_internal:testing"]
+            if "//src/torch_tpu/_internal:testing" not in deps:
+                deps = deps + ["//src/torch_tpu/_internal:testing"]
         else:
-            deps = deps + ["//torch_tpu/_internal:testing"]
+            deps = deps + ["//src/torch_tpu/_internal:testing"]
         all_deps = deps + deps_to_add
     else:
         # In OSS, dynamically route @pypi// dependencies to @pypi_cuda// if --config=cuda is used.
@@ -1132,15 +1136,15 @@ def torch_tpu_py_test(
             pypi_deps = ["@pypi//" + pkg for pkg in pypi_pkgs]
             pypi_cuda_deps = ["@pypi_cuda//" + pkg for pkg in pypi_pkgs]
             all_deps = select({
-                "//:wheel_test_with_cuda_torch": ["//:torch_tpu_py_import"],
-                "//:wheel_test_enabled": ["//:torch_tpu_py_import"],
+                "//:wheel_test_with_cuda_torch": ["//:torch_tpu_py_import"] + other_deps,
+                "//:wheel_test_enabled": ["//:torch_tpu_py_import"] + other_deps,
                 "//shims/torch:use_cuda_torch": other_deps + pypi_cuda_deps + deps_to_add,
                 "//conditions:default": other_deps + pypi_deps + deps_to_add,
             })
         else:
             all_deps = select({
-                "//:wheel_test_with_cuda_torch": ["//:torch_tpu_py_import"],
-                "//:wheel_test_enabled": ["//:torch_tpu_py_import"],
+                "//:wheel_test_with_cuda_torch": ["//:torch_tpu_py_import"] + deps,
+                "//:wheel_test_enabled": ["//:torch_tpu_py_import"] + deps,
                 "//conditions:default": deps + deps_to_add,
             })
 
@@ -1227,7 +1231,7 @@ register_extension_info(
 DEFAULT_TORCH_EXAMPLE_DEPS = [
     "//shims/absl_py:app",
     "//shims/torch:pytorch",
-    "//torch_tpu",
+    "//src/torch_tpu",
     "@pypi//torchvision",
 ]
 

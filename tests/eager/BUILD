@@ -27,9 +27,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/sync",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/sync",
     ],
 )
 
@@ -41,9 +41,9 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/execution_mode",
         "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/execution_mode",
     ],
 )
 

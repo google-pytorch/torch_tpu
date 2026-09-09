@@ -38,7 +38,7 @@ Example usage:
   $ ./setup_clangd.py --no-build
 
   # Refresh for specific combined target patterns.
-  $ ./setup_clangd.py //csrc/common/... //torch_tpu/ops/...
+  $ ./setup_clangd.py //csrc/common/... //src/torch_tpu/ops/...
 """
 
 from __future__ import annotations

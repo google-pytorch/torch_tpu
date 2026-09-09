@@ -32,7 +32,7 @@ exports_files(["README.md"])
 
 alias(
     name = "license",
-    actual = "//torch_tpu:license",
+    actual = "//src/torch_tpu:license",
 )
 
 filegroup(
@@ -225,8 +225,8 @@ genrule(
     srcs = [
         "//examples:wheel_test_site_packages_recursive",
         "//tests:wheel_test_site_packages_recursive",
-        "//torch_tpu/_internal/distributed:spmd_util",
-        "//torch_tpu/_internal/utils:test_fixtures",
+        "//src/torch_tpu/_internal/distributed:spmd_util",
+        "//src/torch_tpu/_internal/utils:test_fixtures",
     ] + select({
         "//ci/wheel:use_local_torch": [
             ":torch_libs_mapped",

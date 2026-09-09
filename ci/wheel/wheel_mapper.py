@@ -67,6 +67,9 @@ def main():
     else:
       clean_dest_path = re.sub(r"^.*?/bin/", "", dest_full_path)
 
+    # Re-root compiled Python extension binaries from src/torch_tpu/ to torch_tpu/ inside the wheel
+    clean_dest_path = clean_dest_path.removeprefix("src/")
+
     dest = os.path.join(args.out_dir, clean_dest_path)
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
