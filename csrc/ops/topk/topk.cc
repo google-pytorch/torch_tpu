@@ -18,73 +18,58 @@
 
 #include <cstdint>
 #include <optional>
-#include <utility>
 
-#include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
-#include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
-#include "stablehlo/integrations/cpp/builder/ChloBuilder.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
-namespace chlo = mlir::chlo;
 namespace stablehlo = mlir::stablehlo;
 
-absl::StatusOr<TopKOutputs> BuildTopKShlo(
-    mlir::MlirOp input_op, int64_t k, int64_t dim, TopKMode topk_mode,
-    std::optional<TopKStableMode> topk_stable_mode) {
+absl::StatusOr<TopKOutputs> BuildTopKShlo(mlir::MlirOp input_op, int64_t k,
+                                          int64_t dim, TopKMode topk_mode) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
-  const int64_t rank = input_type.getRank();
-  TT_ASSIGN_OR_RETURN(const int64_t canonical_dim, SafeWrapDim(dim, rank));
-  const bool need_transpose = (canonical_dim != rank - 1);
+  // TODO(b/436289835): Update chlo topk implementation and use it here.
+  mlir::MlirBuilder& builder = input_op.getBuilder();
+  mlir::MlirOp indices = stablehlo::Iota(
+      builder,
+      makeTensorType(builder.getContext(), input_type.getShape(),
+                     mlir::ElementType::I64),
+      dim);
+  auto comparator = [input_type, topk_mode](mlir::RegionBuilder& rb) {
+    mlir::OpBuilder& op_builder = rb.getOpBuilder();
+    std::optional<llvm::StringRef> compare_type = std::nullopt;
+    if (mlir::isa<mlir::FloatType>(input_type.getElementType())) {
+      compare_type = "TOTALORDER";
+    }
+    stablehlo::buildSortComparisonBody(
+        {input_type.getElementType(), op_builder.getI64Type()},
+        topk_mode == TopKMode::kLargest ? stablehlo::ComparisonDirection::GT
+                                        : stablehlo::ComparisonDirection::LT,
+        compare_type, &rb.getRegion(), &op_builder);
+  };
+  llvm::SmallVector<mlir::MlirOp> outputs =
+      stablehlo::Sort(builder, {input_op, indices}, comparator, dim,
+                      /*is_stable=*/false);
 
-  // Construct permutation vector to swap canonical_dim with rank - 1.
-  mlir::MlirOp sort_input = input_op;
-  Dimensions permutation;
-  if (need_transpose) {
-    permutation.resize(rank);
-    absl::c_iota(permutation, 0);
-    std::swap(permutation[canonical_dim], permutation[rank - 1]);
-
-    sort_input = stablehlo::Transpose(sort_input, permutation);
-  }
-
-  if (topk_mode == TopKMode::kSmallest) {
-    sort_input = stablehlo::Neg(sort_input);
-  }
-
-  // Call chlo::TopK along the innermost dimension (rank - 1). The chlo::TopK
-  // builder defaults is_stable to true; derive it from topk_stable_mode instead
-  // so the default preserves the historical unstable-sort tie-selection
-  // semantics. See github.com/google-pytorch/torch_tpu/issues/3392.
-  llvm::SmallVector<mlir::MlirOp, 2> outputs =
-      chlo::TopK(sort_input, static_cast<uint64_t>(k),
-                 /*is_stable=*/topk_stable_mode == TopKStableMode::kStable);
-  mlir::MlirOp topk_values = outputs[0];
-  mlir::MlirOp topk_indices = outputs[1];
-
-  if (topk_mode == TopKMode::kSmallest) {
-    topk_values = stablehlo::Neg(topk_values);
-  }
-
-  if (need_transpose) {
-    topk_values = stablehlo::Transpose(topk_values, permutation);
-    topk_indices = stablehlo::Transpose(topk_indices, permutation);
-  }
-
-  // Convert index element type from default I32 to I64 to satisfy
-  // PyTorch/ATen kernel conventions.
-  topk_indices =
-      stablehlo::ConvertElementType(topk_indices, mlir::ElementType::I64);
-
+  Indices start_indices(input_type.getRank(), 0);
+  Indices limit_indices = CopyIntVector(input_type.getShape());
+  limit_indices[dim] = k;
+  Indices stride_indices(input_type.getRank(), 1);
+  mlir::MlirOp topk_values = stablehlo::Slice(outputs[0], start_indices,
+                                              limit_indices, stride_indices);
+  mlir::MlirOp topk_indices = stablehlo::Slice(outputs[1], start_indices,
+                                               limit_indices, stride_indices);
   return TopKOutputs{.values = topk_values, .indices = topk_indices};
 }
 

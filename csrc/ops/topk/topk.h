@@ -18,7 +18,6 @@
 #define TORCH_TPU_CSRC_OPS_TOPK_TOPK_H_
 
 #include <cstdint>
-#include <optional>
 
 #include "absl/status/statusor.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -35,14 +34,8 @@ enum class TopKMode {
   kSmallest,
 };
 
-enum class TopKStableMode {
-  kStable,
-  kUnstable,
-};
-
-absl::StatusOr<TopKOutputs> BuildTopKShlo(
-    mlir::MlirOp input_op, int64_t k, int64_t dim, TopKMode topk_mode,
-    std::optional<TopKStableMode> topk_stable_mode = TopKStableMode::kUnstable);
+absl::StatusOr<TopKOutputs> BuildTopKShlo(mlir::MlirOp input_op, int64_t k,
+                                          int64_t dim, TopKMode topk_mode);
 
 }  // namespace torch_tpu
 

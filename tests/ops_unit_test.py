@@ -1137,7 +1137,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     gathered = torch.gather(t, 1, tpu_indices)
     utils.assert_close(gathered, tpu_values)
 
-  def test_topk_chlo(self):
+  def test_topk(self):
     """Tests torch.topk lowering across dtypes, dims, k, and edge cases."""
 
     def _verify_topk(cpu_t, k, dim, largest, check_indices=True):
@@ -1173,8 +1173,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
                 cpu_t, k=k, dim=dim, largest=largest, check_indices=True
             )
 
-      # Duplicates and zeroes (check values and gather,
-      # skip indices check due to ties).
+      # Duplicates and zeroes (verify values, indices, and gather).
       cpu_dup = torch.tensor(
           [
               [0.0, 0.0, 0.0, 5.0, 5.0],
@@ -1187,7 +1186,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           dim_size = cpu_dup.size(dim)
           for k in [0, 1, 2, dim_size]:
             _verify_topk(
-                cpu_dup, k=k, dim=dim, largest=largest, check_indices=False
+                cpu_dup, k=k, dim=dim, largest=largest, check_indices=True
             )
 
       # Varied dimensions (1D, 3D), single-element, and all-zero tensors.
@@ -1219,7 +1218,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         for dim in [0, 1, 2, -1]:
           for k in [0, 1, 2]:
             _verify_topk(
-                cpu_zeroes, k=k, dim=dim, largest=largest, check_indices=False
+                cpu_zeroes, k=k, dim=dim, largest=largest, check_indices=True
             )
 
   def test_max_pool2d_no_indices(self):
