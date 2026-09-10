@@ -21,6 +21,7 @@
 #include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
+#include "csrc/eager/materialize_common.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/repeated_ops_heuristic.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -84,6 +85,7 @@ struct TestMembersClass {
 
 // Internal testing utilities.
 TT_PYBIND11_MODULE(testing, m) {
+  m.def("precompiled_execution_count", &GetPrecompiledExecutionCountForTesting);
   // Python bindings for testing PyBindWrapWithErrorHandling.
   //
   // These bindings throw errors on different contexts, making sure we are

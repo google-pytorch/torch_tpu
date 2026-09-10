@@ -734,7 +734,10 @@ absl::Status MaterializeImpl(
 
 }  // namespace
 
-void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
+void ShutDownMaterializationState() {
+  GetMaterializationWorker().Shutdown();
+  ClearRegisteredPrecompiledExecution();
+}
 
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,

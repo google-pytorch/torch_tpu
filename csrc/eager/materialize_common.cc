@@ -17,6 +17,7 @@
 #include "csrc/eager/materialize_common.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -69,6 +70,10 @@
 namespace torch_tpu {
 
 namespace {
+
+std::atomic<PrecompiledExecutionFactory> precompiled_factory{nullptr};
+std::atomic<PrecompiledCleanup> precompiled_cleanup{nullptr};
+std::atomic<uint64_t> precompiled_execution_count{0};
 
 #ifndef NDEBUG
 // Formatting helper for error messages when VerifyPerNodeOutputs fails for any
@@ -357,6 +362,22 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
 
 }  // namespace
 
+void RegisterPrecompiledExecution(PrecompiledExecutionFactory factory,
+                                  PrecompiledCleanup cleanup) {
+  precompiled_factory.store(factory, std::memory_order_release);
+  precompiled_cleanup.store(cleanup, std::memory_order_release);
+}
+
+void ClearRegisteredPrecompiledExecution() {
+  if (auto cleanup = precompiled_cleanup.load(std::memory_order_acquire)) {
+    cleanup();
+  }
+}
+
+uint64_t GetPrecompiledExecutionCountForTesting() {
+  return precompiled_execution_count.load(std::memory_order_relaxed);
+}
+
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
@@ -368,6 +389,12 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
+  }
+
+  // Start/reuse XLA compilation before inspecting precompiled candidates.
+  PrecompiledExecution precompiled;
+  if (auto factory = precompiled_factory.load(std::memory_order_acquire)) {
+    precompiled = factory(*traversal);
   }
 
   // Mark all outputs of the split as scheduled/materialized.
@@ -387,7 +414,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   return ExecutionTask(std::move(task_name),
                        std::move(traversal_parts.arguments),
                        std::move(traversal_parts.outputs),
-                       std::move(compiled_traversal_or->compiled_kernel));
+                       std::move(compiled_traversal_or->compiled_kernel),
+                       std::move(precompiled));
 }
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
@@ -633,6 +661,15 @@ absl::Status ExecutionTask::RunInternal() {
   std::string_view task_name = "anonymous";
   if (!name_.empty()) {
     task_name = name_;
+  }
+
+  if (precompiled_) {
+    TT_ASSIGN_OR_RETURN(auto results,
+                        std::move(precompiled_)(compiled_kernel_, arguments_));
+    if (results) {
+      precompiled_execution_count.fetch_add(1, std::memory_order_relaxed);
+      return SetOutputNodesAsMaterialized(std::move(*results));
+    }
   }
 
   // Wait for compilation to complete.

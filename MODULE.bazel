@@ -317,6 +317,18 @@ http_file(
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Compiler for the optional experimental kernel bundle. Not a runtime dep.
+http_archive(
+    name = "precompiled_libtpu",
+    build_file_content = "exports_files([\"libtpu/libtpu.so\"])",
+    sha256 = "141a0e355da2968402ff4959950a8cc5128691aad60d06d97090919565bdd126",
+    type = "zip",
+    urls = [
+        "https://storage.googleapis.com/libtpu-nightly-releases/wheels/libtpu/" +
+        "libtpu-0.0.48.dev20260906+nightly-cp312-cp312-manylinux_2_31_x86_64.whl",
+    ],
+)
+
 http_archive(
     name = "jax_tpu_embedding",
     sha256 = "43e45798fbe2dd44dfbdc24fbc72f11d63ac4fbcc3968e17c871ad9a15faad08",
