@@ -299,14 +299,7 @@ class ScanOpTest(seed_test_utils.RepeatableTest):
 
 
 class ScanDeferredOperandsTest(seed_test_utils.RepeatableTest):
-  """Scan whose carry and captured tensor are computed inside the graph.
-
-  Every other test in this file feeds `init` and any captured tensor straight
-  from a graph input, so by the time `_handle_scan_impl` runs they are already
-  unmaterialized placeholders. Producing them with an op first makes them
-  deferred buffers instead, which is the state the body's own trace cannot
-  accept.
-  """
+  """Scan whose carry and captured tensor are computed inside the graph."""
 
   def setUp(self):
     super().setUp()
@@ -340,7 +333,7 @@ class ScanDeferredOperandsTest(seed_test_utils.RepeatableTest):
 
     The motivating case is a joint graph, where AOTAutograd emits a second scan
     for the backward and every operand of it is computed rather than a graph
-    input. Nothing else in this file lowers a backward scan at all.
+    input.
     """
 
     def fn(init, xs, w):
