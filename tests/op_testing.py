@@ -2190,6 +2190,25 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         supports_out=False,
         supports_cow_input_no_materialize_backward=False,
     ),
+    # Upstream has an OpInfo for `_upsample_bilinear2d_aa` but not for the
+    # otherwise-equivalent `_upsample_bicubic2d_aa`.
+    OpInfo(
+        "_upsample_bicubic2d_aa",
+        op=torch.ops.aten._upsample_bicubic2d_aa,  # pylint: disable=protected-access
+        aten_name="_upsample_bicubic2d_aa",
+        # The CPU kernel does not dispatch half or bfloat16.
+        dtypes=common_dtype.floating_types(),
+        dtypesIfCUDA=common_dtype.floating_types_and(
+            torch.half, torch.bfloat16
+        ),
+        sample_inputs_func=functools.partial(
+            common_methods_invocations.sample_inputs_upsample_aa, "bicubic"
+        ),
+        supports_autograd=True,
+        supports_forward_ad=True,
+        supports_fwgrad_bwgrad=True,
+        supports_out=False,
+    ),
     OpInfo(
         "sparse_coo_add",
         op=torch.add,

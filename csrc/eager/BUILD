@@ -837,6 +837,7 @@ torch_tpu_cc_library(
         "//csrc/ops/unique:unique_aten_kernels",
         "//csrc/ops/unique_consecutive:unique_consecutive_aten_kernels",
         "//csrc/ops/upsample:upsample_aten_kernels",
+        "//csrc/ops/upsample:upsample_bicubic2d_aa_aten_kernels",
         "//csrc/ops/upsample:upsample_bicubic2d_aten_kernels",
         "//csrc/ops/upsample:upsample_linear1d_aten_kernels",
         "//csrc/ops/view:view_aten_kernels",

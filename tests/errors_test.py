@@ -490,6 +490,67 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           t, [10, 10], False, None, None, out=out
       )
 
+  def test_upsample_bicubic2d_aa_invalid_rank(self):
+    t = torch.ones(1, 2, 3, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 2, 10, 10, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected 4D tensor, got 3D""",
+        gpu="""It is expected input_size equals to 4, but got size 3""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa.out(t, [10, 10], False, out=out)
+
+  def test_upsample_bicubic2d_aa_non_floating_point_dtype(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected floating-point dtype, got int32""",
+        gpu=""""upsample_bilinear2d_out_frame" not implemented for 'Int'""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa(t, [10, 10], False)
+
+  def test_upsample_bicubic2d_aa_invalid_output_size(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 10, 10, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected output_size to have 2 elements, got 1""",
+        gpu="""It is expected output_size equals to 2, but got size 1""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa.out(t, [10], False, out=out)
+
+  def test_upsample_bicubic2d_aa_dtype_mismatch(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 10, 10, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected out dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa.out(
+          t, [10, 10], False, None, None, out=out
+      )
+
+  def test_upsample_bicubic2d_aa_non_positive_output_size(self):
+    t = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 1, 10, 10, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected positive output_size, got [0, 10]""",
+        gpu="""Input and output sizes should be greater than 0, but got input (H: 4, W: 4) output (H: 0, W: 10)""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa.out(t, [0, 10], False, out=out)
+
+  def test_upsample_bicubic2d_aa_empty_input(self):
+    t = torch.ones(1, 0, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, 0, 10, 10, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""upsample_bicubic2d_aa(): expected non-empty 4D data tensor, got a tensor with sizes [1, 0, 4, 4]""",
+        gpu="""Non-empty 4D data tensor expected but got a tensor with sizes [1, 0, 4, 4]""",
+    ):
+      torch.ops.aten._upsample_bicubic2d_aa.out(t, [10, 10], False, out=out)
+
   def test_upsample_linear1d_invalid_rank(self):
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     out = torch.empty(2, 10, device=et.device(), dtype=torch.float32)

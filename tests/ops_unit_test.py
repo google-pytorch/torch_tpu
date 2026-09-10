@@ -3616,6 +3616,126 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close(golden_result=out_cpu, torch_tpu_result=out_tpu.cpu())
 
+  def test_upsample_bicubic2d_aa_out(self):
+    for align_corners in (True, False):
+      test_cases = [
+          # upsampling square
+          {
+              "input_size": (1, 3, 10, 10),
+              "output_size": [20, 20],
+              "scales_h": 2.0,
+              "scales_w": 2.0,
+          },
+          # downsampling square
+          {
+              "input_size": (2, 3, 20, 20),
+              "output_size": [10, 10],
+              "scales_h": 0.5,
+              "scales_w": 0.5,
+          },
+          # non-square
+          {
+              "input_size": (1, 2, 5, 10),
+              "output_size": [8, 12],
+              "scales_h": 1.6,
+              "scales_w": 1.2,
+          },
+          {
+              "input_size": (1, 1, 10, 5),
+              "output_size": [5, 8],
+              "scales_h": 0.5,
+              "scales_w": 1.6,
+          },
+          # no scale factors
+          {
+              "input_size": (1, 2, 10, 10),
+              "output_size": [5, 8],
+              "scales_h": None,
+              "scales_w": None,
+          },
+          # empty batch
+          {
+              "input_size": (0, 3, 10, 10),
+              "output_size": [20, 20],
+              "scales_h": 2.0,
+              "scales_w": 2.0,
+          },
+      ]
+
+      for test_case in test_cases:
+        for dtype in (torch.float32, torch.bfloat16, torch.float64):
+          with self.subTest(
+              align_corners=align_corners, test_case=test_case, dtype=dtype
+          ):
+            numel = math.prod(test_case["input_size"])
+            if numel > 0:
+              input_cpu = torch.linspace(
+                  0.1, 10.0, steps=numel, dtype=torch.float32
+              ).reshape(test_case["input_size"])
+            else:
+              input_cpu = torch.empty(
+                  test_case["input_size"], dtype=torch.float32
+              )
+            input_tpu = input_cpu.clone().to("tpu").to(dtype)
+
+            # PyTorch CPU does not implement _upsample_bicubic2d_aa for bfloat16
+            cpu_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
+            input_cpu = input_cpu.to(cpu_dtype)
+
+            out_shape = list(test_case["input_size"][:2]) + list(
+                test_case["output_size"]
+            )
+            out_cpu = torch.empty(out_shape, dtype=cpu_dtype)
+            out_tpu = torch.empty(out_shape, dtype=dtype, device="tpu")
+
+            torch.ops.aten._upsample_bicubic2d_aa.out(
+                input_cpu,
+                test_case["output_size"],
+                align_corners,
+                test_case["scales_h"],
+                test_case["scales_w"],
+                out=out_cpu,
+            )
+
+            torch.ops.aten._upsample_bicubic2d_aa.out(
+                input_tpu,
+                test_case["output_size"],
+                align_corners,
+                test_case["scales_h"],
+                test_case["scales_w"],
+                out=out_tpu,
+            )
+
+            atol = 5e-2 if dtype == torch.bfloat16 else 3e-2
+            rtol = 1e-2 if dtype == torch.bfloat16 else 5e-2
+            self.assert_close(
+                golden_result=out_cpu.to(dtype),
+                torch_tpu_result=out_tpu.cpu(),
+                atol=atol,
+                rtol=rtol,
+            )
+
+  def test_upsample_bicubic2d_aa_functional(self):
+    tpu_device = torch.device("tpu")
+    for align_corners in (True, False):
+      numel = 2 * 3 * 8 * 8
+      x = torch.linspace(0.1, 10.0, steps=numel, dtype=torch.float32).reshape(
+          2, 3, 8, 8
+      )
+      x_tpu = x.to(tpu_device)
+      out_tpu = torch.ops.aten._upsample_bicubic2d_aa(
+          x_tpu, [16, 16], align_corners, 2.0, 2.0
+      )
+      out_cpu = torch.ops.aten._upsample_bicubic2d_aa(
+          x, [16, 16], align_corners, 2.0, 2.0
+      )
+      self.assert_close(
+          golden_result=out_cpu,
+          torch_tpu_result=out_tpu.cpu(),
+          atol=3e-2,
+          rtol=5e-2,
+      )
+
   def test_upsample_linear1d_align_corners(self):
     tpu_device = torch.device("tpu")
     for align_corners in (True, False):

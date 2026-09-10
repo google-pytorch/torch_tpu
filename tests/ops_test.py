@@ -857,6 +857,11 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 6.7e-2, "atol": 1.2e-1},
         torch.float32: {"rtol": 6.9e-2, "atol": 2.3e-1},
     },
+    "_upsample_bicubic2d_aa": {
+        torch.bfloat16: {"rtol": 2.7e-2, "atol": 3.3e-2},
+        torch.float16: {"rtol": 3.2e-2, "atol": 4.3e-2},
+        torch.float32: {"rtol": 3.1e-2, "atol": 4.4e-2},
+    },
     "abs": {
         torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
         torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
@@ -1250,6 +1255,11 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-5, "atol": 3e-5},
+    },
+    "_upsample_bicubic2d_aa": {
+        torch.bfloat16: {"rtol": 2.7e-2, "atol": 3.3e-2},
+        torch.float16: {"rtol": 3.2e-2, "atol": 4.3e-2},
+        torch.float32: {"rtol": 3.1e-2, "atol": 4.4e-2},
     },
     "abs": {
         torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
@@ -4645,6 +4655,25 @@ class TestOps(op_testing.OpInfoTestBase):
                 )
             ),
         },
+    )
+
+  def test_upsample_bicubic2d_aa(self):
+    # TODO: The CPU side fails for complex dtypes, integers, bfloat16,
+    # and float16.
+    self.do_test_op(
+        "_upsample_bicubic2d_aa",
+        exclude_dtypes={
+            "cpu": (
+                COMPLEX_DTYPES
+                + INTEGRAL_DTYPES
+                + (torch.bfloat16, torch.float16)
+            ),
+        },
+        # TODO: _upsample_bicubic2d_aa_backward is not implemented on TPU yet.
+        check_grad=False,
+        # TODO: the interpolation weights are emitted as constants sized from
+        # the static input extent, so they cannot adapt to a dynamic input.
+        check_dynamism=False,
     )
 
   def test_upsample_linear1d(self):

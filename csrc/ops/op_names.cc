@@ -1567,6 +1567,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "unsqueeze_";
     case OpName::kUntypedStorageResize_:
       return "untyped_storage_resize_";
+    case OpName::kUpsampleBicubic2dAaOut:
+      return "_upsample_bicubic2d_aa.out";
     case OpName::kUpsampleBicubic2dBackwardGradInput:
       return "upsample_bicubic2d_backward.grad_input";
     case OpName::kUpsampleBicubic2dOut:

@@ -88,6 +88,35 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "upsample_bicubic2d_aa_aten_kernels",
+    srcs = ["upsample_bicubic2d_aa_aten_kernels.cc"],
+    hdrs = ["upsample_bicubic2d_aa_aten_kernels.h"],
+    deps = [
+        "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/common:to_string",
+        "//csrc/common:utils",
+        "//csrc/eager:op_dispatcher",
+        "//csrc/ops:nullary_aten_kernels",
+        "//csrc/ops:op_builder_utils",
+        "//csrc/ops:op_names",
+        "//csrc/ops/macros:kernel",
+        "//csrc/ops/resize:resize_aten_kernels",
+        "//shims/torch:aten_headers",
+        "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "upsample_linear1d_aten_kernels",
     srcs = ["upsample_linear1d_aten_kernels.cc"],
     hdrs = ["upsample_linear1d_aten_kernels.h"],

@@ -160,7 +160,6 @@ UNREGISTERED_OPS = frozenset([
     '_triton_multi_head_attention',
     '_triton_scaled_dot_attention',
     '_unique',
-    '_upsample_bicubic2d_aa.out',
     '_upsample_bicubic2d_aa_backward.grad_input',
     '_upsample_bilinear2d_aa.out',
     '_upsample_bilinear2d_aa_backward.grad_input',
