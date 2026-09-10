@@ -14,7 +14,6 @@
 
 load(
     "//build_files:build_defs.bzl",
-    "if_cuda_dep",
     "if_oss",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -579,7 +578,7 @@ torch_tpu_py_library(
         "@pypi//numpy",
         "@pypi//timm",
         "@pypi//transformers",  # buildcleaner: keep
-    ] + if_cuda_dep("@pypi//mamba_ssm"),  # buildcleaner: keep
+    ],
 )
 
 torch_tpu_py_library(
