@@ -224,7 +224,6 @@ torch_tpu_py_test(
         "//tests/distributed:distributed_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/compile:split_compiler",
         "//torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//torch_tpu/_internal/device:_device_module",
         "//torch_tpu/_internal/distributed:multiprocessing",
@@ -247,9 +246,11 @@ torch_tpu_py_test(
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/compile:compiler",
+        "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/compile:tpu_torch_compile",
         "//torch_tpu/_internal/device_utils:annotations",
         "//torch_tpu/_internal/execution_mode",
@@ -353,98 +354,6 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/precision",
         "//torch_tpu/_internal/utils:test_utils",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_coverage_hf_test",
-    timeout = "long",
-    srcs = ["model_coverage_hf_test.py"],
-    nonightly_oss = "Disabled during switch from opt-in to opt-out",
-    nopresubmit = "slow example",
-    shard_count = 6,
-    tags = [
-        "cpu:4",
-        "nomsan",  # 3p 'rust/tempfile' error: use-of-uninitialized-value in tempfile::file::imp::platform::reopen
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v7x",
-    ],
-    deps = [
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//tests:module_registry",
-        "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/utils:test_utils",
-        "@pypi//accelerate",  # buildcleaner: keep
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_coverage_hf_guitar_test",
-    timeout = "long",
-    srcs = ["model_coverage_hf_test.py"],
-    args = [
-        "--model_sizes_to_run=small",
-        "--model_sizes_to_run=medium",
-        "--model_sizes_to_run=large",
-    ],
-    linking_mode = "static",
-    main = "model_coverage_hf_test.py",
-    nobuild_oss = "Not intended to run in OSS",
-    notap = "For Guitar only.",
-    shard_count = 12,
-    tags = [
-        "cpu:4",
-        "guitar",
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v7x",
-    ],
-    deps = [
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//tests:module_registry",
-        "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/utils:test_utils",
-        "@pypi//accelerate",  # buildcleaner: keep
-    ],
-)
-
-torch_tpu_py_test(
-    name = "model_coverage_timm_test",
-    timeout = "long",
-    srcs = ["model_coverage_timm_test.py"],
-    data = ["data/goldfish.jpg"],
-    notest_oss = "No OSS access to model resources",
-    shard_count = 6,
-    tags = [
-        "noasan",  # b/535295645: TIMM model compilation overhead causes timeouts under ASAN
-        "nomsan",  # b/535295645: TIMM model compilation overhead causes timeouts under MSAN
-        "notsan",  # b/535295645: TIMM model compilation overhead causes timeouts under TSAN
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v5lite",  #
-    ],
-    deps = [
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/etils/epath",
-        "//shims/torch:pytorch",
-        "//tests:module_registry",
-        "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal/utils:test_utils",
-        "@pypi//pillow",
     ],
 )
 
@@ -577,9 +486,9 @@ torch_tpu_py_test(
         "//tests:module_registry",
         "//tests:seed_test_utils",
         "//torch_tpu",
+        "//torch_tpu/_internal:testing",
         "//torch_tpu/_internal/benchmarks:xprof_adapter",
         "//torch_tpu/_internal/compile",
-        "//torch_tpu/_internal:testing",
     ],
 )
 
@@ -610,6 +519,31 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
+        "//torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "fold_gqa_test",
+    srcs = ["fold_gqa_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile/fx_passes:fold_gqa",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "debug_test",
+    srcs = ["debug_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile",
         "//torch_tpu/_internal/utils:test_utils",
     ],
 )

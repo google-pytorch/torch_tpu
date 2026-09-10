@@ -20,9 +20,9 @@ import functools
 from typing import Any, Callable
 
 import torch
-from examples.benchmarks import optimizers
-from examples.benchmarks import single_trace_trainer
 from examples.benchmarks.e2e import common
+from examples.benchmarks.e2e import single_trace_trainer_adapter
+from examples.tracing import optimizers
 
 
 @contextlib.contextmanager
@@ -356,7 +356,7 @@ def functional_train_factory(
     with _sdpa_kernel_if_not_cuda():
       del opt_arg  # Ignored; use SingleTraceTrainer's internal optimizer.
       if state["step_fn"] is None:
-        trainer = single_trace_trainer.SingleTraceTrainer(
+        trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
             model=model,
             optimizer=optimizer,
         )

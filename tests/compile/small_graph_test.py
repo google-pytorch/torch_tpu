@@ -17,6 +17,7 @@
 import dataclasses
 import os
 import pickle
+import re
 from typing import List
 from unittest import mock
 
@@ -421,6 +422,124 @@ class FunctionTest(seed_test_utils.RepeatableTest):
         v[0].graph_module_debug_strs[0], v[1].graph_module_debug_strs[0]
     )
     self.assertNotEqual(v[0].mlir_texts[0], v[1].mlir_texts[0])
+
+  def test_hlo_naming_with_custom_name_options(self):
+    def func(a, b):
+      return (a * b).sum()
+
+    a = torch.tensor([1.0, 2.0, 3.0], device="tpu", requires_grad=True)
+    b = torch.tensor([4.0, 5.0, 6.0], device="tpu", requires_grad=True)
+    tpu_backend = compile_lib.TpuBackend(debug=True)
+    compiled = torch.compile(
+        func, backend=tpu_backend, options={"name": "custom_opt"}
+    )
+    out = compiled(a, b)
+    out.backward()
+    execs = tpu_backend._compiled_executables
+    self.assertGreaterEqual(len(execs), 2)
+    self.assertRegex(execs[0].mlir_texts[0], r"module\s+@custom_opt_split0_fwd")
+    self.assertRegex(execs[1].mlir_texts[0], r"module\s+@custom_opt_split1_bwd")
+
+  def test_hlo_naming_with_graph_break_custom_name(self):
+    def func(a, b):
+      x = a / (torch.abs(a) + 1)
+      if b.sum() < 0:
+        b = b * -1
+      return x * b
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5], device="tpu"),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6], device="tpu"),
+    ]
+
+    tpu_backend = compile_lib.TpuBackend(debug=True)
+    compiled = torch.compile(
+        func, backend=tpu_backend, options={"name": "gb_test"}
+    )
+    _ = compiled(*inputs_val)
+    execs = tpu_backend._compiled_executables
+    self.assertLen(execs, 2)
+    self.assertRegex(execs[0].mlir_texts[0], r"module\s+@gb_test_split0_fwd")
+    self.assertRegex(execs[1].mlir_texts[0], r"module\s+@gb_test_split1_fwd")
+
+  def test_default_behavior_without_name(self):
+    def func(a, b):
+      return (a * b).sum()
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5], device="tpu"),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6], device="tpu"),
+    ]
+    # Without name in options, standard compilation runs normally
+    v = self._run_and_compare(func, inputs_val)
+    self.assertLen(v, 1)
+
+  def test_hlo_naming_sanitization_pressure_test(self):
+    """Tests that invalid characters in custom names do not cause crashes."""
+    test_cases = [
+        # Special symbols, punctuation, brackets, operators, spaces
+        (
+            "my-model.name/layer:0[linear] (v1) + #tag",
+            "my_model_name_layer_0_linear___v1_____tag",
+        ),
+        # Quotes and slashes
+        (
+            r"model\"name'with\slashes",
+            "model__name_with_slashes",
+        ),
+        # Only invalid/special characters
+        ("!@#$%^&*()-+=~`{}[]|:;'<>,.?/ ", "_" * 30),
+        # Unicode, non-ASCII and emojis
+        ("модель_🚀_test_123", "_________test_123"),
+        # Whitespace including tabs and newlines
+        ("  model\twith\nspaces  ", "__model_with_spaces__"),
+        # Purely numeric with symbols (MLIR quotes identifiers starting with digits)
+        ("123.456-789", "123_456_789"),
+    ]
+
+    def func(a, b):
+      return (a * b).sum()
+
+    for raw_name, expected_clean in test_cases:
+      with self.subTest(raw_name=raw_name):
+        sanitized = _backend._sanitize_module_name(raw_name)
+        self.assertEqual(sanitized, expected_clean)
+
+        a = torch.tensor([1.0, 2.0, 3.0], device="tpu", requires_grad=True)
+        b = torch.tensor([4.0, 5.0, 6.0], device="tpu", requires_grad=True)
+        tpu_backend = compile_lib.TpuBackend(debug=True)
+        compiled = torch.compile(
+            func, backend=tpu_backend, options={"name": raw_name}
+        )
+        out = compiled(a, b)
+        out.backward()
+        self.assertEqual(out.item(), 32.0)
+        execs = tpu_backend._compiled_executables
+        self.assertGreaterEqual(len(execs), 2)
+        self.assertRegex(
+            execs[0].mlir_texts[0],
+            rf'module\s+@"?{re.escape(expected_clean)}_split0_fwd',
+        )
+        self.assertRegex(
+            execs[1].mlir_texts[0],
+            rf'module\s+@"?{re.escape(expected_clean)}_split1_bwd',
+        )
+
+  def test_hlo_naming_with_empty_name(self):
+    """Tests that an empty name falls back to default module naming."""
+
+    def func(a, b):
+      return (a * b).sum()
+
+    a = torch.tensor([1.0, 2.0, 3.0], device="tpu")
+    b = torch.tensor([4.0, 5.0, 6.0], device="tpu")
+    tpu_backend = compile_lib.TpuBackend(debug=True)
+    compiled = torch.compile(func, backend=tpu_backend, options={"name": ""})
+    out = compiled(a, b)
+    self.assertEqual(out.item(), 32.0)
+    execs = tpu_backend._compiled_executables
+    self.assertNotEmpty(execs)
+    self.assertRegex(execs[0].mlir_texts[0], r"module\s+@tt_jit")
 
   def test_data_dependent_dynamic_op(self):
     """Test that a dynamo will break on data dependent ops.
@@ -909,6 +1028,33 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     v2 = w[16:48, 16:48]
     self._run_and_compare(fn, [v1, v2])
 
+  def test_different_storage_offsets(self):
+    # Reproduction for https://github.com/google-pytorch/torch_tpu/issues/3370
+    def scalar_view(offset: int):
+      base = torch.arange(129, dtype=torch.int32, device="tpu")
+      return base, base[offset]
+
+    def add_self(x):
+      return x + x
+
+    compiled_add_self = torch.compile(
+        add_self,
+        fullgraph=True,
+        dynamic=False,
+    )
+
+    # Compile and warm up using storage offset 128.
+    _, compile_scalar = scalar_view(128)
+    self.assertEqual(compile_scalar.storage_offset(), 128)
+    warm_output = compiled_add_self(compile_scalar)
+    self.assertEqual(warm_output.cpu().item(), 256)
+
+    # Same shape/dtype, but a different storage offset.
+    _, runtime_scalar = scalar_view(125)
+    self.assertEqual(runtime_scalar.storage_offset(), 125)
+    output = compiled_add_self(runtime_scalar)
+    self.assertEqual(output.cpu().item(), 250)
+
 
 class ModuleTest(seed_test_utils.RepeatableTest):
 
@@ -1246,6 +1392,28 @@ class ModuleTest(seed_test_utils.RepeatableTest):
       with self.subTest(shape=shape):
         inputs = [torch.randn(shape)]
         self._run_and_compare(GeqrfModule, inputs)
+
+  def test_masked_fill_inplace_overflow_tensor_value(self):
+    # Tests that masked_fill_ with an overflowing tensor value succeeds in TPU
+    # compiled mode.
+    #
+    # Makes sure TPU implementation for `masked_fill` has similar behavior to
+    # GPU when the conversion of `value` into the `self` dtype overflows.
+
+    def fn(self_tensor, mask, val_tensor):
+      return self_tensor.masked_fill_(mask, val_tensor)
+
+    compiled_fn = torch.compile(fn, backend="tpu")
+    self_tpu = torch.ones(2, 2, dtype=torch.uint8, device=torch.device("tpu"))
+    mask_tpu = torch.ones(2, 2, dtype=torch.bool, device=torch.device("tpu"))
+    val_tpu = torch.tensor(2**31, dtype=torch.int64, device=torch.device("tpu"))
+
+    # Compiled mode should succeed, even though eager mode errors due to
+    # overflow.
+    actual = compiled_fn(self_tpu, mask_tpu, val_tpu)
+    expected = torch.zeros(2, 2, dtype=torch.uint8)  # (uint8)(2**31) == 0
+
+    utils.assert_close(actual.cpu(), expected)
 
 
 def _reconstruct_none_tuple(inputs, outputs):

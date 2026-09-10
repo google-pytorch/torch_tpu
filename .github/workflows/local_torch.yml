@@ -68,7 +68,7 @@ jobs:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"  # Tag infrastructure-public-image-2c74567ee8e0
     steps:
       - name: Checkout TorchTPU
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Wait for Connection
         uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
         with:
@@ -92,8 +92,13 @@ jobs:
           pip download --no-deps --pre "${TORCH_PIN}" --index-url https://download.pytorch.org/whl/nightly/cpu -d dist/local
           ls -lh dist/local/
 
-          WHEEL_PATH=$(ls $(pwd)/dist/local/torch-*.whl | head -n 1)
-          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
+          # These steps run under `sh`, which has no arrays: the self-hosted
+          # runners execute `run:` blocks through the k8s container hook.
+          # `set --` puts the glob matches in the positional parameters, so
+          # "$1" is the wheel pip just downloaded.
+          set -- "${PWD}"/dist/local/torch-*.whl
+          WHEEL_PATH="$1"
+          echo "TORCH_SOURCE=$WHEEL_PATH" >> "$GITHUB_ENV"
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
       - name: Build TorchTPU wheel
         run: |
@@ -101,7 +106,7 @@ jobs:
             --config=wheel_common \
             --config=local_torch \
             --color=yes --curses=no \
-            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
 
           cp bazel-bin/ci/wheel/torch_tpu-*.whl dist/
       # The smoke tests install the freshly built wheel together with the
@@ -110,7 +115,7 @@ jobs:
         run: uvx nox --force-python 3.12 -s "smoke_test(cpu-local)"
 
   build_and_test_wheel:
-    name: "Build and Test Wheel on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    name: "Build and Test Wheel on ${{ matrix.job_info.runner }}"
     # Run nightly, or on PRs explicitly tagged with 'ci:local-torch'.
     if: >-
       github.event_name == 'schedule' ||
@@ -143,7 +148,7 @@ jobs:
     steps:
       # Checkout torch_tpu into its own subdirectory: ${{ github.workspace }}/torch_tpu
       - name: Checkout TorchTPU
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: torch_tpu
 
@@ -162,8 +167,9 @@ jobs:
           pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
           ls -lh dist/
 
-          WHEEL_PATH=$(ls $(pwd)/dist/torch-*.whl | head -n 1)
-          echo "TORCH_SOURCE=$WHEEL_PATH" >> $GITHUB_ENV
+          set -- "${PWD}"/dist/torch-*.whl
+          WHEEL_PATH="$1"
+          echo "TORCH_SOURCE=$WHEEL_PATH" >> "$GITHUB_ENV"
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
 
       # Build the TorchTPU wheel against the local PyTorch
@@ -174,7 +180,7 @@ jobs:
             --config=wheel_common \
             --config=local_torch \
             --color=yes --curses=no \
-            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
 
           cp bazel-bin/ci/wheel/torch_tpu-*.whl dist/
 
@@ -199,7 +205,7 @@ jobs:
             --google_default_credentials=true \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             --config=local_torch \
-            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
 
       - name: Test TorchTPU Wheel
         working-directory: ${{ github.workspace }}/torch_tpu
@@ -210,7 +216,7 @@ jobs:
             --google_default_credentials=true \
             --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
             --config=local_torch \
-            --repo_env=TORCH_SOURCE=$TORCH_SOURCE
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
 
   notify_failure:
     name: Notify Failed Runs
@@ -220,7 +226,7 @@ jobs:
     steps:
       - name: Check whether one of the jobs failed
         if: contains(needs.build_and_test_wheel.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b  # v1.2.0
+        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930  # v1.3.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           label-name: "ci:local-torch-failed"

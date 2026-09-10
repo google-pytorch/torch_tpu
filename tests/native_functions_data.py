@@ -78,7 +78,6 @@ UNREGISTERED_OPS = frozenset([
     '_linalg_eigh.eigenvalues',
     '_linalg_eigvals',
     '_linalg_slogdet.sign',
-    '_linalg_svd.U',
     '_lstm_mps',
     '_make_dep_token',
     '_make_per_channel_quantized_tensor',
@@ -175,7 +174,6 @@ UNREGISTERED_OPS = frozenset([
     '_weight_int4pack_mm_with_scales_and_zeros',
     '_weight_int8pack_mm',
     '_weight_norm_interface_backward',
-    'adaptive_max_pool2d.out',
     'adaptive_max_pool2d_backward.grad_input',
     'adaptive_max_pool3d.out',
     'adaptive_max_pool3d_backward.grad_input',
@@ -312,8 +310,6 @@ UNREGISTERED_OPS = frozenset([
     'nextafter.out',
     'nonzero_static',
     'nonzero_static.out',
-    'norm.dtype_out',
-    'norm.out',
     'ormqr',
     'ormqr.out',
     'poisson',
@@ -449,11 +445,17 @@ REGISTRATION_OVERRIDES = frozenset([
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.
     'gelu',
+    # gru.input is registered to provide an optimized fused StableHLO kernel
+    # on TPU, overriding the default PyTorch decomposition.
+    'gru.input',
     # TODO(b/525550199): Remove ldexp overrides once we upgrade to PyTorch
     # v2.13.
     'ldexp.Tensor',
     'ldexp.out',
     'ldexp_',
+    # lstm.input is registered to provide an optimized fused StableHLO kernel
+    # on TPU, overriding the default PyTorch decomposition.
+    'lstm.input',
     'native_layer_norm',  # pending removal
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.

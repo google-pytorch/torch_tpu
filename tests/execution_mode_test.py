@@ -20,6 +20,7 @@ import threading
 from typing import TypeAlias
 
 from absl.testing import absltest
+
 #  Keep import to avoid libtorch.so link error in OSS build.
 import torch  # pylint: disable=unused-import  # noqa: F401
 from torch_tpu._internal import execution_mode
@@ -138,6 +139,26 @@ class ExecutionModeTest(absltest.TestCase):  # ABSLTEST_OK=Execution mode test
 
     # Reset
     execution_mode.enable_cpu_fallback = False
+
+  def test_inplace_buffer_donation_mode(self):
+    """Tests that in-place buffer donation is a global setting shared across threads."""
+    event = threading.Event()
+
+    def _wait_and_check():
+      event.wait()
+      return execution_mode.disable_inplace_buffer_donation
+
+    expected_value = random.choice([True, False])
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+      futures = [executor.submit(_wait_and_check) for _ in range(100)]
+      execution_mode.disable_inplace_buffer_donation = expected_value
+      event.set()
+      for future in futures:
+        self.assertIs(future.result(), expected_value)
+
+    # Reset
+    execution_mode.disable_inplace_buffer_donation = False
 
 
 if __name__ == "__main__":

@@ -24,22 +24,22 @@ package(
 
 pybind_extension(
     name = "env",
-    srcs = ["//torch_tpu/csrc/internal:env.cc"],
+    srcs = ["//csrc/internal:env.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:native_scan_support",
+        "//csrc/common:utils",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:native_scan_support",
-        "//torch_tpu/csrc/common:utils",
     ],
 )
 
 pybind_extension(
     # Internal testing utilities.
     name = "testing",
-    srcs = ["//torch_tpu/csrc/internal:testing.cc"],
+    srcs = ["//csrc/internal:testing.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
@@ -48,18 +48,18 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
+        "//csrc/eager:device_gen_impl",
+        "//csrc/eager:events_queue",
+        "//csrc/eager:op_dispatcher",
+        "//csrc/eager:repeated_ops_heuristic",
+        "//csrc/eager:structured_log_buffer",
+        "//csrc/eager:tensor_to_buffer",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/common:pybind_error_utils",
-        "//torch_tpu/csrc/eager:device_gen_impl",
-        "//torch_tpu/csrc/eager:events_queue",
-        "//torch_tpu/csrc/eager:op_dispatcher",
-        "//torch_tpu/csrc/eager:repeated_ops_heuristic",
-        "//torch_tpu/csrc/eager:structured_log_buffer",
-        "//torch_tpu/csrc/eager:tensor_to_buffer",
         "@com_google_absl//absl/flags:flag",
         "@xla//xla/pjrt:pjrt_client",
     ],

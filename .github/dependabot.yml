@@ -12,19 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This file is used to configure Dependabot.
-# We do not use dependabot but there doesn't seem to be a good way to turn it
-# off, so this is designed to never find any updates to prevent it from spamming
-# us with PRs we don't want.
-# TODO(b/498208430): Determine if we can or want to use dependabot in the future
+# This file is used to configure Dependabot following
+# https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference.
+#
+# TODO(b/498208430): decide whether to extend dependabot usage besides GitHub actions.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
+    # "/" covers .github/workflows/ and action YAMLs in the root directory,
+    # but not composite actions in subdirectories.
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    # Bundle version bumps into one PR to denoise.
+    # If certain major releases block other version updates, split the group
+    # by using `update-types: ["minor", "patch"]` so majors arrive alone.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    # To avoid spams, allow exactly one PR per month (on the first day of each month). 
     schedule:
       interval: "monthly"
-    # Configure this look for updates in a directory that doesn't exist and
-    # target a branch that doesn't exist, so that it never finds anything
-    # to update.
-    directory: "/non-existent-directory"
-    target-branch: "non-existent-branch"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 1
+    # Skip releases younger than a week, so a compromised or regressed release
+    # has time to be fixed before it is picked up.
+    cooldown:
+      default-days: 7

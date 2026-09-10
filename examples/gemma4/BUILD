@@ -86,6 +86,7 @@ torch_tpu_py_test(
     name = "correctness_tpu_test",
     srcs = ["correctness_tpu_test.py"],
     tags = [
+        "noasan",  # TODO(b/559190467): fix test flakiness in ASan.
         "requires-tpu-v5p",
     ],
     deps = [

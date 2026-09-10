@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+    "torch_tpu_py_test",
+)
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -74,6 +79,7 @@ torch_tpu_py_library(
     ],
 )
 
+# buildifier: disable=forbidden-tag-requires-gpu
 torch_tpu_py_test(
     name = "llama3_2_1b_random_data_training_test_cuda",
     timeout = "long",
@@ -86,7 +92,7 @@ torch_tpu_py_test(
     notap = "this is a manual test",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
-        "requires-gpu-sm100-full-only",
+        "requires-gpu-sm100-full",
         "requires-net:external",
     ],
     deps = [
@@ -146,6 +152,7 @@ torch_tpu_py_test(
     ],
 )
 
+# buildifier: disable=forbidden-tag-requires-gpu
 torch_tpu_py_test(
     name = "llama3_2_1b_random_data_training_test_xla_cuda",
     timeout = "long",
@@ -158,7 +165,7 @@ torch_tpu_py_test(
     notap = "this is a manual test",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
-        "requires-gpu-sm100-full-only",
+        "requires-gpu-sm100-full",
         "requires-net:external",
     ],
     deps = [
@@ -179,6 +186,7 @@ torch_tpu_py_test(
     ],
 )
 
+# buildifier: disable=forbidden-tag-requires-gpu
 torch_tpu_py_test(
     name = "llama3_2_1b_training_test_cuda",
     timeout = "eternal",  # This causes the test to be skipped on TAP.
@@ -190,7 +198,7 @@ torch_tpu_py_test(
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
+        "requires-gpu-sm100-full",
         "requires-net:external",
     ],
     deps = [
@@ -251,6 +259,7 @@ torch_tpu_py_test(
     ],
 )
 
+# buildifier: disable=forbidden-tag-requires-gpu
 torch_tpu_py_test(
     name = "llama3_2_1b_training_test_xla_cuda",
     timeout = "eternal",  # This causes the test to be skipped on TAP.
@@ -261,7 +270,7 @@ torch_tpu_py_test(
     notap = "slow example",
     tags = [
         "cpu:4",  # For CUDA, the only choices are 1 or 4.
-        "requires-gpu-sm100-full-only",
+        "requires-gpu-sm100-full",
         "requires-net:external",
     ],
     deps = [

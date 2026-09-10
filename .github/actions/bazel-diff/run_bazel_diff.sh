@@ -14,17 +14,27 @@
 # limitations under the License.
 
 # Prerequisites: bazel-diff requires Git, Bazel >= 3.3.0 and Java >= 8.
-# https://github.com/Tinder/bazel-diff/tree/16.0.0?tab=readme-ov-file#prerequisites
+# https://github.com/Tinder/bazel-diff/tree/v46.1.0?tab=readme-ov-file#prerequisites
 # As of 2026-06, our Docker container has Git 2.34.1, Bazel 8.6.0 and Java 21.0.10.
 
 set -e
 
-WORKSPACE_DIR="${1:-$GITHUB_WORKSPACE}"
+WORKSPACE_DIR="${1:-${GITHUB_WORKSPACE:-.}}"
 BASE_SHA="${2}"
-CURRENT_SHA="${3}"
+CURRENT_SHA="${3:-HEAD}"
 BAZEL_CONFIG="${4}"
 EXTRA_FLAGS="${5}"
 DISABLE_BAZEL_DIFF="${6:-false}"
+
+if [ -n "$WORKSPACE_DIR" ] && [ -d "$WORKSPACE_DIR" ]; then
+  WORKSPACE_DIR="$(cd "$WORKSPACE_DIR" && pwd)"
+  cd "$WORKSPACE_DIR"
+fi
+
+# Resolve effective base SHA via centralized helper. If CURRENT_SHA is a merge
+# commit (synthetic PR merge), resolves to CURRENT_SHA^1 to isolate PR changes.
+RESOLVED_BASE="$(bash "${WORKSPACE_DIR}/ci/tools/resolve_base_sha.sh" "${CURRENT_SHA}" "${BASE_SHA}")"
+BASE_SHA="${RESOLVED_BASE}"
 
 # Check if global Bazel configuration were modified. If so, bypass bazel-diff
 # to guarantee a full build validation.
@@ -35,8 +45,16 @@ DISABLE_BAZEL_DIFF="${6:-false}"
 # impacted_targets.txt, and feed them back to Bazel. This introduces a slight
 # performance regression.
 if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
-  git fetch --depth=1 origin "$BASE_SHA"
+  git fetch --depth=1 origin "$BASE_SHA" 2>/dev/null || true
   CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$CURRENT_SHA")
+  echo "BASE_SHA=$BASE_SHA"
+  echo "CURRENT_SHA=$CURRENT_SHA"
+  echo "CHANGED_FILES:"
+  git diff --name-status "$BASE_SHA" "$CURRENT_SHA" || echo "$CHANGED_FILES"
+  echo ""
+  echo "Diff stat:"
+  git diff --stat "$BASE_SHA" "$CURRENT_SHA" || true
+  echo ""
 
   GLOBAL_BAZEL_CONFIGS=(  # One regex per line.
     # go/keep-sorted start
@@ -57,6 +75,15 @@ if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
     echo "Global Bazel configurations modified."
     echo "Forcing a full test run to ensure global configuration validity."
     DISABLE_BAZEL_DIFF="true"
+  fi
+
+  # Check if all modified files are documentation, images, or repo metadata.
+  # If so, they do not affect any build or test targets, so we can skip Bazel entirely.
+  NON_DOC_FILES=$(echo "$CHANGED_FILES" | grep -v -E '(\.md$|^docs/|(^|/)OWNERS|^LICENSE|^\.clang|^\.gitignore|^\.vscode/|\.png$|\.jpg$|\.jpeg$|\.svg$|\.webp$|\.gif$)' || true)
+  if [ -z "$NON_DOC_FILES" ]; then
+    echo "All modified files are documentation or repository metadata."
+    echo "No test targets impacted by these changes. Skipping Bazel entirely!"
+    exit 0
   fi
 fi
 
@@ -80,16 +107,17 @@ if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
 fi
 
 echo "Downloading bazel-diff..."
-# Pin to v16.0.0 because latest releases are missing bazel-diff_deploy.jar:
-# https://github.com/Tinder/bazel-diff/issues/320
+# Updated to v46.1.0 to include canonicalized rule hash inputs and resolve
+# non-deterministic target hash permutations:
+# https://github.com/Tinder/bazel-diff/issues/406
 curl -fLo /tmp/bazel-diff.jar --retry 5 --retry-connrefused \
-  https://github.com/Tinder/bazel-diff/releases/download/16.0.0/bazel-diff_deploy.jar
+  https://github.com/Tinder/bazel-diff/releases/download/v46.1.0/bazel-diff_deploy.jar
 
 echo "Computing impacted targets between $BASE_SHA and $CURRENT_SHA..."
 
 echo "--- Generating Base Hashes ---"
 echo "PR detected. Fetching exact base SHA: $BASE_SHA"
-git fetch --depth=1 origin "$BASE_SHA"
+git fetch --depth=1 origin "$BASE_SHA" 2>/dev/null || true
 git checkout "$BASE_SHA"
 java -jar /tmp/bazel-diff.jar generate-hashes -w "$WORKSPACE_DIR" "$WORKSPACE_DIR/base_hashes.json" \
   --useCquery \
@@ -106,6 +134,7 @@ echo "--- Determining Impacted Targets ---"
 java -jar /tmp/bazel-diff.jar get-impacted-targets \
   -sh "$WORKSPACE_DIR/base_hashes.json" \
   -fh "$WORKSPACE_DIR/pr_hashes.json" \
+  -w "$WORKSPACE_DIR" \
   -o "$WORKSPACE_DIR/impacted_targets.txt"
 
 echo "--- Running Impacted Bazel Tests ---"

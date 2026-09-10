@@ -131,18 +131,18 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "tpu_distributed",
-    srcs = ["//torch_tpu/csrc/internal/distributed:tpu_distributed.cc"],
+    srcs = ["//csrc/internal/distributed:tpu_distributed.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:error_utils",
+        "//csrc/distributed:process_group_tpu",
+        "//csrc/distributed:utils",
+        "//csrc/pjrt:pjrt_state",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/distributed:process_group_tpu",
-        "//torch_tpu/csrc/distributed:utils",
-        "//torch_tpu/csrc/pjrt:pjrt_state",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:check",
     ],

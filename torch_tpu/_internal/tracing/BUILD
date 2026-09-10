@@ -37,14 +37,14 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "_tpu_torch_tracing",
-    srcs = ["//torch_tpu/csrc/internal/tracing:tracing_py.cc"],
+    srcs = ["//csrc/internal/tracing:tracing_py.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/eager:structured_log_buffer",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/eager:structured_log_buffer",
         "@com_google_absl//absl/time",
     ],
 )

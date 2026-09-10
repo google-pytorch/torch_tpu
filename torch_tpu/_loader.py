@@ -15,7 +15,6 @@
 """Module to handle autoloading torch_tpu as torch.tpu."""
 
 import functools
-import inspect
 import os
 import sys
 import threading
@@ -31,6 +30,8 @@ import torch
 import torch._dynamo.backends.registry as backend_registry
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.device_interface import register_interface_for_device
+from torch.utils import _pytree as pytree
+from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.device import _device_module
 from torch_tpu._internal.device import _tpu_backend_config
 from torch_tpu._internal.distributed import tpu_distributed
@@ -52,27 +53,45 @@ if not hasattr(torch.backends, "tpu"):
   torch.backends.tpu = _tpu_backend_config._TpuBackendConfig()  # pyrefly: ignore[missing-attribute]
 
 
-def _get_default_backend_impl() -> backend_registry.CompilerFn:
+def _get_default_backend_impl(example_inputs) -> backend_registry.CompilerFn:
   """Checks for TPU and returns the appropriate backend function.
 
   Note: The reason for this auxiliary method rather than just passing the "tpu"
   string in the monkeypatched torch.compile is that we need InitGoogle to be
   called before we call "tpu_device", therefore we defer till call time.
 
+  Args:
+    example_inputs: The example inputs provided for the model to execute.
+
   Returns:
     The appropriate backend function for `torch.compile`.
   """
+  flat_inputs, _ = pytree.tree_flatten(example_inputs)
+
   if hasattr(torch, "tpu"):
-    return backend_registry.lookup_backend("tpu")
-  else:
-    original_signature = inspect.signature(_torch_compile)
-    default_backend = original_signature.parameters["backend"].default
-    return backend_registry.lookup_backend(default_backend)
+    for x in flat_inputs:
+      if isinstance(x, torch.Tensor) and x.device.type in (
+          "tpu",
+          "xla_cpu",
+          "xla_cuda",
+      ):
+        return backend_registry.lookup_backend("tpu")
+
+  # At this point all inputs are in CPU so call the default backend in such a
+  # case.
+  #
+  # Hard-coding the default backend is fine for now as monkey-patching
+  # `torch.compile` isn't expected to be a long-term solution. The previous
+  # way of using the inspect module wasn't working since torch.compile is an
+  # overloaded method.
+  # We must specify aot_eager for cpu graphs internally since Inductor+CPU is
+  # not supported.
+  return backend_registry.lookup_backend(_backend.get_default_cpu_backend())
 
 
 def _default_backend_selector(graph_module, example_inputs, **kwargs):
   """The backend callable to pass to torch.compile."""
-  backend = _get_default_backend_impl()
+  backend = _get_default_backend_impl(example_inputs)
   return backend(graph_module, example_inputs, **kwargs)
 
 

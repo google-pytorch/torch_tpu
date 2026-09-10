@@ -279,12 +279,19 @@ def get_module_registry():
   return module_registry.ModuleRegistry()
 
 
+def tie_model_weights(model: torch.nn.Module) -> None:
+  """Ties weights in the model if the model supports weight tying."""
+  tie_weights = getattr(model, "tie_weights", None)
+  if callable(tie_weights):
+    tie_weights()
+
+
 def _precompute_attention_mask(
     config: Any,
     example_inputs: dict[str, Any],
     device: torch.device,
     weights_dtype: torch.dtype,
-    masking_device: str | torch.device = "tpu",
+    masking_device: str | torch.device | None = None,
 ) -> Any:
   """Precomputes attention mask and moves to device.
 
@@ -300,6 +307,9 @@ def _precompute_attention_mask(
   bypassing
   these checks completely.
   """
+  if masking_device is None:
+    masking_device = device
+
   input_ids = example_inputs["input_ids"]
   batch_size, seq_len = input_ids.shape
 
@@ -527,19 +537,19 @@ def huggingface_llm_model_builder(
     )
 
   model: torch.nn.Module
-  if dist_strat == DistStrat.NONE:
+  if dist_strat in (DistStrat.NONE, DistStrat.DDP):
     model = model_cpu.to(device)
-  elif dist_strat == DistStrat.DDP:
-    model = model_cpu.to(device)
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
-    model = parallel.DistributedDataParallel(
-        model,
-        init_sync=False,
-        broadcast_buffers=False,
-        gradient_as_bucket_view=False,
-    )
+    tie_model_weights(model)
+    if dist_strat == DistStrat.DDP:
+      model.gradient_checkpointing_enable(
+          gradient_checkpointing_kwargs={"use_reentrant": False}
+      )
+      model = parallel.DistributedDataParallel(
+          model,
+          init_sync=False,
+          broadcast_buffers=False,
+          gradient_as_bucket_view=False,
+      )
   elif dist_strat == DistStrat.FSDP:
     with torch.device("meta"):
       model_meta = module_spec.module_factory().to(weights_dtype)
@@ -950,8 +960,11 @@ def ml_layer_model_builder(
     in_channels = kwargs["in_channels"]
     out_channels = kwargs["out_channels"]
     kernel_size = kwargs["kernel_size"]
-    stride = kwargs["stride"]
-    padding = kwargs["padding"]
+    stride = kwargs.get("stride", 1)
+    padding = kwargs.get("padding", 0)
+    dilation = kwargs.get("dilation", 1)
+    groups = kwargs.get("groups", 1)
+    bias = kwargs.get("bias", True)
     height = kwargs["height"]
     width = kwargs["width"]
 
@@ -964,6 +977,9 @@ def ml_layer_model_builder(
           kernel_size,
           stride,
           padding,
+          dilation,
+          groups,
+          bias,
           dtype,
       ):
         super().__init__()
@@ -973,6 +989,9 @@ def ml_layer_model_builder(
             kernel_size,
             stride=stride,
             padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
             dtype=dtype,
         )
 
@@ -985,6 +1004,9 @@ def ml_layer_model_builder(
         kernel_size,
         stride,
         padding,
+        dilation,
+        groups,
+        bias,
         dtype=weights_dtype,
     )
     example_inputs = torch.randn(
@@ -992,6 +1014,9 @@ def ml_layer_model_builder(
         dtype=weights_dtype,
         device=device,
     )
+    if kwargs.get("channels_last", False):
+      model = model.to(memory_format=torch.channels_last)
+      example_inputs = example_inputs.to(memory_format=torch.channels_last)
   elif model_name == "nn.RMSNorm":
     num_features = kwargs["num_features"]
 
@@ -2212,6 +2237,162 @@ def ml_layer_model_builder(
         ),
     )
 
+  elif model_name == "torch.sort":
+    dim = kwargs.get("dim", None)
+    descending = kwargs.get("descending", False)
+    stable = kwargs.get("stable", False)
+    num_features = kwargs["num_features"]
+
+    class SortModel(torch.nn.Module):
+      """Sort op benchmark model wrapper.
+
+      Wraps torch.sort behind a trainable nn.Linear so that in training mode the
+      backward pass propagates a real gradient to a parameter (proj.weight).
+      The benchmark harness only synchronizes model.parameters() gradients, so
+      without a parameter on the differentiable path the backward would never be
+      forced.
+      """
+
+      def __init__(self, num_features, dim, descending, stable, dtype):
+        super().__init__()
+        self.proj = torch.nn.Linear(num_features, num_features, dtype=dtype)
+        self.dim = dim
+        self.descending = descending
+        self.stable = stable
+
+      def forward(self, x):
+        x = self.proj(x)
+        # torch.sort requires an int dim; default to the last dimension (-1)
+        # when dim is unset.
+        dim = self.dim if self.dim is not None else -1
+        values, indices = torch.sort(
+            x,
+            dim=dim,
+            descending=self.descending,
+            stable=self.stable,
+        )
+        return values, indices
+
+    model = SortModel(
+        num_features, dim, descending, stable, dtype=weights_dtype
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randn(
+            (bs, seq, num_features),
+            dtype=weights_dtype,
+            device=device,
+        ),
+    )
+
+  elif model_name == "nn.LSTM":
+    input_size = kwargs["input_size"]
+    hidden_size = kwargs["hidden_size"]
+    num_layers = kwargs.get("num_layers", 1)
+    bias = kwargs.get("bias", True)
+    batch_first = kwargs.get("batch_first", True)
+    bidirectional = kwargs.get("bidirectional", False)
+
+    class LstmModel(torch.nn.Module):
+
+      def __init__(
+          self,
+          input_size,
+          hidden_size,
+          num_layers,
+          bias,
+          batch_first,
+          bidirectional,
+          dtype,
+      ):
+        super().__init__()
+        self.lstm = torch.nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+            dtype=dtype,
+        )
+
+      def forward(self, x):
+        return self.lstm(x)[0]
+
+    model = LstmModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=bias,
+        batch_first=batch_first,
+        bidirectional=bidirectional,
+        dtype=weights_dtype,
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randn(
+            (bs, seq, input_size) if batch_first else (seq, bs, input_size),
+            dtype=weights_dtype,
+            device=device,
+            requires_grad=is_training,
+        ),
+    )
+
+  elif model_name == "nn.GRU":
+    input_size = kwargs["input_size"]
+    hidden_size = kwargs["hidden_size"]
+    num_layers = kwargs.get("num_layers", 1)
+    bias = kwargs.get("bias", True)
+    batch_first = kwargs.get("batch_first", True)
+    bidirectional = kwargs.get("bidirectional", False)
+
+    class GruModel(torch.nn.Module):
+
+      def __init__(
+          self,
+          input_size,
+          hidden_size,
+          num_layers,
+          bias,
+          batch_first,
+          bidirectional,
+          dtype,
+      ):
+        super().__init__()
+        self.gru = torch.nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bias=bias,
+            batch_first=batch_first,
+            bidirectional=bidirectional,
+            dtype=dtype,
+        )
+
+      def forward(self, x):
+        return self.gru(x)[0]
+
+    model = GruModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        bias=bias,
+        batch_first=batch_first,
+        bidirectional=bidirectional,
+        dtype=weights_dtype,
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randn(
+            (bs, seq, input_size) if batch_first else (seq, bs, input_size),
+            dtype=weights_dtype,
+            device=device,
+            requires_grad=is_training,
+        ),
+    )
   else:
     raise ValueError(f"Unknown ML layer model: {model_name}")
 

@@ -143,6 +143,125 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
         -1.0,
     )
 
+  def test_tpu_peak_memory_reset_and_query(self):
+    device = torch.device('tpu')
+    device_utils.reset_peak_memory_stats('tpu')
+
+    initial_peak = device_utils.get_peak_memory_hbm('tpu')
+    self.assertGreaterEqual(initial_peak, 0.0)
+
+    # Allocate 16MB on TPU (4M float32 elements = 16MB)
+    size_in_bytes = 16 * 1024 * 1024
+    num_elements = size_in_bytes // 4
+    t = torch.randn(num_elements, device=device)
+    torch.accelerator.synchronize()
+
+    peak_after_alloc = device_utils.get_peak_memory_hbm('tpu')
+    self.assertGreaterEqual(peak_after_alloc, 16.0)
+
+    # Free tensor and verify that before reset, the high watermark remains
+    del t
+    torch.accelerator.synchronize()
+
+    peak_before_reset = device_utils.get_peak_memory_hbm('tpu')
+    self.assertEqual(peak_before_reset, peak_after_alloc)
+
+    # Reset peak memory stats and verify that peak memory is cleared
+    device_utils.reset_peak_memory_stats('tpu')
+    peak_after_reset = device_utils.get_peak_memory_hbm('tpu')
+    self.assertLess(peak_after_reset, peak_after_alloc)
+
+  def test_reset_peak_memory_stats_unsupported_device(self):
+    with self.assertRaises(ValueError):
+      device_utils.reset_peak_memory_stats('unsupported_device')
+
+  def test_reset_peak_memory_stats_cpu(self):
+    # CPU should be a safe no-op
+    device_utils.reset_peak_memory_stats('cpu')
+
+  def test_get_peak_memory_hbm_zero_bytes(self):
+    with mock.patch.object(
+        torch.accelerator, 'max_memory_allocated', return_value=0
+    ):
+      # Verifies that 0 bytes allocated is accurately reported as 0.0 MB rather
+      # than falling back to XProf (-1.0 MB).
+      self.assertEqual(device_utils.get_peak_memory_hbm('tpu'), 0.0)
+
+  def test_get_peak_memory_hbm_tpu_fallback_when_accelerator_raises(self):
+    with mock.patch.object(
+        torch.accelerator,
+        'max_memory_allocated',
+        side_effect=RuntimeError('Accelerator query failed'),
+    ), mock.patch.object(
+        device_utils, '_get_peak_hbm_memory_mb', return_value=123.45
+    ) as mock_fallback:
+      result = device_utils.get_peak_memory_hbm(
+          'tpu', session_id='s1', xprof_client=mock.MagicMock()
+      )
+      self.assertEqual(result, 123.45)
+      mock_fallback.assert_called_once()
+
+  def test_get_peak_memory_hbm_tpu_fallback_without_accelerator_api(self):
+    with mock.patch.object(
+        torch, 'accelerator', create=True, spec=[]
+    ), mock.patch.object(
+        device_utils, '_get_peak_hbm_memory_mb', return_value=99.0
+    ) as mock_fallback:
+      result = device_utils.get_peak_memory_hbm(
+          'tpu', session_id='s1', xprof_client=mock.MagicMock()
+      )
+      self.assertEqual(result, 99.0)
+      mock_fallback.assert_called_once()
+
+  def test_get_peak_memory_hbm_xla_cuda(self):
+    with mock.patch.object(
+        torch.accelerator, 'max_memory_allocated', return_value=32 * 1024 * 1024
+    ):
+      self.assertEqual(device_utils.get_peak_memory_hbm('xla_cuda'), 32.0)
+
+  def test_get_peak_memory_hbm_cuda(self):
+    with mock.patch.object(
+        torch.cuda.memory, 'max_memory_allocated', return_value=64 * 1024 * 1024
+    ):
+      self.assertEqual(device_utils.get_peak_memory_hbm('cuda'), 64.0)
+
+  def test_get_peak_memory_hbm_cpu(self):
+    mem = device_utils.get_peak_memory_hbm('cpu')
+    self.assertGreater(mem, 0.0)
+
+  def test_get_peak_memory_hbm_xla_cpu_and_jax(self):
+    with mock.patch.object(
+        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
+    ) as mock_fallback:
+      self.assertEqual(device_utils.get_peak_memory_hbm('xla_cpu'), 42.0)
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
+      self.assertEqual(mock_fallback.call_count, 2)
+
+  def test_get_peak_memory_hbm_unsupported_device(self):
+    with self.assertRaises(ValueError):
+      device_utils.get_peak_memory_hbm('unsupported_device')
+
+  def test_reset_peak_memory_stats_cuda(self):
+    with mock.patch.object(
+        torch.cuda.memory, 'reset_max_memory_allocated'
+    ) as mock_reset:
+      device_utils.reset_peak_memory_stats('cuda')
+      mock_reset.assert_called_once()
+
+  def test_reset_peak_memory_stats_xla_cuda(self):
+    with mock.patch.object(
+        torch.accelerator, 'synchronize'
+    ) as mock_sync, mock.patch.object(
+        torch.accelerator, 'reset_peak_memory_stats'
+    ) as mock_reset:
+      device_utils.reset_peak_memory_stats('xla_cuda')
+      mock_sync.assert_called_once()
+      mock_reset.assert_called_once()
+
+  def test_reset_peak_memory_stats_xla_cpu_and_jax(self):
+    device_utils.reset_peak_memory_stats('xla_cpu')
+    device_utils.reset_peak_memory_stats('jax')
+
 
 if __name__ == '__main__':
   absltest.main()

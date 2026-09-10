@@ -27,7 +27,6 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
-from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
 
 
 class ShapeBoundInfo(NamedTuple):
@@ -79,7 +78,7 @@ def _get_example_inputs(
       aligned_bounds.append(bounds_obj)
 
     elif isinstance(arg, torch.SymInt):
-      _, upper = get_symint_bounds(arg)
+      upper = sym_shape_manager.get_symint_upper_bound(arg)
       updated_example_inputs.append(upper)
       aligned_bounds.append(None)
       # Add an input for the runtime size placeholder for the symint.
@@ -532,15 +531,17 @@ class DynamicCompiler(compiler.Compiler):
   def __init__(
       self,
       compilation_context: compiler.CompilationContext | None = None,
-      debug: bool = False,
+      *,
+      debug: bool | compiler.TpuCompileDebug | None = None,
   ):
     """Initializes the DynamicCompiler instance.
 
     Args:
       compilation_context: A `compiler.CompilationContext` instance used for
         maintaining compilation state.
-      debug: A `bool` that, when `True`, enables debug logging and artifact
-        generation.
+      debug: Optional TpuCompileDebug container or bool for recording
+        compilation debug artifacts. Note: Passing a bool is deprecated; pass a
+        TpuCompileDebug container instead.
     """
     if compilation_context is None:
       compilation_context = compiler.CompilationContext()
@@ -566,6 +567,7 @@ class DynamicCompiler(compiler.Compiler):
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
       is_fwd: bool = True,
+      module_name: str | None = None,
   ) -> _DynamicTpuCompiledExecutable:
     """Called by AOT Autograd to compile the graph.
 
@@ -573,6 +575,7 @@ class DynamicCompiler(compiler.Compiler):
       graph_module: The FX graph module to be compiled.
       example_inputs: A list of example inputs for the graph module.
       is_fwd: Indicates whether the forward or backward pass is being compiled.
+      module_name: The name for the compiled MLIR module.
 
     Returns:
       A callable `_DynamicTpuCompiledExecutable` that wraps the compiled model
@@ -586,6 +589,10 @@ class DynamicCompiler(compiler.Compiler):
 
     # Create a SymInt shape manager.
     sym_shape_manager = SymShapeManager(graph_module, example_inputs)
+
+    # Validate bounds. If the bounds are not valid, this may lead to MLIR error
+    # hence we raise an error here.
+    sym_shape_manager.validate_bounds()
 
     # Add bound checks on symints. This forces dynamo to trigger a recompilation
     # if the bound constraint isn't satisfied.
@@ -625,6 +632,7 @@ class DynamicCompiler(compiler.Compiler):
           is_fwd=is_fwd,
           bounds=aligned_bounds,
           dynamic_outputs=dynamic_outputs,
+          module_name=module_name,
       )
     except (RuntimeError, ValueError) as e:
       raise NotImplementedError(

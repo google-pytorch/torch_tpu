@@ -273,7 +273,7 @@ torch_tpu_py_test(
     ],
 )
 
-# buildozer: disable=forbidden-tag-requires-gpu
+# buildifier: disable=forbidden-tag-requires-gpu
 torch_tpu_py_test(
     name = "qwen3_dynamic_kv_cache_b200",
     timeout = "long",  # 15 minutes
@@ -289,7 +289,7 @@ torch_tpu_py_test(
         "cpu:4",
         "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
-        "requires-gpu-sm100-full-only",
+        "requires-gpu-sm100-full",
         "requires-net:external",  # Needed to access remote files.
     ],
     deps = [
@@ -357,13 +357,13 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "qwen3_0_6b_forward_test_v100",
+    name = "qwen3_0_6b_forward_test_a100",
     srcs = ["qwen3_0_6b_forward_test.py"],
     args = ["--device=cuda"],
     main = "qwen3_0_6b_forward_test.py",
     notap = "slow example",
     tags = [
-        "requires-gpu-sm70-only",  # v100 has 16 or 32 GB HBM.
+        "requires-gpu-sm80",
     ],
     deps = [
         "//examples/huggingface_transformers:model_configs",
@@ -385,7 +385,7 @@ torch_tpu_py_test(
     main = "qwen3_0_6b_forward_test.py",
     notap = "slow example",
     tags = [
-        "requires-gpu-sm80-only",
+        "requires-gpu-sm80",
     ],
     deps = [
         "//examples/huggingface_transformers:model_configs",

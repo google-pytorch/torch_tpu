@@ -78,6 +78,10 @@ _MASKED_SOFTMAX_BENCHMARK_NAME = "masked_softmax"
 _NATIVE_MULTI_HEAD_ATTENTION_BENCHMARK_NAME = "native_multi_head_attention"
 _TRANSFORMER_ENCODER_LAYER_FWD_BENCHMARK_NAME = "transformer_encoder_layer_fwd"
 _TOPK_LAYER_BENCHMARK_NAME = "topk"
+_SORT_LAYER_BENCHMARK_NAME = "sort"
+_LSTM_LAYER_BENCHMARK_NAME = "lstm"
+
+_GRU_LAYER_BENCHMARK_NAME = "gru"
 
 
 _DYNAMIC_SKIPS = {
@@ -331,6 +335,10 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
                 "kernel_size": layer_config.kernel_size,
                 "stride": layer_config.stride,
                 "padding": layer_config.padding,
+                "dilation": layer_config.dilation,
+                "groups": layer_config.groups,
+                "bias": layer_config.bias,
+                "channels_last": layer_config.channels_last,
                 "height": layer_config.height,
                 "width": layer_config.width,
             },
@@ -1322,7 +1330,7 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
   @parameterized.named_parameters(
       test_utils.generate_layer_test_configs(
           (common.RunMode.COMPILED,),
-          (False,),
+          (True, False),
           layer_configs.CONV1D_CONFIGS,
       )
   )
@@ -1611,6 +1619,38 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
 
   @parameterized.named_parameters(
       test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.SORT_CONFIGS
+      )
+  )
+  def test_sort(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="torch.sort",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "num_features": layer_config.num_features,
+                "dim": layer_config.dim,
+                "descending": layer_config.descending,
+                "stable": layer_config.stable,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _SORT_LAYER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
           _ALL_RUN_MODES,
           (True, False),
           layer_configs.TRANSFORMER_ENCODER_LAYER_FWD_CONFIGS,
@@ -1647,6 +1687,74 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
         config,
         _TRANSFORMER_ENCODER_LAYER_FWD_BENCHMARK_NAME,
         microbenchmark_name,
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.LSTM_CONFIGS
+      )
+  )
+  def test_lstm(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nn.LSTM",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "input_size": layer_config.input_size,
+                "hidden_size": layer_config.hidden_size,
+                "num_layers": layer_config.num_layers,
+                "bias": layer_config.bias,
+                "batch_first": layer_config.batch_first,
+                "bidirectional": layer_config.bidirectional,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _LSTM_LAYER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.GRU_CONFIGS
+      )
+  )
+  def test_gru(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nn.GRU",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "input_size": layer_config.input_size,
+                "hidden_size": layer_config.hidden_size,
+                "num_layers": layer_config.num_layers,
+                "bias": layer_config.bias,
+                "batch_first": layer_config.batch_first,
+                "bidirectional": layer_config.bidirectional,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _GRU_LAYER_BENCHMARK_NAME, microbenchmark_name
     )
 
 

@@ -86,12 +86,12 @@ torch_tpu_py_test(
         ":test_fixtures",
         ":test_utils",
         ":utils",
+        "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/dynamism",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
     ],
 )
 

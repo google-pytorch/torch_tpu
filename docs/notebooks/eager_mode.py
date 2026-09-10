@@ -48,7 +48,7 @@ def _(mo):
     | :--- | :--- | :--- |
     | **Strict Eager** | `EagerMode.DEFER_NEVER` | **The default mode.** Operations are dispatched one at a time and the execution is asynchronous. This aligns with standard PyTorch Eager mode on GPU. |
     | **Debug Eager** | `EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING` | **Synchronous mode.** Operations are dispatched one at a time but execution is synchronous. This mode can also be enabled with the TPU_LAUNCH_BLOCKING="1" environment variable. This execution mode is similar to the CUDA_LAUNCH_BLOCKING environment variable. |
-    | **Fused Eager** | `EagerMode.DEFER_AND_FUSE` | **Optimized mode.** Groups multiple operations together, allowing the XLA compiler to fuse across operation boundaries for high performance. This mode can also be enabled with the TPU_DEFER_AND_FUSE="1" environment variable.|
+    | **Fused Eager** | `EagerMode.DEFER_AND_FUSE` | **Optimized mode.** Groups multiple operations together, allowing the XLA compiler to fuse across operation boundaries for high performance. This mode can also be enabled with the TORCH_TPU_DEFER_AND_FUSE="1" environment variable.|
 
 
     ### **Switching Modes**

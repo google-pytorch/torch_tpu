@@ -39,6 +39,28 @@ def run_scatter_wrong_number_inputs(num_inputs: int) -> None:
         for _ in range(num_inputs)
     ]
   output = torch.empty(size, device="tpu", dtype=torch.float32)
+
+  # In PyTorch distributed, parameter validation for root-specific inputs occurs
+  # immediately on rank 0 prior to collective dispatch. If rank 0 raises an
+  # exception and exits while non-root ranks (1..N-1) call dist.scatter(), the
+  # non-root ranks enter the C++ collective wait queue and deadlock waiting for
+  # rank 0, causing test timeouts in OSS CI.
+  #
+  # We synchronize the validation status across all ranks beforehand:
+  # - Rank 0 invokes dist.scatter() to trigger the expected RuntimeError.
+  # - Non-root ranks exit cleanly instead of blocking indefinitely in C++.
+  is_valid = torch.tensor(
+      [1 if (inputs is None or len(inputs) == world_size) else 0],
+      device="tpu",
+      dtype=torch.int32,
+  )
+  dist.broadcast(is_valid, src=src_rank)
+
+  if is_valid.item() == 0:
+    if rank == src_rank:
+      torch.distributed.scatter(output, inputs, src=src_rank)
+    return
+
   torch.distributed.scatter(output, inputs, src=src_rank)
 
 
@@ -59,6 +81,25 @@ def run_scatter_wrong_shape_output(
         for _ in range(world_size)
     ]
   output = torch.empty(output_shape, device="tpu", dtype=torch.float32)
+
+  # Output shape vs. input shape validation only fails on rank 0 because
+  # non-root ranks have `inputs = None`. Non-root ranks will not raise this
+  # validation error and would otherwise block inside dist.scatter() waiting
+  # for rank 0.
+  # We broadcast the validation status from rank 0 so that only rank 0 triggers
+  # the targeted error while peer ranks exit cleanly.
+  is_valid = torch.tensor(
+      [1 if (inputs is None or inputs[0].shape == output.shape) else 0],
+      device="tpu",
+      dtype=torch.int32,
+  )
+  dist.broadcast(is_valid, src=src_rank)
+
+  if is_valid.item() == 0:
+    if rank == src_rank:
+      torch.distributed.scatter(output, inputs, src=src_rank)
+    return
+
   torch.distributed.scatter(output, inputs, src=src_rank)
 
 
@@ -80,6 +121,27 @@ def run_scatter_mismatch_input_shapes(
     ]
     inputs[0] = torch.zeros(mismatch_shape, device="tpu", dtype=torch.float32)
   output = torch.empty(shape, device="tpu", dtype=torch.float32)
+
+  # Mismatched input shapes among the list of tensors is an error caught
+  # only on the root rank. If non-root ranks enter dist.scatter(), they hang
+  # indefinitely when rank 0 crashes early with the RuntimeError.
+  # Broadcast the validity flag to ensure non-root ranks do not call scatter.
+  is_valid = torch.tensor(
+      [
+          1
+          if (inputs is None or all(t.shape == inputs[0].shape for t in inputs))
+          else 0
+      ],
+      device="tpu",
+      dtype=torch.int32,
+  )
+  dist.broadcast(is_valid, src=src_rank)
+
+  if is_valid.item() == 0:
+    if rank == src_rank:
+      torch.distributed.scatter(output, inputs, src=src_rank)
+    return
+
   torch.distributed.scatter(output, inputs, src=src_rank)
 
 

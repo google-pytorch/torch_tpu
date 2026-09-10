@@ -42,6 +42,22 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "sym_constraint_test",
+    srcs = ["sym_constraint_test.py"],
+    notest_oss = "OSS needs to be updated with the latest libtpu release that contains cl/904008746.",
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "generative_ops_test",
     srcs = ["generative_ops_test.py"],
     notest_oss = "OSS needs to be updated with the latest libtpu release for bounded dynamism.",
@@ -92,6 +108,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "symbol_bounds_test",
+    srcs = ["symbol_bounds_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile/dynamic:symbol_bounds",
+    ],
+)
+
+torch_tpu_py_test(
     name = "sym_shape_manager_test",
     srcs = ["sym_shape_manager_test.py"],
     deps = [
@@ -108,6 +137,7 @@ torch_tpu_py_test(
     name = "graph_transformations_test",
     srcs = ["graph_transformations_test.py"],
     deps = [
+        "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
@@ -115,7 +145,6 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/compile/dynamic:graph_transformations",
         "//torch_tpu/_internal/compile/dynamic:sym_shape_manager",
         "//torch_tpu/_internal/compile/dynamic:view_ops_passes",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
     ],
 )
 
@@ -133,6 +162,20 @@ torch_tpu_py_test(
         "//torch_tpu",
         "//torch_tpu/_internal/compile:tpu_backend",
         "//torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "view_decomposition_test",
+    srcs = ["view_decomposition_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile/dynamic:view_decomposition",
+        "//torch_tpu/_internal/utils:test_utils",
+        "@pypi//sympy",
     ],
 )
 

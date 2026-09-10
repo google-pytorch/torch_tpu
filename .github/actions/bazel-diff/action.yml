@@ -17,10 +17,9 @@ description: 'Calculates impacted Bazel targets using bazel-diff and runs them.'
 inputs:
   base_sha:
     description: >-
-      Base commit SHA for diff comparison.
-      On pull request events, pass the base branch tip the synthetic merge commit
-      is built on rather than the event's base SHA, which is a stale snapshot
-      upon PR creation. See https://github.com/orgs/community/discussions/59677.
+      Base commit SHA for diff comparison. Optional.
+      If omitted or running on a PR synthetic merge commit, the base SHA is
+      automatically resolved to the CI-runtime parent commit (CURRENT_SHA^1).
     required: false
     default: ''
   current_sha:

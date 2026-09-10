@@ -154,7 +154,6 @@ torch_tpu_py_test(
     env = {
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "/tmp/collective_ops_test",
     },
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 12,
     tags = if_oss(
         ["exclusive"],
@@ -171,6 +170,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
@@ -209,6 +209,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
+        "//tests:oss_utils",
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/distributed:multiprocessing",
@@ -275,7 +276,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "alltoall_collective_test",
     srcs = ["alltoall_collective_test.py"],
-    shard_count = 4,
+    shard_count = 8,
     tags = if_oss(
         ["exclusive"],
         [],
@@ -446,8 +447,12 @@ torch_tpu_py_test(
     args = [
         "--test_mode=tpu",
     ],
-    env = {"TORCH_SHOW_CPP_STACKTRACES": "0"},
-    notest_oss = "fix hang in OSS",  # TODO
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "0",
+        # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
+        # exception construction in multi-process distributed tests in OSS CI.
+        "TORCH_DISABLE_ADDR2LINE": "1",
+    },
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -474,9 +479,13 @@ torch_tpu_py_test(
     args = [
         "--test_mode=cov",
     ],
-    env = {"TORCH_SHOW_CPP_STACKTRACES": "1"},
+    env = {
+        "TORCH_SHOW_CPP_STACKTRACES": "1",
+        # Disables addr2line C++ stack trace symbolization to prevent deadlocks/hangs during
+        # exception construction in multi-process distributed tests in OSS CI.
+        "TORCH_DISABLE_ADDR2LINE": "1",
+    },
     main = "scatter_errors_test.py",
-    notest_oss = "fix hang in OSS",  # TODO
     shard_count = 3,
     tags = if_oss(
         ["exclusive"],
@@ -684,10 +693,12 @@ torch_tpu_py_test(
     srcs = ["ragged_all_to_all_test.py"],
     nonightly_oss = "This test requires TPU v7. Exclude this test from workflow nightly_tpu.yml running on TPU v6.",
     nopresubmit = "Requires 4 tpu v7x chips.",
+    shard_count = 3,
     tags = [
         "noasan",  # TODO(b/497035517): fix the test in asan mode.
         "nomsan",  # TODO(b/497035517): fix the test in msan mode.
         "notsan",  # TODO(b/497035517): fix the test in tsan mode.
+        "nozapfhahn",  # Requires 4 TPU v7x chips and nopresubmit; excluded from Zapfhahn coverage.
         "requires-tpu-v7x:4",
         # Skip this test on TPU v5 and v6. It was written targeting TPU v7. Running it on v5 and v6
         # will cause issues due to their different topology.
@@ -729,7 +740,6 @@ torch_tpu_py_test(
         "TORCH_TPU_TIER2_COMPILATION_CACHE": "disabled",
         "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": "",
     },
-    notest_oss = "TODO(b/537411907): Re-enable in OSS once fixed.",
     tags = if_oss(
         # In OSS, we have to run the test exclusively to avoid the
         # "TPU initialization failed ... Device or resource busy" error.
@@ -737,6 +747,10 @@ torch_tpu_py_test(
         [],
     ) + [
         "noasan",  # TODO(b/555774204): fix the test in asan mode.
+        "nomsan",  # TODO(b/555774204): OOM
+        "notsan",  # TODO(b/555774204): OOM
+        # Exactly 8 chips are required because the test hardcodes _world_size = 8 to match the
+        # topology and avoid uninitialized chips in OSS CI.
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -755,6 +769,9 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "split_collective_ops_test",
     srcs = ["split_collective_ops_test.py"],
+    exec_properties = {
+        "test.mem": "28g",
+    },
     shard_count = 4,
     tags = if_oss(
         ["exclusive"],
@@ -762,6 +779,8 @@ torch_tpu_py_test(
     ) + [
         "noasan",  # TODO(b/555734615): fix the test in asan mode.
         "notsan",  # TODO(b/555734615): fix the time-out in tsan mode.
+        # Exactly 8 chips are required because the test hardcodes _world_size = 8 to match the
+        # topology and avoid uninitialized chips in OSS CI.
         "requires-tpu-v5lite:8",
     ],
     deps = [
@@ -822,9 +841,26 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "handshake_errors_test",
+    srcs = ["handshake_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//tests:seed_test_utils",
+        "//torch_tpu",
+        "//torch_tpu/_internal/compile:tpu_torch_compile",  # buildcleaner: keep
+        "//torch_tpu/_internal/distributed:handshake",
+        "@pypi//portpicker",
+        "@pypi//pyzmq",
+    ],
+)
+
+torch_tpu_py_test(
     name = "handshake_test",
     srcs = ["handshake_test.py"],
-    notest_oss = "TODO(b/555376758): fix handshake port race in OSS",
     shard_count = 8,
     tags = [
         "noasan",  # TODO(b/497035517)

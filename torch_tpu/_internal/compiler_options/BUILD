@@ -36,18 +36,18 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "compiler_options_impl",
-    srcs = ["//torch_tpu/csrc/internal/compiler_options:compiler_options_impl.cc"],
+    srcs = ["//csrc/internal/compiler_options:compiler_options_impl.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:compilation",
+        "//csrc/common:compilation_spec",
+        "//csrc/common:error_utils",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:compilation",
-        "//torch_tpu/csrc/common:compilation_spec",
-        "//torch_tpu/csrc/common:error_utils",
         "@com_google_absl//absl/status",
     ],
 )

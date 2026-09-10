@@ -127,6 +127,26 @@ class HandleGenerativeOpsPass:
         torch.ops.aten.zeros.default: self._process_bounded_size_op,
         torch.ops.aten.full.default: self._process_bounded_size_op,
         torch.ops.aten.empty.memory_format: self._process_bounded_size_op,
+        torch.ops.aten.new_empty.default: (
+            lambda gm, node: self._process_bounded_size_op(
+                gm, node, size_arg_idx=1
+            )
+        ),
+        torch.ops.aten.new_zeros.default: (
+            lambda gm, node: self._process_bounded_size_op(
+                gm, node, size_arg_idx=1
+            )
+        ),
+        torch.ops.aten.new_ones.default: (
+            lambda gm, node: self._process_bounded_size_op(
+                gm, node, size_arg_idx=1
+            )
+        ),
+        torch.ops.aten.new_full.default: (
+            lambda gm, node: self._process_bounded_size_op(
+                gm, node, size_arg_idx=1
+            )
+        ),
         torch.ops.aten.rand.default: self._process_bounded_size_op,
         torch.ops.aten.randn.default: self._process_bounded_size_op,
         torch.ops.aten.randint.default: (

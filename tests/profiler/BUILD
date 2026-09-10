@@ -26,13 +26,13 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
+        "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
         "@pypi//portpicker",
     ],
 )
@@ -45,6 +45,7 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
+        "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
@@ -52,7 +53,8 @@ torch_tpu_py_test(
         "//torch_tpu/_internal/profiler",
         "//torch_tpu/_internal/profiler:profiler_config",
         "//torch_tpu/_internal/sync",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
+        "@pypi//portpicker",
+        "@tsl//tsl/profiler/protobuf:xplane_proto_py_proto",
     ],
 )
 
@@ -77,11 +79,11 @@ torch_tpu_cc_test(
     name = "xprof_callback_handler_test",
     srcs = ["xprof_callback_handler_test.cc"],
     deps = [
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/profiler:xprof_callback_handler",
         "//shims/torch",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:oss_test_main",
-        "//torch_tpu/csrc/internal/profiler:xprof_callback_handler",
     ],
 )
 
@@ -93,13 +95,68 @@ torch_tpu_cc_test(
     },
     requires_libtpu = True,
     deps = [
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
         "//shims/torch:kineto",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/common:oss_test_main",
-        "//torch_tpu/csrc/internal/profiler:tpu_profiler_plugin_cc",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:string_view",
         "@tsl//tsl/profiler/protobuf:profiler_options_proto_cc",
+    ],
+)
+
+# Tests that base output dir can be configured via legacy env var.
+torch_tpu_cc_test(
+    name = "profiler_output_dir_test_legacy",
+    srcs = ["profiler_output_dir_test.cc"],
+    args = [
+        "--expected_output_dir=/legacy_profiler_dir",
+    ],
+    env = {
+        "TPU_PROFILER_OUTPUT_DIR": "/legacy_profiler_dir",
+    },
+    deps = [
+        "//csrc/common:flags",
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
+        "@com_google_absl//absl/flags:flag",
+    ],
+)
+
+# Tests that base output dir can be configured via TORCH_TPU_PROFILER_OUTPUT_DIR.
+torch_tpu_cc_test(
+    name = "profiler_output_dir_test_public",
+    srcs = ["profiler_output_dir_test.cc"],
+    args = [
+        "--expected_output_dir=/public_profiler_dir",
+    ],
+    env = {
+        "TORCH_TPU_PROFILER_OUTPUT_DIR": "/public_profiler_dir",
+    },
+    deps = [
+        "//csrc/common:flags",
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
+        "@com_google_absl//absl/flags:flag",
+    ],
+)
+
+# Tests that TORCH_TPU_PROFILER_OUTPUT_DIR takes precedence over TPU_PROFILER_OUTPUT_DIR.
+torch_tpu_cc_test(
+    name = "profiler_output_dir_test_precedence",
+    srcs = ["profiler_output_dir_test.cc"],
+    args = [
+        "--expected_output_dir=/public_profiler_dir",
+    ],
+    env = {
+        "TORCH_TPU_PROFILER_OUTPUT_DIR": "/public_profiler_dir",
+        "TPU_PROFILER_OUTPUT_DIR": "/legacy_profiler_dir",
+    },
+    deps = [
+        "//csrc/common:flags",
+        "//csrc/common:oss_test_main",
+        "//csrc/internal/profiler:tpu_profiler_plugin_cc",
+        "@com_google_absl//absl/flags:flag",
     ],
 )
 

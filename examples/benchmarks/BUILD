@@ -19,35 +19,6 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
-    name = "optimizers",
-    srcs = ["optimizers.py"],
-    deps = [
-        "//shims/torch:pytorch",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "optimizers_test",
-    srcs = ["optimizers_test.py"],
-    main = "optimizers_test.py",
-    tags = [
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v5lite",
-    ],
-    deps = [
-        ":optimizers",
-        "//shims/absl_py/testing:absltest",
-        "//shims/absl_py/testing:parameterized",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/benchmarks:xprof_adapter",
-        "//torch_tpu/_internal/compile:compiler",
-        "//torch_tpu/_internal/utils:test_utils",
-    ],
-)
-
 torch_tpu_py_test(
     name = "sched_overhead_test_cuda",
     timeout = "long",
@@ -134,37 +105,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//tests:seed_test_utils",
         "//torch_tpu",
-    ],
-)
-
-torch_tpu_py_library(
-    name = "single_trace_trainer",
-    srcs = ["single_trace_trainer.py"],
-    deps = [
-        ":optimizers",
-        "//shims/torch:pytorch",
-        "//torch_tpu",
-        "//torch_tpu/_internal/compile:compiler",
-        "//torch_tpu/_internal/compile:tpu_torch_compile",  # build_cleaner: keep
-    ],
-)
-
-torch_tpu_py_test(
-    name = "single_trace_trainer_test",
-    srcs = ["single_trace_trainer_test.py"],
-    main = "single_trace_trainer_test.py",
-    tags = [
-        "requires-accel-hbm",
-        "requires-net:external",
-        "requires-tpu-v5lite",
-    ],
-    deps = [
-        ":single_trace_trainer",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//tests:seed_test_utils",
-        "//torch_tpu",
-        "//torch_tpu/_internal/utils:test_utils",
     ],
 )
 

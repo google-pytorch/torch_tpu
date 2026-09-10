@@ -14,9 +14,38 @@
 
 """Propagates SymInt placeholders to submodules that need them."""
 
+from typing import Any
 from absl import logging
 import torch
 from torch_tpu._internal.compile.dynamic import sym_utils
+
+
+def _collect_free_symbols(val: Any) -> set[str]:
+  """Extracts free symbol string names from a SymInt or Tensor metadata."""
+  symbols = set()
+  if isinstance(val, torch.SymInt):
+    if hasattr(val, "node") and hasattr(val.node, "expr"):
+      for s in val.node.expr.free_symbols:
+        symbols.add(str(s))
+    elif hasattr(val, "free_symbols"):
+      for s in val.free_symbols:
+        symbols.add(str(s))
+  elif isinstance(val, torch.Tensor) or hasattr(val, "shape"):
+    if hasattr(val, "shape"):
+      for dim in val.shape:
+        symbols.update(_collect_free_symbols(dim))
+    if hasattr(val, "stride"):
+      try:
+        for st in val.stride():
+          symbols.update(_collect_free_symbols(st))
+      except Exception:
+        pass
+    if hasattr(val, "storage_offset"):
+      try:
+        symbols.update(_collect_free_symbols(val.storage_offset()))
+      except Exception:
+        pass
+  return symbols
 
 
 def apply(gm: torch.fx.GraphModule) -> None:
@@ -25,8 +54,8 @@ def apply(gm: torch.fx.GraphModule) -> None:
   This is required because split_module does not propagate SymInt placeholders
   to submodules unless they are explicitly used in the submodule body.
 
-  The pass detects SymInts that are used in the submodule body but are not yet
-  propagated form the parent module.
+  The pass detects SymInts that are used in the submodule body (or in tensor
+  shapes/strides) but are not yet propagated from the parent module.
   It then adds these SymInt placeholders to the submodule signature and
   updates the call site node in the parent module.
 
@@ -74,9 +103,7 @@ def apply(gm: torch.fx.GraphModule) -> None:
       if node.op == "placeholder" and isinstance(
           node.meta.get("val"), torch.Tensor
       ):
-        for dim in node.meta["val"].shape:
-          if isinstance(dim, torch.SymInt) and bool(dim.node.expr.free_symbols):
-            submod_symbols.add(str(dim))
+        submod_symbols.update(_collect_free_symbols(node.meta["val"]))
 
     existing_submod_symbols = set()
     for node in submod.graph.nodes:
@@ -102,6 +129,7 @@ def apply(gm: torch.fx.GraphModule) -> None:
         call_site_node is not None
     ), f"Could not find call site for {submod_name}"
 
+    new_args = []
     for sym_str in sorted_missing_symbols:
       parent_node = parent_symint_placeholders.get(sym_str)
       if parent_node is None:
@@ -111,13 +139,21 @@ def apply(gm: torch.fx.GraphModule) -> None:
             submod_name,
         )
         continue
+      if parent_node not in new_args:
+        new_args.append(parent_node)
 
-      first_node = next(iter(submod.graph.nodes))
+    if not new_args:
+      continue
+
+    first_node = next(iter(submod.graph.nodes))
+    for parent_node in reversed(new_args):
       with submod.graph.inserting_before(first_node):
-        new_ph = submod.graph.placeholder(f"sym_{sym_str}")
+        sym_name = str(parent_node.meta["val"])
+        new_ph = submod.graph.placeholder(f"sym_{sym_name}")
         new_ph.meta["val"] = parent_node.meta["val"]
+        first_node = new_ph
 
-      call_site_node.args = (parent_node,) + call_site_node.args
+    call_site_node.args = tuple(new_args) + tuple(call_site_node.args)
 
     submod.graph.lint()
     submod.recompile()

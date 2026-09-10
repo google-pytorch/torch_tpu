@@ -441,6 +441,18 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return False
 
   @classmethod
+  def get_multi_processor_count(cls, device: torch.types.Device = None) -> int:
+    """Returns the number of compute units for the device."""
+    get_props = getattr(cls, "get_device_properties", None)
+    if get_props is not None:
+      try:
+        props = get_props(device)
+        return getattr(props, "multi_processor_count", 1)
+      except Exception:  # pylint: disable=broad-except
+        return 1
+    return 1
+
+  @classmethod
   def is_initialized(cls) -> bool:  # This is in torch/cuda/__init__.py.
     """Returns whether PyTorch's TPU state has been initialized."""
     return _device_ops_backend._is_initialized()  # pylint: disable=protected-access

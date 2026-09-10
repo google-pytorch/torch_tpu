@@ -320,16 +320,16 @@ common:bench --spawn_strategy=standalone,local
 
 # Settings specific to CPU CI runs.
 common:ci_cpu --config=ci
-common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu
-common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu
+common:ci_cpu --build_tag_filters=-nobuild,-requires-gpu,-requires-tpu,-cuda-build-test
+common:ci_cpu --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-cuda-build-test
 
 # Settings specific to CPU presubmit.
 common:ci_cpu_presubmit --config=ci_cpu
-common:ci_cpu_presubmit --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nopresubmit
+common:ci_cpu_presubmit --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nopresubmit,-cuda-build-test
 
 # Settings for nightly runs on CPU.
 common:ci_cpu_nightly --config=ci_cpu
-common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nonightly
+common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-requires-tpu,-nonightly,-cuda-build-test
 
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
@@ -387,10 +387,6 @@ common:remote_execution_readonly --remote_executor=grpcs://remotebuildexecution.
 # --remote_default_exec_properties to prevent ImmutableMap duplicate-key crashes
 # when configs are chained.
 common:remote_execution_readonly --extra_execution_platforms="//bazel/platforms:rbe_default_platform"
-
-# Allow per-user, project-specific bazelrc.
-# Do this last so it takes precedence.
-try-import %workspace%/user.bazelrc
 
 # TPU wheel version extras for local default builds.
 build --define WHEEL_VERSION_EXTRAS=
@@ -452,7 +448,7 @@ test:wheel_common_test --test_lang_filters=py  # Only run python tests
 # Config for CPU wheel test.
 test:wheel_test_cpu --config=ci_cpu
 test:wheel_test_cpu --config=wheel_common_test
-test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-requires-tpu,-wheel_test_excluded
+test:wheel_test_cpu --test_tag_filters=-nobuild,-notest,-nopresubmit,-requires-gpu,-requires-tpu,-wheel_test_excluded,-cuda-build-test
 
 # Split wheel test configurations for presubmits
 test:wheel_test_tpu_v5 --config=wheel_common_test
@@ -474,3 +470,8 @@ test:wheel_test_tpu_v7 --spawn_strategy=local
 test:wheel_test_tpu_v5 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v5,presubmit-v5
 test:wheel_test_tpu_v6 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v6,presubmit-v6
 test:wheel_test_tpu_v7 --test_tag_filters=-notest,-nobuild,-nopresubmit,-wheel_test_excluded,-fails-on-tpu-v7,presubmit-v7
+
+###############################################################################
+# Allow per-user, project-specific bazelrc (gitignored).
+# Keep this last so user options take precedence over everything above.
+try-import %workspace%/user.bazelrc

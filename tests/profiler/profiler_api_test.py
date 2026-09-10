@@ -19,14 +19,20 @@ import pathlib
 from unittest import mock
 
 from absl.testing import absltest
+import portpicker
 import torch
 from torch_tpu._internal import profiler
 from torch_tpu._internal import sync as tpu_sync
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.profiler import _api
 from torch_tpu._internal.profiler import _impl as profiler_impl
-from torch_tpu._internal.profiler import profiler_api
 from torch_tpu._internal.profiler.profiler_config import TpuProfilerConfig
 from tests import seed_test_utils
+
+# pylint: disable=g-direct-tensorflow-import
+from tsl.profiler.protobuf import xplane_pb2
+
+# pylint: enable=g-direct-tensorflow-import
 
 
 class ProfilerApiTest(seed_test_utils.RepeatableTest):
@@ -183,19 +189,19 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
         pass
 
   def test_profiler_options_tpu_only(self):
-    options = profiler_api._get_profile_options([profiler.ProfilerActivity.TPU])
+    options = _api._get_profile_options([profiler.ProfilerActivity.TPU])
     self.assertEqual(options.device_tracer_level, 1)
     self.assertEqual(options.host_tracer_level, 0)
     self.assertEqual(options.python_tracer_level, 0)
 
   def test_profiler_options_cpu_only(self):
-    options = profiler_api._get_profile_options([profiler.ProfilerActivity.CPU])
+    options = _api._get_profile_options([profiler.ProfilerActivity.CPU])
     self.assertEqual(options.device_tracer_level, 0)
     self.assertEqual(options.host_tracer_level, 2)
     self.assertEqual(options.python_tracer_level, 1)
 
   def test_profiler_options_tpu_and_cpu(self):
-    options = profiler_api._get_profile_options(
+    options = _api._get_profile_options(
         activities=[
             profiler.ProfilerActivity.TPU,
             profiler.ProfilerActivity.CPU,
@@ -206,7 +212,7 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
     self.assertEqual(options.python_tracer_level, 1)
 
   def test_profiler_options_none(self):
-    options = profiler_api._get_profile_options([])
+    options = _api._get_profile_options([])
     self.assertEqual(options.device_tracer_level, 0)
     self.assertEqual(options.host_tracer_level, 0)
     self.assertEqual(options.python_tracer_level, 0)
@@ -239,6 +245,72 @@ class ProfilerApiTest(seed_test_utils.RepeatableTest):
       TpuProfilerConfig(run_dir=pathlib.Path(local_path))
       custom_config = called_kwargs.get('custom_profiler_config', '')
       self.assertIn(f'run_dir:{local_path}', custom_config)
+
+  def test_exported_start_and_stop_server(self):
+    """Tests start_server and stop_server at exported module paths."""
+    # Test from torch_tpu._internal.profiler
+    port = portpicker.pick_unused_port()
+    server_port = profiler.start_server(port)
+    self.assertEqual(server_port, port)
+    profiler.stop_server()
+
+  def test_start_server_registers_xprof_callback_handler(self):
+    """Tests that starting server registers XProfCallbackHandler."""
+    # 1. Start profiler server, which should trigger
+    # XProfCallbackHandler::Register().
+    port = portpicker.pick_unused_port()
+    profiler.start_server(port)
+    try:
+      output_dir = self.create_tempdir('server_xprof_callback').full_path
+      options = profiler_impl.ProfileOptions()
+      options.host_tracer_level = 2
+
+      # 2. Start a trace session and execute PyTorch ops inside RecordFunction.
+      profiler_impl.start_trace(output_dir, profiler_options=options)
+      try:
+        with torch.autograd.profiler.record_function(
+            'test_server_registered_pytorch_op'
+        ):
+          a = torch.randn(4, 4)
+          b = torch.randn(4, 4)
+          _ = a + b
+      finally:
+        profiler_impl.stop_trace()
+
+      # 3. Verify that output profile directory and xplane trace files exist.
+      plugins_dir = os.path.join(output_dir, 'plugins', 'profile')
+      self.assertTrue(os.path.isdir(plugins_dir))
+      trace_dirs = os.listdir(plugins_dir)
+      self.assertLen(trace_dirs, 1)
+      trace_dir = os.path.join(plugins_dir, trace_dirs[0])
+      xplane_files = [
+          f for f in os.listdir(trace_dir) if f.endswith('.xplane.pb')
+      ]
+      self.assertNotEmpty(xplane_files)
+      xplane_file_path = os.path.join(trace_dir, xplane_files[0])
+
+      # 4. Parse XSpace protobuf and verify the PyTorch op event was captured.
+      with open(xplane_file_path, 'rb') as f:
+        xspace = xplane_pb2.XSpace.FromString(f.read())
+
+      found = False
+      for plane in xspace.planes:
+        for metadata in plane.event_metadata.values():
+          if 'test_server_registered_pytorch_op' in metadata.name:
+            found = True
+            break
+        if found:
+          break
+      self.assertTrue(
+          found,
+          msg=(
+              'Did not find test_server_registered_pytorch_op in XSpace'
+              ' metadata'
+          ),
+      )
+    finally:
+      # 5. Clean up by stopping the profiler server.
+      profiler.stop_server()
 
 
 if __name__ == '__main__':

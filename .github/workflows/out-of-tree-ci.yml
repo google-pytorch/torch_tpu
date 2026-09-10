@@ -94,10 +94,10 @@ jobs:
 
     steps:
       - name: Checkout TorchTPU
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Checkout PyTorch at dispatched SHA
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: pytorch/pytorch
           ref: ${{ github.event.client_payload.payload.after }}
@@ -115,7 +115,7 @@ jobs:
           set +e
           bazel test //... \
             --config=${{ matrix.job_info.config }} \
-            --override_repository=pytorch=$GITHUB_WORKSPACE/pytorch \
+            --override_repository="pytorch=$GITHUB_WORKSPACE/pytorch" \
             ${{ matrix.job_info.extra_flags }}
 
           BAZEL_EXIT_CODE=$?
@@ -138,4 +138,4 @@ jobs:
             echo '```json'
             echo "$EVENT_JSON"
             echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"

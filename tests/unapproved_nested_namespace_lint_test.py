@@ -1,0 +1,40 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for unapproved nested namespace violations."""
+
+from typing import Generator
+
+from absl.testing import absltest
+from absl.testing import parameterized
+from tests import cpp_style_lib as style
+
+
+def _get_files_to_lint() -> Generator[style.CppFile, None, None]:
+  """Yields all files subject to linting."""
+  yield from style.CppCode().files(exclude_test_data=True)
+
+
+class UnapprovedNestedNamespaceTest(
+    parameterized.TestCase,  # ABSLTEST_OK=linter tool test
+):
+
+  @parameterized.parameters(_get_files_to_lint())
+  def test_unapproved_nested_namespace(self, file: style.CppFile):
+    errors = style.check_unapproved_namespace(file)
+    self.assertEmpty(errors, '\n'.join(errors))
+
+
+if __name__ == '__main__':
+  absltest.main()

@@ -24,6 +24,7 @@ from torch_tpu._internal.execution_mode import execution_mode_impl
 EagerMode: TypeAlias = execution_mode_impl.EagerMode
 
 if TYPE_CHECKING:
+  disable_inplace_buffer_donation: bool
   eager_mode: EagerMode
   enable_cpu_fallback: bool
 
@@ -51,6 +52,16 @@ class _ExecutionModeModule(types.ModuleType):
     # pylint: disable-next=protected-access
     execution_mode_impl._enable_cpu_fallback(value)
 
+  @property
+  def disable_inplace_buffer_donation(self) -> bool:
+    # pylint: disable-next=protected-access
+    return not execution_mode_impl._is_inplace_buffer_donation_enabled()
+
+  @disable_inplace_buffer_donation.setter
+  def disable_inplace_buffer_donation(self, value: bool):
+    # pylint: disable-next=protected-access
+    execution_mode_impl._enable_inplace_buffer_donation(not value)
+
 
 sys.modules[__name__].__class__ = _ExecutionModeModule
 
@@ -71,6 +82,7 @@ def set_eager_mode(mode: EagerMode):
 __all__ = [
     # go/keep-sorted start
     "EagerMode",
+    "disable_inplace_buffer_donation",
     "set_eager_mode",
     # go/keep-sorted end
 ]

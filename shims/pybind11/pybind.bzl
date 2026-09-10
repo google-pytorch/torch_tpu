@@ -29,7 +29,7 @@ single shared `libxla_base.so` (via a `common_lib_filters` entry fed by the
 `_backend_probe` targets emitted here) and keeps that version's torch-touching
 code in its own default common. All versions' `libxla_base.so` are byte-identical
 and map to the same wheel path, so the wheel ships one copy. Bazel-only builds
-are unaffected (they use `//torch_tpu/csrc/common:pywrap_torch_tpu`).
+are unaffected (they use `//csrc/common:pywrap_torch_tpu`).
 """
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
@@ -68,9 +68,15 @@ def pybind_extension(name, **kwargs):
     # unversioned symbol being present in each versioned `.so`.
     kwargs["wrap_py_init"] = False
 
-    # Base extension: the version-agnostic target every existing reference
-    # (bazel tests via extra_pywrap_deps, and the ~6 direct label refs) resolves.
-    _pybind_extension(name = name, **kwargs)
+    # Remap to //csrc/common where pywrap_torch_tpu lives in OSS.
+    base_kwargs = dict(kwargs)
+    common_lib_packages = base_kwargs.get("common_lib_packages", [])
+    if common_lib_packages:
+        base_kwargs["common_lib_packages"] = [
+            pkg.replace("torch_tpu/csrc/common", "csrc/common")
+            for pkg in common_lib_packages
+        ]
+    _pybind_extension(name = name, **base_kwargs)
 
     raw_deps = kwargs.get("deps", [])
     testonly = kwargs.get("testonly")

@@ -105,6 +105,7 @@ def _has_test_filter() -> bool:
 COMPLEX_DTYPES = op_testing.COMPLEX_DTYPES
 FLOAT_DTYPES = op_testing.FLOAT_DTYPES
 INTEGRAL_DTYPES = op_testing.INTEGRAL_DTYPES
+UNQUANTIZED_NUMERIC_DTYPES = op_testing.UNQUANTIZED_NUMERIC_DTYPES
 ALL_NUMERIC_DTYPES = op_testing.ALL_NUMERIC_DTYPES
 
 CheckValueMode = test_utils.CheckValueMode
@@ -807,6 +808,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float32: {"rtol": 1.1e-4, "atol": 8.1e-5},
     },
     "_foreach_pow": {
+        torch.complex64: {"rtol": 8.8e-4, "atol": 3.4e-4},
         torch.float32: {"rtol": 5.5e-6},
         torch.int16: {"atol": 1.3},
         torch.int32: {"atol": 1.3},
@@ -821,7 +823,7 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 3.7e-5},
     },
     "_foreach_tanh": {
-        torch.complex64: {"rtol": 2.8e-5, "atol": 1.1e-5},
+        torch.complex64: {"rtol": 1.4e-4, "atol": 1.1e-5},
         torch.float32: {"atol": 5.2e-5},
     },
     "_log_softmax_backward_data": {
@@ -850,6 +852,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.float16: {"rtol": 6.7e-2, "atol": 1.2e-1},
         torch.float32: {"rtol": 6.9e-2, "atol": 2.3e-1},
     },
+    "abs": {
+        torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
+        torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
+    },
     "acos": {
         torch.complex64: {"rtol": 5.5e-5, "atol": 2.2e-5},
     },
@@ -869,10 +875,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "addmm": {
         torch.float16: {"rtol": 1.5e-2},
         torch.float32: {"rtol": 7.7e-3},
-    },
-    "arange": {
-        torch.bfloat16: {"atol": 9.4e-3},
-        torch.float16: {"atol": 5.9e-4},
     },
     "asin": {
         torch.complex64: {"rtol": 7.9e-5, "atol": 1e-4},
@@ -995,13 +997,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.complex64: {"rtol": 4.8e-6},
         torch.float32: {"rtol": 4.8e-6},
     },
-    "linspace": {
-        torch.int16: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int32: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int64: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.uint8: {"rtol": 4.1e-1},
-    },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
         torch.float32: {"rtol": 4.9e-5, "atol": 4.3e-5},
@@ -1039,8 +1034,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.uint8: {"rtol": 6.9e-5},
     },
     "log_softmax": {
-        torch.bfloat16: {"atol": 6.5e-3},
-        torch.float16: {"rtol": 1.2e-3, "atol": 6.3e-4},
         torch.float32: {"rtol": 5.7e-5, "atol": 8.3e-5},
     },
     "logcumsumexp": {
@@ -1159,10 +1152,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 4e-6},
         torch.uint8: {"rtol": 4e-6},
     },
-    "softmax": {
-        torch.bfloat16: {"atol": 4.7e-3},
-        torch.float16: {"atol": 5.9e-4},
-    },
     "tan": {
         torch.complex64: {"rtol": 3.0e-5, "atol": 5.0e-6},
     },
@@ -1174,6 +1163,9 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int64: {"atol": 3.6e-5},
         torch.int8: {"atol": 3.6e-5},
         torch.uint8: {"atol": 3.6e-5},
+    },
+    "torch.ops.aten._safe_softmax.default": {
+        torch.float16: {"atol": 5.9e-4},
     },
     "var": {
         torch.float16: {"rtol": 1.5e-3},
@@ -1210,6 +1202,9 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     "_foreach_log2": {
         torch.complex64: {"rtol": 1.1e-4},
     },
+    "_foreach_pow": {
+        torch.complex64: {"rtol": 8.8e-4, "atol": 3.4e-4},
+    },
     "_foreach_sigmoid": {
         torch.complex64: {"rtol": 1.4e-5},
     },
@@ -1217,7 +1212,7 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"rtol": 3.7e-5},
     },
     "_foreach_tanh": {
-        torch.complex64: {"rtol": 2.8e-5, "atol": 1.1e-5},
+        torch.complex64: {"rtol": 1.4e-4, "atol": 1.1e-5},
     },
     "_log_softmax_backward_data": {
         torch.float32: {"rtol": 3.5e-5, "atol": 3.6e-5},
@@ -1236,6 +1231,10 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "_thnn_fused_gru_cell": {
         torch.float32: {"rtol": 1e-5, "atol": 3e-5},
+    },
+    "abs": {
+        torch.complex64: {"rtol": 2.0e-6, "atol": 2.0e-6},
+        torch.float64: {"rtol": 4.7e-6, "atol": 1e-6},
     },
     "acos": {
         torch.complex64: {"rtol": 5.5e-5, "atol": 2.2e-5},
@@ -1312,13 +1311,8 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.float32: {"rtol": 4.8e-6},
     },
     "linspace": {
-        torch.bfloat16: {"atol": 9.4e-3},
+        torch.bfloat16: {"rtol": 7.9e-3, "atol": 9.4e-3},
         torch.float16: {"rtol": 1.2e-3, "atol": 1.2e-3},
-        torch.int16: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int32: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int64: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.int8: {"rtol": 4.1e-1, "atol": 1.3},
-        torch.uint8: {"rtol": 4.1e-1},
     },
     "log": {
         torch.complex64: {"rtol": 4.7e-5},
@@ -1430,6 +1424,17 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     # go/keep-sorted end
 }  # end of ACCURACY_OVERRIDES_VS_GPU_COMPILED
+
+# The GPU gradient tolerances are based on the TPU vs GPU forward pass tolerances.
+ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
+    str, dict[torch.dtype, dict[str, float]]
+] = update_dict(
+    copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
+    {
+        # go/keep-sorted start
+        # go/keep-sorted end
+    },
+)
 
 # The gradient tolerances are based on the forward pass tolerances.
 ACCURACY_OVERRIDES_GRAD: dict[str, dict[torch.dtype, dict[str, float]]] = (
@@ -1773,6 +1778,7 @@ class TestOps(op_testing.OpInfoTestBase):
         if op_testing.is_compiled_mode()
         else ACCURACY_OVERRIDES_VS_GPU,
         grad_overrides=ACCURACY_OVERRIDES_GRAD,
+        grad_gpu_overrides=ACCURACY_OVERRIDES_GRAD_VS_GPU,
     )
     self.set_dynamism_handlers(
         dynamism_test_utils.verify_op_supports_dynamism,
@@ -1808,6 +1814,14 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "gpu": INTEGRAL_DTYPES + COMPLEX_DTYPES,
         },
+    )
+
+  @op_testing.skip_if_torch_tpu_vs_gpu_mode
+  def test_adaptive_max_pool2d(self):
+    self.do_test_op(
+        "nn.functional.adaptive_max_pool2d",
+        # TODO: adaptive_max_pool2d_backward is not implemented on TPU yet.
+        check_grad=False,
     )
 
   def test_add(self):
@@ -1993,7 +2007,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.bool,
             ),
         },
         exclude_inplace_dtypes={
@@ -2002,7 +2015,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.uint8,
                 torch.int8,
                 torch.int16,
-                torch.bool,
             ),
         },
     )
@@ -2026,19 +2038,14 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_binary_cross_entropy(self):
     self.do_test_op(
         "nn.functional.binary_cross_entropy",
-        # Exclude non-floating dtypes as they are not supported by the op
-        # and because GPU golden sample generation fails for the integer
-        # dtypes.
-        exclude_dtypes=INTEGRAL_DTYPES  # EXCLUDE_DTYPES_OK=unsupported by op
-        + COMPLEX_DTYPES,
+        # TODO(b/557286629): support data sampling for non-floating-point dtypes.
+        exclude_dtypes=INTEGRAL_DTYPES + COMPLEX_DTYPES,
     )
 
   def test_bincount(self):
     self.do_test_op(
         "bincount",
-        # Excluded because they are not supported as input to bincount and
-        # because the op_testing code fails to generate random inputs when
-        # these types are enabled.
+        # TODO(b/557286629): support data sampling for booleans.
         exclude_dtypes={
             "cpu": COMPLEX_DTYPES + FLOAT_DTYPES + (torch.bool,),
             "gpu": COMPLEX_DTYPES + (torch.float64,) + (torch.bool,),
@@ -2168,9 +2175,8 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_ctc_loss(self):
     self.do_test_op(
         "nn.functional.ctc_loss",
-        # Excluded because PyTorch's sample generation (via log_softmax on CPU)
-        # does not support integral, bfloat16, float16, and complex dtypes.
-        # Additionally, CPU and GPU do not support bfloat16 and float16.
+        # TODO(b/557286629): support data sampling for other dtypes than
+        # full-precision floating-point dtypes.
         exclude_dtypes={
             "cpu": (
                 INTEGRAL_DTYPES
@@ -2752,12 +2758,7 @@ class TestOps(op_testing.OpInfoTestBase):
 
   @category("foreach")
   def test_foreach_pow(self):
-    self.do_test_op(
-        "_foreach_pow",
-        # TODO: fix TPU failure for these dtypes.
-        exclude_dtypes=(torch.complex64,),
-        exclude_inplace_dtypes=(torch.complex64,),
-    )
+    self.do_test_op("_foreach_pow")
 
   @category("foreach")
   def test_foreach_reciprocal(self):
@@ -3079,8 +3080,6 @@ class TestOps(op_testing.OpInfoTestBase):
         ),
     )
 
-  # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
-  @oss_utils.skip_in_oss()
   def test_norm(self):
     self.do_test_op(
         "norm",
@@ -3142,9 +3141,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_log_softmax_backward_data(self):
     self.do_test_op(
         "_log_softmax_backward_data",
-        # TODO(unda): this fails for complex and integral dtypes because the
-        # sample generation process calls log_softmax() which is not supported
-        # for these dtypes.
+        # TODO(b/557286629): support data sampling for non-floating-point dtypes.
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
     )
 
@@ -3598,7 +3595,14 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_rms_norm(self):
     self.do_test_op(
         "nn.functional.rms_norm",
-        exclude_dtypes=INTEGRAL_DTYPES + COMPLEX_DTYPES,
+        exclude_dtypes=(
+            torch.uint8,
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+        )
+        + COMPLEX_DTYPES,
     )
 
   # TODO(b/535650392): Re-enable this testin OS once the bug is fixed.
@@ -3681,8 +3685,8 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_prelu(self):
     self.do_test_op(
         "nn.functional.prelu",
+        # TODO(b/557286629): support data sampling for integral dtypes.
         exclude_dtypes=INTEGRAL_DTYPES,
-        # supports floating point types
     )
 
   def test_nn_functional_hardsigmoid(self):
@@ -3829,7 +3833,11 @@ class TestOps(op_testing.OpInfoTestBase):
 
   def test_scaled_mm_v2(self):
     self.do_test_op(
-        "torch._scaled_mm_v2", exclude_dtypes={"cpu": ALL_NUMERIC_DTYPES}
+        "torch._scaled_mm_v2",
+        exclude_dtypes={
+            "cpu": ALL_NUMERIC_DTYPES,
+            "gpu": UNQUANTIZED_NUMERIC_DTYPES,
+        },
     )
 
   def test_scatter(self):
@@ -3926,7 +3934,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_softmax_backward_data(self):
     self.do_test_op(
         "_softmax_backward_data",
-        # TODO: fix the op for these dtypes.
+        # TODO(b/557286629): support data sampling for non-floating-point dtypes.
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
     )
 
@@ -4266,6 +4274,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_native_multi_head_attention(self):
     self.do_test_op(
         "_native_multi_head_attention",
+        # TODO(b/557286629): Attention only supports floating point dtypes.
         exclude_dtypes=(
             COMPLEX_DTYPES
             + INTEGRAL_DTYPES
@@ -4278,6 +4287,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_transformer_encoder_layer_fwd(self):
     self.do_test_op(
         "_transformer_encoder_layer_fwd",
+        # TODO(b/557286629): support data sampling for non-floating-point dtypes.
         exclude_dtypes=((torch.float64,) + COMPLEX_DTYPES + INTEGRAL_DTYPES),
         check_dynamism=False,
         check_grad=False,

@@ -2189,7 +2189,11 @@ Device-side assertion tracking was not enabled by user.""",
       tensor = torch.arange(10).view(2, 5).to(et.device())
       tensor_other = torch.arange(15).view(3, 5).to(et.device())
       boolean_mask = tensor_other % 2 != 0
-      tensor[boolean_mask] = 100
+      torch.index_put_(
+          tensor,
+          (boolean_mask,),
+          torch.tensor(100, device=et.device()),
+      )
 
   def test_index_put_decompose_with_mask_error_mask_dim_more_than_indexed_tensor_dim(
       self,
@@ -2210,13 +2214,17 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
-        gpu="""The shape of the mask [3] at index 0 does not match the shape of the indexed tensor [2, 3, 5, 9] at index 2""",
-        tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 2, got mask shape [3] and indexed tensor shape [2, 3, 5, 9]""",
+        gpu="""The shape of the mask [4] at index 0 does not match the shape of the indexed tensor [3, 5] at index 1""",
+        tpu="""index_put_(): expected the shape of the mask at index 0 to match the shape of the indexed tensor at index 1, got mask shape [4] and indexed tensor shape [3, 5]""",
     ):
-      tensor = torch.arange(270).view(2, 3, 5, 9).to(et.device())
-      boolean_mask_dim1 = tensor[0, :, 0, 0] % 2 != 0
-      boolean_mask_dim3 = tensor[0, 0, 0, :] % 2 != 0
-      tensor[:, :, boolean_mask_dim1, boolean_mask_dim3] = 100
+      tensor = torch.arange(15).view(3, 5).to(et.device())
+      mask0 = (torch.arange(3) % 2 != 0).to(et.device())
+      mask1 = (torch.arange(4) % 2 != 0).to(et.device())
+      torch.index_put_(
+          tensor,
+          (mask0, mask1),
+          torch.tensor(100, device=et.device()),
+      )
 
   def test_index_select_index_must_be_1d(self):
     with et.assert_raises_message(
@@ -4058,6 +4066,182 @@ Supported combinations for non-constant padding:
     ):
       torch.nn.functional.adaptive_avg_pool2d(t_int64, output_size=2)
 
+  def test_adaptive_max_pool2d_unsupported_dtypes(self):
+    t_bool = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.bool)
+    t_complex = torch.zeros(
+        (1, 1, 4, 4), device=et.device(), dtype=torch.complex64
+    )
+    t_complex128 = torch.zeros(
+        (1, 1, 4, 4), device=et.device(), dtype=torch.complex128
+    )
+    t_uint8 = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.uint8)
+    t_int8 = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.int8)
+    t_int16 = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.int16)
+    t_int32 = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.int32)
+    t_int64 = torch.zeros((1, 1, 4, 4), device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): bool dtype is not supported""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Bool'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_bool, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for complex64""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'ComplexFloat'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_complex, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for complex128""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'ComplexDouble'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_complex128, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for uint8""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Byte'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_uint8, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for int8""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Char'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_int8, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for int16""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Short'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_int16, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for int32""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Int'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_int32, output_size=2)
+
+    with et.assert_raises_message(
+        NotImplementedError,
+        tpu="""adaptive_max_pool2d(): not implemented for int64""",
+        gpu=""""adaptive_max_pool2d_cuda" not implemented for 'Long'""",
+    ):
+      torch.nn.functional.adaptive_max_pool2d(t_int64, output_size=2)
+
+  def test_adaptive_max_pool2d_invalid_rank(self):
+    inp_2d = torch.ones(10, 10, device=et.device())
+    inp_5d = torch.ones(1, 1, 1, 10, 10, device=et.device())
+    out = torch.empty(1, device=et.device())
+    indices = torch.empty(1, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected 3D or 4D tensor, got [10, 10]""",
+        gpu="""adaptive_max_pool2d(): Expected 3D or 4D tensor, but got: [10, 10]""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp_2d, [2, 2], out=out, indices=indices
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected 3D or 4D tensor, got [1, 1, 1, 10, 10]""",
+        gpu="""adaptive_max_pool2d(): Expected 3D or 4D tensor, but got: [1, 1, 1, 10, 10]""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp_5d, [2, 2], out=out, indices=indices
+      )
+
+  def test_adaptive_max_pool2d_empty_spatial_dim(self):
+    inp_empty_h = torch.ones(1, 0, 4, device=et.device())
+    inp_empty_w = torch.ones(1, 4, 0, device=et.device())
+    out = torch.empty(1, device=et.device())
+    indices = torch.empty(1, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected input to have non-zero size for non-batch dimensions, got [1, 0, 4] with dimension 1 being empty""",
+        gpu="""adaptive_max_pool2d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 0, 4] with dimension 1 being empty""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp_empty_h, [2, 2], out=out, indices=indices
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected input to have non-zero size for non-batch dimensions, got [1, 4, 0] with dimension 2 being empty""",
+        gpu="""adaptive_max_pool2d(): Expected input to have non-zero size for non-batch dimensions, but input has sizes [1, 4, 0] with dimension 2 being empty""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp_empty_w, [2, 2], out=out, indices=indices
+      )
+
+  def test_adaptive_max_pool2d_invalid_output_size(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device())
+    out = torch.empty(1, device=et.device())
+    indices = torch.empty(1, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected output_size to have 2 elements, got 1""",
+        gpu="""adaptive_max_pool2d(): internal error: output_size.size() must be 2""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(inp, [1], out=out, indices=indices)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected output_size to have 2 elements, got 3""",
+        gpu="""adaptive_max_pool2d(): internal error: output_size.size() must be 2""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp, [1, 2, 3], out=out, indices=indices
+      )
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected output size to be non-negative, got [-1, 2]""",
+        gpu="""numel: integer multiplication overflow""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp, [-1, 2], out=out, indices=indices
+      )
+
+  def test_adaptive_max_pool2d_out_dtype_mismatch(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, device=et.device(), dtype=torch.int32)
+    indices = torch.empty(1, device=et.device(), dtype=torch.int64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected out tensor to have dtype float32, got int32""",
+        gpu="""Expected out tensor to have dtype float, but got int instead""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp, [2, 2], out=out, indices=indices
+      )
+
+  def test_adaptive_max_pool2d_indices_dtype_mismatch(self):
+    inp = torch.ones(1, 1, 4, 4, device=et.device(), dtype=torch.float32)
+    out = torch.empty(1, device=et.device(), dtype=torch.float32)
+    indices = torch.empty(1, device=et.device(), dtype=torch.int32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""adaptive_max_pool2d(): expected indices tensor to have dtype int64, got int32""",
+        gpu="""Expected out tensor to have dtype long, but got int instead""",
+    ):
+      torch.ops.aten.adaptive_max_pool2d.out(
+          inp, [2, 2], out=out, indices=indices
+      )
+
   def test_adaptive_avg_pool3d_unsupported_dtypes(self):
     t_complex = torch.zeros(
         (1, 1, 4, 4), device=et.device(), dtype=torch.complex64
@@ -5226,6 +5410,30 @@ Supported combinations for non-constant padding:
 
   @parameterized.named_parameters(
       dict(
+          testcase_name="bool",
+          dtype=torch.bool,
+          tpu_dtype="bool",
+          gpu_dtype="Bool",
+      ),
+      dict(
+          testcase_name="uint8",
+          dtype=torch.uint8,
+          tpu_dtype="uint8",
+          gpu_dtype="Byte",
+      ),
+      dict(
+          testcase_name="int8",
+          dtype=torch.int8,
+          tpu_dtype="int8",
+          gpu_dtype="Char",
+      ),
+      dict(
+          testcase_name="int16",
+          dtype=torch.int16,
+          tpu_dtype="int16",
+          gpu_dtype="Short",
+      ),
+      dict(
           testcase_name="int32",
           dtype=torch.int32,
           tpu_dtype="int32",
@@ -5252,6 +5460,17 @@ Supported combinations for non-constant padding:
         message_reviewed_by="gunhyun",
     ):
       torch.baddbmm(input_tensor, batch1, batch2)
+
+  def test_baddbmm_invalid_out_dtype(self):
+    input_tensor = torch.ones(1, 2, 2, dtype=torch.float32, device=et.device())
+    batch1 = torch.ones(1, 2, 3, dtype=torch.float32, device=et.device())
+    batch2 = torch.ones(1, 3, 2, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""baddbmm(): expected out_dtype to be the same as input dtype or float32 for float16/bfloat16 inputs, got int32""",
+        gpu="""out_dtype must be the same as input dtype or fp32 for fp16/bf16 inputs""",
+    ):
+      torch.ops.aten.baddbmm.dtype(input_tensor, batch1, batch2, torch.int32)
 
   def test_baddbmm_mismatch_dtypes_batch(self):
     input_tensor = torch.ones(1, 2, 2, dtype=torch.float32, device=et.device())
@@ -6182,6 +6401,30 @@ Supported combinations for non-constant padding:
     ):
       torch.linalg.vector_norm(x, dtype=torch.float32, out=out)
 
+  def test_norm_out_dtype_mismatch(self):
+    x = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, dtype=torch.float64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.norm.out(x, 2.0, [0], False, out=out)
+
+  def test_norm_dtype_out_dtype_mismatch(self):
+    x = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.empty(5, dtype=torch.float32, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""norm(): expected the output dtype to be float64, got float32""",
+        gpu="""Expected out tensor to have dtype double, but got float instead""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.ops.aten.norm.dtype_out(
+          x, 2.0, [0], False, dtype=torch.float64, out=out
+      )
+
   def test_norm_dim_out_of_bounds(self):
     t = torch.ones(2, 3, device=et.device(), dtype=torch.float32)
     for dim in [-3, 3]:
@@ -6215,6 +6458,18 @@ Supported combinations for non-constant padding:
         tpu="""fused_rms_norm(): expected the input dtype to be floating point, got int32""",
         gpu=""""LayerNormKernelImpl" not implemented for 'Int'""",
         message_reviewed_by="wan",
+    ):
+      torch.nn.functional.rms_norm(inp, normalized_shape)
+
+  def test_rms_norm_bool(self):
+    inp = torch.ones(5, 5, device=et.device(), dtype=torch.bool)
+    normalized_shape = (5,)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""fused_rms_norm(): expected the input dtype to be floating point, got bool""",
+        gpu=""""LayerNormKernelImpl" not implemented for 'Bool'""",
+        message_reviewed_by="chizz",
     ):
       torch.nn.functional.rms_norm(inp, normalized_shape)
 
@@ -6856,22 +7111,29 @@ Supported combinations for non-constant padding:
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""masked_fill_(): only supports 1-element value tensors""",
+        tpu="""masked_fill_(): expected value to be a 0D tensor, got 1D tensor of shape [2]""",
         gpu="""masked_fill_ only supports a 0-dimensional value tensor, but got tensor with 1 dimension(s).""",
     ):
       torch.masked_fill(inp, mask, value)
 
-  def test_masked_fill_type_mismatch(self):
-    inp = torch.ones(2, 2, dtype=torch.float32, device=et.device())
+  def test_masked_fill_value_overflow(self):
+    inp = torch.ones(2, 2, dtype=torch.uint8, device=et.device())
     mask = torch.ones(2, 2, dtype=torch.bool, device=et.device())
-    value = torch.ones(1, dtype=torch.int32, device=et.device())
+    value = torch.tensor(2**31, dtype=torch.int64, device=et.device())
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""masked_fill_(): expected self and value to have the same element type, got int32 and float32""",
-        gpu="""masked_fill_ only supports a 0-dimensional value tensor, but got tensor with 1 dimension(s).""",
+        tpu="""masked_fill_(): expected value to be representable as uint8, got 2147483648""",
+        gpu="""value cannot be converted to type uint8_t without overflow""",
     ):
       torch.masked_fill(inp, mask, value)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""masked_fill_(): expected value to be representable as uint8, got 2147483648""",
+        gpu="""value cannot be converted to type uint8_t without overflow""",
+    ):
+      torch.masked_fill(inp, mask, 2**31)
 
   def test_masked_fill_inplace_invalid_broadcast(self):
     inp = torch.ones(2, dtype=torch.float32, device=et.device())
@@ -7380,11 +7642,78 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""acos(): expected the output dtype to be float32, got int32""",
+        tpu="""acos(): result type float32 can't be cast to the desired output type int32""",
         gpu="""result type Float can't be cast to the desired output type Int""",
         message_reviewed_by="wan",
     ):
       torch.acos(t, out=out)
+
+  def test_abs_out_dtype_mismatch(self):
+    # Real-to-real mismatched out dtype is disallowed.
+    real_f32 = torch.tensor([5.0], device=et.device(), dtype=torch.float32)
+    out_f64 = torch.empty(1, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""abs(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.abs(real_f32, out=out_f64)
+
+    # Complex-to-real invalid downcast.
+    x_complex = torch.tensor(
+        [3.0 + 4.0j], device=et.device(), dtype=torch.complex64
+    )
+    out_i32 = torch.empty(1, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""abs(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.abs(x_complex, out=out_i32)
+
+  def test_neg_out_dtype_mismatch(self):
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+
+    # Call the out variant with a mismatching dtype for dtype-preserving ops.
+    out = torch.ones(5, device=et.device(), dtype=torch.float64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""neg(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.neg(t, out=out)
+
+  def test_all_out_dtype_mismatch(self):
+    t = torch.tensor([True, False], device=et.device())
+
+    # Call the out variant with an invalid dtype (not bool or uint8).
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""all(): expected the output dtype to be bool or uint8, got float32""",
+        gpu="""all only supports bool tensor for result, got: Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.all(t, out=out)
+
+  def test_any_out_dtype_mismatch(self):
+    t = torch.tensor([True, False], device=et.device())
+
+    # Call the out variant with an invalid dtype (not bool or uint8).
+    out = torch.empty(0, device=et.device(), dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""any(): expected the output dtype to be bool or uint8, got float32""",
+        gpu="""any only supports bool tensor for result, got: Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.any(t, out=out)
 
   def test_angle_out_dtype_mismatch(self):
     t = torch.tensor([1.0 + 1.0j], device=et.device())
@@ -9244,7 +9573,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""native_multi_head_attention(): expected 4-D mask shape to be [2, 2, 4, 4], got [2, 2, 4, 8]""",
-        gpu="""Mask Type should be defined""",
+        gpu="""Mask shape should match input. mask: [2, 2, 4, 8] input: [2, 2, 4, 4]""",
     ):
       torch.ops.aten._native_multi_head_attention(
           query,
@@ -9259,7 +9588,7 @@ Device-side assertion tracking was not enabled by user.""",
           mask,
           True,
           True,
-          None,
+          2,
       )
 
   def test_native_multi_head_attention_invalid_mask_rank(self):
@@ -9274,7 +9603,7 @@ Device-side assertion tracking was not enabled by user.""",
     mask = torch.ones(2, 4, 4, dtype=torch.bool, device=device)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""native_multi_head_attention(): expected 2-D or 4-D mask, got 3-D tensor""",
+        tpu="""native_multi_head_attention(): expected mask to be a 2D or a 4D tensor, got 3D tensor of shape [2, 4, 4]""",
         gpu="""Mask shape should match input. mask: [2, 4, 4] input: [2, 2, 4, 4]""",
     ):
       torch.ops.aten._native_multi_head_attention(
@@ -11207,6 +11536,193 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""unique_consecutive(): expected dimension to be either 0 or -1 for a shape with 0 dimensions, got -2""",
     ):
       torch.unique_consecutive(scalar, dim=-2)
+
+  @parameterized.named_parameters(
+      ("u_mismatch", "u"),
+      ("s_mismatch", "s"),
+      ("vh_mismatch", "vh"),
+  )
+  def test_linalg_svd_out_dtype_mismatch(self, mismatch_arg):
+    u_dtype = torch.float32 if mismatch_arg == "u" else torch.float64
+    s_dtype = torch.float32 if mismatch_arg == "s" else torch.float64
+    vh_dtype = torch.float32 if mismatch_arg == "vh" else torch.float64
+
+    u = torch.empty(5, 3, device=et.device(), dtype=u_dtype)
+    s = torch.empty(3, device=et.device(), dtype=s_dtype)
+    vh = torch.empty(3, 3, device=et.device(), dtype=vh_dtype)
+
+    t = torch.randn(5, 3, device=et.device(), dtype=torch.float64)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*expected out tensor to have dtype.*", re.IGNORECASE | re.DOTALL
+        ),
+    ):
+      torch.linalg.svd(t, full_matrices=False, out=(u, s, vh))
+
+  def test_min_unary_invalid_output_device(self):
+    tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.tensor(0.0, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""min(): expected output tensor to be on tpu, got cpu""",
+        gpu="""Expected self.device() == out.device() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.min(tensor, out=out)
+
+  def test_max_unary_invalid_output_device(self):
+    tensor = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out = torch.tensor(0.0, device="cpu", dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""max(): expected output tensor to be on tpu, got cpu""",
+        gpu="""Expected self.device() == out.device() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
+        message_reviewed_by="gunhyun",
+    ):
+      torch.max(tensor, out=out)
+
+  @et.skip_if(
+      lambda: torch.accelerator.device_count() > 8,
+      "Only works when there are up to 8 accelerator devices.",
+  )
+  def test_create_stream_with_out_of_bounds_device_index(self):
+    Stream = torch.cuda.Stream if et.is_on_gpu() else torch.tpu.Stream
+
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""expected device index to be in range [0, 8), got 8""",
+        gpu="""CUDA error: invalid device ordinal
+GPU device may be out of range, do you have enough GPUs?
+Device-side assertion tracking was not enabled by user.""",
+        message_reviewed_by="wan",
+    ):
+      Stream(8)
+
+  def test_native_multi_head_attention_dtypes_mismatch(self):
+    query = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
+    key = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float16)
+    value = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
+    qkv_weight = torch.ones(24, 8, device=et.device(), dtype=torch.float32)
+    qkv_bias = torch.ones(24, device=et.device(), dtype=torch.float32)
+    proj_weight = torch.ones(8, 8, device=et.device(), dtype=torch.float32)
+    proj_bias = torch.ones(8, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected query, key, value, qkv_weight, qkv_bias, proj_weight, and proj_bias to have matching dtypes, got float32, float16, float32, float32, float32, float32, float32""",
+        gpu="""expected mat1 and mat2 to have the same dtype, but got: c10::Half != float""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query, key, value, 8, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
+      )
+
+  def test_native_multi_head_attention_non_positive_embed_dim(self):
+    query = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
+    key = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
+    value = torch.ones(2, 4, 8, device=et.device(), dtype=torch.float32)
+    qkv_weight = torch.ones(24, 8, device=et.device(), dtype=torch.float32)
+    qkv_bias = torch.ones(24, device=et.device(), dtype=torch.float32)
+    proj_weight = torch.ones(8, 8, device=et.device(), dtype=torch.float32)
+    proj_bias = torch.ones(8, device=et.device(), dtype=torch.float32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""native_multi_head_attention(): expected embed_dim to be > 0, got 0""",
+        gpu="""passed-in embed_dim 0 didn't match last dim of query 8""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._native_multi_head_attention(
+          query, key, value, 0, 2, qkv_weight, qkv_bias, proj_weight, proj_bias
+      )
+
+  def test_jagged_offsets_multiple_lists(self):
+    values = torch.randn(5, 4, device=et.device())
+    o1 = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
+    o2 = torch.tensor([0, 3, 5], dtype=torch.int64, device=et.device())
+    err_type = NotImplementedError if et.is_on_tpu() else RuntimeError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""jagged_to_padded_dense_forward(): expected only 1 offset tensor (only 1 jagged dim is supported for now), got 2 offset tensors""",
+        gpu="""max_lengths.size(), 1 != num_jagged_dim, 2""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(values, [o1, o2], [3], 0.0)
+
+  def test_jagged_offsets_empty(self):
+    values = torch.randn(5, 4, device=et.device())
+    offsets = torch.tensor([], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""jagged_to_padded_dense_forward(): expected offsets tensors to have size >= 1, got 0""",
+        gpu="""Trying to create tensor with negative dimension -1: [-1, 3, 4]""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets], [3], 0.0
+      )
+
+  def test_leaky_relu_backward_negative_slope_with_self_is_result(self):
+    grad_output = torch.ones(2, device=et.device())
+    self_or_result = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""In-place leakyReLu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead. File an issue at https://github.com/pytorch/pytorch if you do require supporting in-place leakRelu backward calculation with negative slope""",
+        gpu="""In-place leakyReLu backward calculation is triggered with a negative slope which is not supported. This is caused by calling in-place forward function with a negative slope, please call out-of-place version instead. File an issue at https://github.com/pytorch/pytorch if you do require supporting in-place leakRelu backward calculation with negative slope""",
+    ):
+      torch.ops.aten.leaky_relu_backward(
+          grad_output, self_or_result, negative_slope=-1.0, self_is_result=True
+      )
+
+  def test_jagged_to_padded_multiple_max_lengths(self):
+    values = torch.randn(5, 4, device=et.device())
+    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""jagged_to_padded_dense_forward(): expected max_lengths to have only 1 element, got 2""",
+        gpu="""max_lengths.size(), 2 != num_jagged_dim, 1""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets], [3, 4], 0.0
+      )
+
+  def test_jagged_to_padded_negative_max_length(self):
+    values = torch.randn(5, 4, device=et.device())
+    offsets = torch.tensor([0, 2, 5], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""jagged_to_padded_dense_forward(): expected max_lengths[0] to be >= 0, got -1""",
+        gpu="""Trying to create tensor with negative dimension -1: [2, -1, 4]""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._jagged_to_padded_dense_forward(
+          values, [offsets], [-1], 0.0
+      )
+
+  def test_padded_to_jagged_dense_1d(self):
+    dense = torch.randn(10, device=et.device())
+    offsets = torch.tensor([0, 5, 10], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""padded_dense_to_jagged_forward(): expected dense to have >= 2 dimensions, got 1""",
+        gpu="""x_offsets.size(), 1 != num_jagged_dim, -1""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 10)
+
+  def test_padded_to_jagged_batch_size_mismatch(self):
+    dense = torch.randn(2, 5, 4, device=et.device())
+    offsets = torch.tensor([0, 2, 3, 5], dtype=torch.int64, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""padded_dense_to_jagged_forward(): expected dense first dimension size to match the batch size inferred from the offsets (3), got 2""",
+        gpu="""outer_dense_size, 2 != offsets[0].numel() - 1, 3""",
+        message_reviewed_by="wan",
+    ):
+      torch.ops.aten._padded_dense_to_jagged_forward(dense, [offsets], 5)
 
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):

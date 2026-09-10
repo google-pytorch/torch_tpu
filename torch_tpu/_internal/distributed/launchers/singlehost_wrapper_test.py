@@ -82,7 +82,7 @@ def dummy_worker_func_with_arg(arg1):  # pylint: disable=unused-argument
   pass
 
 
-class SingleHostTestLauncherTest(seed_test_utils.RepeatableTest):
+class SingleHostTestLauncherTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_mandatory_variables(self):
     if "TEST_UNDECLARED_OUTPUTS_DIR" not in os.environ:
@@ -91,7 +91,7 @@ class SingleHostTestLauncherTest(seed_test_utils.RepeatableTest):
       )
 
     distributed_utils.dist_run(
-        nproc_per_node=WORLD_SIZE,
+        WORLD_SIZE,
         fn=singlehost_wrapper.tpu_env_wrapper(
             worker_func, world_size=WORLD_SIZE
         ),

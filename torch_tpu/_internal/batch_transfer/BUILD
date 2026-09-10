@@ -36,7 +36,7 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "batch_transfer_impl",
-    srcs = ["//torch_tpu/csrc/internal/batch_transfer:batch_transfer_impl.cc"],
+    srcs = ["//csrc/internal/batch_transfer:batch_transfer_impl.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
@@ -45,12 +45,12 @@ pybind_extension(
     ],
     wrap_py_init = True,
     deps = [
+        "//csrc/common:dimension_types",
+        "//csrc/common:error_utils",
+        "//csrc/experimental/batch_transfer",
         "//shims/torch:aten",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
-        "//torch_tpu/csrc/common:dimension_types",
-        "//torch_tpu/csrc/common:error_utils",
-        "//torch_tpu/csrc/experimental/batch_transfer",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
     ],

@@ -42,6 +42,8 @@ from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile.debug import TpuCompileDebug
+from torch_tpu._internal.compile.fx_passes import fold_gqa
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
@@ -75,7 +77,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       self,
       compilation_context: CompilationContext | None = None,
       *,
-      debug: bool = False,
+      debug: bool | TpuCompileDebug | None = None,
       use_stablehlo_bounds: bool = False,
   ):
     """Initializes the Compiler.
@@ -84,8 +86,9 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       compilation_context: An optional CompilationContext object to share state
         across compilations. If None, a new CompilationContext will be default
         constructed.
-      debug: Enable debug mode, which may store additional artifacts and log
-        more information.
+      debug: Optional TpuCompileDebug container or bool for recording
+        compilation debug artifacts. Note: Passing a bool is deprecated and
+        slated for removal; pass a TpuCompileDebug container instead.
       use_stablehlo_bounds: Whether to use StableHLO bounds during compilation
         for dynamic inputs.
     """
@@ -111,7 +114,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
     Args:
       graph_module: The FX graph module to process.
     """
-    pass
+    fold_gqa.apply(graph_module)
 
   @abc.abstractmethod
   def __call__(
@@ -119,6 +122,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[InputType],
       is_fwd: bool = True,
+      module_name: str | None = None,
   ) -> CompiledArtifact:
     """Compiles the FX graph module into a callable artifact.
 
@@ -131,6 +135,10 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       example_inputs: A sequence of example input tensors that can be used to
         guide the compilation process (e.g., for shape inference).
       is_fwd: Indicates whether the forward or backward pass is being compiled.
+      module_name: Optional custom identifier for the compiled region. When
+        provided, this is used as the MLIR/HLO module name and surfaces in
+        profiling tools like Xprof (identifying the compiled TPU program
+        execution in traces and viewers), compiler IR dumps, and debug logs.
 
     Returns:
       A CompiledArtifact object, which is a callable representation of the
@@ -293,6 +301,7 @@ class StaticCompiler(Compiler):
       argument_layouts: Sequence[Sequence[int]] | None = None,
       dynamic_outputs: Sequence[bool] | None = None,
       donated_inputs: Sequence[int] | None = None,
+      module_name: str | None = None,
   ) -> CompiledArtifact:
     with xprof_adapter.TraceMe("StaticCompiler._compile"):
       tracing_enabled = _is_tracing_enabled()
@@ -335,15 +344,28 @@ class StaticCompiler(Compiler):
           if any(extracted_layouts):
             argument_layouts = extracted_layouts
 
+        # TODO(yho): Remove this check variable and replace with
+        # `self._debug is not None` once we deprecate bool args to debug.
+        if self._debug is None:
+          is_debug = False
+        elif isinstance(self._debug, TpuCompileDebug):
+          is_debug = True
+        elif isinstance(self._debug, bool):
+          is_debug = self._debug
+        else:
+          raise TypeError(f"Invalid type for self._debug: {type(self._debug)}")
+
+        should_serialize = tracing_enabled or is_debug
         with dynamo_timed("torchtpu_fx_to_mlir"):
           exported_mlir = torch_tpu_export.fx_to_mlir(
               graph_module,
               placeholder_args,
-              build_mlir_module=(tracing_enabled or self._debug),
+              build_mlir_module=should_serialize,
               use_stablehlo_bounds=self._use_stablehlo_bounds,
               argument_layouts=argument_layouts,  # pyrefly: ignore[bad-argument-type]
               dynamic_outputs=dynamic_outputs,
               donated_inputs=donated_inputs,
+              module_name=module_name,
           )
 
       if exported_mlir.is_noop:
@@ -354,13 +376,22 @@ class StaticCompiler(Compiler):
         # trivial executable.
         return NoOpCompiledArtifact(exported_mlir.reconstruct_fx_outputs_fn)
 
-      mlir_module = exported_mlir.module
+      executable = TorchTpuCompiledExecutable(
+          executable=exported_mlir.executable,
+          reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
+          updates_default_generator_state=exported_mlir.updates_default_generator_state,
+          dynamic_outputs=exported_mlir.dynamic_outputs,
+          unique_output_indices=exported_mlir.unique_output_indices,
+      )
 
-      # Emit StableHLO artifact for tlparse when TORCH_TRACE is set.
-      if tracing_enabled and mlir_module is not None:
-        mlir_text = tpu_torch_compile.serialize_mlir_text(
-            mlir_module, enable_debug_info=self._debug
-        )
+      if not should_serialize or exported_mlir.module is None:
+        return executable
+
+      mlir_text = tpu_torch_compile.serialize_mlir_text(
+          exported_mlir.module, enable_debug_info=is_debug
+      )
+
+      if tracing_enabled:
         trace_structured(
             "artifact",
             metadata_fn=lambda: {
@@ -371,21 +402,15 @@ class StaticCompiler(Compiler):
             expect_trace_id=True,
         )
 
-      executable = TorchTpuCompiledExecutable(
-          executable=exported_mlir.executable,
-          reconstruct_fx_outputs_fn=exported_mlir.reconstruct_fx_outputs_fn,
-          updates_default_generator_state=exported_mlir.updates_default_generator_state,
-          dynamic_outputs=exported_mlir.dynamic_outputs,
-          unique_output_indices=exported_mlir.unique_output_indices,
-      )
+      if isinstance(self._debug, TpuCompileDebug):
+        if is_fwd:
+          self._debug.stablehlo_forward_text.append(mlir_text)
+        else:
+          self._debug.stablehlo_backward_text.append(mlir_text)
 
-      if self._debug and mlir_module is not None:
-        # Avoid print_readable() as it includes verbose original code lines.
+      if is_debug:
         executable.graph_module_debug_str = str(graph_module.code)
-        executable.mlir_text = tpu_torch_compile.serialize_mlir_text(
-            mlir_module, enable_debug_info=True
-        )
-
+        executable.mlir_text = mlir_text
       return executable
 
   def __call__(
@@ -397,10 +422,11 @@ class StaticCompiler(Compiler):
       argument_layouts: Sequence[Sequence[int]] | None = None,
       dynamic_outputs: Sequence[bool] | None = None,
       donated_inputs: Sequence[int] | None = None,
+      module_name: str | None = None,
   ) -> CompiledArtifact:
     """Compiles the FX graph module for static shapes.
 
-    This method performs the steps below. Steps 4-8 are executed asynchronously
+    This method performs the steps below. Steps 4-7 are executed asynchronously
     if `StaticCompiler` was initialized with `async_compile=True`:
     1.  Applies pre-compilation graph transformations:
         -   Prepares auto functionalized ops and auto-detects donated inputs.
@@ -414,8 +440,6 @@ class StaticCompiler(Compiler):
     5.  Emits MLIR artifacts if tracing is enabled.
     6.  Compiles the MLIR module into a PjRtLoadedExecutable.
     7.  Wraps the executable in a TorchTpuCompiledExecutable.
-    8.  Stores debug information (graph code, MLIR text) in the
-        executable if debug mode is enabled.
 
     Args:
       graph_module: The FX graph module to compile.
@@ -429,6 +453,9 @@ class StaticCompiler(Compiler):
         is an "internal" feature only available to StaticCompiler intended to be
         used directly after tracing with make_fx. TODO(b/545738245): Investigate
         doing this automatically.
+      module_name: Optional custom name for the compiled MLIR module. When
+        provided, this surfaces in profiling tools (e.g., Xprof) and compiler IR
+        dumps.
 
     Returns:
       A `CompiledArtifact` object (`TorchTpuCompiledExecutable` if
@@ -448,6 +475,9 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "fold_gqa"
+    ).apply_graph_pass(fold_gqa.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "mark_embedded_constants"
     ).apply_graph_pass(mark_embedded_constants.apply)
@@ -481,6 +511,7 @@ class StaticCompiler(Compiler):
           argument_layouts,
           dynamic_outputs,
           donated_inputs,
+          module_name,
       )
       return AsyncCompiledArtifact(future)
     else:
@@ -492,4 +523,5 @@ class StaticCompiler(Compiler):
           argument_layouts,
           dynamic_outputs,
           donated_inputs,
+          module_name,
       )

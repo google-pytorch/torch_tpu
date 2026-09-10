@@ -97,6 +97,8 @@ torch_tpu_py_library(
         "//torch_tpu",
         "//torch_tpu/_internal/benchmarks:benchmark_adapter",
         "//torch_tpu/_internal/benchmarks:export_adapter",
+        "//torch_tpu/_internal/benchmarks:xprof_adapter",
+        "//torch_tpu/_internal/compile/dynamic:view_decomposition",
         "//torch_tpu/_internal/compile/fx_passes:clone_mutated_returned_placeholders",
         "//torch_tpu/_internal/compile/fx_passes:propagate_symints",
         "//torch_tpu/_internal/compile/fx_passes:reorder_symints",

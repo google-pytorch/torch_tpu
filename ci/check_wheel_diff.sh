@@ -45,14 +45,16 @@ if [[ "${EVENT_NAME}" != "pull_request" || "${FORCE_BUILD}" == "true" ]]; then
   exit 0
 fi
 
-if [[ -z "${BASE_SHA}" ]]; then
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIFF_BASE="$("${SCRIPT_DIR}/tools/resolve_base_sha.sh" "${HEAD_SHA}" "${BASE_SHA:-}")"
+
+if [[ -z "${DIFF_BASE}" ]]; then
   echo "No base SHA available. Defaulting to build."
   echo "should_build=true" >> "$GITHUB_OUTPUT"
   exit 0
 fi
 
-git fetch --no-tags --depth=1 origin "${BASE_SHA}"
-CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+CHANGED_FILES=$(git diff --name-only "${DIFF_BASE}" "${HEAD_SHA}")
 
 if [[ -z "${CHANGED_FILES}" ]]; then
   echo "No changed files detected. Defaulting to build."

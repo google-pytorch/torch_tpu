@@ -1536,7 +1536,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         run_mode=run_mode,
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
-            model_name="timm/resnet50d",
+            model_name="resnet50d",
             custom_kwargs={"input_shape": (16, 3, 224, 224)},
         ),
         model_and_input_factory=model_utils.timm_model_builder,
@@ -1557,7 +1557,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         run_mode=run_mode,
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
-            model_name="timm/resnet50d",
+            model_name="resnet50d",
             custom_kwargs={"input_shape": (16, 3, 224, 224)},
         ),
         model_and_input_factory=model_utils.timm_model_builder,
@@ -1623,7 +1623,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         run_mode=run_mode,
         is_training=False,
         model_and_input_args=performance_utils.ModelAndInputArgs(
-            model_name="timm/vit_small_patch8_224.dino",
+            model_name="vit_small_patch8_224.dino",
             custom_kwargs={"input_shape": (1, 3, 224, 224)},
         ),
         model_and_input_factory=model_utils.timm_model_builder,
@@ -1645,7 +1645,7 @@ class BenchmarkTest(test_utils.BenchmarkTest):
         run_mode=run_mode,
         is_training=True,
         model_and_input_args=performance_utils.ModelAndInputArgs(
-            model_name="timm/vit_small_patch8_224.dino",
+            model_name="vit_small_patch8_224.dino",
             custom_kwargs={"input_shape": (1, 3, 224, 224)},
         ),
         model_and_input_factory=model_utils.timm_model_builder,

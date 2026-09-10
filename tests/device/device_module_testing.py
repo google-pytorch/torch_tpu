@@ -303,6 +303,9 @@ class DeviceModuleBase(
       self.assertEqual(self.device_module.exchange_device(0), 0)
       self.assertEqual(self.device_module.maybe_exchange_device(0), 0)
 
+  def test_get_multi_processor_count(self):
+    self.assertEqual(self.device_module.get_multi_processor_count(), 1)
+
   def test_get_local_device_attributes(self):
     """Tests the local device attributes dictionary contains correct keys."""
     tensor = torch.zeros(1, device=torch.accelerator.current_accelerator())

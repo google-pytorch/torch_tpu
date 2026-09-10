@@ -37,16 +37,16 @@ torch_tpu_py_library(
 
 pybind_extension(
     name = "execution_mode_impl",
-    srcs = ["//torch_tpu/csrc/internal/execution_mode:execution_mode_impl.cc"],
+    srcs = ["//csrc/internal/execution_mode:execution_mode_impl.cc"],
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
     wrap_py_init = True,
     deps = [
-        "//torch_tpu/csrc/common:context_manager",
-        "//torch_tpu/csrc/common:context_states",
-        "//torch_tpu/csrc/eager:eager_mode",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
+        "//csrc/common:context_manager",
+        "//csrc/common:context_states",
+        "//csrc/eager:eager_mode",
+        "//csrc/eager:tpu_aten_kernels",
     ],
 )
 

@@ -128,5 +128,71 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res_weight.cpu(), expected)
 
 
+class _DummyCompiledExecutable(split_compiler.CompiledArtifact):
+
+  def __init__(self, gm):
+    self.gm = gm
+    self._updates_default_generator_state = False
+    self.mlir_text = "dummy_mlir"
+    self.graph_module_debug_str = gm.print_readable(print_output=False)
+
+  def updates_default_generator_state(self) -> bool:
+    return self._updates_default_generator_state
+
+  def __reduce__(self):
+    return (_DummyCompiledExecutable, (self.gm,))
+
+  def __call__(self, *args, **kwargs):
+    return self.gm(*args, **kwargs)
+
+
+class _DummyBaseCompiler(compiler.Compiler):
+
+  def __init__(self):
+    super().__init__(debug=True)
+
+  def __call__(self, gm, args, is_fwd=True, **kwargs):
+    return _DummyCompiledExecutable(gm)
+
+
+class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
+
+  def test_single_partition_with_lifted_parameters_no_submod_split(self):
+    """Verifies that an FX graph with lifted parameters as placeholders (matching AOT Autograd in DeepSeek-V2) without collectives is NOT partitioned into submod_0."""
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    w1 = graph.placeholder("w1")
+    w2 = graph.placeholder("w2")
+    bias = graph.placeholder("bias")
+    h1 = graph.call_function(torch.matmul, (x, w1))
+    h2 = graph.call_function(torch.matmul, (h1, w2))
+    out = graph.call_function(torch.add, (h2, bias))
+    graph.output(out)
+    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    x_tensor = torch.ones(2, 4)
+    w1_tensor = torch.ones(4, 4)
+    w2_tensor = torch.ones(4, 4)
+    bias_tensor = torch.ones(4)
+    inputs = (x_tensor, w1_tensor, w2_tensor, bias_tensor)
+
+    split_comp = split_compiler.SplitCompiler(_DummyBaseCompiler())
+    executable = split_comp(gm, inputs)
+
+    # In DeepSeek-V2, the forward graph has no collectives (single partition).
+    # CL 967263385 removed the `num_partitions <= 1` bypass, forcing the graph
+    # through split_module which partitioned it into 'submod_0' and hoisted all
+    # parameter placeholders into call_module arguments.
+    # The fix must bypass split_module and not create submod_0.
+    self.assertIsInstance(executable, split_compiler._SplitCompiledExecutable)
+    self.assertEqual(len(executable.compiled_executables), 1)
+    # Verify execution produces correct output
+    res = executable(*inputs)
+    expected = (
+        torch.matmul(torch.matmul(x_tensor, w1_tensor), w2_tensor) + bias_tensor
+    )
+    utils.assert_close(res, expected)
+
+
 if __name__ == "__main__":
   absltest.main()

@@ -221,8 +221,8 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       dynamism.mark_dynamic(y, 0, 2, 10)
 
     args = (
-        torch.rand(3, 1, device=self.device, dtype=torch.float32),
-        torch.rand(3, 1, device=self.device, dtype=torch.float32),
+        torch.rand(3, 1, dtype=torch.float32),
+        torch.rand(3, 1, dtype=torch.float32),
     )
     self._run_bounded_dynamism_test(torch.mul, mark_dynamic, *args)
 
@@ -232,8 +232,8 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       dynamism.mark_dynamic(y, 2, 2, 15)
 
     args = (
-        torch.rand(5, 10, 5, device=self.device, dtype=torch.float32),
-        torch.rand(5, 10, 5, device=self.device, dtype=torch.float32),
+        torch.rand(5, 10, 5, dtype=torch.float32),
+        torch.rand(5, 10, 5, dtype=torch.float32),
     )
     self._run_bounded_dynamism_test(torch.pow, mark_dynamic, *args)
 
@@ -243,8 +243,8 @@ class DynamismTest(seed_test_utils.RepeatableTest):
       dynamism.mark_dynamic(y, 1, 2, 15)
 
     args = (
-        torch.rand(3, 1, device=self.device, dtype=torch.float32),
-        torch.rand(1, 4, device=self.device, dtype=torch.float32),
+        torch.rand(3, 1, dtype=torch.float32),
+        torch.rand(1, 4, dtype=torch.float32),
     )
     self._run_bounded_dynamism_test(torch.add, mark_dynamic, *args)
 

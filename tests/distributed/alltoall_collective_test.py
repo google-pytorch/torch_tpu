@@ -26,6 +26,7 @@ This isn't quite how this will be used in open source, so we should revisit this
 before the open source release.
 """
 
+import math
 import os
 from absl import logging
 from absl.testing import absltest
@@ -150,19 +151,26 @@ def run_all_to_all_single(
   output_tensor = test_data.get_output_tensor(rank, world_size).to(device)
 
   logging.info(
-      "Before all_to_all_single (rank=%d, dtype=%s): input = %s",
+      "Before all_to_all_single (rank=%d, dtype=%s): input = %s, out_splits=%s,"
+      " in_splits=%s",
       rank,
       test_data.get_dtype(),
       input_tensor.cpu(),
+      test_data.get_output_split_sizes(rank, world_size),
+      test_data.get_input_split_sizes(rank, world_size),
   )
 
-  torch.distributed.all_to_all_single(
+  work = torch.distributed.all_to_all_single(
       output_tensor,
       input_tensor,
       test_data.get_output_split_sizes(rank, world_size),
       test_data.get_input_split_sizes(rank, world_size),
       async_op=True,
-  ).wait()
+  )
+  logging.info("Rank %d waiting on work...", rank)
+  if work is not None:
+    work.wait()
+  logging.info("Rank %d work wait completed.", rank)
 
   logging.info(
       "After all_to_all_single (rank=%d, dtype=%s): output = %s",
@@ -172,11 +180,135 @@ def run_all_to_all_single(
   )
 
   expected_tensor = test_data.get_output(rank, world_size)
+  logging.info("Rank %d expected = %s", rank, expected_tensor.cpu())
   utils.assert_close(
       actual=output_tensor.cpu(),
       expected=expected_tensor.cpu(),
       preamble=f"Rank {rank} failed",
   )
+  logging.info("Rank %d assert_close passed.", rank)
+
+  dist.barrier()
+  logging.info("Rank %d barrier passed.", rank)
+  dist.destroy_process_group()
+
+
+class AllToAllSingleUnevenTestData:
+  """Input and output data generator for uneven all_to_all_single collective tests.
+
+  The communication pattern is defined by a 2D split matrix of dimensions
+  [world_size, world_size], where split_matrix[src][dst] specifies the number of
+  elements (rows along dimension 0) sent from rank `src` to rank `dst`.
+  """
+
+  def __init__(
+      self,
+      split_matrix: list[list[int]],
+      dtype: torch.dtype = torch.float32,
+      extra_dims: tuple[int, ...] = (),
+      md_shapes: bool = False,
+  ):
+    """Initializes uneven test data with a split matrix and tensor properties.
+
+    Args:
+      split_matrix: 2D matrix where entry [i][j] is the count sent from rank i
+        to rank j.
+      dtype: Data type of generated tensors.
+      extra_dims: Trailing shape dimensions (e.g. (3, 4) for a [rows, 3, 4]
+        tensor).
+      md_shapes: Convenience flag to add a default trailing dimension of (2,).
+    """
+    self._split_matrix = split_matrix
+    self._world_size = len(split_matrix)
+    self._dtype = dtype
+    if md_shapes and not extra_dims:
+      self._extra_dims = (2,)
+    else:
+      self._extra_dims = extra_dims
+
+  def get_input_split_sizes(self, rank: int, world_size: int) -> list[int]:
+    """Returns the list of slice sizes that `rank` sends to all destination ranks."""
+    del world_size
+    # Row `rank` contains outgoing counts to destination ranks 0..world_size-1.
+    return self._split_matrix[rank]
+
+  def get_output_split_sizes(self, rank: int, world_size: int) -> list[int]:
+    """Returns the list of slice sizes that `rank` receives from all source ranks."""
+    del world_size
+    # Column `rank` contains incoming counts from source ranks 0..world_size-1.
+    return [self._split_matrix[src][rank] for src in range(self._world_size)]
+
+  def get_input(self, rank: int, world_size: int) -> torch.Tensor:
+    """Constructs the local input tensor for `rank` with identifiable values."""
+    del world_size
+    in_splits = self.get_input_split_sizes(rank, self._world_size)
+    total_rows = sum(in_splits)
+    if total_rows == 0:
+      # Return empty tensor with proper trailing dimensions if rank sends 0 elements.
+      shape = (0, *self._extra_dims)
+      return torch.empty(shape, dtype=self._dtype)
+
+    slices = []
+    for dst, count in enumerate(in_splits):
+      if count > 0:
+        # Generate recognizable numbers keyed by (src, dst): e.g., rank 0 -> dst 1 is 1020..
+        base_val = (rank + 1) * 1000 + (dst + 1) * 10
+        val = torch.arange(base_val, base_val + count, dtype=torch.float32).to(
+            self._dtype
+        )
+        if self._extra_dims:
+          val = val.view(-1, *([1] * len(self._extra_dims))).expand(
+              -1, *self._extra_dims
+          )
+        slices.append(val)
+
+    return (
+        torch.cat(slices, dim=0)
+        if slices
+        else torch.empty((0, *self._extra_dims), dtype=self._dtype)
+    )
+
+  def get_output(self, rank: int, world_size: int) -> torch.Tensor:
+    """Constructs the expected received tensor on `rank` after collective exchange."""
+    del world_size
+    out_splits = self.get_output_split_sizes(rank, self._world_size)
+    total_rows = sum(out_splits)
+    if total_rows == 0:
+      # Return empty tensor with proper trailing dimensions if rank receives 0 elements.
+      shape = (0, *self._extra_dims)
+      return torch.empty(shape, dtype=self._dtype)
+
+    # In all_to_all_single, received slices arrive sequentially in source rank order (0..N-1).
+    slices = []
+    for src in range(self._world_size):
+      count = self._split_matrix[src][rank]
+      if count > 0:
+        base_val = (src + 1) * 1000 + (rank + 1) * 10
+        val = torch.arange(base_val, base_val + count, dtype=torch.float32).to(
+            self._dtype
+        )
+        if self._extra_dims:
+          val = val.view(-1, *([1] * len(self._extra_dims))).expand(
+              -1, *self._extra_dims
+          )
+        slices.append(val)
+
+    return (
+        torch.cat(slices, dim=0)
+        if slices
+        else torch.empty((0, *self._extra_dims), dtype=self._dtype)
+    )
+
+  def get_dtype(self) -> torch.dtype:
+    """Returns the tensor element data type."""
+    return self._dtype
+
+  def get_output_tensor(self, rank: int, world_size: int) -> torch.Tensor:
+    """Allocates a pre-sized destination output buffer for the collective call."""
+    return torch.zeros(
+        self.get_output(rank, world_size).shape,
+        dtype=self._dtype,
+    )
 
 
 class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
@@ -207,6 +339,128 @@ class AllToAllSingleCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
     splits = [1, 1, 1, 1, 1, 1, 1, 1]
     rank_data = AllToAllSingleTestData(
         input_split_sizes=splits, output_split_sizes=splits
+    )
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_1d(self):
+    # matrix of split sizes: rank i sends 2 to (i+1)%8, 1 to others (total 9)
+    matrix = [
+        [
+            (2 if j == (i + 1) % self._world_size else 1)
+            for j in range(self._world_size)
+        ]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_multi_dim(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(
+        matrix, dtype=torch.bfloat16, md_shapes=True
+    )
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_zero_sized_slices(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 0) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_cyclic_pattern(self):
+    matrix = [
+        [
+            (3 if j == (i + 1) % self._world_size else 0)
+            for j in range(self._world_size)
+        ]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_float32(self):
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.float32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_asymmetric(self):
+    # Asymmetric split pattern with a mixture of sizes (3, 2, 0, 1) per peer.
+    matrix = [
+        [
+            (
+                3
+                if j == (i + 1) % self._world_size
+                else (
+                    2
+                    if j == (i + 2) % self._world_size
+                    else (0 if j == (i + 3) % self._world_size else 1)
+                )
+            )
+            for j in range(self._world_size)
+        ]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(matrix, dtype=torch.int32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all_single, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_uneven_splits_3d_float32(self):
+    # 3D tensor with trailing shape (2, 4) and float32
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllSingleUnevenTestData(
+        matrix, dtype=torch.float32, extra_dims=(2, 4)
     )
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
@@ -276,8 +530,52 @@ class AllToAllTestData:
     return self._dtype
 
 
+class AllToAllNonUniformTestData:
+  """Input and output data for non-uniform tensor list all_to_all tests."""
+
+  def __init__(
+      self,
+      matrix: list[list[int]],
+      dtype: torch.dtype = torch.int32,
+      extra_dims: tuple[int, ...] = (),
+  ):
+    self._matrix = matrix
+    self._dtype = dtype
+    self._extra_dims = extra_dims
+
+  def _make_tensor(self, count: int, offset: int) -> torch.Tensor:
+    shape = (count,) + self._extra_dims
+    num_elems = count * math.prod(self._extra_dims)
+    return torch.arange(num_elems, dtype=self._dtype).reshape(shape) + offset
+
+  def get_input_tensors(self, rank: int, world_size: int) -> list[torch.Tensor]:
+    return [
+        self._make_tensor(self._matrix[rank][dst], rank * 100 + dst * 10)
+        for dst in range(world_size)
+    ]
+
+  def get_expected_output_tensors(
+      self, rank: int, world_size: int
+  ) -> list[torch.Tensor]:
+    return [
+        self._make_tensor(self._matrix[src][rank], src * 100 + rank * 10)
+        for src in range(world_size)
+    ]
+
+  def get_output_tensors(
+      self, rank: int, world_size: int
+  ) -> list[torch.Tensor]:
+    return [
+        torch.empty_like(t)
+        for t in self.get_expected_output_tensors(rank, world_size)
+    ]
+
+  def get_dtype(self) -> torch.dtype:
+    return self._dtype
+
+
 def run_all_to_all(
-    test_data: AllToAllTestData,
+    test_data: AllToAllTestData | AllToAllNonUniformTestData,
 ) -> None:
   """Tests all-to-all functionality."""
   dist.init_process_group(backend="tpu_dist")
@@ -338,6 +636,80 @@ class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_uniform_tensors_multi_dim(self):
     rank_data = AllToAllTestData(md_shapes=True)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_non_uniform_tensors_1d(self):
+    # Alternating 1D tensor sizes (1, 2, 1, 2...) across ranks.
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.int32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_non_uniform_tensors_multi_dim(self):
+    # Multi-dimensional tensors with trailing hidden dimension (e.g. MoE
+    # [tokens, hidden_dim]) in bfloat16.
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 2) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllNonUniformTestData(
+        matrix, dtype=torch.bfloat16, extra_dims=(2,)
+    )
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_non_uniform_tensors_zero_sized(self):
+    # Zero-sized slices to test empty communication channels between ranks.
+    matrix = [
+        [(1 if (i + j) % 2 == 0 else 0) for j in range(self._world_size)]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.float32)
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            run_all_to_all, world_size=self._world_size
+        ),
+        test_data=rank_data,
+    )
+
+  def test_non_uniform_tensors_asymmetric(self):
+    # Asymmetric split pattern with a mixture of sizes (3, 2, 0, 1) per peer.
+    matrix = [
+        [
+            (
+                3
+                if j == (i + 1) % self._world_size
+                else (
+                    2
+                    if j == (i + 2) % self._world_size
+                    else (0 if j == (i + 3) % self._world_size else 1)
+                )
+            )
+            for j in range(self._world_size)
+        ]
+        for i in range(self._world_size)
+    ]
+    rank_data = AllToAllNonUniformTestData(matrix, dtype=torch.int32)
     distributed_utils.dist_run(
         nproc_per_node=self._world_size,
         fn=singlehost_wrapper.tpu_env_wrapper(

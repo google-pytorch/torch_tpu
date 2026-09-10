@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "torch_tpu/csrc/internal/profiler/tpu_profiler_plugin.h"
+#include "csrc/internal/profiler/tpu_profiler_plugin.h"
 
 // clang-format off
 #include <memory>
@@ -29,8 +29,9 @@
 #include "absl/strings/string_view.h"
 #include <kineto/ActivityType.h>
 #include <kineto/Config.h>
+#include <kineto/GenericTraceActivity.h>
 #include <kineto/IActivityProfiler.h>
-#include "torch_tpu/csrc/common/error_utils.h"
+#include "csrc/common/error_utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
 // clang-format on
 
@@ -360,6 +361,33 @@ TEST(TpuProfilerPluginTest, UpdateProfileOptionsWorkerRank) {
       UpdateProfileOptions("worker_rank:abc", opts, run_dir, worker_rank).ok());
   EXPECT_TRUE(worker_rank.has_value());
   EXPECT_EQ(*worker_rank, "abc");
+}
+
+TEST(TpuProfilerPluginTest, SanitizeStatString) {
+  EXPECT_EQ(SanitizeStatString("plain_stat_value"), "plain_stat_value");
+  EXPECT_EQ(SanitizeStatString(""), "");
+
+  EXPECT_EQ(SanitizeStatString("\"quoted\""), "'quoted'");
+  EXPECT_EQ(SanitizeStatString("foo \"bar\" baz"), "foo 'bar' baz");
+  EXPECT_EQ(SanitizeStatString("\"\""), "''");
+
+  EXPECT_EQ(SanitizeStatString("line1\nline2\r\nline3"), "line1line2line3");
+  EXPECT_EQ(SanitizeStatString("\n\r\n"), "");
+
+  EXPECT_EQ(
+      SanitizeStatString("{\n  \"shape\": [1, 2],\n  \"dtype\": \"f32\"\n}"),
+      "{  'shape': [1, 2],  'dtype': 'f32'}");
+}
+
+TEST(TpuProfilerPluginTest, AddActivityStringMetadata) {
+  libkineto::GenericTraceActivity activity;
+
+  AddActivityStringMetadata(activity, "op_name", "aten::add");
+  EXPECT_EQ(activity.getMetadataValue("op_name"), "aten::add");
+
+  AddActivityStringMetadata(activity, "details",
+                            "name: \"linear\"\nparams: 1024\r\n");
+  EXPECT_EQ(activity.getMetadataValue("details"), "name: 'linear'params: 1024");
 }
 
 }  // namespace

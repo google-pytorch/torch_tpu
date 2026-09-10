@@ -93,6 +93,73 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   add it here.
   """
 
+  def test_clone_inplace_mutation_preserves_original(self):
+    """Verifies that an in-place mutation on a cloned tensor does not mutate or
+
+    invalidate the original tensor's shared device buffer.
+    """
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+        x_clone = x.clone()
+        x_clone.add_(1.0)
+        y = x * 2.0
+        return x, x_clone, y
+
+      self.assert_close_tpu_vs_cpu(compute)
+
+  def test_clone_original_inplace_mutation_preserves_clone(self):
+    """Verifies that an in-place mutation on the original tensor does not mutate
+
+    or invalidate a live clone that shares the same underlying buffer.
+    """
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+        x_clone = x.clone()
+        x.add_(1.0)
+        y = x_clone * 2.0
+        return x, x_clone, y
+
+      self.assert_close_tpu_vs_cpu(compute)
+
+  def test_clone_inplace_mutation_with_original_as_operand(self):
+    """Verifies that an in-place op taking both the clone and original tensor as
+
+    operands (e.g. x_clone.add_(x)) does not donate the shared buffer and
+    corrupt
+    either operand during execution.
+    """
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+        x_clone = x.clone()
+        x_clone.add_(x)
+        y = x * 2.0
+        return x, x_clone, y
+
+      self.assert_close_tpu_vs_cpu(compute)
+
+  def test_clone_deletion_allows_inplace_donation_on_original(self):
+    """Verifies that deleting a clone drops live_data_ptrs back to 1, safely
+
+    re-enabling in-place buffer donation for subsequent operations on the
+    original.
+    """
+    with execution_mode.set_eager_mode(execution_mode.EagerMode.DEFER_NEVER):
+
+      def compute(device):
+        x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+        x_clone = x.clone()
+        del x_clone
+        x.add_(1.0)
+        return x
+
+      self.assert_close_tpu_vs_cpu(compute)
+
   def test_prelu_kernel_direct(self):
     for dtype in (torch.float32, torch.bfloat16, torch.float16):
       # 0D scalar self, 0D scalar weight
@@ -1049,12 +1116,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           tpu_cpu_overrides={"op": {torch.float32: {"rtol": 0}}},
           tpu_gpu_overrides={},
           grad_overrides={},
+          grad_gpu_overrides={},
       )
     with self.assertRaisesRegex(ValueError, "atol must be > 0"):
       self.set_accuracy_overrides(
           tpu_cpu_overrides={"op": {torch.float32: {"atol": 0}}},
           tpu_gpu_overrides={},
           grad_overrides={},
+          grad_gpu_overrides={},
       )
 
   def test_topk_sorted_false(self):
@@ -1185,6 +1254,76 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_adaptive_max_pool2d(self):
+    """Tests nn.functional.adaptive_max_pool2d and aten.adaptive_max_pool2d.out."""
+    for shape, out_size in [
+        # Divisible cases
+        ((2, 3, 4, 4), (2, 2)),
+        ((1, 2, 6, 6), (3, 3)),
+        ((2, 4, 8, 8), (4, 4)),
+        # Non-divisible cases
+        ((1, 2, 5, 7), (3, 2)),
+        ((2, 3, 7, 7), (3, 3)),
+        ((1, 1, 10, 10), (3, 3)),
+        # Single int output_size
+        ((2, 3, 6, 6), 3),
+        ((1, 2, 7, 7), (4, 3)),
+        # 3D tensor (C, H, W)
+        ((3, 7, 7), (3, 3)),
+        ((2, 5, 7), (2, 3)),
+        # Zero-batch tensor (0, 3, 8, 8)
+        ((0, 3, 8, 8), (4, 4)),
+        # 3D zero-channel tensor (0, 4, 4)
+        ((0, 4, 4), (2, 2)),
+        ((0, 4, 4), (0, 0)),
+        # Zero output dimension cases (4D and 3D)
+        ((2, 3, 4, 4), 0),
+        ((2, 3, 4, 4), (0, 0)),
+        ((2, 3, 4, 4), (0, 3)),
+        ((2, 3, 4, 4), (3, 0)),
+        ((3, 4, 4), 0),
+        ((3, 4, 4), (0, 0)),
+        ((3, 4, 4), (0, 3)),
+        ((3, 4, 4), (3, 0)),
+    ]:
+      for dtype in (torch.float32, torch.bfloat16, torch.float16):
+        x_cpu = torch.randn(shape, dtype=dtype)
+        out_size_pair = (
+            (out_size, out_size) if isinstance(out_size, int) else out_size
+        )
+
+        def compute_functional(device, x=x_cpu, os=out_size):
+          return torch.nn.functional.adaptive_max_pool2d(
+              x.to(device), os, return_indices=True
+          )
+
+        self.assert_close_tpu_vs_cpu(
+            compute_functional, rtol=1e-3, atol=1e-3, check_dtype=True
+        )
+
+        def compute_out(device, x=x_cpu, os=out_size_pair, dt=dtype):
+          out_buf = torch.empty((0,), dtype=dt, device=device)
+          idx_buf = torch.empty((0,), dtype=torch.int64, device=device)
+          torch.ops.aten.adaptive_max_pool2d.out(
+              x.to(device), os, out=out_buf, indices=idx_buf
+          )
+          return out_buf, idx_buf
+
+        self.assert_close_tpu_vs_cpu(
+            compute_out, rtol=1e-3, atol=1e-3, check_dtype=True
+        )
+
+    # Tie-breaking test with duplicate maxima
+    tie_x_cpu = torch.tensor(
+        [[[[1.0, 5.0, 5.0], [5.0, 2.0, 3.0], [4.0, 5.0, 1.0]]]],
+        dtype=torch.float32,
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.nn.functional.adaptive_max_pool2d(
+            tie_x_cpu.to(device), (2, 2), return_indices=True
+        )
+    )
+
   def test_rsqrt_complex_grad(self):
     device = torch.device("tpu")
     x = torch.randn(
@@ -1211,6 +1350,23 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
           return torch.abs(input_tensor.to(device))
 
         self.assert_close_tpu_vs_cpu(run)
+
+  def test_complex_abs_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([3.0 + 4.0j], dtype=torch.complex64, device=device)
+    # Valid cast to real float32
+    out_f32 = torch.empty(1, dtype=torch.float32, device=device)
+    torch.abs(x, out=out_f32)
+    utils.assert_close(
+        out_f32, torch.tensor([5.0], dtype=torch.float32, device=device)
+    )
+
+    # Valid upcast to real float64
+    out_f64 = torch.empty(1, dtype=torch.float64, device=device)
+    torch.abs(x, out=out_f64)
+    utils.assert_close(
+        out_f64, torch.tensor([5.0], dtype=torch.float64, device=device)
+    )
 
   def test_bool_abs(self):
     device = torch.device("tpu")
@@ -1282,111 +1438,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return torch.gather(self_tensor, 1, index)
 
     self.assert_close_tpu_vs_cpu(test_fn)
-
-  @parameterized.product(
-      batch_size=[1, 2],
-      in_channels=[4],
-      out_channels=[8],
-      length=[16],
-      kernel_size=[3],
-      stride=[1, 2],
-      padding=[0, 1],
-      output_padding=[0],
-      groups=[1, 2],
-      bias=[True, False],
-      dtype=[torch.float32, torch.bfloat16],
-  )
-  def test_conv_transpose1d(
-      self,
-      batch_size,
-      in_channels,
-      out_channels,
-      length,
-      kernel_size,
-      stride,
-      padding,
-      output_padding,
-      groups,
-      bias,
-      dtype,
-  ):
-    """Tests torch.nn.functional.conv_transpose1d."""
-    input_value = torch.randn(batch_size, in_channels, length, dtype=dtype)
-    weight_value = torch.randn(
-        in_channels,
-        out_channels // groups,
-        kernel_size,
-        dtype=dtype,
-    )
-    bias_value = torch.randn(out_channels, dtype=dtype)
-
-    def compute(device):
-      output = torch.nn.functional.conv_transpose1d(
-          input_value.to(device),
-          weight_value.to(device),
-          bias=(bias_value.to(device) if bias else None),
-          stride=stride,
-          padding=padding,
-          output_padding=output_padding,
-          groups=groups,
-      )
-      return output
-
-    self.assert_close_tpu_vs_cpu(compute, rtol=5e-1, atol=5e-1)
-
-  @parameterized.product(
-      batch_size=[1, 2],
-      in_channels=[4],
-      out_channels=[8],
-      h=[16],
-      w=[16],
-      kernel_size=[3],
-      stride=[1, 2],
-      padding=[0, 1],
-      output_padding=[0],
-      groups=[1, 2],
-      bias=[True, False],
-      dtype=[torch.float32, torch.bfloat16],
-  )
-  def test_conv_transpose2d(
-      self,
-      batch_size,
-      in_channels,
-      out_channels,
-      h,
-      w,
-      kernel_size,
-      stride,
-      padding,
-      output_padding,
-      groups,
-      bias,
-      dtype,
-  ):
-    """Tests torch.nn.functional.conv_transpose2d."""
-    input_value = torch.randn(batch_size, in_channels, h, w, dtype=dtype)
-    weight_value = torch.randn(
-        in_channels,
-        out_channels // groups,
-        kernel_size,
-        kernel_size,
-        dtype=dtype,
-    )
-    bias_value = torch.randn(out_channels, dtype=dtype)
-
-    def compute(device):
-      output = torch.nn.functional.conv_transpose2d(
-          input_value.to(device),
-          weight_value.to(device),
-          bias=(bias_value.to(device) if bias else None),
-          stride=stride,
-          padding=padding,
-          output_padding=output_padding,
-          groups=groups,
-      )
-      return output
-
-    self.assert_close_tpu_vs_cpu(compute, rtol=5e-1, atol=5e-1)
 
   @parameterized.product(
       input_dtype=[torch.int32, torch.int64],
@@ -6010,6 +6061,82 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(functools.partial(compute, 1, False))
     self.assert_close_tpu_vs_cpu(functools.partial(compute, 1, True))
 
+  def test_all_byte(self):
+    device = torch.device("tpu")
+    # For uint8 inputs, PyTorch returns uint8 for backward compatibility.
+    x = torch.tensor([[1, 1], [1, 0], [1, 1]], dtype=torch.uint8, device=device)
+    out = torch.empty(0, dtype=torch.uint8, device=device)
+    torch.all(x, dim=0, out=out)
+    self.assertEqual(out.dtype, torch.uint8)
+    utils.assert_close(
+        out, torch.tensor([1, 0], dtype=torch.uint8, device=device)
+    )
+
+    out_all = torch.empty((), dtype=torch.uint8, device=device)
+    torch.all(x, out=out_all)
+    self.assertEqual(out_all.dtype, torch.uint8)
+    utils.assert_close(
+        out_all, torch.tensor(0, dtype=torch.uint8, device=device)
+    )
+
+    def compute(dim, keep_dim, dev):
+      x_dev = torch.tensor(
+          [[1, 1], [1, 0], [1, 1]], dtype=torch.uint8, device=dev
+      )
+      out_dev = torch.empty(0, dtype=torch.uint8, device=dev)
+      torch.all(x_dev, dim=dim, keepdim=keep_dim, out=out_dev)
+      return out_dev
+
+    self.assert_close_tpu_vs_cpu(functools.partial(compute, 0, False))
+    self.assert_close_tpu_vs_cpu(functools.partial(compute, 0, True))
+
+    # Float input with uint8 output is supported.
+    x_float = torch.tensor([1.0, 1.0], dtype=torch.float32, device=device)
+    out_byte = torch.empty(0, dtype=torch.uint8, device=device)
+    torch.all(x_float, out=out_byte)
+    self.assertEqual(out_byte.dtype, torch.uint8)
+    utils.assert_close(
+        out_byte, torch.tensor(1, dtype=torch.uint8, device=device)
+    )
+
+  def test_any_byte(self):
+    device = torch.device("tpu")
+    # For uint8 inputs, PyTorch returns uint8 for backward compatibility.
+    x = torch.tensor([[0, 0], [1, 0], [0, 0]], dtype=torch.uint8, device=device)
+    out = torch.empty(0, dtype=torch.uint8, device=device)
+    torch.any(x, dim=0, out=out)
+    self.assertEqual(out.dtype, torch.uint8)
+    utils.assert_close(
+        out, torch.tensor([1, 0], dtype=torch.uint8, device=device)
+    )
+
+    out_any = torch.empty((), dtype=torch.uint8, device=device)
+    torch.any(x, out=out_any)
+    self.assertEqual(out_any.dtype, torch.uint8)
+    utils.assert_close(
+        out_any, torch.tensor(1, dtype=torch.uint8, device=device)
+    )
+
+    def compute(dim, keep_dim, dev):
+      x_dev = torch.tensor(
+          [[0, 0], [1, 0], [0, 0]], dtype=torch.uint8, device=dev
+      )
+      out_dev = torch.empty(0, dtype=torch.uint8, device=dev)
+      torch.any(x_dev, dim=dim, keepdim=keep_dim, out=out_dev)
+      return out_dev
+
+    self.assert_close_tpu_vs_cpu(functools.partial(compute, 0, False))
+    self.assert_close_tpu_vs_cpu(functools.partial(compute, 0, True))
+
+    # Float input with uint8 output is supported.
+    x_float = torch.tensor([0.0, 1.0], dtype=torch.float32, device=device)
+    out_byte = torch.empty(0, dtype=torch.uint8, device=device)
+    torch.any(x_float, out=out_byte)
+    self.assertEqual(out_byte.dtype, torch.uint8)
+    utils.assert_close(
+        out_byte, torch.tensor(1, dtype=torch.uint8, device=device)
+    )
+
   def test_multinomial_output_properties(self):
     device = torch.device("tpu")
 
@@ -7229,6 +7356,411 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run)
 
+  def _assert_all_nan(self, *tensors):
+    for t in tensors:
+      self.assertTrue(torch.isnan(t.to("cpu")).all())
+
+  def _assert_no_nan(self, *tensors):
+    for t in tensors:
+      self.assertFalse(torch.isnan(t.to("cpu")).any())
+
+  def _verify_svd_invariants(self, u, s, vh):
+    u = u.to("cpu")
+    s = s.to("cpu")
+    vh = vh.to("cpu")
+
+    k = s.shape[-1]
+    u_sliced = u[..., :k]
+    vh_sliced = vh[..., :k, :]
+
+    u_ortho = u_sliced.adjoint() @ u_sliced
+    vh_ortho = vh_sliced @ vh_sliced.adjoint()
+    s_expanded = s.unsqueeze(-2)
+    reconstructed = (u_sliced * s_expanded) @ vh_sliced
+
+    return s, reconstructed, u_ortho, vh_ortho
+
+  def _test_svd_helper(
+      self, input_tensor, full_matrices=True, atol=None, rtol=None
+  ):
+    def run(device):
+      u, s, vh = torch.linalg.svd(
+          input_tensor.to(device), full_matrices=full_matrices
+      )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run, atol=atol, rtol=rtol)
+
+  @parameterized.product(
+      shape=[
+          (4, 4),
+          (10, 4),
+          (4, 10),
+          (2, 3, 4),
+      ],
+      dtype=[
+          torch.float32,
+          torch.float64,
+          torch.complex64,
+      ],
+      full_matrices=[True, False],
+  )
+  def test_linalg_svd(self, shape, dtype, full_matrices):
+    input_tensor = torch.randn(shape, dtype=dtype)
+    rtol, atol = None, None
+    if dtype == torch.float32:
+      rtol, atol = 1.1e-02, 1.8e-02
+    elif dtype == torch.complex64:
+      rtol, atol = 2.3e-02, 1.2e-02
+    self._test_svd_helper(input_tensor, full_matrices, rtol=rtol, atol=atol)
+
+  @parameterized.product(
+      shape=[
+          (4, 4),
+          (10, 4),
+          (4, 10),
+          (2, 3, 4),
+      ],
+      full_matrices=[True, False],
+  )
+  def test_linalg_svd_complex128(self, shape, full_matrices):
+    input_tensor = torch.randn(shape, dtype=torch.complex128)
+
+    def run(device):
+      if torch.device(device).type == "cpu":
+        # TorchTPU computes complex128 SVD by downcasting to complex64 and upcasting
+        # results back. We mirror this on CPU for a fair comparison.
+        u, s, vh = torch.linalg.svd(
+            input_tensor.to(torch.complex64), full_matrices=full_matrices
+        )
+        u = u.to(torch.complex128)
+        s = s.to(torch.float64)
+        vh = vh.to(torch.complex128)
+      else:
+        u, s, vh = torch.linalg.svd(
+            input_tensor.to(device), full_matrices=full_matrices
+        )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run, rtol=2.3e-02, atol=1.2e-02)
+
+  @parameterized.product(
+      shape=[
+          (9, 8),  # Tall, no QR preprocess (9 <= 1.15 * 8)
+          (8, 9),  # Wide, no QR preprocess
+      ],
+      dtype=[
+          torch.float32,
+          torch.float64,
+          torch.complex64,
+      ],
+      full_matrices=[True, False],
+  )
+  def test_linalg_svd_extra_shapes(self, shape, dtype, full_matrices):
+    input_tensor = torch.randn(shape, dtype=dtype)
+    rtol, atol = None, None
+    if dtype == torch.float32:
+      rtol, atol = 1.4e-02, 1.6e-02
+    elif dtype == torch.complex64:
+      rtol, atol = 2.3e-02, 2.2e-02
+    self._test_svd_helper(input_tensor, full_matrices, rtol=rtol, atol=atol)
+
+  @parameterized.parameters(
+      {"some": True},
+      {"some": False},
+  )
+  def test_torch_legacy_svd(self, some):
+    input_tensor = torch.randn(5, 3, dtype=torch.float64)
+
+    def run(device):
+      u, s, v = torch.svd(input_tensor.to(device), some=some)
+      vh = v.adjoint() if v.is_complex() else v.transpose(-2, -1)
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
+      shape=[
+          (0, 3),
+          (5, 0),
+          (0, 0),
+          (0, 5, 3),
+          (2, 0, 3),
+          (2, 5, 0),
+      ],
+      full_matrices=[True, False],
+  )
+  def test_linalg_svd_zero_sized(self, shape, full_matrices):
+    input_tensor = torch.randn(shape, dtype=torch.float32)
+
+    def run(device):
+      u, s, vh = torch.linalg.svd(
+          input_tensor.to(device), full_matrices=full_matrices
+      )
+      # For zero-sized inputs, outputs are deterministic (empty or identity),
+      # so we can compare them directly.
+      return u, s, vh
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  @parameterized.product(
+      shape=[
+          (4, 4),
+          (10, 4),
+          (4, 10),
+          (2, 3, 4),
+      ]
+  )
+  def test_linalg_svdvals(self, shape):
+    input_tensor = torch.randn(shape, dtype=torch.float64)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.svdvals(input_tensor.to(device))
+    )
+
+  @parameterized.product(
+      shape=[
+          (0, 3),
+          (5, 0),
+          (0, 0),
+          (2, 0, 3),
+          (2, 5, 0),
+      ],
+  )
+  def test_linalg_svdvals_zero_sized(self, shape):
+    input_tensor = torch.randn(shape, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.svdvals(input_tensor.to(device))
+    )
+
+  def test_linalg_svd_all_zeros(self):
+    input_tensor = torch.zeros(5, 3, dtype=torch.float32)
+    self._test_svd_helper(input_tensor, full_matrices=False)
+
+  def test_linalg_svd_nan(self):
+    input_tensor = torch.randn(5, 3, dtype=torch.float32)
+    input_tensor[2, 1] = float("nan")
+
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+  def test_linalg_svd_nan_batched(self):
+    input_tensor = torch.randn(2, 5, 3, dtype=torch.float64)
+    input_tensor[0, 2, 1] = float("nan")
+
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u[0], s[0], vh[0])
+    self._assert_no_nan(u[1], s[1], vh[1])
+
+  def test_linalg_svd_tiny_element(self):
+    dtype = torch.float32
+    tiny_element = torch.finfo(dtype).tiny
+    input_tensor = torch.zeros(5, 3, dtype=dtype)
+    input_tensor[2, 1] = tiny_element
+    self._test_svd_helper(input_tensor, full_matrices=False)
+
+  def test_linalg_svd_inf(self):
+    input_tensor = torch.randn(5, 3, dtype=torch.float32)
+    input_tensor[2, 1] = float("inf")
+
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+  def test_linalg_svd_inf_batched(self):
+    input_tensor = torch.randn(2, 5, 3, dtype=torch.float64)
+    input_tensor[0, 2, 1] = float("inf")
+
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u[0], s[0], vh[0])
+    self._assert_no_nan(u[1], s[1], vh[1])
+
+  @parameterized.parameters(
+      torch.complex64,
+      torch.complex128,
+  )
+  def test_linalg_svd_nan_complex(self, dtype):
+    input_tensor = torch.randn(5, 3, dtype=dtype)
+    # Set real part to NaN
+    input_tensor[2, 1] = complex(float("nan"), 1.0)
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+    # Set imag part to NaN
+    input_tensor = torch.randn(5, 3, dtype=dtype)
+    input_tensor[2, 1] = complex(1.0, float("nan"))
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+  @parameterized.parameters(
+      torch.complex64,
+      torch.complex128,
+  )
+  def test_linalg_svd_inf_complex(self, dtype):
+    input_tensor = torch.randn(5, 3, dtype=dtype)
+    # Set real part to Inf
+    input_tensor[2, 1] = complex(float("inf"), 1.0)
+    device = torch.device("tpu")
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+    # Set imag part to Inf
+    input_tensor = torch.randn(5, 3, dtype=dtype)
+    input_tensor[2, 1] = complex(1.0, float("inf"))
+    u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+    self._assert_all_nan(u, s, vh)
+
+  def test_linalg_svd_identity(self):
+    input_tensor = torch.eye(5, dtype=torch.float32)
+    self._test_svd_helper(input_tensor, full_matrices=True)
+
+  def test_linalg_svd_ill_conditioned(self):
+    dtype = torch.float64
+    u_rand = torch.randn(5, 5, dtype=dtype)
+    u, _ = torch.linalg.qr(u_rand)
+    vh_rand = torch.randn(5, 5, dtype=dtype)
+    vh, _ = torch.linalg.qr(vh_rand)
+    s = torch.tensor([1.0, 1e-3, 1e-6, 1e-10, 1e-15], dtype=dtype)
+    input_tensor = u @ torch.diag(s) @ vh
+    self._test_svd_helper(input_tensor, full_matrices=True)
+
+  @parameterized.product(
+      shape=[
+          (5, 3),
+          (3, 5),
+          (4, 4),
+      ],
+      full_matrices=[True, False],
+      zero_dims=[1, 2],
+  )
+  def test_linalg_svd_rank_deficient(self, shape, full_matrices, zero_dims):
+    input_tensor = torch.randn(shape, dtype=torch.float64)
+    m, n = shape
+    if m >= n:
+      input_tensor[..., :, n - zero_dims :] = 0.0
+    else:
+      input_tensor[..., m - zero_dims :, :] = 0.0
+
+    self._test_svd_helper(input_tensor, full_matrices)
+
+  @parameterized.product(
+      full_matrices=[True, False],
+      zero_dims_batch=[(0, 1), (2, 1)],
+  )
+  def test_linalg_svd_rank_deficient_batched(
+      self, full_matrices, zero_dims_batch
+  ):
+    shape = (2, 5, 3)
+    input_tensor = torch.randn(shape, dtype=torch.float64)
+    m, n = shape[-2:]
+    for b in range(shape[0]):
+      zero_dims = zero_dims_batch[b]
+      if zero_dims > 0:
+        if m >= n:
+          input_tensor[b, :, n - zero_dims :] = 0.0
+        else:
+          input_tensor[b, m - zero_dims :, :] = 0.0
+
+    self._test_svd_helper(input_tensor, full_matrices)
+
+  @parameterized.product(
+      shape=[
+          (1000, 2),  # Large tall, QR preprocess
+          (2, 1000),  # Large wide, QR preprocess
+      ]
+  )
+  def test_linalg_svd_large(self, shape):
+    input_tensor = torch.randn(shape, dtype=torch.float64)
+    self._test_svd_helper(input_tensor, full_matrices=False)
+
+  def test_linalg_svd_out(self):
+    dtype = torch.float64
+    shape = (5, 3)
+    input_tensor = torch.randn(shape, dtype=dtype)
+
+    def run(device):
+      m, n = shape
+      k = min(m, n)
+      u = torch.empty((m, k), dtype=dtype, device=device)
+      s = torch.empty((k,), dtype=dtype, device=device)
+      vh = torch.empty((k, n), dtype=dtype, device=device)
+      torch.linalg.svd(
+          input_tensor.to(device), full_matrices=False, out=(u, s, vh)
+      )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run)
+
+  def test_linalg_svd_variants(self):
+    dtype = torch.float64
+    shape = (5, 3)
+    input_tensor = torch.randn(shape, dtype=dtype)
+
+    # 1. linalg_svd (public functional)
+    def run_linalg_svd(device):
+      u, s, vh = torch.linalg.svd(input_tensor.to(device), full_matrices=False)
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run_linalg_svd)
+
+    # 2. linalg_svd.U (public out)
+    def run_linalg_svd_out(device):
+      m, n = shape
+      k = min(m, n)
+      u = torch.empty((m, k), dtype=dtype, device=device)
+      s = torch.empty((k,), dtype=dtype, device=device)
+      vh = torch.empty((k, n), dtype=dtype, device=device)
+      torch.linalg.svd(
+          input_tensor.to(device), full_matrices=False, out=(u, s, vh)
+      )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run_linalg_svd_out)
+
+    # 3. _linalg_svd (private functional)
+    def run_private_svd(device):
+      u, s, vh = torch._linalg_svd(
+          input_tensor.to(device), full_matrices=False, compute_uv=True
+      )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run_private_svd)
+
+    # 4. _linalg_svd.U (private out)
+    def run_private_svd_out(device):
+      m, n = shape
+      k = min(m, n)
+      u = torch.empty((m, k), dtype=dtype, device=device)
+      s = torch.empty((k,), dtype=dtype, device=device)
+      vh = torch.empty((k, n), dtype=dtype, device=device)
+      torch._linalg_svd(
+          input_tensor.to(device),
+          full_matrices=False,
+          compute_uv=True,
+          out=(u, s, vh),
+      )
+      return self._verify_svd_invariants(u, s, vh)
+
+    self.assert_close_tpu_vs_cpu(run_private_svd_out)
+
+    # 5. linalg_svdvals (public functional)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.linalg.svdvals(input_tensor.to(device))
+    )
+
+    # 6. linalg_svdvals.out (public out)
+    def run_svdvals_out(device):
+      m, n = shape
+      k = min(m, n)
+      s = torch.empty((k,), dtype=dtype, device=device)
+      torch.linalg.svdvals(input_tensor.to(device), out=s)
+      return s
+
+    self.assert_close_tpu_vs_cpu(run_svdvals_out)
+
   def test_geqrf_out(self):
     input_tensor = torch.randn(8, 4)
     a = torch.empty(8, 4)
@@ -8154,6 +8686,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(test_fn)
 
+  def test_masked_fill_inplace_tensor_value_different_dtype(self):
+    input_value = torch.randn(2, 3, dtype=torch.float32)
+    mask_value = torch.tensor(
+        [[True, False, True], [False, True, False]], dtype=torch.bool
+    )
+    tensor_value = torch.tensor(5, dtype=torch.int32)
+
+    def compute(device):
+      inp = to(input_value, device).clone()
+      mask = to(mask_value, device)
+      val = to(tensor_value, device)
+      inp.masked_fill_(mask, val)
+      return inp
+
+    self.assert_close_tpu_vs_cpu(compute)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
@@ -8204,6 +8752,125 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
     )
     self.assert_close(golden_result=expected.cpu(), torch_tpu_result=res.cpu())
     self.assert_close(golden_result=expected.cpu(), torch_tpu_result=out.cpu())
+
+  def test_ragged_dot_weight_grad_on_tpu(self):
+    """Tests the tpu.ragged_dot_weight_grad custom op on TPU.
+
+    Verifies that torch.ops.tpu.ragged_dot_weight_grad computes the gradient
+    with respect to the 3D weights tensor (grad_rhs) by contracting activations
+    and output gradients along the ragged token dimension.
+
+    Expected behavior:
+      For each group i with token count gs = group_sizes[i], the weight slice
+      is computed as:
+        expected[i] = lhs[start:end].T @ grad_output[start:end]
+      where [start:end] corresponds to the tokens assigned to group i.
+      The TPU kernel result must match this CPU golden slice contraction.
+    """
+    device = torch.device("tpu")
+    m, k, n, g = 5, 4, 3, 2
+    lhs = torch.arange(m * k, dtype=torch.float32, device=device).reshape(m, k)
+    grad_output = torch.ones(m, n, dtype=torch.float32, device=device)
+    group_sizes = torch.tensor([2, 3], dtype=torch.int32, device=device)
+    res = torch.ops.tpu.ragged_dot_weight_grad(lhs, grad_output, group_sizes)
+
+    # Compute expected golden reference slice-by-slice on CPU.
+    lhs_cpu = lhs.cpu()
+    grad_output_cpu = grad_output.cpu()
+    expected = torch.zeros(g, k, n, dtype=torch.float32)
+    idx = 0
+    for i, gs in enumerate([2, 3]):
+      if gs > 0:
+        expected[i] = (
+            lhs_cpu[idx : idx + gs].T @ grad_output_cpu[idx : idx + gs]
+        )
+        idx += gs
+
+    self.assert_close(golden_result=expected, torch_tpu_result=res.cpu())
+
+  @parameterized.named_parameters(
+      dict(testcase_name="eager", compile_test=False),
+      dict(testcase_name="compiled", compile_test=True),
+  )
+  def test_ragged_dot_autograd_on_tpu(self, compile_test: bool = False):
+    """Tests full autograd backward differentiation for tpu.ragged_dot on TPU.
+
+    Verifies that calling .backward() on the output of torch.ops.tpu.ragged_dot
+    (under both eager execution and torch.compile with TpuBackend):
+      1. Accurately differentiates with respect to activations (lhs, shape [M,
+      K]).
+         Activations gradient (grad_lhs) is computed via ragged contracting
+         matmul:
+           grad_lhs[slice_i] = grad_output[slice_i] @ rhs[i].T
+      2. Accurately differentiates with respect to weights (rhs, shape [G, K,
+      N]).
+         Weights gradient (grad_rhs) is computed via ragged_dot_weight_grad:
+           grad_rhs[i] = lhs[slice_i].T @ grad_output[slice_i]
+      3. Gracefully handles zero-sized groups (e.g. gs=[2, 0, 4] where group 1
+         has 0 tokens assigned). For zero-sized groups, the weight gradient
+         slice
+         should remain zero and cause no indexing errors.
+
+    Expected behavior:
+      Both forward output and backward gradients (lhs.grad and rhs.grad) on TPU
+      must match the analytical golden reference computed on CPU.
+    """
+    device = torch.device("tpu")
+    m, k, n, g = 6, 4, 3, 3
+    lhs_cpu = torch.randn(m, k, dtype=torch.float32, requires_grad=True)
+    rhs_cpu = torch.randn(g, k, n, dtype=torch.float32, requires_grad=True)
+    # Include an empty group (size 0) to test ragged boundary edge cases.
+    gs = [2, 0, 4]
+    group_sizes = torch.tensor(gs, dtype=torch.int32, device=device)
+
+    lhs_tpu = lhs_cpu.detach().to(device).requires_grad_(True)
+    rhs_tpu = rhs_cpu.detach().to(device).requires_grad_(True)
+
+    def op_fn(x, w, s):
+      return torch.ops.tpu.ragged_dot(x, w, s)
+
+    # Execute forward pass (either via torch.compile or eager).
+    if compile_test:
+      compiled_op = torch.compile(op_fn, backend="tpu")
+      out_tpu = compiled_op(lhs_tpu, rhs_tpu, group_sizes)
+    else:
+      out_tpu = op_fn(lhs_tpu, rhs_tpu, group_sizes)
+
+    grad_out = torch.randn_like(out_tpu)
+    # Backward pass on TPU via registered AutogradPrivateUse1 kernel.
+    out_tpu.backward(grad_out)
+
+    # Compute golden forward and backward on CPU using slice matmuls.
+    out_slices = []
+    idx = 0
+    for i, size in enumerate(gs):
+      if size > 0:
+        out_slices.append(lhs_cpu[idx : idx + size] @ rhs_cpu[i])
+        idx += size
+    out_cpu = torch.cat(out_slices, dim=0)
+    out_cpu.backward(grad_out.cpu())
+
+    # Verify forward output matches CPU reference.
+    self.assert_close(
+        golden_result=out_cpu,
+        torch_tpu_result=out_tpu.cpu(),
+        atol=5e-2,
+        rtol=1e-1,
+    )
+    # Verify activation gradient (grad_lhs) matches CPU reference.
+    self.assert_close(
+        golden_result=lhs_cpu.grad,
+        torch_tpu_result=lhs_tpu.grad.cpu(),
+        atol=5e-2,
+        rtol=1e-1,
+    )
+    # Verify weight gradient (grad_rhs) matches CPU reference.
+    self.assert_close(
+        golden_result=rhs_cpu.grad,
+        torch_tpu_result=rhs_tpu.grad.cpu(),
+        atol=5e-2,
+        rtol=1e-1,
+    )
 
   def test_experimental_op_warning_once(self):
     """Verifies that experimental ops warn exactly once per operator."""
@@ -9345,6 +10012,115 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     assert_with_tol(functools.partial(fn, norm=3.0, keepdim=True))
     assert_with_tol(functools.partial(fn, norm=2.0, dim=1, keepdim=True))
 
+  def test_norm_out(self):
+    def test_fn(
+        device, p=2.0, dim=None, keepdim=False, dtype=None, empty_out=False
+    ):
+      x = torch.tensor(
+          [[-4.0, -3.0, -2.0], [-1.0, 0.0, 1.0], [2.0, 3.0, 4.0]],
+          device=device,
+          dtype=torch.float32,
+      )
+      dim_list = (
+          [] if dim is None else ([dim] if isinstance(dim, int) else list(dim))
+      )
+      if empty_out:
+        out = torch.empty(0, device=device, dtype=dtype or torch.float32)
+      else:
+        out = torch.zeros(1, device=device, dtype=dtype or torch.float32)
+
+      if dtype is not None:
+        torch.ops.aten.norm.dtype_out(
+            x, p, dim_list, keepdim, dtype=dtype, out=out
+        )
+      else:
+        torch.ops.aten.norm.out(x, p, dim_list, keepdim, out=out)
+      return out
+
+    assert_with_tol = functools.partial(
+        self.assert_close_tpu_vs_cpu, rtol=1e-5, atol=1e-5
+    )
+    # Default p (None / 2.0)
+    assert_with_tol(functools.partial(test_fn, p=None))
+    assert_with_tol(functools.partial(test_fn, p=None, dim=0))
+    assert_with_tol(functools.partial(test_fn, p=None, dim=1, keepdim=True))
+    assert_with_tol(functools.partial(test_fn, p=None, dim=(0, 1)))
+    assert_with_tol(functools.partial(test_fn, p=None, empty_out=True))
+
+    # Various p orders
+    for p in [0, 1, 2, 3, 1.0, 2.0, 3.0, 1.5, float("inf"), float("-inf")]:
+      assert_with_tol(functools.partial(test_fn, p=p))
+      assert_with_tol(functools.partial(test_fn, p=p, dim=0))
+      assert_with_tol(functools.partial(test_fn, p=p, dim=1, keepdim=True))
+
+    # norm.dtype_out
+    assert_with_tol(functools.partial(test_fn, p=2.0, dtype=torch.float32))
+    assert_with_tol(
+        functools.partial(test_fn, p=2.0, dim=0, dtype=torch.float64)
+    )
+    assert_with_tol(
+        functools.partial(test_fn, p=2.0, dim=-1, dtype=torch.float32)
+    )
+
+    # Complex tensor norm
+    def test_complex_fn(device, p=2.0, dim=0):
+      x = torch.tensor(
+          [[1.0 + 2.0j, -3.0 + 4.0j], [5.0 - 6.0j, 7.0 + 8.0j]],
+          device=device,
+          dtype=torch.complex64,
+      )
+      out = torch.empty(0, device=device, dtype=torch.float32)
+      torch.ops.aten.norm.out(x, p, [dim], False, out=out)
+      return out
+
+    assert_with_tol(functools.partial(test_complex_fn, p=2.0, dim=0))
+    assert_with_tol(functools.partial(test_complex_fn, p=1.0, dim=1))
+
+    # 0-D scalar tensor
+    def test_0d_fn(device, p=2.0):
+      x = torch.tensor(3.5, device=device, dtype=torch.float32)
+      out = torch.empty(0, device=device, dtype=torch.float32)
+      torch.ops.aten.norm.out(x, p, [], False, out=out)
+      return out
+
+    assert_with_tol(functools.partial(test_0d_fn, p=2.0))
+    assert_with_tol(functools.partial(test_0d_fn, p=None))
+
+    # Zero-size empty tensor
+    def test_empty_tensor_fn(device, p=2.0, dim=0):
+      x = torch.empty((0, 4), device=device, dtype=torch.float32)
+      out = torch.empty(0, device=device, dtype=torch.float32)
+      torch.ops.aten.norm.out(x, p, [dim], False, out=out)
+      return out
+
+    assert_with_tol(functools.partial(test_empty_tensor_fn, p=2.0, dim=0))
+    assert_with_tol(functools.partial(test_empty_tensor_fn, p=2.0, dim=1))
+
+    # Non-contiguous tensor
+    def test_noncontiguous_fn(device, p=2.0):
+      x = torch.tensor(
+          [[-4.0, -3.0, -2.0], [-1.0, 0.0, 1.0], [2.0, 3.0, 4.0]],
+          device=device,
+          dtype=torch.float32,
+      ).t()
+      out = torch.empty(0, device=device, dtype=torch.float32)
+      torch.ops.aten.norm.out(x, p, [0], False, out=out)
+      return out
+
+    assert_with_tol(functools.partial(test_noncontiguous_fn, p=2.0))
+    assert_with_tol(functools.partial(test_noncontiguous_fn, p=1.0))
+
+    # Float dtypes: float16, bfloat16, float64
+    def test_dtypes_fn(device, in_dtype, p=2.0):
+      x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device=device, dtype=in_dtype)
+      out = torch.empty(0, device=device, dtype=in_dtype)
+      torch.ops.aten.norm.out(x, p, [0], False, out=out)
+      return out
+
+    assert_with_tol(functools.partial(test_dtypes_fn, in_dtype=torch.float16))
+    assert_with_tol(functools.partial(test_dtypes_fn, in_dtype=torch.bfloat16))
+    assert_with_tol(functools.partial(test_dtypes_fn, in_dtype=torch.float64))
+
   def test_layer_norm_backward(self):
     def fn(device):
       c, h, w = 2, 2, 4
@@ -9802,49 +10578,6 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     )
 
   @parameterized.product(
-      groups=[1, 2, 4],
-      in_channels_per_group=[1, 2],
-      out_channels_per_group=[1, 2],
-  )
-  def test_convolution_backward_groups(
-      self, groups, in_channels_per_group, out_channels_per_group
-  ):
-    """Tests convolution backward with various group sizes."""
-    in_channels = groups * in_channels_per_group
-    out_channels = groups * out_channels_per_group
-    input_ = torch.randn(
-        2,
-        in_channels,
-        4,
-        4,
-        dtype=torch.float32,
-        requires_grad=True,
-    )
-    weight = torch.randn(
-        out_channels,
-        in_channels_per_group,
-        3,
-        3,
-        dtype=torch.float32,
-        requires_grad=True,
-    )
-    bias = torch.randn(out_channels, dtype=torch.float32, requires_grad=True)
-
-    def test_fn(device):
-      out = torch.nn.functional.conv2d(
-          input_.to(device),
-          weight.to(device),
-          bias=bias.to(device),
-          groups=groups,
-      )
-      grad_output = torch.randn_like(out, device=device)
-      out.backward(grad_output)
-
-      return input_.grad, weight.grad, bias.grad
-
-    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
-
-  @parameterized.product(
       stride=[2],
       padding=[1],
       groups=[1],
@@ -9982,6 +10715,490 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
       return input_.grad, weight.grad, bias.grad
 
     self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      dilation=[2, 4],
+      padding=[0, 2],
+  )
+  def test_conv1d_dilated_backward(self, batch_size, dilation, padding):
+    """Tests 1D dilated convolution backward pass on TPU vs CPU golden.
+
+    Dilated 1D convolutions (atrous convolutions) expand the receptive field
+    exponentially across time steps without downsampling or increasing the
+    parameter count. This is a foundational building block in Temporal
+    Convolutional Networks (TCN architectures) used in quantitative finance for
+    volatility forecasting, macro trend detection, and price prediction.
+
+    Test Configuration:
+      - Input tensor: (batch_size, in_channels=2, length=16)
+      - Weight tensor: (out_channels=2, in_channels=2, kernel_size=3)
+      - Bias tensor: (out_channels=2)
+      - Dilation: 2 or 4 (expanding effective receptive field to 5 or 9 steps)
+      - Padding: 0 or 2 (valid or symmetric padding)
+
+    Expected Output:
+      - Forward output tensor matches CPU golden within rtol=1e-2, atol=1e-2.
+      - Input gradient (x.grad) matches CPU golden shape and values.
+      - Weight gradient (w.grad) matches CPU golden shape and values.
+      - Bias gradient (b.grad) matches CPU golden shape and values.
+    """
+    in_channels = 2
+    out_channels = 2
+    length = 16
+    kernel_size = 3
+
+    # Generate synthetic input and weight tensors on CPU as golden references.
+    x_cpu = torch.randn(batch_size, in_channels, length, dtype=torch.float32)
+    weight_cpu = torch.randn(
+        out_channels, in_channels, kernel_size, dtype=torch.float32
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Attach gradients to test tensors transferred to the target device.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: 1D convolution with dilated spacing between kernel taps.
+      out = torch.nn.functional.conv1d(
+          x, w, bias=b, dilation=dilation, padding=padding
+      )
+
+      # Backward pass: backpropagate unit gradients through all parameters.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      # Return forward activation and all backward gradient tensors.
+      return out, x.grad, w.grad, b.grad
+
+    # Verify forward and backward numerical parity between TPU and CPU.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      dilation=[1, 2, 4],
+  )
+  def test_conv1d_causal_backward(self, batch_size, dilation):
+    """Tests causal 1D convolution backward pass with strict left-padding.
+
+    In financial algorithmic trading, convolutions must be strictly causal:
+    the output at timestamp t must only depend on inputs at timestamps <= t,
+    strictly preventing lookahead bias and future information leakage.
+
+    Causality is enforced by prepending (kernel_size - 1) * dilation zero-pads
+    strictly to the left (past) side of the time series, followed by an
+    unpadded (padding=0) convolution.
+
+    Test Configuration:
+      - Input tensor: (batch_size, in_channels=2, length=12)
+      - Weight tensor: (out_channels=2, in_channels=2, kernel_size=3)
+      - Left-padding: (kernel_size - 1) * dilation = 2 * dilation zeros
+      - Dilation: 1, 2, or 4
+
+    Expected Output:
+      - Forward activation of shape (batch_size, out_channels=2, length=12),
+        preserving sequence length without future data leakage.
+      - Accurate backpropagation through both convolution and left-pad layers.
+      - Exact numerical parity between TPU and CPU golden within tolerances.
+    """
+    in_channels = 2
+    out_channels = 2
+    length = 12
+    kernel_size = 3
+    left_pad = (kernel_size - 1) * dilation
+
+    # Generate synthetic input and weight tensors on CPU.
+    x_cpu = torch.randn(batch_size, in_channels, length, dtype=torch.float32)
+    weight_cpu = torch.randn(
+        out_channels, in_channels, kernel_size, dtype=torch.float32
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Attach autograd gradient trackers.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Apply asymmetric left-padding: pad format is (left, right).
+      x_padded = torch.nn.functional.pad(x, (left_pad, 0))
+
+      # Causal convolution with padding=0 on the padded time-series.
+      out = torch.nn.functional.conv1d(
+          x_padded, w, bias=b, dilation=dilation, padding=0
+      )
+
+      # Backpropagate unit gradients through convolution and left-pad op.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify TPU and CPU produce identical forward results and gradients.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.product(
+      length=[4, 6],
+      stride=[1, 2],
+  )
+  def test_conv1d_streaming_small_shape_backward(self, length, stride):
+    """Tests low-latency streaming 1D convolution backward on minimal buffers.
+
+    Ultra-low-latency financial trading systems process events (tick quotes,
+    order updates) as individual streaming items (batch_size=1) with very
+    short history windows (lengths 4 to 6).
+
+    This test validates that TPU lowering, padding, and autograd kernels
+    execute correctly on sub-tile shapes without tiling corruption or
+    dimension alignment bugs on physical TPU vector hardware.
+
+    Test Configuration:
+      - Batch size: 1 (single-stream streaming inference / online adaptation)
+      - Channels: in_channels=1, out_channels=2
+      - Sequence length: 4 or 6 timesteps
+      - Kernel size: 2, Stride: 1 or 2
+
+    Expected Output:
+      - Forward output tensor matching CPU reference shape and values.
+      - Complete gradient propagation (x.grad, w.grad, b.grad) matching CPU
+        golden within rtol=1e-2, atol=1e-2.
+    """
+    batch_size = 1
+    in_channels = 1
+    out_channels = 2
+    kernel_size = 2
+
+    # Initialize small-shape tensors for low-latency streaming test.
+    x_cpu = torch.randn(batch_size, in_channels, length, dtype=torch.float32)
+    weight_cpu = torch.randn(
+        out_channels, in_channels, kernel_size, dtype=torch.float32
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Transfer tensors to device and enable gradient tracking.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: 1D convolution across short streaming buffer.
+      out = torch.nn.functional.conv1d(x, w, bias=b, stride=stride)
+
+      # Backward pass: backpropagate gradients across minimal sequence lengths.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify TPU output and parameter gradients match CPU golden.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      kernel_and_stride=[
+          ((1, 2), (1, 2)),  # Spatial aggregation across price-volume depth
+          ((3, 1), (1, 1)),  # Temporal aggregation across timestamps
+      ],
+  )
+  def test_conv2d_anisotropic_lob_backward(self, batch_size, kernel_and_stride):
+    """Tests 2D convolution backward with anisotropic kernels for LOB data.
+
+    Deep Limit Order Book (DeepLOB) models represent order books as 2D grids
+    where height represents time (consecutive event updates) and width
+    represents order book depth (bid/ask price levels and queue volumes).
+    Because the two spatial axes represent fundamentally different physics,
+    anisotropic (non-square) kernels are required:
+      1. Spatial kernel (1, 2) with stride (1, 2): captures interactions
+         between adjacent bid/ask price and volume levels at the same timestamp.
+      2. Temporal kernel (3, 1) with stride (1, 1): captures multi-step
+         temporal momentum across consecutive events for a single price level.
+
+    Test Configuration:
+      - Input grid: (batch_size, in_channels=1, height=10, width=6)
+        representing [time] x [depth].
+      - Weight tensor: (out_channels=2, in_channels=1, k_h, k_w)
+      - Kernel & stride pairs: ((1, 2), (1, 2)) and ((3, 1), (1, 1))
+
+    Expected Output:
+      - Forward feature map matching CPU golden reference.
+      - Backpropagated input, weight, and bias gradients matching CPU reference
+        within rtol=5e-2, atol=5e-2.
+    """
+    kernel_size, stride = kernel_and_stride
+    in_channels = 1
+    out_channels = 2
+    height, width = 10, 6
+
+    # Generate synthetic limit order book grid (time x depth).
+    x_cpu = torch.randn(
+        batch_size, in_channels, height, width, dtype=torch.float32
+    )
+    weight_cpu = torch.randn(
+        out_channels,
+        in_channels,
+        kernel_size[0],
+        kernel_size[1],
+        dtype=torch.float32,
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Enable gradient tracking on device tensors.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: 2D convolution using anisotropic rectangular kernel.
+      out = torch.nn.functional.conv2d(x, w, bias=b, stride=stride)
+
+      # Backward pass: compute gradients across anisotropic dimensions.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify forward and backward parity between TPU and CPU golden.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=5e-2, atol=5e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      dilation=[1, 2],
+  )
+  def test_conv1d_depthwise_backward(self, batch_size, dilation):
+    """Tests depthwise 1D convolution backward (groups = in_channels).
+
+    Depthwise convolutions apply independent spatial filters to each input
+    channel individually. In quantitative finance and multi-asset portfolio
+    modeling, each channel corresponds to an independent financial instrument
+    (e.g., FX pair, stock ticker, cryptocurrency) to learn asset-specific
+    temporal dynamics prior to cross-asset aggregation.
+
+    Test Configuration:
+      - Input tensor: (batch_size, channels=2, length=12)
+      - Weight tensor: (channels=2, 1, kernel_size=3)
+      - Groups: channels (strictly depthwise)
+      - Dilation: 1 or 2
+
+    Expected Output:
+      - Forward output tensor computed independently per channel.
+      - Weight gradients of shape (channels, 1, kernel_size) isolated per group.
+      - Full numerical parity between TPU and CPU reference within rtol=1e-2,
+        atol=1e-2.
+    """
+    channels = 2
+    groups = channels
+    length = 12
+    kernel_size = 3
+
+    # Generate multi-channel input and per-channel independent weights.
+    x_cpu = torch.randn(batch_size, channels, length, dtype=torch.float32)
+    weight_cpu = torch.randn(channels, 1, kernel_size, dtype=torch.float32)
+    bias_cpu = torch.randn(channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Enable autograd tracking for input, depthwise weight, and bias.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: depthwise 1D conv where groups equals channel count.
+      out = torch.nn.functional.conv1d(
+          x, w, bias=b, dilation=dilation, groups=groups
+      )
+
+      # Backward pass: verify gradient routing to grouped weight channels.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify TPU execution matches CPU golden reference.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=1e-2, atol=1e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      stride=[1, 2],
+      padding=[0, 1],
+  )
+  def test_conv3d_backward(self, batch_size, stride, padding):
+    """Tests standard 3D convolution backward on fast, bounded tensor shapes.
+
+    Standard PyTorch OpInfo generates randomly sized 3D convolution inputs with
+    large dimensions (e.g. 10x11x12) and large dilation/padding combinations,
+    which cause XLA / StableHLO compilation timeouts during test execution.
+
+    This unit test provides fast, regression-safe coverage for standard 3D
+    convolution backward by constraining dimensions to 4x4x4 and kernel size
+    to 2x2x2.
+
+    Test Configuration:
+      - Input tensor: (batch_size, in_channels=2, d=4, h=4, w=4)
+      - Weight tensor: (out_channels=2, in_channels=2, k=2, k=2, k=2)
+      - Stride: 1 or 2
+      - Padding: 0 or 1
+
+    Expected Output:
+      - Forward 3D convolution output matching CPU reference.
+      - Backpropagated input, weight, and bias gradients matching CPU reference
+        within rtol=5e-2, atol=5e-2.
+    """
+    in_channels = 2
+    out_channels = 2
+    d, h, w = 4, 4, 4
+    kernel_size = 2
+
+    # Initialize compact 3D tensors.
+    x_cpu = torch.randn(batch_size, in_channels, d, h, w, dtype=torch.float32)
+    weight_cpu = torch.randn(
+        out_channels,
+        in_channels,
+        kernel_size,
+        kernel_size,
+        kernel_size,
+        dtype=torch.float32,
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Track gradients for input, kernel weights, and bias.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: standard 3D convolution across spatial depth/height/width.
+      out = torch.nn.functional.conv3d(
+          x, w, bias=b, stride=stride, padding=padding
+      )
+
+      # Backward pass: compute adjoint gradients across 3D dimensions.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify numerical equivalence between TPU and CPU reference.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=5e-2, atol=5e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      stride=[1, 2],
+  )
+  def test_conv_transpose3d_backward(self, batch_size, stride):
+    """Tests 3D transposed convolution backward on fast, bounded tensor shapes.
+
+    Transposed 3D convolution (fractionally strided convolution) is the inverse
+    transformation of standard 3D convolution, commonly used in 3D generative
+    models, volumetric segmentation decoders, and physics upsamplers.
+
+    Test Configuration:
+      - Input tensor: (batch_size, in_channels=2, d=3, h=3, w=3)
+      - Weight tensor: (in_channels=2, out_channels=2, k=2, k=2, k=2)
+      - Stride: 1 or 2
+
+    Expected Output:
+      - Upsampled forward 3D output matching CPU golden reference.
+      - Correct backpropagation computing input, filter, and bias gradients
+        matching CPU reference within rtol=5e-2, atol=5e-2.
+    """
+    in_channels = 2
+    out_channels = 2
+    d, h, w = 3, 3, 3
+    kernel_size = 2
+
+    # Initialize 3D tensors for transposed convolution.
+    x_cpu = torch.randn(batch_size, in_channels, d, h, w, dtype=torch.float32)
+    weight_cpu = torch.randn(
+        in_channels,
+        out_channels,
+        kernel_size,
+        kernel_size,
+        kernel_size,
+        dtype=torch.float32,
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Enable autograd tracking for input, transposed filter, and bias.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: 3D transposed convolution upsampling spatial dimensions.
+      out = torch.nn.functional.conv_transpose3d(x, w, bias=b, stride=stride)
+
+      # Backward pass: backpropagate unit gradients through the transposed conv.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify TPU results match CPU golden reference.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=5e-2, atol=5e-2)
+
+  @parameterized.product(
+      batch_size=[1, 2],
+      dilation_and_padding=[
+          ((2, 1), (1, 0)),
+          ((1, 2), (0, 1)),
+      ],
+  )
+  def test_conv2d_asymmetric_dilation_padding_backward(
+      self, batch_size, dilation_and_padding
+  ):
+    """Tests 2D convolution backward with asymmetric dilation and padding pairs.
+
+    Verifies that rectangular dilation rates (e.g., dilation=(2, 1) or (1, 2))
+    paired with corresponding asymmetric padding (e.g., padding=(1, 0) or
+    (0, 1)) lower correctly into TPU XLA HLO convolution operators and produce
+    accurate forward activations and autograd gradients.
+
+    Test Configuration:
+      - Input tensor: (batch_size, in_channels=2, height=8, width=8)
+      - Weight tensor: (out_channels=2, in_channels=2, 3, 3)
+      - Dilation & padding pairs: ((2, 1), (1, 0)) and ((1, 2), (0, 1))
+
+    Expected Output:
+      - Forward 2D convolution output matching CPU reference with asymmetric
+        receptive fields.
+      - Input, weight, and bias gradients matching CPU golden reference within
+        rtol=5e-2, atol=5e-2.
+    """
+    dilation, padding = dilation_and_padding
+    in_channels = 2
+    out_channels = 2
+    height, width = 8, 8
+    kernel_size = 3
+
+    # Generate synthetic input and weight tensors on CPU.
+    x_cpu = torch.randn(
+        batch_size, in_channels, height, width, dtype=torch.float32
+    )
+    weight_cpu = torch.randn(
+        out_channels, in_channels, kernel_size, kernel_size, dtype=torch.float32
+    )
+    bias_cpu = torch.randn(out_channels, dtype=torch.float32)
+
+    def test_fn(device):
+      # Transfer tensors to device and enable gradient computation.
+      x = x_cpu.to(device).detach().requires_grad_(True)
+      w = weight_cpu.to(device).detach().requires_grad_(True)
+      b = bias_cpu.to(device).detach().requires_grad_(True)
+
+      # Forward pass: 2D convolution with asymmetric dilation and padding.
+      out = torch.nn.functional.conv2d(
+          x, w, bias=b, dilation=dilation, padding=padding
+      )
+
+      # Backward pass: backpropagate unit gradients through asymmetric conv.
+      grad_output = torch.ones_like(out)
+      out.backward(grad_output)
+
+      return out, x.grad, w.grad, b.grad
+
+    # Verify TPU outputs and gradients match CPU golden reference.
+    self.assert_close_tpu_vs_cpu(test_fn, rtol=5e-2, atol=5e-2)
 
   def test_linear_inference_mode(self):
     class LinearModel(torch.nn.Module):

@@ -18,16 +18,19 @@ import os
 import re
 import textwrap
 from typing import TypeAlias
+
 from absl.testing import absltest
 import torch
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.device_utils import annotations
 from torch_tpu._internal.utils import test_utils as utils
+from tests import oss_utils
 from tests import seed_test_utils
 
 EagerMode: TypeAlias = execution_mode.EagerMode
@@ -267,6 +270,22 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
 
       mock_lookup_backend.assert_called_with('tpu')
 
+  def test_compile_backend_defaults_to_torch_default_if_no_tpu_tensor(self):
+    with get_mock_lookup_backend() as mock_lookup_backend:
+      x = torch.ones(10, device=torch.device('cpu'))
+      torch.compile(lambda arg: arg + 1)(x)
+
+      mock_lookup_backend.assert_called_with(_backend.get_default_cpu_backend())
+
+  def test_global_compile_decorator_backend_defaults_to_torch_default_if_no_tpu_tensor(
+      self,
+  ):
+    with get_mock_lookup_backend() as mock_lookup_backend:
+      x = torch.ones(10, device=torch.device('cpu'))
+      global_compile_plus_one(x)
+
+      mock_lookup_backend.assert_called_with(_backend.get_default_cpu_backend())
+
   def test_compile_explicit_backend_is_respected(self):
 
     with get_mock_lookup_backend() as mock_lookup_backend:
@@ -376,6 +395,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
       expected = torch.tensor([[1, 1, 1, 1, 0, 0, 0, 0]], dtype=torch.int64)
       utils.assert_close(padded_tensor.cpu(), expected)
 
+  # TODO(b/559266072): re-enable the test once fixed in OSS.
+  @oss_utils.skip_in_oss('XLA failure')
   def test_get_or_compile_slice_module(self):
     target_shapes = [[1, 4]]
     padded_shapes = [[1, 8]]

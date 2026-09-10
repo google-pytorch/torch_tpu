@@ -58,7 +58,7 @@ torch_tpu_py_test(
     },
     main = "device_module_gpu_test.py",
     tags = [
-        "requires-gpu-nvidia",
+        "requires-gpu-sm90",
     ],
     deps = [
         ":device_module_testing",

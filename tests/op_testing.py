@@ -38,7 +38,7 @@ import sys
 import time
 import traceback
 import typing
-from typing import Any, Final, IO
+from typing import Any, Final, IO, TypeGuard
 import unittest
 
 from absl import flags
@@ -354,44 +354,25 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     # go/keep-sorted start
     "_thnn_fused_gru_cell",
     "_thnn_fused_lstm_cell",
-    "abs",
-    "acos",
-    "acosh",
     "add",
     "addcdiv",
     "addcmul",
     "addmm",
-    "all",
     "aminmax",
-    "any",
-    "asin",
-    "asinh",
-    "atan",
-    "atanh",
     "baddbmm",
     "bernoulli",
     "bmm",
     "bucketize",
-    "ceil",
     "clamp_max",
     "clamp_min",
     "complex",
-    "conj_physical",
-    "cos",
-    "cosh",
     "cumprod",
     "cumsum",
     "div",
-    "erf",
-    "erfinv",
-    "exp",
-    "exp2",
-    "expm1",
     "fft.fft",
     "fft.ifft",
     "fft.irfft",
     "fft.rfft",
-    "floor",
     "gather",
     "geqrf",
     "histc",
@@ -400,7 +381,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "isin",
     "ldexp",
     "lerp",
-    "lgamma",
     "linalg.inv",
     "linalg.lu",
     "linalg.lu_factor_ex",
@@ -410,10 +390,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "linalg.solve_ex",
     "linalg.solve_triangular",
     "linalg.vector_norm",
-    "log",
-    "log10",
-    "log1p",
-    "log2",
     "log_softmax",
     "logcumsumexp",
     "logit",
@@ -424,7 +400,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "mul",
     "multinomial",
     "nan_to_num",
-    "neg",
     "nn.functional.avg_pool2d",
     "nn.functional.avg_pool3d",
     "nn.functional.gelu",
@@ -433,33 +408,21 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "norm",
     "polar",
     "pow",
-    "reciprocal",
-    "round",
-    "rsqrt",
     "scatter",
     "scatter_add",
     "scatter_reduce",
     "searchsorted",
-    "sgn",
     "sigmoid",
-    "sign",
-    "signbit",
-    "sin",
-    "sinh",
     "softmax",
     "sort",
     "split_with_sizes_copy",
-    "sqrt",
     "std",
     "sub",
     "take",
-    "tan",
-    "tanh",
     "topk",
     "torch._scaled_mm_v2",
     "tril",
     "triu",
-    "trunc",
     # go/keep-sorted end
 }
 
@@ -2874,6 +2837,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   tpu_cpu_accuracy_overrides: AccuracyOverrides
   tpu_gpu_accuracy_overrides: AccuracyOverrides
   grad_accuracy_overrides: AccuracyOverrides
+  grad_gpu_accuracy_overrides: AccuracyOverrides
 
   def setUp(self) -> None:
     super().setUp()
@@ -2921,22 +2885,28 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
       grad_overrides: Mapping[
           str, Mapping[torch.dtype, Mapping[str, Tolerance]]
       ],
+      grad_gpu_overrides: Mapping[
+          str, Mapping[torch.dtype, Mapping[str, Tolerance]]
+      ],
   ) -> None:
     """Sets the accuracy overrides for the test.
 
     Args:
       tpu_cpu_overrides: Accuracy overrides for TorchTPU vs CPU.
       tpu_gpu_overrides: Accuracy overrides for TorchTPU vs GPU.
-      grad_overrides: Accuracy overrides for gradients.
+      grad_overrides: Accuracy overrides for gradients vs CPU.
+      grad_gpu_overrides: Accuracy overrides for gradients vs GPU.
 
     To be called by a subclass's setUp() method.
     """
     _validate_accuracy_overrides(tpu_cpu_overrides)
     _validate_accuracy_overrides(tpu_gpu_overrides)
     _validate_accuracy_overrides(grad_overrides)
+    _validate_accuracy_overrides(grad_gpu_overrides)
     self.tpu_cpu_accuracy_overrides = tpu_cpu_overrides
     self.tpu_gpu_accuracy_overrides = tpu_gpu_overrides
     self.grad_accuracy_overrides = grad_overrides
+    self.grad_gpu_accuracy_overrides = grad_gpu_overrides
 
   def set_dynamism_handlers(
       self,
@@ -3761,7 +3731,11 @@ class OpInfoTestBase(
     if _IGNORE_ACCURACY_OVERRIDES.value:
       accuracy_overrides = {}
     elif compute_grad:
-      accuracy_overrides = self.grad_accuracy_overrides
+      accuracy_overrides = (
+          self.grad_gpu_accuracy_overrides
+          if _torch_tpu_vs_gpu_mode()
+          else self.grad_accuracy_overrides
+      )
     elif _torch_tpu_vs_cpu_mode():
       accuracy_overrides = self.tpu_cpu_accuracy_overrides
     else:
@@ -4152,16 +4126,28 @@ class OpInfoTestBase(
         op_exclude_dtypes = _get_dtype_exclusions(
             raw_exclude_dtypes, self.golden_device_type
         )
-        # Select one valid promotional upcast pair (allowed_pair, e.g., float32 -> float64)
-        # and one invalid downcast pair (illegal_pair, e.g., float32 -> int32) from the
-        # dtypes to be tested. These will be used below to test out-variant dtype casting
-        # and exception parity between TorchTPU and GPU.
+        # Select one valid promotional upcast pair (allowed_pair, e.g., float32
+        # -> float64) and one invalid downcast pair (illegal_pair, e.g.,
+        # float32 -> int32) from the dtypes to be tested. These will be used
+        # below to test out-variant dtype casting and exception parity between
+        # TorchTPU and GPU.
         cast_pairs = find_cast_pairs([
             d
             for d in dtypes_to_test
             if not _should_skip_dtype(d, exclude_dtypes=op_exclude_dtypes)
         ])
         test_out_casting = op.name not in _OUT_DTYPE_CAST_KNOWN_FAILURES
+
+        def _should_test_out_casting(
+            cast_pair: tuple[torch.dtype, torch.dtype] | None,
+        ) -> TypeGuard[tuple[torch.dtype, torch.dtype]]:
+          # In golden generation mode, always capture golden data regardless of
+          # whether the op is known to fail on TPU.
+          return (
+              (_gen_gpu_golden_mode() or test_out_casting)
+              and cast_pair is not None
+              and dtype == cast_pair[0]
+          )
 
         for dtype in dtypes_to_test:
           if _should_skip_dtype(dtype, exclude_dtypes=exclude_dtypes):
@@ -4183,14 +4169,11 @@ class OpInfoTestBase(
               max_samples_per_op_dtype=max_samples_per_op_dtype,
           )
 
-          # If this dtype is the input dtype of the allowed cast pair, run an additional
-          # out-variant test with out_dtype_override set to the target upcast dtype to verify
-          # that TorchTPU correctly supports out-variant promotional upcasting.
-          if (
-              test_out_casting
-              and cast_pairs.allowed_pair is not None
-              and dtype == cast_pairs.allowed_pair[0]
-          ):
+          # If this dtype is the input dtype of the allowed cast pair, run an
+          # additional out-variant test with out_dtype_override set to the
+          # target upcast dtype to verify that TorchTPU correctly supports
+          # out-variant promotional upcasting.
+          if _should_test_out_casting(cast_pairs.allowed_pair):
             self._test_torch_tpu_vs_golden(
                 op,
                 dtype,
@@ -4208,14 +4191,11 @@ class OpInfoTestBase(
                 out_dtype_override=cast_pairs.allowed_pair[1],
             )
 
-          # If this dtype is the input dtype of the illegal cast pair, run an additional
-          # out-variant test with out_dtype_override set to the target downcast dtype to verify
-          # that TorchTPU raises the same RuntimeError (exception parity) as PyTorch/GPU.
-          if (
-              test_out_casting
-              and cast_pairs.illegal_pair is not None
-              and dtype == cast_pairs.illegal_pair[0]
-          ):
+          # If this dtype is the input dtype of the illegal cast pair, run an
+          # additional out-variant test with out_dtype_override set to the
+          # target downcast dtype to verify that TorchTPU raises the same
+          # RuntimeError (exception parity) as PyTorch/GPU.
+          if _should_test_out_casting(cast_pairs.illegal_pair):
             self._test_torch_tpu_vs_golden(
                 op,
                 dtype,
@@ -4270,9 +4250,15 @@ class TorchTpuVsCpuTestBase(TorchTpuTestBase):
 
 def _golden_file_prefix() -> str:
   """Returns the prefix for the golden file name."""
+  if is_compiled_mode():
+    return (
+        "ops_test_gpu_golden_grad_compiled"
+        if _COMPUTE_GRAD.value
+        else "ops_test_gpu_golden_compiled"
+    )
   return (
-      "ops_test_gpu_golden_compiled"
-      if is_compiled_mode()
+      "ops_test_gpu_golden_grad"
+      if _COMPUTE_GRAD.value
       else "ops_test_gpu_golden"
   )
 

@@ -96,7 +96,7 @@ def reset_state(
   if target.device_kind.value == "tpu":
     getattr(torch, "tpu")._clear_cache()  # pylint: disable=protected-access
     if device.type == "tpu":
-      from torch_tpu._internal import testing as tt_testing
+      from torch_tpu._internal import testing as tt_testing  # pylint: disable=g-import-not-at-top
       tt_testing.reset_eager_state()
   if common.is_torch_compile(run_mode):
     torch._dynamo.reset()

@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import functools
+import os
 import struct
 import threading
 from typing import Any, Callable
 import unittest
+from unittest import mock
 
 from absl import flags
 from absl.testing import absltest
@@ -799,6 +801,97 @@ class CompiledRngTest(_BaseRngTest):
     self.assertTrue(torch.equal(mask_fwd, mask_bwd))
 
 
+class ErrorHandlingRngTest(_BaseRngTest):
+  """Tests verifying RNG contracts under error and exception conditions."""
+
+  def test_compile_tracing_failure_restores_eager_rng(self):
+    """Verifies compilation tracing failure restores eager generator state."""
+    self.backend_mod.manual_seed(42)
+    expected = torch.rand(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+
+    def failing_fn(x):
+      _ = torch.rand_like(x)
+      raise RuntimeError("Simulated tracing failure")
+
+    with self.assertRaises(  # ASSERT_RAISES_OK=Tests RNG behavior on crash, not error handling.
+        RuntimeError
+    ):
+      torch.compile(failing_fn, fullgraph=True)(
+          torch.ones(10, device=self.device)
+      )
+
+    actual = torch.rand(10, device=self.device)
+    self.assertTrue(torch.equal(expected, actual))
+
+  def test_eager_exception_after_rng_op_does_not_rollback(self):
+    """Verifies exception in Python does not roll back advanced RNG state."""
+    self.backend_mod.manual_seed(42)
+    _ = torch.rand(10, device=self.device)
+    expected_next = torch.rand(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+    try:
+      _ = torch.rand(10, device=self.device)
+      raise RuntimeError("Simulated eager error")
+    except RuntimeError:
+      pass
+
+    actual_next = torch.rand(10, device=self.device)
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
+  def test_compiled_runtime_error_without_catch(self):
+    """Verifies runtime error in compiled fn does not rollback RNG state."""
+    self.backend_mod.manual_seed(42)
+    _ = torch.rand(10, device=self.device)
+    expected_next = torch.rand(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+
+    @torch.compile(fullgraph=False)
+    def fn(x):
+      r = torch.rand_like(x)
+      # Evaluating a tensor condition triggers a graph break; the exception
+      # is raised eagerly in Python after the compiled RNG op executes.
+      if x.sum() > 0:
+        raise RuntimeError("Runtime error after compiled execution")
+      return r
+
+    with self.assertRaises(  # ASSERT_RAISES_OK=Tests RNG behavior on crash, not error handling.
+        RuntimeError
+    ):
+      fn(torch.ones(10, device=self.device))
+
+    actual_next = torch.rand(10, device=self.device)
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
+  def test_compiled_runtime_error_with_catch(self):
+    """Verifies caught error inside compiled fn preserves RNG progression."""
+    self.backend_mod.manual_seed(42)
+    _ = torch.rand(10, device=self.device)
+    expected_next = torch.rand(10, device=self.device)
+
+    self.backend_mod.manual_seed(42)
+
+    @torch.compile(fullgraph=False)
+    def fn_with_try_catch(x):
+      r = torch.rand_like(x)
+      # Evaluating a tensor condition triggers a graph break; the exception
+      # and catch block execute eagerly in Python after the compiled RNG op.
+      try:
+        if x.sum() > 0:
+          raise RuntimeError("Caught error inside function")
+      except RuntimeError:
+        pass
+      return r
+
+    _ = fn_with_try_catch(torch.ones(10, device=self.device))
+
+    actual_next = torch.rand(10, device=self.device)
+    self.assertTrue(torch.equal(expected_next, actual_next))
+
+
 class SingleProcessMultiDeviceTest(_BaseRngTest):
   """Tests documenting single-process multi-device RNG differences.
 
@@ -1161,6 +1254,75 @@ class MultiThreadRngTest(_BaseRngTest):
     self.assertFalse(
         torch.equal(generators[0].get_state(), generators[1].get_state())
     )
+
+  @mock.patch.dict(os.environ, {"TORCHINDUCTOR_COMPILE_THREADS": "0"})
+  @torch._inductor.config.patch(compile_threads=1)
+  def test_concurrent_compile_tracing_and_eager_rng(self):
+    """Verifies concurrent eager RNG operations during torch.compile tracing."""
+    if self.backend == "tpu":
+      # b/556256460: The race condition between concurrent eager RNG operations
+      # and compilation tracing causes a fatal C++ CHECK failure (SIGABRT) in
+      # the runtime, terminating the test process. Because _fail_on_tpu only
+      # catches Python exceptions, this test must be skipped on TPU until a fix
+      # lands.
+      self.skipTest(
+          "b/556256460: Concurrent eager RNG execution during compilation"
+          " tracing hits unmaterialized placeholder state."
+      )
+    # Force single-threaded compilation: the env var prevents subprocess
+    # spawning in hermetic test runners, while compile_threads=1 enforces
+    # single-threaded compilation in this thread's ContextVar scope.
+    stop_event = threading.Event()
+    errors = []
+
+    def eager_worker():
+      try:
+        # Repeatedly execute eager RNG operations to generate contention on the
+        # default generator until the compile worker signals completion.
+        while not stop_event.is_set():
+          _ = torch.rand(10, device=self.device)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        errors.append(e)
+        stop_event.set()
+
+    def fn_to_compile(x):
+      res = x
+      for _ in range(30):
+        res = res + torch.rand_like(res)
+      return res
+
+    # Force Dynamo to re-compile on each iteration by passing a different shape
+    # with dynamic=False, triggering a fresh compilation cycle without caching.
+    compiled = torch.compile(fn_to_compile, dynamic=False)
+
+    def compile_worker():
+      # Inductor configs are thread-scoped via ContextVar; patch compile_threads
+      # in the worker thread to ensure synchronous compilation during tracing.
+      with torch._inductor.config.patch(compile_threads=1):
+        try:
+          for i in range(10):
+            if stop_event.is_set():
+              break
+            x = torch.zeros(10 + i, device=self.device)
+            _ = compiled(x)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+          errors.append(e)
+        finally:
+          stop_event.set()
+
+    eager_threads = [threading.Thread(target=eager_worker) for _ in range(8)]
+    compile_thread = threading.Thread(target=compile_worker)
+
+    for t in eager_threads:
+      t.start()
+    compile_thread.start()
+
+    compile_thread.join()
+    for t in eager_threads:
+      t.join()
+
+    if errors:
+      raise errors[0]
 
 
 if __name__ == "__main__":

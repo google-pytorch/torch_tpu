@@ -65,9 +65,9 @@ def versioned_glue_library():
     pywrap_library(
         name = "pywrap_" + suffix,
         common_lib_filters = {
-            "torch_tpu/csrc/common/xla_base": Label("//torch_tpu/csrc/common:xla_base_filter"),
+            "torch_tpu/csrc/common/xla_base": Label("//csrc/common:xla_base_filter"),
         },
-        extra_deps = [Label("//torch_tpu/csrc/common:torch_rpath_flags")],
+        extra_deps = [Label("//csrc/common:torch_rpath_flags")],
         pywrap_count = len(PYWRAP_EXTENSIONS),
         deps = [
             Label(glue)

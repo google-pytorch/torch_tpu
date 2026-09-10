@@ -1,0 +1,97 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "csrc/ops/index_add/index_add_aten_kernels.h"
+
+#include <cstdint>
+#include <optional>
+#include <utility>
+
+#include "ATen/core/ATen_fwd.h"
+#include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
+#include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
+#include "csrc/common/cache_key.h"
+#include "csrc/common/dtype.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
+#include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/index_add/index_add.h"
+#include "csrc/ops/index_utils.h"
+#include "csrc/ops/macros/kernel.h"
+#include "csrc/ops/op_builder_utils.h"
+#include "csrc/ops/op_names.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
+
+namespace torch_tpu {
+
+namespace {
+
+absl::Status IndexAdd(const at::Tensor& self, int64_t dim,
+                      const at::Tensor& index, const at::Tensor& source,
+                      PromotedScalar& promoted_alpha,
+                      const at::ScalarType& out_scalar_type,
+                      OpParamCacheKeys param_keys, at::Tensor& out) {
+  TT_ASSIGN_OR_RETURN(dim,
+                      ValidateIndexInputsAndGetDim(self, dim, index, source));
+
+  at::ScalarType promoted_scalar_type =
+      c10::promoteTypes(self.scalar_type(), out_scalar_type);
+  TT_ASSIGN_OR_RETURN(const auto computation_dtype,
+                      ConvertTo<mlir::ElementType>(promoted_scalar_type));
+
+  TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
+                      promoted_alpha.GetTensor(promoted_scalar_type));
+
+  auto index_add_op_builder =
+      [dim, computation_dtype](FixedSizeSpan<mlir::MlirOp, 4> inputs) {
+        auto& [self, index, source, alpha_op] = inputs;
+        return BuildIndexAddShlo(self, dim, index, source, alpha_op,
+                                 computation_dtype);
+      };
+
+  TT_ASSIGN_OR_RETURN(const auto output_dtype,
+                      ConvertTo<mlir::ElementType>(out_scalar_type));
+  Dimensions output_dims = CopyIntVector(self.sizes());
+
+  return DispatchOpOut<4>(std::move(index_add_op_builder),
+                          {self, index, source, alpha_tensor}, out,
+                          {.out_dtype = output_dtype,
+                           .out_dims = output_dims,
+                           .op_param_cache_keys = std::move(param_keys)});
+}
+
+}  // namespace
+
+at::Tensor& TpuAtenIndexAddOut(const at::Tensor& self, int64_t dim,
+                               const at::Tensor& index,
+                               const at::Tensor& source,
+                               const at::Scalar& alpha, at::Tensor& out) {
+  PromotedScalar promoted_alpha = PromoteScalar(alpha);
+  TT_KERNEL(OpName::kIndexAddOut, param_keys,
+            (self, dim, index, source, promoted_alpha, out), {
+              TT_THROW_IF_ERROR(IndexAdd(self, dim, index, source,
+                                         promoted_alpha, out.scalar_type(),
+                                         std::move(param_keys), out));
+              return out;
+            });
+}
+
+}  // namespace torch_tpu

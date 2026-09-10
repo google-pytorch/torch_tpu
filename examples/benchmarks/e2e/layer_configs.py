@@ -425,11 +425,15 @@ class Conv2dConfig:
   batch_size: int
   in_channels: int
   out_channels: int
-  kernel_size: int
-  stride: int
-  padding: int
-  height: int
-  width: int
+  kernel_size: int | tuple[int, int]
+  stride: int | tuple[int, int] = 1
+  padding: int | tuple[int, int] = 0
+  height: int = 128
+  width: int = 128
+  dilation: int | tuple[int, int] = 1
+  groups: int = 1
+  bias: bool = True
+  channels_last: bool = False
 
 
 CONV2D_CONFIGS = (
@@ -454,6 +458,86 @@ CONV2D_CONFIGS = (
         padding=1,
         height=256,
         width=256,
+    ),
+    # DeepLOB / Limit Order Book (LOB) configs (Time x Depth/Price levels):
+    # 1. Feature projection across depth levels (height=100, width=40 features).
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=1,
+        out_channels=32,
+        kernel_size=1,
+        stride=1,
+        padding=0,
+        height=100,
+        width=40,
+    ),
+    # 2. Spatial aggregation across order book depth (bid/ask, W=40 -> 20).
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=32,
+        out_channels=32,
+        kernel_size=(1, 2),
+        stride=(1, 2),
+        padding=0,
+        height=100,
+        width=40,
+    ),
+    # 3. Temporal aggregation across event updates (multi-step price momentum).
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=32,
+        out_channels=32,
+        kernel_size=(3, 1),
+        stride=(1, 1),
+        padding=(1, 0),
+        height=100,
+        width=20,
+    ),
+    # 4. Low-latency streaming LOB inference (B=1, sub-tile execution).
+    Conv2dConfig(
+        batch_size=1,
+        in_channels=1,
+        out_channels=32,
+        kernel_size=(1, 2),
+        stride=(1, 2),
+        padding=0,
+        height=100,
+        width=40,
+    ),
+    # 5. TPU 128-tile-aligned DeepLOB configuration (H=128, W=40 -> 5120
+    # elements, exactly 40 full 128-element MXU systolic tiles).
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=32,
+        out_channels=64,
+        kernel_size=(3, 1),
+        stride=1,
+        padding=(1, 0),
+        height=128,
+        width=40,
+    ),
+    # 6. Deep layer MXU saturation config (C_in=64, C_out=128, full MXU lanes).
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=64,
+        out_channels=128,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        height=128,
+        width=40,
+    ),
+    # 7. Native TPU channels-last (NHWC) format to evaluate layout speedup.
+    Conv2dConfig(
+        batch_size=32,
+        in_channels=64,
+        out_channels=128,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        height=128,
+        width=40,
+        channels_last=True,
     ),
 )
 
@@ -958,6 +1042,64 @@ TOPK_CONFIGS = (
 
 
 @dataclasses.dataclass
+class SortConfig:
+  """Configuration parameters for sort benchmarks."""
+
+  batch_size: int
+  seq_len: int
+  num_features: int
+  dim: int | None = None
+  descending: bool = False
+  stable: bool = False
+
+
+SORT_CONFIGS = (
+    # Default config for smoke test.
+    SortConfig(
+        batch_size=1,
+        seq_len=128,
+        num_features=128,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=2048,
+        num_features=2048,
+        dim=-1,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=1024,
+        num_features=4096,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=1024,
+        num_features=4096,
+        dim=1,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=1024,
+        num_features=4096,
+        descending=True,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=1024,
+        num_features=4096,
+        stable=True,
+    ),
+    SortConfig(
+        batch_size=32,
+        seq_len=1024,
+        num_features=4096,
+        descending=True,
+        stable=True,
+    ),
+)
+
+
+@dataclasses.dataclass
 class NonZeroConfig:
   batch_size: int
   seq_len: int
@@ -1160,6 +1302,52 @@ CONV1D_CONFIGS = (
         kernel_size=31,
         padding=15,
         groups=512,
+    ),
+    # Financial services / time-series configs (TCN & market data):
+    # 1. HFT low-latency streaming inference (B=1, small channel count).
+    Conv1dConfig(
+        batch_size=1,
+        seq_len=256,
+        in_channels=32,
+        out_channels=64,
+        kernel_size=5,
+    ),
+    # 2. Dilated TCN layer for multi-horizon return / volatility forecasting.
+    Conv1dConfig(
+        batch_size=64,
+        seq_len=1024,
+        in_channels=64,
+        out_channels=64,
+        kernel_size=3,
+        dilation=8,
+    ),
+    # 3. Long-sequence high-dilation TCN layer (exponential receptive field).
+    Conv1dConfig(
+        batch_size=32,
+        seq_len=2048,
+        in_channels=64,
+        out_channels=128,
+        kernel_size=3,
+        dilation=32,
+    ),
+    # 4. Multi-asset depthwise 1D conv (128 assets, 128-lane VPU vectorization).
+    Conv1dConfig(
+        batch_size=32,
+        seq_len=1024,
+        in_channels=128,
+        out_channels=128,
+        kernel_size=5,
+        padding=2,
+        groups=128,
+    ),
+    # 5. MXU peak-compute financial backbone layer (C=256, saturating MXU).
+    Conv1dConfig(
+        batch_size=32,
+        seq_len=1024,
+        in_channels=256,
+        out_channels=256,
+        kernel_size=3,
+        padding=1,
     ),
 )
 
@@ -1655,4 +1843,176 @@ class TransformerEncoderLayerFwdConfig:
 
 TRANSFORMER_ENCODER_LAYER_FWD_CONFIGS = (
     TransformerEncoderLayerFwdConfig.get_base_configs()
+)
+
+
+@dataclasses.dataclass
+class LstmConfig:
+  batch_size: int
+  seq_len: int
+  input_size: int
+  hidden_size: int
+  num_layers: int = 1
+  bias: bool = True
+  batch_first: bool = True
+  bidirectional: bool = False
+
+
+LSTM_CONFIGS = (
+    # Small / smoke test config
+    LstmConfig(
+        batch_size=32,
+        seq_len=32,
+        input_size=256,
+        hidden_size=256,
+        num_layers=1,
+    ),
+    # Standard recurrent workloads
+    LstmConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    LstmConfig(
+        batch_size=32,
+        seq_len=128,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    LstmConfig(
+        batch_size=32,
+        seq_len=256,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    LstmConfig(
+        batch_size=16,
+        seq_len=512,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    # Multi-layer stacked LSTM
+    LstmConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=2,
+    ),
+    # Bidirectional LSTM workloads
+    LstmConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
+    LstmConfig(
+        batch_size=32,
+        seq_len=128,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
+    LstmConfig(
+        batch_size=32,
+        seq_len=256,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
+)
+
+
+@dataclasses.dataclass
+class GruConfig:
+  batch_size: int
+  seq_len: int
+  input_size: int
+  hidden_size: int
+  num_layers: int = 1
+  bias: bool = True
+  batch_first: bool = True
+  bidirectional: bool = False
+
+
+GRU_CONFIGS = (
+    # Small / smoke test config
+    GruConfig(
+        batch_size=32,
+        seq_len=32,
+        input_size=256,
+        hidden_size=256,
+        num_layers=1,
+    ),
+    # Standard recurrent workloads
+    GruConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    GruConfig(
+        batch_size=32,
+        seq_len=128,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    GruConfig(
+        batch_size=32,
+        seq_len=256,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    GruConfig(
+        batch_size=16,
+        seq_len=512,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+    ),
+    # Multi-layer stacked GRU
+    GruConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=2,
+    ),
+    # Bidirectional GRU workloads
+    GruConfig(
+        batch_size=32,
+        seq_len=64,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
+    GruConfig(
+        batch_size=32,
+        seq_len=128,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
+    GruConfig(
+        batch_size=32,
+        seq_len=256,
+        input_size=512,
+        hidden_size=512,
+        num_layers=1,
+        bidirectional=True,
+    ),
 )

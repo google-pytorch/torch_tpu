@@ -656,6 +656,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
        - `.last_hidden_state` / "last_hidden_state"
        - `.sample` / "sample"
        - `.reconstruction` / "reconstruction"
+       - `.waveform` / "waveform"
+       - `.audio` / "audio"
+       - `.sequences` / "sequences"
        - `.prediction_logits` / "prediction_logits"
        - `.output` / "output"
     3. Sequences (tuple/list): Recursively unwraps the first element (out[0]).
@@ -677,6 +680,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
       "last_hidden_state",
       "sample",
       "reconstruction",
+      "waveform",
+      "audio",
+      "sequences",
       "prediction_logits",
       "output",
   )

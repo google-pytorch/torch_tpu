@@ -27,11 +27,11 @@ torch_tpu_py_test(
     shuffle_tests = False,
     tags = ["requires-tpu-v5lite"],
     deps = [
+        "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py:app",
         "//shims/torch:pytorch",
         "//torch_tpu",
         "//torch_tpu/_internal/utils:test_utils",
-        "//torch_tpu/csrc/eager:tpu_aten_kernels",
         "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",
     ],
 )

@@ -93,6 +93,24 @@ def buildifier(session: nox.Session) -> None:
   session.run("ci/tools/buildifier_lint.sh", "format", external=True)
 
 
+@nox.session(venv_backend="none")
+def actionlint(session: nox.Session) -> None:
+  """Runs static checkers on GitHub Actions workflows with actionlint."""
+  session.run("ci/tools/actionlint.sh", external=True)
+
+
+@nox.session(venv_backend="none")
+def test_ci_tools(session: nox.Session) -> None:
+  """Run unit tests for CI base SHA resolution and diff isolation scripts."""
+  session.run(
+      "python3",
+      "-m",
+      "unittest",
+      "ci/tools/test_resolve_base_sha.py",
+      external=True,
+  )
+
+
 # Use venv_backend="none" to allow running the script directly in the host.
 # The script relies exclusively on Python standard libraries, so creating
 # a virtual env adds unnecessary overhead with no benefits.

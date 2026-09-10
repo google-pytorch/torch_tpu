@@ -52,8 +52,10 @@ def _pack32(values):
   # Translate values from {-1, 1} to {0, 1}
   bits = (values == 1.0).to(torch.uint32)
 
-  # Create all bit patterns from 0000, 0001, 0010, etc. on the same device.
-  bit_patterns = 2 ** torch.arange(32, dtype=torch.uint32, device=values.device)
+  # Create all bit patterns from 0000, 0001, 0010, etc.
+  bit_patterns = (
+      2 ** torch.arange(32, dtype=torch.int64, device=values.device)
+  ).to(torch.uint32)
 
   # Summing the bit patterns is a bitwise_or reduction on a vector.
   return torch.sum(bits * bit_patterns, dim=0, dtype=torch.uint32)

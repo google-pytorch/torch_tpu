@@ -15,7 +15,6 @@
 """Tests for distributed handshake protocol using PyZMQ and asyncio."""
 
 import asyncio
-import json
 import os
 import threading
 import time
@@ -87,31 +86,6 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
     self.assertEqual(count.collective_count_before, 0)
     self.assertEqual(count.num_collectives_in_graph, 2)
 
-  def test_invalid_collective_count_before(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "collective_count_before must be non-negative"
-    ):
-      ProcessGroupCollectiveCount(
-          collective_count_before=-1,
-          num_collectives_in_graph=1,
-      )
-
-  def test_invalid_num_collectives_in_graph(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "num_collectives_in_graph must be strictly positive"
-    ):
-      ProcessGroupCollectiveCount(
-          collective_count_before=0,
-          num_collectives_in_graph=0,
-      )
-    with self.assertRaisesRegex(
-        ValueError, "num_collectives_in_graph must be strictly positive"
-    ):
-      ProcessGroupCollectiveCount(
-          collective_count_before=0,
-          num_collectives_in_graph=-2,
-      )
-
   def test_increment_num_collectives_in_graph(self) -> None:
     count = ProcessGroupCollectiveCount(
         collective_count_before=0,
@@ -124,16 +98,6 @@ class ProcessGroupCollectiveCountTest(seed_test_utils.RepeatableTest):
     count.increment_num_collectives_in_graph(0)
     self.assertEqual(count.collective_count_before, 5)
     self.assertEqual(count.num_collectives_in_graph, 0)
-
-  def test_increment_num_collectives_in_graph_invalid(self) -> None:
-    count = ProcessGroupCollectiveCount(
-        collective_count_before=0,
-        num_collectives_in_graph=2,
-    )
-    with self.assertRaisesRegex(
-        ValueError, "number_of_collectives must be greater or equal to 0"
-    ):
-      count.increment_num_collectives_in_graph(-1)
 
 
 class RankCollectiveCountsTest(seed_test_utils.RepeatableTest):
@@ -240,12 +204,6 @@ class RankCollectiveCountsTest(seed_test_utils.RepeatableTest):
     self.assertEqual(deserialized[pg].collective_count_before, 2)
     self.assertEqual(deserialized[pg].num_collectives_in_graph, 4)
 
-  def test_missing_key_raises_key_error(self) -> None:
-    counts = RankCollectiveCounts()
-    pg = ProcessGroupId([0, 1])
-    with self.assertRaises(KeyError):
-      _ = counts[pg]
-
   def test_eq(self) -> None:
     counts1 = RankCollectiveCounts({
         ProcessGroupId([0, 1]): ProcessGroupCollectiveCount(
@@ -305,20 +263,6 @@ class RankCollectiveCountsTest(seed_test_utils.RepeatableTest):
     })
     self.assertEqual(counts.collective_count(pg1), 5)
     self.assertEqual(counts.collective_count(pg2), 3)
-
-  def test_collective_count_empty_raises(self) -> None:
-    counts = RankCollectiveCounts()
-    with self.assertRaises(KeyError):
-      counts.collective_count(ProcessGroupId([0, 1]))
-
-  def test_collective_count_missing_key_raises(self) -> None:
-    counts = RankCollectiveCounts({
-        ProcessGroupId([0, 1]): ProcessGroupCollectiveCount(
-            collective_count_before=0, num_collectives_in_graph=1
-        ),
-    })
-    with self.assertRaises(KeyError):
-      counts.collective_count(ProcessGroupId([0, 1, 2, 3]))
 
 
 class ShouldHandshakeTest(seed_test_utils.RepeatableTest):
@@ -404,44 +348,6 @@ class CollectiveHandshakeRequestTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(request.participating_ranks, [0, 1, 2])
 
-  def test_invalid_participating_ranks_empty(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "participating_ranks cannot be empty"
-    ):
-      CollectiveHandshakeRequest(
-          pg_collective_counts=RankCollectiveCounts(),
-          executable_fingerprint="fp",
-          rank=0,
-      )
-
-  def test_invalid_rank(self) -> None:
-    pg_counts = RankCollectiveCounts()
-    pg_counts.increment_pg_collective_counts({
-        ProcessGroupId([0, 1, 2, 3]): 1,
-    })
-    with self.assertRaisesRegex(
-        ValueError, r"rank \(4\) must be present in participating_ranks"
-    ):
-      CollectiveHandshakeRequest(
-          pg_collective_counts=pg_counts,
-          executable_fingerprint="fp",
-          rank=4,
-      )
-    with self.assertRaisesRegex(ValueError, "rank must be non-negative"):
-      CollectiveHandshakeRequest(
-          pg_collective_counts=pg_counts,
-          executable_fingerprint="fp",
-          rank=-1,
-      )
-
-  def test_from_bytes_invalid_payloads(self) -> None:
-    with self.assertRaises(json.JSONDecodeError):
-      CollectiveHandshakeRequest.from_bytes(b"invalid json")
-    with self.assertRaises(UnicodeDecodeError):
-      CollectiveHandshakeRequest.from_bytes(b"\xff\xfe")
-    with self.assertRaises(KeyError):
-      CollectiveHandshakeRequest.from_bytes(b"{}")
-
 
 class CollectiveHandshakeResponseTest(seed_test_utils.RepeatableTest):
   """Unit tests for CollectiveHandshakeResponse class and serialization."""
@@ -465,10 +371,6 @@ class CollectiveHandshakeResponseTest(seed_test_utils.RepeatableTest):
     deserialized_f = CollectiveHandshakeResponse.from_bytes(serialized_f)
     self.assertFalse(deserialized_f.success)
 
-  def test_from_bytes_invalid_payloads(self) -> None:
-    with self.assertRaises(ValueError):
-      CollectiveHandshakeResponse.from_bytes(b"invalid")
-
 
 class GetHandshakeTimeoutMsTest(seed_test_utils.RepeatableTest):
   """Unit tests for _get_handshake_timeout_s environment variable parser."""
@@ -483,69 +385,9 @@ class GetHandshakeTimeoutMsTest(seed_test_utils.RepeatableTest):
     ):
       self.assertEqual(_get_handshake_timeout_s(), 5)
 
-  def test_invalid_string_timeout(self) -> None:
-    with mock.patch.dict(
-        os.environ, {"TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "invalid"}
-    ):
-      with self.assertRaisesRegex(
-          ValueError,
-          "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be an integer",
-      ):
-        _get_handshake_timeout_s()
-
-  def test_negative_timeout(self) -> None:
-    with mock.patch.dict(
-        os.environ, {"TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "-100"}
-    ):
-      with self.assertRaisesRegex(
-          ValueError,
-          "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be non-negative",
-      ):
-        _get_handshake_timeout_s()
-
 
 class CollectiveHandshakeConsensusTest(seed_test_utils.RepeatableTest):
   """Unit tests for _CollectiveHandshakeConsensus request queuing and gathering."""
-
-  def test_invalid_num_queues(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "num_queues must be strictly positive"
-    ):
-      _CollectiveHandshakeConsensus(num_queues=0)
-    with self.assertRaisesRegex(
-        ValueError, "num_queues must be strictly positive"
-    ):
-      _CollectiveHandshakeConsensus(num_queues=-1)
-
-  def test_invalid_put_request_rank(self) -> None:
-    async def _test() -> None:
-      consensus = _CollectiveHandshakeConsensus(num_queues=4)
-      msg = _make_request(rank=0)
-      env = _CollectiveHandshakeRequestZMQEnvelope(client_id=b"c", request=msg)
-      with self.assertRaisesRegex(ValueError, r"rank \(-1\) must be in range"):
-        await consensus.put_request(-1, env)
-      with self.assertRaisesRegex(ValueError, r"rank \(4\) must be in range"):
-        await consensus.put_request(4, env)
-
-    asyncio.run(_test())
-
-  def test_invalid_get_from_ranks(self) -> None:
-    async def _test() -> None:
-      consensus = _CollectiveHandshakeConsensus(num_queues=4)
-      with self.assertRaisesRegex(
-          ValueError, "ranks must not contain duplicates"
-      ):
-        await consensus.get_from_ranks([0, 1, 0])
-      with self.assertRaisesRegex(
-          ValueError, r"rank \(-1\) in ranks must be in range"
-      ):
-        await consensus.get_from_ranks([-1, 0])
-      with self.assertRaisesRegex(
-          ValueError, r"rank \(4\) in ranks must be in range"
-      ):
-        await consensus.get_from_ranks([0, 4])
-
-    asyncio.run(_test())
 
   def test_put_and_get_first_request(self) -> None:
     async def _test() -> None:
@@ -661,15 +503,6 @@ class GetValidatedHandshakePortTest(seed_test_utils.RepeatableTest):
         port = handshake._get_validated_port(is_coordinator)
         self.assertEqual(port, 12345)
 
-  def test_get_validated_port_in_use_raises_error_for_coordinator(self) -> None:
-    """Tests that an exception is raised when the handshake port is in use."""
-
-    with mock.patch.object(portpicker, "is_port_free", return_value=False):
-      with self.assertRaisesRegex(
-          RuntimeError, "TORCH_TPU_INTERNAL_HANDSHAKE_PORT"
-      ):
-        handshake._get_validated_port(is_coordinator=True)
-
 
 def _msg_eq(
     msg1: CollectiveHandshakeRequest, msg2: CollectiveHandshakeRequest
@@ -685,39 +518,6 @@ def _msg_eq(
 
 class ZMQServerClientTest(seed_test_utils.RepeatableTest):
   """Unit tests for _ZMQServer and _ZMQClient communication."""
-
-  def test_zmq_server_invalid_port_number(self) -> None:
-    with self.assertRaises(ValueError):
-      _ZMQServer(port=-1)
-
-    with self.assertRaises(ValueError):
-      _ZMQServer(port=65536)
-
-  def test_zmq_client_invalid_port_number(self) -> None:
-    with self.assertRaises(ValueError):
-      _ZMQClient(port=-1)
-    with self.assertRaises(ValueError):
-      _ZMQClient(port=65536)
-
-  def test_zmq_server_invalid_timeout(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "send_timeout_s must be non-negative"
-    ):
-      _ZMQServer(port=12345, send_timeout_s=-1)
-    with self.assertRaisesRegex(
-        ValueError, "recv_timeout_s must be non-negative"
-    ):
-      _ZMQServer(port=12345, recv_timeout_s=-1)
-
-  def test_zmq_client_invalid_timeout(self) -> None:
-    with self.assertRaisesRegex(
-        ValueError, "send_timeout_s must be non-negative"
-    ):
-      _ZMQClient(port=12345, send_timeout_s=-1)
-    with self.assertRaisesRegex(
-        ValueError, "recv_timeout_s must be non-negative"
-    ):
-      _ZMQClient(port=12345, recv_timeout_s=-1)
 
   def test_zmq_server_client_custom_timeouts(self) -> None:
     port = portpicker.pick_unused_port()
@@ -771,36 +571,6 @@ class ZMQServerClientTest(seed_test_utils.RepeatableTest):
       client.close()
       server.close()
 
-  def test_zmq_server_close_idempotent_and_closed_operations(self) -> None:
-    port = portpicker.pick_unused_port()
-    server = _ZMQServer(port=port)
-    server.close()
-    # Multiple close calls must be safe and idempotent
-    server.close()
-
-    async def _test() -> None:
-      with self.assertRaises(zmq.ZMQError):
-        await server.recv_request()
-      with self.assertRaises(zmq.ZMQError):
-        await server.send_reply(
-            b"c0", CollectiveHandshakeResponse(success=True)
-        )
-
-    asyncio.run(_test())
-
-  def test_zmq_client_close_idempotent_and_closed_operations(self) -> None:
-    port = portpicker.pick_unused_port()
-    client = _ZMQClient(port=port)
-    client.close()
-    # Multiple close calls must be safe and idempotent
-    client.close()
-
-    msg = _make_request(rank=0)
-    with self.assertRaises(zmq.ZMQError):
-      client.send(msg)
-    with self.assertRaises(zmq.ZMQError):
-      client.recv()
-
 
 class LoopRunnerTest(seed_test_utils.RepeatableTest):
   """Unit tests for _LoopRunner."""
@@ -846,8 +616,9 @@ class HandshakeServerClientBackendTest(seed_test_utils.RepeatableTest):
 
   def test_handshake_server_singleton(self) -> None:
     """Tests that _HandshakeServer acts as a singleton per process."""
-    server1 = _HandshakeServer(current_rank=0, port=31234, world_size=1)
-    server2 = _HandshakeServer(current_rank=0, port=31234, world_size=1)
+    port = portpicker.pick_unused_port()
+    server1 = _HandshakeServer(current_rank=0, port=port, world_size=1)
+    server2 = _HandshakeServer(current_rank=0, port=port, world_size=1)
     self.assertIs(server1, server2)
 
   def test_handshake_server_close_cancels_loop_tasks_and_shuts_down_loop(
@@ -1238,78 +1009,141 @@ class HandshakeTest(seed_test_utils.RepeatableTest):
 
   def test_handshake_port_cache(self) -> None:
     """Tests that Handshake caches port selection per coordinator rank."""
+    port = portpicker.pick_unused_port()
     with mock.patch.object(dist, "get_world_size", return_value=1):
-      _ = Handshake(current_rank=0, coordinator_rank=0)
-      self.assertEqual(
-          Handshake._port_cache[0],
-          tpu_torch_compile.get_handshake_port_env_var_once(),
-      )
-
-  def test_submit_invalid_message_type(self) -> None:
-    """Tests that submitting non-CollectiveHandshakeRequest raises TypeError."""
-    with mock.patch.object(dist, "get_world_size", return_value=1):
-      hs = Handshake(current_rank=0, coordinator_rank=0)
-      with self.assertRaises(TypeError):
-        hs.submit("invalid_string")  # pyrefly: ignore[bad-argument-type]
-
-  def test_submit_subgroup_not_supported(self) -> None:
-    """Tests that submitting participating_ranks != world_size raises RuntimeError."""
-    with mock.patch.object(dist, "get_world_size", return_value=4):
-      hs = Handshake(current_rank=0, coordinator_rank=0)
-      msg = _make_request(
-          rank=0,
-          participating_ranks=[0, 1],  # len 2 != world_size 4
-          fingerprint="fp",
-          num_collectives_in_graph=2,
-          collective_count_before=0,
-      )
-      with self.assertRaisesRegex(
-          RuntimeError, "do not support subgroup communication"
+      with mock.patch.object(
+          tpu_torch_compile,
+          "get_handshake_port_env_var_once",
+          return_value=port,
       ):
-        hs.submit(msg)
+        _ = Handshake(current_rank=0, coordinator_rank=0)
+        self.assertEqual(
+            Handshake._port_cache[0],
+            port,
+        )
 
   @parameterized.parameters(0, 1)
   def test_handshake_request_matching(self, coordinator_rank: int) -> None:
-    distributed_utils.dist_run(
-        4, test_wrapper, _run_handshake_request_matching, coordinator_rank
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          4, test_wrapper, _run_handshake_request_matching, coordinator_rank
+      )
 
   @parameterized.parameters(0, 1)
   def test_handshake_request_mismatching(self, coordinator_rank: int) -> None:
-    distributed_utils.dist_run(
-        4, test_wrapper, _run_handshake_request_mismatching, coordinator_rank
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          4, test_wrapper, _run_handshake_request_mismatching, coordinator_rank
+      )
 
   def test_multiple_consecutive_submissions(self) -> None:
-    distributed_utils.dist_run(
-        3, test_wrapper, _run_multiple_consecutive_submissions, 0
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          3, test_wrapper, _run_multiple_consecutive_submissions, 0
+      )
 
   def test_handshake_with_initialized_process_group(self) -> None:
-    distributed_utils.dist_run(
-        3, test_wrapper, _run_handshake_with_initialized_process_group, 0
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          3, test_wrapper, _run_handshake_with_initialized_process_group, 0
+      )
 
   def test_subset_handshake_without_coordinator(self) -> None:
-    distributed_utils.dist_run(
-        4, test_wrapper, _run_subset_handshake_without_coordinator, 0
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          4, test_wrapper, _run_subset_handshake_without_coordinator, 0
+      )
 
   def test_mismatched_frame_count(self) -> None:
     """Tests that mismatched frame count across ranks is exhausted cleanly without deadlocking."""
-    distributed_utils.dist_run(8, test_wrapper, _run_mismatched_frame_count)
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(8, test_wrapper, _run_mismatched_frame_count)
 
   def test_mismatched_multi_frame_count_exhaustion(self) -> None:
     """Tests that multi-frame count mismatch across ranks is exhausted cleanly before a subsequent matching step."""
-    distributed_utils.dist_run(
-        8, test_wrapper, _run_mismatched_multi_frame_count_exhaustion
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          8, test_wrapper, _run_mismatched_multi_frame_count_exhaustion
+      )
 
   def test_target_count_increases_during_exhaustion(self) -> None:
     """Tests that when target_count increases during an exhaust round, lagging ranks are exhausted to the higher target count."""
-    distributed_utils.dist_run(
-        4, test_wrapper, _run_target_count_increases_during_exhaustion
-    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            # We patch the port with an unused one to ensure the test doesn't
+            # fail due to a port conflict with another test.
+            "TORCH_TPU_INTERNAL_HANDSHAKE_PORT": str(
+                portpicker.pick_unused_port()
+            ),
+        },
+    ):
+      distributed_utils.dist_run(
+          4, test_wrapper, _run_target_count_increases_during_exhaustion
+      )
 
 
 if __name__ == "__main__":

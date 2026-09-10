@@ -204,7 +204,18 @@ def get_peak_memory_hbm(
     total = psutil.virtual_memory().total
     percentage = psutil.Process(os.getpid()).memory_percent()
     peak_memory_usage_mb = percentage / 100.0 * total / _BYTES_IN_MB
-  elif device in ('tpu', 'xla_cuda', 'xla_cpu', 'jax'):
+  elif device in ('tpu', 'xla_cuda'):
+    if hasattr(torch, 'accelerator') and hasattr(
+        torch.accelerator, 'max_memory_allocated'
+    ):
+      try:
+        peak_memory_bytes = torch.accelerator.max_memory_allocated()
+        if peak_memory_bytes >= 0:
+          return peak_memory_bytes / _BYTES_IN_MB
+      except Exception:  # Fallback to XProf if accelerator query fails
+        pass
+    peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
+  elif device in ('xla_cpu', 'jax'):
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
   else:
     raise ValueError(f'Unsupported device: {device}')
@@ -214,7 +225,13 @@ def get_peak_memory_hbm(
 def reset_peak_memory_stats(device):
   if device == 'cuda':
     torch.cuda.memory.reset_max_memory_allocated()
-  elif device in ('tpu', 'cpu', 'xla_cuda', 'xla_cpu', 'jax'):
+  elif device in ('tpu', 'xla_cuda'):
+    if hasattr(torch, 'accelerator'):
+      if hasattr(torch.accelerator, 'synchronize'):
+        torch.accelerator.synchronize()
+      if hasattr(torch.accelerator, 'reset_peak_memory_stats'):
+        torch.accelerator.reset_peak_memory_stats()
+  elif device in ('cpu', 'xla_cpu', 'jax'):
     pass
   else:
     raise ValueError(f'Unsupported device: {device}')

@@ -150,7 +150,13 @@ def run_spmd_safe_multi_dtensor_compile_test():
 
 class SpmdSafeDecoratorTest(seed_test_utils.MultiProcessRepeatableTest):
 
-  _world_size = 4
+  # Using _world_size = 4 has flakiness on 8-chip TPU v5e CI runners:
+  # initializing only 4 chips leaves the rest of the physical interconnect ring
+  # idle, causing process group init to intermittently hang for ~20s and fail
+  # with SIGTERM (ProcessExitedException). Setting this to 8 ensures all chips
+  # on the host participate, allowing the physical ring to close and sync
+  # deterministically.
+  _world_size = 8
 
   def _check_fused_mlir(self, dump_dir, expected_count=1):
     """Checks there is exactly `expected_count` unique fused modules with all_reduce and multiply."""

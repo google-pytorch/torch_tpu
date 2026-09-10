@@ -23,7 +23,6 @@ from torch import distributed as dist
 from torch.distributed import tensor
 import torch.multiprocessing as mp
 from torch_tpu._internal import compile as tt_compile
-from torch_tpu._internal.compile import split_compiler
 from torch_tpu._internal.compile import torch_tpu_compiled_executable
 from torch_tpu._internal.device import _device_module as tpu_device
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
@@ -36,21 +35,14 @@ from tests.distributed import distributed_utils
 TorchTpuCompiledExecutable = (
     torch_tpu_compiled_executable.TorchTpuCompiledExecutable
 )
-_WrapperModule = split_compiler._WrapperModule
-_SplitCompiledExecutable = split_compiler._SplitCompiledExecutable
 
 
 def get_all_compiled_executables(execs) -> list[TorchTpuCompiledExecutable]:
   flat_execs = []
   for exe in execs:
-    if isinstance(exe, TorchTpuCompiledExecutable):
-      flat_execs.append(exe)
-    elif isinstance(exe, _SplitCompiledExecutable):
-      for child in exe._split_gm.children():
-        if isinstance(child, _WrapperModule) and isinstance(
-            child.submod, TorchTpuCompiledExecutable
-        ):
-          flat_execs.append(child.submod)
+    for leaf in exe.compiled_executables:
+      if isinstance(leaf, TorchTpuCompiledExecutable):
+        flat_execs.append(leaf)
   return flat_execs
 
 
