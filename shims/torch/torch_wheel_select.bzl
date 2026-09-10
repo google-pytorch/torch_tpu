@@ -82,3 +82,42 @@ def torch_headers_select(base, extra = []):
     }
     rows.update(base)
     return rows
+
+# The extra-version pip hubs are locked `--no-deps` to save disk space and
+# avoid duplicating third-party packages, i.e. their versioned wheel repositories
+# (@pypi_torch_<v>_*//:pkg) contain only the raw torch wheel. Thus, each
+# extra-version must supply torch's Python dependencies from the default hub.
+_TORCH_PYPI_DEPS = [
+    # ABI-independent and shared across torch versions.
+    "@pypi//filelock",
+    "@pypi//fsspec",
+    "@pypi//jinja2",
+    "@pypi//networkx",
+    "@pypi//setuptools",
+    "@pypi//sympy",
+    "@pypi//typing_extensions",
+]
+
+def torch_py_select(base, extra = []):
+    """A select() dict choosing the torch Python package per torch version.
+
+    For py_library deps: makes Python targets run against a specific version of
+    PyTorch selected by --//:_torch_version instead of the default pin.
+    Each extra-version row is that version's wheel `:pkg` plus torch's Python
+    dependencies from the default hub (the torch-only locks carry none).
+
+    Args:
+      base: The fallback select() dict for the default PyTorch version and
+        custom build configurations (e.g. :use_local_torch).
+      extra: Additional dependencies from `//conditions:default`, such as numpy,
+        that the target requires and must be preserved when an extra version
+        branch is selected.
+    """
+    rows = {
+        _torch_version_setting(v): (
+            [_extra_wheel(v, "pkg")] + _TORCH_PYPI_DEPS + extra
+        )
+        for v in _EXTRA_GLUE_VERSIONS
+    }
+    rows.update(base)
+    return rows
