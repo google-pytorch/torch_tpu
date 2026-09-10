@@ -963,7 +963,8 @@ class DeviceBufferList {
     // Returns true if this DeviceBufferList::Data has finished materialization.
     // It may have succeeded or failed.
     [[nodiscard]] bool is_materialized() const {
-      return materialization_future_.IsKnownReady();
+      return !placeholder_ && materialization_future_.IsValid() &&
+             materialization_future_.IsKnownReady();
     }
 
     // Returns true if the DeviceBufferList::Data was created as a constant or

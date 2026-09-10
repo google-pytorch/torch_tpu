@@ -1418,6 +1418,72 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [x])
 
+  @et.why_tpu_only(
+      "Verifies that attempting to materialize a tensor depending on a"
+      " placeholder fails gracefully instead of crashing."
+  )
+  def test_materialize_tensor_depending_on_placeholder(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*materialize was called on a placeholder tensor.*",
+            re.DOTALL,
+        ),
+    ):
+      _ = x + 1.0
+
+  @et.why_tpu_only(
+      "Verifies that attempting to materialize a placeholder tensor directly"
+      " fails gracefully."
+  )
+  def test_materialize_placeholder_directly(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*cannot Materialize\(\) a placeholder tensor.*",
+            re.DOTALL,
+        ),
+    ):
+      x.cpu()
+
+  @et.why_tpu_only(
+      "Verifies that graphs with mixed real and placeholder arguments fail"
+      " gracefully when materialization is attempted."
+  )
+  def test_materialize_mixed_real_and_placeholder(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+    real = torch.ones(4, 4, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*materialize was called on a placeholder tensor.*",
+            re.DOTALL,
+        ),
+    ):
+      _ = real + x
+
+  @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
+  def test_execute_placeholder_argument(self):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      x = torch.ones(4, 4, device="cpu").to(device=et.device())
+      z = x + x
+      ph = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
+
+    compile_result = tpu_torch_compile.traverse_and_compile([z], [x])
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=re.compile(
+            r".*cannot Materialize\(\) a placeholder tensor.*",
+            re.DOTALL,
+        ),
+    ):
+      tpu_torch_compile.execute(compile_result.executable, [ph])
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
     with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):

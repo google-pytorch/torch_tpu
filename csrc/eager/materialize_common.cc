@@ -300,7 +300,14 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
                             /*argument_layouts=*/{},
                             /*donated_inputs=*/{});
   for (const auto& argument : traversal.arguments()) {
-    if (argument.is_materialized()) {
+    if (argument.is_placeholder()) {
+      return TT_ERROR(error::kInternal)
+             << "materialize was called on a placeholder tensor. This "
+                "should never happen.\nkPlaceholder tensors should only "
+                "appear in compiled mode, which should never try to "
+                "materialize tensors.\n"
+             << argument.DebugString();
+    } else if (argument.is_materialized()) {
       // Argument has either succeeded or failed; check that it didn't fail.
       // AwaitBuffer is non-blocking when is_materialized() is true.
       auto buffer_or = argument.AwaitBuffer();
@@ -311,13 +318,6 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     } else if (argument.is_materializing()) {
       // Input isn't ready yet, so we will wait and recheck it during Run().
       continue;
-    } else if (argument.is_placeholder()) {
-      return TT_ERROR(error::kInternal)
-             << "materialize was called on a placeholder tensor. This "
-                "should never happen.\nkPlaceholder tensors should only "
-                "appear in compiled mode, which should never try to "
-                "materialize tensors.\n"
-             << argument.DebugString();
     } else if (const auto deferred_op = argument.deferred_op()) {
       return TT_ERROR(error::kInternal)
              << "traversal (cache key: " << compilation_cache_key

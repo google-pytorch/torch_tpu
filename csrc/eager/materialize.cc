@@ -698,14 +698,14 @@ absl::Status MaterializeImpl(
               "materialize tensors";
   }
 
-  // Fast-path: deduplicate and prune non-deferred nodes in-place. If no
-  // deferred nodes remain, return synchronously without profiler scopes or
-  // inter-thread task handoffs to the MaterializationWorker.
+  // Fast-path: deduplicate and prune already-materialized nodes in-place. If no
+  // unmaterialized nodes remain, return synchronously without profiler scopes
+  // or inter-thread task handoffs to the MaterializationWorker.
   {
     absl::flat_hash_set<const DeviceBufferList*> unique_nodes;
     std::erase_if(nodes_to_materialize,
                   [&unique_nodes](const SharedDeviceBufferList& node) {
-                    return node == nullptr || !node->is_deferred() ||
+                    return node == nullptr || node->is_materialized() ||
                            !unique_nodes.insert(node.get()).second;
                   });
   }
