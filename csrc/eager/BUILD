@@ -134,6 +134,7 @@ torch_tpu_cc_test(
 torch_tpu_cc_test(
     name = "materialization_heuristics_test",
     srcs = ["materialization_heuristics_test.cc"],
+    requires_libtpu = True,
     deps = [
         ":device_buffer",
         ":materialization_heuristics",
