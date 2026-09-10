@@ -233,6 +233,7 @@ torch_tpu_py_test(
     main = "torch_benchmark_test.py",
     nolocal = "Full-scope benchmark sweep; run from the benchmark registry.",
     notest_oss = "Benchmarks have a separate workflow.",
+    notap = "manual run only",
     tags = [
         "nofastbuild",  # Benchmark.
         # Needed for getting xprof links

@@ -1,0 +1,86 @@
+# proto-file: https://github.com/google-ml-infra/bap/blob/main/bap_proto/benchmark_registry.proto
+# proto-message: BenchmarkSuite
+#
+# Benchmarks run against a pip-installed torch_tpu wheel rather than through
+# `bazel run`, via the repository's own workload executor at
+# //.github/actions/run-benchmark.
+#
+# Why this registry exists separately: under the Bazel executor the entire
+# runtime environment -- torch, libtpu, transformers -- resolves from the
+# single @pypi hub that every unit test in this repository also uses, so
+# benchmarking a different PyTorch means a new full lock file, a new pip.parse
+# hub in MODULE.bazel, and new select() rows in the torch shims. The wheel
+# already supports the versions at runtime (one glue per ABI-breaking release,
+# dispatched by torch_tpu/_versioned_so_loader.py), so this executor moves the
+# choice to install time: `torch_spec` and `libtpu_spec` are per-environment
+# inputs, and adding a version is an environment_configs block rather than a
+# build reconfiguration.
+#
+# Kept out of benchmark_registry.pbtxt on purpose -- that one is what Nightly
+# Benchmarks runs and publishes -- so these can be brought up and compared
+# against their Bazel equivalents before anything migrates. The entries here
+# deliberately mirror the "eager default" llama benchmark in that registry so
+# the two paths' numbers are directly comparable.
+#
+# The wheel is built from the checked-out source on the benchmark runner, so
+# each job measures the commit under test and A/B mode works unchanged. To
+# keep that build off an accelerator runner, set `torch_tpu_wheel` to a gs://
+# or https:// path and the build step is skipped.
+
+benchmarks {
+  name: "pip_test_llama_3_2_1b_forward_eager_default-hf_llama_3_2_1b"
+  description: "Eager default forward pass for HF Llama 3.2 1B, run against a pip-installed wheel."
+  owner: "TorchTPU"
+
+  workload {
+    # Resolved by BAP's dynamic_action_executor against $GITHUB_WORKSPACE,
+    # where the bap checkout ("ml_actions") and this repository ("user_repo")
+    # sit side by side. validate_registry accepts any "./"-prefixed action.
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/model_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    # absltest reads TESTBRIDGE_TEST_ONLY from the environment directly, so
+    # the Bazel path's --action_env becomes a plain exported variable here.
+    action_inputs { key: "env_vars" value: "TESTBRIDGE_TEST_ONLY=test_llama_3_2_1b_forward_eager_default" }
+  }
+
+  # The default torch, matching what the Bazel path resolves from @pypi. This
+  # is the apples-to-apples comparison against "tpu-v7" in
+  # benchmark_registry.pbtxt.
+  environment_configs {
+    id: "pip-tpu-v7-torch-default"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    # CPU-built torch: the TPU backend comes from libtpu, and the default PyPI
+    # torch would drag in the whole CUDA stack for nothing.
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.11.0" }
+  }
+
+  # The same benchmark on a different PyTorch. Under the Bazel executor this
+  # environment could not exist without new checked-in build plumbing; here it
+  # is one changed line.
+  environment_configs {
+    id: "pip-tpu-v7-torch-2-13"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+  }
+
+  # CUDA: a different index and runner, not a --config=cuda build against a
+  # second pip hub. torch comes from PyPI, whose default build is CUDA-enabled.
+  environment_configs {
+    id: "pip-gpu-b200-1"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "runtime_flags" value: "--platform=b200_1 --enable_tensorboard_logging" }
+  }
+
+  metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
+}

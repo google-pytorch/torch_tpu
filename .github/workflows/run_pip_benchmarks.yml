@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runs examples/benchmarks/pip_benchmark_registry.pbtxt: benchmarks executed
+# against a pip-installed torch_tpu wheel through this repository's own
+# workload executor (//.github/actions/run-benchmark) instead of `bazel run`.
+#
+# Dispatch-only and non-publishing, like Run Harness Benchmarks: the point of
+# this registry is to compare the pip path against the Bazel path in
+# benchmark_registry.pbtxt before anything migrates, so its numbers must not
+# land in the nightly dataset yet.
+name: Run Pip Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_filter:
+        description: "Regex to filter by benchmark name."
+        required: false
+        type: string
+        default: ""
+      environment_filter:
+        description: "Regex to filter by environment configuration ID (e.g. 'pip-tpu-v7.*')."
+        required: false
+        type: string
+        default: ""
+      custom_metadata:
+        description: "JSON string of metadata to append to the benchmark result."
+        required: false
+        type: string
+        default: "{}"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  run_benchmarks:
+    name: Run TorchTPU pip benchmarks
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@aa854ba7bdb77966a9cc1a013417f1c1a208c4c0 # main
+    with:
+      registry_file: "examples/benchmarks/pip_benchmark_registry.pbtxt"
+      bap_ref: "aa854ba7bdb77966a9cc1a013417f1c1a208c4c0"
+      runner: "linux-x86-n4-16"
+      benchmark_filter: ${{ inputs.benchmark_filter }}
+      environment_filter: ${{ inputs.environment_filter }}
+      custom_metadata: ${{ inputs.custom_metadata }}

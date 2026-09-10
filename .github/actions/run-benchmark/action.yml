@@ -1,0 +1,396 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A BAP workload executor that benchmarks a pip-installed torch_tpu wheel.
+#
+# BAP's own executors live in the bap checkout ("./ml_actions/actions/..."),
+# and the Bazel one resolves the whole runtime environment -- torch, libtpu,
+# transformers -- from the single @pypi hub that every unit test in this
+# repository also uses. Varying a version there means a new full lock, a new
+# pip.parse hub in MODULE.bazel, and new select() rows in the torch shims.
+#
+# This executor moves that choice to install time instead, where the wheel's
+# multi-ABI glue dispatch (torch_tpu/_versioned_so_loader.py) already supports
+# it: one wheel serves every PyTorch release in the supported range, so
+# switching versions is an input, not a build reconfiguration. A benchmark
+# registry selects it with
+#
+#   workload { action: "./user_repo/.github/actions/run-benchmark" }
+#
+# which BAP's dynamic_action_executor resolves against $GITHUB_WORKSPACE,
+# where the bap checkout ("ml_actions") and this repository ("user_repo") sit
+# side by side. Nothing else in BAP changes: it still generates the matrix,
+# picks the runner and container, handles A/B checkouts, and parses whatever
+# lands in $TENSORBOARD_OUTPUT_DIR afterwards.
+
+name: "Run TorchTPU Benchmark"
+description: >-
+  Runs a TorchTPU benchmark script against a pip-installed torch_tpu wheel,
+  with the PyTorch and libtpu versions selected per benchmark run.
+
+inputs:
+  script:
+    description: "Benchmark script to run, relative to the repository root."
+    required: true
+  python_version:
+    description: "Python version for the benchmark environment."
+    required: false
+    default: "3.12"
+  torch_tpu_wheel:
+    description: >-
+      A prebuilt torch_tpu wheel to benchmark: a local path, an https:// URL,
+      or a gs:// path. Empty (the default) builds the wheel from the
+      checked-out source, so the benchmark measures the commit under test.
+      Point it at a prebuilt wheel to keep the build off an accelerator
+      runner.
+    required: false
+    default: ""
+  bazel_build_flags:
+    description: >-
+      Extra bazel flags for the from-source wheel build, appended to
+      ci/build_wheels.sh (e.g. --config=no_rbe where RBE credentials are
+      unavailable).
+    required: false
+    default: ""
+  torch_spec:
+    description: >-
+      The PyTorch requirement to install, e.g. "torch==2.13.0". Empty leaves
+      the choice to the resolver, which honours the wheel's own torch>= floor.
+      An "==" pin is verified after installation.
+    required: false
+    default: ""
+  torch_index:
+    description: >-
+      Extra index torch resolves from, e.g.
+      https://download.pytorch.org/whl/cu130 for CUDA or
+      https://download.pytorch.org/whl/nightly/cpu for nightlies. uv gives
+      --extra-index-url priority over PyPI and takes each package from the
+      first index carrying it, so torch comes from here while every other
+      dependency still falls back to PyPI.
+    required: false
+    default: ""
+  libtpu_spec:
+    description: 'libtpu requirement, e.g. "libtpu==0.0.41". Empty installs none.'
+    required: false
+    default: ""
+  extras:
+    description: >-
+      Comma-separated pyproject.toml optional-dependency groups to install
+      alongside the wheel (e.g. "benchmark" or "benchmark,examples").
+    required: false
+    default: "benchmark"
+  extra_specs:
+    description: >-
+      Whitespace-separated additional requirements, for pinning a dependency
+      a benchmark needs at a particular version (e.g. "transformers==5.8.0").
+    required: false
+    default: ""
+  prerelease:
+    description: "Allow pre-release versions during resolution (needed for torch nightlies)."
+    required: false
+    default: "false"
+  env_vars:
+    description: >-
+      Newline-separated KEY=VALUE pairs exported for the benchmark process.
+      This is where BENCHMARK_PLATFORM, TORCH_DEVICE_BACKEND_AUTOLOAD,
+      TESTBRIDGE_TEST_ONLY and the TEST_TOTAL_SHARDS/TEST_SHARD_INDEX pair go
+      -- the plain-environment equivalent of the Bazel executor's --test_env.
+    required: false
+    default: ""
+  runtime_flags:
+    description: "Base flags passed to the benchmark script."
+    required: false
+    default: ""
+  runtime_flags_hw:
+    description: "Hardware-specific flags, appended to runtime_flags."
+    required: false
+    default: ""
+  teardown:
+    description: "If true, removes the virtual environment and the built wheel at the end of the run."
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve benchmark environment
+      shell: bash
+      run: |
+        echo "::group::Resolve benchmark environment"
+        set -euo pipefail
+
+        # This action sits at <repo>/.github/actions/run-benchmark, so three
+        # levels up is the repository root. Deriving it from the action path
+        # rather than hardcoding "user_repo" keeps the action usable both from
+        # a benchmark registry (BAP checks the repo out into
+        # $GITHUB_WORKSPACE/user_repo) and from an ordinary torch_tpu workflow
+        # (checked out at $GITHUB_WORKSPACE itself).
+        REPO_ROOT="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        {
+          echo "BENCHMARK_REPO_ROOT=$REPO_ROOT"
+          echo "BENCHMARK_VENV_DIR=$GITHUB_WORKSPACE/.venv-benchmark"
+          echo "BENCHMARK_WHEEL_DIR=$GITHUB_WORKSPACE/benchmark-wheel"
+        } >> "$GITHUB_ENV"
+        echo "Repository root: $REPO_ROOT"
+
+        # uv, not pip: it resolves the wheel, torch, libtpu and the benchmark
+        # extras as one set (see the install step) and can fetch the requested
+        # interpreter itself, so no deadsnakes/apt dance is needed.
+        if ! command -v uv > /dev/null 2>&1; then
+          echo "uv not found; installing."
+          curl -LsSf https://astral.sh/uv/install.sh \
+            | env UV_INSTALL_DIR=/usr/local/bin sh
+        fi
+        uv --version
+        echo "::endgroup::"
+
+    - name: Export benchmark environment variables
+      shell: bash
+      env:
+        ENV_VARS: ${{ inputs.env_vars }}
+      run: |
+        echo "::group::Export benchmark environment variables"
+        set -euo pipefail
+
+        if [[ -z "${ENV_VARS//[[:space:]]/}" ]]; then
+          echo "No environment variables requested."
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          # Trim surrounding whitespace, skip blanks and comments.
+          line="${line#"${line%%[![:space:]]*}"}"
+          line="${line%"${line##*[![:space:]]}"}"
+          [[ -z "$line" || "$line" == \#* ]] && continue
+
+          if [[ "$line" != *=* ]]; then
+            echo "error: not a KEY=VALUE pair: $line" >&2
+            exit 1
+          fi
+
+          # Validate the name strictly. Registry content reaches this step as
+          # data, and an unchecked name would be a bash array-index injection
+          # (foo[$(...)]) once written to GITHUB_ENV.
+          var_name="${line%%=*}"
+          if [[ ! "$var_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            echo "error: invalid environment variable name: $var_name" >&2
+            exit 1
+          fi
+
+          echo "Exporting $var_name"
+          printf '%s\n' "$line" >> "$GITHUB_ENV"
+        done <<< "$ENV_VARS"
+        echo "::endgroup::"
+
+    - name: Build or fetch torch_tpu wheel
+      shell: bash
+      env:
+        WHEEL_INPUT: ${{ inputs.torch_tpu_wheel }}
+        PYTHON_VERSION: ${{ inputs.python_version }}
+        BAZEL_BUILD_FLAGS: ${{ inputs.bazel_build_flags }}
+      run: |
+        echo "::group::Build or fetch torch_tpu wheel"
+        set -euo pipefail
+
+        mkdir -p "$BENCHMARK_WHEEL_DIR"
+
+        if [[ -z "$WHEEL_INPUT" ]]; then
+          # ci/build_wheels.sh is the single source of truth for how a wheel is
+          # built -- the same script the release publisher runs -- so the
+          # benchmarked artifact is built exactly like the shipped one. In
+          # particular it applies --config=wheel_common, without which the
+          # wheel aborts on import with duplicate static registrations.
+          echo "Building wheel from source for Python $PYTHON_VERSION."
+          cd "$BENCHMARK_REPO_ROOT"
+          read -ra BAZEL_FLAGS <<< "$BAZEL_BUILD_FLAGS"
+          ci/build_wheels.sh --output-dir "$BENCHMARK_WHEEL_DIR" "$PYTHON_VERSION" -- \
+            --color=yes --curses=no ${BAZEL_FLAGS[@]+"${BAZEL_FLAGS[@]}"}
+        else
+          echo "Fetching prebuilt wheel: $WHEEL_INPUT"
+          case "$WHEEL_INPUT" in
+            gs://*)
+              gcloud storage cp "$WHEEL_INPUT" "$BENCHMARK_WHEEL_DIR/"
+              ;;
+            http://*|https://*)
+              curl -fSsL -o "$BENCHMARK_WHEEL_DIR/$(basename "$WHEEL_INPUT")" "$WHEEL_INPUT"
+              ;;
+            *)
+              cp "$WHEEL_INPUT" "$BENCHMARK_WHEEL_DIR/"
+              ;;
+          esac
+        fi
+
+        shopt -s nullglob
+        WHEELS=("$BENCHMARK_WHEEL_DIR"/torch_tpu-*.whl)
+        if [[ ${#WHEELS[@]} -ne 1 ]]; then
+          echo "error: expected exactly one torch_tpu wheel in $BENCHMARK_WHEEL_DIR," \
+               "found ${#WHEELS[@]}: ${WHEELS[*]-}" >&2
+          exit 1
+        fi
+
+        echo "BENCHMARK_WHEEL=${WHEELS[0]}" >> "$GITHUB_ENV"
+        echo "Wheel: ${WHEELS[0]}"
+        echo "::endgroup::"
+
+    - name: Install benchmark environment
+      shell: bash
+      env:
+        PYTHON_VERSION: ${{ inputs.python_version }}
+        TORCH_SPEC: ${{ inputs.torch_spec }}
+        TORCH_INDEX: ${{ inputs.torch_index }}
+        LIBTPU_SPEC: ${{ inputs.libtpu_spec }}
+        EXTRAS: ${{ inputs.extras }}
+        EXTRA_SPECS: ${{ inputs.extra_specs }}
+        PRERELEASE: ${{ inputs.prerelease }}
+      run: |
+        echo "::group::Install benchmark environment"
+        set -euo pipefail
+
+        uv venv --python "$PYTHON_VERSION" "$BENCHMARK_VENV_DIR"
+        VENV_PYTHON="$BENCHMARK_VENV_DIR/bin/python"
+
+        # The extras are read straight out of pyproject.toml rather than
+        # requested as wheel extras: //ci/wheel:torch_tpu_wheel passes py_wheel
+        # only `requires`, so the built wheel declares no extras, and
+        # pyproject.toml has no build-system, so `uv pip install .[benchmark]`
+        # cannot supply them either. tomllib is stdlib on every supported
+        # Python (3.11+).
+        EXTRA_REQS=()
+        if [[ -n "${EXTRAS//[[:space:]]/}" ]]; then
+          # Via a temp file, not `mapfile < <(...)`: a process substitution's
+          # exit status is not the pipeline's, so `set -e` would not notice
+          # the extractor rejecting an unknown extra and the run would quietly
+          # continue with no benchmark dependencies at all.
+          EXTRAS_FILE="$(mktemp)"
+          "$VENV_PYTHON" - "$BENCHMARK_REPO_ROOT/pyproject.toml" "$EXTRAS" > "$EXTRAS_FILE" <<'PYTHON'
+        import sys
+        import tomllib
+
+        pyproject_path, requested = sys.argv[1], sys.argv[2]
+        with open(pyproject_path, "rb") as handle:
+          optional = tomllib.load(handle)["project"].get("optional-dependencies", {})
+
+        for group in (name.strip() for name in requested.split(",") if name.strip()):
+          if group not in optional:
+            sys.exit(f"pyproject.toml declares no '{group}' extra")
+          for requirement in optional[group]:
+            print(requirement)
+        PYTHON
+          mapfile -t EXTRA_REQS < "$EXTRAS_FILE"
+          rm -f "$EXTRAS_FILE"
+        fi
+
+        INSTALL_ARGS=()
+        if [[ -n "$TORCH_INDEX" ]]; then
+          INSTALL_ARGS+=(--extra-index-url "$TORCH_INDEX")
+        fi
+        if [[ "$PRERELEASE" == "true" ]]; then
+          INSTALL_ARGS+=(--prerelease=allow)
+        fi
+
+        SPECS=("$BENCHMARK_WHEEL")
+        if [[ -n "$TORCH_SPEC" ]]; then
+          SPECS+=("$TORCH_SPEC")
+        fi
+        if [[ -n "$LIBTPU_SPEC" ]]; then
+          SPECS+=("$LIBTPU_SPEC")
+        fi
+        read -ra EXTRA_SPEC_ARRAY <<< "$EXTRA_SPECS"
+        SPECS+=(${EXTRA_SPEC_ARRAY[@]+"${EXTRA_SPEC_ARRAY[@]}"})
+        SPECS+=(${EXTRA_REQS[@]+"${EXTRA_REQS[@]}"})
+
+        # One resolution for the whole set, deliberately. Resolved separately,
+        # a later install silently moves torch off the requested pin -- the
+        # benchmark extras reach torchvision through timm, and torchvision
+        # pins torch hard. Together, uv fails on the conflict instead.
+        echo "Installing: ${SPECS[*]}"
+        uv pip install --python "$VENV_PYTHON" \
+          ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} "${SPECS[@]}"
+
+        echo "BENCHMARK_PYTHON=$VENV_PYTHON" >> "$GITHUB_ENV"
+        echo "::endgroup::"
+
+    - name: Verify benchmark environment
+      shell: bash
+      env:
+        TORCH_SPEC: ${{ inputs.torch_spec }}
+      run: |
+        echo "::group::Verify benchmark environment"
+        set -euo pipefail
+
+        # The one failure mode the multi-ABI glue dispatch cannot make loud:
+        # resolution quietly landing on a torch other than the requested one,
+        # leaving the job to report a version it did not actually measure.
+        # Metadata only -- importing torch_tpu here would claim the single
+        # PrivateUse1 slot that the CUDA benchmarks need left free.
+        "$BENCHMARK_PYTHON" - <<'PYTHON'
+        import importlib.metadata as metadata
+        import os
+        import sys
+
+        def version_of(name):
+          try:
+            return metadata.version(name)
+          except metadata.PackageNotFoundError:
+            return None
+
+        torch_version = version_of("torch")
+        for name in ("torch", "torch_tpu", "libtpu"):
+          print(f"{name:12} {version_of(name) or '(not installed)'}")
+
+        spec = os.environ.get("TORCH_SPEC", "")
+        if "==" in spec:
+          wanted = spec.split("==", 1)[1].strip()
+          if torch_version is None or not torch_version.startswith(wanted):
+            sys.exit(
+                f"ERROR: requested {spec!r} but resolved torch {torch_version!r}."
+            )
+          print(f"Verified torch matches {spec}.")
+        PYTHON
+        echo "::endgroup::"
+
+    - name: Run benchmark
+      shell: bash
+      env:
+        SCRIPT: ${{ inputs.script }}
+        ARGS: "${{ inputs.runtime_flags }} ${{ inputs.runtime_flags_hw }}"
+      run: |
+        echo "::group::Run benchmark"
+        set -euo pipefail
+
+        cd "$BENCHMARK_REPO_ROOT"
+
+        # The harness imports its own modules as examples.benchmarks.e2e.*,
+        # i.e. relative to the repository root, exactly as it does under Bazel
+        # runfiles. torch_tpu itself comes from the venv, not from the tree.
+        export PYTHONPATH="$BENCHMARK_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+        echo "----------------------------------------------------------------"
+        echo "SCRIPT: $SCRIPT"
+        echo "ARGS:   $ARGS"
+        echo "----------------------------------------------------------------"
+
+        read -ra SCRIPT_ARGS <<< "$ARGS"
+        "$BENCHMARK_PYTHON" "$SCRIPT" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+        echo "::endgroup::"
+
+    - name: Teardown benchmark environment
+      if: ${{ inputs.teardown == 'true' }}
+      shell: bash
+      run: |
+        echo "::group::Teardown benchmark environment"
+        set -euo pipefail
+        rm -rf "$BENCHMARK_VENV_DIR" "$BENCHMARK_WHEEL_DIR"
+        echo "::endgroup::"
