@@ -19,13 +19,27 @@
 
 #include <optional>
 
+#include "ATen/BlasBackend.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/statusor.h"
 #include "csrc/common/macro_utils.h"
 #include "csrc/common/utils.h"
+#include "mlir/IR/Types.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
+
+absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
+    mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
+    std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision,
+    at::blas::ScalingType scaling_a, at::blas::ScalingType scaling_b,
+    at::blas::SwizzleType swiz_a, at::blas::SwizzleType swiz_b);
 
 at::Tensor AtenScaledMm(const at::Tensor& self, const at::Tensor& mat2,
                         const at::Tensor& scale_a, const at::Tensor& scale_b,

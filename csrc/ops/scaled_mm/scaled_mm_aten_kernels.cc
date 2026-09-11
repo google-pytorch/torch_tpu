@@ -26,6 +26,8 @@
 #include "ATen/ceil_div.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/base/call_once.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -39,10 +41,13 @@
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/custom_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise_scaled_mm_e4m3_embed.h"
+#include "csrc/ops/scaled_mm/kernels/blockwise_scaled_mm_e5m2_embed.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
@@ -192,6 +197,106 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmShlo(
   return scaled_result;
 }
 
+// =============================================================================
+// Modular Scaling Recipe Input Validators
+// =============================================================================
+//
+// Extension Point:
+// When adding support for new block-scaling formats (e.g. 2D block scaling or
+// custom micro-scaling schemes):
+// 1. Implement a recipe validator function:
+//      absl::Status Validate<Format>Inputs(...)
+//    enforcing format-specific invariants (e.g. operand dtypes, scale tensor
+//    ranks/shapes, and valid swizzle configurations).
+// 2. Dispatch to the new validator from ValidateScaledMmV2Inputs based on the
+//    scaling types (scaling_a, scaling_b).
+// =============================================================================
+
+// Validates format-specific preconditions for MXFP8 (BlockWise1x32).
+absl::Status ValidateMxFp8Inputs(const at::Tensor& self, const at::Tensor& mat2,
+                                 const at::Tensor& scale_a,
+                                 at::blas::ScalingType scaling_a,
+                                 at::blas::SwizzleType swiz_a,
+                                 const at::Tensor& scale_b,
+                                 at::blas::ScalingType scaling_b,
+                                 at::blas::SwizzleType swiz_b) {
+  // 1. Validate swizzle format compatibility. SWIZZLE_32_4_4 is specifically
+  // designed for MXFP8 1x32 block scaling.
+  if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RET_CHECK(scaling_a == at::blas::ScalingType::BlockWise1x32,
+                 error::kInvalidArgument)
+        << "swizzle_32_4_4 requires BlockWise1x32 scaling recipe for scale_a";
+  }
+  if (swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    TT_RET_CHECK(scaling_b == at::blas::ScalingType::BlockWise1x32,
+                 error::kInvalidArgument)
+        << "swizzle_32_4_4 requires BlockWise1x32 scaling recipe for scale_b";
+  }
+
+  // 2. Validate contraction dimension alignment (K must be a multiple of 32
+  // for 1x32 block scaling).
+  if (scaling_a == at::blas::ScalingType::BlockWise1x32 ||
+      scaling_b == at::blas::ScalingType::BlockWise1x32) {
+    TT_RET_CHECK(self.size(1) % 32 == 0, error::kInvalidArgument)
+        << "expected contraction dimension to be a multiple of 32 for "
+           "BlockWise1x32 scaling, got "
+        << self.size(1);
+  }
+
+  // 3. Validate scale tensor shapes and ranks.
+  if (scaling_a == at::blas::ScalingType::BlockWise1x32) {
+    if (swiz_a == at::blas::SwizzleType::NO_SWIZZLE) {
+      TT_RET_CHECK(scale_a.dim() == 2, error::kInvalidArgument)
+          << "expected scale_a to be 2D tensor for BlockWise1x32 scaling, got "
+          << scale_a.dim() << "D";
+      TT_RET_CHECK(scale_a.size(0) == self.size(0) &&
+                       scale_a.size(1) == self.size(1) / 32,
+                   error::kInvalidArgument)
+          << "expected scale_a shape [" << self.size(0) << ", "
+          << (self.size(1) / 32) << "] for unswizzled BlockWise1x32, got "
+          << ToString(scale_a.sizes());
+    } else if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+      const int64_t outer = self.size(0);
+      const int64_t k_logical = self.size(1) / 32;
+      const int64_t padded_outer = at::ceil_div(outer, int64_t{128}) * 128;
+      const int64_t padded_k = at::ceil_div(k_logical, int64_t{4}) * 4;
+      TT_RET_CHECK(scale_a.numel() == padded_outer * padded_k,
+                   error::kInvalidArgument)
+          << "expected scale buffer to have " << padded_outer * padded_k
+          << " elements for outer=" << outer << " and k_logical=" << k_logical
+          << ", got " << scale_a.numel() << " (" << ToString(scale_a.sizes())
+          << ")";
+    }
+  }
+
+  if (scaling_b == at::blas::ScalingType::BlockWise1x32) {
+    if (swiz_b == at::blas::SwizzleType::NO_SWIZZLE) {
+      TT_RET_CHECK(scale_b.dim() == 2, error::kInvalidArgument)
+          << "expected scale_b to be 2D tensor for BlockWise1x32 scaling, got "
+          << scale_b.dim() << "D";
+      TT_RET_CHECK(scale_b.size(0) == mat2.size(0) / 32 &&
+                       scale_b.size(1) == mat2.size(1),
+                   error::kInvalidArgument)
+          << "expected scale_b shape [" << (mat2.size(0) / 32) << ", "
+          << mat2.size(1) << "] for unswizzled BlockWise1x32, got "
+          << ToString(scale_b.sizes());
+    } else if (swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+      const int64_t outer = mat2.size(1);
+      const int64_t k_logical = mat2.size(0) / 32;
+      const int64_t padded_outer = at::ceil_div(outer, int64_t{128}) * 128;
+      const int64_t padded_k = at::ceil_div(k_logical, int64_t{4}) * 4;
+      TT_RET_CHECK(scale_b.numel() == padded_outer * padded_k,
+                   error::kInvalidArgument)
+          << "expected scale buffer to have " << padded_outer * padded_k
+          << " elements for outer=" << outer << " and k_logical=" << k_logical
+          << ", got " << scale_b.numel() << " (" << ToString(scale_b.sizes())
+          << ")";
+    }
+  }
+
+  return absl::OkStatus();
+}
+
 #if TT_TORCH_VERSION_GE(2, 14)  // See scaled_mm_aten_kernels.h.
 absl::Status ValidateScaledMmV2Inputs(
     const at::Tensor& self, const at::Tensor& mat2,
@@ -287,6 +392,24 @@ absl::Status ValidateScaledMmV2Inputs(
   TT_RETURN_IF_ERROR(check_swizzle(swiz_a, "scale_a"));
   TT_RETURN_IF_ERROR(check_swizzle(swiz_b, "scale_b"));
 
+  // =========================================================================
+  // Recipe-Specific Validation Dispatch
+  // =========================================================================
+  // Extension Point:
+  // Plug in format-specific validation for newly registered scaling formats
+  // here. Each recipe validator checks tensor layout, rank, and swizzle
+  // constraints specific to its block geometry.
+  if (scaling_a == at::blas::ScalingType::BlockWise1x32 ||
+      scaling_b == at::blas::ScalingType::BlockWise1x32 ||
+      swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4 ||
+      swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
+    const at::Tensor& s_a = scale_a.front();
+    const at::Tensor& s_b = scale_b.front();
+    TT_RETURN_IF_ERROR(ValidateMxFp8Inputs(self, mat2, s_a, scaling_a, swiz_a,
+                                           s_b, scaling_b, swiz_b));
+  }
+  // [Extension Point]: Additional recipe validators should be dispatched here.
+
   if (bias.has_value()) {
     TT_RET_CHECK(bias->dim() == 1 || bias->dim() == 2, error::kInvalidArgument)
         << "expected bias to be 1D or 2D tensor, got " << bias->dim() << "D";
@@ -347,12 +470,8 @@ absl::StatusOr<mlir::MlirOp> BuildUnswizzle(mlir::MlirOp scale, Operand operand,
   // SWIZZLE_32_4_4 requires fixed 128x4 hardware tiles (interleaving
   // 4 groups of 32 rows). Callers (e.g. PyTorch `to_blocked`) pad unaligned
   // shapes up to full tiles, so the swizzled buffer has padded dimensions.
-  TT_RET_CHECK(scale_type.getNumElements() == padded_outer * padded_k,
-               error::kInvalidArgument)
-      << "expected scale buffer to have " << padded_outer * padded_k
-      << " elements for outer=" << outer << " and k_logical=" << k_logical
-      << ", got " << scale_type.getNumElements() << " ("
-      << ToString(scale_type.getShape()) << ")";
+  ABSL_CHECK_EQ(  // CRASH_OK=Validated at dispatch time by ValidateMxFp8Inputs.
+      scale_type.getNumElements(), padded_outer * padded_k);
 
   // Worked example: outer = 256, K_logical = 8, i.e. a 256x8 logical scale
   // matrix stored as a 2x2 grid of 128x4 swizzled tiles, arriving flat.
@@ -505,16 +624,140 @@ absl::StatusOr<mlir::MlirOp> ApplyScalesAndBias(
   return scaled_result;
 }
 
+// Registers embedded StableHLO Pallas kernels for block-scaled matmul.
+static void RegisterBlockwiseScaledMmKernels() {
+  static absl::once_flag once;
+  absl::call_once(once, []() {
+    RegisterCustomKernel("blockwise_scaled_mm_e4m3", "",
+                         std::string_view(reinterpret_cast<const char*>(
+                                              kBlockwiseScaledMmE4m3_data),
+                                          kBlockwiseScaledMmE4m3_len));
+    RegisterCustomKernel("blockwise_scaled_mm_e5m2", "",
+                         std::string_view(reinterpret_cast<const char*>(
+                                              kBlockwiseScaledMmE5m2_data),
+                                          kBlockwiseScaledMmE5m2_len));
+  });
+}
+
+absl::StatusOr<mlir::MlirOp> BuildBlockWiseScaledMmNativeShlo(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
+    mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
+    std::optional<mlir::Type> out_dtype, mlir::ElementType elem_type) {
+  RegisterBlockwiseScaledMmKernels();
+
+  ABSL_CHECK(  // CRASH_OK=Checked by caller BuildScaledMmV2Shlo.
+      elem_type == mlir::ElementType::F8E4M3FN ||
+      elem_type == mlir::ElementType::F8E5M2);
+  const std::string_view kernel_name =
+      (elem_type == mlir::ElementType::F8E4M3FN) ? "blockwise_scaled_mm_e4m3"
+                                                 : "blockwise_scaled_mm_e5m2";
+
+  mlir::MlirBuilder& builder = lhs.getBuilder();
+  const auto lhs_type = GetTensorTypeOrDie(lhs);
+  const auto rhs_type = GetTensorTypeOrDie(rhs);
+
+  const int64_t m = lhs_type.getShape()[0];
+  const int64_t k = lhs_type.getShape()[1];
+  const int64_t n = rhs_type.getShape()[1];
+
+  constexpr int64_t kTileM = 128;
+  constexpr int64_t kTileN = 128;
+  constexpr int64_t kTileK = 256;
+  constexpr int64_t kBlockSize = 32;
+
+  // AOT jax.export constrains symbolic shapes to exact tile multiples
+  // (mod(m/n/k, tile) == 0), making Python _pad_to_tiles a no-op in the
+  // exported StableHLO module and emitting @shape_assertion checks.
+  const int64_t padded_m = at::ceil_div(m, kTileM) * kTileM;
+  const int64_t padded_n = at::ceil_div(n, kTileN) * kTileN;
+  const int64_t padded_k = at::ceil_div(k, kTileK) * kTileK;
+
+  mlir::MlirOp padded_lhs = lhs;
+  mlir::MlirOp padded_rhs = rhs;
+  mlir::MlirOp padded_scale_a = scale_a;
+  mlir::MlirOp padded_scale_b = scale_b;
+
+  TT_ASSIGN_OR_RETURN(padded_scale_a,
+                      CastIfNeeded(padded_scale_a, mlir::ElementType::F32));
+  TT_ASSIGN_OR_RETURN(padded_scale_b,
+                      CastIfNeeded(padded_scale_b, mlir::ElementType::F32));
+
+  mlir::MlirOp zero_f32 =
+      MakeScalarConstant(builder, 0.0f, mlir::ElementType::F32);
+  mlir::MlirOp zero_fp8 =
+      mlir::stablehlo::ConvertElementType(zero_f32, lhs_type.getElementType());
+
+  const Dimensions no_padding = {0, 0};
+
+  if (padded_m != m || padded_k != k) {
+    const Dimensions pad_high = {padded_m - m, padded_k - k};
+    padded_lhs = mlir::stablehlo::Pad(padded_lhs, zero_fp8, no_padding,
+                                      pad_high, no_padding);
+    const Dimensions scale_a_pad_high = {padded_m - m,
+                                         (padded_k - k) / kBlockSize};
+    padded_scale_a = mlir::stablehlo::Pad(padded_scale_a, zero_f32, no_padding,
+                                          scale_a_pad_high, no_padding);
+  }
+
+  if (padded_k != k || padded_n != n) {
+    const Dimensions pad_high = {padded_k - k, padded_n - n};
+    padded_rhs = mlir::stablehlo::Pad(padded_rhs, zero_fp8, no_padding,
+                                      pad_high, no_padding);
+    const Dimensions scale_b_pad_high = {(padded_k - k) / kBlockSize,
+                                         padded_n - n};
+    padded_scale_b = mlir::stablehlo::Pad(padded_scale_b, zero_f32, no_padding,
+                                          scale_b_pad_high, no_padding);
+  }
+
+  TT_ASSIGN_OR_RETURN(
+      DynamicMlirOpResults results,
+      CallCustomKernel(builder,
+                       {padded_lhs, padded_rhs, padded_scale_a, padded_scale_b},
+                       kernel_name, ""));
+
+  mlir::MlirOp result = results[0];
+
+  if (padded_m != m || padded_n != n) {
+    result = mlir::stablehlo::Slice(result, /*start_indices=*/{0, 0},
+                                    /*limit_indices=*/{m, n},
+                                    /*strides=*/{1, 1});
+  }
+
+  return ApplyScalesAndBias(result, scale_a, /*apply_scale_a=*/false, scale_b,
+                            /*apply_scale_b=*/false, bias, out_dtype);
+}
+
+// =============================================================================
+// Modular Lowering Dispatch for Scaled MM V2
+// =============================================================================
+//
+// Extension Point:
+// When adding lowering support for new block-scaling formats (e.g. 2D block
+// scaling or alternative micro-scaling schemes):
+// 1. Define a specialized lowering builder helper:
+//      absl::StatusOr<mlir::MlirOp> Build<Recipe>ScaledMmNativeShlo(...)
+// 2. Attach a dispatch route below under Section 1 (Native Hardware Path)
+//    when inputs match the recipe and hardware constraints.
+// 3. If fallback or reference dequantization is needed when preconditions are
+//    not met, add the corresponding dequantization helper in Section 2.
+// =============================================================================
+}  // namespace
+
 absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp scale_a,
     mlir::MlirOp scale_b, std::optional<mlir::MlirOp> bias,
     std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision,
     at::blas::ScalingType scaling_a, at::blas::ScalingType scaling_b,
     at::blas::SwizzleType swiz_a, at::blas::SwizzleType swiz_b) {
+  // Normalize swizzled scales to canonical logical layout prior to compute.
   // The blocked scale buffer carries no shape of its own, so its logical
   // extents come from the operand it scales: [M, K / 32] and [K / 32, N].
-  const auto lhs_shape = GetTensorTypeOrDie(lhs).getShape();
-  const auto rhs_shape = GetTensorTypeOrDie(rhs).getShape();
+  // [Extension Point]: If additional hardware swizzle modes are introduced,
+  // unswizzle them to canonical logical layout here.
+  const auto lhs_type = GetTensorTypeOrDie(lhs);
+  const auto rhs_type = GetTensorTypeOrDie(rhs);
+  const auto lhs_shape = lhs_type.getShape();
+  const auto rhs_shape = rhs_type.getShape();
   if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
     TT_ASSIGN_OR_RETURN(scale_a,
                         BuildUnswizzle(scale_a, Operand::kLhs, lhs_shape[0],
@@ -526,38 +769,61 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
                                        rhs_shape[0] / 32));
   }
 
-  mlir::MlirOp lhs_deq = lhs;
-  mlir::MlirOp rhs_deq = rhs;
-  const bool is_lhs_block = (scaling_a == at::blas::ScalingType::BlockWise1x32);
-  const bool is_rhs_block = (scaling_b == at::blas::ScalingType::BlockWise1x32);
+  const bool is_lhs_mxfp8 = (scaling_a == at::blas::ScalingType::BlockWise1x32);
+  const bool is_rhs_mxfp8 = (scaling_b == at::blas::ScalingType::BlockWise1x32);
 
-  if (is_lhs_block) {
-    TT_ASSIGN_OR_RETURN(
-        lhs_deq, BuildDequantizeBlockWise32(lhs, scale_a, Operand::kLhs));
-  }
-  if (is_rhs_block) {
-    TT_ASSIGN_OR_RETURN(
-        rhs_deq, BuildDequantizeBlockWise32(rhs, scale_b, Operand::kRhs));
+  auto lhs_elem_type_or =
+      ConvertTo<mlir::ElementType>(lhs_type.getElementType());
+  auto rhs_elem_type_or =
+      ConvertTo<mlir::ElementType>(rhs_type.getElementType());
+  const bool is_supported_fp8 =
+      lhs_elem_type_or.ok() && rhs_elem_type_or.ok() &&
+      (*lhs_elem_type_or == mlir::ElementType::F8E4M3FN ||
+       *lhs_elem_type_or == mlir::ElementType::F8E5M2) &&
+      *lhs_elem_type_or == *rhs_elem_type_or && lhs_shape[0] > 0 &&
+      lhs_shape[1] > 0 && rhs_shape[1] > 0;
+
+  // Native Pallas kernel path when both operands use supported MXFP8 1x32
+  // scaling.
+  if (is_lhs_mxfp8 && is_rhs_mxfp8 && is_supported_fp8) {
+    return BuildBlockWiseScaledMmNativeShlo(lhs, rhs, scale_a, scale_b, bias,
+                                            out_dtype, *lhs_elem_type_or);
   }
 
-  if (is_lhs_block || is_rhs_block) {
-    if (!is_lhs_block) {
+  // Fallback dequantization path for asymmetric scaling or unsupported dtypes.
+  if (is_lhs_mxfp8 || is_rhs_mxfp8) {
+    mlir::MlirOp lhs_deq = lhs;
+    mlir::MlirOp rhs_deq = rhs;
+
+    if (is_lhs_mxfp8) {
+      TT_ASSIGN_OR_RETURN(
+          lhs_deq, BuildDequantizeBlockWise32(lhs, scale_a, Operand::kLhs));
+    } else {
       TT_ASSIGN_OR_RETURN(lhs_deq, CastIfNeeded(lhs, mlir::ElementType::F32));
     }
-    if (!is_rhs_block) {
+
+    if (is_rhs_mxfp8) {
+      TT_ASSIGN_OR_RETURN(
+          rhs_deq, BuildDequantizeBlockWise32(rhs, scale_b, Operand::kRhs));
+    } else {
       TT_ASSIGN_OR_RETURN(rhs_deq, CastIfNeeded(rhs, mlir::ElementType::F32));
     }
 
     TT_ASSIGN_OR_RETURN(mlir::MlirOp mm_result,
                         BuildStablehloDotGeneral(lhs_deq, rhs_deq, precision));
 
-    return ApplyScalesAndBias(mm_result, scale_a, !is_lhs_block, scale_b,
-                              !is_rhs_block, bias, out_dtype);
-  } else {
-    return BuildScaledMmShlo(lhs, rhs, scale_a, scale_b, bias, std::nullopt,
-                             out_dtype, precision);
+    return ApplyScalesAndBias(mm_result, scale_a, !is_lhs_mxfp8, scale_b,
+                              !is_rhs_mxfp8, bias, out_dtype);
   }
+
+  // ---------------------------------------------------------------------------
+  // Section 3: Standard TensorWise / RowWise Scaled Matmul Path
+  // ---------------------------------------------------------------------------
+  return BuildScaledMmShlo(lhs, rhs, scale_a, scale_b, bias, std::nullopt,
+                           out_dtype, precision);
 }
+
+namespace {
 
 absl::Status ValidateScaledMmInputs(
     const at::Tensor& self, const at::Tensor& mat2, const at::Tensor& scale_a,

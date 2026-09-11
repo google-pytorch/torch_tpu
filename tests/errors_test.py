@@ -9048,7 +9048,6 @@ Device-side assertion tracking was not enabled by user.""",
         ),
         message_reviewed_by="wan",
     ):
-      # TODO(yangzhouml): error at dispatch time instead of at compile time
       torch._scaled_mm_v2(
           mat1,
           mat2,
@@ -9060,7 +9059,7 @@ Device-side assertion tracking was not enabled by user.""",
           [1],  # SWIZZLE_32_4_4
           None,
           None,
-      ).cpu()
+      )
 
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (
@@ -9393,6 +9392,309 @@ Device-side assertion tracking was not enabled by user.""",
           None,
           torch.float32,
           out=out,
+      )
+
+  def test_scaled_mm_v2_swizzle_a_requires_blockwise(self):
+    (
+        self_tpu,
+        mat2_tpu,
+        scale_a_tpu,
+        _,
+        _,
+        scale_b_tpu,
+        recipe_b,
+        swizzle_b,
+    ) = et.get_scaled_mm_v2_default_inputs()
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): swizzle_32_4_4 requires BlockWise1x32 scaling recipe for scale_a""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_a).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_tpu,
+          [0],
+          [1],
+          scale_b_tpu,
+          recipe_b,
+          swizzle_b,
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_swizzle_b_requires_blockwise(self):
+    (
+        self_tpu,
+        mat2_tpu,
+        scale_a_tpu,
+        recipe_a,
+        swizzle_a,
+        scale_b_tpu,
+        _,
+        _,
+    ) = et.get_scaled_mm_v2_default_inputs()
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): swizzle_32_4_4 requires BlockWise1x32 scaling recipe for scale_b""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_b).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_tpu,
+          recipe_a,
+          swizzle_a,
+          scale_b_tpu,
+          [0],
+          [1],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_blockwise_contraction_dim_not_multiple_of_32(self):
+    (
+        self_tpu,
+        mat2_tpu,
+        scale_a_tpu,
+        _,
+        swizzle_a,
+        scale_b_tpu,
+        recipe_b,
+        swizzle_b,
+    ) = et.get_scaled_mm_v2_default_inputs()
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected contraction dimension to be a multiple of 32 for BlockWise1x32 scaling, got 16""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|BlockWise1x32"
+            r"|contraction).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_tpu,
+          [3],
+          swizzle_a,
+          scale_b_tpu,
+          recipe_b,
+          swizzle_b,
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_blockwise_scale_a_not_2d(self):
+    dev = et.device()
+    self_tpu = (
+        torch.randn(16, 32, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2_tpu = (
+        torch.randn(32, 16, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    scale_a_1d = [torch.tensor([1.5], dtype=torch.float32, device=dev)]
+    scale_b = [torch.tensor([2.0], dtype=torch.float32, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a to be 2D tensor for BlockWise1x32 scaling, got 1D""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_a).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_1d,
+          [3],
+          [0],
+          scale_b,
+          [0],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_blockwise_scale_a_shape_mismatch(self):
+    dev = et.device()
+    self_tpu = (
+        torch.randn(16, 32, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2_tpu = (
+        torch.randn(32, 16, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    scale_a_bad = [torch.ones(16, 2, dtype=torch.float32, device=dev)]
+    scale_b = [torch.tensor([2.0], dtype=torch.float32, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_a shape [16, 1] for unswizzled BlockWise1x32, got [16, 2]""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_a).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_bad,
+          [3],
+          [0],
+          scale_b,
+          [0],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_blockwise_scale_b_not_2d(self):
+    dev = et.device()
+    self_tpu = (
+        torch.randn(16, 32, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2_tpu = (
+        torch.randn(32, 16, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    scale_a = [torch.tensor([1.5], dtype=torch.float32, device=dev)]
+    scale_b_1d = [torch.tensor([2.0], dtype=torch.float32, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_b to be 2D tensor for BlockWise1x32 scaling, got 1D""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_b).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a,
+          [0],
+          [0],
+          scale_b_1d,
+          [3],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_blockwise_scale_b_shape_mismatch(self):
+    dev = et.device()
+    self_tpu = (
+        torch.randn(16, 32, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2_tpu = (
+        torch.randn(32, 16, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    scale_a = [torch.tensor([1.5], dtype=torch.float32, device=dev)]
+    scale_b_bad = [torch.ones(2, 16, dtype=torch.float32, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale_b shape [1, 16] for unswizzled BlockWise1x32, got [2, 16]""",
+        gpu=re.compile(
+            r".*(Only multiplication of row-major"
+            r"|Invalid scaling configuration for _scaled_mm_v2"
+            r"|torch\._scaled_mm is only supported on CUDA devices"
+            r"|torch\._scaled_mm_v2 is only supported on CUDA devices"
+            r"|scale_b).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a,
+          [0],
+          [0],
+          scale_b_bad,
+          [3],
+          [0],
+          None,
+          None,
+      )
+
+  def test_scaled_mm_v2_swizzled_scale_b_shape_mismatch(self):
+    dev = et.device()
+    self_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    mat2_tpu = (
+        torch.randn(128, 128, dtype=torch.float32)
+        .to(torch.float8_e4m3fn)
+        .to(dev)
+    )
+    scale_a = [torch.zeros(512, dtype=torch.float8_e8m0fnu, device=dev)]
+    scale_b_bad = [
+        torch.zeros((32, 32), dtype=torch.float8_e8m0fnu, device=dev)
+    ]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1024 ([32, 32])""",
+        gpu=re.compile(
+            r".*For Blockwise scaling with SWIZZLE_32_4_4 scale_b should have"
+            r" 512 elements, got: 1024.*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          scale_b_bad,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          None,
+          None,
       )
 
   def test_fft_c2c_non_complex_input(self):
