@@ -37,6 +37,18 @@ inputs:
       Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
+  test_runner:
+    description: 'Test runner to execute ("bazel" or "pytest")'
+    required: false
+    default: 'bazel'
+  device:
+    description: 'Target device for pytest runner ("cpu" or "tpu")'
+    required: false
+    default: ''
+  extra_pytest_flags:
+    description: 'Additional flags passed directly to pytest'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -50,4 +62,7 @@ runs:
         --bazel-config="${{ inputs.bazel_config }}"
         --extra-bazel-flags="${{ inputs.extra_bazel_flags }}"
         --test-all="${{ inputs.test_all }}"
+        --test-runner="${{ inputs.test_runner }}"
+        --device="${{ inputs.device }}"
+        --extra-pytest-flags="${{ inputs.extra_pytest_flags }}"
       shell: bash

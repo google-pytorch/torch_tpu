@@ -137,7 +137,10 @@ class BazelDiffOptions:
   bazel_config: str
   extra_bazel_flags: str
   test_all: bool
-  workflow_ref: str
+  workflow_ref: str = ""
+  test_runner: str = "bazel"
+  device: str = ""
+  extra_pytest_flags: str = ""
 
 
 def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
@@ -186,6 +189,21 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
           " $GITHUB_WORKFLOW_REF, which GitHub Actions sets automatically."
       ),
   )
+  parser.add_argument(
+      "--test-runner",
+      default="bazel",
+      help="Test runner to execute ('bazel' or 'pytest').",
+  )
+  parser.add_argument(
+      "--device",
+      default="",
+      help="Target device for pytest runner ('cpu' or 'tpu').",
+  )
+  parser.add_argument(
+      "--extra-pytest-flags",
+      default="",
+      help="Additional flags passed directly to pytest.",
+  )
   ns = parser.parse_args(argv)
   return BazelDiffOptions(
       workspace_dir=pathlib.Path(ns.workspace_dir),
@@ -195,6 +213,9 @@ def parse_args(argv: Sequence[str]) -> BazelDiffOptions:
       extra_bazel_flags=ns.extra_bazel_flags,
       test_all=(str(ns.test_all).lower() == "true"),
       workflow_ref=ns.workflow_ref,
+      test_runner=ns.test_runner or "bazel",
+      device=ns.device,
+      extra_pytest_flags=ns.extra_pytest_flags,
   )
 
 
@@ -375,6 +396,35 @@ def _run_bazel_test(
   return res.returncode
 
 
+def _run_pytest_targets(
+    workspace_dir: pathlib.Path,
+    mode: str,
+    bazel_config: str,
+    device: str,
+    extra_pytest_flags: str,
+    targets_file: pathlib.Path | None = None,
+) -> int:
+  """Executes ci/tools/run_pytest_targets.py for full or diff test runs."""
+  script = workspace_dir / "ci" / "tools" / "run_pytest_targets.py"
+  cmd = [
+      sys.executable,
+      os.fspath(script),
+      f"--mode={mode}",
+      f"--workspace-dir={os.fspath(workspace_dir)}",
+  ]
+  if targets_file:
+    cmd.append(f"--targets-file={os.fspath(targets_file)}")
+  if bazel_config:
+    cmd.append(f"--bazel-config={bazel_config}")
+  if device:
+    cmd.append(f"--device={device}")
+  if extra_pytest_flags:
+    cmd.append(f"--extra-pytest-flags={extra_pytest_flags}")
+  sys.stdout.flush()
+  result = subprocess.run(cmd, check=False)
+  return result.returncode
+
+
 def main(argv: Sequence[str]) -> int:
   sys.stdout.reconfigure(line_buffering=True)
   opts = parse_args(argv)
@@ -441,6 +491,15 @@ def main(argv: Sequence[str]) -> int:
         " global configuration files modified. Skipping bazel-diff and running"
         " all tests."
     )
+    if opts.test_runner == "pytest":
+      print("Running all tests via pytest...")
+      return _run_pytest_targets(
+          workspace_dir,
+          "full",
+          opts.bazel_config,
+          opts.device,
+          opts.extra_pytest_flags,
+      )
     return _run_bazel_test(opts.bazel_config, opts.extra_bazel_flags, ["//..."])
 
   print("Downloading bazel-diff...")
@@ -546,6 +605,17 @@ def main(argv: Sequence[str]) -> int:
     for target in sorted(impacted_targets):
       print(target)
     print("-----------------------------")
+
+    if opts.test_runner == "pytest":
+      print("Running impacted tests via pytest...")
+      return _run_pytest_targets(
+          workspace_dir,
+          "diff",
+          opts.bazel_config,
+          opts.device,
+          opts.extra_pytest_flags,
+          targets_file=impacted_targets_file,
+      )
 
     # bazel-diff feeds the impacted targets as explicit labels, and Bazel treats
     # an explicitly requested target whose target_compatible_with is unsatisfied

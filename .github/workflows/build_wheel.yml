@@ -224,6 +224,60 @@ jobs:
           extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
+  test_wheels_cpu_pytest:
+    name: "Test wheel via Pytest on CPU (Python ${{ matrix.python_version }})"
+    needs: [build_wheels, setup]
+    if: needs.setup.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        python_version: ${{ fromJSON(needs.setup.outputs.cpu_versions) }}
+    runs-on: linux-x86-n4-16
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      options: --privileged
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Create Virtualenv & Install Wheel
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          VENV_DIR="/tmp/venv"
+          uv venv "$VENV_DIR" --python "${PYTHON_VERSION}"
+          echo "$VENV_DIR/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$VENV_DIR" >> "$GITHUB_ENV"
+          PYTHON_VER_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          uv pip install --python "$VENV_DIR/bin/python" --prerelease=allow --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -r "requirements/requirements_${PYTHON_VER_UND}.txt" dist/*.whl --reinstall
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ inputs.override_base_sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "wheel_test_cpu"
+          extra_bazel_flags: "--repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}"
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_runner: "pytest"
+
   # Confirm each intermediate PyTorch patch (one we ship no exact glue for) is
   # served by its same-minor glue: the nox session runs the CPU smoke tests
   # once per entry in INTERMEDIATE_PATCH_VERSIONS (bazel/pytorch_versions.bzl),
@@ -369,6 +423,59 @@ jobs:
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  test_wheels_tpu_pytest:
+    name: Test wheel via Pytest on TPU v7 (Python ${{ matrix.python_version }})
+    needs: [build_wheels, setup]
+    if: needs.setup.outputs.should_build == 'true'
+    strategy:
+      matrix:
+        python_version: ${{ fromJSON(needs.setup.outputs.tpu_versions) }}
+    runs-on: linux-x86-tpu7x-224-4tpu
+    container:
+      image: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996  # Tag infrastructure-public-image-2c74567ee8e0
+      options: --privileged
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Download Wheel from GCS
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          GCS_WHEEL_DIR: ${{ needs.build_wheels.outputs.gcs_wheel_dir }}
+        run: |
+          mkdir dist
+          PYTHON_VER_CLEAN=$(echo "${PYTHON_VERSION}" | tr -d '.')
+          gcloud storage cp "${GCS_WHEEL_DIR}*cp${PYTHON_VER_CLEAN}*.whl" dist/
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Create Virtualenv & Install Wheel
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+        run: |
+          VENV_DIR="/tmp/venv"
+          uv venv "$VENV_DIR" --python "${PYTHON_VERSION}"
+          echo "$VENV_DIR/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$VENV_DIR" >> "$GITHUB_ENV"
+          PYTHON_VER_UND=$(echo "${PYTHON_VERSION}" | tr '.' '_')
+          uv pip install --python "$VENV_DIR/bin/python" --prerelease=allow --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -r "requirements/requirements_${PYTHON_VER_UND}.txt" dist/*.whl --reinstall
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ inputs.override_base_sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "wheel_test_tpu_v7"
+          extra_bazel_flags: "--repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}"
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_runner: "pytest"
 
   # Smoke-test the nightly glue on TPU: nox installs the built wheel plus a
   # PyTorch nightly in a single uv resolution and checks that the backend

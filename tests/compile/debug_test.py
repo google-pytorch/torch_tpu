@@ -16,6 +16,7 @@
 from absl.testing import absltest
 import torch
 from torch_tpu._internal import compile as compile_lib
+from torch_tpu._internal.compile.dynamic import dynamic_compiler
 from torch_tpu._internal.utils import test_utils
 from tests import seed_test_utils
 
@@ -144,7 +145,7 @@ class TpuCompileDebugTest(seed_test_utils.RepeatableTest):
     static_comp = compile_lib.compiler.StaticCompiler(debug=debug)
     self.assertIs(static_comp._debug, debug)
 
-    dyn_comp = compile_lib.dynamic_compiler.DynamicCompiler(debug=debug)
+    dyn_comp = dynamic_compiler.DynamicCompiler(debug=debug)
     self.assertIs(dyn_comp._debug, debug)
     self.assertIs(dyn_comp.static_compiler._debug, debug)
 

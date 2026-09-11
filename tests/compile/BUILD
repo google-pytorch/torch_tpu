@@ -650,11 +650,20 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "debug_test",
     srcs = ["debug_test.py"],
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Offload heavy TorchDynamo/Inductor compilation suites to TPU v7",
+    ),
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
     deps = [
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/compile/dynamic:dynamic_compiler",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
