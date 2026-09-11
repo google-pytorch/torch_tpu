@@ -31,7 +31,7 @@ limitations under the License.
 
 # **API Mapping Table: `torch.cuda` → `torch.tpu`**
 
-Once the backend is initialized via `api.tpu_device()`, TorchTPU registers a dedicated Python module: **`torch.tpu`**. This module is designed as a drop-in replacement for the standard `torch.cuda` API.
+Once the backend is initialized via `torch.device("tpu")`, TorchTPU registers a dedicated Python module: **`torch.tpu`**. This module is designed as a drop-in replacement for the standard `torch.cuda` API.
 
 Use this reference to quickly translate CUDA-based code to TorchTPU.
 
@@ -44,8 +44,8 @@ Use this reference to quickly translate CUDA-based code to TorchTPU.
 | `torch.cuda.is_available()` | `torch.tpu.is_available()` | Checks if the TPU backend is ready. |
 | `torch.cuda.device_count()` | `torch.tpu.device_count()` | Number of devices assigned to the process. |
 | `torch.cuda.current_device()` | `torch.tpu.current_device()` | Returns the active core index. |
-| `torch.cuda.get_device_properties()` | *(Implicit in `api.tpu_device()`)* | Hardware metadata via PjRt logs. |
-| `torch.cuda.set_device(rank)` | Handled automatically by `api.tpu_device()` | Backend init is automatic. |
+| `torch.cuda.get_device_properties()` | *(Implicit in `torch.device("tpu")`)* | Hardware metadata via PjRt logs. |
+| `torch.cuda.set_device(rank)` | Handled automatically by `torch.device("tpu")` | Backend init is automatic. |
 
 ```{code-cell} ipython3
 import torch

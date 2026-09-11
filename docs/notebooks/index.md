@@ -56,27 +56,20 @@ source env/bin/activate
 #### Step 2: Install TorchTPU & Dependencies
 
 ```bash
-# 1. Authenticate to get access to whl
-pip install keyrings.google-artifactregistry-auth
-gcloud auth login
-gcloud auth application-default login
+# 1. Install torch_tpu, PyTorch 2.11 CPU will install automatically, do not install manually.
+pip install --pre --index-url "https://us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" torch_tpu
 
-# 2. Install torch_tpu, PyTorch 2.11 CPU will install automatically, do not install manually.
-pip install --pre --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/" torch_tpu
-
-# 3. Install optional utilities
+# 2. Install optional utilities
 pip install portpicker jupyter scikit-learn pandas
 
-# 4. Optional for Pallas kernels
+# 3. Optional for Pallas kernels
 pip install jax
 
-# 5. Optional for xProf
+# 4. Optional for xProf
 pip install tensorboard
 ```
 
 +++
-
-(tutorials)=
 
 ### 🎓 Tutorials
 Step-by-step lessons that teach core concepts hands-on.
@@ -85,9 +78,7 @@ Step-by-step lessons that teach core concepts hands-on.
     *Device init, deferred execution, and materialization*
 2.  **[Your First Port (ViT on MNIST)](porting_vit_mnist.ipynb)**
     *Ghosting shims, Linear patching, and pure-tensor pipelines*
-3.  **The Debugger's Toolkit** *(coming soon)*
-    *OpTracer, format_model, and graph visualization*
-4.  **[Distributed Training 101](distributed_training_101.ipynb)**
+3.  **[Distributed Training 101](distributed_training_101.ipynb)**
     *Multi-core scaling (DDP) and the TPU environment orchestrator*
 
 +++
@@ -99,8 +90,6 @@ Focused recipes for solving specific problems.
 
 *   **[Numerical Parity Workflow](numerical_parity.ipynb)**
     *Validating TPU outputs match CPU within tolerance*
-*   **Scaling to Large Models (FSDP)** *(coming soon)*
-    *Sharding models across TPU chips with FSDP*
 *   **[Advanced torch.compile on TPU](advanced_compile.ipynb)**
     *Graph breaks, backends, and compilation debugging*
 *   **[Precision Management (BFloat16 & AMP)](precision_management.ipynb)**
@@ -123,8 +112,6 @@ Lookup tables and quick-reference materials.
     *All env vars that control TorchTPU behavior*
 *   **[Error Code Glossary](error_glossary.ipynb)**
     *Common errors, what they mean, and how to fix them*
-*   **Hardware Alignment Cheat Sheet** *(coming soon)*
-    *MXU tile sizes, padding rules, and performance cliffs*
 
 +++
 
@@ -133,16 +120,12 @@ Lookup tables and quick-reference materials.
 ### 🧠 Explanation
 Deep dives into how TorchTPU works under the hood.
 
-*   **The XLA & StableHLO Pipeline** *(coming soon)*
-    *How PyTorch ops become TPU machine code*
 *   **[The Compilation Cache](compilation_cache.ipynb)**
     *How compiled graphs are cached and reused*
 *   **[Eager Mode](eager_mode.ipynb)**
     *Guide to Fused Eager execution and debugging modes.*
 *   **[Precision Management](precision_management.ipynb)**
     *Guide to controlling floating-point precision on TPU.*
-*   **Strict SPMD Synchronization** *(coming soon)*
-    *Why all ranks must execute the same graph*
 
 +++
 

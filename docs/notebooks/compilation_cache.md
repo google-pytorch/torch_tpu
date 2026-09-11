@@ -27,18 +27,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-```{code-cell} ipython3
----
-jupyter:
-  source_hidden: true
-tags: [remove-input]
----
-import os
-
-# Environment Configuration
-os.environ["ACCELERATOR_TYPE"] = "v6e-4"
-```
-
 # **The Compilation Cache**
 
 Understanding "Cold Starts" vs. "Warm Hits" is essential for achieving peak TPU performance. This guide explains how graph fingerprints are generated, why compilation storms happen, and how to ensure your training loop stays on the fast path.
