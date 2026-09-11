@@ -373,6 +373,7 @@ TEST(EnvironmentDeathTest,
         EXPECT_TRUE(InitializeSingleDeviceEnvironment().ok());
         EXPECT_STREQ(std::getenv(kTpuVisibleDevicesEnvVar), "3");
         EXPECT_STREQ(std::getenv(kTpuVisibleChipsEnvVar), "3");
+        EXPECT_STREQ(std::getenv(kAllowMultipleLibtpuLoadEnvVar), "1");
         _exit(0);
       },
       ExitedWithCode(0), "");

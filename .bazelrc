@@ -240,6 +240,7 @@ common:tpu_envvars --test_env=CHIPS_PER_HOST_BOUNDS
 common:tpu_envvars --test_env=HOST_BOUNDS
 # NOTE: This value can be host-specific and harmful to Bazel caching.
 common:tpu_envvars --test_env=VBAR_CONTROL_SERVICE_URL
+common:tpu_envvars --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD
 
 # Configs for Bazel remote caching. For security reasons, split configs into
 # read-only and read-write to prevent cache poisoning / corruption by untrusted users.
@@ -336,6 +337,11 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 common:ci_tpu_base --config=ci
 common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
 common:ci_tpu_base --spawn_strategy=standalone,local
+common:ci_tpu_base --test_strategy=standalone
+# Allow multiple concurrent test shards on multi-chip TPU runners (e.g. 8-chip
+# TPU v5e linux-x86-ct5lp-224-8tpu) to load libtpu without colliding on the
+# host-wide /tmp/libtpu_lockfile.
+common:ci_tpu_base --test_env=ALLOW_MULTIPLE_LIBTPU_LOAD=true
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base

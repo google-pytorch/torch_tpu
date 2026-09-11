@@ -112,6 +112,13 @@ absl::Status InitializeSingleDeviceEnvironment() {
                                      : "0";
   SetEnv<kTpuVisibleDevicesEnvVar>(target_dev);
   SetEnv<kTpuVisibleChipsEnvVar>(target_dev);
+
+  // Avoid multi-process libtpu lock in GCP/multi-chip runner init, see
+  // b/487769788. When running multiple single-device test shards in parallel on
+  // multi-chip runners (e.g. 8-chip TPU v5e linux-x86-ct5lp-224-8tpu), this
+  // prevents libtpu from taking an exclusive process lockfile on
+  // /tmp/libtpu_lockfile.
+  SetEnv<kAllowMultipleLibtpuLoadEnvVar>("1");
   return absl::OkStatus();
 }
 
