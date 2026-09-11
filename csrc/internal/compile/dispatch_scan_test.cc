@@ -83,6 +83,50 @@ static constexpr std::string_view kAddStepMlir = R"mlir(
   }
 )mlir";
 
+// MLIR step-function that calls a private helper instead of doing the work
+// inline. Cloning @main copies the call but not the helper, so this is the
+// fixture that fails without ImportStepFunctionCallees.
+//
+// mlir signature:
+//   func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>)
+//       -> (tensor<1xi32>, tensor<1xi32>)
+static constexpr std::string_view kCalleeStepMlir = R"mlir(
+  module {
+    func.func private @scan_body_add(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = stablehlo.add %a, %b : tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>) -> (tensor<1xi32>, tensor<1xi32>) {
+      %0 = func.call @scan_body_add(%x, %carry) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0, %0 : tensor<1xi32>, tensor<1xi32>
+    }
+  }
+)mlir";
+
+// MLIR step-function with a two-deep helper chain: @main calls
+// @scan_body_outer, which calls @scan_body_inner. Both must be renamed before
+// either is cloned, or the copy of @scan_body_outer calls the old name.
+//
+// mlir signature:
+//   func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>)
+//       -> (tensor<1xi32>, tensor<1xi32>)
+static constexpr std::string_view kNestedCalleeStepMlir = R"mlir(
+  module {
+    func.func private @scan_body_inner(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = stablehlo.add %a, %b : tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func private @scan_body_outer(%a: tensor<1xi32>, %b: tensor<1xi32>) -> tensor<1xi32> {
+      %0 = func.call @scan_body_inner(%a, %b) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0 : tensor<1xi32>
+    }
+    func.func @main(%carry: tensor<1xi32>, %x: tensor<1xi32>) -> (tensor<1xi32>, tensor<1xi32>) {
+      %0 = func.call @scan_body_outer(%x, %carry) : (tensor<1xi32>, tensor<1xi32>) -> tensor<1xi32>
+      return %0, %0 : tensor<1xi32>, tensor<1xi32>
+    }
+  }
+)mlir";
+
 // MLIR step-function with multiple carries (%c1, %c2) and a single input slice
 // (%x): next_c1 = c1 + x, next_c2 = c2 + x, output = c1 + x.
 //
@@ -315,6 +359,48 @@ TEST_F(DispatchScanTest, With1D) {
 
   SCOPED_TRACE("With1D");
   LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2);
+}
+
+TEST_F(DispatchScanTest, StepFunctionCalleeIsImported) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs(kCalleeStepMlir);
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 2);
+
+  SCOPED_TRACE("StepFunctionCalleeIsImported");
+  std::string lowered_mlir;
+  LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/1, &lowered_mlir);
+
+  // Check the definition came with the call, so the call is not a dangling
+  // reference.
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.call @scan_body_add"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_add"));
+}
+
+TEST_F(DispatchScanTest, NestedStepFunctionCalleesAreImported) {
+  const auto [input, carry_init, dummy_output, body_module] =
+      GetStandard1DInputs(kNestedCalleeStepMlir);
+
+  const std::vector<at::Tensor> results = PyCreateScanOp(
+      {carry_init}, {input}, body_module, ScanDirection::kForward,
+      {dummy_output}, /*num_scan_inputs=*/1);
+  ASSERT_EQ(results.size(), 2);
+
+  SCOPED_TRACE("NestedStepFunctionCalleesAreImported");
+  std::string lowered_mlir;
+  LowerAndVerify(results, {carry_init, input}, /*expected_results_size=*/2,
+                 /*output_buffer_index=*/1, &lowered_mlir);
+
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_outer"));
+  EXPECT_THAT(lowered_mlir, HasSubstr("func.func private @scan_body_inner"));
+  // No `func.` prefix: MLIR elides it inside a `func.func` body, where `func`
+  // is the default dialect. The `_0` is the rename the import does before
+  // cloning, so matching it pins the nested call to the imported callee.
+  EXPECT_THAT(lowered_mlir, HasSubstr("call @scan_body_inner_0"));
 }
 
 TEST_F(DispatchScanTest, With2D) {

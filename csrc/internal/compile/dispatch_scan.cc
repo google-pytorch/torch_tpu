@@ -25,6 +25,7 @@
 
 #include "ATen/core/TensorBody.h"
 #include "absl/algorithm/container.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
@@ -51,6 +52,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Parser/Parser.h"
@@ -122,6 +125,51 @@ llvm::SmallVector<mlir::MlirOp> InitZeroOutputAccumulators(
   absl::c_transform(output_types, std::back_inserter(output_inits),
                     create_init);
   return output_inits;
+}
+
+// Copies @main's sibling helper functions into the module the scan is built
+// into.
+//
+// A step function may call private helpers declared beside @main.
+// `BuildLoopBody` clones only @main's own operations into the while region, so
+// the cloned call would reference a symbol that does not exist in the
+// destination module.
+//
+// Each helper is renamed before any is cloned. renameToUnique appends a
+// counter -- @foo becomes @foo_0 -- taking the first suffix free in both
+// modules, and updates the calls to it. The order matters: if @outer calls
+// @inner, cloning @outer early copies `call @inner` across, then @inner
+// becomes @inner_0 and the copy calls a name that is gone.
+absl::Status ImportStepFunctionCallees(mlir::MlirBuilder& builder,
+                                       mlir::ModuleOp body_module,
+                                       mlir::func::FuncOp main_func) {
+  llvm::SmallVector<mlir::func::FuncOp> helpers;
+  for (mlir::func::FuncOp func : body_module.getOps<mlir::func::FuncOp>()) {
+    if (func != main_func) helpers.push_back(func);
+  }
+  if (helpers.empty()) return absl::OkStatus();
+
+  mlir::ModuleOp dst_module = GetModuleOp(builder);
+
+  mlir::SymbolTableCollection symbol_tables;
+  mlir::SymbolTable& dst_st = symbol_tables.getSymbolTable(dst_module);
+  mlir::SymbolTable& src_st = symbol_tables.getSymbolTable(body_module);
+
+  for (mlir::func::FuncOp func : helpers) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=a helper's only uses are func.calls
+                   // in this module, which renameToUnique always rewrites.
+        mlir::succeeded(src_st.renameToUnique(func, &dst_st)), error::kInternal)
+        << "failed to rename step function callee " << func.getName().str();
+  }
+
+  mlir::IRRewriter rewriter(dst_module.getContext());
+  rewriter.setInsertionPointToStart(dst_module.getBody());
+  for (mlir::func::FuncOp func : helpers) {
+    auto cloned = mlir::cast<mlir::func::FuncOp>(rewriter.clone(*func));
+    // The copy is a helper of this module, not one of its entry points.
+    cloned.setVisibility(mlir::SymbolTable::Visibility::Private);
+  }
+  return absl::OkStatus();
 }
 
 // Populates the StableHLO while-loop body by cloning the pre-lowered step
@@ -248,6 +296,11 @@ std::vector<at::Tensor> PyCreateScanOp(
         << "failed to parse body MLIR module";
 
     auto main_func = body_module_op->lookupSymbol<mlir::func::FuncOp>("main");
+
+    // Must run before the step function's operations are cloned into the loop
+    // body: it is what makes any `func.call` among them resolve.
+    TT_RETURN_IF_ERROR(
+        ImportStepFunctionCallees(builder, *body_module_op, main_func));
 
     // Split inputs into carries and scanned inputs.
     const llvm::ArrayRef<mlir::MlirOp> inputs_ref(op_inputs.data(),
