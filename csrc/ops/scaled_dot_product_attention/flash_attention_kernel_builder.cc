@@ -408,12 +408,12 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> CreateFlashAttentionKernel(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     const std::optional<at::Tensor>& attn_bias, bool is_causal,
-    std::optional<double> scale) {
-  const bool return_lse =
+    std::optional<double> scale, std::optional<bool> return_lse) {
+  const bool should_return_lse = return_lse.value_or(
       at::GradMode::is_enabled() &&
-      (query.requires_grad() || key.requires_grad() || value.requires_grad());
+      (query.requires_grad() || key.requires_grad() || value.requires_grad()));
   return CreateFlashAttentionKernelImpl(query, key, value, attn_bias, is_causal,
-                                        scale, return_lse);
+                                        scale, should_return_lse);
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>

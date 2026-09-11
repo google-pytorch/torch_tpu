@@ -28,14 +28,17 @@
 namespace torch_tpu {
 
 struct FusedAttentionResults {
-  at::Tensor output;     // UNINITIALIZED_TENSOR_OK
-  at::Tensor logsumexp;  // UNINITIALIZED_TENSOR_OK
+  at::Tensor output;         // UNINITIALIZED_TENSOR_OK
+  at::Tensor logsumexp;      // UNINITIALIZED_TENSOR_OK
+  at::Tensor philox_seed;    // UNINITIALIZED_TENSOR_OK
+  at::Tensor philox_offset;  // UNINITIALIZED_TENSOR_OK
 };
 
 absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     const std::optional<at::Tensor>& attn_bias, bool is_causal,
     std::optional<double> scale, bool allow_half_precision_reduction_math,
+    double dropout_p, const std::optional<at::Tensor>& rng_state,
     OpParamCacheKeys param_keys);
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
@@ -43,7 +46,10 @@ ScaledDotProductFusedAttentionShloBackward(
     const at::Tensor& grad_out, const at::Tensor& query, const at::Tensor& key,
     const at::Tensor& value, const at::Tensor& attn_bias,
     const at::Tensor& sum_exp, std::optional<double> scale, bool is_causal,
-    bool allow_half_precision_reduction_math, OpParamCacheKeys param_keys);
+    bool allow_half_precision_reduction_math, double dropout_p,
+    const std::optional<at::Tensor>& philox_seed,
+    const std::optional<at::Tensor>& philox_offset,
+    OpParamCacheKeys param_keys);
 
 }  // namespace torch_tpu
 

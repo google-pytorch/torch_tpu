@@ -37,8 +37,10 @@
 #include "c10/util/Exception.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/nullary_aten_kernels.h"
@@ -180,7 +182,8 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
         // also try it when it is enabled.
         if (math_enabled || overrideable_enabled) {
           bool is_floating_type = c10::isFloatingType(query.scalar_type());
-          if (consistent_ranks && has_batch && !has_dropout &&
+          bool dropout_supported = (dropout_p >= 0.0 && dropout_p < 1.0);
+          if (consistent_ranks && has_batch && dropout_supported &&
               is_floating_type) {
             return static_cast<int64_t>(at::SDPBackend::overrideable);
           } else {
@@ -188,7 +191,7 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
                 "TorchTPU only supports SHLO optimized MATH SDPBackend when "
                 "these conditions "
                 "are met:\n"
-                "- dropout_p is 0.0 (current: ",
+                "- dropout_p is between 0.0 and 1.0 (current: ",
                 dropout_p,
                 ")\n"
                 "- inputs are not complex (current: ",
@@ -211,12 +214,11 @@ int64_t AtenFusedSdpChoice(const at::Tensor& query, const at::Tensor& key,
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, c10::SymInt,
            c10::SymInt, at::Tensor, at::Tensor, at::Tensor>
-GenerateResults(at::Tensor out, at::Tensor logsumexp) {
+GenerateResults(at::Tensor out, at::Tensor logsumexp, at::Tensor philox_seed,
+                at::Tensor philox_offset) {
   int64_t batch = get_batch_size(out.sizes());
   at::Tensor cum_seq_q = at::zeros({batch + 1}, out.options().dtype(at::kInt));
   at::Tensor cum_seq_k = at::zeros({batch + 1}, out.options().dtype(at::kInt));
-  at::Tensor philox_seed = at::zeros({1}, out.options().dtype(at::kLong));
-  at::Tensor philox_offset = at::zeros({1}, out.options().dtype(at::kLong));
   at::Tensor debug_mask = at::zeros({1}, out.options().dtype(at::kBool));
 
   return std::make_tuple(std::move(out), std::move(logsumexp),
@@ -235,21 +237,57 @@ AtenScaledDotProductFusedAttentionOverrideable(
       OpName::kScaledDotProductFusedAttentionOverrideable, param_keys,
       (query, key, value,
        IgnoreInCacheKey(attn_bias, "Tensors are implicitly fingerprinted."),
-       IgnoreInCacheKey(dropout_p, "Unused"), is_causal,
-       IgnoreInCacheKey(return_debug_mask, "Unused"), scale),
+       dropout_p, is_causal, IgnoreInCacheKey(return_debug_mask, "Unused"),
+       scale),
       {
         const bool allow_half_precision_reduction_math =
             at::globalContext().allowFP16BF16ReductionMathSDP();
         TT_THROW_IF_ERROR(param_keys.SetParam(
             "allow_fp16_bf16_reduction", allow_half_precision_reduction_math));
 
+        if (dropout_p > 0.0) {
+          auto gen = at::get_generator_or_default<DeviceGeneratorImpl>(
+              /*generator=*/c10::nullopt, GetDefaultDeviceGenerator());
+
+          std::scoped_lock<std::mutex> lock(gen->mutex_);
+          at::Tensor rng_state = gen->DeviceStateTensor();
+
+          TT_ASSIGN_OR_THROW(auto results,
+                             ScaledDotProductFusedAttentionShlo(
+                                 query, key, value, attn_bias, is_causal, scale,
+                                 allow_half_precision_reduction_math, dropout_p,
+                                 rng_state, std::move(param_keys)));
+
+          const int rank = query.ndimension();
+          const int64_t batch_size = get_batch_size(query.sizes());
+          const int64_t num_head_q = query.size(rank - 3);
+          const int64_t seq_len_q = query.size(rank - 2);
+          const int64_t seq_len_kv = key.size(rank - 2);
+          const int64_t num_elements =
+              batch_size * num_head_q * seq_len_q * seq_len_kv;
+
+          TT_ASSIGN_OR_THROW(const mlir::ElementType elem_type,
+                             ConvertTo<mlir::ElementType>(query.scalar_type()));
+          const int64_t bit_width = TorchEquivalentBitwidth(elem_type);
+
+          TT_THROW_IF_ERROR(
+              gen->AdvanceDeviceStateTensor(num_elements, bit_width));
+
+          return GenerateResults(
+              std::move(results.output), std::move(results.logsumexp),
+              std::move(results.philox_seed), std::move(results.philox_offset));
+        }
+
         TT_ASSIGN_OR_THROW(
             auto results,
             ScaledDotProductFusedAttentionShlo(
                 query, key, value, attn_bias, is_causal, scale,
-                allow_half_precision_reduction_math, std::move(param_keys)));
-        auto [out, logsumexp] = results;
-        return GenerateResults(out, logsumexp);
+                allow_half_precision_reduction_math, dropout_p,
+                /*rng_state=*/std::nullopt, std::move(param_keys)));
+
+        return GenerateResults(
+            std::move(results.output), std::move(results.logsumexp),
+            std::move(results.philox_seed), std::move(results.philox_offset));
       });
 }
 
@@ -267,19 +305,27 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
       (grad_out, query, key, value, attn_bias,
        IgnoreInCacheKey(grad_input_mask, "Doesn't affect SHLO"), out, logsumexp,
        cum_seq_q, cum_seq_k, IgnoreInCacheKey(max_q, "Unused"),
-       IgnoreInCacheKey(max_k, "Unused"), IgnoreInCacheKey(dropout_p, "Unused"),
-       is_causal, philox_seed, philox_offset, scale),
+       IgnoreInCacheKey(max_k, "Unused"), dropout_p, is_causal, philox_seed,
+       philox_offset, scale),
       {
         const bool allow_half_precision_reduction_math =
             at::globalContext().allowFP16BF16ReductionMathSDP();
         TT_THROW_IF_ERROR(param_keys.SetParam(
             "allow_fp16_bf16_reduction", allow_half_precision_reduction_math));
 
+        std::optional<at::Tensor> seed_opt;
+        std::optional<at::Tensor> offset_opt;
+        if (dropout_p > 0.0) {
+          seed_opt = philox_seed;
+          offset_opt = philox_offset;
+        }
+
         TT_ASSIGN_OR_THROW(
-            auto out, ScaledDotProductFusedAttentionShloBackward(
-                          grad_out, query, key, value, attn_bias, logsumexp,
-                          scale, is_causal, allow_half_precision_reduction_math,
-                          std::move(param_keys)));
+            auto out,
+            ScaledDotProductFusedAttentionShloBackward(
+                grad_out, query, key, value, attn_bias, logsumexp, scale,
+                is_causal, allow_half_precision_reduction_math, dropout_p,
+                seed_opt, offset_opt, std::move(param_keys)));
 
         return std::make_tuple(
             grad_input_mask[0] ? std::get<0>(out)
@@ -298,18 +344,20 @@ AtenScaledDotProductEfficientAttention(
     const std::optional<at::Tensor>& attn_bias, bool compute_log_sumexp,
     double dropout_p, bool is_causal, std::optional<double> scale) {
   TT_KERNEL(OpName::kScaledDotProductEfficientAttention, _,
-            (query, key, value, IgnoreInCacheKey(attn_bias, "Unused"),
-             IgnoreInCacheKey(compute_log_sumexp, "Unused"),
+            (query, key, value,
+             IgnoreInCacheKey(attn_bias, "Delegates to implementation"),
+             IgnoreInCacheKey(compute_log_sumexp,
+                              "Delegates to CreateFlashAttentionKernel"),
              IgnoreInCacheKey(dropout_p, "Unused"),
              IgnoreInCacheKey(is_causal, "Delegates to implementation"),
              IgnoreInCacheKey(scale, "Delegates to implementation")),
             {
-              // Unused arguments: attn_bias, compute_log_sumexp, dropout_p,
-              // scale.
-              TT_ASSIGN_OR_THROW(auto results, CreateFlashAttentionKernel(
-                                                   query, key, value, attn_bias,
-                                                   is_causal, scale));
-              auto [out, logsumexp] = results;
+              // Unused arguments: dropout_p.
+              TT_ASSIGN_OR_THROW(auto results,
+                                 CreateFlashAttentionKernel(
+                                     query, key, value, attn_bias, is_causal,
+                                     scale, compute_log_sumexp));
+              auto [out, logsumexp] = std::move(results);
               at::Tensor philox_seed =
                   at::zeros({1}, query.options().dtype(at::kLong));
               at::Tensor philox_offset =

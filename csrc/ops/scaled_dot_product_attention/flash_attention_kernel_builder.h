@@ -31,7 +31,7 @@ namespace torch_tpu {
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor>> CreateFlashAttentionKernel(
     const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
     const std::optional<at::Tensor>& attn_bias, bool is_causal,
-    std::optional<double> scale);
+    std::optional<double> scale, std::optional<bool> return_lse = std::nullopt);
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
 CreateFlashAttentionBackwardKernel(
