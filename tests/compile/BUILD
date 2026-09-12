@@ -599,4 +599,17 @@ torch_tpu_py_test(
     ],
 )
 
+torch_tpu_py_test(
+    name = "optimize_recurrence_and_slices_test",
+    srcs = ["optimize_recurrence_and_slices_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:optimize_recurrence_and_slices",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
 torch_tpu_package_end()
