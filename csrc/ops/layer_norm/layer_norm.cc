@@ -283,20 +283,27 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
 
   Dimensions batch_dims;
   Dimensions norm_dims;
-  Dimensions all_dims;
   for (int i = 0; i < x_rank; ++i) {
-    all_dims.push_back(i);
     if (i < batch_len)
       batch_dims.push_back(i);
     else
       norm_dims.push_back(i);
   }
 
+  const auto batch_type = mlir::RankedTensorType::get(
+      GetTensorTypeOrDie(x).getShape().take_front(batch_len), acc_elem_type);
+  if (GetTensorTypeOrDie(mean).getRank() != batch_dims.size()) {
+    mean = mlir::stablehlo::Reshape(batch_type, mean);
+  }
+  if (GetTensorTypeOrDie(rstd).getRank() != batch_dims.size()) {
+    rstd = mlir::stablehlo::Reshape(batch_type, rstd);
+  }
+
   // Broadcast mean/rstd to x shape.
   mlir::MlirOp mean_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), mean, all_dims);
+      mlir::stablehlo::BroadcastInDim(x.getType(), mean, batch_dims);
   mlir::MlirOp rstd_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), rstd, all_dims);
+      mlir::stablehlo::BroadcastInDim(x.getType(), rstd, batch_dims);
 
   // x_hat = (x - mean) * rstd
   mlir::MlirOp x_hat = mlir::stablehlo::Subtract(x, mean_bcast);
@@ -340,36 +347,47 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
   }
 
   // a1 = sum_norm(dy * gamma)
-  // Reduce over norm_dims {1, 2, 3} to get [20], then broadcast to [20, 5, 10,
-  // 10]
-  mlir::MlirOp a1 = mlir::stablehlo::Reduce(builder, dy_gamma, zeros,
-                                            sum_reduce_builder, norm_dims)[0];
-  a1 = mlir::stablehlo::BroadcastInDim(x.getType(), a1, batch_dims);
-
   // a2 = sum_norm(dy * gamma * x_hat)
-  // Reduce over norm_dims {1, 2, 3} to get [20], then broadcast to [20, 5, 10,
-  // 10]
+  // Combine these two reductions into a single multi-output Reduce op over
+  // norm_dims {1, 2, 3} to get [20], then pre-scale on batch shape.
   mlir::MlirOp a2_full = mlir::stablehlo::Mul(dy_gamma, x_hat);
-  mlir::MlirOp a2 = mlir::stablehlo::Reduce(builder, a2_full, zeros,
-                                            sum_reduce_builder, norm_dims)[0];
-  a2 = mlir::stablehlo::BroadcastInDim(x.getType(), a2, batch_dims);
+  const mlir::RankedTensorType scalar_acc_type =
+      mlir::RankedTensorType::get({}, acc_float_type);
+  const auto sum_two_reduce_builder =
+      [scalar_acc_type](mlir::RegionBuilder& rb) {
+        mlir::MlirOp acc1 = mlir::Argument(rb, scalar_acc_type);
+        mlir::MlirOp acc2 = mlir::Argument(rb, scalar_acc_type);
+        mlir::MlirOp val1 = mlir::Argument(rb, scalar_acc_type);
+        mlir::MlirOp val2 = mlir::Argument(rb, scalar_acc_type);
+        mlir::MlirOp new_acc1 = mlir::stablehlo::Add(acc1, val1);
+        mlir::MlirOp new_acc2 = mlir::stablehlo::Add(acc2, val2);
+        mlir::stablehlo::Return(rb, {new_acc1, new_acc2});
+      };
+  const auto a_results =
+      mlir::stablehlo::Reduce(builder, {dy_gamma, a2_full}, {zeros, zeros},
+                              sum_two_reduce_builder, norm_dims);
+  mlir::MlirOp a1 = a_results[0];
+  mlir::MlirOp a2 = a_results[1];
 
+  // Pre-scale a1 and a2 on the batch shape before broadcasting:
   // dx = (1/N) * rstd * (N * dy_gamma - a1 - x_hat * a2)
+  //    = dy_gamma * rstd - (a1 * rstd / N) - x_hat * (a2 * rstd / N)
+  //    = term1 - c1_bcast - term2
   TT_ASSIGN_OR_RETURN(const int64_t n, NumElements(normalized_shape));
-  mlir::MlirOp n_const =
-      MakeScalarConstant(builder, static_cast<double>(n), acc_float_type);
-  mlir::MlirOp n_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), n_const, {});
   mlir::MlirOp inv_n = MakeScalarConstant(builder, 1.0 / n, acc_float_type);
-  mlir::MlirOp inv_n_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), inv_n, {});
-
-  mlir::MlirOp dx = mlir::stablehlo::Mul(n_bcast, dy_gamma);
-  dx = mlir::stablehlo::Subtract(dx, a1);
-  mlir::MlirOp x_hat_a2 = mlir::stablehlo::Mul(x_hat, a2);
-  dx = mlir::stablehlo::Subtract(dx, x_hat_a2);
-  mlir::MlirOp inv_n_rstd = mlir::stablehlo::Mul(inv_n_bcast, rstd_bcast);
-  dx = mlir::stablehlo::Mul(dx, inv_n_rstd);
+  mlir::MlirOp inv_n_batch =
+      mlir::stablehlo::BroadcastInDim(rstd.getType(), inv_n, {});
+  mlir::MlirOp scaled_rstd = mlir::stablehlo::Mul(rstd, inv_n_batch);
+  mlir::MlirOp c1 = mlir::stablehlo::Mul(a1, scaled_rstd);
+  mlir::MlirOp c2 = mlir::stablehlo::Mul(a2, scaled_rstd);
+  mlir::MlirOp c1_bcast =
+      mlir::stablehlo::BroadcastInDim(x.getType(), c1, batch_dims);
+  mlir::MlirOp c2_bcast =
+      mlir::stablehlo::BroadcastInDim(x.getType(), c2, batch_dims);
+  mlir::MlirOp term1 = mlir::stablehlo::Mul(dy_gamma, rstd_bcast);
+  mlir::MlirOp term2 = mlir::stablehlo::Mul(x_hat, c2_bcast);
+  mlir::MlirOp term1_minus_c1 = mlir::stablehlo::Subtract(term1, c1_bcast);
+  mlir::MlirOp dx = mlir::stablehlo::Subtract(term1_minus_c1, term2);
 
   if (needs_upcast) {
     dx = mlir::stablehlo::ConvertElementType(dx, orig_elem_type);
