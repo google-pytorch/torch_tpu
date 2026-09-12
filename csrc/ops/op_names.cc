@@ -1247,6 +1247,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "remainder.Tensor_out";
     case OpName::kRepeat:
       return "repeat";
+    case OpName::kRepeatInterleaveBackward:
+      return "repeat_interleave_backward";
+    case OpName::kRepeatInterleaveSelfInt:
+      return "repeat_interleave.self_int";
     case OpName::kRepeatInterleaveSelfTensor:
       return "repeat_interleave.self_Tensor";
     case OpName::kReplicationPad1dBackwardGradInput:
@@ -1351,6 +1355,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "searchsorted.Tensor_out";
     case OpName::kSegmentReduce:
       return "segment_reduce";
+    case OpName::kSelectBackward:
+      return "select_backward";
     case OpName::kSetDimensionLogicalSize:
       return "set_dimension_logical_size";
     case OpName::kSet_:
@@ -1379,6 +1385,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sinh.out";
     case OpName::kSlice:
       return "slice";
+    case OpName::kSliceBackward:
+      return "slice_backward";
     case OpName::kSoftmaxBackwardDataOut:
       return "_softmax_backward_data.out";
     case OpName::kSoftmaxOut:

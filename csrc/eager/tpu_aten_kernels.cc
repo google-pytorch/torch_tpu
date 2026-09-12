@@ -65,6 +65,7 @@
 #include "csrc/ops/channel_shuffle/channel_shuffle_aten_kernels.h"
 #include "csrc/ops/clamp/clamp_aten_kernels.h"
 #include "csrc/ops/col2im/col2im_aten_kernels.h"
+#include "csrc/ops/constant_pad/constant_pad_aten_kernels.h"
 #include "csrc/ops/convolution/convolution_aten_kernels.h"
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/count_nonzero/count_nonzero_aten_kernels.h"
@@ -194,6 +195,7 @@
 #include "csrc/ops/segment_reduce/segment_reduce_aten_kernels.h"
 #include "csrc/ops/set/set_aten_kernels.h"
 #include "csrc/ops/sigmoid/sigmoid_aten_kernels.h"
+#include "csrc/ops/slice_backward/slice_backward_aten_kernels.h"
 #include "csrc/ops/softmax/_masked_softmax_aten_kernels.h"
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
 #include "csrc/ops/softplus/softplus_aten_kernels.h"
@@ -434,6 +436,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kCol2ImOut>(m, AtenCol2ImOut);
   ImplStable<OpName::kComplexOut>(m, AtenComplexOut);
   ImplStable<OpName::kConjPhysicalOut>(m, AtenConjPhysicalOut);
+  ImplStable<OpName::kConstantPadNd>(m, AtenConstantPadNd);
   ImplStable<OpName::kConvolution>(m, AtenConvolution);
   ImplStable<OpName::kConvolutionBackward>(m, AtenConvolutionBackward);
   ImplStable<OpName::kConvolutionOut>(m, AtenConvolutionOut);
@@ -907,6 +910,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRelu_>(m, AtenRelu_);
   ImplStable<OpName::kRemainderScalarTensor>(m, AtenRemainderScalarTensor);
   ImplStable<OpName::kRemainderTensorOut>(m, AtenRemainderTensorOut);
+  ImplStable<OpName::kRepeatInterleaveSelfInt>(m, AtenRepeatInterleaveSelfInt);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m, AtenRepeatInterleave);
   ImplStable<OpName::kReplicationPad1dBackwardGradInput>(
       m, AtenReplicationPad1dBackwardGradInput);
@@ -958,6 +962,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSearchsortedTensor>(m, AtenSearchsortedTensor);
   ImplStable<OpName::kSearchsortedTensorOut>(m, AtenSearchsortedTensorOut);
   ImplStable<OpName::kSegmentReduce>(m, AtenSegmentReduce);
+  ImplStable<OpName::kSelectBackward>(m, AtenSelectBackward);
   ImplStable<OpName::kSet_>(m, AtenSet_);
   ImplStable<OpName::kSet_SourceStorage>(m, AtenSet_SourceStorage);
   ImplStable<OpName::kSet_SourceStorageOffset>(m, AtenSet_SourceStorageOffset);
@@ -971,6 +976,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSiluOut>(m, AtenSiluOut);
   ImplStable<OpName::kSinOut>(m, AtenSinOut);
   ImplStable<OpName::kSinhOut>(m, AtenSinhOut);
+  ImplStable<OpName::kSliceBackward>(m, AtenSliceBackward);
   ImplStable<OpName::kSoftmaxBackwardDataOut>(m, AtenSoftmaxBackwardDataOut);
   ImplStable<OpName::kSoftmaxOut>(m, AtenSoftmaxOut);
   ImplStable<OpName::kSoftplusBackwardGradInput>(m,
@@ -1122,6 +1128,10 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // ctc_loss to our custom forward/backward autograd implementation.
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
+  ImplStable<OpName::kRepeatInterleaveSelfInt>(
+      m, AtenRepeatInterleaveSelfIntAutograd);
+  ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,
+                                                  AtenRepeatInterleaveAutograd);
   // go/keep-sorted end
 }
 

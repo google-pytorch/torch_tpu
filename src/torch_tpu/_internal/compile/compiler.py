@@ -46,6 +46,7 @@ from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
+from torch_tpu._internal.compile.fx_passes import optimize_recurrence_and_slices
 from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompiledArtifact
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import CompiledArtifact
@@ -116,6 +117,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       graph_module: The FX graph module to process.
     """
     fold_gqa.apply(graph_module)
+    optimize_recurrence_and_slices.apply(graph_module)
 
   @abc.abstractmethod
   def __call__(
@@ -503,6 +505,9 @@ class StaticCompiler(Compiler):
     graph_transform_observer.GraphTransformObserver(
         graph_module, "fold_gqa"
     ).apply_graph_pass(fold_gqa.apply)
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "optimize_recurrence_and_slices"
+    ).apply_graph_pass(optimize_recurrence_and_slices.apply)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "detect_causal_mask"
     ).apply_graph_pass(

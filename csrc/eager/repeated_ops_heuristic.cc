@@ -64,6 +64,7 @@ class OpWindow {
     pos_ = 0;
     next_valid_pos_ = 0;
     last_repeated_sequence_size_ = 0;
+    ops_since_last_split_ = 0;
   }
 
   void Append(const DeferredOp& op) {
@@ -76,6 +77,7 @@ class OpWindow {
     }
     // Increase the number of ops we have encountered so far.
     pos_++;
+    ops_since_last_split_++;
     // However, for very long running op sequences, we wrap the counters around
     // to avoid over overflow.
     const auto wrap = 2 * max_history_size_;
@@ -135,6 +137,9 @@ class OpWindow {
   }
 
  private:
+  static constexpr size_t kMinOpsBeforeSplittingSmallLoop = 2048;
+  static constexpr size_t kSmallLoopMaxSequenceSize = 32;
+
   // Return true if there is a repeated sequence in the history at position i,
   // specifically if history[2i+2-n:i] = history[i+1:n-1].
   bool IsMatch(size_t i) {
@@ -154,6 +159,11 @@ class OpWindow {
           // next search to `repeated_sequence_size` ops ahead.
           next_valid_pos_ = pos_ + repeated_sequence_size;
           last_repeated_sequence_size_ = repeated_sequence_size;
+          if (repeated_sequence_size < kSmallLoopMaxSequenceSize &&
+              ops_since_last_split_ < kMinOpsBeforeSplittingSmallLoop) {
+            return false;
+          }
+          ops_since_last_split_ = 0;
           return true;
         }
       }
@@ -168,6 +178,7 @@ class OpWindow {
   size_t pos_;
   size_t next_valid_pos_;
   size_t last_repeated_sequence_size_;
+  size_t ops_since_last_split_;
 };
 
 OpWindow& GetOpWindow() {

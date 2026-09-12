@@ -590,25 +590,50 @@ ViewSequence GetBitcastSequenceToWritable(mlir::ElementType from_dtype,
   return result;
 }
 
-mlir::MlirOp Invert1DSliceViaConcat(mlir::MlirOp pre_slice_value,
-                                    mlir::MlirOp post_slice_value,
-                                    int64_t start_index, int64_t limit_index,
-                                    int64_t total_size) {
+// Inverts a non-strided slice update along a single dimension by concatenating
+// the unmodified left prefix (`0..start_index`), the updated slice value
+// (`post_slice_value`), and the unmodified right suffix
+// (`limit_index..total_size`).
+//
+// Used specifically when the sliced dimension size exceeds `INT32_MAX`, where
+// XLA's `DynamicUpdateSlice` index representation or hardware dynamic indexing
+// limits can overflow 32-bit offsets.
+mlir::MlirOp InvertSingleDimSliceViaConcat(
+    mlir::MlirOp pre_slice_value, mlir::MlirOp post_slice_value,
+    int64_t active_dim, int64_t start_index, int64_t limit_index,
+    const mlir::stablehlo::Dimensions& pre_slice_dims) {
+  const int64_t rank = pre_slice_dims.size();
+  const int64_t total_size = pre_slice_dims[active_dim].size;
   std::vector<mlir::MlirOp> parts;
+  Dimensions strides(rank, 1);
+
   if (start_index > 0) {
+    Dimensions starts(rank, 0);
+    Dimensions limits;
+    limits.reserve(rank);
+    for (int64_t i = 0; i < rank; ++i) {
+      limits.push_back(i == active_dim ? start_index : pre_slice_dims[i].size);
+    }
     parts.push_back(
-        mlir::stablehlo::Slice(pre_slice_value, {0}, {start_index}, {1}));
+        mlir::stablehlo::Slice(pre_slice_value, starts, limits, strides));
   }
   parts.push_back(post_slice_value);
   if (limit_index < total_size) {
-    parts.push_back(mlir::stablehlo::Slice(pre_slice_value, {limit_index},
-                                           {total_size}, {1}));
+    Dimensions starts(rank, 0);
+    starts[active_dim] = limit_index;
+    Dimensions limits;
+    limits.reserve(rank);
+    for (int64_t i = 0; i < rank; ++i) {
+      limits.push_back(pre_slice_dims[i].size);
+    }
+    parts.push_back(
+        mlir::stablehlo::Slice(pre_slice_value, starts, limits, strides));
   }
   if (parts.size() == 1) {
     return parts[0];
   }
   return mlir::stablehlo::Concatenate(pre_slice_value.getBuilder(), parts,
-                                      /*dimension=*/0);
+                                      /*dimension=*/active_dim);
 }
 
 mlir::MlirOp InvertNonStridedSliceShlo(mlir::MlirOp pre_slice_value,
@@ -616,18 +641,45 @@ mlir::MlirOp InvertNonStridedSliceShlo(mlir::MlirOp pre_slice_value,
                                        const SlicePrimitive& slice) {
   const mlir::stablehlo::Dimensions pre_slice_dims =
       GetDimensions(pre_slice_value);
-  if (slice.slice_dims.size() == 1 &&
-      pre_slice_dims[0].size > std::numeric_limits<int32_t>::max()) {
-    const SliceDimension& slice_dim = slice.slice_dims[0];
+
+  bool has_dynamic_dim = false;
+  int64_t active_slice_dim = -1;
+  int64_t num_sliced_dims = 0;
+  for (int64_t i = 0; i < slice.slice_dims.size(); ++i) {
+    const auto& slice_dim = slice.slice_dims[i];
     ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
         slice_dim.stride, 1)
         << "expected SlicePrimitive slice dimensions to have stride = 1, got "
-        << slice_dim.stride << "; calling InvertNonStridedSliceShlo() with "
+        << slice_dim.stride << " at index " << i
+        << "; calling InvertNonStridedSliceShlo() with "
         << GetViewPrimitiveErrorSuffix(slice, {.leading_semicolon = false});
+    if (pre_slice_dims[i].boundOp.has_value()) {
+      has_dynamic_dim = true;
+    }
+    if (slice_dim.start_index > 0 ||
+        slice_dim.limit_index < pre_slice_dims[i].size) {
+      active_slice_dim = i;
+      ++num_sliced_dims;
+    }
+  }
 
-    return Invert1DSliceViaConcat(pre_slice_value, post_slice_value,
-                                  slice_dim.start_index, slice_dim.limit_index,
-                                  pre_slice_dims[0].size);
+  // Note on XLA buffer aliasing (`DynamicUpdateSlice` vs `Slice +
+  // Concatenate`): For standard dimensions (`size <= INT32_MAX`), we must emit
+  // `stablehlo.dynamic_update_slice` rather than 3-way `Slice + Concatenate`.
+  // In sequential loops that mutate slices of an output buffer step-by-step
+  // (e.g. `output[:, t, :] = h_t` across timesteps in RNNs/LSTMs),
+  // `DynamicUpdateSlice` has a single read operand (`pre_slice_value`) that XLA
+  // buffer assignment aliases in-place with the output buffer. A 3-way
+  // `Concatenate(Slice(output, 0..t), h_t, Slice(output, t+1..L))` reads
+  // `output` via two distinct `Slice` operations, preventing XLA from aliasing
+  // `output` in-place and doubling memory consumption.
+  const int64_t target_dim = active_slice_dim >= 0 ? active_slice_dim : 0;
+  if (!has_dynamic_dim && num_sliced_dims <= 1 && !pre_slice_dims.empty() &&
+      pre_slice_dims[target_dim].size > std::numeric_limits<int32_t>::max()) {
+    const auto& slice_dim = slice.slice_dims[target_dim];
+    return InvertSingleDimSliceViaConcat(pre_slice_value, post_slice_value,
+                                         target_dim, slice_dim.start_index,
+                                         slice_dim.limit_index, pre_slice_dims);
   }
 
   // Use dynamic_update_slice to invert non-strided slices.
@@ -635,14 +687,6 @@ mlir::MlirOp InvertNonStridedSliceShlo(mlir::MlirOp pre_slice_value,
   start_indices.reserve(slice.slice_dims.size());
   for (int64_t i = 0; i < slice.slice_dims.size(); ++i) {
     const auto& slice_dim = slice.slice_dims[i];
-
-    ABSL_CHECK_EQ(  // CRASH_OK=Internal error on view decomposition.
-        slice_dim.stride, 1)
-        << "expected SlicePrimitive slice dimensions to have stride = 1, got "
-        << slice_dim.stride << " at index " << i
-        << "; calling InvertNonStridedSliceShlo() with "
-        << GetViewPrimitiveErrorSuffix(slice, {.leading_semicolon = false});
-
     start_indices.push_back(MakeScalarConstant(pre_slice_value.getBuilder(),
                                                slice_dim.start_index,
                                                mlir::ElementType::I64));

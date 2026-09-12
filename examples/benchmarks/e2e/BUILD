@@ -692,6 +692,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:optimize_recurrence_and_slices",
         "//tests:seed_test_utils",
     ],
 )

@@ -5504,9 +5504,98 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assert_close_tpu_vs_cpu(
         lambda device: torch.repeat_interleave(
             input=to(t, device=device),
+            repeats=1,
+            dim=0,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
             repeats=0,
         ),
     )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=0,
+            dim=0,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t, device=device),
+            repeats=2,
+            dim=0,
+            output_size=6,
+        ),
+    )
+
+    # Multi-dimensional shapes (2D, 3D, 4D) with positive, negative, and None dims.
+    t_3d = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    for dim in (None, 0, 1, 2, -1, -2):
+      self.assert_close_tpu_vs_cpu(
+          lambda device, d=dim: torch.repeat_interleave(
+              input=to(t_3d, device=device),
+              repeats=3,
+              dim=d,
+          ),
+      )
+
+    # 4D GQA head expansion shape with explicit output_size and 1-element tensor repeat.
+    t_4d = torch.randn(2, 4, 8, 16, dtype=torch.float32)
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_4d, device=device),
+            repeats=2,
+            dim=2,
+            output_size=16,
+        ),
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.repeat_interleave(
+            input=to(t_4d, device=device),
+            repeats=to(torch.tensor([2]), device=device),
+            dim=2,
+            output_size=16,
+        ),
+    )
+
+    # Backward / Autograd verification across dim=1, dim=-1, dim=None, repeats=1, repeats=0.
+    grad_3d = torch.randn(2, 9, 4, dtype=torch.float32)
+
+    def _backward_dim1(device):
+      x = to(t_3d.clone(), device=device).requires_grad_(True)
+      out = torch.repeat_interleave(x, repeats=3, dim=1)
+      out.backward(to(grad_3d, device=device))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(_backward_dim1)
+
+    grad_flat = torch.randn(24 * 2, dtype=torch.float32)
+
+    def _backward_flat(device):
+      x = to(t_3d.clone(), device=device).requires_grad_(True)
+      out = torch.repeat_interleave(x, repeats=2, dim=None)
+      out.backward(to(grad_flat, device=device))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(_backward_flat)
+
+    def _backward_repeats1(device):
+      x = to(t_3d.clone(), device=device).requires_grad_(True)
+      out = torch.repeat_interleave(x, repeats=1, dim=2)
+      out.backward(to(t_3d, device=device))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(_backward_repeats1)
+
+    def _backward_repeats0(device):
+      x = to(t_3d.clone(), device=device).requires_grad_(True)
+      out = torch.repeat_interleave(x, repeats=0, dim=1)
+      out.backward(torch.zeros_like(out))
+      return x.grad
+
+    self.assert_close_tpu_vs_cpu(_backward_repeats0)
 
   def test_repeat_interleave_tensor(self):
     t = torch.tensor([1, 2, 3])
@@ -9599,6 +9688,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       return inp
 
     self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.named_parameters(
+      ("crop_left_and_pad_right", (-2, 3), False),
+      ("pad_left_and_crop_right", (3, -2), False),
+      ("crop_entire_input_and_pad_right", (-5, 4), False),
+      ("pad_left_and_crop_entire_input", (4, -5), False),
+      ("crop_left_exceeding_input", (-8, 10), True),
+      ("crop_right_exceeding_input", (10, -8), True),
+  )
+  def test_constant_pad_nd_negative_padding_overflow(self, pad, allow_failure):
+    x = torch.arange(1, 6, dtype=torch.float32)
+
+    def compute(device):
+      return torch.nn.functional.pad(to(x, device), pad, "constant", 0.0)
+
+    self.assert_close_tpu_vs_cpu(compute, allow_failure=allow_failure)
 
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):

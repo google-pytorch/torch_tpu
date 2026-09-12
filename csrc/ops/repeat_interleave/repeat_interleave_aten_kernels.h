@@ -17,6 +17,7 @@
 
 #include <optional>
 
+#include "c10/core/SymInt.h"
 #include "torch/csrc/api/include/torch/types.h"
 
 namespace torch_tpu {
@@ -25,6 +26,20 @@ at::Tensor AtenRepeatInterleave(const at::Tensor& self,
                                 const at::Tensor& repeats,
                                 std::optional<int64_t> dim,
                                 std::optional<int64_t> output_size);
+
+at::Tensor AtenRepeatInterleaveSelfInt(const at::Tensor& self,
+                                       c10::SymInt repeats,
+                                       std::optional<int64_t> dim,
+                                       std::optional<c10::SymInt> output_size);
+
+at::Tensor AtenRepeatInterleaveAutograd(const at::Tensor& self,
+                                        const at::Tensor& repeats,
+                                        std::optional<int64_t> dim,
+                                        std::optional<int64_t> output_size);
+
+at::Tensor AtenRepeatInterleaveSelfIntAutograd(
+    const at::Tensor& self, c10::SymInt repeats, std::optional<int64_t> dim,
+    std::optional<c10::SymInt> output_size);
 
 }  // namespace torch_tpu
 

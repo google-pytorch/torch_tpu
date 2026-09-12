@@ -12123,6 +12123,70 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._assert_async.msg(multi_cond, "multiple assertion")
 
+  def test_repeat_interleave_negative_repeats(self):
+    t = torch.tensor([1, 2], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): expected repeats to be greater than or equal to zero, got -1""",
+        gpu="""Repeats must be non-negative""",
+    ):
+      torch.repeat_interleave(t, -1)
+
+  def test_repeat_interleave_invalid_output_size(self):
+    t = torch.tensor([1, 2], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): allocated size does not match required size""",
+        gpu="""repeat_interleave: Invalid output_size, expected 4 but got 10""",
+    ):
+      torch.repeat_interleave(t, 2, output_size=10)
+
+  def test_constant_pad_nd_odd_pad_length(self):
+    t = torch.ones(2, 2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""length of pad must be even but instead it equals 3""",
+        gpu="""Length of pad must be even but instead it equals 3""",
+    ):
+      torch.ops.aten.constant_pad_nd(t, [1, 2, 3], 0.0)
+
+  def test_constant_pad_nd_excessive_pad_length(self):
+    t = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad length must be at most twice the input dimension""",
+        gpu="""Length of pad should be no more than twice the number of dimensions of the input. Pad length is 4while the input has 1dimensions.""",
+    ):
+      torch.ops.aten.constant_pad_nd(t, [1, 1, 1, 1], 0.0)
+
+  def test_constant_pad_nd_negative_cropped_size(self):
+    t = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""length must be non-negative""",
+        gpu="""narrow(): length must be non-negative.""",
+    ):
+      torch.ops.aten.constant_pad_nd(t, [-3, 0], 0.0)
+
+  def test_select_backward_index_out_of_range(self):
+    grad = torch.ones(2, device=et.device())
+    err_type = RuntimeError if et.is_on_tpu() else IndexError
+    with et.assert_raises_message(
+        err_type,
+        tpu="""index out of range""",
+        gpu="""select(): index 5 out of range for tensor of size [3, 2] at dimension 0""",
+    ):
+      torch.ops.aten.select_backward(grad, [3, 2], 0, 5)
+
+  def test_slice_backward_non_positive_step(self):
+    grad = torch.ones(2, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""slice step must be positive""",
+        gpu="""slice step must be positive""",
+    ):
+      torch.ops.aten.slice_backward(grad, [4], 0, 0, 2, 0)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

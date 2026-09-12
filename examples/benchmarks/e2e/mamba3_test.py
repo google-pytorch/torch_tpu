@@ -92,6 +92,120 @@ class Mamba3Test(seed_test_utils.RepeatableTest):
           ngroups=3,  # 4 % 3 != 0
       )
 
+  def test_fx_optimization_pass(self):
+    from torch.fx.experimental.proxy_tensor import make_fx
+    import torch.func as func
+    from torch_tpu._internal.compile.fx_passes import optimize_recurrence_and_slices
+
+    layer = mamba3.Mamba3(
+        d_model=64,
+        d_state=32,
+        expand=2,
+        headdim=32,
+        ngroups=2,
+        is_mimo=False,
+        mimo_rank=1,
+    )
+    u = torch.randn(2, 8, 64)
+    params = dict(layer.named_parameters())
+    buffers = dict(layer.named_buffers())
+
+    def step(p, b, x):
+      def loss_fn(p_arg):
+        out = func.functional_call(layer, (p_arg, b), (x,))
+        return out.mean()
+
+      grads, loss = func.grad_and_value(loss_fn)(p)
+      return loss, grads
+
+    ref_loss, ref_grads = step(params, buffers, u)
+    gm = make_fx(step, tracing_mode="fake")(params, buffers, u)
+    optimize_recurrence_and_slices.apply(gm)
+
+    select_bwd_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.select_backward.default
+    )
+    slice_bwd_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.slice_backward.default
+    )
+    seq_select_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.select.int
+        and len(n.args) >= 2
+        and n.args[1] == 1
+    )
+    self.assertEqual(select_bwd_count, 0)
+    self.assertEqual(slice_bwd_count, 0)
+    self.assertEqual(seq_select_count, 0)
+
+    opt_loss, opt_grads = gm(params, buffers, u)
+    torch.testing.assert_close(opt_loss, ref_loss, rtol=1e-4, atol=1e-4)
+    for k in ref_grads:
+      torch.testing.assert_close(
+          opt_grads[k], ref_grads[k], rtol=1e-4, atol=1e-4
+      )
+
+  def test_config2_train_fx_optimization_pass(self):
+    from torch.fx.experimental.proxy_tensor import make_fx
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    import torch.func as func
+    from torch_tpu._internal.compile.fx_passes import optimize_recurrence_and_slices
+
+    with FakeTensorMode():
+      layer = mamba3.Mamba3(
+          d_model=2048,
+          d_state=128,
+          expand=2,
+          headdim=64,
+          ngroups=8,
+          is_mimo=False,
+          mimo_rank=4,
+      )
+      u = torch.randn(8, 1024, 2048)
+      params = dict(layer.named_parameters())
+      buffers = dict(layer.named_buffers())
+
+      def step(p, b, x):
+        def loss_fn(p_arg):
+          out = func.functional_call(layer, (p_arg, b), (x,))
+          return out.mean()
+
+        grads, loss = func.grad_and_value(loss_fn)(p)
+        return loss, grads
+
+      gm = make_fx(step)(params, buffers, u)
+      optimize_recurrence_and_slices.apply(gm)
+
+    select_bwd_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.select_backward.default
+    )
+    slice_bwd_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.slice_backward.default
+    )
+    const_pad_count = sum(
+        1
+        for n in gm.graph.nodes
+        if n.op == "call_function"
+        and n.target == torch.ops.aten.constant_pad_nd.default
+    )
+    self.assertEqual(select_bwd_count, 0)
+    self.assertEqual(slice_bwd_count, 0)
+    self.assertEqual(const_pad_count, 1)
+
 
 if __name__ == "__main__":
   absltest.main()
