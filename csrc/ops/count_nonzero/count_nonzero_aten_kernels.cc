@@ -44,9 +44,7 @@ namespace {
 // count_nonzero == sum(self != 0), with the count accumulated in int64.
 absl::StatusOr<mlir::MlirOp> BuildCountNonzeroShlo(
     mlir::MlirOp input_op, absl::Span<const int64_t> reduce_dims) {
-  mlir::MlirOp zero = MakeConstantLike(input_op, 0);
-  mlir::MlirOp mask = mlir::stablehlo::Compare(
-      input_op, zero, mlir::stablehlo::ComparisonDirection::NE);
+  mlir::MlirOp mask = GetNonzeroMask(input_op);
   mlir::MlirOp mask_i64 =
       mlir::stablehlo::ConvertElementType(mask, mlir::ElementType::I64);
   return BuildSumShlo(mask_i64, reduce_dims, ReductionMode::kDropDims,

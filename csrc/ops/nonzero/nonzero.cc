@@ -20,9 +20,9 @@
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/sort/sort.h"
@@ -42,23 +42,6 @@ namespace torch_tpu {
 namespace stablehlo = mlir::stablehlo;
 
 namespace {
-
-mlir::MlirOp GetInputMask(mlir::MlirOp input) {
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-
-  mlir::MlirOp input_mask;
-  if (IsBooleanType(input_type)) {
-    return input;
-  }
-
-  // not a boolean type, so create a boolean mask
-  // create a zero tensor of same shape as input
-  mlir::MlirOp zero = MakeConstantLike(input, 0);
-
-  // compare input with zero_val to get a tensor of booleans
-  // where input is not zero, the corresponding boolean is true.
-  return stablehlo::Compare(input, zero, stablehlo::ComparisonDirection::NE);
-}
 
 absl::StatusOr<mlir::MlirOp> FlattenIfNeeded(mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
@@ -131,7 +114,7 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroGetOutputSizeShlo(
   ABSL_VLOG(3) << "BuildNonzeroGetOutputSizeShlo input: " << input.ToString();
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
 
-  mlir::MlirOp input_mask = GetInputMask(input);
+  mlir::MlirOp input_mask = GetNonzeroMask(input);
 
   mlir::MlirOp zero_val =
       MakeScalarConstant(input.getBuilder(), 0, element_type);
@@ -221,7 +204,7 @@ absl::StatusOr<mlir::MlirOp> BuildNonzeroShlo(int64_t output_size,
   // boolean mask is generated, with True values marking the positions of
   // non-zero elements.
   TT_ASSIGN_OR_RETURN(mlir::MlirOp input_flattened, FlattenIfNeeded(input));
-  mlir::MlirOp input_mask = GetInputMask(input_flattened);
+  mlir::MlirOp input_mask = GetNonzeroMask(input_flattened);
 
   // STEP 2:
   // Perform stable sort on the flattened mask to get the indices of the true

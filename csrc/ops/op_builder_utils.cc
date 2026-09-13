@@ -437,6 +437,30 @@ absl::StatusOr<mlir::MlirOp> MakeConstantLike(mlir::MlirOp input,
   return mlir::chlo::ConstantLike(input, attr);
 }
 
+mlir::MlirOp GetNonzeroMask(mlir::MlirOp input) {
+  mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  if (IsBooleanType(input_type)) {
+    return input;
+  }
+
+  // Test the bits instead: the float comparator would flush subnormals to
+  // zero. Clearing the sign bit keeps -0.0 zero.
+  if (input_type.getElementType().isF32()) {
+    mlir::Type i32_type = input.getBuilder().getOpBuilder().getI32Type();
+    mlir::MlirOp input_bits =
+        mlir::stablehlo::BitcastConvert(input_type.clone(i32_type), input);
+    mlir::MlirOp sign_bit_mask = MakeConstantLike(input_bits, 0x7FFF'FFFF);
+    mlir::MlirOp magnitude = mlir::stablehlo::And(input_bits, sign_bit_mask);
+    mlir::MlirOp zero_bits = MakeConstantLike(magnitude, 0);
+    return mlir::stablehlo::Compare(magnitude, zero_bits,
+                                    mlir::stablehlo::ComparisonDirection::NE);
+  }
+
+  mlir::MlirOp zero = MakeConstantLike(input, 0);
+  return mlir::stablehlo::Compare(input, zero,
+                                  mlir::stablehlo::ComparisonDirection::NE);
+}
+
 RngBitGeneratorResults RngBitGeneratorLike(
     mlir::MlirOp rng_input_state, mlir::RankedTensorType output_type,
     mlir::stablehlo::RngAlgorithmAttr rng_alg,

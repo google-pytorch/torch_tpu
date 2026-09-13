@@ -14,6 +14,7 @@
 
 """Tests for step."""
 
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
@@ -746,6 +747,207 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     stepper._decode_model = mock_model
     logits = stepper._unpack_output_and_update_cache(tuple_output)
     self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+  def test_decode_stepper_dynamic_cache_post_warmup_crop(self):
+    ops = self._ops()
+    config = transformers.LlamaConfig(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        num_key_value_heads=1,
+        max_position_embeddings=128,
+    )
+    if not hasattr(config, "head_dim"):
+      config.head_dim = config.hidden_size // config.num_attention_heads
+    model = transformers.LlamaForCausalLM(config).to(ops.device)
+    model.eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+
+    stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper.pre_warmup_init()
+    self.assertEqual(stepper.current_pos, 4)
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    self.assertEqual(stepper.current_pos, 8)
+    self.assertEqual(stepper.cache.get_seq_length(), 8)
+
+    stepper.post_warmup_hook()
+    self.assertEqual(stepper.current_pos, 4)
+    self.assertEqual(stepper.cache.get_seq_length(), 4)
+
+  @unittest.skipUnless(
+      hasattr(transformers, "Zamba2Config"),
+      "Zamba2Config not available in this transformers version",
+  )
+  def test_decode_stepper_zamba2(self):
+    ops = self._ops()
+    config = transformers.Zamba2Config(
+        vocab_size=16,
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        layers_block_type=["linear_attention", "hybrid"],
+        mamba_d_conv=4,
+        mamba_d_state=16,
+        mamba_expand=2,
+        mamba_headdim=4,
+        mamba_ngroups=1,
+        n_mamba_heads=8,
+    )
+    model = transformers.Zamba2ForCausalLM(config).to(ops.device)
+    model.eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+    # Test with dynamism=True
+    stepper_dyn = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper_dyn.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_dyn.pre_warmup_init()
+    step_fn_dyn = stepper_dyn.get_step_fn()
+    _ = step_fn_dyn()
+    self.assertEqual(stepper_dyn.current_pos, 8)
+    stepper_dyn.post_warmup_hook()
+    self.assertEqual(stepper_dyn.current_pos, 4)
+    self.assertEqual(stepper_dyn.cache.get_seq_length(), 4)
+
+    # Test with dynamism=False (StaticCache)
+    stepper_static = decode.DecodeStepper(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_static.pre_warmup_init()
+    step_fn_static = stepper_static.get_step_fn()
+    _ = step_fn_static()
+    self.assertEqual(stepper_static.current_pos, 8)
+    stepper_static.post_warmup_hook()
+    self.assertEqual(stepper_static.current_pos, 4)
+
+  @unittest.skipUnless(
+      hasattr(transformers, "BambaConfig"),
+      "BambaConfig not available in this transformers version",
+  )
+  def test_decode_stepper_bamba(self):
+    ops = self._ops()
+    config = transformers.BambaConfig(
+        vocab_size=16,
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=32,
+        attn_layer_indices=[1],
+        mamba_n_groups=1,
+        mamba_n_heads=4,
+        mamba_d_state=8,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        mamba_chunk_size=8,
+    )
+    model = transformers.BambaForCausalLM(config).to(ops.device)
+    model.eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+    stepper_dyn = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper_dyn.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_dyn.pre_warmup_init()
+    step_fn_dyn = stepper_dyn.get_step_fn()
+    _ = step_fn_dyn()
+    self.assertEqual(stepper_dyn.current_pos, 8)
+    stepper_dyn.post_warmup_hook()
+    self.assertEqual(stepper_dyn.current_pos, 4)
+
+    stepper_static = decode.DecodeStepper(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_static.pre_warmup_init()
+    step_fn_static = stepper_static.get_step_fn()
+    _ = step_fn_static()
+    self.assertEqual(stepper_static.current_pos, 8)
+    stepper_static.post_warmup_hook()
+    self.assertEqual(stepper_static.current_pos, 4)
+
+  @unittest.skipUnless(
+      hasattr(transformers, "FalconH1Config"),
+      "FalconH1Config not available in this transformers version",
+  )
+  def test_decode_stepper_falcon_h1(self):
+    ops = self._ops()
+    config = transformers.FalconH1Config(
+        vocab_size=16,
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=32,
+        attn_layer_indices=[1],
+        mamba_n_groups=1,
+        mamba_n_heads=4,
+        mamba_d_state=8,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        mamba_chunk_size=8,
+    )
+    model = transformers.FalconH1ForCausalLM(config).to(ops.device)
+    model.eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+    stepper_dyn = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper_dyn.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_dyn.pre_warmup_init()
+    step_fn_dyn = stepper_dyn.get_step_fn()
+    _ = step_fn_dyn()
+    self.assertEqual(stepper_dyn.current_pos, 8)
+    stepper_dyn.post_warmup_hook()
+    self.assertEqual(stepper_dyn.current_pos, 4)
+
+    stepper_static = decode.DecodeStepper(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_static.pre_warmup_init()
+    step_fn_static = stepper_static.get_step_fn()
+    _ = step_fn_static()
+    self.assertEqual(stepper_static.current_pos, 8)
+    stepper_static.post_warmup_hook()
+    self.assertEqual(stepper_static.current_pos, 4)
+
+  @unittest.skipUnless(
+      hasattr(transformers, "NemotronHConfig"),
+      "NemotronHConfig not available in this transformers version",
+  )
+  def test_decode_stepper_nemotron_h(self):
+    ops = self._ops()
+    config = transformers.NemotronHConfig(
+        vocab_size=16,
+        hidden_size=16,
+        layers_block_type=["linear_attention", "full_attention"],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=4,
+        intermediate_size=32,
+        ssm_state_size=8,
+        mamba_num_heads=4,
+        mamba_n_groups=1,
+        mamba_head_dim=4,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        mamba_chunk_size=8,
+    )
+    model = transformers.NemotronHForCausalLM(config).to(ops.device)
+    model.eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+    stepper_dyn = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper_dyn.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_dyn.pre_warmup_init()
+    step_fn_dyn = stepper_dyn.get_step_fn()
+    _ = step_fn_dyn()
+    self.assertEqual(stepper_dyn.current_pos, 8)
+    stepper_dyn.post_warmup_hook()
+    self.assertEqual(stepper_dyn.current_pos, 4)
+
+    stepper_static = decode.DecodeStepper(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper_static.pre_warmup_init()
+    step_fn_static = stepper_static.get_step_fn()
+    _ = step_fn_static()
+    self.assertEqual(stepper_static.current_pos, 8)
+    stepper_static.post_warmup_hook()
+    self.assertEqual(stepper_static.current_pos, 4)
 
 
 if __name__ == "__main__":

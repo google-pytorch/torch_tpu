@@ -66,6 +66,7 @@ class DecodeStepper(common.BaseStepper):
     self.prefill_next_token = None
     self.current_pos = None
     self._decode_model = None
+    self._saved_linear_states = []
 
   def init_with_benchmark_args(
       self, model, input_args, input_kwargs, *args, **kwargs
@@ -232,6 +233,32 @@ class DecodeStepper(common.BaseStepper):
     self.prefill_next_token = self.next_token.clone()
     self.current_pos = self.prompt_len
 
+    self._saved_linear_states = []
+    if hasattr(self.cache, "layers"):
+      for layer in self.cache.layers:
+        layer_state = {}
+        if hasattr(layer, "conv_states") and isinstance(
+            layer.conv_states, dict
+        ):
+          layer_state["conv_states"] = {
+              k: v.clone()
+              for k, v in layer.conv_states.items()
+              if isinstance(v, torch.Tensor)
+          }
+        if hasattr(layer, "recurrent_states") and isinstance(
+            layer.recurrent_states, dict
+        ):
+          layer_state["recurrent_states"] = {
+              k: v.clone()
+              for k, v in layer.recurrent_states.items()
+              if isinstance(v, torch.Tensor)
+          }
+        if hasattr(layer, "has_previous_state") and isinstance(
+            layer.has_previous_state, dict
+        ):
+          layer_state["has_previous_state"] = dict(layer.has_previous_state)
+        self._saved_linear_states.append(layer_state)
+
   # In-place reset of cache to return it to its post-prefill state.
   # This is used to facilitate warmup decode runs to warm the compilation cache w/o post warmup recompilation.
   def post_warmup_hook(self):
@@ -240,23 +267,53 @@ class DecodeStepper(common.BaseStepper):
     assert self.prompt_len is not None
     self.next_token = self.prefill_next_token.clone()
 
-    if self.dynamism:
-      self.cache.crop(self.prompt_len)
-    else:
-
-      def _reset_internal(cache, prompt_len):
-        for layer in cache.layers:
-          if hasattr(layer, "keys"):
-            layer.keys[:, :, prompt_len:, :].zero_()
-          if hasattr(layer, "values"):
-            layer.values[:, :, prompt_len:, :].zero_()
+    if hasattr(self.cache, "layers"):
+      for idx, layer in enumerate(self.cache.layers):
+        # 1. Reset standard attention KV cache
+        if self.dynamism:
+          if (
+              hasattr(layer, "crop")
+              and not getattr(layer, "is_linear", False)
+              and not hasattr(layer, "conv_states")
+          ):
+            layer.crop(self.prompt_len)
+          elif (
+              hasattr(layer, "keys")
+              and layer.keys is not None
+              and layer.keys.numel() > 0
+          ):
+            layer.keys = layer.keys[:, :, : self.prompt_len, :]
+            layer.values = layer.values[:, :, : self.prompt_len, :]
+        else:
+          if hasattr(layer, "keys") and layer.keys is not None:
+            layer.keys[:, :, self.prompt_len :, :].zero_()
+          if hasattr(layer, "values") and layer.values is not None:
+            layer.values[:, :, self.prompt_len :, :].zero_()
           if hasattr(layer, "cumulative_length"):
             if isinstance(layer.cumulative_length, int):
-              layer.cumulative_length = prompt_len
+              layer.cumulative_length = self.prompt_len
             else:
-              layer.cumulative_length.fill_(prompt_len)
+              layer.cumulative_length.fill_(self.prompt_len)
 
-      _reset_internal(self.cache, self.prompt_len)
+        # 2. Reset LinearAttention / SSM / Mamba recurrent states
+        if idx < len(self._saved_linear_states):
+          saved = self._saved_linear_states[idx]
+          if "conv_states" in saved and hasattr(layer, "conv_states"):
+            for k, v in saved["conv_states"].items():
+              if k in layer.conv_states and isinstance(
+                  layer.conv_states[k], torch.Tensor
+              ):
+                layer.conv_states[k].copy_(v)
+          if "recurrent_states" in saved and hasattr(layer, "recurrent_states"):
+            for k, v in saved["recurrent_states"].items():
+              if k in layer.recurrent_states and isinstance(
+                  layer.recurrent_states[k], torch.Tensor
+              ):
+                layer.recurrent_states[k].copy_(v)
+          if "has_previous_state" in saved and hasattr(
+              layer, "has_previous_state"
+          ):
+            layer.has_previous_state.update(saved["has_previous_state"])
 
     self.current_pos = self.prompt_len
 

@@ -399,6 +399,18 @@ template <typename T>
 absl::StatusOr<mlir::MlirOp> MakeConstantLike(mlir::MlirOp input,
                                               const at::Scalar& value);
 
+// Returns an i1 mask of the elements that are not zero.
+//
+// For f32 the test is done on the bit pattern (sign bit cleared, so -0.0 stays
+// zero) because TPU float comparators flush subnormals to zero, unlike CPU and
+// CUDA. Every other type uses a plain float compare, which is already correct:
+// TPU widens f16 to f32 on entry, and f16 subnormals are normal f32 values.
+//
+// bf16 stays divergent. Its subnormals are f32 subnormals too, so that same
+// widening flushes them before any op of the computation runs and no lowering
+// can see them. See b/562066667.
+mlir::MlirOp GetNonzeroMask(mlir::MlirOp input);
+
 struct RngBitGeneratorResults {
   mlir::MlirOp output_state;
   mlir::MlirOp output;
