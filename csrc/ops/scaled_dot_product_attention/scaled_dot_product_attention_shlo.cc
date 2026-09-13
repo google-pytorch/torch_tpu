@@ -95,58 +95,25 @@ enum class SdpaPromotionType {
 };
 
 // Determine exactly where type promotion should happen inside the attn module.
-// Softmax mode emits a pattern replaced by XLA with an optimized kernel; we
-// use a simple heuristic based on tensor size and sequence alignment to decide
-// when that kernel is beneficial. Otherwise we fall back to full precision.
+// For half-precision inputs (BF16/FP16), we promote only softmax and dP
+// gradient scaling to FP32 for numerical stability (matching CUDA
+// FlashAttention and TorchAX contract), keeping all matrix multiplications
+// in native half precision on TPU MXUs. If
+// allow_half_precision_reduction_math is true, no promotion is performed.
 SdpaPromotionType GetSdpaPromotionType(
-    mlir::MlirOp query, mlir::MlirOp key,
+    mlir::MlirOp query, mlir::MlirOp /*key*/,
     bool allow_half_precision_reduction_math) {
   if (allow_half_precision_reduction_math) {
     return SdpaPromotionType::kNone;
   }
 
-  // Softmax-only promotion requires >500k elements to offset kernel launch
-  // overhead, and sequence lengths <=8192 aligned to 128 (or 32 for >=2048).
-  constexpr int64_t kMinTotalElements = 500000;
-  constexpr int64_t kDefaultSeqLenAlignment = 128;
-  constexpr int64_t kLargeSeqLenThreshold = 2048;
-  constexpr int64_t kLargeSeqLenAlignment = 32;
-  constexpr int64_t kMaxSupportedSeqLen = 8192;
-
-  auto query_shape = GetTensorTypeOrDie(query).getShape();
-  auto key_shape = GetTensorTypeOrDie(key).getShape();
-
-  int64_t total_elements = 1;
-  for (auto dim : query_shape) {
-    total_elements *= dim;
+  const auto element_type = GetTensorTypeOrDie(query).getElementType();
+  const bool is_half_precision = element_type.isF16() || element_type.isBF16();
+  if (is_half_precision) {
+    return SdpaPromotionType::kSoftmaxOnly;
   }
 
-  const int query_rank = query_shape.size();
-  const int key_rank = key_shape.size();
-  bool sequence_length_supported = true;
-  bool sequence_length_too_large = false;
-  if (query_rank >= 2 && key_rank >= 2) {
-    const int64_t seq_len_q = query_shape[query_rank - 2];
-    const int64_t seq_len_kv = key_shape[key_rank - 2];
-    const bool is_multiple_of_128 =
-        (seq_len_q % kDefaultSeqLenAlignment == 0) &&
-        (seq_len_kv % kDefaultSeqLenAlignment == 0);
-    const bool is_large_multiple_of_32 =
-        (seq_len_q >= kLargeSeqLenThreshold &&
-         seq_len_kv >= kLargeSeqLenThreshold) &&
-        (seq_len_q % kLargeSeqLenAlignment == 0) &&
-        (seq_len_kv % kLargeSeqLenAlignment == 0);
-    sequence_length_supported = is_multiple_of_128 || is_large_multiple_of_32;
-    sequence_length_too_large =
-        (seq_len_q > kMaxSupportedSeqLen) || (seq_len_kv > kMaxSupportedSeqLen);
-  }
-
-  const bool should_fallback = (total_elements < kMinTotalElements) ||
-                               !sequence_length_supported ||
-                               sequence_length_too_large;
-
-  return should_fallback ? SdpaPromotionType::kWholeModule
-                         : SdpaPromotionType::kSoftmaxOnly;
+  return SdpaPromotionType::kNone;
 }
 
 absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
