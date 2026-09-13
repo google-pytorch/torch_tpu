@@ -106,4 +106,12 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "optimize_attention",
+    srcs = ["optimize_attention.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()

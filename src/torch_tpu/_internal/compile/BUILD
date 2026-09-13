@@ -37,6 +37,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/compile/fx_passes:fold_gqa",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
+        "//src/torch_tpu/_internal/compile/fx_passes:optimize_attention",
         "//src/torch_tpu/_internal/compile/fx_passes:reassociate_norm_weights",
         "//src/torch_tpu/_internal/export",
     ],
