@@ -21,6 +21,55 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
 
 
+def _is_reloaded(placeholder):
+  """Returns whether `placeholder` is read back from the host with `ao.reload`.
+
+  Only `args[0]` is followed, because a reload reads one tensor and every op
+  between the placeholder and it -- a slice, a view -- takes that tensor
+  first. In `index_select(stack, 0, row)`, `stack` is the offloaded buffer and
+  `row` is the loop counter; following both would send the counter to the host
+  too.
+  """
+  if placeholder.meta.get("saved_for_offloading", False):
+    return True
+  seen, stack = set(), [placeholder]
+  while stack:
+    node = stack.pop()
+    if node in seen:
+      continue
+    seen.add(node)
+    for user in node.users:
+      if user.op != "call_function" or not user.args or user.args[0] is not node:
+        continue
+      if "ao.reload" in str(user.target) or "ao::reload" in str(user.target):
+        return True
+      stack.append(user)
+  return False
+
+
+def _pin_offloaded_body_args(combine_fn, body_args):
+  """Returns `body_args` with host-offloaded operands moved back to the host.
+
+  `fx_to_mlir` below compiles the body on its own, so each operand becomes an
+  entry argument and gets HBM reserved for it -- including an activation the
+  run has deliberately parked on the host. At llama3-405B batch 2 that is one
+  63 GiB argument, and reserving it is what stops the body compiling.
+
+  `_backend` already does this for the top-level graph. It never sees this
+  compile.
+  """
+  if not isinstance(combine_fn, torch.fx.GraphModule):
+    return body_args
+  placeholders = [n for n in combine_fn.graph.nodes if n.op == "placeholder"]
+  pinned = list(body_args)
+  for i, (node, arg) in enumerate(zip(placeholders, body_args)):
+    if isinstance(arg, torch.Tensor) and _is_reloaded(node):
+      pinned[i] = tpu_torch_compile.placeholder(
+          list(arg.shape), arg.dtype, arg.requires_grad, is_pinned_host=True
+      )
+  return pinned
+
+
 def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
   """TPU implementation for scan higher-order op.
 
@@ -84,6 +133,7 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
 
   # Compile the body sub-graph to MLIR.
   body_args = init_list + x_list + extra_list
+  body_args = _pin_offloaded_body_args(actual_combine_fn, body_args)
   body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
 
   # Call the C++ binding to create a deferred scan operation.
