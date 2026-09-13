@@ -235,6 +235,18 @@ class CompileTest(seed_test_utils.RepeatableTest):
     metrics = self.call_and_compare(reduction_func, test_inputs, None)
     self.assertEqual(metrics["bounded_compile_events"], 2)
 
+  def test_dynamic_cumsum(self):
+    def cumsum_func(x):
+      return torch.cumsum(x, dim=-1)
+
+    test_inputs = [
+        (torch.ones(1, 2, 3),),  # static
+        (torch.ones(1, 2, 4),),  # bounded compile (1, 2, 4<=8)
+        (torch.ones(1, 2, 6),),  # no compile
+    ]
+    metrics = self.call_and_compare(cumsum_func, test_inputs, None)
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
   def test_matmul(self):
     def simple_matmul(x, y):
       return torch.matmul(x, y)
