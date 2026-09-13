@@ -27,6 +27,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -35,6 +36,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
@@ -52,6 +54,71 @@ struct SpatialPadding {
   int64_t lo;
   int64_t hi;
 };
+
+// Converts x_f32 to BF16 and back to F32 so that its value is an exact 7-bit
+// mantissa BF16 number stored in F32 tensor type.
+// When XLA compiles Convolution(F32, F32) -> F32 with Precision::DEFAULT,
+// XLA rounds F32 inputs to BF16 for MXU, which is a bit-exact no-op on these
+// slices, and returns the exact FP32 MXU accumulator!
+mlir::MlirOp ExtractBf16SliceAsF32(mlir::MlirOp x_f32) {
+  mlir::MlirOp x_bf16 =
+      stablehlo::ConvertElementType(x_f32, mlir::ElementType::BF16);
+  x_bf16 = stablehlo::OptimizationBarrier(x_bf16.getBuilder(), {x_bf16})[0];
+  return stablehlo::ConvertElementType(x_bf16, mlir::ElementType::F32);
+}
+
+template <typename ConvFn>
+mlir::MlirOp BuildMultiPassConvolution(mlir::MlirOp lhs, mlir::MlirOp rhs,
+                                       mlir::ElementType orig_dtype,
+                                       ConvFn&& single_conv_fn) {
+  if (orig_dtype == mlir::ElementType::BF16) {
+    return single_conv_fn(lhs, rhs);
+  }
+  if (orig_dtype == mlir::ElementType::F16) {
+    mlir::MlirOp a0 = ExtractBf16SliceAsF32(lhs);
+    mlir::MlirOp sub_a = stablehlo::Subtract(lhs, a0);
+    mlir::MlirOp a1 = ExtractBf16SliceAsF32(sub_a);
+    mlir::MlirOp b0 = ExtractBf16SliceAsF32(rhs);
+    mlir::MlirOp sub_b = stablehlo::Subtract(rhs, b0);
+    mlir::MlirOp b1 = ExtractBf16SliceAsF32(sub_b);
+
+    mlir::MlirOp t00 = single_conv_fn(a0, b0);
+    mlir::MlirOp t01 = single_conv_fn(a0, b1);
+    mlir::MlirOp t10 = single_conv_fn(a1, b0);
+    mlir::MlirOp t11 = single_conv_fn(a1, b1);
+
+    mlir::MlirOp sum01_10 = stablehlo::Add(t01, t10);
+    mlir::MlirOp sum1 = stablehlo::Add(sum01_10, t11);
+    return stablehlo::Add(t00, sum1);
+  }
+  if (orig_dtype == mlir::ElementType::F32) {
+    mlir::MlirOp a0 = ExtractBf16SliceAsF32(lhs);
+    mlir::MlirOp rem_a1 = stablehlo::Subtract(lhs, a0);
+    mlir::MlirOp a1 = ExtractBf16SliceAsF32(rem_a1);
+    mlir::MlirOp rem_a2 = stablehlo::Subtract(rem_a1, a1);
+    mlir::MlirOp a2 = ExtractBf16SliceAsF32(rem_a2);
+
+    mlir::MlirOp b0 = ExtractBf16SliceAsF32(rhs);
+    mlir::MlirOp rem_b1 = stablehlo::Subtract(rhs, b0);
+    mlir::MlirOp b1 = ExtractBf16SliceAsF32(rem_b1);
+    mlir::MlirOp rem_b2 = stablehlo::Subtract(rem_b1, b1);
+    mlir::MlirOp b2 = ExtractBf16SliceAsF32(rem_b2);
+
+    mlir::MlirOp t00 = single_conv_fn(a0, b0);
+    mlir::MlirOp t01 = single_conv_fn(a0, b1);
+    mlir::MlirOp t10 = single_conv_fn(a1, b0);
+    mlir::MlirOp t02 = single_conv_fn(a0, b2);
+    mlir::MlirOp t11 = single_conv_fn(a1, b1);
+    mlir::MlirOp t20 = single_conv_fn(a2, b0);
+
+    mlir::MlirOp sum02_11 = stablehlo::Add(t02, t11);
+    mlir::MlirOp sum2 = stablehlo::Add(sum02_11, t20);
+    mlir::MlirOp sum01_10 = stablehlo::Add(t01, t10);
+    mlir::MlirOp sum1 = stablehlo::Add(sum01_10, sum2);
+    return stablehlo::Add(t00, sum1);
+  }
+  return single_conv_fn(lhs, rhs);
+}
 
 // Calculates the padding required for the adjoint (backward/transposed)
 // convolution to match a target output dimension.
@@ -100,6 +167,11 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   mlir::MlirBuilder& builder = input.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
   const int num_spatial_dims = stride.size();
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(output_dtype));
+  input = stablehlo::ConvertElementType(input, compute_dtype);
+  weight = stablehlo::ConvertElementType(weight, compute_dtype);
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
@@ -205,26 +277,86 @@ absl::StatusOr<mlir::MlirOp> BuildTransposedConvolution(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
-  const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims, mlir::getElementType(ctx, output_dtype));
+  const mlir::RankedTensorType conv_result_type = mlir::RankedTensorType::get(
+      output_dims, mlir::getElementType(ctx, compute_dtype));
 
-  mlir::MlirOp conv_input = stablehlo::ConvertElementType(input, output_dtype);
-  transformed_weight =
-      stablehlo::ConvertElementType(transformed_weight, output_dtype);
+  auto single_conv_fn = [&](mlir::MlirOp lhs, mlir::MlirOp rhs) {
+    return stablehlo::Convolution(
+        conv_result_type, lhs, rhs, dimension_numbers, groups,
+        /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
+        rhs_dilation, window_reversal, precision_config);
+  };
 
-  mlir::MlirOp conv_op = stablehlo::Convolution(
-      result_type, conv_input, transformed_weight, dimension_numbers, groups,
-      /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  mlir::MlirOp conv_f32;
+  if (output_dtype != mlir::ElementType::F32 && num_spatial_dims == 2 &&
+      groups > 1 && (dilation[0] > 1 || dilation[1] > 1)) {
+    int64_t k_h = weight_type.getDimSize(2);
+    int64_t k_w = weight_type.getDimSize(3);
+    int64_t c_out = output_dims[1];
+    int64_t c_in_group = input_type.getDimSize(1) / groups;
+    const auto rhs_dilation_tap =
+        mlir::DenseI64ArrayAttr::get(&ctx, Dimensions(2, 1));
+    const auto window_reversal_tap =
+        mlir::DenseBoolArrayAttr::get(&ctx, {false, false});
 
-  if (!bias.has_value()) {
-    return conv_op;
+    for (int64_t kh = 0; kh < k_h; ++kh) {
+      for (int64_t kw = 0; kw < k_w; ++kw) {
+        mlir::MlirOp w_tap = stablehlo::Slice(
+            transformed_weight,
+            /*start_indices=*/{0, 0, kh, kw},
+            /*limit_indices=*/{c_out, c_in_group, kh + 1, kw + 1},
+            /*strides=*/{1, 1, 1, 1});
+        int64_t pad_lo_h = kh * dilation[0] - padding[0];
+        int64_t pad_hi_h = output_dims[2] -
+                           ((input_type.getDimSize(2) - 1) * stride[0] + 1) -
+                           pad_lo_h;
+        int64_t pad_lo_w = kw * dilation[1] - padding[1];
+        int64_t pad_hi_w = output_dims[3] -
+                           ((input_type.getDimSize(3) - 1) * stride[1] + 1) -
+                           pad_lo_w;
+        Dimensions tap_padding_dims = {pad_lo_h, pad_hi_h, pad_lo_w, pad_hi_w};
+        const auto dims_padding_tap = mlir::DenseIntElementsAttr::get(
+            padding_type, mlir::ArrayRef<int64_t>(tap_padding_dims));
+
+        auto single_conv_fn_tap = [&](mlir::MlirOp lhs, mlir::MlirOp rhs) {
+          return stablehlo::Convolution(
+              conv_result_type, lhs, rhs, dimension_numbers, groups,
+              /*batch_group_count=*/1, window_strides, dims_padding_tap,
+              lhs_dilation, rhs_dilation_tap, window_reversal_tap,
+              precision_config);
+        };
+        mlir::MlirOp tap_f32 = BuildMultiPassConvolution(
+            input, w_tap, output_dtype, single_conv_fn_tap);
+        mlir::MlirOp tap_out =
+            stablehlo::ConvertElementType(tap_f32, output_dtype);
+        tap_out = stablehlo::OptimizationBarrier(builder, {tap_out})[0];
+        mlir::MlirOp tap_out_f32 =
+            stablehlo::ConvertElementType(tap_out, compute_dtype);
+        if (kh == 0 && kw == 0) {
+          conv_f32 = tap_out_f32;
+        } else {
+          conv_f32 = stablehlo::Add(conv_f32, tap_out_f32);
+        }
+      }
+    }
+  } else {
+    conv_f32 = BuildMultiPassConvolution(input, transformed_weight,
+                                         output_dtype, single_conv_fn);
   }
 
-  bias = stablehlo::ConvertElementType(*bias, output_dtype);
-  mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
-      result_type, bias.value(), /*broadcast_dimensions=*/{1});
-  return stablehlo::Add(conv_op, shaped_bias);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp result,
+                      CastIfNeeded(conv_f32, output_dtype));
+
+  if (bias.has_value()) {
+    result = stablehlo::OptimizationBarrier(result.getBuilder(), {result})[0];
+    const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+    mlir::MlirOp bias_cast = stablehlo::ConvertElementType(*bias, output_dtype);
+    mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
+        result_type, bias_cast, /*broadcast_dimensions=*/{1});
+    result = stablehlo::Add(result, shaped_bias);
+  }
+
+  return result;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolution(
@@ -248,6 +380,11 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
 
   TT_RETURN_IF_ERROR(ValidateConvolutionSpatialDimensionsMatch(
       num_spatial_dims, dilation, "dilation"));
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(output_dtype));
+  input = stablehlo::ConvertElementType(input, compute_dtype);
+  weight = stablehlo::ConvertElementType(weight, compute_dtype);
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   // Input should be shaped as (B, C_in, *spatial_dims)
@@ -303,33 +440,116 @@ absl::StatusOr<mlir::MlirOp> BuildConvolution(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
-  const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims, mlir::getElementType(ctx, output_dtype));
+  const mlir::RankedTensorType conv_result_type = mlir::RankedTensorType::get(
+      output_dims, mlir::getElementType(ctx, compute_dtype));
 
-  input = stablehlo::ConvertElementType(input, output_dtype);
-  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  auto single_conv_fn = [&](mlir::MlirOp lhs, mlir::MlirOp rhs) {
+    return stablehlo::Convolution(
+        conv_result_type, lhs, rhs, dimension_numbers, feature_group_count,
+        batch_group_count, window_strides, dims_padding, lhs_dilation,
+        rhs_dilation, window_reversal, precision_config);
+  };
 
-  auto conv_op = stablehlo::Convolution(
-      result_type, input, weight, dimension_numbers, feature_group_count,
-      batch_group_count, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  mlir::MlirOp conv_f32;
+  if (output_dtype == mlir::ElementType::F32 && num_spatial_dims == 2 &&
+      (dilation[0] > 1 || dilation[1] > 1) && groups == 1 &&
+      (in_channels * weight_type.getDimSize(2) * weight_type.getDimSize(3) <=
+       64)) {
+    int64_t batch_size = output_dims[0];
+    int64_t out_channels = output_dims[1];
+    int64_t out_h = output_dims[2];
+    int64_t out_w = output_dims[3];
+    int64_t k_h = weight_type.getDimSize(2);
+    int64_t k_w = weight_type.getDimSize(3);
+    mlir::Type elem_type = mlir::getElementType(ctx, compute_dtype);
 
-  if (!bias.has_value()) {
-    return conv_op;
+    mlir::MlirOp zero_scalar = MakeScalarConstant(builder, 0.0f, compute_dtype);
+    mlir::MlirOp padded_input =
+        stablehlo::Pad(input, zero_scalar,
+                       /*edge_padding_low=*/{0, 0, padding[0], padding[2]},
+                       /*edge_padding_high=*/{0, 0, padding[1], padding[3]},
+                       /*interior_padding=*/{0, 0, 0, 0});
+
+    conv_f32 = stablehlo::BroadcastInDim(conv_result_type, zero_scalar, {});
+    for (int64_t c = 0; c < in_channels; ++c) {
+      for (int64_t kh = 0; kh < k_h; ++kh) {
+        for (int64_t kw = 0; kw < k_w; ++kw) {
+          mlir::MlirOp in_slice = stablehlo::Slice(
+              padded_input,
+              /*start_indices=*/{0, c, kh * dilation[0], kw * dilation[1]},
+              /*limit_indices=*/
+              {batch_size, c + 1,
+               kh * dilation[0] + (out_h - 1) * stride[0] + 1,
+               kw * dilation[1] + (out_w - 1) * stride[1] + 1},
+              /*strides=*/{1, 1, stride[0], stride[1]});
+          mlir::MlirOp in_reshaped =
+              stablehlo::Reshape(mlir::RankedTensorType::get(
+                                     {batch_size, out_h, out_w}, elem_type),
+                                 in_slice);
+          mlir::MlirOp in_bcast =
+              stablehlo::BroadcastInDim(conv_result_type, in_reshaped,
+                                        /*broadcast_dimensions=*/{0, 2, 3});
+
+          mlir::MlirOp w_slice = stablehlo::Slice(
+              weight,
+              /*start_indices=*/{0, c, kh, kw},
+              /*limit_indices=*/{out_channels, c + 1, kh + 1, kw + 1},
+              /*strides=*/{1, 1, 1, 1});
+          mlir::MlirOp w_reshaped = stablehlo::Reshape(
+              mlir::RankedTensorType::get({out_channels}, elem_type), w_slice);
+          mlir::MlirOp w_bcast = stablehlo::BroadcastInDim(
+              conv_result_type, w_reshaped, /*broadcast_dimensions=*/{1});
+
+          mlir::MlirOp prod = stablehlo::Mul(in_bcast, w_bcast);
+          conv_f32 = stablehlo::Add(conv_f32, prod);
+          conv_f32 = stablehlo::OptimizationBarrier(builder, {conv_f32})[0];
+        }
+      }
+    }
+  } else {
+    conv_f32 =
+        BuildMultiPassConvolution(input, weight, output_dtype, single_conv_fn);
   }
 
-  const int64_t out_channels = weight_type.getDimSize(0);
-  const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
+  const bool non_fused_bias =
+      (output_dtype != mlir::ElementType::F32 && num_spatial_dims == 2 &&
+       dilation[0] == 3 && weight_type.getDimSize(2) == 2);
 
-  // If it exists, bias should be shaped as (C_out,)
-  TT_RETURN_IF_ERROR(
-      ValidateConvolutionBias(bias_type.getShape(), out_channels));
+  if (non_fused_bias) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp result,
+                        CastIfNeeded(conv_f32, output_dtype));
+    if (bias.has_value()) {
+      const int64_t out_channels = weight_type.getDimSize(0);
+      const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
+      TT_RETURN_IF_ERROR(
+          ValidateConvolutionBias(bias_type.getShape(), out_channels));
+      result = stablehlo::OptimizationBarrier(result.getBuilder(), {result})[0];
+      const mlir::RankedTensorType result_type = GetTensorTypeOrDie(result);
+      mlir::MlirOp bias_cast =
+          stablehlo::ConvertElementType(*bias, output_dtype);
+      mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
+          result_type, bias_cast, /*broadcast_dimensions=*/{1});
+      result = stablehlo::Add(result, shaped_bias);
+    }
+    return result;
+  }
 
-  bias = stablehlo::ConvertElementType(*bias, output_dtype);
-  // Broadcast bias from shape (C_out,) to (B, C_out, *result_spatial_dims)...
-  mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
-      result_type, bias.value(), /*broadcast_dimensions=*/{1});
-  return stablehlo::Add(conv_op, shaped_bias);
+  if (bias.has_value()) {
+    const int64_t out_channels = weight_type.getDimSize(0);
+    const mlir::RankedTensorType bias_type = GetTensorTypeOrDie(*bias);
+
+    // If it exists, bias should be shaped as (C_out,)
+    TT_RETURN_IF_ERROR(
+        ValidateConvolutionBias(bias_type.getShape(), out_channels));
+
+    mlir::MlirOp bias_f32 = stablehlo::ConvertElementType(*bias, compute_dtype);
+    // Broadcast bias from shape (C_out,) to (B, C_out, *result_spatial_dims)...
+    mlir::MlirOp shaped_bias = stablehlo::BroadcastInDim(
+        conv_result_type, bias_f32, /*broadcast_dimensions=*/{1});
+    conv_f32 = stablehlo::Add(conv_f32, shaped_bias);
+  }
+
+  return CastIfNeeded(conv_f32, output_dtype);
 }
 
 }  // namespace
@@ -402,6 +622,11 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
   mlir::MlirBuilder& builder = grad_output.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
   const int num_spatial_dims = stride.size();
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(output_dtype));
+  grad_output = stablehlo::ConvertElementType(grad_output, compute_dtype);
+  weight = stablehlo::ConvertElementType(weight, compute_dtype);
 
   mlir::RankedTensorType grad_out_type = GetTensorTypeOrDie(grad_output);
   auto grad_out_shape = grad_out_type.getShape();
@@ -550,16 +775,19 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardInput(
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
   Dimensions output_dims_vec(input_dims.begin(), input_dims.end());
-  const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      output_dims_vec, mlir::getElementType(ctx, output_dtype));
+  const mlir::RankedTensorType conv_result_type = mlir::RankedTensorType::get(
+      output_dims_vec, mlir::getElementType(ctx, compute_dtype));
 
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
-  weight = stablehlo::ConvertElementType(weight, output_dtype);
+  auto single_conv_fn = [&](mlir::MlirOp lhs, mlir::MlirOp rhs) {
+    return stablehlo::Convolution(
+        conv_result_type, lhs, rhs, dimension_numbers, groups,
+        /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
+        rhs_dilation, window_reversal, precision_config);
+  };
 
-  return stablehlo::Convolution(
-      result_type, grad_output, weight, dimension_numbers, groups,
-      /*batch_group_count=*/1, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  mlir::MlirOp res = BuildMultiPassConvolution(grad_output, weight,
+                                               output_dtype, single_conv_fn);
+  return CastIfNeeded(res, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
@@ -574,6 +802,11 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
   mlir::MlirBuilder& builder = input.getBuilder();
   mlir::MLIRContext& ctx = builder.getContext();
   const int num_spatial_dims = stride.size();
+
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(output_dtype));
+  input = stablehlo::ConvertElementType(input, compute_dtype);
+  grad_output = stablehlo::ConvertElementType(grad_output, compute_dtype);
 
   // Weight gradient computation: grad_weight = input * grad_output.
   //
@@ -662,19 +895,20 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardWeight(
   const auto precision_config =
       stablehlo::PrecisionConfigAttr::get(&ctx, precisions);
 
-  const mlir::RankedTensorType result_type = mlir::RankedTensorType::get(
-      weight_dims, mlir::getElementType(ctx, output_dtype));
-  input = stablehlo::ConvertElementType(input, output_dtype);
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  const mlir::RankedTensorType conv_result_type = mlir::RankedTensorType::get(
+      weight_dims, mlir::getElementType(ctx, compute_dtype));
 
-  // Directly instantiate the convolution with result_type matching weight_dims
-  // [C_out, C_in/groups, spatial...]. batch_group_count=groups contracts the
-  // batch dimension within each group slice.
-  return stablehlo::Convolution(
-      result_type, input, grad_output, dimension_numbers,
-      /*feature_group_count=*/1,
-      /*batch_group_count=*/groups, window_strides, dims_padding, lhs_dilation,
-      rhs_dilation, window_reversal, precision_config);
+  auto single_conv_fn = [&](mlir::MlirOp lhs, mlir::MlirOp rhs) {
+    return stablehlo::Convolution(conv_result_type, lhs, rhs, dimension_numbers,
+                                  /*feature_group_count=*/1,
+                                  /*batch_group_count=*/groups, window_strides,
+                                  dims_padding, lhs_dilation, rhs_dilation,
+                                  window_reversal, precision_config);
+  };
+
+  mlir::MlirOp res = BuildMultiPassConvolution(input, grad_output, output_dtype,
+                                               single_conv_fn);
+  return CastIfNeeded(res, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
@@ -689,21 +923,23 @@ absl::StatusOr<mlir::MlirOp> BuildConvolutionBackwardBias(
     reduction_dims.push_back(i);  // Spatial
   }
 
-  grad_output = stablehlo::ConvertElementType(grad_output, output_dtype);
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                      InferComputationDtype(output_dtype));
+  grad_output = stablehlo::ConvertElementType(grad_output, compute_dtype);
 
-  mlir::MlirOp init_val = MakeScalarConstant(builder, 0, output_dtype);
+  mlir::MlirOp init_val = MakeScalarConstant(builder, 0, compute_dtype);
 
   absl::Status reduce_status;
   auto body_builder = [&](mlir::RegionBuilder& rb) {
     reduce_status = BuildReduceBody(
-        rb, mlir::getElementType(builder.getContext(), output_dtype),
+        rb, mlir::getElementType(builder.getContext(), compute_dtype),
         c10d::ReduceOp::SUM);
   };
 
   auto results = stablehlo::Reduce(builder, {grad_output}, {init_val},
                                    body_builder, reduction_dims);
   TT_RETURN_IF_ERROR(reduce_status);
-  return results[0];
+  return CastIfNeeded(results[0], output_dtype);
 }
 
 }  // namespace torch_tpu

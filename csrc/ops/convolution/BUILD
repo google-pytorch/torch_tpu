@@ -37,6 +37,7 @@ torch_tpu_cc_library(
     hdrs = ["convolution.h"],
     deps = [
         ":convolution_checks",
+        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
