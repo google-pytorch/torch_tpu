@@ -198,36 +198,39 @@ absl::StatusOr<LayerNormShloResults> BuildLayerNormShlo(
   mlir::MlirOp normalized_input =
       mlir::stablehlo::Mul(input_minus_mean, rstd_broadcasted);
 
-  // Compute affine output by multiplying normalized input by gamma and adding
-  // beta.
-  mlir::MlirOp normalized_input_casted = normalized_input;
-  if (stats_type != element_type) {
-    normalized_input_casted =
-        mlir::stablehlo::ConvertElementType(normalized_input, element_type);
-  }
-
-  mlir::MlirOp normalized_input_times_weight = normalized_input_casted;
+  // Compute affine output in accumulator precision (stats_type) before
+  // downcasting to match PyTorch reference (layer_norm_kernel.cu) and enable
+  // single-pass XLA loop fusion on TPU.
+  mlir::MlirOp affine = normalized_input;
   if (weight_op.has_value()) {
-    mlir::MlirOp weight_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *weight_op, reduction_axes);
-    normalized_input_times_weight =
-        mlir::stablehlo::Mul(normalized_input_casted, weight_broadcasted);
+    mlir::MlirOp weight = *weight_op;
+    if (stats_type != element_type) {
+      weight = mlir::stablehlo::ConvertElementType(weight, stats_type);
+    }
+    mlir::MlirOp weight_broadcasted = mlir::stablehlo::BroadcastInDim(
+        stats_tensor_type, weight, reduction_axes);
+    affine = mlir::stablehlo::Mul(affine, weight_broadcasted);
   }
 
-  mlir::MlirOp affine_output = normalized_input_times_weight;
   if (bias_op.has_value()) {
-    mlir::MlirOp bias_broadcasted =
-        mlir::stablehlo::BroadcastInDim(input_type, *bias_op, reduction_axes);
+    mlir::MlirOp bias = *bias_op;
+    if (stats_type != element_type) {
+      bias = mlir::stablehlo::ConvertElementType(bias, stats_type);
+    }
+    mlir::MlirOp bias_broadcasted = mlir::stablehlo::BroadcastInDim(
+        stats_tensor_type, bias, reduction_axes);
+    affine = mlir::stablehlo::Add(affine, bias_broadcasted);
+  }
 
-    affine_output =
-        mlir::stablehlo::Add(normalized_input_times_weight, bias_broadcasted);
+  if (stats_type != element_type) {
+    affine = mlir::stablehlo::ConvertElementType(affine, element_type);
   }
 
   // mean and rstd are returned without trailing size-1 dimensions.
   // Future calls to GetBuffer will use the appropriate view logic
   // to reshape them as desired for downstream use.
   return LayerNormShloResults{
-      .normalized_values = affine_output, .mean = mean, .reciprocal_std = rstd};
+      .normalized_values = affine, .mean = mean, .reciprocal_std = rstd};
 }
 
 absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
