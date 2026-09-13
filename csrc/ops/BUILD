@@ -57,6 +57,25 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
+    name = "contraction_utils",
+    srcs = ["contraction_utils.cc"],
+    hdrs = ["contraction_utils.h"],
+    deps = [
+        ":op_builder_utils",
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//shims/torch/c10/core:base_headers",
+        "//shims/torch/torch/headeronly:torch_headeronly",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+        "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "op_builder_utils",
     srcs = ["op_builder_utils.cc"],
     hdrs = ["op_builder_utils.h"],

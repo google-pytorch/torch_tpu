@@ -15,36 +15,26 @@
 #include "csrc/ops/dot/dot.h"
 
 #include "absl/status/statusor.h"
+#include "csrc/common/dtype.h"
+#include "csrc/common/error_utils.h"
+#include "csrc/ops/contraction_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
 absl::StatusOr<mlir::MlirOp> BuildDotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::stablehlo::Precision precision) {
   const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
-  const mlir::RankedTensorType rhs_type = GetTensorTypeOrDie(rhs);
-  bool is_any_i64 = lhs_type.getElementType().isInteger(64) ||
-                    rhs_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    lhs = mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F64);
-    rhs = mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F64);
-  }
-  auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-      &lhs.getContext(), {precision, precision});
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType out_dtype,
+                      ConvertTo<mlir::ElementType>(lhs_type.getElementType()));
   auto dot_dimension_numbers =
       mlir::stablehlo::getDefaultDotDimensionNumbers(lhs.getValue());
-  auto dot_result = mlir::stablehlo::DotGeneral(lhs, rhs, dot_dimension_numbers,
-                                                precision_config);
-  if (is_any_i64) {
-    return mlir::stablehlo::ConvertElementType(dot_result,
-                                               lhs_type.getElementType());
-  }
-  return dot_result;
+  return BuildAccurateDotGeneral(lhs, rhs, dot_dimension_numbers, out_dtype,
+                                 precision);
 }
 
 }  // namespace torch_tpu

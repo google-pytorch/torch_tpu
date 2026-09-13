@@ -928,8 +928,9 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     expected_mlir = textwrap.dedent("""\
         module @tt_jit_compile_api_test_test_dynamic_placeholder_mm {
           func.func @main(%arg0: tensor<?x128xbf16, #stablehlo.bounds<100, ?>>, %arg1: tensor<128x64xbf16>) -> tensor<?x64xbf16, #stablehlo.bounds<100, ?>> {
-            %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<?x128xbf16, #stablehlo.bounds<100, ?>>, tensor<128x64xbf16>) -> tensor<?x64xbf16, #stablehlo.bounds<100, ?>>
-            return %0 : tensor<?x64xbf16, #stablehlo.bounds<100, ?>>
+            %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<?x128xbf16, #stablehlo.bounds<100, ?>>, tensor<128x64xbf16>) -> tensor<?x64xf32, #stablehlo.bounds<100, ?>>
+            %1 = stablehlo.convert %0 : (tensor<?x64xf32, #stablehlo.bounds<100, ?>>) -> tensor<?x64xbf16, #stablehlo.bounds<100, ?>>
+            return %1 : tensor<?x64xbf16, #stablehlo.bounds<100, ?>>
           }
         }""")
 

@@ -34,11 +34,12 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/ops/bmm/bmm.h"
+#include "csrc/ops/contraction_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "mlir/IR/Types.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -119,56 +120,87 @@ absl::StatusOr<mlir::MlirOp> BuildBaddbmmShlo(
   Dimensions out_shape = {batch1_shape[0], batch1_shape[1], batch2_shape[2]};
   auto& builder = batch1_op.getBuilder();
 
+  auto dot_dimension_numbers = mlir::stablehlo::DotDimensionNumbersAttr::get(
+      &batch1_op.getContext(),
+      /*lhs_batch_dimensions=*/{0},
+      /*rhs_batch_dimensions=*/{0},
+      /*lhs_contracting_dimensions=*/{2},
+      /*rhs_contracting_dimensions=*/{1});
+
   // Case 1: beta is zero. Baddbmm result is just alpha * (batch1 @ batch2).
   if (beta.IsZero()) {
     if (alpha.IsZero()) {
       return MakeConstant(builder, at::Scalar(0.0), out_dtype, out_shape);
     }
     TT_ASSIGN_OR_RETURN(
-        mlir::MlirOp bmm_res,
-        BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
-    if (alpha.IsOne()) {
-      return bmm_res;
+        mlir::MlirOp bmm_acc,
+        BuildAccurateDotGeneralAccumulator(batch1_op, batch2_op,
+                                           dot_dimension_numbers, precision));
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType acc_elem_type,
+                        ConvertTo<mlir::ElementType>(
+                            GetTensorTypeOrDie(bmm_acc).getElementType()));
+    if (!alpha.IsOne()) {
+      TT_ASSIGN_OR_RETURN(auto alpha_acc,
+                          CastOrConvertTo(*alpha_op, acc_elem_type));
+      TT_ASSIGN_OR_RETURN(auto alpha_tensor,
+                          BroadcastIfNeeded(alpha_acc, bmm_acc));
+      bmm_acc = mlir::stablehlo::Mul(bmm_acc, alpha_tensor);
     }
-    // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
-    TT_ASSIGN_OR_RETURN(auto alpha_tensor,
-                        BroadcastIfNeeded(*alpha_op, bmm_res));
-    return mlir::stablehlo::Mul(bmm_res, alpha_tensor);
+    return CastOrConvertTo(bmm_acc, out_dtype);
   }
 
   // Case 2: beta is not zero. self_op is guaranteed to have a value.
 
   // Case 2a: alpha is zero. Baddbmm result is just beta * self.
   if (alpha.IsZero()) {
-    TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, out_shape));
+    const mlir::Type self_type = GetTensorTypeOrDie(*self_op).getElementType();
+    mlir::ElementType compute_type;
+    if (self_type.isBF16() || self_type.isF16()) {
+      compute_type = mlir::ElementType::F32;
+    } else {
+      TT_ASSIGN_OR_RETURN(compute_type,
+                          ConvertTo<mlir::ElementType>(self_type));
+    }
+    TT_ASSIGN_OR_RETURN(auto self_acc, CastOrConvertTo(*self_op, compute_type));
+    TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(self_acc, out_shape));
     if (!beta.IsOne()) {
-      // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
+      TT_ASSIGN_OR_RETURN(auto beta_acc,
+                          CastOrConvertTo(*beta_op, compute_type));
       TT_ASSIGN_OR_RETURN(auto beta_tensor,
-                          BroadcastIfNeeded(*beta_op, self_bcst));
+                          BroadcastIfNeeded(beta_acc, self_bcst));
       self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
     }
-    return self_bcst;
+    return CastOrConvertTo(self_bcst, out_dtype);
   }
 
-  // Case 2b: alpha is not zero. Compute bmm_res = alpha * (batch1 @ batch2).
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp bmm_res,
-                      BuildBmmShlo(batch1_op, batch2_op, out_dtype, precision));
+  // Case 2b: alpha is not zero. Compute bmm_acc = alpha * (batch1 @ batch2).
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp bmm_acc,
+      BuildAccurateDotGeneralAccumulator(batch1_op, batch2_op,
+                                         dot_dimension_numbers, precision));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType acc_elem_type,
+                      ConvertTo<mlir::ElementType>(
+                          GetTensorTypeOrDie(bmm_acc).getElementType()));
   if (!alpha.IsOne()) {
-    // alpha is neither 0 nor 1, so alpha_op is guaranteed to have a value.
+    TT_ASSIGN_OR_RETURN(auto alpha_acc,
+                        CastOrConvertTo(*alpha_op, acc_elem_type));
     TT_ASSIGN_OR_RETURN(auto alpha_tensor,
-                        BroadcastIfNeeded(*alpha_op, bmm_res));
-    bmm_res = mlir::stablehlo::Mul(bmm_res, alpha_tensor);
+                        BroadcastIfNeeded(alpha_acc, bmm_acc));
+    bmm_acc = mlir::stablehlo::Mul(bmm_acc, alpha_tensor);
   }
-  // Compute beta * self and add.
-  TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(*self_op, bmm_res));
+  // Compute beta * self in acc_elem_type and add.
+  TT_ASSIGN_OR_RETURN(auto self_acc, CastOrConvertTo(*self_op, acc_elem_type));
+  TT_ASSIGN_OR_RETURN(auto self_bcst, BroadcastIfNeeded(self_acc, bmm_acc));
   if (!beta.IsOne()) {
-    // beta is neither 0 nor 1, so beta_op is guaranteed to have a value.
+    TT_ASSIGN_OR_RETURN(auto beta_acc,
+                        CastOrConvertTo(*beta_op, acc_elem_type));
     TT_ASSIGN_OR_RETURN(auto beta_tensor,
-                        BroadcastIfNeeded(*beta_op, self_bcst));
+                        BroadcastIfNeeded(beta_acc, self_bcst));
     self_bcst = mlir::stablehlo::Mul(self_bcst, beta_tensor);
   }
 
-  return mlir::stablehlo::Add(self_bcst, bmm_res);
+  mlir::MlirOp res_acc = mlir::stablehlo::Add(self_bcst, bmm_acc);
+  return CastOrConvertTo(res_acc, out_dtype);
 }
 
 auto GetBaddbmmOpBuilder(MaybePromotedScalar beta, MaybePromotedScalar alpha,
@@ -272,13 +304,15 @@ ReturnType ResolveAndDispatchBaddbmm(
     MaybePromotedScalar beta, MaybePromotedScalar alpha,
     at::ScalarType out_dtype, OpParamCacheKeys& param_keys,
     std::optional<OpName> op_name_override, DispatchFn&& dispatch_fn) {
+  const at::ScalarType scalar_tensor_dtype =
+      c10::isReducedFloatingType(out_dtype) ? at::kFloat : out_dtype;
   std::optional<at::Tensor> beta_tensor;
   if (!beta.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(beta_tensor, beta.GetTensor(scalar_tensor_dtype));
   }
   std::optional<at::Tensor> alpha_tensor;
   if (!alpha.ValueMatchesExclude()) {
-    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(out_dtype));
+    TT_ASSIGN_OR_RETURN(alpha_tensor, alpha.GetTensor(scalar_tensor_dtype));
   }
   return DispatchBaddbmm<ReturnType>(
       self, batch1, batch2, std::move(beta), std::move(beta_tensor),

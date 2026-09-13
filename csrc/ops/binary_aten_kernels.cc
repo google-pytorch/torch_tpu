@@ -114,10 +114,12 @@ absl::StatusOr<DeviceBufferRef> DispatchBinaryOp(
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType default_comp_dtype,
                       ToElementType(promoted_scalar_type));
+  mlir::ElementType computation_dtype =
+      opts.computation_dtype.value_or(default_comp_dtype);
   mlir::ElementType output_dtype =
-      opts.result_dtype.value_or(computation_dtype);
+      opts.result_dtype.value_or(default_comp_dtype);
 
   auto op_builder =
       [bin_op_builder = std::move(bin_op_builder),
@@ -159,10 +161,12 @@ absl::StatusOr<DeviceBufferRef> DispatchTernaryOp(
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType default_comp_dtype,
                       ToElementType(promoted_scalar_type));
+  mlir::ElementType computation_dtype =
+      opts.computation_dtype.value_or(default_comp_dtype);
   mlir::ElementType output_dtype =
-      opts.result_dtype.value_or(computation_dtype);
+      opts.result_dtype.value_or(default_comp_dtype);
 
   auto op_builder = [ternary_op_builder = std::move(ternary_op_builder)](
                         FixedSizeSpan<mlir::MlirOp, 3> inputs) {
@@ -232,8 +236,10 @@ absl::Status DispatchBinaryOpOut(const at::Tensor& self,
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType default_comp_dtype,
                       ToElementType(promoted_scalar_type));
+  mlir::ElementType computation_dtype =
+      opts.computation_dtype.value_or(default_comp_dtype);
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
@@ -309,8 +315,10 @@ absl::Status TernaryOpOut(const at::Tensor& self, const at::Tensor& other,
       promoted_scalar_type = c10::get_default_dtype_as_scalartype();
     }
   }
-  TT_ASSIGN_OR_RETURN(mlir::ElementType computation_dtype,
+  TT_ASSIGN_OR_RETURN(mlir::ElementType default_comp_dtype,
                       internal::ToElementType(promoted_scalar_type));
+  mlir::ElementType computation_dtype =
+      opts.computation_dtype.value_or(default_comp_dtype);
   TT_ASSIGN_OR_RETURN(const auto out_element_type,
                       ConvertTo<mlir::ElementType>(out.scalar_type()));
 
@@ -1054,17 +1062,36 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
     TT_THROW_IF_ERROR(ValidateAlphaTypeSupported(alpha));
 
     const at::ScalarType promoted_scalar_type = at::result_type(self, other);
+    const at::ScalarType computation_scalar_type =
+        c10::isReducedFloatingType(promoted_scalar_type) ? at::kFloat
+                                                         : promoted_scalar_type;
+    TT_ASSIGN_OR_THROW(const mlir::ElementType result_elem_type,
+                       internal::ToElementType(promoted_scalar_type));
+    TT_ASSIGN_OR_THROW(const mlir::ElementType comp_elem_type,
+                       internal::ToElementType(computation_scalar_type));
+
+    auto move_cpu_scalar =
+        [&](const at::Tensor& t) -> absl::StatusOr<at::Tensor> {
+      if (t.device().type() == c10::DeviceType::CPU && t.numel() == 1) {
+        return MakeTensor(t.item(), computation_scalar_type);
+      }
+      return t;
+    };
+    TT_ASSIGN_OR_THROW(at::Tensor self_tpu, move_cpu_scalar(self));
+    TT_ASSIGN_OR_THROW(at::Tensor other_tpu, move_cpu_scalar(other));
 
     // As an optimization, skip the scaling if alpha is 1.
     if (promoted_alpha.IsOne()) {
       TT_THROW_IF_ERROR(
-          BinaryOpOut(self, other, out, BuildAddShlo,
-                      {.op_param_cache_keys = std::move(param_keys)}));
+          BinaryOpOut(self_tpu, other_tpu, out, BuildAddShlo,
+                      {.op_param_cache_keys = std::move(param_keys),
+                       .result_dtype = result_elem_type,
+                       .computation_dtype = comp_elem_type}));
       return out;
     }
 
     TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                       promoted_alpha.GetTensor(promoted_scalar_type));
+                       promoted_alpha.GetTensor(computation_scalar_type));
 
     auto op_builder =
         [](mlir::MlirOp self_op, mlir::MlirOp other_op,
@@ -1073,9 +1100,11 @@ at::Tensor& AtenAddOut(const at::Tensor& self, const at::Tensor& other,
       return BuildAddShlo(self_op, mul_op);
     };
 
-    TT_THROW_IF_ERROR(
-        TernaryOpOut(self, other, alpha_tensor, out, std::move(op_builder),
-                     {.op_param_cache_keys = std::move(param_keys)}));
+    TT_THROW_IF_ERROR(TernaryOpOut(
+        self_tpu, other_tpu, alpha_tensor, out, std::move(op_builder),
+        {.op_param_cache_keys = std::move(param_keys),
+         .result_dtype = result_elem_type,
+         .computation_dtype = comp_elem_type}));
     return out;
   });
 }

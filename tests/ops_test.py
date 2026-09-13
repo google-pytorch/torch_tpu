@@ -870,14 +870,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int8: {"rtol": 2.8e-5},
         torch.uint8: {"rtol": 2.8e-5},
     },
-    "add": {
-        torch.bfloat16: {"rtol": 1.8e-2, "atol": 1.5e-2},
-        torch.float16: {"rtol": 4.5e-3, "atol": 1.2e-3},
-    },
-    "addmm": {
-        torch.float16: {"rtol": 1.5e-2},
-        torch.float32: {"rtol": 7.7e-3},
-    },
     "asin": {
         torch.complex64: {"rtol": 7.9e-5, "atol": 1e-4},
     },
@@ -897,17 +889,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
     "atanh": {
         torch.complex64: {"rtol": 1.8e-5, "atol": 3.2e-5},
         torch.float32: {"rtol": 5.8e-5, "atol": 7.7e-5},
-    },
-    "baddbmm": {
-        torch.bfloat16: {"rtol": 1.7e-2, "atol": 1.5e-2},
-        torch.complex64: {"rtol": 8.3e-2},
-        torch.float16: {"rtol": 2.8e-1, "atol": 3.3e-1},
-        torch.float32: {"rtol": 3.4e-1, "atol": 3.6e-1},
-    },
-    "bmm": {
-        torch.complex64: {"rtol": 9.6e-2},
-        torch.float16: {"rtol": 1.1e-1, "atol": 3.5e-1},
-        torch.float32: {"rtol": 6.6e-2, "atol": 3.4e-1},
     },
     "cdist": {
         torch.bfloat16: {"atol": 2.1e-1},
@@ -1052,17 +1033,6 @@ ACCURACY_OVERRIDES_VS_GPU = {
         torch.int64: {"atol": 7.5e-5},
         torch.int8: {"atol": 7.5e-5},
         torch.uint8: {"atol": 7.5e-5},
-    },
-    "matmul": {
-        torch.bfloat16: {"rtol": 1.2e-1, "atol": 1.9e-1},
-        torch.complex64: {"rtol": 1.4e-1},
-        torch.float16: {"rtol": 3e-1, "atol": 4.7e-1},
-        torch.float32: {"rtol": 2.7e-1, "atol": 3.9e-1},
-    },
-    "mm": {
-        torch.complex64: {"rtol": 3.8e-2},
-        torch.float16: {"rtol": 4.8e-2},
-        torch.float32: {"rtol": 5.2e-2},
     },
     # Tolerance overrides justified for performance: native bfloat16/float16
     # pooling computations avoid costly intermediate upcasts to float32.
@@ -1278,14 +1248,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.complex64: {"rtol": 1.8e-5, "atol": 3.2e-5},
         torch.float32: {"rtol": 5.8e-5, "atol": 7.7e-5},
     },
-    "baddbmm": {
-        torch.complex64: {"rtol": 6.9e-2},
-    },
-    "bmm": {
-        torch.complex64: {"rtol": 9.6e-2},
-        torch.float16: {"rtol": 1.1e-1, "atol": 3.5e-1},
-        torch.float32: {"rtol": 6.6e-2, "atol": 3.4e-1},
-    },
     "cos": {
         torch.complex64: {"rtol": 4.5e-6},
     },
@@ -1362,12 +1324,6 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
         torch.int64: {"atol": 7.5e-5},
         torch.int8: {"atol": 7.5e-5},
         torch.uint8: {"atol": 7.5e-5},
-    },
-    "matmul": {
-        torch.complex64: {"rtol": 5.2e-2},
-    },
-    "mm": {
-        torch.complex64: {"rtol": 3.8e-2},
     },
     # Tolerance overrides justified for performance: native bfloat16/float16
     # pooling computations avoid costly intermediate upcasts to float32.

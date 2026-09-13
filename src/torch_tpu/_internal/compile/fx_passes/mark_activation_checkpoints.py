@@ -36,6 +36,8 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
   else:
     graph = gm_or_graph
 
+  graph.eliminate_dead_code()
+
   recompute_nodes = set()
 
   for node in graph.nodes:
@@ -55,7 +57,7 @@ def apply(gm_or_graph: torch.fx.GraphModule | torch.fx.Graph) -> None:
       if user in recompute_nodes:
         is_leaf = False
         break
-    if is_leaf:
+    if is_leaf and len(node.users) > 0:
       leaf_nodes.add(node)
 
   for node in leaf_nodes:

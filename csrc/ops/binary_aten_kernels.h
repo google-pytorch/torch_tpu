@@ -62,6 +62,7 @@ struct BinaryOpOptions {
   // `out`
   //   (validated via ValidateOutDtype).
   std::optional<mlir::ElementType> result_dtype = std::nullopt;
+  std::optional<mlir::ElementType> computation_dtype = std::nullopt;
   // Whether the out-variant kernel allows casting the natural result dtype
   // to a different output tensor dtype via c10::canCast (true for
   // math/arithmetic ops, false for ops like `complex` or `polar` that enforce
@@ -87,6 +88,7 @@ struct TernaryOpOptions {
   // `out`
   //   (validated via ValidateOutDtype).
   std::optional<mlir::ElementType> result_dtype = std::nullopt;
+  std::optional<mlir::ElementType> computation_dtype = std::nullopt;
   // Whether the out-variant kernel allows casting the natural result dtype
   // to a different output tensor dtype via c10::canCast (true for
   // math/arithmetic ops, false for ops that enforce strict dtype matching).

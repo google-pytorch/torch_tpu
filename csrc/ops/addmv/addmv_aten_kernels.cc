@@ -32,6 +32,7 @@
 #include "csrc/common/fixed_size_span.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/op_dispatcher.h"
+#include "csrc/ops/contraction_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -41,72 +42,64 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
 
 namespace stablehlo = mlir::stablehlo;
 
-// Matrix-vector dot product helper.
-mlir::MlirOp MatVecDot(mlir::MlirOp mat_op, mlir::MlirOp vec_op,
-                       mlir::ElementType out_dtype,
-                       mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType mat_type = GetTensorTypeOrDie(mat_op);
-  const mlir::RankedTensorType vec_type = GetTensorTypeOrDie(vec_op);
-
-  // XLA doesn't support matmuls with i64, so we convert them to f64.
-  const bool is_any_i64 = mat_type.getElementType().isInteger(64) ||
-                          vec_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    mat_op = stablehlo::ConvertElementType(mat_op, mlir::ElementType::F64);
-    vec_op = stablehlo::ConvertElementType(vec_op, mlir::ElementType::F64);
-  }
-
-  // After matmul, we want the result back in the original type, so we specify
-  // the preferred element type to be the output type.
-  mlir::MlirOp mv_op = stablehlo::DotGeneral(
-      mat_op, vec_op,
-      /*dotDimsAttr=*/
-      stablehlo::DotDimensionNumbersAttr::get(
-          &mat_op.getContext(), /*lhs_batch_dimensions=*/{},
-          /*rhs_batch_dimensions=*/{}, /*lhs_contracting_dimensions=*/{1},
-          /*rhs_contracting_dimensions=*/{0}),
-      /*precisionConfig=*/
-      stablehlo::PrecisionConfigAttr::get(&mat_op.getContext(),
-                                          {precision, precision}));
-
-  // Cast the matmul result back to the original type right away. CPU behavior
-  // expects the computation to be lossy not precise.
-  if (is_any_i64) {
-    mv_op = stablehlo::ConvertElementType(mv_op, out_dtype);
-  }
-  return mv_op;
+absl::StatusOr<mlir::MlirOp> MatVecDotAcc(
+    mlir::MlirOp mat_op, mlir::MlirOp vec_op,
+    mlir::stablehlo::Precision precision) {
+  auto dot_dims = stablehlo::DotDimensionNumbersAttr::get(
+      &mat_op.getContext(), /*lhs_batch_dimensions=*/{},
+      /*rhs_batch_dimensions=*/{}, /*lhs_contracting_dimensions=*/{1},
+      /*rhs_contracting_dimensions=*/{0});
+  return BuildAccurateDotGeneralAccumulator(mat_op, vec_op, dot_dims,
+                                            precision);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAddmvShloBetaZero(
     mlir::MlirOp mat_op, mlir::MlirOp vec_op, mlir::MlirOp alpha_op,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, out_dtype, precision);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mv_acc,
+                      MatVecDotAcc(mat_op, vec_op, precision));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType acc_elem_type,
+                      ConvertTo<mlir::ElementType>(
+                          GetTensorTypeOrDie(mv_acc).getElementType()));
+  TT_ASSIGN_OR_RETURN(auto alpha_acc, CastOrConvertTo(alpha_op, acc_elem_type));
   TT_ASSIGN_OR_RETURN(auto broadcasted_alpha,
-                      BroadcastIfNeeded(alpha_op, mv_op));
-  return stablehlo::Mul(broadcasted_alpha, mv_op);
+                      BroadcastIfNeeded(alpha_acc, mv_acc));
+  mlir::MlirOp scaled_mv = stablehlo::Mul(broadcasted_alpha, mv_acc);
+  return CastOrConvertTo(scaled_mv, out_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildAddmvShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat_op, mlir::MlirOp vec_op,
     mlir::MlirOp beta_op, mlir::MlirOp alpha_op, mlir::ElementType out_dtype,
     mlir::stablehlo::Precision precision) {
-  auto mv_op = MatVecDot(mat_op, vec_op, out_dtype, precision);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp mv_acc,
+                      MatVecDotAcc(mat_op, vec_op, precision));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType acc_elem_type,
+                      ConvertTo<mlir::ElementType>(
+                          GetTensorTypeOrDie(mv_acc).getElementType()));
+
+  TT_ASSIGN_OR_RETURN(auto alpha_acc, CastOrConvertTo(alpha_op, acc_elem_type));
+  TT_ASSIGN_OR_RETURN(auto beta_acc, CastOrConvertTo(beta_op, acc_elem_type));
+  TT_ASSIGN_OR_RETURN(auto self_acc, CastOrConvertTo(self_op, acc_elem_type));
 
   TT_ASSIGN_OR_RETURN(auto broadcasted_alpha,
-                      BroadcastIfNeeded(alpha_op, mv_op));
+                      BroadcastIfNeeded(alpha_acc, mv_acc));
   TT_ASSIGN_OR_RETURN(auto broadcasted_beta,
-                      BroadcastIfNeeded(beta_op, self_op));
+                      BroadcastIfNeeded(beta_acc, self_acc));
 
-  auto bias_op = stablehlo::Mul(broadcasted_beta, self_op);
-  TT_ASSIGN_OR_RETURN(auto broadcasted_bias, BroadcastIfNeeded(bias_op, mv_op));
-  auto scaled_mv_op = stablehlo::Mul(broadcasted_alpha, mv_op);
-  return stablehlo::Add(broadcasted_bias, scaled_mv_op);
+  auto bias_op = stablehlo::Mul(broadcasted_beta, self_acc);
+  TT_ASSIGN_OR_RETURN(auto broadcasted_bias,
+                      BroadcastIfNeeded(bias_op, mv_acc));
+  auto scaled_mv_op = stablehlo::Mul(broadcasted_alpha, mv_acc);
+  mlir::MlirOp sum_op = stablehlo::Add(broadcasted_bias, scaled_mv_op);
+  return CastOrConvertTo(sum_op, out_dtype);
 }
 
 absl::Status Addmv(const at::Tensor& self, const at::Tensor& mat,
@@ -146,7 +139,10 @@ absl::Status Addmv(const at::Tensor& self, const at::Tensor& mat,
     return BuildAddmvShlo(self_op, mat_op, vec_op, beta_op, alpha_op, out_dtype,
                           precision);
   };
-  TT_ASSIGN_OR_RETURN(auto beta_tensor, beta.GetTensor(out.scalar_type()));
+  const at::ScalarType scalar_tensor_dtype =
+      c10::isReducedFloatingType(out.scalar_type()) ? at::kFloat
+                                                    : out.scalar_type();
+  TT_ASSIGN_OR_RETURN(auto beta_tensor, beta.GetTensor(scalar_tensor_dtype));
   return DispatchOpOut<5>(std::move(op_builder),
                           {self, mat, vec, beta_tensor, alpha_tensor}, out,
                           std::move(options));
@@ -210,8 +206,11 @@ at::Tensor& AtenAddmvOut(const at::Tensor& self, const at::Tensor& mat,
       (self, mat, vec, promoted_beta, promoted_alpha, out), {
         TT_THROW_IF_ERROR(ValidateAddmvInputs(self, mat, vec, beta, alpha));
 
+        const at::ScalarType scalar_tensor_dtype =
+            c10::isReducedFloatingType(out.scalar_type()) ? at::kFloat
+                                                          : out.scalar_type();
         TT_ASSIGN_OR_THROW(const at::Tensor alpha_tensor,
-                           promoted_alpha.GetTensor(out.scalar_type()));
+                           promoted_alpha.GetTensor(scalar_tensor_dtype));
         TT_THROW_IF_ERROR(Addmv(self, mat, vec, std::move(promoted_beta),
                                 alpha_tensor, out, param_keys));
         return out;

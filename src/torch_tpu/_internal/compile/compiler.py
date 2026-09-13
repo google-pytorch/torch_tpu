@@ -332,6 +332,13 @@ class StaticCompiler(Compiler):
       donated_inputs: Sequence[int] | None = None,
       module_name: str | None = None,
   ) -> CompiledArtifact:
+    if module_name is None and not is_fwd:
+      has_ac = any(
+          n.meta.get("recompute", None) is not None
+          or n.target == torch.ops.tpu.optimization_barrier.default
+          for n in graph_module.graph.nodes
+      )
+      module_name = "tt_jit_ac_bwd" if has_ac else "tt_jit_bwd"
     with xprof_adapter.TraceMe("StaticCompiler._compile"):
       tracing_enabled = _is_tracing_enabled()
 

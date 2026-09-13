@@ -35,6 +35,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/contraction_utils.h"
 #include "csrc/ops/gelu/gelu.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -59,42 +60,45 @@ absl::StatusOr<mlir::MlirOp> BuildAddmmShlo(
     mlir::MlirOp self_op, mlir::MlirOp mat1_op, mlir::MlirOp mat2_op,
     std::optional<mlir::MlirOp> beta_op, mlir::MlirOp alpha_op,
     mlir::ElementType out_dtype, mlir::stablehlo::Precision precision) {
-  const mlir::RankedTensorType mat1_type = GetTensorTypeOrDie(mat1_op);
-  const mlir::RankedTensorType mat2_type = GetTensorTypeOrDie(mat2_op);
+  auto dot_dimension_numbers = stablehlo::DotDimensionNumbersAttr::get(
+      &mat1_op.getContext(),
+      /*lhs_batch_dimensions=*/{},
+      /*rhs_batch_dimensions=*/{},
+      /*lhs_contracting_dimensions=*/{1},
+      /*rhs_contracting_dimensions=*/{0});
 
-  // TODO: XLA doesn't support matmuls with i64, so we convert them to f64.
-  const bool is_any_i64 = mat1_type.getElementType().isInteger(64) ||
-                          mat2_type.getElementType().isInteger(64);
-  if (is_any_i64) {
-    mat1_op = stablehlo::ConvertElementType(mat1_op, mlir::ElementType::F64);
-    mat2_op = stablehlo::ConvertElementType(mat2_op, mlir::ElementType::F64);
-  }
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp dot_acc,
+                      BuildAccurateDotGeneralAccumulator(
+                          mat1_op, mat2_op, dot_dimension_numbers, precision));
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType acc_elem_type,
+                      ConvertTo<mlir::ElementType>(
+                          GetTensorTypeOrDie(dot_acc).getElementType()));
 
-  const auto precision_config = mlir::stablehlo::PrecisionConfigAttr::get(
-      &self_op.getContext(), {precision, precision});
-
-  mlir::MlirOp dot_result = stablehlo::Dot(mat1_op, mat2_op, precision_config);
-  if (is_any_i64) {
-    dot_result = stablehlo::ConvertElementType(dot_result, out_dtype);
-  }
-
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_acc,
+                      CastOrConvertTo(alpha_op, acc_elem_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp alpha_tensor,
-                      BroadcastIfNeeded(alpha_op, dot_result));
-  mlir::MlirOp scaled_dot_result = stablehlo::Mul(dot_result, alpha_tensor);
+                      BroadcastIfNeeded(alpha_acc, dot_acc));
+  mlir::MlirOp scaled_dot_result = stablehlo::Mul(dot_acc, alpha_tensor);
 
   if (!beta_op.has_value()) {
-    return scaled_dot_result;
+    return CastOrConvertTo(scaled_dot_result, out_dtype);
   }
 
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp self_acc,
+                      CastOrConvertTo(self_op, acc_elem_type));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp beta_acc,
+                      CastOrConvertTo(*beta_op, acc_elem_type));
   TT_ASSIGN_OR_RETURN(mlir::MlirOp beta_tensor,
-                      BroadcastIfNeeded(*beta_op, self_op));
-  mlir::MlirOp scaled_input_result = stablehlo::Mul(self_op, beta_tensor);
+                      BroadcastIfNeeded(beta_acc, self_acc));
+  mlir::MlirOp scaled_input_result = stablehlo::Mul(self_acc, beta_tensor);
 
   TT_ASSIGN_OR_RETURN(
       (auto [bcast_scaled_input_result, bcast_scaled_dot_result]),
       ApplyBroadcastIfNeeded(scaled_input_result, scaled_dot_result));
 
-  return stablehlo::Add(bcast_scaled_input_result, bcast_scaled_dot_result);
+  mlir::MlirOp res_acc =
+      stablehlo::Add(bcast_scaled_input_result, bcast_scaled_dot_result);
+  return CastOrConvertTo(res_acc, out_dtype);
 }
 
 absl::Status ValidateInputBroadcast(const at::Tensor& self,
@@ -187,9 +191,13 @@ ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
     return BuildReluShlo(res);
   };
 
+  const at::ScalarType scalar_tensor_dtype =
+      c10::isReducedFloatingType(out_scalar_type) ? at::kFloat
+                                                  : out_scalar_type;
+
   if (beta.ValueMatchesExclude()) {
     TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                        alpha.GetTensor(out_scalar_type));
+                        alpha.GetTensor(scalar_tensor_dtype));
     auto op_builder = [output_dtype_mlir, current_precision, apply_activation](
                           FixedSizeSpan<mlir::MlirOp, 4> inputs_op)
         -> absl::StatusOr<mlir::MlirOp> {
@@ -208,9 +216,9 @@ ReturnType DispatchAddmm(const at::Tensor& self, const at::Tensor& mat1,
   }
 
   TT_ASSIGN_OR_RETURN(const at::Tensor beta_tensor,
-                      beta.GetTensor(out_scalar_type));
+                      beta.GetTensor(scalar_tensor_dtype));
   TT_ASSIGN_OR_RETURN(const at::Tensor alpha_tensor,
-                      alpha.GetTensor(out_scalar_type));
+                      alpha.GetTensor(scalar_tensor_dtype));
   auto op_builder = [output_dtype_mlir, current_precision,
                      apply_activation](FixedSizeSpan<mlir::MlirOp, 5> inputs_op)
       -> absl::StatusOr<mlir::MlirOp> {

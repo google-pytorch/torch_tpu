@@ -104,20 +104,14 @@ absl::Status Mm(const at::Tensor& lhs, const at::Tensor& rhs, at::Tensor& out,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
   const auto current_precision = GetAndAddPrecisionTo(param_keys);
-  bool needs_conversion = (lhs.scalar_type() != target_scalar_type);
 
-  auto op_builder = [current_precision, target_elem_dtype,
-                     needs_conversion](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+  auto op_builder = [current_precision,
+                     target_elem_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
       -> absl::StatusOr<mlir::MlirOp> {
     mlir::MlirOp lhs_op = inputs[0];
     mlir::MlirOp rhs_op = inputs[1];
 
-    if (needs_conversion) {
-      lhs_op = mlir::stablehlo::ConvertElementType(lhs_op, target_elem_dtype);
-      rhs_op = mlir::stablehlo::ConvertElementType(rhs_op, target_elem_dtype);
-    }
-
-    return BuildMmShlo(lhs_op, rhs_op, current_precision);
+    return BuildMmShlo(lhs_op, rhs_op, current_precision, target_elem_dtype);
   };
 
   return DispatchOpOut<2>(std::move(op_builder), {lhs, rhs}, out,

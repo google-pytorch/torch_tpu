@@ -16,6 +16,7 @@
 
 #include "csrc/ops/experimental/ragged_dot/ragged_dot_aten_kernels.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "ATen/core/ATen_fwd.h"
@@ -34,10 +35,12 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/contraction_utils.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/precision_context.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
@@ -48,10 +51,96 @@
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 #include "torch/csrc/autograd/custom_function.h"
+#include "torch/csrc/autograd/function_hook.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
+
+static absl::StatusOr<mlir::MlirOp> BuildAccurateRaggedDot(
+    mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
+    llvm::ArrayRef<int64_t> out_shape,
+    mlir::chlo::RaggedDotDimensionNumbersAttr dimension_numbers,
+    mlir::ElementType output_element_type,
+    mlir::stablehlo::Precision precision) {
+  const mlir::RankedTensorType lhs_type = GetTensorTypeOrDie(lhs);
+  mlir::Type elem_type = lhs_type.getElementType();
+
+  mlir::chlo::Precision chlo_precision =
+      static_cast<mlir::chlo::Precision>(precision);
+  auto precision_attr =
+      mlir::chlo::PrecisionAttr::get(&lhs.getContext(), chlo_precision);
+  auto precision_config =
+      mlir::ArrayAttr::get(&lhs.getContext(), {precision_attr, precision_attr});
+
+  mlir::Type f32_out_type =
+      mlir::makeTensorType(lhs.getContext(), out_shape, mlir::ElementType::F32);
+
+  auto single_ragged_dot_f32 = [&](mlir::MlirOp l, mlir::MlirOp r) {
+    return mlir::chlo::RaggedDot(f32_out_type, l, r, group_sizes,
+                                 dimension_numbers, precision_config);
+  };
+
+  if (elem_type.isBF16()) {
+    mlir::MlirOp acc = single_ragged_dot_f32(lhs, rhs);
+    return CastOrConvertTo(acc, output_element_type);
+  }
+
+  auto zero_nans = [](mlir::MlirOp input) {
+    mlir::MlirOp is_finite = mlir::stablehlo::IsFinite(input);
+    mlir::MlirOp zero = MakeConstantLike(input, 0.0);
+    return mlir::stablehlo::Select(is_finite, input, zero);
+  };
+
+  auto chain_pass = [&](mlir::MlirOp acc, mlir::MlirOp l_f32,
+                        mlir::MlirOp r_f32, int l_idx, int r_idx) {
+    auto barrier = mlir::stablehlo::OptimizationBarrier(acc.getBuilder(),
+                                                        {acc, l_f32, r_f32});
+    mlir::MlirOp dot = single_ragged_dot_f32(GetBf16Part(barrier[1], l_idx),
+                                             GetBf16Part(barrier[2], r_idx));
+    return mlir::stablehlo::Add(barrier[0], dot);
+  };
+
+  if (elem_type.isF16()) {
+    mlir::MlirOp lhs_f32 =
+        mlir::stablehlo::ConvertElementType(lhs, mlir::ElementType::F32);
+    mlir::MlirOp rhs_f32 =
+        mlir::stablehlo::ConvertElementType(rhs, mlir::ElementType::F32);
+
+    mlir::MlirOp lower_sum =
+        single_ragged_dot_f32(GetBf16Part(lhs_f32, 1), GetBf16Part(rhs_f32, 1));
+    lower_sum = chain_pass(lower_sum, lhs_f32, rhs_f32, 0, 1);
+    lower_sum = chain_pass(lower_sum, lhs_f32, rhs_f32, 1, 0);
+    lower_sum = zero_nans(lower_sum);
+    auto barrier = mlir::stablehlo::OptimizationBarrier(
+        lower_sum.getBuilder(), {lower_sum, lhs_f32, rhs_f32});
+    mlir::MlirOp main_dot = single_ragged_dot_f32(GetBf16Part(barrier[1], 0),
+                                                  GetBf16Part(barrier[2], 0));
+    mlir::MlirOp acc = mlir::stablehlo::Add(main_dot, barrier[0]);
+    return CastOrConvertTo(acc, output_element_type);
+  }
+
+  if (elem_type.isF32()) {
+    mlir::MlirOp lower_sum =
+        single_ragged_dot_f32(GetBf16Part(lhs, 1), GetBf16Part(rhs, 1));
+    lower_sum = chain_pass(lower_sum, lhs, rhs, 2, 0);
+    lower_sum = chain_pass(lower_sum, lhs, rhs, 0, 2);
+    lower_sum = chain_pass(lower_sum, lhs, rhs, 1, 0);
+    lower_sum = chain_pass(lower_sum, lhs, rhs, 0, 1);
+    lower_sum = zero_nans(lower_sum);
+    auto barrier = mlir::stablehlo::OptimizationBarrier(lower_sum.getBuilder(),
+                                                        {lower_sum, lhs, rhs});
+    mlir::MlirOp main_dot = single_ragged_dot_f32(GetBf16Part(barrier[1], 0),
+                                                  GetBf16Part(barrier[2], 0));
+    mlir::MlirOp acc = mlir::stablehlo::Add(main_dot, barrier[0]);
+    return CastOrConvertTo(acc, output_element_type);
+  }
+
+  mlir::Type out_type =
+      mlir::makeTensorType(lhs.getContext(), out_shape, output_element_type);
+  return mlir::chlo::RaggedDot(out_type, lhs, rhs, group_sizes,
+                               dimension_numbers, precision_config);
+}
 
 static absl::StatusOr<mlir::MlirOp> BuildRaggedDotShlo(
     mlir::MlirOp lhs, mlir::MlirOp rhs, mlir::MlirOp group_sizes,
@@ -67,19 +156,9 @@ static absl::StatusOr<mlir::MlirOp> BuildRaggedDotShlo(
       /*rhsContractingDimensions=*/{1},
       /*lhsRaggedDimensions=*/{0},
       /*rhsGroupDimensions=*/{0});
-  mlir::Type out_type = mlir::makeTensorType(
-      lhs.getContext(), {lhs_type.getShape()[0], rhs_type.getShape()[2]},
-      output_element_type);
-
-  mlir::chlo::Precision chlo_precision =
-      static_cast<mlir::chlo::Precision>(precision);
-  auto precision_attr =
-      mlir::chlo::PrecisionAttr::get(&lhs.getContext(), chlo_precision);
-  auto precision_config =
-      mlir::ArrayAttr::get(&lhs.getContext(), {precision_attr, precision_attr});
-
-  return mlir::chlo::RaggedDot(out_type, lhs, rhs, group_sizes,
-                               dimension_numbers, precision_config);
+  return BuildAccurateRaggedDot(
+      lhs, rhs, group_sizes, {lhs_type.getShape()[0], rhs_type.getShape()[2]},
+      dimension_numbers, output_element_type, precision);
 }
 
 static absl::StatusOr<DeviceBufferRef> RaggedDotCommon(
@@ -134,21 +213,11 @@ static absl::StatusOr<mlir::MlirOp> BuildRaggedDotWeightGradShlo(
       /*rhsContractingDimensions=*/{0},
       /*lhsRaggedDimensions=*/{1},
       /*rhsGroupDimensions=*/{});
-  mlir::Type out_type = mlir::makeTensorType(
-      lhs.getContext(),
+  return BuildAccurateRaggedDot(
+      lhs_t, grad_output, group_sizes,
       {group_sizes_type.getShape()[0], lhs_t_type.getShape()[0],
        grad_output_type.getShape()[1]},
-      output_element_type);
-
-  mlir::chlo::Precision chlo_precision =
-      static_cast<mlir::chlo::Precision>(precision);
-  auto precision_attr =
-      mlir::chlo::PrecisionAttr::get(&lhs.getContext(), chlo_precision);
-  auto precision_config =
-      mlir::ArrayAttr::get(&lhs.getContext(), {precision_attr, precision_attr});
-
-  return mlir::chlo::RaggedDot(out_type, lhs_t, grad_output, group_sizes,
-                               dimension_numbers, precision_config);
+      dimension_numbers, output_element_type, precision);
 }
 
 static absl::StatusOr<DeviceBufferRef> RaggedDotWeightGradCommon(

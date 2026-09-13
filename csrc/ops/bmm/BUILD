@@ -24,12 +24,10 @@ torch_tpu_cc_library(
     srcs = ["bmm.cc"],
     hdrs = ["bmm.h"],
     deps = [
-        "//csrc/ops:op_builder_utils",
+        "//csrc/ops:contraction_utils",
         "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
     ],
 )

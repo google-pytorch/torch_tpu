@@ -24,12 +24,14 @@ torch_tpu_cc_library(
     srcs = ["dot.cc"],
     hdrs = ["dot.h"],
     deps = [
+        "//csrc/common:dtype",
+        "//csrc/common:error_utils",
+        "//csrc/ops:contraction_utils",
         "//csrc/ops:op_builder_utils",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//mlir:IR",
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
-        "@stablehlo//:stablehlo_builder",
         "@stablehlo//:stablehlo_ops",
     ],
 )
