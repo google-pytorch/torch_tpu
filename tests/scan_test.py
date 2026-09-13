@@ -15,8 +15,14 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
+# Registering ao::offload / ao::reload is an import side effect, and the body
+# graphs below insert ao.reload directly.
+import torch._functorch._activation_offloading.offload_ops  # noqa: F401
 from torch._higher_order_ops import scan
+import torch.fx
 import torch.utils._pytree as pytree
+from torch_tpu._internal.compile import scan as tpu_scan
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
@@ -321,6 +327,70 @@ class ScanLoweringTest(seed_test_utils.RepeatableTest):
         "stablehlo.while",
         hlo,
         msg="scan was unexpectedly unrolled: stablehlo.while not found",
+    )
+
+
+def _offloaded_body(*, reload_slice=True):
+  """A backward-scan body that takes one row of a host-offloaded stack.
+
+  This is the shape torchtitan's offload pass produces: the stack arrives
+  whole as a body operand and the body indexes it with the loop counter, so
+  the reload sits on the slice rather than on the operand.
+  """
+  graph = torch.fx.Graph()
+  stack = graph.placeholder("stack")
+  row = graph.placeholder("row")
+  sliced = graph.call_function(
+      torch.ops.aten.index_select.default, (stack, 0, row)
+  )
+  out = sliced
+  if reload_slice:
+    out = graph.call_function(
+        torch.ops.ao.reload.default, (sliced, torch.device("cpu"), [4], [1])
+    )
+  graph.output((out,))
+  return torch.fx.GraphModule(torch.nn.Module(), graph)
+
+
+class PinOffloadedBodyArgsTest(absltest.TestCase):
+  """What the standalone body compile budgets in HBM, and what it does not."""
+
+  def setUp(self):
+    super().setUp()
+    self.args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+
+  def test_reloaded_operand_is_pinned_to_host(self):
+    pinned = tpu_scan._pin_offloaded_body_args(_offloaded_body(), self.args)
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
+    self.assertEqual(pinned[0].shape, self.args[0].shape)
+    self.assertEqual(pinned[0].dtype, self.args[0].dtype)
+
+  def test_loop_counter_is_not_pinned(self):
+    # `index_select(stack, 0, row)` takes the offloaded buffer and the loop
+    # counter. Only operand 0 leads to the reload, and following the rest
+    # would put the counter on the host too.
+    pinned = tpu_scan._pin_offloaded_body_args(_offloaded_body(), self.args)
+    self.assertIs(pinned[1], self.args[1])
+
+  def test_body_with_no_reload_is_left_alone(self):
+    pinned = tpu_scan._pin_offloaded_body_args(
+        _offloaded_body(reload_slice=False), self.args
+    )
+    self.assertIs(pinned[0], self.args[0])
+    self.assertIs(pinned[1], self.args[1])
+
+  def test_saved_for_offloading_meta_pins_without_a_reload(self):
+    body = _offloaded_body(reload_slice=False)
+    stack = next(n for n in body.graph.nodes if n.op == "placeholder")
+    stack.meta["saved_for_offloading"] = True
+    pinned = tpu_scan._pin_offloaded_body_args(body, self.args)
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
+
+  def test_eager_body_is_passed_through(self):
+    # An exported or eager combine_fn has no graph to walk. Hand it back
+    # rather than making the caller check which kind it holds.
+    self.assertIs(
+        tpu_scan._pin_offloaded_body_args(lambda *a: a, self.args), self.args
     )
 
 
