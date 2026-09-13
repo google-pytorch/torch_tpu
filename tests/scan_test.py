@@ -15,9 +15,6 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-# Registering ao::offload / ao::reload is an import side effect, and the body
-# graphs below insert ao.reload directly.
-import torch._functorch._activation_offloading.offload_ops  # noqa: F401
 from torch._higher_order_ops import scan
 import torch.fx
 import torch.utils._pytree as pytree
@@ -27,6 +24,16 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
+
+try:
+  # Registering ao::offload / ao::reload is an import side effect, and the body
+  # graphs below insert ao.reload directly. Torch releases before activation
+  # offloading landed have no such ops, and nothing to pin for.
+  import torch._functorch._activation_offloading.offload_ops  # noqa: F401
+
+  _HAS_AO_OPS = True
+except ImportError:
+  _HAS_AO_OPS = False
 
 
 def _compile_and_run(fn, *args, **kwargs):
@@ -359,12 +366,14 @@ class PinOffloadedBodyArgsTest(absltest.TestCase):
     super().setUp()
     self.args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
 
+  @absltest.skipUnless(_HAS_AO_OPS, "torch build has no ao.reload")
   def test_reloaded_operand_is_pinned_to_host(self):
     pinned = tpu_scan._pin_offloaded_body_args(_offloaded_body(), self.args)
     self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
     self.assertEqual(pinned[0].shape, self.args[0].shape)
     self.assertEqual(pinned[0].dtype, self.args[0].dtype)
 
+  @absltest.skipUnless(_HAS_AO_OPS, "torch build has no ao.reload")
   def test_loop_counter_is_not_pinned(self):
     # `index_select(stack, 0, row)` takes the offloaded buffer and the loop
     # counter. Only operand 0 leads to the reload, and following the rest
