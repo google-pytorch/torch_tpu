@@ -95,58 +95,16 @@ enum class SdpaPromotionType {
 };
 
 // Determine exactly where type promotion should happen inside the attn module.
-// Softmax mode emits a pattern replaced by XLA with an optimized kernel; we
-// use a simple heuristic based on tensor size and sequence alignment to decide
-// when that kernel is beneficial. Otherwise we fall back to full precision.
+// Matrix multiplications stay in native BF16 (kSoftmaxOnly), while softmax
+// reduction math promotes to F32 unless half precision reduction math is
+// explicitly allowed.
 SdpaPromotionType GetSdpaPromotionType(
-    mlir::MlirOp query, mlir::MlirOp key,
+    mlir::MlirOp /*query*/, mlir::MlirOp /*key*/,
     bool allow_half_precision_reduction_math) {
   if (allow_half_precision_reduction_math) {
     return SdpaPromotionType::kNone;
   }
-
-  // Softmax-only promotion requires >500k elements to offset kernel launch
-  // overhead, and sequence lengths <=8192 aligned to 128 (or 32 for >=2048).
-  constexpr int64_t kMinTotalElements = 500000;
-  constexpr int64_t kDefaultSeqLenAlignment = 128;
-  constexpr int64_t kLargeSeqLenThreshold = 2048;
-  constexpr int64_t kLargeSeqLenAlignment = 32;
-  constexpr int64_t kMaxSupportedSeqLen = 8192;
-
-  auto query_shape = GetTensorTypeOrDie(query).getShape();
-  auto key_shape = GetTensorTypeOrDie(key).getShape();
-
-  int64_t total_elements = 1;
-  for (auto dim : query_shape) {
-    total_elements *= dim;
-  }
-
-  const int query_rank = query_shape.size();
-  const int key_rank = key_shape.size();
-  bool sequence_length_supported = true;
-  bool sequence_length_too_large = false;
-  if (query_rank >= 2 && key_rank >= 2) {
-    const int64_t seq_len_q = query_shape[query_rank - 2];
-    const int64_t seq_len_kv = key_shape[key_rank - 2];
-    const bool is_multiple_of_128 =
-        (seq_len_q % kDefaultSeqLenAlignment == 0) &&
-        (seq_len_kv % kDefaultSeqLenAlignment == 0);
-    const bool is_large_multiple_of_32 =
-        (seq_len_q >= kLargeSeqLenThreshold &&
-         seq_len_kv >= kLargeSeqLenThreshold) &&
-        (seq_len_q % kLargeSeqLenAlignment == 0) &&
-        (seq_len_kv % kLargeSeqLenAlignment == 0);
-    sequence_length_supported = is_multiple_of_128 || is_large_multiple_of_32;
-    sequence_length_too_large =
-        (seq_len_q > kMaxSupportedSeqLen) || (seq_len_kv > kMaxSupportedSeqLen);
-  }
-
-  const bool should_fallback = (total_elements < kMinTotalElements) ||
-                               !sequence_length_supported ||
-                               sequence_length_too_large;
-
-  return should_fallback ? SdpaPromotionType::kWholeModule
-                         : SdpaPromotionType::kSoftmaxOnly;
+  return SdpaPromotionType::kSoftmaxOnly;
 }
 
 absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
@@ -178,36 +136,36 @@ absl::StatusOr<AttentionPrepResults> PrepareAttentionLogits(
     head_count_ratio = num_head_q / num_head_kv;
   }
 
-  // Scale Q before Dot product - matches pytorch attention implementation and
-  // improves stability https://tinyurl.com/sudb9s96
-  mlir::MlirOp scale_value =
-      GetScaleDefaulted(builder, scale, head_dim, element_type);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_scale_value,
-                      BroadcastIfNeeded(scale_value, query_4d));
-  mlir::MlirOp scaled_query_4d =
-      mlir::stablehlo::Mul(query_4d, broadcasted_scale_value);
-
-  mlir::MlirOp scaled_attn_logits;
+  mlir::MlirOp attn_logits;
   if (head_count_ratio > 1) {
-    mlir::MlirOp scaled_query_5d = mlir::stablehlo::Reshape(
-        scaled_query_4d,
+    mlir::MlirOp query_5d = mlir::stablehlo::Reshape(
+        query_4d,
         {batch_size, num_head_kv, head_count_ratio, seq_len_q, head_dim});
     auto attention_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
         context, /*lhs_batching_dimensions=*/{0, 1},
         /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{4},
         /*rhs_contracting_dimensions=*/{3});
-    mlir::MlirOp logits_5d = mlir::stablehlo::DotGeneral(
-        scaled_query_5d, key_4d, attention_dot_dims);
-    scaled_attn_logits = mlir::stablehlo::Reshape(
+    mlir::MlirOp logits_5d =
+        mlir::stablehlo::DotGeneral(query_5d, key_4d, attention_dot_dims);
+    attn_logits = mlir::stablehlo::Reshape(
         logits_5d, {batch_size, num_head_q, seq_len_q, seq_len_kv});
   } else {
     auto attention_dot_dims = mlir::stablehlo::DotDimensionNumbersAttr::get(
         context, /*lhs_batching_dimensions=*/{0, 1},
         /*rhs_batching_dimensions=*/{0, 1}, /*lhs_contracting_dimensions=*/{3},
         /*rhs_contracting_dimensions=*/{3});
-    scaled_attn_logits = mlir::stablehlo::DotGeneral(scaled_query_4d, key_4d,
-                                                     attention_dot_dims);
+    attn_logits =
+        mlir::stablehlo::DotGeneral(query_4d, key_4d, attention_dot_dims);
   }
+
+  // Scale logits after dot product so Q and K can enter MXU directly in native
+  // precision without prior elementwise VPU scaling.
+  mlir::MlirOp scale_value =
+      GetScaleDefaulted(builder, scale, head_dim, element_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp broadcasted_scale_value,
+                      BroadcastIfNeeded(scale_value, attn_logits));
+  mlir::MlirOp scaled_attn_logits =
+      mlir::stablehlo::Mul(attn_logits, broadcasted_scale_value);
 
   mlir::Attribute min_attr =
       GetMinFiniteValueAttr(element_type, builder.getOpBuilder());
@@ -716,30 +674,11 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
                            .out_dims_list = {out_dims, lse_dims},
                            .op_param_cache_keys = std::move(param_keys)})));
 
-  // We return a view with dense strides that preserves the layout permutation
-  // of the query. This ensures subsequent view operations (e.g., merging heads)
-  // do not crash due to unexpected non-contiguity, while avoiding the memory
-  // bloat and performance cost of matching exact CUDA strides (which may have
-  // gaps if the query was sliced).
-  // Note: This does not preserve the exact strides/offset for explicit
-  // `as_strided` calls, which is considered an acceptable trade-off.
-  // See: https://pytorch.org/docs/stable/generated/torch.as_strided.html
-  if (query.sizes().back() == value.sizes().back()) {
-    // We can only do this simple when the query and value have the same head
-    // dimension.
-    // TODO(willfroom): Check if we need to handle the general case.
-    Strides dense_strides = DenseStrides(query.strides(), out_dims);
-    TT_ASSIGN_OR_RETURN(at::Tensor view_out,
-                        ContiguousToView(std::move(results[0]), dense_strides,
-                                         /*target_storage_offset=*/0));
-    return FusedAttentionResults{
-        .output = std::move(view_out),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  } else {
-    return FusedAttentionResults{
-        .output = MakeTensor(std::move(results[0])),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  }
+  // The output is produced directly as contiguous, avoiding unnecessary
+  // strided view slicing (ContiguousToView) and eliminating
+  // dynamic-update-slice ops.
+  return FusedAttentionResults{.output = MakeTensor(std::move(results[0])),
+                               .logsumexp = MakeTensor(std::move(results[1]))};
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
