@@ -125,22 +125,5 @@ jobs:
           path: bazel-testlogs/
           retention-days: 7
 
-  notify_failure:
-    name: Notify Failed Runs
-    needs: [run_tests]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Get current date
-        id: date
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - name: Check whether one of the jobs failed
-        if: contains(needs.run_tests.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930  # v1.3.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label-name: "ci:unpinned-deps-failed"
-          title-template: "Failed Nightly with Unpinned Dependencies (${{ steps.date.outputs.date }})"
+# TODO(b/558939987): consider re-enabling failure notifications
+# once OSS builds stabilize.

@@ -218,16 +218,5 @@ jobs:
             --config=local_torch \
             --repo_env=TORCH_SOURCE="$TORCH_SOURCE"
 
-  notify_failure:
-    name: Notify Failed Runs
-    needs: [build_and_test_wheel]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check whether one of the jobs failed
-        if: contains(needs.build_and_test_wheel.result, 'failure') && github.event_name != 'pull_request'
-        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930  # v1.3.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          label-name: "ci:local-torch-failed"
-          title-template: "Failed Wheel Build/Test against Local PyTorch on TPU"
+# TODO(b/558939987): consider re-enabling failure notifications
+# once OSS builds stabilize.
