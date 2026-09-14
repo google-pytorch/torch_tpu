@@ -44,6 +44,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
+from torch_tpu._internal.compile.fx_passes import fuse_rope
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
@@ -116,6 +117,7 @@ class Compiler(abc.ABC, AOTDispatchCompiler):
       graph_module: The FX graph module to process.
     """
     fold_gqa.apply(graph_module)
+    fuse_rope.apply(graph_module)
 
   @abc.abstractmethod
   def __call__(

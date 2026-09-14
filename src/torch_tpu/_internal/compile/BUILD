@@ -35,6 +35,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/compile/fx_passes:detect_causal_mask",
         "//src/torch_tpu/_internal/compile/fx_passes:fold_gqa",
+        "//src/torch_tpu/_internal/compile/fx_passes:fuse_rope",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_activation_checkpoints",
         "//src/torch_tpu/_internal/compile/fx_passes:mark_embedded_constants",
         "//src/torch_tpu/_internal/compile/fx_passes:reassociate_norm_weights",
