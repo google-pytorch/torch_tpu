@@ -155,6 +155,20 @@ default.
 > capacity for several suites at once, stop queueing and split the fleet
 > instead: run N suites on M VMs each.
 
+### If the run comes back 56/57
+
+Check whether the one red target is this:
+
+```
+FAIL: test_kernel_compiled_mode_donation_invalidates_deferred_op
+      (__main__.TestPallasKernels)
+AssertionError: [] has length of 0, expected 1.
+```
+
+That one is a known flake on single-chip v5e, tracked in b/561202917. It fails
+about a third of the time and has nothing to do with your change. Re-run. Any
+other failure is worth reading.
+
 ---
 
 ## 4. Who can run the relay, and what they need
