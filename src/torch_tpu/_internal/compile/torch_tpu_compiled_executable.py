@@ -15,11 +15,13 @@
 """Compiled artifact and executable definitions for TorchTPU."""
 
 import abc
+import atexit
 from collections.abc import Callable, Sequence
 import concurrent.futures
 import operator
 import threading
 from typing import Any, TypeAlias
+import weakref
 
 from absl import logging
 import torch
@@ -172,6 +174,38 @@ class CompiledArtifact(abc.ABC, OutputCode):
     pass
 
 
+# Module-level registry tracking live TorchTpuCompiledExecutable instances via
+# weak references. Tracking at the module level keeps instance registration and
+# the atexit teardown hook simple and decoupled from the class definition.
+_COMPILED_EXECUTABLES: list[weakref.ref["TorchTpuCompiledExecutable"]] = []
+
+
+def clear_compiled_executables() -> None:
+  """Releases references to loaded PJRT executables before runtime shutdown.
+
+  During normal Python shutdown, `atexit` handlers run prior to final
+  interpreter teardown (`Py_FinalizeEx`). Higher-level compiler caches (such as
+  TorchDynamo's internal code and frame caches) outlive `atexit` and are only
+  collected when Python clears module dictionaries during `Py_FinalizeEx`.
+
+  If the PJRT client runtime has already been shut down by the device module's
+  `atexit` handler, deallocating an executable during `Py_FinalizeEx` causes a
+  SIGSEGV because the C++ destructor invokes `DeleteExecutable()` on an
+  already-destroyed client pointer. Registering this cleanup with `atexit`
+  ensures all executables are released while the PJRT client runtime is still
+  alive and valid.
+  """
+  global _COMPILED_EXECUTABLES
+  for ref in _COMPILED_EXECUTABLES:
+    item = ref()
+    if item is not None:
+      item.release()
+  _COMPILED_EXECUTABLES.clear()
+
+
+atexit.register(clear_compiled_executables)
+
+
 def _unpickle_compiled_executable(
     serialized_bytes: bytes,
     reconstruct_fx_outputs_fn: _ReconstructFxOutputsFn | None,
@@ -249,6 +283,7 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
         corresponding to deduplicated outputs.
     """  # fmt: skip
     self._executable = executable
+    _COMPILED_EXECUTABLES.append(weakref.ref(self))
     self._reconstruct_fx_outputs_fn = reconstruct_fx_outputs_fn
     self._tensor_arg_indices = None
     self._graph_module_debug_str: str | None = None
@@ -300,6 +335,26 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
 
   def updates_default_generator_state(self) -> bool:
     return self._updates_default_generator_state
+
+  def release(self) -> None:
+    """Releases the underlying PJRT executable and associated runner.
+
+    Setting `self._executable` and `self._fast_runner` to None drops Python
+    references to the pybind11 `LoadedExecutableWithMetadata` object. When its
+    reference count drops to zero, pybind11 immediately invokes the C++
+    destructor, destroying the underlying `xla::PjRtLoadedExecutable` and
+    releasing all device/HBM executable resources in `libtpu` while the PJRT
+    client is still valid.
+
+    Calling this method on an already released executable is a no-op.
+    """
+    self._executable = None
+    self._fast_runner = None
+
+  @property
+  def is_released(self) -> bool:
+    """Returns True if the executable has been released."""
+    return self._executable is None
 
   @property
   def graph_module_debug_str(self) -> str | None:
@@ -415,9 +470,11 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       are made to match the expected output of the original FX graph,
       potentially after being processed by `reconstruct_fx_outputs_fn`.
     """
+    if self._executable is None:
+      raise RuntimeError("Cannot execute a released TorchTpuCompiledExecutable.")
+
     if self._fast_runner is not None and not output_shapes:
       return self._fast_runner(args)
-
     if self._has_generator_args is None:
       unboxed = (
           args[0]
