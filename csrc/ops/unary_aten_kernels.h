@@ -128,6 +128,10 @@ TT_DECLARE_ATEN_UNARY_OUT(AtenTanh);
 TT_DECLARE_ATEN_UNARY_OUT(AtenTrunc);
 // go/keep-sorted end
 
+at::Tensor& AtenSiluBackwardGradInputOut(const at::Tensor& grad_output,
+                                         const at::Tensor& self,
+                                         at::Tensor& grad_input);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_UNARY_ATEN_KERNELS_H_

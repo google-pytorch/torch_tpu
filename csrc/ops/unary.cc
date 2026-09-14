@@ -21,6 +21,7 @@
 #include "ATen/OpMathType.h"
 #include "absl/status/statusor.h"
 #include "c10/core/ScalarType.h"
+#include "csrc/common/aten_utils.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
@@ -194,6 +195,31 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
   mlir::MlirOp sigmoid_op = stablehlo::Logistic(input_op);
   mlir::MlirOp result_op = stablehlo::Mul(input_op, sigmoid_op);
   return result_op;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildSiluBackwardGradInputShlo(
+    mlir::MlirOp grad_output_op, mlir::MlirOp input_op,
+    mlir::ElementType output_dtype) {
+  TT_ASSIGN_OR_RETURN(const mlir::ElementType computation_dtype,
+                      InferComputationDtype(output_dtype));
+
+  TT_ASSIGN_OR_RETURN(
+      (auto [computation_grad_output_op, computation_input_op]),
+      ConvertIfIntegers(grad_output_op, input_op, computation_dtype));
+  computation_grad_output_op = mlir::stablehlo::ConvertElementType(
+      computation_grad_output_op, computation_dtype);
+  computation_input_op = mlir::stablehlo::ConvertElementType(
+      computation_input_op, computation_dtype);
+
+  mlir::MlirOp k_1_0 = MakeConstantLike(computation_input_op, 1.0);
+  mlir::MlirOp s = stablehlo::Logistic(computation_input_op);
+  mlir::MlirOp one_minus_s = stablehlo::Subtract(k_1_0, s);
+  mlir::MlirOp x_term = stablehlo::Mul(computation_input_op, one_minus_s);
+  mlir::MlirOp bracket = stablehlo::Add(k_1_0, x_term);
+  mlir::MlirOp scale = stablehlo::Mul(s, bracket);
+  mlir::MlirOp result = stablehlo::Mul(computation_grad_output_op, scale);
+
+  return mlir::stablehlo::ConvertElementType(result, output_dtype);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildTruncShlo(mlir::MlirOp input_op) {

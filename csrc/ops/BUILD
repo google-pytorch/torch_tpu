@@ -275,6 +275,7 @@ torch_tpu_cc_library(
     hdrs = ["unary.h"],
     deps = [
         ":op_builder_utils",
+        "//csrc/common:aten_utils",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:macro_utils",

@@ -413,4 +413,38 @@ at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out) {
   });
 }
 
+at::Tensor& AtenSiluBackwardGradInputOut(const at::Tensor& grad_output,
+                                         const at::Tensor& self,
+                                         at::Tensor& grad_input) {
+  TT_KERNEL(
+      OpName::kSiluBackwardGradInput, param_keys,
+      (grad_output, self, grad_input), {
+        TT_CHECK_THROW(self.is_floating_point(),
+                       error::kPythonNotImplementedError)
+            << "not implemented for " << ToString(self.scalar_type());
+        TT_CHECK_THROW(grad_output.is_floating_point(),
+                       error::kPythonNotImplementedError)
+            << "not implemented for " << ToString(grad_output.scalar_type());
+        const c10::ScalarType output_tensor_type = InferOutputDtype(self);
+        TT_ASSIGN_OR_THROW(const auto out_dtype,
+                           ConvertTo<mlir::ElementType>(output_tensor_type));
+
+        auto op_builder = [out_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+            -> absl::StatusOr<mlir::MlirOp> {
+          auto& [grad_output_op, input_op] = inputs;
+          return BuildSiluBackwardGradInputShlo(grad_output_op, input_op,
+                                                out_dtype);
+        };
+        const Dimensions output_shape = CopyIntVector(self.sizes());
+
+        TT_THROW_IF_ERROR(DispatchOpOut<2>(
+            std::move(op_builder), {grad_output, self}, grad_input,
+            /*options=*/
+            {.out_dtype = out_dtype,
+             .out_dims = output_shape,
+             .op_param_cache_keys = std::move(param_keys)}));
+        return grad_input;
+      });
+}
+
 }  // namespace torch_tpu

@@ -5747,6 +5747,44 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16, torch.float16])
+  def test_silu_backward(self, dtype):
+    input_value = torch.randn(4, 4, dtype=dtype)
+    grad_output_value = torch.randn(4, 4, dtype=dtype)
+
+    def compute(device):
+      x = input_value.clone().detach().to(device)
+      grad_output = grad_output_value.clone().detach().to(device)
+      return torch.ops.aten.silu_backward(grad_output, x)
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(compute, atol=2e-2, rtol=1e-2)
+    elif dtype == torch.float16:
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-3, rtol=1e-3)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.product(dtype=[torch.float32, torch.bfloat16, torch.float16])
+  def test_silu_backward_grad_input_out(self, dtype):
+    input_value = torch.randn(4, 4, dtype=dtype)
+    grad_output_value = torch.randn(4, 4, dtype=dtype)
+
+    def compute(device):
+      x = input_value.clone().detach().to(device)
+      grad_output = grad_output_value.clone().detach().to(device)
+      grad_input = torch.empty_like(x)
+      torch.ops.aten.silu_backward.grad_input(
+          grad_output, x, grad_input=grad_input
+      )
+      return grad_input
+
+    if dtype == torch.bfloat16:
+      self.assert_close_tpu_vs_cpu(compute, atol=2e-2, rtol=1e-2)
+    elif dtype == torch.float16:
+      self.assert_close_tpu_vs_cpu(compute, atol=1e-3, rtol=1e-3)
+    else:
+      self.assert_close_tpu_vs_cpu(compute)
+
   @parameterized.product(dtype=[torch.float32, torch.bfloat16])
   def test_hardswish(self, dtype):
     # Scale by 5 to have coverage of the x < -3 and x >= 3 piecewise branches
