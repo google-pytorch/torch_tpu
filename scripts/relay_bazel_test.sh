@@ -54,6 +54,7 @@ CLI_FILTER=""
 CLI_IP_MODE="auto"
 CLI_OUTPUT_DIR=""
 CLI_REPORT=false
+CLI_UPLOAD_RESULTS=false
 CLI_WAIT=true
 CLI_WAIT_TIMEOUT=3600
 CLI_KEEP=false
@@ -101,6 +102,9 @@ Options:
                         Default: relay_reports/test_<timestamp>
   --report              Also synthesize the presubmit-style report. Off by
                         default; bazel's own output is usually what you want.
+  --upload-results      Send build events to ResultStore. Off by default: only
+                        the CI service account can write there, and the upload
+                        fails the run after the tests have already passed.
   --no-wait             Fail instead of queueing when somebody has the fleet.
   --wait-timeout SECS   How long to stand in line. Default: 3600.
   --keep                Leave the fleet attached on exit, so a follow-up run
@@ -143,6 +147,7 @@ parse_args() {
       --output-dir) [[ $# -ge 2 ]] || die "--output-dir requires an argument."; CLI_OUTPUT_DIR="$2"; shift 2 ;;
       --output-dir=*) CLI_OUTPUT_DIR="${1#*=}"; shift ;;
       --report) CLI_REPORT=true; shift ;;
+      --upload-results) CLI_UPLOAD_RESULTS=true; shift ;;
       --wait) CLI_WAIT=true; shift ;;
       --no-wait) CLI_WAIT=false; shift ;;
       --wait-timeout) [[ $# -ge 2 ]] || die "--wait-timeout requires an argument."; CLI_WAIT_TIMEOUT="$2"; shift 2 ;;
@@ -227,6 +232,13 @@ main() {
   [[ -z "$CLI_JOBS" ]] || relay_args+=(--jobs "$CLI_JOBS")
   [[ -z "$CLI_BAZEL_CONFIG" ]] || relay_args+=(--bazel-config "$CLI_BAZEL_CONFIG")
   [[ "$CLI_REPORT" == "true" ]] || relay_args+=(--no-report)
+  # The ci configs chain down to --config=resultstore_base, which uploads build
+  # events to ml-oss-rbe-testing. Only the CI service account can write there,
+  # so for anyone else the upload fails after the tests have already run and
+  # bazel still exits non-zero. Clearing the backend drops the upload only.
+  if [[ "$CLI_UPLOAD_RESULTS" != "true" ]]; then
+    relay_args+=(--bazel-flag "--bes_backend=")
+  fi
   local flag
   for flag in ${CLI_BAZEL_FLAGS[@]+"${CLI_BAZEL_FLAGS[@]}"}; do
     relay_args+=(--bazel-flag "$flag")

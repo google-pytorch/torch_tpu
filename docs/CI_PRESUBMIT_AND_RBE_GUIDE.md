@@ -273,7 +273,7 @@ reaches two other services on your application default credentials.
 | Service | What for | If you cannot reach it |
 | :--- | :--- | :--- |
 | `projects/tensorflow-testing/instances/default_instance` | Compile actions, via `--config=ci_tpu_v5_relay` | Pass `--bazel-config=""` and build locally. First build is slow, later ones are warm. |
-| ResultStore / BES on `ml-oss-rbe-testing` | Build event upload, dragged in by `--config=resultstore_base` | Already off. `relay_presubmit_pr.sh` passes `--bes_backend=` unless you ask for `--upload-results`. |
+| ResultStore / BES on `ml-oss-rbe-testing` | Build event upload, dragged in by `--config=resultstore_base` | Already off. Both `relay_presubmit_pr.sh` and `relay_bazel_test.sh` pass `--bes_backend=` unless you ask for `--upload-results`. |
 
 > [!IMPORTANT]
 > Only the CI service account can write to the ResultStore instance. Left on,

@@ -201,6 +201,12 @@ resolve_ip_mode() {
   fi
 }
 
+# The usage text is the comment block at the top of this file, so there is only
+# one copy of it to keep current.
+show_help() {
+  sed -n '16,81p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -271,7 +277,7 @@ parse_args() {
         [[ "$1" == *=* ]] && IP_MODE="${1#*=}" || { IP_MODE="${2:-}"; shift; }
         shift ;;
       -h|--help)
-        sed -n '16,81p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+        show_help
         exit 0 ;;
       *)
         die "Unknown option '$1'." ;;
@@ -872,6 +878,18 @@ cmd_status() {
 }
 
 main() {
+  # parse_args only ever sees what is left after the subcommand is shifted off,
+  # so a bare -h would be read as the subcommand and fall through to the usage
+  # error instead of printing anything.
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0 ;;
+    "")
+      show_help >&2
+      die "no subcommand given." ;;
+  esac
+
   local subcommand="${1:-}"
   [[ $# -gt 0 ]] && shift
   parse_args "$@"

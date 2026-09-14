@@ -4111,6 +4111,29 @@ class TestRelayBazelTestArguments(RelayBazelTestCase):
     self.run_wrapper(*self.default_args("//tests:a"), "--report")
     self.assertNotIn("--no-report", self.relay_call())
 
+  def test_it_clears_the_bes_backend_by_default(self):
+    """A personal account cannot write to ResultStore, and the denied upload
+    fails the run after the tests have already passed."""
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertIn("--bazel-flag --bes_backend=", self.relay_call())
+
+  def test_upload_results_keeps_the_bes_backend(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"), "--upload-results")
+    self.assertNotIn("--bes_backend=", self.relay_call())
+
+  def test_a_user_bazel_flag_still_lands_after_the_bes_default(self):
+    """Last flag wins in bazel, so an explicit --bes_backend must come later."""
+    self.stub_everything()
+    self.run_wrapper(
+        *self.default_args("//tests:a"), "--", "--bes_backend=grpcs://mine"
+    )
+    call = self.relay_call()
+    self.assertLess(
+        call.index("--bes_backend="), call.index("--bes_backend=grpcs://mine")
+    )
+
   def test_it_asks_for_no_tag_filter_by_default(self):
     """Naming your own targets is already the filter."""
     self.stub_everything()
@@ -4183,4 +4206,54 @@ class TestRelayBazelTestArguments(RelayBazelTestCase):
     self.assertEqual(proc.returncode, 0, proc.stderr)
     self.assertEqual(self.recorded(), [])
     self.assertIn("Would attach", proc.stdout)
+
+
+class TestFleetHelp(unittest.TestCase):
+  """Asking the fleet script for help, with and without a subcommand.
+
+  Printing help leases nothing, so these run the real script directly.
+  """
+
+  def _run(self, *args):
+    return subprocess.run(
+        ["bash", FLEET_SCRIPT, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+  def test_bare_help_prints_usage(self):
+    proc = self._run("--help")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn("Brings up a fleet of Spot TPU v5e VMs", proc.stdout)
+
+  def test_bare_h_prints_usage(self):
+    proc = self._run("-h")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn("Brings up a fleet of Spot TPU v5e VMs", proc.stdout)
+
+  def test_subcommand_help_prints_the_same_usage(self):
+    self.assertEqual(
+        self._run("--help").stdout, self._run("attach", "--help").stdout
+    )
+
+  def test_help_documents_the_ip_mode_flag(self):
+    self.assertIn("--ip-mode", self._run("--help").stdout)
+
+  def test_help_does_not_leak_script_body(self):
+    """The text is sed'd out of the header comment, so a stale line range
+    would start spilling shell code into the usage message."""
+    self.assertNotIn("parse_args()", self._run("--help").stdout)
+
+  def test_no_subcommand_is_an_error_that_still_shows_usage(self):
+    proc = self._run()
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("no subcommand given", proc.stderr)
+    self.assertIn("Brings up a fleet of Spot TPU v5e VMs", proc.stderr)
+
+  def test_an_unknown_subcommand_is_still_refused(self):
+    proc = self._run("sideways")
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("Usage:", proc.stderr)
+
 
