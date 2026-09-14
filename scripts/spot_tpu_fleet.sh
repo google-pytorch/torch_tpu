@@ -25,6 +25,7 @@
 #   scripts/spot_tpu_fleet.sh attach [--pool DIR] [--zone ZONE] [--ssh-user USER]
 #                                    [--ssh-identity PATH] [--no-key-push]
 #                                    [--name-prefix PREFIX] [--accelerator-type TYPE]
+#                                    [--ip-mode auto|internal|external]
 #   scripts/spot_tpu_fleet.sh detach [--pool DIR]
 #   scripts/spot_tpu_fleet.sh status [--pool DIR]
 #
@@ -70,6 +71,14 @@
 #
 # --wait-timeout caps the wait (default 1h). A waiter that walks away loses its
 # place after two minutes of silence, so nobody holds the line by crashing.
+#
+# Everything above assumes the driver is a corp workstation, which reaches the
+# chips on their external addresses through corp-ssh-helper. A GCE VM in the
+# same VPC is already inside the firewall and has to use the internal addresses
+# instead. --ip-mode picks; the default `auto` looks for corp-ssh-helper first,
+# then asks the metadata server, so a workstation behaves exactly as before.
+#
+#   scripts/spot_tpu_fleet.sh attach --ip-mode internal --zone europe-west4-b
 
 
 set -uo pipefail
@@ -141,6 +150,19 @@ ATTACH_READY=0
 ATTACH_FOUND=0
 ATTACH_HELD=0
 
+# Which address the driver uses to reach the chips. A corp workstation has to go
+# through the external IP, because corp-ssh-helper is what gets it past the
+# firewall. A GCE VM in the same VPC is already inside and reaches the internal
+# IP directly, where the external one is denied. `auto` works that out; see
+# resolve_ip_mode.
+IP_MODE="auto"
+IP_MODE_RESOLVED=""
+# Filled in by resolve_ip_mode. Internal mode needs `gcloud ... ssh` to target
+# the internal address too, or it dials the external one and hangs.
+GCLOUD_SSH_IP_ARGS=()
+SSH_PROXY_BIN="${CORP_SSH_HELPER_BIN:-corp-ssh-helper}"
+readonly METADATA_URL="${TORCH_TPU_METADATA_URL:-http://metadata.google.internal/computeMetadata/v1/instance/id}"
+
 
 die() {
   echo "ERROR [spot_tpu_fleet]: $*" >&2
@@ -149,6 +171,34 @@ die() {
 
 log() {
   echo "[spot_tpu_fleet] $*"
+}
+
+# Decides once, in the parent shell, which address family reaches the chips.
+# Attach forks a job per VM, so resolving lazily would make every one of them
+# repeat the probe.
+#
+#   corp-ssh-helper on PATH          -> external  (a corp workstation; this is
+#                                       the existing path, and it short-circuits
+#                                       before the probe so it costs nothing)
+#   else the metadata server answers -> internal  (a GCE VM inside the VPC)
+#   else                             -> external  (and the SSH error explains it)
+resolve_ip_mode() {
+  if [[ "$IP_MODE" != "auto" ]]; then
+    IP_MODE_RESOLVED="$IP_MODE"
+  elif command -v "$SSH_PROXY_BIN" >/dev/null 2>&1; then
+    IP_MODE_RESOLVED="external"
+  elif curl -fsS --max-time 1 -H 'Metadata-Flavor: Google' \
+      "$METADATA_URL" >/dev/null 2>&1; then
+    IP_MODE_RESOLVED="internal"
+  else
+    IP_MODE_RESOLVED="external"
+  fi
+
+  if [[ "$IP_MODE_RESOLVED" == "internal" ]]; then
+    GCLOUD_SSH_IP_ARGS=(--internal-ip)
+  else
+    GCLOUD_SSH_IP_ARGS=()
+  fi
 }
 
 parse_args() {
@@ -217,8 +267,11 @@ parse_args() {
       --queue-host|--queue-host=*)
         [[ "$1" == *=* ]] && QUEUE_HOST="${1#*=}" || { QUEUE_HOST="${2:-}"; shift; }
         shift ;;
+      --ip-mode|--ip-mode=*)
+        [[ "$1" == *=* ]] && IP_MODE="${1#*=}" || { IP_MODE="${2:-}"; shift; }
+        shift ;;
       -h|--help)
-        sed -n '16,72p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+        sed -n '16,81p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
         exit 0 ;;
       *)
         die "Unknown option '$1'." ;;
@@ -229,8 +282,13 @@ parse_args() {
     || die "--size must be a positive integer, got '$FLEET_SIZE'."
   [[ "$DEADLINE_MINUTES" =~ ^[0-9]+$ ]] \
     || die "--deadline-minutes must be a non-negative integer, got '$DEADLINE_MINUTES'."
+  case "$IP_MODE" in
+    auto|internal|external) ;;
+    *) die "--ip-mode must be auto, internal or external, got '$IP_MODE'." ;;
+  esac
   [[ ${#ZONES[@]} -gt 0 ]] || ZONES=("${DEFAULT_ZONES[@]}")
   REAPER_PID_FILE="${POOL_DIR}/reaper.pid"
+  resolve_ip_mode
 }
 
 # Brings up one VM and drops its session file in the pool. Runs as a background
@@ -432,14 +490,23 @@ attach_one() {
   local session="${POOL_DIR}/vm_${index}.env"
   local log_file="${POOL_DIR}/vm_${index}.log"
 
+  # Internal mode does not fall back to the external address. From inside the
+  # VPC the external one is denied by the hierarchical firewall, so offering it
+  # would trade a clear "no address" for a ten-minute hang.
   local ip
-  ip=$(gcloud compute tpus tpu-vm describe "$name" \
-    --zone="$zone" --project="$ALLOWED_PROJECT" \
-    --format="value(networkEndpoints[0].accessConfig.externalIp)" 2>>"$log_file")
-  if [[ -z "$ip" ]]; then
+  if [[ "$IP_MODE_RESOLVED" == "internal" ]]; then
     ip=$(gcloud compute tpus tpu-vm describe "$name" \
       --zone="$zone" --project="$ALLOWED_PROJECT" \
       --format="value(networkEndpoints[0].ipAddress)" 2>>"$log_file")
+  else
+    ip=$(gcloud compute tpus tpu-vm describe "$name" \
+      --zone="$zone" --project="$ALLOWED_PROJECT" \
+      --format="value(networkEndpoints[0].accessConfig.externalIp)" 2>>"$log_file")
+    if [[ -z "$ip" ]]; then
+      ip=$(gcloud compute tpus tpu-vm describe "$name" \
+        --zone="$zone" --project="$ALLOWED_PROJECT" \
+        --format="value(networkEndpoints[0].ipAddress)" 2>>"$log_file")
+    fi
   fi
   [[ -n "$ip" ]] || { log "${name}: no reachable address, skipping"; return 1; }
 
@@ -453,6 +520,7 @@ attach_one() {
     local remote_out holder
     remote_out=$(gcloud compute tpus tpu-vm ssh "$name" \
       --zone="$zone" --project="$ALLOWED_PROJECT" \
+      "${GCLOUD_SSH_IP_ARGS[@]}" \
       --command="$(claim_script)" 2>>"$log_file" | tr -d '\r')
     holder=$(printf '%s\n' "$remote_out" | sed -n 's/^CLAIMED_BY://p' | head -n 1)
     if [[ -n "$holder" ]]; then
@@ -626,6 +694,7 @@ queue_pick_host() {
 queue_ssh() {
   gcloud compute tpus tpu-vm ssh "$QUEUE_HOST" \
     --zone="$QUEUE_HOST_ZONE" --project="$ALLOWED_PROJECT" \
+    "${GCLOUD_SSH_IP_ARGS[@]}" \
     --command="$1" 2>/dev/null | tr -d '\r'
 }
 
@@ -820,7 +889,10 @@ main() {
     detach) cmd_detach ;;
     deadline) cmd_deadline ;;
     status) cmd_status ;;
-    *)      die "Usage: $0 <up|down|attach|detach|status> [options]" ;;
+    # Exists so callers that wrap this script can ask which address family it
+    # settled on rather than working it out a second time and disagreeing.
+    ip-mode) printf '%s\n' "$IP_MODE_RESOLVED" ;;
+    *)      die "Usage: $0 <up|down|attach|detach|status|ip-mode> [options]" ;;
   esac
 }
 

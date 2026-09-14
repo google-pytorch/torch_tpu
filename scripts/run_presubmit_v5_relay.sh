@@ -44,6 +44,11 @@ CLI_ZONE="europe-west4-b"
 # they burn a full timeout each and then report as ordinary failures.
 CLI_FILTER="presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5lite:8"
 CLI_TARGETS=""
+# Where to look when --targets is not given. The presubmit only ever wants the
+# test tree; a free-form run may want a package somewhere else entirely.
+CLI_SCOPE="//tests/..."
+# The report is the point of a presubmit run and noise for an ad-hoc one.
+CLI_NO_REPORT=false
 CLI_DRY_RUN=false
 CLI_OUTPUT_DIR=""
 CLI_TEST_TIMEOUT="900s"
@@ -74,10 +79,15 @@ via the SSH relay test runner and Spot TPU instances in rbe-tpu-oss.
 
 Options:
   --zone=ZONE              GCP zone for Spot TPU VM (default: europe-west4-b)
-  --filter=TAG_EXPR        Test tag filter expression
+  --filter=TAG_EXPR        Test tag filter expression. Pass "" to run every test
+                           in scope with no tag filtering at all.
                            (default: presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild)
   --targets=LABELS         Comma- or space-separated target labels or package pattern
-                           (default: all targets in //tests/... matching filter tags)
+                           (default: all targets in --scope matching filter tags)
+  --scope=PATTERN          Where to look when --targets is omitted
+                           (default: //tests/...)
+  --no-report              Skip report synthesis. The exit code still reflects
+                           whether the tests passed.
   --dry-run                Resolve target list, print plan, and exit without provisioning VM
   --output-dir=DIR         Directory for test logs and reports
                            (default: presubmit_reports/run_<timestamp>)
@@ -137,6 +147,13 @@ parse_args() {
         CLI_TARGETS="$2"; shift 2 ;;
       --targets=*)
         CLI_TARGETS="${1#*=}"; shift ;;
+      --scope)
+        [[ $# -lt 2 ]] && { echo "ERROR [run_presubmit]: --scope requires an argument." >&2; exit 1; }
+        CLI_SCOPE="$2"; shift 2 ;;
+      --scope=*)
+        CLI_SCOPE="${1#*=}"; shift ;;
+      --no-report)
+        CLI_NO_REPORT=true; shift ;;
       --dry-run)
         CLI_DRY_RUN=true; shift ;;
       --output-dir)
@@ -296,6 +313,7 @@ cleanup_orchestrator() {
 resolve_targets() {
   local target_arg="${1:-}"
   local filter_arg="${2:-}"
+  local scope_arg="${3:-//tests/...}"
   local targets=()
 
   if [[ -n "$target_arg" ]]; then
@@ -343,16 +361,16 @@ resolve_targets() {
       fi
     done
 
-    local query_expr="tests(//tests/...)"
+    local query_expr="tests(${scope_arg})"
     if [[ ${#pos_tags[@]} -gt 0 ]]; then
       local pos_pattern
       pos_pattern=$(IFS='|'; echo "${pos_tags[*]}")
-      query_expr="${query_expr} intersect attr(tags, \"${pos_pattern}\", //tests/...)"
+      query_expr="${query_expr} intersect attr(tags, \"${pos_pattern}\", ${scope_arg})"
     fi
     if [[ ${#neg_tags[@]} -gt 0 ]]; then
       local neg_pattern
       neg_pattern=$(IFS='|'; echo "${neg_tags[*]}")
-      query_expr="${query_expr} except attr(tags, \"${neg_pattern}\", //tests/...)"
+      query_expr="${query_expr} except attr(tags, \"${neg_pattern}\", ${scope_arg})"
     fi
 
     local query_out
@@ -411,7 +429,7 @@ main() {
 
   # Resolve target list
   local resolved_targets_str
-  resolved_targets_str=$(resolve_targets "$CLI_TARGETS" "$CLI_FILTER")
+  resolved_targets_str=$(resolve_targets "$CLI_TARGETS" "$CLI_FILTER" "$CLI_SCOPE")
   local target_list=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && target_list+=("$line")
@@ -579,24 +597,30 @@ main() {
     _FINAL_EXIT_CODE="$bazel_rc"
   fi
 
-  # Result aggregation and report synthesis
-  echo "Synthesizing presubmit test reports in '$CLI_OUTPUT_DIR'..."
-  set +e
-  python3 "$REPORTER" \
-    --output-dir="$CLI_OUTPUT_DIR" \
-    --bazel-log="$bazel_log" \
-    --workspace-root="$REPO_ROOT" \
-    --targets-file="$targets_file" \
-    --duration="$duration" \
-    --bazel-exit-code="$bazel_rc" \
-    --run-started-at="$run_started_at" \
-    --session-env="$SESSION_ENV_FILE" \
-    --session-pool="$CLI_SESSION_POOL"
-  local report_rc=$?
-  set -e
+  # Result aggregation and report synthesis. Skipping it changes nothing about
+  # the verdict: bazel's exit code has already been folded into
+  # _FINAL_EXIT_CODE above.
+  if [[ "$CLI_NO_REPORT" == "true" ]]; then
+    echo "Skipping report synthesis (--no-report)."
+  else
+    echo "Synthesizing presubmit test reports in '$CLI_OUTPUT_DIR'..."
+    set +e
+    python3 "$REPORTER" \
+      --output-dir="$CLI_OUTPUT_DIR" \
+      --bazel-log="$bazel_log" \
+      --workspace-root="$REPO_ROOT" \
+      --targets-file="$targets_file" \
+      --duration="$duration" \
+      --bazel-exit-code="$bazel_rc" \
+      --run-started-at="$run_started_at" \
+      --session-env="$SESSION_ENV_FILE" \
+      --session-pool="$CLI_SESSION_POOL"
+    local report_rc=$?
+    set -e
 
-  if [[ $_FINAL_EXIT_CODE -eq 0 && $report_rc -ne 0 ]]; then
-    _FINAL_EXIT_CODE="$report_rc"
+    if [[ $_FINAL_EXIT_CODE -eq 0 && $report_rc -ne 0 ]]; then
+      _FINAL_EXIT_CODE="$report_rc"
+    fi
   fi
 
   return "$_FINAL_EXIT_CODE"

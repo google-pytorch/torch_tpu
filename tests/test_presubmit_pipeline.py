@@ -1296,3 +1296,186 @@ exit 0
   def test_the_dry_run_plan_shows_it(self):
     proc = self._run("--dry-run", "--bazel-flag=--bes_backend=")
     self.assertIn("--bes_backend=", proc.stdout)
+
+
+class QueryHarnessTestCase(PipelineMockToolchainTestCase):
+  """Runs the relay as far as the bazel query and captures what it asked for."""
+
+  LOGGING_BAZEL = """
+log="${BAZEL_ARGV_LOG}"
+printf '%s\\n' "$*" >> "$log"
+if [[ "$1" == "query" ]]; then
+  echo "//tests:empty_test"
+  exit 0
+fi
+echo "//tests:empty_test PASSED in 0.4s"
+exit 0
+"""
+
+  def _run(self, *extra_args):
+    env = self._mock_env("scope_bin", self.LOGGING_BAZEL)
+    self.argv_log = os.path.join(self.tmp_dir, "bazel_argv.log")
+    env["BAZEL_ARGV_LOG"] = self.argv_log
+    proc = subprocess.run(
+        [
+            RUNNER_SCRIPT,
+            f"--output-dir={self.output_dir}",
+            "--dry-run",
+            *extra_args,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+    )
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    return proc
+
+  def _query(self):
+    with open(self.argv_log) as f:
+      queries = [line.rstrip("\n") for line in f if line.startswith("query ")]
+    self.assertEqual(len(queries), 1, f"expected one query: {queries}")
+    return queries[0]
+
+
+class QueryScopeTest(QueryHarnessTestCase):
+  """--scope decides where the relay looks when no targets are named.
+
+  It was pinned to //tests/... which is the presubmit suite and nothing else.
+  Anyone wanting to run a package elsewhere on the fleet had to name every
+  label by hand.
+  """
+
+  def test_it_still_defaults_to_the_test_tree(self):
+    self._run()
+    self.assertIn("tests(//tests/...)", self._query())
+
+  def test_a_scope_replaces_the_default(self):
+    self._run("--scope=//tests/pallas/...")
+    query = self._query()
+    self.assertIn("tests(//tests/pallas/...)", query)
+    self.assertNotIn("//tests/...)", query)
+
+  def test_the_scope_also_bounds_the_tag_clauses(self):
+    """A tag clause left pointing at //tests/... would widen the scope back out.
+
+    `tests(X) intersect attr(tags, t, //tests/...)` is not the same query as
+    one bounded to X, and the difference only shows up as targets nobody asked
+    for.
+    """
+    self._run("--scope=//tests/pallas/...", "--filter=presubmit-v5,-notest")
+    query = self._query()
+    self.assertNotIn("//tests/...", query)
+    self.assertEqual(query.count("//tests/pallas/..."), 3)
+
+  def test_the_space_separated_spelling_works_too(self):
+    self._run("--scope", "//tests/pallas/...")
+    self.assertIn("tests(//tests/pallas/...)", self._query())
+
+  def test_a_missing_value_is_an_error(self):
+    env = self._mock_env("scope_missing_bin", self.LOGGING_BAZEL)
+    proc = subprocess.run(
+        [RUNNER_SCRIPT, "--scope"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+    )
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("--scope requires an argument", proc.stderr)
+
+
+class EmptyTagFilterTest(QueryHarnessTestCase):
+  """An empty --filter means run everything in scope, with no tag filtering.
+
+  The presubmit needs a filter because it is picking one suite out of the
+  tree. Someone naming their own targets has already done the filtering.
+  """
+
+  def test_no_filter_leaves_a_bare_tests_query(self):
+    self._run("--filter=")
+    query = self._query()
+    self.assertIn("tests(//tests/...)", query)
+    self.assertNotIn("intersect", query)
+    self.assertNotIn("except", query)
+
+  def test_a_filter_of_only_separators_is_also_empty(self):
+    self._run("--filter=,,")
+    query = self._query()
+    self.assertNotIn("intersect", query)
+    self.assertNotIn("except", query)
+
+  def test_the_default_filter_still_builds_both_clauses(self):
+    self._run()
+    query = self._query()
+    self.assertIn("intersect", query)
+    self.assertIn("except", query)
+
+
+class NoReportTest(PipelineMockToolchainTestCase):
+  """--no-report skips report synthesis without changing the verdict."""
+
+  PASSING_BAZEL = """
+if [[ "$1" == "query" ]]; then
+  echo "//tests:empty_test"
+  exit 0
+fi
+echo "//tests:empty_test PASSED in 0.4s"
+exit 0
+"""
+
+  FAILING_BAZEL = """
+if [[ "$1" == "query" ]]; then
+  echo "//tests:empty_test"
+  exit 0
+fi
+if [[ "$1" == "test" ]]; then
+  echo "//tests:empty_test FAILED in 0.4s"
+  exit 3
+fi
+exit 0
+"""
+
+  def _run(self, *extra_args, bazel_body=None):
+    env = self._mock_env("report_bin", bazel_body or self.PASSING_BAZEL)
+    return subprocess.run(
+        [
+            RUNNER_SCRIPT,
+            f"--output-dir={self.output_dir}",
+            "--targets=//tests:empty_test",
+            *extra_args,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+    )
+
+  def _summary_path(self):
+    return os.path.join(self.output_dir, "presubmit_summary.json")
+
+  def test_the_report_is_written_by_default(self):
+    self._run()
+    self.assertTrue(os.path.exists(self._summary_path()))
+
+  def test_no_report_writes_no_summary(self):
+    proc = self._run("--no-report")
+    self.assertFalse(os.path.exists(self._summary_path()))
+    self.assertIn("Skipping report synthesis", proc.stdout)
+
+  def test_a_skipped_report_still_reports_success(self):
+    proc = self._run("--no-report")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+  def test_a_skipped_report_cannot_turn_a_failure_green(self):
+    """The verdict comes from bazel, not from the reporter.
+
+    Skipping the report must not lose the failure, or --no-report becomes a
+    way to launder a red run.
+    """
+    proc = self._run("--no-report", bazel_body=self.FAILING_BAZEL)
+    self.assertNotEqual(proc.returncode, 0)
+

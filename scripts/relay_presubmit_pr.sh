@@ -20,7 +20,8 @@
 # Why this runs here and not in GitHub Actions: a hierarchical firewall policy
 # above rbe-tpu-oss denies port 22 from 0.0.0.0/0, so no GitHub-hosted runner
 # can reach the fleet. Corp workstations get in through corp-ssh-helper, which
-# /etc/ssh/ssh_config wires up automatically. See
+# /etc/ssh/ssh_config wires up automatically. A GCE VM in the fleet's VPC also
+# works, on internal addresses, with no proxy at all; see --ip-mode. See
 # docs/CI_PRESUBMIT_AND_RBE_GUIDE.md section 5.
 
 set -euo pipefail
@@ -65,6 +66,10 @@ CLI_BAZEL_FLAGS=()
 # rather fail than block.
 CLI_WAIT=true
 CLI_WAIT_TIMEOUT=3600
+# Passed straight to the fleet script, which owns the decision. Kept here only
+# so the preflight can ask what it resolved to before spending time on GitHub.
+CLI_IP_MODE="auto"
+IP_MODE_RESOLVED=""
 
 # Set once the pending status is published, so the exit trap knows it owes the
 # PR a terminal state.
@@ -115,6 +120,9 @@ Options:
   --wait-timeout SECS   How long to stand in line. Default: 3600.
   --skip-head-check     Run even if the working tree is not at the PR head.
   --no-report           Run the suite but leave the PR untouched.
+  --ip-mode MODE        How to reach the chips: auto (default), internal or
+                        external. auto picks external on a corp workstation and
+                        internal on a GCE VM in the fleet's VPC.
   --dry-run             Print the plan and exit without touching hardware.
   -h, --help            This message.
 
@@ -157,6 +165,8 @@ parse_args() {
       --wait-timeout=*) CLI_WAIT_TIMEOUT="${1#*=}"; shift ;;
       --skip-head-check) CLI_SKIP_HEAD_CHECK=true; shift ;;
       --no-report) CLI_NO_REPORT=true; shift ;;
+      --ip-mode) [[ $# -ge 2 ]] || die "--ip-mode requires an argument."; CLI_IP_MODE="$2"; shift 2 ;;
+      --ip-mode=*) CLI_IP_MODE="${1#*=}"; shift ;;
       --dry-run) CLI_DRY_RUN=true; shift ;;
       -h|--help) show_help; exit 0 ;;
       *) die "unknown argument '$1'. Try --help." ;;
@@ -173,6 +183,10 @@ parse_args() {
   if [[ -n "$CLI_JOBS" && ! "$CLI_JOBS" =~ ^[0-9]+$ ]]; then
     die "--jobs must be a number, got '${CLI_JOBS}'."
   fi
+  case "$CLI_IP_MODE" in
+    auto|internal|external) ;;
+    *) die "--ip-mode must be auto, internal or external, got '${CLI_IP_MODE}'." ;;
+  esac
 
   [[ ${#CLI_ZONES[@]} -gt 0 ]] || CLI_ZONES=("europe-west4-b")
   [[ -n "$CLI_POOL" ]] || CLI_POOL="/tmp/tpu_pool_${USER:-relay}"
@@ -196,10 +210,23 @@ mode_label() {
   fi
 }
 
-# A workstation reaches the fleet through corp-ssh-helper, which the corp
-# ssh_config installs as a ProxyCommand. Without it every SSH in the relay hangs
-# until it times out, which is a slow and confusing way to fail.
+# Which address family the fleet script settled on. Asked rather than worked out
+# here, so the two can never disagree about whether corp-ssh-helper is needed.
+resolve_ip_mode() {
+  # `|| true` matters: this is a bare assignment, so under `set -e` a fleet
+  # script that failed here would abort the run before the preflight below got
+  # to say anything useful about why.
+  IP_MODE_RESOLVED="$("$FLEET" ip-mode --ip-mode "$CLI_IP_MODE" 2>/dev/null)" || true
+  [[ -n "$IP_MODE_RESOLVED" ]] || IP_MODE_RESOLVED="external"
+}
+
+# Only external mode needs the proxy. A corp workstation reaches the fleet
+# through corp-ssh-helper, which the corp ssh_config installs as a ProxyCommand;
+# without it every SSH in the relay hangs until it times out, which is a slow
+# and confusing way to fail. A GCE VM in the same VPC is already inside the
+# firewall and uses internal addresses, so the proxy is irrelevant there.
 check_ssh_path() {
+  [[ "$IP_MODE_RESOLVED" == "internal" ]] && return 0
   command -v "$SSH_PROXY" >/dev/null 2>&1 && return 0
   cat >&2 <<'EOF'
 ERROR [relay_pr]: corp-ssh-helper is not on PATH.
@@ -211,6 +238,10 @@ session and every test will time out.
 
 Run this from a corp workstation or cloudtop. If you are on one and this still
 fires, check that /usr/local/bin is on your PATH.
+
+The other supported driver is a GCE VM in the same VPC as the fleet, which
+reaches the chips on their internal addresses and needs no proxy. From one of
+those, pass --ip-mode internal.
 EOF
   return 1
 }
@@ -220,6 +251,7 @@ preflight() {
   command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
   [[ -x "$FLEET" ]] || die "cannot execute ${FLEET}."
   [[ -x "$RELAY" ]] || die "cannot execute ${RELAY}."
+  resolve_ip_mode
   check_ssh_path || exit 1
 }
 
@@ -415,7 +447,8 @@ and this run would report under the same check name. Add it with --add-label."
   fi
 
   log "borrowing VMs from the standing fleet"
-  "$FLEET" attach --pool "$CLI_POOL" "${zone_args[@]}" ${wait_args[@]+"${wait_args[@]}"}
+  "$FLEET" attach --pool "$CLI_POOL" --ip-mode "$IP_MODE_RESOLVED" \
+    "${zone_args[@]}" ${wait_args[@]+"${wait_args[@]}"}
   _ATTACHED=true
 
   local attached

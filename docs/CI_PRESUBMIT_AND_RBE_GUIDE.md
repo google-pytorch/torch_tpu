@@ -109,6 +109,65 @@ The fleet spans four zones and the driver only looks in `europe-west4-b` unless
 told otherwise. Naming all four is the difference between 8 VMs and 28, which
 is the difference between 20 minutes and 7.
 
+### Running something that is not a presubmit
+
+None of this needs a pull request. `relay_bazel_test.sh` takes bazel labels,
+borrows the fleet, runs, and gives the VMs back:
+
+```bash
+# One target.
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test \
+  --zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a
+
+# Hunting a flake: same target, twenty times, spread across the chips.
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test -- --runs_per_test=20
+
+# A whole package. Patterns go through `bazel query tests(...)`, so only test
+# rules come back.
+scripts/relay_bazel_test.sh //tests/pallas/...
+
+# Everything in a subtree carrying a tag.
+scripts/relay_bazel_test.sh --scope //tests/pallas/... --filter presubmit-v5
+```
+
+It gives the fleet back however it exits, Ctrl-C included. `--keep` leaves it
+attached so a second run starts instantly; you are then holding it, so run
+`spot_tpu_fleet.sh detach --pool DIR` when you are done. Pointing `--pool` at a
+pool that already has sessions reuses those VMs and leaves them alone, on the
+assumption they are somebody else's.
+
+> [!IMPORTANT]
+> Every test action leases one `v5litepod-1` chip. A target tagged
+> `requires-tpu-v5lite:8` cannot pass on this fleet however you invoke it. That
+> is the shape of the hardware, not a limit of the script.
+
+### Driving from a GCE VM instead of a workstation
+
+A corp workstation reaches the chips on their external addresses through
+`corp-ssh-helper`. A GCE VM in the same VPC is already inside the firewall and
+reaches them on internal addresses with no proxy at all: the hierarchical
+policy over `rbe-tpu-oss` allows RFC1918 at priority 24, well before the
+`0.0.0.0/0` deny at priority 32.
+
+`--ip-mode` picks, and all three scripts take it. The default `auto` looks for
+`corp-ssh-helper` first and only then asks the metadata server, so a
+workstation behaves exactly as it always has:
+
+| Driver | `auto` resolves to |
+| :--- | :--- |
+| Corp workstation or cloudtop | `external` |
+| GCE VM in the fleet's VPC | `internal` |
+| Neither | `external`, and the error names what is missing |
+
+The proxy check only fires for runs that actually need the proxy, so a GCE
+driver is not refused for lacking something it does not use.
+
+> [!NOTE]
+> A cloudtop is itself a GCE VM and its metadata server answers, but it is not
+> in `rbe-tpu-oss`'s VPC. That is why the `corp-ssh-helper` check comes first.
+> A GCE VM in some other VPC will resolve to `internal` and then fail to
+> connect; pass `--ip-mode external` if that is genuinely what you want.
+
 > [!IMPORTANT]
 > Until this lands on `main`, none of these scripts exist on your branch. Pull
 > them across without moving HEAD, so the verdict still belongs to your code:

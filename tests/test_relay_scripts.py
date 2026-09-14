@@ -39,6 +39,7 @@ REMOTE_EXECUTOR = os.path.join(
     REPO_ROOT, "ci", "tools", "remote_tpu_executor.sh"
 )
 RELAY_DRIVER = os.path.join(REPO_ROOT, "scripts", "relay_presubmit_pr.sh")
+RELAY_BAZEL_TEST = os.path.join(REPO_ROOT, "scripts", "relay_bazel_test.sh")
 
 SESSION_KEYS = (
     "TPU_IP",
@@ -1372,10 +1373,20 @@ exit 0
 """)
     os.chmod(path, 0o755)
 
+  # A cloudtop is itself a GCE VM, so the real metadata server answers and the
+  # resolved address mode would otherwise depend on whether the host happens to
+  # have corp-ssh-helper installed. Point the probe at a closed port so these
+  # tests always run the external path unless they ask for otherwise.
+  UNREACHABLE_METADATA = "http://127.0.0.1:1/unreachable"
+
   def run_fleet(self, *args):
     return subprocess.run(
         ["bash", FLEET_SCRIPT, *args],
-        env={"PATH": f"{self.bin_dir}:{os.environ['PATH']}", "HOME": self.root},
+        env={
+            "PATH": f"{self.bin_dir}:{os.environ['PATH']}",
+            "HOME": self.root,
+            "TORCH_TPU_METADATA_URL": self.UNREACHABLE_METADATA,
+        },
         capture_output=True,
         text=True,
         timeout=120,
@@ -2431,6 +2442,213 @@ class TestFleetDetach(FleetAttachTestCase):
     self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class FleetIpModeTestCase(FleetAttachTestCase):
+  """Helpers for driving the address-mode decision from the outside.
+
+  Both inputs are injectable: which binary counts as corp-ssh-helper, and what
+  the metadata probe talks to. Nothing here depends on what the host running
+  the tests happens to be.
+  """
+
+  MISSING_PROXY = "definitely-not-on-path-corp-ssh-helper"
+
+  def reachable_metadata(self):
+    path = os.path.join(self.root, "metadata.txt")
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write("4242\n")
+    return f"file://{path}"
+
+  def fake_gcloud_with_both_addresses(
+      self, listed_names, external="34.1.2.3", internal="10.164.0.7"
+  ):
+    """A gcloud that answers whichever address format it is asked for."""
+    listing_file = os.path.join(self.root, "listing.txt")
+    with open(listing_file, "w", encoding="utf-8") as fh:
+      fh.write("".join(f"{name}\n" for name in listed_names))
+
+    path = os.path.join(self.bin_dir, "gcloud")
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write(f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "{self.gcloud_log}"
+case "$4" in
+  list) cat "{listing_file}" ;;
+  describe)
+    if [[ "$*" == *"externalIp"* ]]; then
+      printf '%s\\n' "{external}"
+    else
+      printf '%s\\n' "{internal}"
+    fi
+    ;;
+  ssh) printf '%s\\n' "ci" ;;
+esac
+exit 0
+""")
+    os.chmod(path, 0o755)
+
+  def run_fleet_with_env(self, *args, proxy=None, metadata=None):
+    env = {
+        "PATH": f"{self.bin_dir}:{os.environ['PATH']}",
+        "HOME": self.root,
+        "TORCH_TPU_METADATA_URL": metadata or self.UNREACHABLE_METADATA,
+    }
+    if proxy is not None:
+      env["CORP_SSH_HELPER_BIN"] = proxy
+    return subprocess.run(
+        ["bash", FLEET_SCRIPT, *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+  def resolved_mode(self, *args, proxy=None, metadata=None):
+    proc = self.run_fleet_with_env(
+        "ip-mode", *args, proxy=proxy, metadata=metadata
+    )
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    return proc.stdout.strip()
+
+  def ssh_calls(self):
+    return [c for c in self.gcloud_calls() if " ssh " in f" {c} "]
+
+
+class TestFleetIpModeResolution(FleetIpModeTestCase):
+  """Which address family the driver uses, and how it works that out.
+
+  A corp workstation reaches the chips on their external addresses through
+  corp-ssh-helper. A GCE VM in the same VPC is inside the firewall already and
+  has to use the internal ones, where the external ones are denied.
+  """
+
+  def test_a_workstation_resolves_to_external(self):
+    self.assertEqual(self.resolved_mode(), "external")
+
+  def test_corp_ssh_helper_wins_even_on_a_gce_vm(self):
+    """A cloudtop is a GCE VM and its metadata server answers.
+
+    It is not in the fleet's VPC though, so trusting the metadata probe over
+    the proxy would break every cloudtop run. The proxy check has to come
+    first.
+    """
+    mode = self.resolved_mode(metadata=self.reachable_metadata())
+    self.assertEqual(mode, "external")
+
+  def test_no_proxy_but_a_metadata_server_resolves_to_internal(self):
+    mode = self.resolved_mode(
+        proxy=self.MISSING_PROXY, metadata=self.reachable_metadata()
+    )
+    self.assertEqual(mode, "internal")
+
+  def test_neither_falls_back_to_external(self):
+    """External is the better guess to fail on: the error names the proxy."""
+    self.assertEqual(self.resolved_mode(proxy=self.MISSING_PROXY), "external")
+
+  def test_an_explicit_internal_overrides_detection(self):
+    mode = self.resolved_mode("--ip-mode", "internal")
+    self.assertEqual(mode, "internal")
+
+  def test_an_explicit_external_overrides_detection(self):
+    mode = self.resolved_mode(
+        "--ip-mode",
+        "external",
+        proxy=self.MISSING_PROXY,
+        metadata=self.reachable_metadata(),
+    )
+    self.assertEqual(mode, "external")
+
+  def test_the_equals_spelling_works_too(self):
+    self.assertEqual(self.resolved_mode("--ip-mode=internal"), "internal")
+
+  def test_a_bad_mode_is_refused(self):
+    proc = self.run_fleet_with_env("ip-mode", "--ip-mode", "sideways")
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("--ip-mode must be", proc.stderr)
+
+  def test_reporting_the_mode_touches_no_hardware(self):
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    self.resolved_mode()
+    self.assertEqual(self.gcloud_calls(), [])
+
+
+class TestFleetAttachUsesTheResolvedAddress(FleetIpModeTestCase):
+  """The resolved mode has to reach the session file and the SSH command."""
+
+  def attach(self, *extra):
+    return self.run_fleet_with_env(
+        "attach", "--pool", self.pool, "--zone", self.ZONE, *extra
+    )
+
+  def test_external_mode_writes_the_external_address(self):
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    proc = self.attach("--ip-mode", "external")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertEqual(self.read_session("vm_0.env")["TPU_IP"], "34.1.2.3")
+
+  def test_internal_mode_writes_the_internal_address(self):
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    proc = self.attach("--ip-mode", "internal")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertEqual(self.read_session("vm_0.env")["TPU_IP"], "10.164.0.7")
+
+  def test_internal_mode_never_asks_for_the_external_address(self):
+    """Falling back to an address the firewall denies buys a timeout, not a run."""
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    self.attach("--ip-mode", "internal")
+    describes = [c for c in self.gcloud_calls() if " describe " in f" {c} "]
+    self.assertTrue(describes, self.gcloud_calls())
+    for call in describes:
+      self.assertNotIn("externalIp", call)
+
+  def test_internal_mode_tells_gcloud_ssh_to_use_the_internal_address(self):
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    self.attach("--ip-mode", "internal")
+    self.assertTrue(self.ssh_calls(), self.gcloud_calls())
+    for call in self.ssh_calls():
+      self.assertIn("--internal-ip", call)
+
+  def test_external_mode_leaves_the_ssh_command_exactly_as_it_was(self):
+    """The cloudtop path is the one in daily use; it must not shift at all."""
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    self.attach("--ip-mode", "external")
+    self.assertTrue(self.ssh_calls(), self.gcloud_calls())
+    for call in self.ssh_calls():
+      self.assertNotIn("--internal-ip", call)
+
+  def test_the_control_socket_follows_the_address_in_use(self):
+    """Two modes reaching one VM must not share a ControlMaster socket.
+
+    The socket is keyed on the address, so this falls out for free; assert it
+    so a later refactor cannot quietly key it on the VM name instead.
+    """
+    self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
+    self.attach("--ip-mode", "internal")
+    self.assertIn(
+        "10.164.0.7", self.read_session("vm_0.env")["SSH_CONTROL_PATH"]
+    )
+
+  def test_a_vm_with_no_internal_address_is_skipped(self):
+    listing_file = os.path.join(self.root, "listing.txt")
+    with open(listing_file, "w", encoding="utf-8") as fh:
+      fh.write("spot-tpu-v5e-111-1\n")
+    path = os.path.join(self.bin_dir, "gcloud")
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write(f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "{self.gcloud_log}"
+case "$4" in
+  list) cat "{listing_file}" ;;
+  describe) [[ "$*" == *"externalIp"* ]] && printf '%s\\n' "34.1.2.3" ;;
+  ssh) printf '%s\\n' "ci" ;;
+esac
+exit 0
+""")
+    os.chmod(path, 0o755)
+
+    self.attach("--ip-mode", "internal")
+    self.assertEqual(self.sessions(), [])
+
+
+
 class TestTestRuleEnvReachesTheVm(
     unittest.TestCase  # UNITTEST_OK=No RNG; tests shell scripts.
 ):
@@ -2595,7 +2813,7 @@ class RelayDriverTestCase(
     ])
     return self.write_stub("gh", body)
 
-  def fake_fleet(self, vms=2):
+  def fake_fleet(self, vms=2, ip_mode="external"):
     """A fleet script that writes session files on attach and clears on detach."""
     body = "\n".join([
         'pool=""',
@@ -2604,7 +2822,9 @@ class RelayDriverTestCase(
         '  if [[ "$prev" == "--pool" ]]; then pool="$arg"; fi',
         '  prev="$arg"',
         "done",
-        'if [[ "$1" == "attach" ]]; then',
+        'if [[ "$1" == "ip-mode" ]]; then',
+        f'  echo "{ip_mode}"',
+        'elif [[ "$1" == "attach" ]]; then',
         '  mkdir -p "$pool"',
         (
             f"  for i in $(seq 1 {vms}); do echo TPU_NAME=vm$i >"
@@ -2683,6 +2903,17 @@ class RelayDriverTestCase(
         if call.startswith("spot_tpu_fleet.sh ")
     ]
 
+  # Verbs that reach a VM. `ip-mode` is deliberately absent: it only reports
+  # which address family the driver would use and leases nothing.
+  HARDWARE_VERBS = ("up", "down", "attach", "detach")
+
+  def hardware_calls(self):
+    return [
+        call
+        for call in self.fleet_calls()
+        if call.split()[1:2] and call.split()[1] in self.HARDWARE_VERBS
+    ]
+
   def relay_call(self):
     return next(
         call
@@ -2717,9 +2948,9 @@ class RelayDriverTestCase(
         "--skip-head-check",
     ]
 
-  def stub_everything(self, **relay_kwargs):
+  def stub_everything(self, ip_mode="external", **relay_kwargs):
     self.fake_gh()
-    self.fake_fleet()
+    self.fake_fleet(ip_mode=ip_mode)
     self.fake_relay(**relay_kwargs)
 
 
@@ -2789,7 +3020,66 @@ class TestRelayDriverPreflight(RelayDriverTestCase):
     )
     self.assertNotEqual(result.returncode, 0)
     self.assertIn("corp-ssh-helper", result.stderr)
-    self.assertEqual(self.fleet_calls(), [])
+    self.assertEqual(self.hardware_calls(), [])
+
+  def test_the_error_points_at_the_gce_option(self):
+    """The proxy is one of two ways in, so the error should name the other."""
+    self.stub_everything()
+    result = self.run_driver(
+        *self.default_args(),
+        CORP_SSH_HELPER_BIN=os.path.join(self.bin, "no-such-proxy"),
+    )
+    self.assertIn("--ip-mode internal", result.stderr)
+
+  def test_a_gce_driver_does_not_need_the_proxy(self):
+    """Inside the VPC the chips are reachable directly.
+
+    Demanding corp-ssh-helper there would refuse a run that would have worked.
+    """
+    self.stub_everything(ip_mode="internal")
+    result = self.run_driver(
+        *self.default_args(),
+        "--ip-mode",
+        "internal",
+        CORP_SSH_HELPER_BIN=os.path.join(self.bin, "no-such-proxy"),
+    )
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertNotIn("corp-ssh-helper", result.stderr)
+
+  def test_it_rejects_an_unknown_ip_mode(self):
+    self.stub_everything()
+    result = self.run_driver(*self.default_args(), "--ip-mode", "sideways")
+    self.assertNotEqual(result.returncode, 0)
+    self.assertIn("--ip-mode must be", result.stderr)
+
+  def test_the_resolved_mode_reaches_attach(self):
+    self.stub_everything(ip_mode="internal")
+    self.run_driver(*self.default_args(), "--ip-mode", "internal")
+    attach = next(c for c in self.fleet_calls() if " attach " in c)
+    self.assertIn("--ip-mode internal", attach)
+
+  def test_a_workstation_run_still_attaches_externally(self):
+    """The path in daily use has to come out the other side unchanged."""
+    self.stub_everything()
+    self.run_driver(*self.default_args())
+    attach = next(c for c in self.fleet_calls() if " attach " in c)
+    self.assertIn("--ip-mode external", attach)
+
+  def test_a_fleet_script_that_cannot_answer_does_not_kill_the_run(self):
+    """A bare assignment from a failing command substitution aborts under set -e.
+
+    That would swallow the preflight error and leave the operator with no
+    output at all.
+    """
+    self.fake_gh()
+    self.fake_relay()
+    self.write_stub("spot_tpu_fleet.sh", "exit 9")
+    result = self.run_driver(
+        *self.default_args(),
+        CORP_SSH_HELPER_BIN=os.path.join(self.bin, "no-such-proxy"),
+    )
+    self.assertNotEqual(result.returncode, 0)
+    self.assertIn("corp-ssh-helper", result.stderr)
 
   def test_it_refuses_to_report_on_a_tree_that_is_not_the_pr_head(self):
     self.stub_everything()
@@ -2920,10 +3210,13 @@ class TestRelayDriverFleetHandling(RelayDriverTestCase):
   def fleet_verbs(self):
     return [call.split()[1] for call in self.fleet_calls()]
 
+  def hardware_verbs(self):
+    return [call.split()[1] for call in self.hardware_calls()]
+
   def test_it_attaches_and_detaches(self):
     self.stub_everything()
     self.run_driver(*self.default_args())
-    self.assertEqual(self.fleet_verbs(), ["attach", "detach"])
+    self.assertEqual(self.hardware_verbs(), ["attach", "detach"])
 
   def test_it_detaches_even_when_the_relay_fails(self):
     """A run that dies holding every session file starves the next one."""
@@ -3144,6 +3437,7 @@ exit 0
             "HOME": self.root,
             "USER": user or self.user,
             "TORCH_TPU_REMOTE_CLAIM_PATH": self.claim_root,
+            "TORCH_TPU_METADATA_URL": self.UNREACHABLE_METADATA,
         },
         capture_output=True,
         text=True,
@@ -3405,6 +3699,7 @@ printf '%s' "$cmd" | sed "s|{self.claim_root}|{self.claim_root}-$vm|g" | bash
             "USER": user or self.user,
             "TORCH_TPU_REMOTE_CLAIM_PATH": self.claim_root,
             "TORCH_TPU_REMOTE_QUEUE_PATH": self.queue_root,
+            "TORCH_TPU_METADATA_URL": self.UNREACHABLE_METADATA,
         },
         capture_output=True,
         text=True,
@@ -3592,3 +3887,300 @@ class TestRelayDriverQueuesForTheFleet(RelayDriverTestCase):
         *self.default_args(), "--sha", self.HEAD_SHA, "--dry-run", "--no-wait"
     )
     self.assertIn("take what is free", impatient.stdout)
+
+
+class RelayBazelTestCase(
+    unittest.TestCase  # UNITTEST_OK=No RNG; tests shell scripts.
+):
+  """Drives scripts/relay_bazel_test.sh against stubs instead of hardware."""
+
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.tmp.cleanup)
+    self.bin = os.path.join(self.tmp.name, "bin")
+    os.makedirs(self.bin)
+    self.pool = os.path.join(self.tmp.name, "pool")
+    self.out = os.path.join(self.tmp.name, "out")
+    self.calls = os.path.join(self.tmp.name, "calls.log")
+
+  def write_stub(self, name, body):
+    path = os.path.join(self.bin, name)
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write(
+          "#!/usr/bin/env bash\n"
+          f'printf "%s\\n" "{name} $*" >> "$CALL_LOG"\n' + body + "\n"
+      )
+    os.chmod(path, 0o755)
+    return path
+
+  def fake_fleet(self, vms=2):
+    self.write_stub(
+        "spot_tpu_fleet.sh",
+        "\n".join([
+            'pool=""',
+            'prev=""',
+            'for arg in "$@"; do',
+            '  if [[ "$prev" == "--pool" ]]; then pool="$arg"; fi',
+            '  prev="$arg"',
+            "done",
+            'if [[ "$1" == "attach" ]]; then',
+            '  mkdir -p "$pool"',
+            (
+                f"  for i in $(seq 1 {vms}); do echo TPU_NAME=vm$i >"
+                ' "$pool/vm_$i.env"; done'
+            ),
+            'elif [[ "$1" == "detach" ]]; then',
+            '  rm -f "$pool"/*.env',
+            "fi",
+            "exit 0",
+        ]),
+    )
+
+  def fake_relay(self, exit_code=0, body=""):
+    self.write_stub(
+        "run_presubmit_v5_relay.sh", f"{body}\nexit {exit_code}"
+    )
+
+  def stub_everything(self, vms=2, relay_exit=0, relay_body=""):
+    self.fake_fleet(vms=vms)
+    self.fake_relay(exit_code=relay_exit, body=relay_body)
+    self.write_stub("gcloud", "exit 0")
+
+  def run_wrapper(self, *args, **env_overrides):
+    env = {
+        "PATH": self.bin + os.pathsep + os.environ["PATH"],
+        "HOME": self.tmp.name,
+        "USER": "tester",
+        "CALL_LOG": self.calls,
+        "SPOT_TPU_FLEET_BIN": os.path.join(self.bin, "spot_tpu_fleet.sh"),
+        "RUN_PRESUBMIT_V5_RELAY_BIN": os.path.join(
+            self.bin, "run_presubmit_v5_relay.sh"
+        ),
+    }
+    env.update(env_overrides)
+    return subprocess.run(
+        ["bash", RELAY_BAZEL_TEST, *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+  def default_args(self, *extra):
+    return (
+        "--pool",
+        self.pool,
+        "--output-dir",
+        self.out,
+        "--no-wait",
+        *extra,
+    )
+
+  def recorded(self):
+    if not os.path.exists(self.calls):
+      return []
+    with open(self.calls, encoding="utf-8") as fh:
+      return [line.strip() for line in fh if line.strip()]
+
+  def fleet_verbs(self):
+    return [
+        call.split()[1]
+        for call in self.recorded()
+        if call.startswith("spot_tpu_fleet.sh ")
+    ]
+
+  def relay_call(self):
+    return next(
+        call
+        for call in self.recorded()
+        if call.startswith("run_presubmit_v5_relay.sh ")
+    )
+
+  def sessions(self):
+    return sorted(
+        f for f in os.listdir(self.pool) if f.endswith(".env")
+    ) if os.path.isdir(self.pool) else []
+
+
+class TestRelayBazelTestLeasing(RelayBazelTestCase):
+  """Borrowing the fleet and, more importantly, giving it back.
+
+  A run that walks away holding 28 claims blocks everyone else until the
+  four-hour TTL expires, so every exit path has to release.
+  """
+
+  def test_it_attaches_runs_and_detaches(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertEqual(self.fleet_verbs(), ["attach", "detach"])
+
+  def test_it_detaches_when_the_run_fails(self):
+    self.stub_everything(relay_exit=1)
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("detach", self.fleet_verbs())
+    self.assertEqual(self.sessions(), [])
+
+  def test_it_detaches_when_interrupted(self):
+    """Ctrl-C is the normal way to abandon a long run."""
+    self.stub_everything(relay_body='kill -INT $PPID\nsleep 5')
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("detach", self.fleet_verbs())
+    self.assertEqual(self.sessions(), [])
+
+  def test_it_never_creates_or_deletes_hardware(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertNotIn("up", self.fleet_verbs())
+    self.assertNotIn("down", self.fleet_verbs())
+
+  def test_it_stops_when_nothing_could_be_borrowed(self):
+    self.stub_everything(vms=0)
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("does not create hardware", proc.stderr)
+
+  def test_keep_leaves_the_fleet_attached(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args("//tests:a"), "--keep")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertNotIn("detach", self.fleet_verbs())
+    self.assertEqual(self.sessions(), ["vm_1.env", "vm_2.env"])
+
+  def test_a_pool_somebody_else_filled_is_left_alone(self):
+    """Detaching a borrowed pool would pull the VMs out from under its owner."""
+    self.stub_everything()
+    os.makedirs(self.pool)
+    with open(
+        os.path.join(self.pool, "vm_0.env"), "w", encoding="utf-8"
+    ) as fh:
+      fh.write("export TPU_NAME='someone-elses'\n")
+
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertNotIn("attach", self.fleet_verbs())
+    self.assertNotIn("detach", self.fleet_verbs())
+    self.assertEqual(self.sessions(), ["vm_0.env"])
+
+  def test_it_says_it_is_reusing_the_pool(self):
+    self.stub_everything()
+    os.makedirs(self.pool)
+    with open(
+        os.path.join(self.pool, "vm_0.env"), "w", encoding="utf-8"
+    ) as fh:
+      fh.write("export TPU_NAME='someone-elses'\n")
+    proc = self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertIn("reusing", proc.stdout)
+
+
+class TestRelayBazelTestArguments(RelayBazelTestCase):
+  """What the wrapper hands the runner underneath."""
+
+  def test_targets_reach_the_runner(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a", "//tests:b"))
+    self.assertIn("--targets //tests:a //tests:b", self.relay_call())
+
+  def test_flags_after_the_double_dash_become_bazel_flags(self):
+    self.stub_everything()
+    self.run_wrapper(
+        *self.default_args("//tests:a"), "--", "--runs_per_test=20"
+    )
+    self.assertIn("--bazel-flag --runs_per_test=20", self.relay_call())
+
+  def test_a_bazel_flag_is_not_mistaken_for_a_target(self):
+    """Everything after -- is bazel's, including things that look like targets."""
+    self.stub_everything()
+    self.run_wrapper(
+        *self.default_args("//tests:a"), "--", "--test_arg=//not/a:target"
+    )
+    call = self.relay_call()
+    self.assertIn("--targets //tests:a", call)
+    self.assertNotIn("--targets //tests:a //not/a:target", call)
+
+  def test_it_skips_the_report_by_default(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertIn("--no-report", self.relay_call())
+
+  def test_report_turns_the_report_back_on(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"), "--report")
+    self.assertNotIn("--no-report", self.relay_call())
+
+  def test_it_asks_for_no_tag_filter_by_default(self):
+    """Naming your own targets is already the filter."""
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"))
+    self.assertIn("--filter ", self.relay_call() + " ")
+
+  def test_a_scope_reaches_the_runner(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args(), "--scope", "//tests/pallas/...")
+    self.assertIn("--scope //tests/pallas/...", self.relay_call())
+
+  def test_the_ip_mode_reaches_attach(self):
+    self.stub_everything()
+    self.run_wrapper(*self.default_args("//tests:a"), "--ip-mode", "internal")
+    attach = next(
+        c for c in self.recorded() if c.startswith("spot_tpu_fleet.sh attach")
+    )
+    self.assertIn("--ip-mode internal", attach)
+
+  def test_zones_are_all_passed_through(self):
+    self.stub_everything()
+    self.run_wrapper(
+        *self.default_args("//tests:a"),
+        "--zone",
+        "us-west1-c",
+        "--zone",
+        "us-west4-a",
+    )
+    attach = next(
+        c for c in self.recorded() if c.startswith("spot_tpu_fleet.sh attach")
+    )
+    self.assertIn("--zone us-west1-c", attach)
+    self.assertIn("--zone us-west4-a", attach)
+
+  def test_naming_nothing_at_all_is_refused(self):
+    """Silently falling back to the whole tree would run a presubmit nobody asked for."""
+    self.stub_everything()
+    proc = self.run_wrapper("--pool", self.pool, "--output-dir", self.out)
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("name at least one target", proc.stderr)
+
+  def test_a_scope_alone_is_enough(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args(), "--scope", "//tests/...")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+  def test_it_rejects_an_unknown_option(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args("//tests:a"), "--nonsense")
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("unknown option", proc.stderr)
+
+  def test_it_rejects_a_non_numeric_job_count(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args("//tests:a"), "--jobs", "lots")
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("--jobs must be a number", proc.stderr)
+
+  def test_it_rejects_an_unknown_ip_mode(self):
+    self.stub_everything()
+    proc = self.run_wrapper(
+        *self.default_args("//tests:a"), "--ip-mode", "sideways"
+    )
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("--ip-mode must be", proc.stderr)
+
+  def test_the_dry_run_touches_nothing(self):
+    self.stub_everything()
+    proc = self.run_wrapper(*self.default_args("//tests:a"), "--dry-run")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertEqual(self.recorded(), [])
+    self.assertIn("Would attach", proc.stdout)
+
