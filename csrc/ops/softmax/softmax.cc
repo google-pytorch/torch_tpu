@@ -69,13 +69,6 @@ absl::StatusOr<mlir::MlirOp> BuildBroadcastedMaxShlo(mlir::MlirOp input_op,
   return BroadcastIfNeeded(unsqueezed_op, input_op);
 }
 
-absl::StatusOr<mlir::MlirOp> BuildBroadcastedSumShlo(mlir::MlirOp input_op,
-                                                     int64_t dim) {
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_op, BuildSumShlo(input_op, {dim}));
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp unsqueezed_op, Unsqueeze(sum_op, dim));
-  return BroadcastIfNeeded(unsqueezed_op, input_op);
-}
-
 }  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
@@ -104,15 +97,22 @@ absl::StatusOr<mlir::MlirOp> BuildSoftmaxShlo(mlir::MlirOp input_op,
       mlir::stablehlo::Subtract(input_op, max_val_broadcasted);
   mlir::MlirOp exp_op = mlir::stablehlo::Exp(shifted_op);
 
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
-                      BuildBroadcastedSumShlo(exp_op, dim));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_op, BuildSumShlo(exp_op, {dim}));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_unsqueezed_op,
+                      Unsqueeze(sum_op, dim));
 
   mlir::MlirOp result;
   if (softmax_mode == SoftmaxMode::kLogSoftmax) {
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted_op,
+                        BroadcastIfNeeded(sum_exp_unsqueezed_op, exp_op));
     mlir::MlirOp log_op = mlir::stablehlo::Log(sum_exp_broadcasted_op);
     result = mlir::stablehlo::Subtract(shifted_op, log_op);
   } else {
-    result = mlir::stablehlo::Div(exp_op, sum_exp_broadcasted_op);
+    auto one = MakeConstantLike(sum_exp_unsqueezed_op, 1.0);
+    mlir::MlirOp inv_sum_op = mlir::stablehlo::Div(one, sum_exp_unsqueezed_op);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_broadcasted_op,
+                        BroadcastIfNeeded(inv_sum_op, exp_op));
+    result = mlir::stablehlo::Mul(exp_op, inv_sum_broadcasted_op);
   }
 
   return CastIfNeeded(result, orig_element_type);

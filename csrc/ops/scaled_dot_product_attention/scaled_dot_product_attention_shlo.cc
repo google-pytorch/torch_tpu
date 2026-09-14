@@ -383,9 +383,14 @@ absl::StatusOr<MlirOpResults<2>> BuildScaledDotProductFusedAttentionShloOp(
   // Softmax along the last dimension (Lk)
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
   mlir::MlirOp sum_exp = SumReduce(builder, exp_val, /*dimension=*/3);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
-                      BroadcastIfNeeded(sum_exp, exp_val, {0, 1, 2}));
-  mlir::MlirOp softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
+  auto one = MakeConstantLike(sum_exp, 1.0);
+  mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
+                      BroadcastIfNeeded(inv_sum_exp, exp_val,
+                                        /*broadcast_dimensions=*/{0, 1, 2}));
+
+  // Softmax along the last dimension (Lk)
+  mlir::MlirOp softmax = mlir::stablehlo::Mul(exp_val, inv_sum_exp_broadcasted);
 
   if (promotion_type == SdpaPromotionType::kSoftmaxOnly && is_half_precision) {
     softmax =
@@ -628,13 +633,15 @@ BuildScaledDotProductAttentionBackward(
   // Softmax using previously computed sum_exp
   mlir::MlirOp sum_exp_converted =
       ConvertElementTypeIfNeeded(sum_exp_3d, softmax_calc_type);
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp sum_exp_broadcasted,
-                      BroadcastIfNeeded(sum_exp_converted, logits,
+  auto one = MakeConstantLike(sum_exp_converted, 1.0);
+  mlir::MlirOp inv_sum_exp = mlir::stablehlo::Div(one, sum_exp_converted);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp inv_sum_exp_broadcasted,
+                      BroadcastIfNeeded(inv_sum_exp, logits,
                                         /*broadcast_dimensions=*/{0, 1, 2}));
 
   // Softmax along the last dimension (Lk)
   mlir::MlirOp exp_val = mlir::stablehlo::Exp(logits);
-  mlir::MlirOp softmax = mlir::stablehlo::Div(exp_val, sum_exp_broadcasted);
+  mlir::MlirOp softmax = mlir::stablehlo::Mul(exp_val, inv_sum_exp_broadcasted);
 
   // Compute backward gradients for Q, K, V
   BackwardGradients4D grads;
