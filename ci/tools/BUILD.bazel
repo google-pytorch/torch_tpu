@@ -24,6 +24,9 @@ py_binary(
     name = "list_ci_tests",
     srcs = ["list_ci_tests.py"],
     data = [
+        # presubmit.yml builds its job matrix by running this, so reading the
+        # workflow alone finds no entries. The tool runs it for the same answer.
+        "presubmit_job_matrix.sh",
         "//:.bazelrc",
         "//:github_workflows",
     ],
@@ -36,6 +39,7 @@ py_test(
     name = "list_ci_tests_test",
     srcs = ["list_ci_tests_test.py"],
     data = [
+        "presubmit_job_matrix.sh",
         "//:.bazelrc",
         "//:github_workflows",
     ],
