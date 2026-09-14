@@ -1366,7 +1366,7 @@ class FleetTeardownTestCase(
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 # argv is: compute tpus tpu-vm <verb> ...
 [[ "$4" == "list" ]] && cat "{listing_file}"
 exit 0
@@ -1394,13 +1394,30 @@ exit 0
     )
 
   def gcloud_calls(self):
+    """One line per invocation.
+
+    Every filter below looks for a verb as a substring, so an argument that
+    spans lines -- `--command=` carries a whole shell script -- would otherwise
+    log as several calls and match on words from inside the script. The stubs
+    collapse newlines when they log for exactly that reason.
+    """
     if not os.path.exists(self.gcloud_log):
       return []
     with open(self.gcloud_log, encoding="utf-8") as fh:
       return [line.strip() for line in fh if line.strip()]
 
+  def calls_with_verb(self, verb):
+    """Invocations of one gcloud verb.
+
+    argv is `compute tpus tpu-vm <verb> ...`, so the verb is matched by
+    position. A substring match cannot be trusted here: `--command=` carries a
+    whole shell script, and a word like "create" inside an error message in it
+    is not a call that creates anything.
+    """
+    return [c for c in self.gcloud_calls() if c.split()[3:4] == [verb]]
+
   def delete_calls(self):
-    return [c for c in self.gcloud_calls() if " delete " in f" {c} "]
+    return self.calls_with_verb("delete")
 
 
 class TestFleetOrphanSweep(FleetTeardownTestCase):
@@ -1429,7 +1446,7 @@ class TestFleetOrphanSweep(FleetTeardownTestCase):
     self.fake_gcloud([])
     self.run_fleet("down", "--pool", self.pool, "--zone", self.ZONE)
 
-    listings = [c for c in self.gcloud_calls() if " list " in f" {c} "]
+    listings = self.calls_with_verb("list")
     self.assertTrue(listings, self.gcloud_calls())
     for call in listings:
       self.assertIn("--filter=name~spot-tpu-v5e-", call)
@@ -2047,7 +2064,7 @@ class TestStageRelayBaseRemoteLayout(StageRelayBaseSshTestCase):
 
   def test_the_base_directory_is_a_view_over_the_layers(self):
     link = self._command(r"^set -e; rm -rf '/tmp/torch_tpu_relay/base-")
-    self.assertIn(f"mkdir -p '{self.base_dir}'", link)
+    self.assertIn(f"mkdir -m 0777 -p '{self.base_dir}'", link)
     self.assertIn("ln -sfn", link)
     self.assertIn("/tmp/torch_tpu_relay/store/", link)
 
@@ -2125,7 +2142,7 @@ class FleetAttachTestCase(FleetTeardownTestCase):
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 # argv is: compute tpus tpu-vm <verb> ...
 case "$4" in
   list) cat "{listing_file}" ;;
@@ -2191,15 +2208,14 @@ class TestFleetAttach(FleetAttachTestCase):
     self.fake_gcloud_with_addresses(["spot-tpu-v5e-111-1"])
     self.run_fleet("attach", "--pool", self.pool, "--zone", self.ZONE)
 
-    calls = self.gcloud_calls()
     self.assertEqual(self.delete_calls(), [])
-    self.assertEqual([c for c in calls if " create " in f" {c} "], [])
+    self.assertEqual(self.calls_with_verb("create"), [])
 
   def test_it_only_looks_at_ready_vms_this_tooling_named(self):
     self.fake_gcloud_with_addresses([])
     self.run_fleet("attach", "--pool", self.pool, "--zone", self.ZONE)
 
-    listings = [c for c in self.gcloud_calls() if " list " in f" {c} "]
+    listings = self.calls_with_verb("list")
     self.assertTrue(listings, self.gcloud_calls())
     for call in listings:
       self.assertIn(
@@ -2257,7 +2273,7 @@ class TestFleetAttach(FleetAttachTestCase):
     )
     self.assertEqual(self.read_session("vm_0.env")["SSH_USER"], "runner")
     self.assertEqual(
-        [c for c in self.gcloud_calls() if " ssh " in f" {c} "], []
+        self.calls_with_verb("ssh"), []
     )
 
   def test_no_key_push_still_claims_but_keeps_the_given_user(self):
@@ -2279,7 +2295,7 @@ class TestFleetAttach(FleetAttachTestCase):
         "--no-key-push",
     )
     self.assertEqual(self.read_session("vm_0.env")["SSH_USER"], "runner")
-    self.assertTrue([c for c in self.gcloud_calls() if " ssh " in f" {c} "])
+    self.assertTrue(self.calls_with_verb("ssh"))
 
   def test_a_vm_with_no_address_never_enters_the_pool(self):
     """A half-provisioned node in the pool loses every test that leases it."""
@@ -2307,8 +2323,8 @@ class TestFleetAttachToReservedCapacity(FleetAttachTestCase):
   def listing_filters(self):
     return [
         call
-        for call in self.gcloud_calls()
-        if " list " in f" {call} " and "--filter=" in call
+        for call in self.calls_with_verb("list")
+        if "--filter=" in call
     ]
 
   def test_a_custom_prefix_replaces_the_default_one(self):
@@ -2406,7 +2422,7 @@ class TestFleetAttachToReservedCapacity(FleetAttachTestCase):
     self.fake_gcloud(["spot-tpu-v5e-111-1"])
     self.run_fleet("down", "--pool", self.pool, "--zone", self.ZONE)
 
-    listings = [c for c in self.gcloud_calls() if " list " in f" {c} "]
+    listings = self.calls_with_verb("list")
     self.assertTrue(listings, self.gcloud_calls())
     for call in listings:
       self.assertIn("name~spot-tpu-v5e-", call)
@@ -2469,7 +2485,7 @@ class FleetIpModeTestCase(FleetAttachTestCase):
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 case "$4" in
   list) cat "{listing_file}" ;;
   describe)
@@ -2510,7 +2526,7 @@ exit 0
     return proc.stdout.strip()
 
   def ssh_calls(self):
-    return [c for c in self.gcloud_calls() if " ssh " in f" {c} "]
+    return self.calls_with_verb("ssh")
 
 
 class TestFleetIpModeResolution(FleetIpModeTestCase):
@@ -2595,7 +2611,7 @@ class TestFleetAttachUsesTheResolvedAddress(FleetIpModeTestCase):
     """Falling back to an address the firewall denies buys a timeout, not a run."""
     self.fake_gcloud_with_both_addresses(["spot-tpu-v5e-111-1"])
     self.attach("--ip-mode", "internal")
-    describes = [c for c in self.gcloud_calls() if " describe " in f" {c} "]
+    describes = self.calls_with_verb("describe")
     self.assertTrue(describes, self.gcloud_calls())
     for call in describes:
       self.assertNotIn("externalIp", call)
@@ -2634,7 +2650,7 @@ class TestFleetAttachUsesTheResolvedAddress(FleetIpModeTestCase):
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 case "$4" in
   list) cat "{listing_file}" ;;
   describe) [[ "$*" == *"externalIp"* ]] && printf '%s\\n' "34.1.2.3" ;;
@@ -3409,7 +3425,7 @@ class FleetClaimTestCase(FleetAttachTestCase):
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 case "$4" in
   list) cat "{listing_file}" ;;
   describe)
@@ -3536,8 +3552,11 @@ class TestFleetClaim(FleetClaimTestCase):
     self.assertEqual(self.owner_of(), self.mine())
 
   def test_a_claim_inside_the_ttl_is_left_alone(self):
+    # A minute inside the four-hour TTL, not a second: `at` is stamped here and
+    # compared on the VM, so a margin narrower than the time it takes to get
+    # there makes this fail whenever the machine is busy.
     self.fake_gcloud_running_commands([self.VM])
-    self.write_claim("busy:live-pool", age_seconds=14399)
+    self.write_claim("busy:live-pool", age_seconds=14340)
     self.assertNotEqual(self.attach().returncode, 0)
 
   def test_the_ttl_is_configurable(self):
@@ -3558,6 +3577,239 @@ class TestFleetClaim(FleetClaimTestCase):
     proc = self.attach("--no-claim")
     self.assertEqual(proc.returncode, 0, proc.stderr)
     self.assertFalse(os.path.exists(self.claim_path()))
+
+
+class TestFleetClaimSurvivesASecondUser(FleetClaimTestCase):
+  """The relay directory is shared, so it must not belong to whoever ran first.
+
+  This is the bug that sat somebody in a --wait loop for twenty minutes against
+  a completely idle fleet: their mkdir of the claim failed with EACCES, the
+  script reported every such failure as "somebody got there first", and waiting
+  cannot change a permission bit.
+  """
+
+  def relay_root(self):
+    """The directory the claim lives in, which everyone shares."""
+    return os.path.dirname(self.claim_root)
+
+  def make_the_relay_root_unwritable(self):
+    root = self.relay_root()
+    os.makedirs(root, exist_ok=True)
+    os.chmod(root, 0o555)
+    self.addCleanup(os.chmod, root, 0o755)
+
+  def test_the_relay_root_is_created_world_writable(self):
+    self.fake_gcloud_running_commands([self.VM])
+    self.assertEqual(self.attach().returncode, 0)
+    self.assertEqual(os.stat(self.relay_root()).st_mode & 0o777, 0o777)
+
+  def test_the_claim_itself_is_world_writable(self):
+    """Reaping an expired claim means deleting the files inside it, which needs
+    write permission on the claim directory and not just on its parent."""
+    self.fake_gcloud_running_commands([self.VM])
+    self.assertEqual(self.attach().returncode, 0)
+    self.assertEqual(os.stat(self.claim_path()).st_mode & 0o777, 0o777)
+
+  def test_an_unwritable_relay_root_is_an_error_not_a_busy_fleet(self):
+    self.fake_gcloud_running_commands([self.VM])
+    self.make_the_relay_root_unwritable()
+
+    proc = self.attach()
+    self.assertNotEqual(proc.returncode, 0)
+    output = proc.stdout + proc.stderr
+    self.assertIn("would not let this user take a claim", output)
+    self.assertNotIn("is held by", output)
+
+  def test_the_error_names_the_command_that_fixes_it(self):
+    self.fake_gcloud_running_commands([self.VM])
+    self.make_the_relay_root_unwritable()
+
+    proc = self.attach()
+    self.assertIn(f"prepare --zone {self.ZONE}", proc.stdout + proc.stderr)
+
+  def test_the_error_reports_the_mode_and_owner_it_found(self):
+    self.fake_gcloud_running_commands([self.VM])
+    self.make_the_relay_root_unwritable()
+
+    proc = self.attach()
+    self.assertIn("dr-xr-xr-x", proc.stdout + proc.stderr)
+
+  def test_waiting_gives_up_immediately_instead_of_polling(self):
+    """--wait exists for a fleet somebody is using. A permission wall never
+    clears, so polling it just hides the problem for an hour."""
+    self.fake_gcloud_running_commands([self.VM])
+    self.make_the_relay_root_unwritable()
+
+    started = time.monotonic()
+    proc = self.attach("--wait", "--wait-poll", "30", "--wait-timeout", "600")
+    elapsed = time.monotonic() - started
+
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("Waiting will not help", proc.stdout + proc.stderr)
+    self.assertNotIn("The fleet is busy", proc.stdout + proc.stderr)
+    self.assertLess(elapsed, 30)
+
+  def test_a_real_holder_is_still_reported_as_held(self):
+    """The new error path must not swallow the case it was carved out of."""
+    self.fake_gcloud_running_commands([self.VM])
+    self.write_claim("someone-else:their-pool")
+
+    proc = self.attach()
+    output = proc.stdout + proc.stderr
+    self.assertIn("is held by someone-else:their-pool", output)
+    self.assertNotIn("CLAIM_ERROR", output)
+
+  def test_leaving_the_pool_alone_when_the_claim_cannot_be_taken(self):
+    """A failed attach must not leave half a fleet recorded in the pool."""
+    self.fake_gcloud_running_commands([self.VM])
+    self.make_the_relay_root_unwritable()
+
+    self.attach()
+    self.assertEqual(self.sessions(), [])
+
+
+class FleetPrepareTestCase(FleetAttachTestCase):
+  """A fake gcloud that keeps the script `prepare` sends to each VM."""
+
+  VM = "spot-tpu-v5e-111-1"
+
+  def setUp(self):
+    super().setUp()
+    self.command_log = os.path.join(self.root, "remote_commands.txt")
+
+  def fake_gcloud(self, listed_names, ssh_exit=0):
+    listing_file = os.path.join(self.root, "listing.txt")
+    with open(listing_file, "w", encoding="utf-8") as fh:
+      fh.write("".join(f"{name}\n" for name in listed_names))
+
+    path = os.path.join(self.bin_dir, "gcloud")
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write(f"""#!/usr/bin/env bash
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
+case "$4" in
+  list) cat "{listing_file}" ;;
+  ssh)
+    for arg in "$@"; do
+      if [[ "$arg" == --command=* ]]; then
+        printf '%s\\n--END--\\n' "${{arg#--command=}}" >> "{self.command_log}"
+      fi
+    done
+    exit {ssh_exit}
+    ;;
+esac
+exit 0
+""")
+    os.chmod(path, 0o755)
+
+  def remote_scripts(self):
+    if not os.path.exists(self.command_log):
+      return []
+    with open(self.command_log, encoding="utf-8") as fh:
+      return [s for s in fh.read().split("--END--\n") if s.strip()]
+
+  def prepare(self, *extra):
+    return self.run_fleet("prepare", "--zone", self.ZONE, *extra)
+
+
+class TestFleetPrepare(FleetPrepareTestCase):
+  """`prepare` is what stops the relay directory belonging to one person.
+
+  A plain mkdir leaves the tree owned by whoever attached first, and everybody
+  after them is locked out until the VM reboots. The tmpfiles rule puts it back
+  root-owned and world-writable on every boot instead.
+  """
+
+  def test_it_installs_the_tmpfiles_rule(self):
+    self.fake_gcloud([self.VM])
+    proc = self.prepare()
+    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+    self.assertIn("/etc/tmpfiles.d/torch-tpu-relay.conf", self.remote_scripts()[0])
+
+  def test_the_rule_is_root_owned_and_world_writable(self):
+    self.fake_gcloud([self.VM])
+    self.prepare()
+    script = self.remote_scripts()[0]
+    for subdir in ("", "/queue", "/base", "/store", "/payloads", "/sandboxes"):
+      self.assertRegex(
+          script, rf"d /tmp/torch_tpu_relay{subdir}\s+0777 root root"
+      )
+
+  def test_it_never_pre_creates_the_claim_directory(self):
+    """The claim directory is the mutex: mkdir succeeding or failing is the
+    lock. Creating it up front would make every VM read as permanently held."""
+    self.fake_gcloud([self.VM])
+    self.prepare()
+    self.assertNotIn("torch_tpu_relay/claim", self.remote_scripts()[0])
+
+  def test_the_rule_is_not_sticky(self):
+    """Sticky would let only the owner delete an entry, which breaks claim
+    expiry, --force-claim and the base store reaper."""
+    self.fake_gcloud([self.VM])
+    self.prepare()
+    self.assertNotIn("1777", self.remote_scripts()[0])
+
+  def test_it_applies_the_rule_without_waiting_for_a_reboot(self):
+    self.fake_gcloud([self.VM])
+    self.prepare()
+    self.assertIn("systemd-tmpfiles --create", self.remote_scripts()[0])
+
+  def test_it_reaches_every_vm_it_finds(self):
+    self.fake_gcloud(["spot-tpu-v5e-111-1", "spot-tpu-v5e-111-2"])
+    proc = self.prepare()
+    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+    self.assertEqual(len(self.remote_scripts()), 2)
+    self.assertIn("Prepared 2/2", proc.stdout)
+
+  def test_it_creates_and_deletes_no_hardware(self):
+    self.fake_gcloud([self.VM])
+    self.prepare()
+    self.assertEqual(self.delete_calls(), [])
+    self.assertEqual(
+        self.calls_with_verb("create"), []
+    )
+
+  def test_a_vm_that_refuses_is_an_error(self):
+    self.fake_gcloud([self.VM], ssh_exit=1)
+    proc = self.prepare()
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("could not be prepared", proc.stderr)
+
+  def test_no_vms_is_an_error_rather_than_a_silent_success(self):
+    self.fake_gcloud([])
+    proc = self.prepare()
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("No VMs found to prepare", proc.stderr)
+
+
+class TestFleetStatusHonoursTheZoneFlag(FleetAttachTestCase):
+  """`status` used to loop the default zones and throw --zone away.
+
+  Three of the four zones the fleet actually lives in are not defaults, so
+  anyone checking whether the fleet was busy was reading the wrong zones.
+  """
+
+  def status(self, *extra):
+    return self.run_fleet("status", "--pool", self.pool, *extra)
+
+  def test_it_lists_the_zone_it_was_given(self):
+    self.fake_gcloud_with_addresses([])
+    self.assertIn("-- us-south1-a", self.status("--zone", "us-south1-a").stdout)
+
+  def test_it_leaves_out_the_zones_it_was_not_given(self):
+    self.fake_gcloud_with_addresses([])
+    self.assertNotIn(
+        "-- europe-west4-b", self.status("--zone", "us-south1-a").stdout
+    )
+
+  def test_every_zone_given_shows_up(self):
+    self.fake_gcloud_with_addresses([])
+    out = self.status("--zone", "us-south1-a", "--zone", "us-west1-c").stdout
+    self.assertIn("-- us-south1-a", out)
+    self.assertIn("-- us-west1-c", out)
+
+  def test_with_no_zone_it_still_falls_back_to_the_defaults(self):
+    self.fake_gcloud_with_addresses([])
+    self.assertIn("-- europe-west4-b", self.status().stdout)
 
 
 class TestFleetDetachReleasesTheClaim(FleetClaimTestCase):
@@ -3644,7 +3896,7 @@ class FleetQueueTestCase(FleetClaimTestCase):
     path = os.path.join(self.bin_dir, "gcloud")
     with open(path, "w", encoding="utf-8") as fh:
       fh.write(f"""#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "{self.gcloud_log}"
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
 case "$4" in
   list) cat "{listing_file}" ;;
   describe)
@@ -4240,10 +4492,33 @@ class TestFleetHelp(unittest.TestCase):
   def test_help_documents_the_ip_mode_flag(self):
     self.assertIn("--ip-mode", self._run("--help").stdout)
 
+  def test_help_documents_the_prepare_subcommand(self):
+    self.assertIn("spot_tpu_fleet.sh prepare", self._run("--help").stdout)
+
   def test_help_does_not_leak_script_body(self):
-    """The text is sed'd out of the header comment, so a stale line range
+    """The text is the header comment block, so a range that runs too far
     would start spilling shell code into the usage message."""
-    self.assertNotIn("parse_args()", self._run("--help").stdout)
+    stdout = self._run("--help").stdout
+    self.assertNotIn("parse_args()", stdout)
+    self.assertNotIn("set -uo pipefail", stdout)
+
+  def test_help_reaches_the_end_of_the_header(self):
+    """The other half of the same failure: a range that stops too early drops
+    whole paragraphs without erroring, so check the last line is present."""
+    with open(FLEET_SCRIPT, encoding="utf-8") as fh:
+      lines = fh.read().splitlines()
+
+    block = []
+    for line in lines[lines.index("") + 1 :]:
+      if not line.startswith("#"):
+        break
+      block.append(line)
+
+    last = [line for line in block if line.strip() != "#"][-1]
+    self.assertIn(last.lstrip("# "), self._run("--help").stdout)
+
+  def test_help_skips_the_licence(self):
+    self.assertNotIn("Apache License", self._run("--help").stdout)
 
   def test_no_subcommand_is_an_error_that_still_shows_usage(self):
     proc = self._run()
@@ -4255,5 +4530,82 @@ class TestFleetHelp(unittest.TestCase):
     proc = self._run("sideways")
     self.assertNotEqual(proc.returncode, 0)
     self.assertIn("Usage:", proc.stderr)
+
+
+class TestSharedRelayDirectoryIsNeverPrivate(
+    unittest.TestCase  # UNITTEST_OK=No RNG; reads shell scripts.
+):
+  """Nothing may create a directory under /tmp/torch_tpu_relay privately.
+
+  Everyone using the fleet shares that tree. One bare `mkdir -p` anywhere puts
+  it back under the first user's umask and locks the next person out until the
+  VM reboots, so the mode has to be named at every site that creates one.
+
+  These read the scripts rather than run them: the code only runs on a TPU VM,
+  and the property being checked is textual anyway.
+  """
+
+  RELAY_ROOT = "/tmp/torch_tpu_relay"
+
+  def body(self, path):
+    with open(path, encoding="utf-8") as fh:
+      return fh.read()
+
+  def mkdirs_under_the_relay_root(self, path):
+    """Lines that create something under the shared root.
+
+    Comments are skipped, and so is the tail of a line continued onto the next
+    with `||`: a bare `mkdir -p` there is the fallback for a system whose mkdir
+    has no -m, and the attempt before it already named the mode.
+    """
+    return [
+        line.strip()
+        for line in self.body(path).splitlines()
+        if "mkdir" in line
+        and self.RELAY_ROOT in line
+        and not line.strip().startswith("#")
+        and not line.strip().startswith("||")
+    ]
+
+  def test_every_shared_mkdir_names_its_mode(self):
+    for script in (FLEET_SCRIPT, REMOTE_EXECUTOR, RELAY_RUNNER):
+      for line in self.mkdirs_under_the_relay_root(script):
+        with self.subTest(script=os.path.basename(script), line=line):
+          # The first mkdir on the line is the one that has to be right;
+          # anything after an `||` is the no -m fallback.
+          self.assertIn("mkdir -m 0777", line.split("||")[0])
+
+  def test_the_claim_directory_is_created_with_its_mode(self):
+    """Not just its parent. Reaping an expired claim deletes the files inside
+    it, which needs write permission on the claim directory itself."""
+    self.assertIn(r'mkdir -m 0777 "\$c"', self.body(FLEET_SCRIPT))
+
+  def test_the_queue_ticket_is_created_with_its_mode(self):
+    self.assertIn(r'mkdir -m 0777 \"\$t\"', self.body(FLEET_SCRIPT))
+
+  def test_base_layers_are_left_reapable_by_other_users(self):
+    """The store reaper rm -rf's layers from earlier runs, and the tarball
+    carries the driver's modes, so the tree needs opening up after extraction."""
+    body = self.body(os.path.join(REPO_ROOT, "ci", "tools", "stage_relay_base.sh"))
+    self.assertIn("chmod -R a+rwX", body)
+
+  def test_the_executor_is_replaced_by_rename_not_by_truncation(self):
+    """Only the owner of the shared executor may truncate it. Rename needs
+    write permission on the directory, which everybody has."""
+    body = self.body(RELAY_RUNNER)
+    self.assertIn("mv -f ${remote_tmp} ${REMOTE_EXECUTOR}", body)
+    self.assertNotIn("cat > ${REMOTE_EXECUTOR}", body)
+
+  def test_nothing_uses_the_sticky_bit(self):
+    """Sticky would let only the owner delete an entry, which breaks claim
+    expiry, --force-claim and the base store reaper."""
+    for script in (
+        FLEET_SCRIPT,
+        REMOTE_EXECUTOR,
+        RELAY_RUNNER,
+        os.path.join(REPO_ROOT, "ci", "tools", "stage_relay_base.sh"),
+    ):
+      with self.subTest(script=os.path.basename(script)):
+        self.assertNotIn("1777", self.body(script))
 
 

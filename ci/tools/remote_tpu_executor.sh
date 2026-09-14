@@ -55,6 +55,12 @@ shift 2
 [[ "${1:-}" == "--" ]] && shift
 declare -a TEST_ARGS=("$@")
 
+# Everyone using this VM shares the directories above the sandbox, so they have
+# to be world-writable; see `spot_tpu_fleet.sh prepare`. -m only applies to the
+# last component of the path, which is why each level is named. The sandbox
+# itself is this run's own workspace and keeps the default mode.
+mkdir -m 0777 -p /tmp/torch_tpu_relay 2>/dev/null
+mkdir -m 0777 -p "$(dirname "$SANDBOX_DIR")" 2>/dev/null
 mkdir -p "$SANDBOX_DIR"
 
 # Phase timing, off unless TORCH_TPU_RELAY_TIMING is set. This is the VM half
@@ -146,7 +152,8 @@ else
 
   # Publish before the test runs, so nothing the test writes lands in the cache.
   if [[ -n "$PAYLOAD_KEY" ]]; then
-    mkdir -p "$PAYLOAD_CACHE"
+    # Shared with everyone else using this VM; see `spot_tpu_fleet.sh prepare`.
+    mkdir -m 0777 -p "$PAYLOAD_CACHE" 2>/dev/null || mkdir -p "$PAYLOAD_CACHE"
     staging="${PAYLOAD_CACHE}/.staging.$$"
     rm -rf "$staging"
     if cp -al "$SANDBOX_DIR" "$staging" 2>/dev/null; then
@@ -305,7 +312,8 @@ cleanup() {
   fi
 
   # Update latest pointer symlinks
-  mkdir -p /tmp/torch_tpu_relay/sandboxes 2>/dev/null || true
+  mkdir -m 0777 -p /tmp/torch_tpu_relay/sandboxes 2>/dev/null \
+    || mkdir -p /tmp/torch_tpu_relay/sandboxes 2>/dev/null || true
   ln -sfn "${SANDBOX_DIR}/test.xml" "/tmp/torch_tpu_relay/sandboxes/$(basename "$SANDBOX_DIR")_latest.xml" 2>/dev/null || true
   ln -sfn "${SANDBOX_DIR}/test.xml" "/tmp/torch_tpu_relay/latest_test.xml" 2>/dev/null || true
 

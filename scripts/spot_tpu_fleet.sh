@@ -27,7 +27,8 @@
 #                                    [--name-prefix PREFIX] [--accelerator-type TYPE]
 #                                    [--ip-mode auto|internal|external]
 #   scripts/spot_tpu_fleet.sh detach [--pool DIR]
-#   scripts/spot_tpu_fleet.sh status [--pool DIR]
+#   scripts/spot_tpu_fleet.sh status [--pool DIR] [--zone ZONE]
+#   scripts/spot_tpu_fleet.sh prepare [--zone ZONE] [--name-prefix PREFIX]
 #
 # `up` arms a detached deadline that runs `down` after --deadline-minutes, so a
 # fleet cannot outlive a crashed orchestrator. Pass 0 to turn it off. `down`
@@ -60,6 +61,16 @@
 # both take the whole fleet and run two tests on every chip. `detach` drops the
 # marker; a claim nobody released ages out after --claim-ttl seconds (4h).
 # --force-claim takes a VM anyway, --no-claim turns the whole thing off.
+#
+# Everyone who uses the fleet shares /tmp/torch_tpu_relay on each VM, so it has
+# to be writable by all of them. Left to a plain mkdir it belongs to whoever ran
+# first, and the next person's claim fails with a permission error that reads,
+# unhelpfully, as a held VM. `prepare` installs a systemd-tmpfiles rule that
+# recreates the tree root-owned and world-writable on every boot, and repairs
+# VMs that are already wrong. Run it once per fleet, and again whenever someone
+# reports CLAIM_ERROR:
+#
+#   scripts/spot_tpu_fleet.sh prepare --zone europe-west4-b
 #
 # With --wait, `attach` takes the whole fleet or none of it, and stands in line
 # when somebody else has it. A run is seven minutes, so waiting your turn on all
@@ -128,6 +139,10 @@ ATTACH_CLAIM_FORCE=false
 # day without ever cutting a live one loose.
 ATTACH_CLAIM_TTL=14400
 readonly REMOTE_CLAIM_PATH="${TORCH_TPU_REMOTE_CLAIM_PATH:-/tmp/torch_tpu_relay/claim}"
+# The tree every user of the fleet shares, and the rule that keeps it that way.
+# See cmd_prepare for why it is 0777 and why `claim` is not in the rule.
+readonly REMOTE_RELAY_ROOT="${TORCH_TPU_REMOTE_RELAY_ROOT:-/tmp/torch_tpu_relay}"
+readonly REMOTE_TMPFILES_CONF="/etc/tmpfiles.d/torch-tpu-relay.conf"
 # --wait turns "take what is free" into "take all of it or stand in line". The
 # line lives on one VM of the fleet, so it needs no storage the relay does not
 # already reach, and it survives nothing: if every VM goes away there is nothing
@@ -145,10 +160,12 @@ readonly QUEUE_STALE=120
 readonly REMOTE_QUEUE_PATH="${TORCH_TPU_REMOTE_QUEUE_PATH:-/tmp/torch_tpu_relay/queue}"
 # Set once a ticket exists, so the exit trap knows what to take back out.
 QUEUE_TICKET=""
-# What the last attach attempt managed: taken, seen, and held by someone else.
+# What the last attach attempt managed: taken, seen, held by someone else, and
+# unusable because the relay directory on the VM will not let this user write.
 ATTACH_READY=0
 ATTACH_FOUND=0
 ATTACH_HELD=0
+ATTACH_BROKEN=0
 
 # Which address the driver uses to reach the chips. A corp workstation has to go
 # through the external IP, because corp-ssh-helper is what gets it past the
@@ -202,9 +219,16 @@ resolve_ip_mode() {
 }
 
 # The usage text is the comment block at the top of this file, so there is only
-# one copy of it to keep current.
+# one copy of it to keep current. The block is found rather than hardcoded by
+# line number: skip the licence, which ends at the first blank line, then print
+# comments until the code starts. A hardcoded range silently truncates the help
+# the moment anyone adds a paragraph up there.
 show_help() {
-  sed -n '16,81p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  awk '
+    !started { if ($0 == "") started = 1; next }
+    /^#/     { sub(/^# ?/, ""); print; next }
+    { exit }
+  ' "${BASH_SOURCE[0]}"
 }
 
 parse_args() {
@@ -461,6 +485,13 @@ claim_owner() {
 # What attach runs on each VM. Takes the claim and prints the login name, or
 # prints CLAIMED_BY:<owner> and leaves the VM alone. mkdir is the lock: it
 # either creates the directory or it does not, with nothing in between.
+#
+# A failed mkdir has two very different causes and they must not be reported the
+# same way. Losing the race means somebody holds the VM, which clears on its own
+# and is what --wait is for. Being unable to create the directory at all means
+# the relay root belongs to another user and is not writable by this one, which
+# no amount of waiting fixes. That confusion cost somebody twenty minutes in a
+# --wait loop against a completely idle fleet.
 claim_script() {
   if [[ "$ATTACH_CLAIM" != "true" ]]; then
     printf 'whoami\n'
@@ -468,8 +499,19 @@ claim_script() {
   fi
   cat <<EOF
 c="${REMOTE_CLAIM_PATH}"
-mkdir -p "\$(dirname "\$c")"
+d=\$(dirname "\$c")
+# 0777 because the fleet is shared and the next person to attach is not in this
+# person's group. No sticky bit: expired claims have to be reapable by anyone.
+mkdir -m 0777 -p "\$d" 2>/dev/null || mkdir -p "\$d" 2>/dev/null
 now=\$(date +%s)
+
+claim_error() {
+  perms=\$(ls -ld "\$d" 2>/dev/null | awk '{print \$1, \$3}')
+  echo "CLAIM_ERROR:\$1 (\$perms)"
+  exit 0
+}
+
+[ -d "\$d" ] || claim_error "cannot create \$d"
 if [ -d "\$c" ]; then
   owner=\$(cat "\$c/owner" 2>/dev/null || echo unknown)
   since=\$(cat "\$c/at" 2>/dev/null || echo 0)
@@ -480,8 +522,21 @@ if [ -d "\$c" ]; then
     exit 0
   fi
   rm -rf "\$c"
+  if [ -d "\$c" ]; then
+    claim_error "cannot clear the expired claim at \$c"
+  fi
 fi
-mkdir "\$c" 2>/dev/null || { echo "CLAIMED_BY:someone who got there first"; exit 0; }
+# 0777 on the claim itself, not just on its parent. Reaping an expired claim
+# means rm -rf'ing the owner and at files inside it, and that needs write
+# permission on the claim directory. Left at the creator's umask, --claim-ttl
+# and --force-claim only ever work for the person who took the claim.
+if ! mkdir -m 0777 "\$c" 2>/dev/null; then
+  # A directory that appeared between the check above and this mkdir is a lost
+  # race. Anything else is a permission wall.
+  [ -d "\$c" ] || claim_error "cannot create \$c"
+  echo "CLAIMED_BY:\$(cat "\$c/owner" 2>/dev/null || echo 'someone who got there first')"
+  exit 0
+fi
 echo "$(claim_owner)" > "\$c/owner"
 echo "\$now" > "\$c/at"
 whoami
@@ -523,11 +578,18 @@ attach_one() {
   # carries the verdict on the claim.
   local ssh_user="$ATTACH_SSH_USER"
   if [[ "$ATTACH_PUSH_KEY" == "true" || "$ATTACH_CLAIM" == "true" ]]; then
-    local remote_out holder
+    local remote_out holder broken
     remote_out=$(gcloud compute tpus tpu-vm ssh "$name" \
       --zone="$zone" --project="$ALLOWED_PROJECT" \
       "${GCLOUD_SSH_IP_ARGS[@]}" \
       --command="$(claim_script)" 2>>"$log_file" | tr -d '\r')
+    broken=$(printf '%s\n' "$remote_out" | sed -n 's/^CLAIM_ERROR://p' | head -n 1)
+    if [[ -n "$broken" ]]; then
+      log "${name}: ${broken}"
+      # 3, not 2: waiting cannot change a permission bit, so the caller has to
+      # stop and say so rather than poll.
+      return 3
+    fi
     holder=$(printf '%s\n' "$remote_out" | sed -n 's/^CLAIMED_BY://p' | head -n 1)
     if [[ -n "$holder" ]]; then
       log "${name} is held by ${holder}, skipping"
@@ -636,19 +698,21 @@ attach_attempt() {
     index=$(( index + 1 ))
   done <<< "$candidates"
 
-  local ready=0 held=0 pid rc
+  local ready=0 held=0 broken=0 pid rc
   for pid in ${pids[@]+"${pids[@]}"}; do
     wait "$pid"
     rc=$?
     case "$rc" in
       0) ready=$(( ready + 1 )) ;;
       2) held=$(( held + 1 )) ;;
+      3) broken=$(( broken + 1 )) ;;
     esac
   done
 
   ATTACH_READY="$ready"
   ATTACH_FOUND="$found"
   ATTACH_HELD="$held"
+  ATTACH_BROKEN="$broken"
 }
 
 # Drops this pool's claim on one VM. Best effort: a VM that has already gone
@@ -710,9 +774,12 @@ queue_ssh() {
 queue_join() {
   local out
   out=$(queue_ssh "
-mkdir -p '${REMOTE_QUEUE_PATH}'
+mkdir -m 0777 -p '$(dirname "${REMOTE_QUEUE_PATH}")' 2>/dev/null
+mkdir -m 0777 -p '${REMOTE_QUEUE_PATH}' 2>/dev/null || mkdir -p '${REMOTE_QUEUE_PATH}'
 t='${REMOTE_QUEUE_PATH}/'\$(date +%s | awk '{printf \"%012d\", \$1}').\$\$.\$RANDOM
-mkdir \"\$t\" 2>/dev/null || exit 1
+# 0777 so another waiter can sweep this ticket if this run walks away;
+# see the claim directory above for the same reasoning.
+mkdir -m 0777 \"\$t\" 2>/dev/null || exit 1
 printf '%s\n' '$(claim_owner)' > \"\$t/owner\"
 echo \"TICKET:\$t\"
 ")
@@ -753,6 +820,18 @@ queue_leave() {
   QUEUE_TICKET=""
 }
 
+# A VM whose relay directory this user cannot write to is not busy and never
+# will be, so say what is wrong and name the command that fixes it rather than
+# letting the caller queue behind it.
+die_if_claims_are_broken() {
+  [[ "$ATTACH_BROKEN" -gt 0 ]] || return 0
+  release_claims
+  forget_sessions
+  die "${ATTACH_BROKEN} of ${ATTACH_FOUND} VM(s) would not let this user take a claim.
+The relay directory on them belongs to somebody else. Waiting will not help. Fix it with:
+  $0 prepare$(printf ' --zone %s' "${ZONES[@]}")"
+}
+
 cmd_attach() {
   mkdir -p "$POOL_DIR"
 
@@ -762,6 +841,7 @@ cmd_attach() {
 
   if [[ "$ATTACH_WAIT" != "true" ]]; then
     attach_attempt "$candidates"
+    die_if_claims_are_broken
     log "Attached ${ATTACH_READY}/${ATTACH_FOUND} VM(s) in ${POOL_DIR}"
     [[ "$ATTACH_READY" -gt 0 ]] || die "No VMs to attach to. Bring a fleet up first."
     return 0
@@ -793,6 +873,7 @@ cmd_attach() {
       : # fall through to the sleep
     elif [[ "$ahead" == "0" ]]; then
       attach_attempt "$candidates"
+      die_if_claims_are_broken
       if [[ "$ATTACH_HELD" -eq 0 && "$ATTACH_READY" -gt 0 ]]; then
         queue_leave
         trap - EXIT
@@ -856,9 +937,83 @@ sweep_orphans() {
   done
 }
 
+# What `prepare` runs on each VM.
+#
+# The mode is 0777 with no sticky bit, and that is deliberate. Sticky is the
+# reflexive answer for a shared directory under /tmp, and it would break three
+# things the relay depends on, all of which delete an entry another user
+# created: reaping a claim past its TTL, --force-claim, and the base store
+# reaper in ci/tools/stage_relay_base.sh. Sticky would turn a stale four-hour
+# claim into a permanent one, which is a worse version of the bug this fixes.
+# The tradeoff is that any user can delete any other user's cache or sandbox.
+# On an ephemeral /tmp shared by a handful of trusted people, that is the
+# intended behaviour.
+prepare_script() {
+  cat <<EOF
+set -e
+sudo tee ${REMOTE_TMPFILES_CONF} >/dev/null <<'CONF'
+# Managed by scripts/spot_tpu_fleet.sh prepare. Do not edit by hand.
+#
+# Root-owned so no user owns the tree and "whoever attached first wins" cannot
+# happen. World-writable so the second person to attach can take a claim. Not
+# sticky: expired claims have to be reapable by whoever finds them.
+#
+# claim/ is deliberately absent. That directory IS the mutex, so pre-creating
+# it would make every VM read as permanently held.
+d ${REMOTE_RELAY_ROOT}           0777 root root -
+d ${REMOTE_RELAY_ROOT}/queue     0777 root root -
+d ${REMOTE_RELAY_ROOT}/base      0777 root root -
+d ${REMOTE_RELAY_ROOT}/store     0777 root root -
+d ${REMOTE_RELAY_ROOT}/payloads  0777 root root -
+d ${REMOTE_RELAY_ROOT}/sandboxes 0777 root root -
+CONF
+sudo systemd-tmpfiles --create ${REMOTE_TMPFILES_CONF}
+ls -ld ${REMOTE_RELAY_ROOT} | awk '{print \$1, \$3, \$4, \$NF}'
+EOF
+}
+
+prepare_one() {
+  local name="$1" zone="$2" out
+  if ! out=$(gcloud compute tpus tpu-vm ssh "$name" \
+      --zone="$zone" --project="$ALLOWED_PROJECT" \
+      "${GCLOUD_SSH_IP_ARGS[@]}" \
+      --command="$(prepare_script)" 2>&1 | tr -d '\r'); then
+    log "${name}: FAILED -- $(printf '%s' "$out" | tail -n 1)"
+    return 1
+  fi
+  log "${name}: $(printf '%s\n' "$out" | tail -n 1)"
+}
+
+# Installs the tmpfiles rule on every VM `attach` would consider and applies it
+# now, which also repairs a VM whose relay directory already belongs to one
+# user. Safe to re-run. This is the answer when somebody reports CLAIM_ERROR.
+cmd_prepare() {
+  local candidates
+  candidates=$(discover_candidates)
+  [[ -n "$candidates" ]] || die "No VMs found to prepare in: ${ZONES[*]}"
+
+  local name zone pids=() total=0
+  while IFS=$'\t' read -r name zone; do
+    [[ -n "$name" ]] || continue
+    total=$(( total + 1 ))
+    prepare_one "$name" "$zone" &
+    pids+=("$!")
+  done <<< "$candidates"
+
+  local pid ok=0
+  for pid in ${pids[@]+"${pids[@]}"}; do
+    wait "$pid" && ok=$(( ok + 1 ))
+  done
+
+  log "Prepared ${ok}/${total} VM(s)."
+  [[ "$ok" -eq "$total" ]] || die "$(( total - ok )) VM(s) could not be prepared."
+}
+
 cmd_status() {
   local zone
-  for zone in "${DEFAULT_ZONES[@]}"; do
+  # ZONES, not DEFAULT_ZONES: parse_args already falls back to the defaults, and
+  # reading them directly here threw away --zone without saying so.
+  for zone in "${ZONES[@]}"; do
     echo "-- ${zone}"
     gcloud compute tpus tpu-vm list \
       --project="$ALLOWED_PROJECT" --zone="$zone" 2>&1 | sed 's/^/   /'
@@ -894,11 +1049,15 @@ main() {
   [[ $# -gt 0 ]] && shift
   parse_args "$@"
 
-  # Only `attach` reads the widened search. Refusing it elsewhere means nobody
-  # can pass it to `down` and believe they widened what gets deleted.
-  if [[ "$ATTACH_NAME_PREFIX_SET" == "true" && "$subcommand" != "attach" ]]; then
-    die "--name-prefix only applies to 'attach', not '${subcommand}'."
-  fi
+  # Only the subcommands that borrow VMs read the widened search. Refusing it
+  # elsewhere means nobody can pass it to `down` and believe they widened what
+  # gets deleted.
+  case "$subcommand" in
+    attach|prepare) ;;
+    *)
+      [[ "$ATTACH_NAME_PREFIX_SET" != "true" ]] \
+        || die "--name-prefix only applies to 'attach' and 'prepare', not '${subcommand}'." ;;
+  esac
 
   case "$subcommand" in
     up)     cmd_up ;;
@@ -907,10 +1066,11 @@ main() {
     detach) cmd_detach ;;
     deadline) cmd_deadline ;;
     status) cmd_status ;;
+    prepare) cmd_prepare ;;
     # Exists so callers that wrap this script can ask which address family it
     # settled on rather than working it out a second time and disagreeing.
     ip-mode) printf '%s\n' "$IP_MODE_RESOLVED" ;;
-    *)      die "Usage: $0 <up|down|attach|detach|status|ip-mode> [options]" ;;
+    *)      die "Usage: $0 <up|down|attach|detach|status|prepare|ip-mode> [options]" ;;
   esac
 }
 

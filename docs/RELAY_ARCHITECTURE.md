@@ -284,31 +284,58 @@ Things that will quietly break if changed:
 6. `ALLOWED_PROJECT` is `rbe-tpu-oss`, enforced in five scripts. Note the
    ambient gcloud default on a corp workstation is often something else.
 
+## Sharing the relay directory between users
+
+`/tmp/torch_tpu_relay` on each VM is shared by everyone who uses the fleet. It
+used to be created by a plain `mkdir -p`, so it ended up owned by whoever
+attached first with no write permission for anyone else. The second person's
+`mkdir` of the claim directory failed `EACCES`, the script read *any* `mkdir`
+failure as having lost the race, and reported `The fleet is busy: 28 of 28
+VM(s) held`. `--wait` then polled forever, because waiting cannot change a
+permission bit. That cost somebody twenty minutes against a completely idle
+fleet.
+
+Three things changed:
+
+| Change | Where |
+| :--- | :--- |
+| Tell a lost race apart from a permission wall, and print the mode and owner found | `claim_script` in [`spot_tpu_fleet.sh`](../scripts/spot_tpu_fleet.sh) |
+| Stop `--wait` retrying a `CLAIM_ERROR`, and name the command that fixes it | `die_if_claims_are_broken` |
+| Create every shared directory `0777`, including the claim and queue-ticket directories themselves | all five `mkdir` sites |
+
+The mode is `0777` with **no sticky bit**, on purpose. Sticky lets only the
+owner delete an entry, and three things here delete entries another user
+created: reaping a claim past its TTL, `--force-claim`, and the base store
+reaper in `stage_relay_base.sh`. Sticky would turn a stale four-hour claim into
+a permanent one. The tradeoff is that anyone can delete anyone else's cache or
+sandbox, which on an ephemeral `/tmp` shared by a few trusted people is the
+intended behaviour.
+
+Creating the directory correctly only helps the first time. A VM whose tree
+already belongs to one user is repaired with:
+
+```
+scripts/spot_tpu_fleet.sh prepare --zone europe-west4-b
+```
+
+which installs `/etc/tmpfiles.d/torch-tpu-relay.conf` and runs
+`systemd-tmpfiles --create`. Because systemd re-applies it at boot, the tree
+comes back root-owned and world-writable every time `/tmp` is wiped, and no
+user ever owns it. The rule deliberately does **not** list `claim`: that
+directory *is* the mutex, and pre-creating it would make every VM read as
+permanently held.
+
 ## Known rough edges
 
 Flagged, not fixed:
 
-- **A second user cannot attach to a fleet the first user touched.**
-  `/tmp/torch_tpu_relay` on the VM is created by plain `mkdir -p`, so it lands
-  owned by whoever ran first, mode `0775`, group = that user's own primary
-  group. A second user is not in that group, so their `mkdir "$c"` of the claim
-  dir at [`spot_tpu_fleet.sh:484`](../scripts/spot_tpu_fleet.sh#L484) fails
-  `EACCES` — and that line reads *any* `mkdir` failure as lost the race, so it
-  prints `CLAIMED_BY:someone who got there first`. The caller is told
-  `The fleet is busy: 28 of 28 VM(s) held`, and `--wait` then loops forever
-  because no amount of waiting changes a permission bit. `base/`, `payloads/`,
-  `sandboxes/` and `store/` under the same root have the same problem. This is
-  the worst one on the list: it blocks a second person completely and the error
-  message points at the wrong cause.
-- **`status --zone X` silently ignores the flag.** `cmd_status`
-  ([`spot_tpu_fleet.sh:859-865`](../scripts/spot_tpu_fleet.sh#L859-L865)) loops
-  `DEFAULT_ZONES` and never reads `ZONES`, which is what `--zone` populates.
 - **`DEFAULT_ZONES` does not describe the fleet.** It is
   `(europe-west4-b us-central1-a)`
   ([`spot_tpu_fleet.sh:99`](../scripts/spot_tpu_fleet.sh#L99)) — one empty zone
   and one real one, missing three of the four zones the 28 VMs actually live in.
-  Combined with the bug above, a plain `status` reports 8 of 28 VMs and there is
-  no flag that fixes it. Anyone debugging fleet state gets a wrong picture.
+  So a plain `status` reports 8 of 28. `--zone` now works, so there is a flag
+  that fixes it, but the default is still wrong. Left alone until the full
+  reservation lands and the zone list changes anyway.
 - **ControlMaster socket path** `/tmp/tpu_cm_${ip}_22_${ssh_user}` has no local
   UID. Two users on one shared host collide on a `0600` socket. More likely now
   that GCE drivers are supported.

@@ -298,7 +298,17 @@ ensure_remote_executor() {
 
   # Ship the file only when the copy on the VM is stale or absent. Sandboxes
   # come and go, but the executor is shared by every test on this VM.
-  rsh "if [ \"\$(sha256sum ${REMOTE_EXECUTOR} 2>/dev/null | awk '{print \$1}')\" != \"$local_hash\" ]; then mkdir -p ${REMOTE_RELAY_DIR} && cat > ${REMOTE_EXECUTOR} && chmod +x ${REMOTE_EXECUTOR}; fi" \
+  #
+  # Write to a private temp file and rename, rather than over the top of the
+  # existing one. Everyone using the fleet shares this path, and only its owner
+  # may truncate it. Rename needs write permission on the directory, not on the
+  # file, and the relay root gives that to everybody -- see
+  # `spot_tpu_fleet.sh prepare`.
+  local remote_tmp="${REMOTE_EXECUTOR}.\$\$.tmp"
+  rsh "if [ \"\$(sha256sum ${REMOTE_EXECUTOR} 2>/dev/null | awk '{print \$1}')\" != \"$local_hash\" ]; then
+         mkdir -m 0777 -p ${REMOTE_RELAY_DIR} 2>/dev/null || mkdir -p ${REMOTE_RELAY_DIR} || exit 1
+         cat > ${remote_tmp} && chmod 0755 ${remote_tmp} && mv -f ${remote_tmp} ${REMOTE_EXECUTOR} || { rm -f ${remote_tmp}; exit 1; }
+       fi" \
     < "$local_executor" 2>/dev/null || true
 }
 ensure_remote_executor

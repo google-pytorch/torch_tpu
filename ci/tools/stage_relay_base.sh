@@ -267,7 +267,7 @@ stage_one() {
 
     echo "[stage_relay_base] ${label}: pushing ${layer}..."
     if ! ssh -S "$SSH_CONTROL_PATH" "${SSH_OPTS[@]}" "$remote" \
-        "rm -rf '${layer_dir}' && mkdir -p '${layer_dir}'" 2>/dev/null; then
+        "rm -rf '${layer_dir}' && mkdir -m 0777 -p '${layer_dir}'" 2>/dev/null; then
       echo "[stage_relay_base] ${label}: cannot reach VM" >&2
       return 1
     fi
@@ -276,6 +276,12 @@ stage_one() {
       echo "[stage_relay_base] ${label}: ${layer} transfer failed" >&2
       return 1
     fi
+    # The reaper at the end of this function deletes layers from earlier runs,
+    # and rm -rf needs write permission on every directory inside them. The
+    # tarball carries the driver's modes, so without this a layer staged by one
+    # person can never be reclaimed by anyone else and the disk fills up.
+    ssh -S "$SSH_CONTROL_PATH" "${SSH_OPTS[@]}" "$remote" \
+      "chmod -R a+rwX '${layer_dir}'" >/dev/null 2>&1 || true
     ssh -S "$SSH_CONTROL_PATH" "${SSH_OPTS[@]}" "$remote" \
       "touch '${layer_dir}/.complete'"
   done
@@ -283,7 +289,7 @@ stage_one() {
   # The base directory is just a view over the layers: one symlink per top-level
   # entry. remote_tpu_executor.sh links those into each sandbox, and a link to a
   # link resolves the same as a link to the directory.
-  local link_script="set -e; rm -rf '${base_dir}'; mkdir -p '${base_dir}'"
+  local link_script="set -e; rm -rf '${base_dir}'; mkdir -m 0777 -p '${base_dir}'"
   local layer_dir
   for layer_dir in "${layer_dirs[@]}"; do
     link_script+="; for entry in '${layer_dir}'/*; do"
