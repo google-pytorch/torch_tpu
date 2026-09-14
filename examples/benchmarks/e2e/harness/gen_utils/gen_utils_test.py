@@ -15,7 +15,14 @@
 """Tests for gen_benchmarks."""
 
 from absl.testing import absltest
+from absl.testing import flagsaver
+from absl.testing import parameterized
+import torch
+from examples.benchmarks.e2e.harness import context as context_lib
+from examples.benchmarks.e2e.harness import target as target_lib
+from examples.benchmarks.e2e.harness import torch_device_ops
 from examples.benchmarks.e2e.harness.gen_utils import gen_utils
+from examples.benchmarks.e2e.harness.gen_utils import load_model
 from tests import seed_test_utils
 
 
@@ -81,6 +88,28 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
       self.assertTrue(model.provider)
       self.assertTrue(model.model_type)
       self.assertTrue(model.category)
+
+  @parameterized.named_parameters(
+      ("bf16", target_lib.DType.BF16),
+      ("fp32", target_lib.DType.FP32),
+  )
+  @flagsaver.flagsaver(weights_base_path="")
+  def test_default_load_model_dtype(self, dtype: target_lib.DType):
+    ctx = context_lib.Context(
+        target=target_lib.make_target(target_lib.Platform.CPU, dtype),
+        run_scope=context_lib.RunScope.PRESUBMIT,
+    )
+    # Checked-in vision config whose checkpoint defaults to float32.
+    model, inputs = load_model.default_load_model(
+        ctx, "microsoft/resnet-50", is_training=False
+    )
+    want = torch_device_ops.get_torch_dtype(dtype)
+
+    self.assertEqual(next(model.parameters()).dtype, want)
+    self.assertEqual(inputs["pixel_values"].dtype, want)
+
+    with torch.inference_mode():
+      model(**inputs)
 
 
 if __name__ == "__main__":

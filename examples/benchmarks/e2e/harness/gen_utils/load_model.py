@@ -74,6 +74,16 @@ def default_load_model(
   _, inputs = module_spec.sample_inputs_factory(
       (batch_size, seq_len), device_str
   )
+
+  # Cast floating-point inputs to match the module's target dtype.
+  for k, v in inputs.items():
+    if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
+      inputs[k] = v.to(dtype)
+    elif isinstance(v, dict):
+      for dk, dv in v.items():
+        if isinstance(dv, torch.Tensor) and torch.is_floating_point(dv):
+          v[dk] = dv.to(dtype)
+
   # Pop attention_mask to trigger transformers fully static causal attention
   # mask fallback, avoiding control-flow tracing errors.
   inputs.pop("attention_mask", None)
