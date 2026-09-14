@@ -47,10 +47,21 @@ That is the whole config delta. Matching the presubmit's RBE instance and tag
 filters is deliberate: a shadow run is only meaningful if the only variable is
 where tests execute.
 
-Consequence worth naming: **all 28 VMs are fed from one machine's uplink.** It
-has not bitten us at 28 chips. It is the first thing that breaks if the fleet
-grows, and it is why a GCE driver inside the VPC has more headroom than a corp
-workstation going through `corp-ssh-helper`.
+Consequence worth naming: **every byte a VM receives leaves one machine's
+uplink.** The weight is not the per-test payload — that has been a few hundred
+KB since `_main/csrc` moved into the base layer. It is base staging:
+
+| Layer tarball | Size, compressed | Moves when |
+| :--- | ---: | :--- |
+| `deps_*.tar.gz` | ~694 MB | `MODULE.bazel.lock` changes |
+| `solib_*.tar.gz` | ~405 MB | any code change |
+
+Sizes measured off `/tmp/torch_tpu_relay/base_tarballs` on a driver. The
+per-fleet numbers are those times 28, not a measured transfer: ~31 GB out of
+one uplink when both layers are cold, ~11 GB on an ordinary change where only
+`solib` moves. It has not bitten us at 28 chips. It is the first thing that
+breaks if the fleet grows, and it is why a GCE driver inside the VPC has more
+headroom than a corp workstation going through `corp-ssh-helper`.
 
 ## One test action, end to end
 
@@ -104,9 +115,12 @@ Content-addressed with a symlink directory per run — a fixed path was fine for
 one person, but on a shared pool the second run would overwrite the libraries
 the first run's tests are executing against.
 
-The single biggest win is excluding `_main/csrc`:
-`libpywrap_torch_tpu_common.so` is **493 MB of a 499 MB payload** and is
-identical for every test.
+The single biggest win is excluding `_main/csrc`. Without the exclusion,
+`libpywrap_torch_tpu_common.so` is **493 MB of a 499 MB payload**, identical for
+every test and re-sent by every test. That 499 MB is the pre-exclusion size and
+is why the base layer exists — it is not what ships now. Commit `61204558` moved
+`_main/csrc` into the solib layer and `gru_test`'s payload went **499 MB →
+189 KB**, gzip **14.7s → 0.2s**. Per-test payloads today are a few hundred KB.
 
 **Payload.** Every shard of a target ships the same tree and the big targets
 have 30-50 shards, so the tree is unpacked once and `cp -al` hardlinks the rest.
@@ -213,12 +227,24 @@ Why internal works at all, from
 ```
 org-firewall  priority 1-31  ALLOW INGRESS   (#24 = 10.0.0.0/8, 100.64.0.0/10, ...)
 org-firewall  priority 32    DENY  INGRESS   0.0.0.0/0
+org-firewall  priority 33    DENY  INGRESS   ::/0
+org-firewall  priority 34    ALLOW EGRESS    0.0.0.0/0   tcp, udp, icmp
+org-firewall  priority 37    DENY  EGRESS    0.0.0.0/0
+org-firewall  priority 38    DENY  EGRESS    ::/0
 ```
 
 RFC1918 is allowed at 24, ahead of the blanket deny at 32. TPU VMs sit on
 `10.164.0.0/20`. [`relay_ssh.sh`](../ci/tools/relay_ssh.sh) needs no change —
 the corp `ProxyCommand` in `/etc/ssh/ssh_config` only matches GCP external
 ranges.
+
+**Ingress is shut, egress is open.** The allow at 34 covers all of tcp, udp and
+icmp to `0.0.0.0/0` and sits ahead of the denies at 37 and 38, so a TPU VM can
+open a connection to anything — a blob store, a cache, an artifact bucket —
+with no policy change. Nothing outside the allowed ingress ranges can open one
+to it. That asymmetry decides what is cheap to build: anything where the VM
+pulls needs no approval, anything where an outside worker pushes needs an
+exception on a policy we do not own.
 
 > [!NOTE]
 > Known gap: a GCE VM in a *different* VPC resolves to `internal` and then fails
@@ -262,6 +288,27 @@ Things that will quietly break if changed:
 
 Flagged, not fixed:
 
+- **A second user cannot attach to a fleet the first user touched.**
+  `/tmp/torch_tpu_relay` on the VM is created by plain `mkdir -p`, so it lands
+  owned by whoever ran first, mode `0775`, group = that user's own primary
+  group. A second user is not in that group, so their `mkdir "$c"` of the claim
+  dir at [`spot_tpu_fleet.sh:484`](../scripts/spot_tpu_fleet.sh#L484) fails
+  `EACCES` — and that line reads *any* `mkdir` failure as lost the race, so it
+  prints `CLAIMED_BY:someone who got there first`. The caller is told
+  `The fleet is busy: 28 of 28 VM(s) held`, and `--wait` then loops forever
+  because no amount of waiting changes a permission bit. `base/`, `payloads/`,
+  `sandboxes/` and `store/` under the same root have the same problem. This is
+  the worst one on the list: it blocks a second person completely and the error
+  message points at the wrong cause.
+- **`status --zone X` silently ignores the flag.** `cmd_status`
+  ([`spot_tpu_fleet.sh:859-865`](../scripts/spot_tpu_fleet.sh#L859-L865)) loops
+  `DEFAULT_ZONES` and never reads `ZONES`, which is what `--zone` populates.
+- **`DEFAULT_ZONES` does not describe the fleet.** It is
+  `(europe-west4-b us-central1-a)`
+  ([`spot_tpu_fleet.sh:99`](../scripts/spot_tpu_fleet.sh#L99)) — one empty zone
+  and one real one, missing three of the four zones the 28 VMs actually live in.
+  Combined with the bug above, a plain `status` reports 8 of 28 VMs and there is
+  no flag that fixes it. Anyone debugging fleet state gets a wrong picture.
 - **ControlMaster socket path** `/tmp/tpu_cm_${ip}_22_${ssh_user}` has no local
   UID. Two users on one shared host collide on a `0600` socket. More likely now
   that GCE drivers are supported.
@@ -278,15 +325,30 @@ Flagged, not fixed:
 
 ## Numbers
 
-Measured on PR 3730, 4 zones, 28 chips:
+Measured on PR 3730, 4 zones, 28 chips. The run is **two separate bazel
+invocations**, not one invocation with a build phase inside it:
 
-| | |
-| :--- | :--- |
-| Targets | 57 |
-| Bazel execution | 426s (7.1 min) |
-| Total wall clock | 8m15s |
-| Baseline GitHub runner | ~1 hour |
-| Single small target, cold pool | 63s end to end |
+| | | |
+| :--- | ---: | :--- |
+| Targets | 57 | |
+| Build invocation, elapsed | 19.8s | `relay_reports/timing_check/bazel_build.log` |
+| Test invocation, elapsed | 424.8s | `bazel_presubmit.log`, critical path 414.9s |
+| Reported total | 426s | 56/57 pass |
+| Total wall clock | 8m15s | |
+| Baseline GitHub runner | ~1 hour | |
+| Single small target, cold pool | 63s | end to end |
+
+Both invocations report **zero remote executions and zero remote cache fetches**
+— every hit came from the local action cache or the local disk cache. On a warm
+driver the RBE workers contribute nothing to these numbers. They earn their keep
+on a cold driver or in CI, where the disk cache is empty.
+
+**Inference, not measurement:** the 57 targets report 7,032.8s of test time in
+aggregate. Over 28 chips that is a 251s floor if packing were perfect, against
+426s actual — so roughly 40% of the run is per-action overhead (lease, ssh,
+payload, sandbox setup and teardown) plus the tail where the long shards are
+still going and most chips have nothing left to do. The 414.9s critical path
+says some of that tail is unavoidable rather than waste.
 
 Set `TORCH_TPU_RELAY_TIMING=1` for per-phase marks on both the host and VM
 sides.

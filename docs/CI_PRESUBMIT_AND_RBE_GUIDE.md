@@ -287,7 +287,7 @@ reaches two other services on your application default credentials.
 ## 5. Why the relay runs on your workstation
 
 A hierarchical firewall policy above `rbe-tpu-oss` denies all ingress from
-`0.0.0.0/0` at priority 31. The allow rules above it list Google corp and relay
+`0.0.0.0/0` at priority 32. The allow rules above it list Google corp and relay
 netblocks plus RFC1918. The project's own `default-allow-ssh` rule sits at
 priority 1000 in the VPC, which is never reached — hierarchy rules are
 evaluated first.

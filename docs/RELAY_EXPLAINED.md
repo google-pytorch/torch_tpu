@@ -71,7 +71,7 @@ This is also why the script can only *borrow* them. Letting a test run delete
 hardware is how you end up deleting hardware somebody else is mid-way through
 using.
 
-### We stop sending the same 500 MB over and over
+### We stopped sending the same 500 MB over and over
 
 Every test needs the same big pile of shared stuff — Python, PyTorch, the TPU
 libraries, our own compiled code. That is a couple of gigabytes, and it is
@@ -80,9 +80,18 @@ identical for all 57 tests.
 So it gets sent to each TPU machine **once** and left there. Each test then only
 sends its own handful of files.
 
-One file alone, a compiled library, is **493 MB of what would have been a 499 MB
-transfer**. Sending it once instead of 57 times is most of the speedup right
-there.
+One file alone, a compiled library, used to be 493 MB of a 499 MB transfer, sent
+again for every single test. Moving it into the shared pile is most of the
+speedup right there: one test's transfer went from 499 MB to under 200 KB, and
+the time spent packing it from about 15 seconds to a fifth of a second. What
+each test sends now is a few hundred kilobytes, not half a gigabyte.
+
+What is left is getting that shared pile out in the first place. It is about a
+gigabyte per machine once packed, and all 28 machines are fed from your one
+machine's connection — so roughly 30 GB after a change that rebuilds everything,
+and about a third of that on a normal change where only our own compiled code
+moves. That, not what each test sends, is the part that will strain first if the
+pool gets bigger.
 
 ### Big tests get split, and the pieces share
 
