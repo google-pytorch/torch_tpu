@@ -411,10 +411,10 @@ The job logs a warning instead, and a maintainer runs the relay.
 
 ---
 
-## 6. Running the suite on Spot TPUs locally
+## 6. Running the suite on real TPUs locally
 
 `presubmit.yml` and `test_rbe_opt_in.yml` are the CI paths. To run the same test
-targets against real Spot TPU v5e VMs from a workstation, use the relay:
+targets against real v5e VMs from a workstation, use the relay:
 
 ```bash
 # Single VM, one test at a time (a v5litepod-1 has one chip).
@@ -442,8 +442,16 @@ materialise.
 
 > [!CAUTION]
 > `spot_tpu_fleet.sh down` is not optional if you brought the fleet up yourself.
-> Spot VMs bill until deleted. Check for strays with
+> `up` creates Spot VMs, and they bill until deleted. Check for strays with
 > `scripts/spot_tpu_manager.sh reap --dry-run`.
+
+> [!NOTE]
+> The standing fleet you reach with `attach` is **on-demand**, not Spot, even
+> though every VM is named `spot-tpu-v5e-*` — the name prefix is hardcoded and
+> ignores `--on-demand`. Confirm with
+> `gcloud compute tpus tpu-vm describe <name> --project=rbe-tpu-oss --zone=<zone> --format='value(schedulingConfig)'`;
+> empty means on-demand. `attach`/`detach` never create or delete it, so the
+> caution above does not apply to that path.
 
 > [!NOTE]
 > Spot capacity is the real limit, not quota. As of this writing only
