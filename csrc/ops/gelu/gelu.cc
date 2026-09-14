@@ -46,9 +46,9 @@ absl::StatusOr<mlir::MlirOp> BuildGeluApproximateShlo(mlir::MlirOp input_op) {
   auto k_sqrt_2_div_pi =
       MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
   auto k_0_044715 = MakeConstantLike(input_op, 0.044715);
-  auto k_3_0 = MakeConstantLike(input_op, 3.0);
 
-  mlir::MlirOp x_cubed = stablehlo::Pow(input_op, k_3_0);
+  mlir::MlirOp x_sq = stablehlo::Mul(input_op, input_op);
+  mlir::MlirOp x_cubed = stablehlo::Mul(x_sq, input_op);
   mlir::MlirOp x_mul = stablehlo::Mul(x_cubed, k_0_044715);
   mlir::MlirOp inner_term = stablehlo::Add(input_op, x_mul);
   mlir::MlirOp tanh_arg = stablehlo::Mul(inner_term, k_sqrt_2_div_pi);
@@ -88,10 +88,10 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
     mlir::MlirOp grad_output_op, mlir::MlirOp input_op) {
   auto k_0_5 = MakeConstantLike(input_op, 0.5);
   auto k_1_0 = MakeConstantLike(input_op, 1.0);
-  auto k_3_0 = MakeConstantLike(input_op, 3.0);
   // kBeta = sqrt(2/pi)
   auto kBeta = MakeConstantLike(input_op, std::sqrt(2.0 / std::numbers::pi));
   auto kKappa = MakeConstantLike(input_op, 0.044715);
+  auto k3Kappa = MakeConstantLike(input_op, 3.0 * 0.044715);
 
   // 1. Recompute 'k' (inner) and tanh(k) used in the forward pass
   mlir::MlirOp x_sq = stablehlo::Mul(input_op, input_op);
@@ -113,7 +113,6 @@ absl::StatusOr<mlir::MlirOp> BuildGeluBackwardGradInputApproximateShlo(
   mlir::MlirOp tanh_derivative = stablehlo::Subtract(k_1_0, tanh_inner_sq);
 
   // Calculate k' = sqrt(2/pi) * (1 + 3 * kappa * x^2)
-  mlir::MlirOp k3Kappa = stablehlo::Mul(k_3_0, kKappa);
   mlir::MlirOp k3Kappa_x_sq = stablehlo::Mul(k3Kappa, x_sq);
   mlir::MlirOp inner_derivative_arg = stablehlo::Add(k_1_0, k3Kappa_x_sq);
   mlir::MlirOp inner_derivative = stablehlo::Mul(kBeta, inner_derivative_arg);
