@@ -99,6 +99,10 @@ inline constexpr char kTorchTpuInternalDisableInplaceBufferDonationEnvVar[] =
 // be overridden by setting this env var to "0".
 inline constexpr char kTorchTpuInternalEnableDebugChecksEnvVar[] =
     "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS";
+// If set to "0" or "false", disables compound SwiGLU backward fusion.
+// Default is "true".
+inline constexpr char kTorchTpuInternalEnableFuseSwigluBackwardEnvVar[] =
+    "TORCH_TPU_INTERNAL_ENABLE_FUSE_SWIGLU_BACKWARD";
 // If set to "0" or "false", disables reassociating normalization weights.
 // Default is "true".
 inline constexpr char kTorchTpuInternalEnableReassociateNormWeightsEnvVar[] =
@@ -232,6 +236,8 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, std::nullopt},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar, std::nullopt},
         {kTorchTpuInternalEnableDebugChecksEnvVar, std::nullopt},
+        {kTorchTpuInternalEnableFuseSwigluBackwardEnvVar,
+         SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeStageEnvVar, SymbolStage::InternalApi()},

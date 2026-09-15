@@ -968,6 +968,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kSigmoidOut>(m, AtenSigmoidOut);
   ImplStable<OpName::kSignOut>(m, AtenSignOut);
   ImplStable<OpName::kSignbitOut>(m, AtenSignbitOut);
+  ImplStable<OpName::kSiluBackwardGradInput>(m, AtenSiluBackwardGradInput);
   ImplStable<OpName::kSiluOut>(m, AtenSiluOut);
   ImplStable<OpName::kSinOut>(m, AtenSinOut);
   ImplStable<OpName::kSinhOut>(m, AtenSinhOut);

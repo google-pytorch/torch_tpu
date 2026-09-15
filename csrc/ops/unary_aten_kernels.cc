@@ -413,4 +413,36 @@ at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out) {
   });
 }
 
+at::Tensor& AtenSiluBackwardGradInput(const at::Tensor& grad_output,
+                                      const at::Tensor& self,
+                                      at::Tensor& grad_input) {
+  TT_KERNEL(
+      OpName::kSiluBackwardGradInput, _, (grad_output, self, grad_input), {
+        TT_CHECK_THROW(self.is_floating_point(),
+                       error::kPythonNotImplementedError)
+            << "not implemented for input type "
+            << ToString(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto output_mlir_type,
+                           ConvertTo<mlir::ElementType>(self.scalar_type()));
+        const auto comp_type = ToAccumulateType(self.scalar_type());
+        TT_ASSIGN_OR_THROW(const auto computation_dtype,
+                           ConvertTo<mlir::ElementType>(comp_type));
+
+        DispatchOpOptions<1> options = {
+            .out_dtype = output_mlir_type,
+            .out_dims = grad_input.sizes(),
+            .computation_dtype = computation_dtype,
+            .op_param_cache_keys = OpParamCacheKeys::Empty(),
+        };
+        TT_THROW_IF_ERROR(DispatchOpOut<2>(
+            [](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+                -> absl::StatusOr<mlir::MlirOp> {
+              auto& [grad_output_op, self_op] = inputs;
+              return BuildSiluBackwardShlo(grad_output_op, self_op);
+            },
+            {grad_output, self}, grad_input, std::move(options)));
+        return grad_input;
+      });
+}
+
 }  // namespace torch_tpu

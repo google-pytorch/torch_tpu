@@ -106,4 +106,13 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "fuse_swiglu_backward",
+    srcs = ["fuse_swiglu_backward.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
+    ],
+)
+
 torch_tpu_package_end()

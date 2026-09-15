@@ -42,6 +42,9 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
   std::optional<bool> value;
   if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
+  } else if (name == kTorchTpuInternalEnableFuseSwigluBackwardEnvVar) {
+    value =
+        GetBooleanEnvOnce<kTorchTpuInternalEnableFuseSwigluBackwardEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalEnableReassociateNormWeightsEnvVar>();

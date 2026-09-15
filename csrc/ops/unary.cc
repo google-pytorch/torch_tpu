@@ -196,6 +196,19 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
   return result_op;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildSiluBackwardShlo(mlir::MlirOp grad_output,
+                                                   mlir::MlirOp self) {
+  // silu'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
+  // grad_input = grad_output * silu'(x)
+  mlir::MlirOp sigmoid_op = stablehlo::Logistic(self);
+  mlir::MlirOp one = MakeConstantLike(self, 1.0);
+  mlir::MlirOp one_minus_sigmoid = stablehlo::Subtract(one, sigmoid_op);
+  mlir::MlirOp x_term = stablehlo::Mul(self, one_minus_sigmoid);
+  mlir::MlirOp inner = stablehlo::Add(one, x_term);
+  mlir::MlirOp d_silu = stablehlo::Mul(sigmoid_op, inner);
+  return stablehlo::Mul(grad_output, d_silu);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildTruncShlo(mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
 
