@@ -202,6 +202,23 @@ def is_pinned_host_tensor(t: Any) -> bool:
     return False
 
 
+def _mark_auto_functionalized_mutations(
+    gm_or_graph: torch.fx.GraphModule | torch.fx.Graph,
+) -> None:
+  """Marks auto_functionalized ops so decompose_auto_functionalized doesn't clone them."""
+  graph = (
+      gm_or_graph.graph
+      if isinstance(gm_or_graph, torch.fx.GraphModule)
+      else gm_or_graph
+  )
+  for node in graph.nodes:
+    if node.op == "call_function" and node.target in (
+        torch.ops.higher_order.auto_functionalized,
+        torch.ops.higher_order.auto_functionalized_v2,
+    ):
+      node.meta["only_clone_these_tensors"] = ()
+
+
 def _create_storage_aware_placeholders(
     example_inputs: Sequence[Any],
     bounds: Sequence[Any] | None = None,
@@ -496,6 +513,9 @@ class StaticCompiler(Compiler):
     # the default behaviour inserts flatten and unflatten ops at the boundaries
     # which then blocks buffer donation.
     # TODO(b/491716758): Replace with our own fork.
+    graph_transform_observer.GraphTransformObserver(
+        graph_module, "mark_auto_functionalized_mutations"
+    ).apply_graph_pass(_mark_auto_functionalized_mutations)
     graph_transform_observer.GraphTransformObserver(
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)

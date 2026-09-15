@@ -799,6 +799,9 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     if compile_op:
       grad_fn = torch.compile(grad_fn, fullgraph=True)
 
+    initial_table_sharded_cpu = embedding_table_sharded.detach().cpu().clone()
+    initial_table_sharded_np = initial_table_sharded_cpu.numpy()
+
     updated_table_tpu = grad_fn(
         row_pointers,
         embedding_ids,
@@ -810,7 +813,6 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
 
     updated_table_tpu_np = updated_table_tpu.cpu().numpy()
-    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
 
     updated_rows = [0, 1, 2, 3, 16, 17]
 
@@ -841,12 +843,14 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       matmul_fn = torch.compile(matmul_fn, fullgraph=True)
 
     eps = 1e-3
-    grad_approx = torch.zeros_like(embedding_table_sharded)
+    grad_approx = torch.zeros(
+        (vocab_size, embedding_dim), dtype=torch.float32, device=device
+    )
 
     for r in updated_rows:
-      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_plus[r] += eps
-      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_minus[r] -= eps
 
       out_plus = matmul_fn(
@@ -929,6 +933,12 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     if compile_op:
       grad_fn = torch.compile(grad_fn, fullgraph=True)
+
+    initial_table_sharded_cpu = embedding_table_sharded.detach().cpu().clone()
+    initial_table_sharded_np = initial_table_sharded_cpu.numpy()
+    initial_acc_sharded_cpu = accumulator_sharded.detach().cpu().clone()
+    initial_acc_sharded_np = initial_acc_sharded_cpu.numpy()
+
     updated_table_tpu, updated_acc_tpu = grad_fn(
         row_pointers,
         embedding_ids,
@@ -941,9 +951,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         epsilon,
     )
     updated_table_tpu_np = updated_table_tpu.cpu().numpy()
-    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
     updated_acc_tpu_np = updated_acc_tpu.cpu().numpy()
-    initial_acc_sharded_np = accumulator_sharded.cpu().numpy()
     updated_rows = [0, 1, 2, 3, 16, 17]
     for i in range(vocab_size):
       if i not in updated_rows:
@@ -975,11 +983,13 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     if compile_op:
       matmul_fn = torch.compile(matmul_fn, fullgraph=True)
     eps = 1e-3
-    grad_approx = torch.zeros_like(embedding_table_sharded)
+    grad_approx = torch.zeros(
+        (vocab_size, embedding_dim), dtype=torch.float32, device=device
+    )
     for r in updated_rows:
-      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_plus[r] += eps
-      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_minus[r] -= eps
       out_plus = matmul_fn(
           row_pointers, embedding_ids, sample_ids, gains, table_sharded_plus
@@ -1072,6 +1082,12 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
 
     if compile_op:
       grad_fn = torch.compile(grad_fn, fullgraph=True)
+
+    initial_table_sharded_cpu = embedding_table_sharded.detach().cpu().clone()
+    initial_table_sharded_np = initial_table_sharded_cpu.numpy()
+    initial_acc_sharded_cpu = accumulator_sharded.detach().cpu().clone()
+    initial_acc_sharded_np = initial_acc_sharded_cpu.numpy()
+
     updated_table_tpu, updated_acc_tpu = grad_fn(
         row_pointers,
         embedding_ids,
@@ -1084,9 +1100,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
         epsilon,
     )
     updated_table_tpu_np = updated_table_tpu.cpu().numpy()
-    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
     updated_acc_tpu_np = updated_acc_tpu.cpu().numpy()
-    initial_acc_sharded_np = accumulator_sharded.cpu().numpy()
     updated_rows = [0, 1, 2, 3, 16, 17]
     for i in range(vocab_size):
       if i not in updated_rows:
@@ -1118,11 +1132,13 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     if compile_op:
       matmul_fn = torch.compile(matmul_fn, fullgraph=True)
     eps = 1e-3
-    grad_approx = torch.zeros_like(embedding_table_sharded)
+    grad_approx = torch.zeros(
+        (vocab_size, embedding_dim), dtype=torch.float32, device=device
+    )
     for r in updated_rows:
-      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_plus[r] += eps
-      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_minus[r] -= eps
       out_plus = matmul_fn(
           row_pointers, embedding_ids, sample_ids, gains, table_sharded_plus
@@ -1243,6 +1259,13 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     if compile_op:
       grad_fn = torch.compile(grad_fn, fullgraph=True)
 
+    initial_table_sharded_cpu = embedding_table_sharded.detach().cpu().clone()
+    initial_table_sharded_np = initial_table_sharded_cpu.numpy()
+    initial_mom_sharded_cpu = momentum_sharded.detach().cpu().clone()
+    initial_mom_sharded_np = initial_mom_sharded_cpu.numpy()
+    initial_vel_sharded_cpu = velocity_sharded.detach().cpu().clone()
+    initial_vel_sharded_np = initial_vel_sharded_cpu.numpy()
+
     updated_table_tpu, updated_mom_tpu, updated_vel_tpu = grad_fn(
         row_pointers,
         embedding_ids,
@@ -1259,11 +1282,8 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
 
     updated_table_tpu_np = updated_table_tpu.cpu().numpy()
-    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
     updated_mom_tpu_np = updated_mom_tpu.cpu().numpy()
-    initial_mom_sharded_np = momentum_sharded.cpu().numpy()
     updated_vel_tpu_np = updated_vel_tpu.cpu().numpy()
-    initial_vel_sharded_np = velocity_sharded.cpu().numpy()
 
     updated_rows = [0, 1, 2, 3, 16, 17]
 
@@ -1306,12 +1326,14 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       matmul_fn = torch.compile(matmul_fn, fullgraph=True)
 
     eps = 1e-3
-    grad_approx = torch.zeros_like(embedding_table_sharded)
+    grad_approx = torch.zeros(
+        (vocab_size, embedding_dim), dtype=torch.float32, device=device
+    )
 
     for r in updated_rows:
-      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_plus[r] += eps
-      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_minus[r] -= eps
 
       out_plus = matmul_fn(
@@ -1442,6 +1464,13 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     if compile_op:
       grad_fn = torch.compile(grad_fn, fullgraph=True)
 
+    initial_table_sharded_cpu = embedding_table_sharded.detach().cpu().clone()
+    initial_table_sharded_np = initial_table_sharded_cpu.numpy()
+    initial_mom_sharded_cpu = momentum_sharded.detach().cpu().clone()
+    initial_mom_sharded_np = initial_mom_sharded_cpu.numpy()
+    initial_vel_sharded_cpu = velocity_sharded.detach().cpu().clone()
+    initial_vel_sharded_np = initial_vel_sharded_cpu.numpy()
+
     updated_table_tpu, updated_mom_tpu, updated_vel_tpu = grad_fn(
         row_pointers,
         embedding_ids,
@@ -1458,11 +1487,8 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
     )
 
     updated_table_tpu_np = updated_table_tpu.cpu().numpy()
-    initial_table_sharded_np = embedding_table_sharded.cpu().numpy()
     updated_mom_tpu_np = updated_mom_tpu.cpu().numpy()
-    initial_mom_sharded_np = momentum_sharded.cpu().numpy()
     updated_vel_tpu_np = updated_vel_tpu.cpu().numpy()
-    initial_vel_sharded_np = velocity_sharded.cpu().numpy()
 
     updated_rows = [0, 1, 2, 3, 16, 17]
 
@@ -1505,12 +1531,14 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
       matmul_fn = torch.compile(matmul_fn, fullgraph=True)
 
     eps = 1e-3
-    grad_approx = torch.zeros_like(embedding_table_sharded)
+    grad_approx = torch.zeros(
+        (vocab_size, embedding_dim), dtype=torch.float32, device=device
+    )
 
     for r in updated_rows:
-      table_sharded_plus = embedding_table_sharded.clone()
+      table_sharded_plus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_plus[r] += eps
-      table_sharded_minus = embedding_table_sharded.clone()
+      table_sharded_minus = initial_table_sharded_cpu.to(device).clone()
       table_sharded_minus[r] -= eps
 
       out_plus = matmul_fn(
@@ -1634,7 +1662,7 @@ class SparseDenseMatmulTest(op_testing.TorchTpuTestBase):
             embedding_ids,
             sample_ids,
             gains,
-            table_t8,
+            upd_table,
             mom_t8,
             vel_t8,
             activations_grad,

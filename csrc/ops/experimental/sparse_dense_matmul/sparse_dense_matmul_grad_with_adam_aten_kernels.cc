@@ -351,7 +351,8 @@ AtenSparseDenseMatmulGradWithAdam(
             (DispatchOp<9, 3>(builder_fn, inputs,
                               {.out_dtypes = {out_dtype, out_dtype, vel_dtype},
                                .out_dims_list = {out_dims, out_dims, vel_dims},
-                               .op_param_cache_keys = std::move(param_keys)})));
+                               .op_param_cache_keys = std::move(param_keys),
+                               .donated_indices = {4, 5, 6}})));
         TT_ASSIGN_OR_THROW(const DeviceBufferRef table_buf,
                            GetBuffer(embedding_table));
         if (table_buf.shape().layout().has_value()) {

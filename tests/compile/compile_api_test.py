@@ -1378,6 +1378,404 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
         comp(gm, [x, y], donated_inputs=[0] if donated_first else [])
         self.assertEqual(torch.tpu._get_cache_hits(), initial_hits + 1)
 
+  def test_static_compiler_auto_buffer_donation_with_mutable_custom_op(self):
+    @torch.library.custom_op(
+        'custom_tpu_test::table_update', mutates_args={'table'}
+    )
+    def table_update(table: torch.Tensor, grad: torch.Tensor) -> None:
+      table.add_(grad)
+
+    @table_update.register_fake
+    def _(table: torch.Tensor, grad: torch.Tensor) -> None:
+      return
+
+    def model_fn(table, grad):
+      torch.ops.custom_tpu_test.table_update(table, grad)
+      return table
+
+    table = torch.randn(4, 8, device=self.device)
+    grad = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(table, grad)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [table, grad], donated_inputs=[0])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertTrue(hasattr(compiled_executable, 'mlir_text'))
+    self.assertIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+
+    # Verify no clones of table are present
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+  def test_static_compiler_clone_preserved_when_mutated_tensor_read_downstream(
+      self,
+  ):
+    """Verifies that when an input is mutated by a custom op but also read
+
+    downstream, the graph executes correctly and returns both the mutated
+    and unmutated/derived tensors.
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::table_update_preserved_clone',
+        mutates_args={'table'},
+    )
+    def table_update_preserved_clone(
+        table: torch.Tensor, grad: torch.Tensor
+    ) -> None:
+      table.add_(grad)
+
+    @table_update_preserved_clone.register_fake
+    def _(table: torch.Tensor, grad: torch.Tensor) -> None:
+      return
+
+    def model_fn(table, grad):
+      orig = table * 2.0
+      torch.ops.custom_tpu_test.table_update_preserved_clone(table, grad)
+      return table, orig
+
+    table = torch.randn(4, 8, device=self.device)
+    grad = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(table, grad)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [table, grad])
+
+    self.assertIsNotNone(compiled_executable)
+
+    table_cpu = table.cpu().clone()
+    grad_cpu = grad.cpu().clone()
+    expected_mutated = table_cpu + grad_cpu
+    expected_orig_scaled = table_cpu * 2.0
+
+    res = compiled_executable(table, grad)
+    self.assertLen(res, 2)
+    utils.assert_close(res[0].cpu(), expected_mutated)
+    utils.assert_close(res[1].cpu(), expected_orig_scaled)
+
+  def test_static_compiler_mixed_mutable_and_immutable_arguments(self):
+    """Verifies that in a graph with mixed mutable and immutable inputs,
+
+    only the mutable input is buffer donated and clone-eliminated, while
+    immutable inputs remain intact and non-donated.
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::table_update_mixed', mutates_args={'table'}
+    )
+    def table_update_mixed(table: torch.Tensor, grad: torch.Tensor) -> None:
+      table.add_(grad)
+
+    @table_update_mixed.register_fake
+    def _(table: torch.Tensor, grad: torch.Tensor) -> None:
+      return
+
+    def model_fn(table, pure_x, pure_y):
+      torch.ops.custom_tpu_test.table_update_mixed(table, pure_x)
+      computed = pure_x * pure_y + 1.0
+      return table, computed
+
+    table = torch.randn(4, 8, device=self.device)
+    pure_x = torch.randn(4, 8, device=self.device)
+    pure_y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(table, pure_x, pure_y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [table, pure_x, pure_y], donated_inputs=[0])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+    table_cpu = table.cpu().clone()
+    pure_x_cpu = pure_x.cpu().clone()
+    pure_y_cpu = pure_y.cpu().clone()
+    expected_table = table_cpu + pure_x_cpu
+    expected_computed = pure_x_cpu * pure_y_cpu + 1.0
+
+    res = compiled_executable(table, pure_x, pure_y)
+    self.assertLen(res, 2)
+    utils.assert_close(res[0].cpu(), expected_table)
+    utils.assert_close(res[1].cpu(), expected_computed)
+
+    # Donated input 0 should be consumed
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
+        RuntimeError, 'INVALID_ARGUMENT: Buffer has been deleted or donated'
+    ):
+      table.cpu()
+
+    # Immutable inputs 1 and 2 must remain valid and un-donated
+    utils.assert_close(pure_x.cpu(), pure_x_cpu)
+    utils.assert_close(pure_y.cpu(), pure_y_cpu)
+
+  def test_static_compiler_multiple_mutating_ops(self):
+    """Verifies that multiple independent mutable ops in a single graph
+
+    are all reinplaced without clones and donated correctly.
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::multi_table_update_1', mutates_args={'t1'}
+    )
+    def multi_table_update_1(t1: torch.Tensor, g1: torch.Tensor) -> None:
+      t1.add_(g1)
+
+    @multi_table_update_1.register_fake
+    def _(t1: torch.Tensor, g1: torch.Tensor) -> None:
+      return
+
+    @torch.library.custom_op(
+        'custom_tpu_test::multi_table_update_2', mutates_args={'t2'}
+    )
+    def multi_table_update_2(t2: torch.Tensor, g2: torch.Tensor) -> None:
+      t2.mul_(g2)
+
+    @multi_table_update_2.register_fake
+    def _(t2: torch.Tensor, g2: torch.Tensor) -> None:
+      return
+
+    def model_fn(t1, t2, g1, g2):
+      torch.ops.custom_tpu_test.multi_table_update_1(t1, g1)
+      torch.ops.custom_tpu_test.multi_table_update_2(t2, g2)
+      return t1, t2
+
+    t1 = torch.randn(4, 8, device=self.device)
+    t2 = torch.randn(4, 8, device=self.device)
+    g1 = torch.randn(4, 8, device=self.device)
+    g2 = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(t1, t2, g1, g2)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [t1, t2, g1, g2], donated_inputs=[0, 1])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+    t1_cpu = t1.cpu().clone()
+    t2_cpu = t2.cpu().clone()
+    g1_cpu = g1.cpu().clone()
+    g2_cpu = g2.cpu().clone()
+    expected_t1 = t1_cpu + g1_cpu
+    expected_t2 = t2_cpu * g2_cpu
+
+    res = compiled_executable(t1, t2, g1, g2)
+    self.assertLen(res, 2)
+    utils.assert_close(res[0].cpu(), expected_t1)
+    utils.assert_close(res[1].cpu(), expected_t2)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
+        RuntimeError, 'INVALID_ARGUMENT: Buffer has been deleted or donated'
+    ):
+      t1.cpu()
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
+        RuntimeError, 'INVALID_ARGUMENT: Buffer has been deleted or donated'
+    ):
+      t2.cpu()
+
+  def test_static_compiler_custom_op_with_multiple_mutated_args(self):
+    """Verifies custom ops with multiple mutated arguments (e.g.
+
+    table and state).
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::dual_state_update', mutates_args={'table', 'state'}
+    )
+    def dual_state_update(
+        table: torch.Tensor, state: torch.Tensor, grad: torch.Tensor
+    ) -> None:
+      table.add_(grad)
+      state.add_(grad * 2.0)
+
+    @dual_state_update.register_fake
+    def _(table: torch.Tensor, state: torch.Tensor, grad: torch.Tensor) -> None:
+      return
+
+    def model_fn(table, state, grad):
+      torch.ops.custom_tpu_test.dual_state_update(table, state, grad)
+      return table, state
+
+    table = torch.randn(4, 8, device=self.device)
+    state = torch.randn(4, 8, device=self.device)
+    grad = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(table, state, grad)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [table, state, grad], donated_inputs=[0, 1])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+    table_cpu = table.cpu().clone()
+    state_cpu = state.cpu().clone()
+    grad_cpu = grad.cpu().clone()
+    expected_table = table_cpu + grad_cpu
+    expected_state = state_cpu + grad_cpu * 2.0
+
+    res = compiled_executable(table, state, grad)
+    self.assertLen(res, 2)
+    utils.assert_close(res[0].cpu(), expected_table)
+    utils.assert_close(res[1].cpu(), expected_state)
+
+  def test_static_compiler_intermediate_mutation_not_donated(self):
+    """Verifies mutating an intermediate tensor created within the graph
+
+    executes cleanly and does not donate input arguments.
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::intermediate_update', mutates_args={'target'}
+    )
+    def intermediate_update(target: torch.Tensor, inc: torch.Tensor) -> None:
+      target.add_(inc)
+
+    @intermediate_update.register_fake
+    def _(target: torch.Tensor, inc: torch.Tensor) -> None:
+      return
+
+    def model_fn(x, y):
+      inter = x + y
+      torch.ops.custom_tpu_test.intermediate_update(inter, x)
+      return inter
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(x, y)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [x, y], donated_inputs=[])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertNotIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+
+    x_cpu = x.cpu().clone()
+    y_cpu = y.cpu().clone()
+    expected = (x_cpu + y_cpu) + x_cpu
+
+    res = compiled_executable(x, y)
+    utils.assert_close(res.cpu(), expected)
+
+    # Inputs x and y were not donated
+    utils.assert_close(x.cpu(), x_cpu)
+    utils.assert_close(y.cpu(), y_cpu)
+
+  def test_static_compiler_chained_mutations_on_same_tensor(self):
+    """Verifies that sequential chained in-place mutations on the same tensor
+
+    are all reinplaced cleanly without inserting intermediate clones.
+    """
+
+    @torch.library.custom_op(
+        'custom_tpu_test::chain_update_add', mutates_args={'t'}
+    )
+    def chain_update_add(t: torch.Tensor, g: torch.Tensor) -> None:
+      t.add_(g)
+
+    @chain_update_add.register_fake
+    def _(t: torch.Tensor, g: torch.Tensor) -> None:
+      return
+
+    @torch.library.custom_op(
+        'custom_tpu_test::chain_update_mul', mutates_args={'t'}
+    )
+    def chain_update_mul(t: torch.Tensor, scale: torch.Tensor) -> None:
+      t.mul_(scale)
+
+    @chain_update_mul.register_fake
+    def _(t: torch.Tensor, scale: torch.Tensor) -> None:
+      return
+
+    def model_fn(t, g, scale):
+      torch.ops.custom_tpu_test.chain_update_add(t, g)
+      torch.ops.custom_tpu_test.chain_update_mul(t, scale)
+      return t
+
+    t = torch.randn(4, 8, device=self.device)
+    g = torch.randn(4, 8, device=self.device)
+    scale = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(t, g, scale)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [t, g, scale], donated_inputs=[0])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+    t_cpu = t.cpu().clone()
+    g_cpu = g.cpu().clone()
+    scale_cpu = scale.cpu().clone()
+    expected = (t_cpu + g_cpu) * scale_cpu
+
+    res = compiled_executable(t, g, scale)
+    utils.assert_close(res.cpu(), expected)
+
+  def test_static_compiler_pure_functional_graph_no_donation(self):
+    """Verifies that standard pure functional graphs compile and execute without
+
+    buffer donors or defensive clones.
+    """
+
+    def model_fn(a, b, c):
+      return (a * b) + c
+
+    a = torch.randn(8, 8, device=self.device)
+    b = torch.randn(8, 8, device=self.device)
+    c = torch.randn(8, 8, device=self.device)
+
+    gm = make_fx(model_fn)(a, b, c)
+    comp = StaticCompiler(debug=True)
+    compiled_executable = comp(gm, [a, b, c])
+
+    self.assertIsNotNone(compiled_executable)
+    self.assertNotIn('jax.buffer_donor = true', compiled_executable.mlir_text)
+    self.assertNotIn('aten.clone', compiled_executable.graph_module_debug_str)
+
+    expected = (a.cpu() * b.cpu()) + c.cpu()
+    res = compiled_executable(a, b, c)
+    utils.assert_close(res.cpu(), expected)
+
+  def test_static_compiler_async_with_mutable_custom_op(self):
+    """Verifies async StaticCompiler works with mutable custom ops and buffer donation."""
+
+    @torch.library.custom_op(
+        'custom_tpu_test::async_table_update', mutates_args={'table'}
+    )
+    def async_table_update(table: torch.Tensor, grad: torch.Tensor) -> None:
+      table.add_(grad)
+
+    @async_table_update.register_fake
+    def _(table: torch.Tensor, grad: torch.Tensor) -> None:
+      return
+
+    def model_fn(table, grad):
+      torch.ops.custom_tpu_test.async_table_update(table, grad)
+      return table
+
+    table = torch.randn(4, 8, device=self.device)
+    grad = torch.randn(4, 8, device=self.device)
+
+    gm = make_fx(model_fn)(table, grad)
+    comp = StaticCompiler(async_compile=True, debug=True)
+    async_artifact = comp(gm, [table, grad], donated_inputs=[0])
+
+    self.assertIsInstance(async_artifact, compiler.AsyncCompiledArtifact)
+
+    table_cpu = table.cpu().clone()
+    grad_cpu = grad.cpu().clone()
+    expected = table_cpu + grad_cpu
+
+    res = async_artifact(table, grad)
+    utils.assert_close(res.cpu(), expected)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=verify buffer donation
+        RuntimeError, 'INVALID_ARGUMENT: Buffer has been deleted or donated'
+    ):
+      table.cpu()
+
   def test_executable_layouts(self):
     with eager_mode_compile_fx_graph():
       x = torch.ones(2, 3, device='cpu').to(device=torch.device('tpu'))
