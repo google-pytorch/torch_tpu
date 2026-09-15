@@ -61,6 +61,7 @@ from torch_tpu._internal import compiler_options as compiler
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.utils import test_utils
 from torch_tpu._internal.utils import utils
+from tests import dynamism_test_utils
 from tests import quantize_utils
 from tests import seed_test_utils
 import yaml
@@ -75,11 +76,12 @@ OpInfo = core.OpInfo  # pylint: disable=protected-access
 SampleInput = core.SampleInput  # pylint: disable=protected-access
 CheckValueMode = test_utils.CheckValueMode
 Tolerance = test_utils.Tolerance
+DynamismMode = dynamism_test_utils.DynamismMode
 
 AccuracyOverrides = Mapping[str, Mapping[torch.dtype, Mapping[str, Tolerance]]]
 
-FilterFn = Callable[[OpInfo, torch.Tensor, Sequence[Any]], str | None]
-MarkDynamicFn = Callable[[int, OpInfo, torch.Tensor, Sequence[Any]], None]
+FilterFn = Callable[..., str | None]
+MarkDynamicFn = Callable[..., None]
 
 
 def _validate_tolerances(
@@ -3985,27 +3987,27 @@ class OpInfoTestBase(
 
     input_value = device_op_input.input_value
 
-    if use_compiled:
-      if not _compiled_supports_op(op, device_op_input, variant):
-        self.skipTest(f"TpuBackend does not support {op_name} currently.")
-      logging.getLogger(tt_compile.TpuBackend.__module__).setLevel(
-          logging.DEBUG
-      )
-      backend = "tpu" if str(device) == "tpu" else "inductor"
-      print(f"Compiling {op_name} for device {device} ...", flush=True)
-      op_func = torch.compile(op_func, dynamic=False, backend=backend)
+    is_dynamic_test = bool(
+        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+    )
 
-    if _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu"):
+    if is_dynamic_test:
       if not check_dynamism:
         self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
 
+      dynamism_mode = (
+          DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
+      )
       print(
-          f">>> Marking dynamism for {op_name} with dtype {dtype} ...",
+          f">>> Marking dynamism for {op_name} with dtype {dtype}"
+          f" (mode={dynamism_mode.value}) ...",
           flush=True,
       )
 
       # Verify op is supported with dynamism.
-      skip = self.dynamism_filter_fn(op, op_input.input_value, op_input.args)
+      skip = self.dynamism_filter_fn(
+          op, op_input.input_value, op_input.args, mode=dynamism_mode
+      )
       if skip is not None:
         self.skipTest(skip)
 
@@ -4014,8 +4016,27 @@ class OpInfoTestBase(
       seed = seed if seed > 0 else (time.time_ns() % 100000)
       print(f">>>> Reproduce using `--check_dynamism_using_seed={seed}`")
       self.dynamism_mark_dynamic_fn(
-          seed, op, device_op_input.input_value, device_op_input.args
+          seed,
+          op,
+          device_op_input.input_value,
+          device_op_input.args,
+          mode=dynamism_mode,
       )
+
+    if use_compiled and device != torch.device("cpu"):
+      if not _compiled_supports_op(op, device_op_input, variant):
+        self.skipTest(f"TpuBackend does not support {op_name} currently.")
+      logging.getLogger(tt_compile.TpuBackend.__module__).setLevel(
+          logging.DEBUG
+      )
+      backend = "tpu" if str(device) == "tpu" else "inductor"
+      print(f"Compiling {op_name} for device {device} ...", flush=True)
+      if is_dynamic_test:
+        op_func = torch.compile(
+            op_func, backend=backend, options={"bounded_dynamism": True}
+        )
+      else:
+        op_func = torch.compile(op_func, dynamic=False, backend=backend)
 
     if compute_grad:
 

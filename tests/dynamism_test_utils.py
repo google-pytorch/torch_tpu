@@ -15,13 +15,14 @@
 """Testing utilities for bounded dynamism.
 
 Handles the following details for per-op unit testing:
-  - Valide if an op supports bounded dynamism.
+  - Validate if an op supports bounded dynamism.
   - Discover valid bounded dynamic candidates.
   - Mark input as dynamic
   - Mark dependent args as dynamic.
 """
 
 from collections.abc import Sequence
+import enum
 import random
 from typing import Any
 
@@ -32,6 +33,45 @@ from torch.testing._internal.opinfo import core
 from torch.utils import _pytree
 from torch_tpu._internal import dynamism
 from torch_tpu._internal.utils import utils
+
+
+class DynamismMode(enum.Enum):
+  """Mode of dynamism testing."""
+
+  EAGER = "eager"
+  COMPILE = "compile"
+
+
+EAGER = DynamismMode.EAGER
+COMPILE = DynamismMode.COMPILE
+ALL_MODES = frozenset({DynamismMode.EAGER, DynamismMode.COMPILE})
+
+
+def _mark_tensor_dynamic(
+    tensor: torch.Tensor,
+    dimension: int,
+    lower_bound: int,
+    upper_bound: int,
+    mode: DynamismMode = DynamismMode.EAGER,
+) -> None:
+  """Marks a dimension of a tensor as dynamic according to the specified mode."""
+  if mode == DynamismMode.EAGER:
+    dynamism.mark_dynamic(
+        tensor,
+        dimension=dimension,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+    )
+  elif mode == DynamismMode.COMPILE:
+    torch._dynamo.mark_dynamic(
+        tensor,
+        dimension,
+        min=lower_bound,
+        max=upper_bound,
+    )
+  else:
+    raise ValueError(f"Unsupported dynamism mode: {mode}")
+
 
 # Static variables for op classification.
 foreach_binops = frozenset(
@@ -122,10 +162,112 @@ def _should_skip_input_marking(
   return None
 
 
+# Mode-aware deny list mapping op names to the set of DynamismMode(s) for which they are excluded.
+untriaged_ops_deny_list: dict[
+    str, set[DynamismMode] | frozenset[DynamismMode]
+] = {
+    "bincount": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
+    "bmm": {COMPILE},  # numerical mismatch under dynamic compile
+    "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
+    "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
+    "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
+    "eq": ALL_MODES,  # dynamic triage (invalid result)
+    "expand": ALL_MODES,  # view op - expand not yet supported
+    "expm1": ALL_MODES,  # dynamic triage (result differ)
+    "fft.rfft": ALL_MODES,  # expected all dimensions to be static
+    "fft.irfft": ALL_MODES,  # expected all dimensions to be static
+    "fft.ifft": ALL_MODES,  # expected all dimensions to be static
+    "fft.fft": ALL_MODES,  # expected all dimensions to be static
+    "flip": ALL_MODES,  # dynamic triage (invalid result)
+    "floor_divide": ALL_MODES,  # currently failing dynamism tests
+    "full_like": {COMPILE},  # buffer dimension mismatch
+    "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
+    "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
+    "index_put": ALL_MODES,  # garbage data
+    "index_select": ALL_MODES,  # invalid gather
+    "isinf": {COMPILE},  # buffer dimension mismatch
+    "isin": ALL_MODES,  # materialization failure (negative dimension size)
+    "kron": ALL_MODES,  # dynamic triage (invalid result)
+    "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
+    "linalg.lu_factor_ex": (
+        ALL_MODES
+    ),  # materialization failure (negative dim size)
+    "logical_and": ALL_MODES,  # dynamic triage (invalid result)
+    "masked_scatter": ALL_MODES,  # unflatten ambiguous error
+    "matmul": ALL_MODES,  # reshapes in the structured delegate
+    "mm": {COMPILE},  # numerical mismatch under dynamic compile
+    "maximum": ALL_MODES,  # dynamic triage (invalid result)
+    "ne": ALL_MODES,  # dynamic triage (invalid result)
+    "neg": ALL_MODES,  # dynamic triage (invalid result)
+    "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
+    "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
+    "nn.functional.embedding": ALL_MODES,  # crash in shard 27
+    "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
+    "nn.functional.grid_sample": ALL_MODES,  #
+    "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
+    "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
+    "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
+    "nn.functional.max_pool1d": (
+        ALL_MODES
+    ),  # MLIR assertion failure (bounds length vs rank)
+    "nn.functional.max_pool2d": (
+        ALL_MODES
+    ),  # crash (negative dim size in compiled_mode.cc)
+    "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
+    "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
+    "nn.functional.nll_loss": (
+        ALL_MODES
+    ),  # numerical mismatch or failure in some shards
+    "nn.functional.pdist": (
+        ALL_MODES
+    ),  # inlined vector size fail (likely using bound)
+    "nn.functional.relu": ALL_MODES,  # dynamic triage (tolerance)
+    "nn.functional.scaled_dot_product_attention": (
+        ALL_MODES
+    ),  # broadcasting issue in add
+    "nn.functional.upsample_bilinear": ALL_MODES,  # MLIR gather out of bounds
+    "nn.functional.upsample_nearest": ALL_MODES,  # MLIR gather build failure
+    "normal": ALL_MODES,  # OK
+    "ones_like": {COMPILE},  # buffer dimension mismatch
+    "pow": ALL_MODES,  # dynamic triage (invalid result)
+    "remainder": ALL_MODES,  # dynamic triage (invalid result)
+    "round": ALL_MODES,  # dynamic triage (invalid result)
+    "sgn": ALL_MODES,  # dynamic triage (invalid result)
+    "searchsorted": ALL_MODES,  # expected last dim to be static
+    "sign": ALL_MODES,  # dynamic triage (invalid result)
+    "sinh": ALL_MODES,  # dynamic triage (invalid result)
+    "slice": ALL_MODES,  # reshape reassociation not supported
+    "squeeze": (
+        ALL_MODES
+    ),  # unsupported view op - enhance view op to detect squeeze
+    "squeeze_copy": ALL_MODES,  # unsupported view op
+    "std": {COMPILE},  # shape mismatch on out under dynamic compile
+    "sub": ALL_MODES,  # dynamic triage (invalid result)
+    "sum": ALL_MODES,  # return i64, which has lowering issues
+    "take": ALL_MODES,  # dynamic triage (invalid result)
+    "tan": ALL_MODES,  # dynamic triage (invalid result)
+    "to": ALL_MODES,  # fails numerics (?)
+    "tril": ALL_MODES,  # bad broadcast
+    "triu": ALL_MODES,  # bad broadcast, iota-like
+    "trunc": ALL_MODES,  # dynamic triage (invalid result)
+    "unique_consecutive": (
+        ALL_MODES
+    ),  # dynamic shape operator / invalid TPU shape
+    "var": ALL_MODES,  # dynamic triage (invalid result)
+    "var_mean": {COMPILE},  # reshape lowering failure in compile mode
+    "vdot": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
+    "view_as_complex": ALL_MODES,  # crash (Aborted)
+    "view_as_real": ALL_MODES,  # OK
+    "xlogy": ALL_MODES,  # dynamic triage (invalid result)
+    "zeros_like": {COMPILE},  # buffer dimension mismatch
+}
+
+
 def verify_op_supports_dynamism(
     op_info: core.OpInfo,
     input_value: torch.Tensor,
     args: Sequence[Any],
+    mode: DynamismMode = DynamismMode.EAGER,
 ) -> None | str:
   """Checks if an op+input is supported with dynamism.
 
@@ -136,88 +278,19 @@ def verify_op_supports_dynamism(
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
+    mode: The active dynamism mode (EAGER or COMPILE).
 
   Returns:
     None if the op+input is supported, or an skipTest message if not.
   """
-
-  untriaged_ops_deny_list = [
-      "bincount",  # MLIR assertion failure (bounds length vs rank)
-      "clamp_min",  # dynamic triage (invalid result)
-      "conj_physical",  # identity operation for i64 and f64 fails
-      "diagonal",  # materialization failure (negative dimension size)
-      "eq",  # dynamic triage (invalid result)
-      "expand",  # view op - expand not yet supported
-      "expm1",  # dynamic triage (result differ)
-      "fft.rfft",  # expected all dimensions to be static
-      "fft.irfft",  # expected all dimensions to be static
-      "fft.ifft",  # expected all dimensions to be static
-      "fft.fft",  # expected all dimensions to be static
-      "flip",  # dynamic triage (invalid result)
-      "floor_divide",  # currently failing dynamism tests
-      "index_add",  # invalid bound length (likely bad tensor copy)
-      "index_copy",  # invalid bound length (likely bad tensor copy)
-      "index_put",  # garbage data
-      "index_select",  # invalid gather
-      "isin",  # materialization failure (negative dimension size)
-      "kron",  # dynamic triage (invalid result)
-      "ldexp",  # dynamic shape value permutation mismatch
-      "linalg.lu_factor_ex",  # materialization failure (negative dim size)
-      "logical_and",  # dynamic triage (invalid result)
-      "masked_scatter",  # unflatten ambiguous error
-      "matmul",  # reshapes in the structured delegate
-      "maximum",  # dynamic triage (invalid result)
-      "ne",  # dynamic triage (invalid result)
-      "neg",  # dynamic triage (invalid result)
-      "nn.functional.adaptive_avg_pool2d",  # sort op fails to infer
-      "nn.functional.batch_norm",  # dynamic triage (xla error)
-      "nn.functional.embedding",  # crash in shard 27
-      "nn.functional.embedding_bag",  # invalid gather
-      "nn.functional.grid_sample",  #
-      "nn.functional.hardswish",  # dynamic triage (adjust tolerance)
-      "nn.functional.interpolate",  # gather with dynamic slice size
-      "nn.functional.leaky_relu",  # dynamic triage (invalid result)
-      "nn.functional.max_pool1d",  # MLIR assertion failure (bounds length vs rank)
-      "nn.functional.max_pool3d",  # crash (Aborted)
-      "nn.functional.mse_loss",  # binop LHS / RHS mismatch
-      "nn.functional.nll_loss",  # numerical mismatch or failure in some shards
-      "nn.functional.pdist",  # inlined vector size fail (likely using bound)
-      "nn.functional.relu",  # dynamic triage (tolerance)
-      "nn.functional.scaled_dot_product_attention",  # broadcasting issue in add
-      "nn.functional.upsample_bilinear",  # MLIR gather out of bounds
-      "nn.functional.upsample_nearest",  # MLIR gather build failure
-      "normal",  # OK
-      "pow",  # dynamic triage (invalid result)
-      "remainder",  # dynamic triage (invalid result)
-      "round",  # dynamic triage (invalid result)
-      "sgn",  # dynamic triage (invalid result)
-      "searchsorted",  # expected last dim to be static
-      "sign",  # dynamic triage (invalid result)
-      "sinh",  # dynamic triage (invalid result)
-      "slice",  # reshape reassociation not supported
-      "squeeze",  # unsupported view op - enhance view op to detect squeeze
-      "squeeze_copy",  # unsupported view op
-      "std",  # dynamic triage
-      "sub",  # dynamic triage (invalid result)
-      "sum",  # return i64, which has lowering issues
-      "take",  # dynamic triage (invalid result)
-      "tan",  # dynamic triage (invalid result)
-      "to",  # fails numerics (?)
-      "tril",  # bad broadcast
-      "triu",  # bad broadcast, iota-like
-      "trunc",  # dynamic triage (invalid result)
-      "unique_consecutive",
-      "var",  # dynamic triage (invalid result)
-      "vdot",  # MLIR assertion failure (bounds length vs rank)
-      "view_as_complex",  # crash (Aborted)
-      "view_as_real",  # OK
-      "xlogy",  # dynamic triage (invalid result)
-  ]
   op = op_info
+  if op.name in untriaged_ops_deny_list:
+    denied_modes = untriaged_ops_deny_list[op.name]
+    if mode in denied_modes:
+      return f"Op {op.name} is not supported in {mode.value} dynamism mode."
+
   if op.name == "addcdiv" and not utils.libtpu_at_least((0, 0, 47)):
     return "addcdiv requires libtpu >= 0.0.47 for dynamism support."
-  if op.name in untriaged_ops_deny_list:
-    return f"Op {op.name} is not supported."
 
   ### [TEST INFRA TASKS] ###
   # The following indicate changes needed in this file to increase coverage.
@@ -267,7 +340,11 @@ def verify_op_supports_dynamism(
 
 
 def _mark_numpy_broadcastable_arg_dynamic(
-    arg: torch.Tensor, like: torch.Tensor, idx: int, ub: int
+    arg: torch.Tensor,
+    like: torch.Tensor,
+    idx: int,
+    ub: int,
+    mode: DynamismMode = DynamismMode.EAGER,
 ):
   """Marks dependent dims of a bounded dimension as dynamic.
 
@@ -285,14 +362,17 @@ def _mark_numpy_broadcastable_arg_dynamic(
     like: The tensor that was marked dynamic.
     idx: The dimension of `like` that was marked dynamic.
     ub: The upper bound of the dynamic dimension.
+    mode: The dynamism mode (EAGER or COMPILE).
   """
 
   logging.debug(
-      "[_mark_numpy_broadcastable_arg_dynamic] arg=%s, like=%s, idx=%d, ub=%d",
+      "[_mark_numpy_broadcastable_arg_dynamic] arg=%s, like=%s, idx=%d, ub=%d,"
+      " mode=%s",
       arg.shape,
       like.shape,
       idx,
       ub,
+      mode,
   )
 
   # Don't annotate scalar args
@@ -310,10 +390,10 @@ def _mark_numpy_broadcastable_arg_dynamic(
   assert arg.shape[arg_idx] == like.shape[idx], "bound dims mismatch"
   print(
       f">>>> Marking dependent arg dim {arg_idx} dynamic [<={ub}] in"
-      f" {utils.InputMetadata(arg)}",
+      f" {utils.InputMetadata(arg)} (mode={mode.value})",
       flush=True,
   )
-  dynamism.mark_dynamic(arg, dimension=arg_idx, lower_bound=2, upper_bound=ub)
+  _mark_tensor_dynamic(arg, arg_idx, 2, ub, mode=mode)
 
 
 class DynamicOpInfo:
@@ -337,15 +417,20 @@ class DynamicOpInfo:
     return DynamicOpInfo(op_info)
 
   def mark_dynamic(
-      self, seed: int, input_value: torch.Tensor, args: Sequence[Any]
+      self,
+      seed: int,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the op as dynamic."""
 
     logging.debug(
-        "[DynamicOpInfo] mark_dynamic(%s, %s, %s)",
+        "[DynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
         self.op_info.name,
         utils.InputMetadata(input_value),
         utils.InputMetadata(args),
+        mode,
     )
 
     # Allow picking a list value from input_value for ops like cat, etc.
@@ -356,24 +441,28 @@ class DynamicOpInfo:
     input_value_str = utils.get_tensor_summary(input_value, data=False)
     ub = input_value.shape[idx] + 10
     print(
-        f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}",
+        f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}"
+        f" (mode={mode.value})",
         flush=True,
     )
 
     # Mark input_value as dynamic.
-    dynamism.mark_dynamic(
-        input_value, dimension=idx, lower_bound=2, upper_bound=ub
-    )
+    _mark_tensor_dynamic(input_value, idx, 2, ub, mode=mode)
 
     # Mark any dependent args as dynamic.
-    self._mark_dependent_arg_dynamic(args, input_value, idx, ub)
+    self._mark_dependent_arg_dynamic(args, input_value, idx, ub, mode=mode)
 
   def _mark_dependent_arg_dynamic(
-      self, args: Sequence[Any], like: torch.Tensor, idx: int, ub: int
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Marks dependent dims of a bounded dimension as dynamic."""
     # No dependent args to mark.
-    del like, idx, ub
+    del like, idx, ub, mode
     logging.debug(
         "[DynamicOpInfo] _mark_dependent_arg_dynamic %s %s",
         self.op_info.name,
@@ -401,11 +490,12 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
       like: torch.Tensor,
       idx: int,
       ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the args of a binary elementwise op as dynamic."""
     rhs = args[0]
     if isinstance(rhs, torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub)
+      _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
 
 
 class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
@@ -433,12 +523,13 @@ class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
       like: torch.Tensor,
       idx: int,
       ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the args of a ternary elementwise op as dynamic."""
     if len(args) >= 1 and isinstance(args[0], torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub)
+      _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
     if len(args) >= 2 and isinstance(args[1], torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(args[1], like, idx, ub)
+      _mark_numpy_broadcastable_arg_dynamic(args[1], like, idx, ub, mode=mode)
 
 
 class ForEachDynamicOpInfo(DynamicOpInfo):
@@ -458,6 +549,7 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
       seed: int,
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the op as dynamic, handling for list types."""
     # Split the inputs into their logical units for marking dynamic.
@@ -466,10 +558,11 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
     #   - foreach_add(list, [[arg0s], [args1s], ...])
 
     logging.debug(
-        "[ForEachDynamicOpInfo] mark_dynamic(%s, %s, %s)",
+        "[ForEachDynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
         self.op_info.name,
         utils.InputMetadata(input_value),
         utils.InputMetadata(args),
+        mode,
     )
     n_dynamic = 0
     for idx, value in enumerate(input_value):
@@ -488,14 +581,14 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
           or not isinstance(args, (list, tuple))
           or not isinstance(args[0], (list, tuple))
       ):
-        super().mark_dynamic(seed, value, [])
+        super().mark_dynamic(seed, value, [], mode=mode)
         continue
 
       # Binary ops expect len(args) == 1
       if self.op_info.name in foreach_binops:
         rhs_vals = args[0]
         BinaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            seed, value, (rhs_vals[idx],)
+            seed, value, (rhs_vals[idx],), mode=mode
         )
         continue
 
@@ -508,12 +601,15 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
         rhs_vals = args[0] if len(args) >= 1 else None
         ehs_vals = args[1] if len(args) >= 2 else None
         TernaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            seed, value, (rhs_vals[idx], ehs_vals[idx])  # pyrefly: ignore[unsupported-operation]
+            seed,
+            value,
+            (rhs_vals[idx], ehs_vals[idx]),  # pyrefly: ignore[unsupported-operation]
+            mode=mode,
         )
         continue
 
       # Not binary or ternary, no dependent args.
-      super().mark_dynamic(seed, value, [])
+      super().mark_dynamic(seed, value, [], mode=mode)
       logging.debug(
           "[ForEachDynamicOpInfo] no dependent args %s",
           utils.InputMetadata(args),
@@ -536,6 +632,7 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       like: torch.Tensor,
       idx: int,
       ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the args of a binary elementwise op as dynamic."""
     rhs = args[0]
@@ -549,15 +646,13 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
           rhs_value_str = utils.get_tensor_summary(rhs, data=False)
           print(
               f">>>> Marking dim {rhs_cdim} dynamic [<={ub}] in"
-              f" {rhs_value_str}",
+              f" {rhs_value_str} (mode={mode.value})",
               flush=True,
           )
-          dynamism.mark_dynamic(
-              rhs, dimension=rhs_cdim, lower_bound=2, upper_bound=ub
-          )
+          _mark_tensor_dynamic(rhs, rhs_cdim, 2, ub, mode=mode)
       # If a batch dim is dynamic, mark rhs's batch dim too.
       elif idx < lhs_ndim - 2:
-        _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub)
+        _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
 
 
@@ -566,6 +661,7 @@ def mark_input_dynamic(
     op_info: core.OpInfo,
     input_value: torch.Tensor | Sequence[torch.Tensor],
     args: Sequence[Any],
+    mode: DynamismMode = DynamismMode.EAGER,
 ):
   """Mark an arg tensor as dynamic.
 
@@ -574,8 +670,12 @@ def mark_input_dynamic(
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
+    mode: The dynamism mode (EAGER or COMPILE).
   """
 
   dynamic_op_info = DynamicOpInfo.get(op_info)
-  print(">>> Marking input dynamic using ", type(dynamic_op_info))
-  dynamic_op_info.mark_dynamic(seed, input_value, args)
+  print(
+      ">>> Marking input dynamic using"
+      f" {type(dynamic_op_info)} (mode={mode.value})"
+  )
+  dynamic_op_info.mark_dynamic(seed, input_value, args, mode=mode)

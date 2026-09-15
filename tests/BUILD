@@ -283,6 +283,7 @@ torch_tpu_py_library(
     srcs = ["op_testing.py"],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":dynamism_test_utils",
         ":quantize_utils",
         ":seed_test_utils",
         "//csrc/eager:tpu_aten_kernels",
@@ -330,6 +331,7 @@ torch_tpu_py_library(
 # * ops_test_grad_vs_cpu: gradient on TPU vs CPU.
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
 # * ops_test_dynamic_vs_cpu: TPU vs GPU, bounds a dimension.
+# * ops_test_dynamic_compiled_vs_cpu: TPU vs GPU, bounds a dimension under torch.compile.
 # * ops_test_compiled: TPU vs GPU (torch.compile TpuBackend vs GPU inductor backend).
 
 # We chose to manually maintain the duplicate tests instead of using a for-loop to generate the
@@ -800,6 +802,41 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "ok-to-wait-for-v6e-in-presubmit",
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_dynamic_compiled_vs_cpu",
+    timeout = "long",  # Needed for asan.
+    srcs = ["ops_test.py"],
+    args = [
+        "--check_dynamism_using_seed=-1",
+        "--use_compiled=True",
+        "--test_mode=torch_tpu_vs_cpu",
+        "--print_op_inputs=1",
+        "--max_samples_per_op_dtype=1",  # No need to test many samples to catch dynamism bugs.
+    ],
+    main = "ops_test.py",
+    nopresubmit = "Dynamic compile tests are run in postsubmit.",
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 32,
+    tags = [
+        "nomsan",  # TODO: fix the test in msan mode.
+        "notsan",  # TODO: fix the test in tsan mode.
     ],
     deps = [
         ":dynamism_test_utils",
