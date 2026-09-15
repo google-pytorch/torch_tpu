@@ -1371,6 +1371,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sign.out";
     case OpName::kSignbitOut:
       return "signbit.out";
+    case OpName::kSiluBackwardGradInput:
+      return "silu_backward.grad_input";
     case OpName::kSiluOut:
       return "silu.out";
     case OpName::kSinOut:

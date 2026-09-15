@@ -8790,6 +8790,24 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  def test_silu_backward(self):
+    """Tests torch.ops.aten.silu_backward with bfloat16 and float32."""
+    for dtype in [torch.bfloat16, torch.float32]:
+      for shape in [(16,), (4, 16), (2, 8, 16)]:
+        grad_output = torch.randn(shape, dtype=dtype)
+        self_input = torch.randn(shape, dtype=dtype)
+
+        def compute(device, go=grad_output, si=self_input):
+          return torch.ops.aten.silu_backward(
+              to(go, device),
+              to(si, device),
+          )
+
+        if dtype == torch.bfloat16:
+          self.assert_close_tpu_vs_cpu(compute, atol=2e-2, rtol=1e-2)
+        else:
+          self.assert_close_tpu_vs_cpu(compute, atol=1e-4, rtol=1e-4)
+
   def test_ceil_integral(self):
     for dtype in [torch.int32, torch.uint8]:
       x = torch.tensor([-2, -1, 0, 1, 2], dtype=dtype)

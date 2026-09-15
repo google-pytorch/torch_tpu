@@ -196,6 +196,32 @@ absl::StatusOr<mlir::MlirOp> BuildSiluShlo(mlir::MlirOp input_op) {
   return result_op;
 }
 
+absl::StatusOr<mlir::MlirOp> BuildSiluBackwardGradInputShlo(
+    mlir::MlirOp grad_output_op, mlir::MlirOp self_op) {
+  // Only defined for floating point types
+  const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self_op);
+
+  TT_ASSIGN_OR_RETURN(const at::ScalarType scalar_type,
+                      ConvertTo<c10::ScalarType>(self_type.getElementType()));
+
+  TT_RET_CHECK(IsFloatType(self_type), error::kInvalidArgument)
+      << "expected the input dtype to be floating point, got "
+      << ToString(scalar_type);
+
+  TT_ASSIGN_OR_RETURN((auto [grad_output_bcst, self_bcst]),
+                      ApplyBroadcastIfNeeded(grad_output_op, self_op));
+
+  // Defined as silu_backward(dy, x) = dy * sigmoid(x) * (1 + x * (1 -
+  // sigmoid(x)))
+  mlir::MlirOp sigmoid_op = stablehlo::Logistic(self_bcst);
+  mlir::MlirOp one_op = MakeConstantLike(sigmoid_op, 1.0);
+  mlir::MlirOp one_minus_sigmoid = stablehlo::Subtract(one_op, sigmoid_op);
+  mlir::MlirOp x_mul = stablehlo::Mul(self_bcst, one_minus_sigmoid);
+  mlir::MlirOp bracket = stablehlo::Add(one_op, x_mul);
+  mlir::MlirOp sigmoid_mul = stablehlo::Mul(sigmoid_op, bracket);
+  return stablehlo::Mul(grad_output_bcst, sigmoid_mul);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildTruncShlo(mlir::MlirOp input_op) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input_op);
 

@@ -71,6 +71,19 @@ _TPU_DECOMPOSITIONS = get_decompositions([
     torch.ops.aten.masked_fill_.Tensor,
 ])
 
+# Ensure aten.silu_backward is preserved as a native ATen op in compiled
+# training graphs rather than decomposed into individual arithmetic operations,
+# allowing TorchTPU to execute the precision-optimized native lowering directly
+# in BF16.
+if hasattr(torch.ops.aten, "silu_backward"):
+  for _silu_bwd_op in (
+      torch.ops.aten.silu_backward,
+      torch.ops.aten.silu_backward.default,
+      torch.ops.aten.silu_backward.grad_input,
+  ):
+    _TPU_DECOMPOSITIONS.pop(_silu_bwd_op, None)
+
+
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
 
 

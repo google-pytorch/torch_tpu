@@ -88,6 +88,10 @@ absl::Status UnaryOpOut(const at::Tensor& self, at::Tensor& out,
 at::Tensor AtenRelu(const at::Tensor& self);
 at::Tensor& AtenRelu_(at::Tensor& self);
 
+at::Tensor& AtenSiluBackwardGradInput(const at::Tensor& grad_output,
+                                      const at::Tensor& self,
+                                      at::Tensor& grad_input);
+
 // go/keep-sorted start
 TT_DECLARE_ATEN_UNARY_OUT(AtenAbs);
 TT_DECLARE_ATEN_UNARY_OUT(AtenAcos);
