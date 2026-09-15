@@ -152,9 +152,15 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
   }
   // materialize.cc and events_queue.h will respect OpSplitMode, even with
   // MaterializationMode::kFullGraph.
+  // In DeferNever, we don't block on materialization, we initiate and continue.
+  // In DeferNeverAndLaunchBlocking, we first block until the materialization is
+  // started, and then block on its completion.
+  const MaterializationBlockMode block_mode =
+      block ? MaterializationBlockMode::kBlockUntilStarted
+            : MaterializationBlockMode::kNonBlocking;
   TT_RETURN_IF_ERROR(Materialize(device_buffer_list,
                                  MaterializationReason::kDebugMode,
-                                 MaterializationMode::kFullGraph));
+                                 MaterializationMode::kFullGraph, block_mode));
   if (block) {
     return device_buffer_list->Synchronize();
   }
@@ -189,10 +195,10 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
     // Record the deferred op and detect any repetitions.
     // If a repetition is detected, materialize the current stream.
     if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
-      TT_RETURN_IF_ERROR(
-          MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
-                                   GetRepeatedOpsMaterializationMode())
-              .Await());
+      // Start a background materialization of the current stream; don't
+      // wait for it to complete.
+      MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
+                               GetRepeatedOpsMaterializationMode());
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);

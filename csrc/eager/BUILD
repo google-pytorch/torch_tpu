@@ -278,11 +278,13 @@ torch_tpu_cc_library(
     deps = [
         ":device_buffer",
         ":eager_mode",
+        ":events_queue",
         ":materialize",
         ":op_dispatcher",
         ":structured_log_buffer",
         ":tensor_to_buffer",
         "//csrc/common:cache_key",
+        "//csrc/common:context_states",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/ops:op_builder_utils",

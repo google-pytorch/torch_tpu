@@ -597,7 +597,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     // Get the deferred op we need to build.
     const auto maybe_deferred_op = node->deferred_op();
     TT_RET_CHECK(maybe_deferred_op, error::kInternal)
-        << "DeviceBufferList in execution_order has no deferred op";
+        << "in execution_order, a DeviceBufferList has no deferred op";
     const DeferredOp& deferred_op = *maybe_deferred_op;
 
     // Get the MlirOps for all inputs.

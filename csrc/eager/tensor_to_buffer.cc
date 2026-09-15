@@ -601,7 +601,8 @@ c10::DataPtr MakeDataPtr(DeviceBufferRef buffer_ref, const int device_idx) {
 }
 
 absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
-    const at::Tensor& tensor, MaterializationReason reason) {
+    const at::Tensor& tensor, MaterializationReason reason,
+    MaterializationBlockMode block_mode) {
   tsl::profiler::TraceMe trace("MaterializeAndReturn");
   // If the tensor is a (non-trivial) view, these will be two different
   // buffers. If the tensor's base is the same shape and layout as the tensor,
@@ -612,18 +613,29 @@ absl::StatusOr<DeviceBufferRef> MaterializeAndReturn(
   if (base_buffer_ref.device_index() != view_buffer_ref.device_index() ||
       base_buffer_ref.stream_id() != view_buffer_ref.stream_id()) {
     // The base and view were created on different streams, but the implied
-    // dependency forces the base buffer to materialize first.
-    TT_RETURN_IF_ERROR(
-        Materialize(base_buffer_ref, reason, MaterializationMode::kSplitGraph));
-    TT_RETURN_IF_ERROR(
-        Materialize(view_buffer_ref, reason, MaterializationMode::kSplitGraph));
+    // dependency forces the base buffer to materialize first. Block until the
+    // base buffer has been enqueued to avoid scheduling the view buffer before
+    // its input.
+    //
+    // Note: in most cases, the materialization on exiting the prior stream
+    // will have already forced the base buffer to materialize and this will
+    // be a no-op. But exceptions are possible (such as in a
+    // one-stream-per-thread setup).
+    if (!base_buffer_ref.is_materializing()) {
+      TT_RETURN_IF_ERROR(
+          Materialize(base_buffer_ref, reason, MaterializationMode::kSplitGraph,
+                      MaterializationBlockMode::kBlockUntilStarted));
+    }
+    TT_RETURN_IF_ERROR(Materialize(
+        view_buffer_ref, reason, MaterializationMode::kSplitGraph, block_mode));
   } else {
     // Deduplication will happen inside the Materialize() call; this will cover
     // the case where a tensor is a trivial view.
     // If the view is not trivial but the base and view are on the same stream,
     // we can materialize them jointly.
     TT_RETURN_IF_ERROR(Materialize({base_buffer_ref, view_buffer_ref}, reason,
-                                   MaterializationMode::kSplitGraph));
+                                   MaterializationMode::kSplitGraph,
+                                   block_mode));
   }
 
   return view_buffer_ref;

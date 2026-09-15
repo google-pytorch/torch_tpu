@@ -45,6 +45,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:error_utils",
         "//csrc/eager:device_buffer",
+        "//csrc/eager:events_queue",
         "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",

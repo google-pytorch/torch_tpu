@@ -8231,7 +8231,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     """
     t, k, feat = 8, 4, 6
     ids = (torch.arange(t * k) % t).to("tpu")
-    src = torch.ones(t * k, feat, device="tpu")
+    src = torch.ones(t * k, feat, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
         execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
@@ -14740,7 +14740,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     131072 individual elements.
     """
     mask = (torch.arange(2048).reshape(1, 2048, 1) % 2 == 0).to("tpu")
-    source = torch.ones(1024, 64, device="tpu")
+    source = torch.ones(1024, 64, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
         execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
@@ -14762,7 +14762,7 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     detection from widening to masks it must not fold.
     """
     mask = (torch.arange(2048 * 64).reshape(1, 2048, 64) % 2 == 0).to("tpu")
-    source = torch.ones(65536, device="tpu")
+    source = torch.ones(65536, device="cpu").to("tpu")
     with execution_mode.set_eager_mode(
         execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):

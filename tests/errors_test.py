@@ -8996,7 +8996,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else Exception
     with et.assert_raises_message(
         err_type,
-        tpu="""scaled_mm_v2(): expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
+        tpu="""scaled_mm_v2(): transfer to 'cpu' device failed with: expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
         gpu=re.compile(
             r".*For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have"
             r" 512 elements, got: 1.*",
@@ -9004,6 +9004,7 @@ Device-side assertion tracking was not enabled by user.""",
         ),
         message_reviewed_by="wan",
     ):
+      # TODO(yangzhouml): error at dispatch time instead of at compile time
       torch._scaled_mm_v2(
           mat1,
           mat2,
@@ -9015,7 +9016,7 @@ Device-side assertion tracking was not enabled by user.""",
           [1],  # SWIZZLE_32_4_4
           None,
           None,
-      )
+      ).cpu()
 
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (

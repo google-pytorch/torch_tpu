@@ -27,6 +27,7 @@
 #include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -87,8 +88,9 @@ DeviceBufferState TensorBufferHandle::state() const {
 }
 
 absl::Status TensorBufferHandle::Materialize() {
-  return torch_tpu::Materialize(impl_->buffer_ref(),
-                                MaterializationReason::kExplicitSync);
+  return torch_tpu::Materialize(
+      impl_->buffer_ref(), MaterializationReason::kExplicitSync,
+      MaterializationMode::kSplitGraph, MaterializationBlockMode::kNonBlocking);
 }
 
 absl::StatusOr<xla::PjRtBuffer* absl_nonnull>

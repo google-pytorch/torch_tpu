@@ -73,6 +73,8 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
   def test_traverse_and_compile_with_argument_layouts(self):
     x = torch.randn(2, 1, 8, 16, device=self.device, dtype=torch.bfloat16)
     y = torch.randn(2, 1, 9, 16, device=self.device, dtype=torch.bfloat16)
+    torch.accelerator.synchronize(self.device)
+
     with eager_mode_compile_fx_graph():
       z = torch.cat([x, y], dim=-2)
 
