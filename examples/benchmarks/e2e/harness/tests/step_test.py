@@ -558,6 +558,195 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     self.assertEqual(stepper_empty.num_heads, 1)
     self.assertEqual(stepper_empty.head_dim, 1)
 
+  def test_decode_stepper_base_model_output_with_past_eager(self):
+    ops = self._ops()
+
+    config = transformers.LlamaConfig(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=128,
+    )
+    if not hasattr(config, "head_dim"):
+      config.head_dim = config.hidden_size // config.num_attention_heads
+    # LlamaModel outputs BaseModelOutputWithPast (no logits field)
+    model = transformers.LlamaModel(config).to(ops.device)
+    model.eval()
+
+    prompt_len = 4
+    x = torch.randint(0, 16, (1, prompt_len), device=ops.device)
+
+    stepper = decode.decode(output_tokens=4, dynamism=True)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+
+    cache = stepper.get_cache()
+    self.assertIsInstance(cache, transformers.cache_utils.DynamicCache)
+    self.assertEqual(cache.get_seq_length(), 0)
+
+    stepper.pre_warmup_init()
+    torch.accelerator.synchronize()
+    cache = stepper.get_cache()
+    self.assertEqual(cache.get_seq_length(), prompt_len)
+    self.assertIsNotNone(stepper.next_token)
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    cache = stepper.get_cache()
+    self.assertEqual(cache.get_seq_length(), prompt_len + stepper.output_tokens)
+
+  def test_decode_unpack_output_base_model_output_variations(self):
+    ops = self._ops()
+    batch_size, seq_len, hidden_dim, vocab_size = 2, 4, 8, 16
+
+    # 1. Output with get_output_embeddings
+    stepper = decode.DecodeStepper()
+    linear_head = torch.nn.Linear(hidden_dim, vocab_size, bias=False)
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=linear_head)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    hidden = torch.randn(batch_size, seq_len, hidden_dim)
+    base_output = transformers.modeling_outputs.BaseModelOutputWithPast(
+        last_hidden_state=hidden
+    )
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    # 2. Output with lm_head
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = torch.nn.Linear(hidden_dim, vocab_size, bias=True)
+    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    # 3. Output with get_input_embeddings
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    # 4. Fallback to hidden_state
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=[])
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, hidden_dim))
+
+    # 5. Output with tied nn.Embedding from get_output_embeddings
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    # 6. Dictionary output with past_key_values and last_hidden_state
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+    dummy_cache = transformers.cache_utils.DynamicCache()
+    dict_output = {
+        "last_hidden_state": hidden,
+        "past_key_values": dummy_cache,
+    }
+    logits = stepper._unpack_output_and_update_cache(dict_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    self.assertIs(stepper.cache, dummy_cache)
+
+    # 7. Tuple output (return_dict=False) with base model hidden state
+    stepper = decode.DecodeStepper()
+    mock_config = mock.MagicMock(vocab_size=vocab_size)
+    mock_model = mock.MagicMock(spec=torch.nn.Module, config=mock_config)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+    tuple_output = (hidden, dummy_cache)
+    logits = stepper._unpack_output_and_update_cache(tuple_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    self.assertIs(stepper.cache, dummy_cache)
+
+    # 8. Output with lm_head as nn.Embedding (tied weights)
+    stepper = decode.DecodeStepper()
+    mock_model = mock.MagicMock(spec=torch.nn.Module)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = torch.nn.Embedding(vocab_size, hidden_dim)
+    mock_model.get_input_embeddings = mock.MagicMock(return_value=None)
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+
+    logits = stepper._unpack_output_and_update_cache(base_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
+    # 9. Raw torch.Tensor output already representing logits
+    stepper = decode.DecodeStepper()
+    mock_config = mock.MagicMock(vocab_size=vocab_size)
+    mock_model = mock.MagicMock(spec=torch.nn.Module, config=mock_config)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+    stepper.vocab_size = vocab_size
+    raw_logits_tensor = torch.randn(batch_size, seq_len, vocab_size)
+    logits = stepper._unpack_output_and_update_cache(raw_logits_tensor)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+    self.assertIs(logits, raw_logits_tensor)
+
+    # 10. Nested text_config with vocab_size
+    stepper = decode.DecodeStepper()
+    text_cfg = mock.MagicMock(vocab_size=vocab_size)
+    root_cfg = mock.MagicMock(text_config=text_cfg)
+    mock_model = mock.MagicMock(spec=torch.nn.Module, config=root_cfg)
+    mock_model.get_output_embeddings = mock.MagicMock(return_value=None)
+    mock_model.lm_head = None
+    mock_model.get_input_embeddings = mock.MagicMock(
+        return_value=torch.nn.Embedding(vocab_size, hidden_dim)
+    )
+    stepper._model = mock_model
+    stepper._decode_model = mock_model
+    logits = stepper._unpack_output_and_update_cache(tuple_output)
+    self.assertEqual(logits.shape, (batch_size, seq_len, vocab_size))
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -32,6 +32,21 @@ def _safe_get(obj: Any, *attr_names: str) -> Any:
   return None
 
 
+def _apply_projection(
+    module: Any, hidden_state: torch.Tensor
+) -> torch.Tensor | None:
+  """Projects hidden_state using a module or embedding weights."""
+  if module is None or hidden_state is None:
+    return None
+  if isinstance(module, torch.nn.Embedding):
+    return torch.nn.functional.linear(hidden_state, module.weight)
+  if callable(module):
+    return module(hidden_state)
+  if hasattr(module, "weight"):
+    return torch.nn.functional.linear(hidden_state, module.weight)
+  return None
+
+
 class DecodeStepper(common.BaseStepper):
 
   def __init__(self, output_tokens: int = 16, dynamism: bool = False):
@@ -43,6 +58,7 @@ class DecodeStepper(common.BaseStepper):
     self.prompt_len = None
     self.head_dim = None
     self.num_heads = None
+    self.vocab_size = None
     self.device = None
     self.dtype = None
     self.cache = None
@@ -64,6 +80,7 @@ class DecodeStepper(common.BaseStepper):
     model_config = getattr(self._model, "config")  # pytype: disable=attribute-error
     cfg = _safe_get(model_config, "text_config") or model_config
 
+    self.vocab_size = _safe_get(cfg, "vocab_size")
     num_attn_heads = (
         _safe_get(cfg, "num_attention_heads", "n_head", "num_heads") or 1
     )
@@ -129,15 +146,70 @@ class DecodeStepper(common.BaseStepper):
         **step_kwargs,
     )
 
+  def _project_hidden_state_to_logits(
+      self, hidden_state: torch.Tensor
+  ) -> torch.Tensor | None:
+    """Projects hidden_state to vocabulary logits using model output or input embeddings."""
+    if self._model is None or hidden_state is None:
+      return None
+
+    get_out = getattr(self._model, "get_output_embeddings", None)
+    out_embed = get_out() if callable(get_out) else None
+    res = _apply_projection(out_embed, hidden_state)
+    if res is not None:
+      return res
+
+    lm_head = getattr(self._model, "lm_head", None)
+    res = _apply_projection(lm_head, hidden_state)
+    if res is not None:
+      return res
+
+    get_in = getattr(self._model, "get_input_embeddings", None)
+    in_embed = get_in() if callable(get_in) else None
+    if in_embed is None:
+      in_embed = _safe_get(
+          self._model, "embed_tokens", "wte", "word_embeddings"
+      )
+    return _apply_projection(in_embed, hidden_state)
+
   def _unpack_output_and_update_cache(self, output: Any) -> torch.Tensor:
     """Extracts logits and updates self.cache from model output."""
+    vocab_size = self.vocab_size
+    if vocab_size is None and self._model is not None:
+      model_config = getattr(self._model, "config", None)
+      cfg = _safe_get(model_config, "text_config") or model_config
+      vocab_size = _safe_get(cfg, "vocab_size")
+
     if isinstance(output, (tuple, list)):
-      logits = output[0]
+      logits = output[0] if output else None
       if len(output) > 1 and isinstance(output[1], cache_utils.Cache):
         self.cache = output[1]
+      if (
+          isinstance(logits, torch.Tensor)
+          and vocab_size is not None
+          and logits.shape[-1] != vocab_size
+      ):
+        projected = self._project_hidden_state_to_logits(logits)
+        if projected is not None:
+          logits = projected
     else:
-      self.cache = getattr(output, "past_key_values", self.cache)
-      logits = getattr(output, "logits", None)
+      cache = _safe_get(output, "past_key_values")
+      if cache is not None:
+        self.cache = cache
+
+      logits = _safe_get(output, "logits")
+      if logits is None:
+        if isinstance(output, torch.Tensor):
+          if vocab_size is not None and output.shape[-1] == vocab_size:
+            logits = output
+          else:
+            projected = self._project_hidden_state_to_logits(output)
+            logits = projected if projected is not None else output
+        else:
+          hidden_state = _safe_get(output, "last_hidden_state")
+          if hidden_state is not None:
+            projected = self._project_hidden_state_to_logits(hidden_state)
+            logits = projected if projected is not None else hidden_state
 
     assert (
         logits is not None
