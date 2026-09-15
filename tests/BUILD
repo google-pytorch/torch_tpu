@@ -150,6 +150,17 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "env_utils_test",
+    srcs = ["env_utils_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "env_vars_test",
     srcs = ["env_vars_test.py"],
     notest_oss = "subprocess spawning to set env vars timeout in oss",

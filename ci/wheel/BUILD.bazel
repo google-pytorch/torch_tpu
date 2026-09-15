@@ -132,6 +132,7 @@ torch_tpu_py_library(
         # fail without this in the wheel build.
         "//src/torch_tpu/_internal/utils:test_utils",
         "//src/torch_tpu/_internal/utils:tracer_utils",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/ops",
         "//src/torch_tpu/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
         "//src/torch_tpu/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",

@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build_files:build_defs.bzl", "torch_tpu_package_end")
+load(
+    "//build_files:build_defs.bzl",
+    "torch_tpu_package_end",
+    "torch_tpu_py_library",
+)
 load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 licenses(["notice"])
@@ -70,6 +74,11 @@ pybind_extension(
         "@com_google_absl//absl/flags:flag",
         "@xla//xla/pjrt:pjrt_client",
     ],
+)
+
+torch_tpu_py_library(
+    name = "env_utils",
+    srcs = ["env_utils.py"],
 )
 
 torch_tpu_package_end()
