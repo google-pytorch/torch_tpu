@@ -18,17 +18,29 @@ on:
   pull_request:
     types: [closed]
 
-permissions:
-  actions: write
-  contents: read
+permissions: {}
 
 jobs:
   cancel_runs:
     name: Cancel In-flight PR Runs
     runs-on: ubuntu-latest
+    permissions:
+      actions: write  # Cancel workflow runs.
     steps:
+      # Closing a PR creates a fresh batch of `pull_request` runs on the head
+      # branch at the same instant as this one. Most of them are gated off and
+      # settle as `skipped` within 7-18s, but the Mergify action lists runs ~5s
+      # in and POSTs /cancel a couple of seconds later, so it races them and
+      # dies on a 409. Wait for that batch to finalize first.
+      #
+      # 15s clears it with margin. Do not raise this much past 20s: the
+      # `GitHub Actions Scan` run is also a cancellation target and finishes on
+      # its own 21-65s in, so a longer wait just races that one instead.
+      - name: Wait for PR-closure actions to finalize
+        run: sleep 15
+
       - name: Cancel runs using upstream Mergify action
-        uses: Mergifyio/gha-cancel-workflow-runs-on-pr-close@b6f38e95a59c8a14403d9a77da0908dbe2d78136  # v1.0.0
+        uses: Mergifyio/gha-cancel-workflow-runs-on-pr-close@b6f38e95a59c8a14403d9a77da0908dbe2d78136  # 1.0.0
 
   cleanup_runs:
     name: Delete Cancelled PR Runs
@@ -38,9 +50,14 @@ jobs:
     # `always()` so cleanup still runs to delete any already-cancelled runs even
     # if the upstream cancellation job encountered an error.
     if: always()
+    permissions:
+      actions: write  # Delete workflow runs.
+      contents: read  # Check out delete_cancelled_pr_runs.py.
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Delete cancelled PR runs
         env:
