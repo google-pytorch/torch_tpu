@@ -187,6 +187,16 @@ class EagerLikeFxInterpreter(torch.fx.Interpreter):
       logging.warning("Failed to set func code to node source locations: %s", e)
     return
 
+  @contextlib.contextmanager
+  def _set_current_node(self, node: torch.fx.Node):
+    """No-op override to prevent mutating process-global FX metadata.
+
+    The base interpreter sets `torch.fx.traceback.current_meta`, which is a
+    process-global dictionary. Overriding this prevents background compilation
+    workers from corrupting autograd traceback state on the main thread.
+    """
+    yield
+
   def run_node(self, node) -> Any:
     """(Override) Run a single node in the FX graph, adding source locations."""
 

@@ -175,7 +175,12 @@ class ResolutionCanary:
 
 
 def _reset() -> None:
-  """Resets torch compiler, dynamo, inductor codecache, and AOTAutograd cache."""
+  """Resets compiler, dynamo, inductor, and AOTAutograd caches."""
+  if (
+      hasattr(torch.fx, "traceback")
+      and getattr(torch.fx.traceback, "current_meta", None) is not None
+  ):
+    torch.fx.traceback.current_meta.clear()
   torch.compiler.reset()
   torch.tpu._clear_cache()
   torch._dynamo.reset()
@@ -319,6 +324,42 @@ class AsyncCompileTest(seed_test_utils.RepeatableTest):
         warmup_inputs,
         no_grad=False,
     )
+
+    x = torch.randn(4, 8, device="tpu", requires_grad=True)
+    out = compiled(x)
+    loss = out.sum()
+    loss.backward()
+
+    self.assertIsNotNone(x.grad)
+    self.assertIsNotNone(model.w.grad)
+    self.assertEqual(x.grad.shape, (4, 8))
+    self.assertEqual(model.w.grad.shape, (8, 8))
+
+  def test_async_compile_autograd_overlap_traceback_isolation(self):
+    """Verifies autograd overlap preserves FX traceback metadata."""
+    model = TrainableModel()
+    warmup_inputs = [
+        (torch.randn(2, 8, device="tpu", requires_grad=True),),
+        (torch.randn(4, 8, device="tpu", requires_grad=True),),
+    ]
+
+    try:
+      # Pre-set autograd traceback state to simulate active autograd context.
+      torch.fx.traceback.should_preserve_node_meta = True
+      torch.fx.traceback.set_grad_fn_seq_nr(1)
+      # Compiling warmup inputs asynchronously in background threads must not
+      # corrupt current_meta or wipe in_grad_fn.
+      compiled = tpu_compile.async_compile(
+          model,
+          warmup_inputs,
+          no_grad=False,
+      )
+      # Resetting the grad_fn_seq_nr must succeed without AssertionError.
+      torch.fx.traceback.reset_grad_fn_seq_nr()
+    finally:
+      torch.fx.traceback.should_preserve_node_meta = False
+      if getattr(torch.fx.traceback, "current_meta", None) is not None:
+        torch.fx.traceback.current_meta.clear()
 
     x = torch.randn(4, 8, device="tpu", requires_grad=True)
     out = compiled(x)
