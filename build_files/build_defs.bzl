@@ -1213,6 +1213,10 @@ def torch_tpu_py_test(
                 tags = result.build_test_tags,
             )
 
+        target_kwargs = dict(kwargs)
+        if is_oss() and "requires-tpu-v5lite" in target_tags and target_kwargs.get("shard_count", 1) > 28:
+            target_kwargs["shard_count"] = 28
+
         rule(
             name = target_name,
             srcs = srcs,
@@ -1222,7 +1226,7 @@ def torch_tpu_py_test(
             deps = all_deps,
             env = test_env,
             tags = target_tags,
-            **kwargs
+            **target_kwargs
         )
 
 # Enable build_cleaner to clean up deps for torch_tpu_py_test.

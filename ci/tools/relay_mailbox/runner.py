@@ -203,6 +203,16 @@ class LocalRunner:
       env["TEST_TMPDIR"] = str(workdir / "tmp")
       (workdir / "tmp").mkdir(parents=True, exist_ok=True)
 
+      cmd_str = " ".join(item.argv)
+      if "env_vars_test" not in cmd_str and "cache_test" not in cmd_str:
+        cache_dir = pathlib.Path(DEFAULT_ROOT) / "compilation_cache"
+        try:
+          cache_dir.mkdir(parents=True, exist_ok=True)
+          cache_dir.chmod(0o777)
+        except OSError:
+          pass
+        env.setdefault("TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT", str(cache_dir))
+
       libtpu = list(base.glob("rules_python*libtpu/site-packages/libtpu/libtpu.so"))
       if libtpu and "TPU_LIBRARY_PATH" not in env:
         env["TPU_LIBRARY_PATH"] = str(libtpu[0])

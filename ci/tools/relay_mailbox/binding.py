@@ -23,6 +23,7 @@ already knows which chip it owns.
 
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import random
 import time
@@ -79,15 +80,21 @@ class FleetRegistry:
       TPU names, in arbitrary order.
     """
     now = self._time_fn()
-    names = []
-    for path in self._client.list(protocol.FLEET_PREFIX):
+    paths = self._client.list(protocol.FLEET_PREFIX)
+    if not paths:
+      return []
+
+    def _check(path: str) -> str | None:
       blob = self._client.get(path)
       if blob is None:
-        continue
+        return None
       entry = protocol.FleetEntry.decode(blob.json())
       if entry.is_available(now):
-        names.append(entry.tpu)
-    return names
+        return entry.tpu
+      return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+      return [tpu for tpu in executor.map(_check, paths) if tpu]
 
 
 class Binder:
