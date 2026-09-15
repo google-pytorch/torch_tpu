@@ -3754,7 +3754,6 @@ class TestOps(op_testing.OpInfoTestBase):
             torch.uint8,
             torch.int8,
             torch.int16,
-            torch.int32,
         )
         + COMPLEX_DTYPES,
     )
