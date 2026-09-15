@@ -1407,6 +1407,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "sparse_gather_backward";
     case OpName::kSparseIota:
       return "sparse_iota";
+    case OpName::kSparseMapRow:
+      return "sparse_map_row";
     case OpName::kSplitWithSizesCopyOut:
       return "split_with_sizes_copy.out";
     case OpName::kSqrtOut:

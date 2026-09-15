@@ -22,43 +22,6 @@ INT_MAX = 2**31 - 1
 PAD_WIDTH = 8
 
 
-_SPARSECORE_SUPPORTED: bool | None = None
-
-
-def is_sparsecore_supported() -> bool:
-  """Returns True if the current device environment supports SparseCore."""
-  global _SPARSECORE_SUPPORTED
-  if _SPARSECORE_SUPPORTED is not None:
-    return _SPARSECORE_SUPPORTED
-
-  if not torch.accelerator.is_available():
-    _SPARSECORE_SUPPORTED = False
-    return False
-
-  try:
-    from torch_tpu._internal.device import _device_ops_backend
-
-    _ = torch.zeros(1, device="tpu")
-    attrs = _device_ops_backend._get_local_device_attributes()
-    kind = attrs.get("device_kind", "")
-    if not kind.startswith("TPU v7"):
-      _SPARSECORE_SUPPORTED = False
-      return False
-    _SPARSECORE_SUPPORTED = True
-    return True
-  except Exception:
-    pass
-
-  try:
-    rp = torch.tensor([0, 8], dtype=torch.int32, device="tpu")
-    torch.ops.tpu.sparse_iota(rp, max_non_zeroes=8, max_non_zeroes_per_row=8)
-    _SPARSECORE_SUPPORTED = True
-    return True
-  except Exception:
-    _SPARSECORE_SUPPORTED = False
-    return False
-
-
 def compute_expected_sparse_iota(
     row_sizes: list[int],
     pad_size: int,
@@ -81,10 +44,6 @@ def compute_expected_sparse_iota(
 
 class SparseIotaTest(op_testing.TorchTpuTestBase):
   """Tests for sparse_iota op on TPU SparseCore."""
-
-  def _skip_if_sparsecore_unsupported(self) -> None:
-    if not is_sparsecore_supported():
-      self.skipTest("SparseCore is not supported on this TPU device.")
 
   def _get_inputs(self, device: torch.device):
     row_sizes = [7, 14, 20, 0, 24, 0, 13, 0]

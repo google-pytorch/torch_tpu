@@ -3039,6 +3039,105 @@ module {
     ):
       torch.ops.tpu.sparse_iota(row_pointers, 2048, 0)
 
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_no_csr_tensors(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected at least 1 CSR tensor, got 0""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_no_csr_lengths(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected at least 1 entry in csr_lengths, got 0""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_csr_lengths_sum_mismatch(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected the sum of csr_lengths (2) to equal the number of CSR tensors, got 1""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [2], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_invalid_result_row_pointer_op_index(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected result_row_pointer_op_index to be between 0 and 0, got 1""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 1
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_invalid_max_non_zeroes_per_row(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected max_non_zeroes_per_row to be greater than 0, got 0""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [1], [], "mlir", [dummy], 0, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_empty_body_mlir(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected a non-empty body MLIR module, got an empty string""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [1], [], "", [dummy], 16, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_no_dummy_outputs(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): expected at least 1 dummy output tensor, got 0""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [1], [], "mlir", [], 16, 0, 8, 0.5, 0
+      )
+
+  @et.why_tpu_only("Custom op sparse_map_row is TPU only.")
+  def test_sparse_map_row_unsupported_device_without_sparse_core(self):
+    device = et.device()
+    dummy = torch.empty(8, dtype=torch.int32, device=device)
+
+    # Valid inputs executed on a TPU device without SparseCore support
+    # (e.g., TPU v5 lite) should raise an error.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""sparse_map_row(): sparse_map_row requires a TPU device with SparseCore support""",
+    ):
+      torch.ops.tpu.sparse_map_row(
+          [dummy], [1], [], "mlir", [dummy], 16, 0, 8, 0.5, 0
+      )
+
   @et.why_tpu_only("TPU-specific C++ kernel argument validation")
   def test_scaled_mm_v2_invalid_contraction_dim_size(self):
     (

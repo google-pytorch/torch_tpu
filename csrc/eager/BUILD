@@ -742,6 +742,7 @@ torch_tpu_cc_library(
         "//csrc/ops/experimental/sparse_dense_matmul:sparse_dense_matmul_gradient_stack",
         "//csrc/ops/experimental/sparse_gather",
         "//csrc/ops/experimental/sparse_iota",
+        "//csrc/ops/experimental/sparse_map_row",
         "//csrc/ops/exponential:exponential_aten_kernels",
         "//csrc/ops/eye:eye_aten_kernels",
         "//csrc/ops/fake_quantize:fake_quantize_aten_kernels",

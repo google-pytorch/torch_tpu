@@ -23,51 +23,6 @@ from tests import seed_test_utils
 PAD_WIDTH = 8
 INT_MAX = 2**31 - 1
 
-_SPARSECORE_SUPPORTED: bool | None = None
-
-
-def is_sparsecore_supported() -> bool:
-  """Returns True if the current device environment supports SparseCore."""
-  global _SPARSECORE_SUPPORTED
-  if _SPARSECORE_SUPPORTED is not None:
-    return _SPARSECORE_SUPPORTED
-
-  if not torch.accelerator.is_available():
-    _SPARSECORE_SUPPORTED = False
-    return False
-
-  try:
-    from torch_tpu._internal.device import _device_ops_backend
-
-    _ = torch.zeros(1, device="tpu")
-    attrs = _device_ops_backend._get_local_device_attributes()
-    kind = attrs.get("device_kind", "")
-    if not kind.startswith("TPU v7"):
-      _SPARSECORE_SUPPORTED = False
-      return False
-    _SPARSECORE_SUPPORTED = True
-    return True
-  except Exception:
-    pass
-
-  # Fallback: probe sparse_gather op directly on a minimal input.
-  try:
-    rp = torch.tensor([0, 8], dtype=torch.int32, device="tpu")
-    idx = torch.full((16,), INT_MAX, dtype=torch.int32, device="tpu")
-    op = torch.zeros((1, 8), dtype=torch.float32, device="tpu")
-    torch.ops.tpu.sparse_gather(rp, idx, op, max_non_zeroes_per_row=8)
-    _SPARSECORE_SUPPORTED = True
-    return True
-  except RuntimeError as e:
-    if "SparseCore support" in str(e):
-      _SPARSECORE_SUPPORTED = False
-      return False
-    _SPARSECORE_SUPPORTED = False
-    return False
-  except Exception:
-    _SPARSECORE_SUPPORTED = False
-    return False
-
 
 def pad_length(arr: list[int]) -> list[int]:
   """Pads the array to the nearest multiple of PAD_WIDTH."""
@@ -158,10 +113,6 @@ class SparseGatherTest(op_testing.TorchTpuTestBase):
     if not torch.accelerator.is_available():
       self.skipTest("TPU accelerator not available in this test environment.")
     torch._dynamo.reset()
-
-  def _skip_if_sparsecore_unsupported(self) -> None:
-    if not is_sparsecore_supported():
-      self.skipTest("SparseCore is not supported on this TPU device.")
 
   def _get_inputs(
       self,

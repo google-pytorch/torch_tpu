@@ -715,6 +715,7 @@ enum class OpName {
   kSparseGather,
   kSparseGatherBackward,
   kSparseIota,
+  kSparseMapRow,
   kSplitWithSizesCopyOut,
   kSqrtOut,
   kStdCorrection,
@@ -822,6 +823,7 @@ inline std::ostream& operator<<(std::ostream& os, const OpName op_name) {
     case OpName::kSparseDenseMatmulGradientStack:
     case OpName::kSparseGather:
     case OpName::kSparseIota:
+    case OpName::kSparseMapRow:
       return true;
     default:
       return false;

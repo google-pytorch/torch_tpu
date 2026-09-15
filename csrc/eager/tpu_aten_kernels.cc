@@ -97,6 +97,7 @@
 #include "csrc/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_gradient_stack_aten_kernels.h"
 #include "csrc/ops/experimental/sparse_gather/sparse_gather_aten_kernels.h"
 #include "csrc/ops/experimental/sparse_iota/sparse_iota_aten_kernels.h"
+#include "csrc/ops/experimental/sparse_map_row/sparse_map_row_aten_kernels.h"
 #include "csrc/ops/exponential/exponential_aten_kernels.h"
 #include "csrc/ops/eye/eye_aten_kernels.h"
 #include "csrc/ops/fake_quantize/fake_quantize_aten_kernels.h"
@@ -1310,6 +1311,11 @@ TORCH_LIBRARY(tpu, m) {
   m.def(
       "sparse_dense_matmul_gradient_stack(Tensor[] unstacked_gradients, int "
       "stacked_batch_size, int stacked_feature_dim) -> Tensor");
+  m.def(
+      "sparse_map_row(Tensor[] csr_tensors, int[] csr_lengths, Tensor[] "
+      "dense_args, str body_mlir, Tensor[] dummy_outputs, int "
+      "max_non_zeroes_per_row, int pad_value, int max_pad_per_row, float "
+      "wait_threshold, int result_row_pointer_op_index) -> Tensor[]");
 }
 
 // Registers meta implementations for torch.ops.tpu ops.
@@ -1430,6 +1436,27 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
             unstacked_gradients, stacked_batch_size, stacked_feature_dim));
         return at::empty({stacked_batch_size, stacked_feature_dim},
                          unstacked_gradients[0].options());
+      });
+  ImplExperimental<OpName::kSparseMapRow>(
+      m,
+      +[](const std::vector<at::Tensor>& csr_tensors,
+          at::IntArrayRef csr_lengths,
+          const std::vector<at::Tensor>& dense_args, std::string_view body_mlir,
+          const std::vector<at::Tensor>& dummy_outputs,
+          int64_t max_non_zeroes_per_row, int64_t /*pad_value*/,
+          int64_t /*max_pad_per_row*/, double /*wait_threshold*/,
+          int64_t result_row_pointer_op_index) -> std::vector<at::Tensor> {
+        TT_THROW_IF_ERROR(ValidateSparseMapRowInputs(
+            csr_tensors, csr_lengths, dense_args, body_mlir, dummy_outputs,
+            max_non_zeroes_per_row, result_row_pointer_op_index));
+        std::vector<at::Tensor> results;
+        results.reserve(dummy_outputs.size());
+        for (const auto& dummy : dummy_outputs) {
+          results.push_back(
+              at::empty(dummy.sizes(),
+                        csr_tensors[0].options().dtype(dummy.scalar_type())));
+        }
+        return results;
       });
   ImplExperimental<OpName::kSparseDenseMatmulGradWithSgd>(
       m,
@@ -1556,6 +1583,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
       m, AtenSparseDenseMatmulActivationUnstack);
   ImplExperimental<OpName::kSparseDenseMatmulGradientStack>(
       m, AtenSparseDenseMatmulGradientStack);
+  ImplExperimental<OpName::kSparseMapRow>(m, AtenSparseMapRow);
 }
 
 // Registers custom autograd for torch.ops.tpu ops.

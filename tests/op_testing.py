@@ -3380,6 +3380,42 @@ def _compiled_supports_op(
   return key not in compiled_deny_list
 
 
+_SPARSECORE_UNSUPPORTED_DEVICE_KINDS = frozenset({
+    "TPU v5 lite",
+    "TPU v5e",
+    "TPU v4",
+    "TPU v4 lite",
+    "TPU v3",
+    "TPU v2",
+    "cpu",
+    "",
+})
+_SPARSECORE_SUPPORTED: bool | None = None
+
+
+def is_sparsecore_supported() -> bool:
+  """Returns True if the current device environment supports SparseCore."""
+  global _SPARSECORE_SUPPORTED
+  if _SPARSECORE_SUPPORTED is not None:
+    return _SPARSECORE_SUPPORTED
+
+  if not torch.accelerator.is_available():
+    _SPARSECORE_SUPPORTED = False
+    return False
+
+  try:
+    from torch_tpu._internal.device import _device_ops_backend  # pylint: disable=g-import-not-at-top
+
+    _ = torch.zeros(1, device="tpu")
+    attrs = _device_ops_backend._get_local_device_attributes()
+    kind = attrs.get("device_kind", "")
+    _SPARSECORE_SUPPORTED = kind not in _SPARSECORE_UNSUPPORTED_DEVICE_KINDS
+    return _SPARSECORE_SUPPORTED
+  except Exception:  # pylint: disable=broad-exception-caught
+    _SPARSECORE_SUPPORTED = False
+    return False
+
+
 class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   """Base class for TorchTPU tests."""
 
@@ -3390,6 +3426,10 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
   tpu_gpu_accuracy_overrides: AccuracyOverrides
   grad_accuracy_overrides: AccuracyOverrides
   grad_gpu_accuracy_overrides: AccuracyOverrides
+
+  def _skip_if_sparsecore_unsupported(self) -> None:
+    if not is_sparsecore_supported():
+      self.skipTest("SparseCore is not supported on this TPU device.")
 
   def setUp(self) -> None:
     super().setUp()

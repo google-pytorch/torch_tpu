@@ -293,6 +293,7 @@ torch_tpu_py_library(
         "//shims/torch:testing_internal",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compiler_options",
+        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils",
         "//src/torch_tpu/_internal/utils:test_utils",
         "@pypi//pyyaml",
@@ -994,7 +995,6 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "@pypi//numpy",
     ],
 )
@@ -1017,8 +1017,30 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "sparse_map_row_test",
+    srcs = ["sparse_map_row_test.py"],
+    main = "sparse_map_row_test.py",
+    notap = "Requires SparseCore accelerator",
+    oss_presubmit_tpu_generation = tpu_gen(
+        "v7",
+        reason = "Requires SparseCore accelerator",
+    ),
+    tags = [
+        "requires-tpu-v7x",
+    ],
+    deps = [
+        ":op_testing",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/export",
     ],
 )
 
