@@ -297,8 +297,13 @@ if [[ -n "$CLI_SHA" && "$CLI_NO_REPORT" == "false" ]]; then
   _STATUS_POSTED=true
 fi
 
-BAZEL_ARGS=(
-  "test"
+BAZEL_ARGS=("test")
+
+if [[ -n "$CLI_BAZEL_CONFIG" ]]; then
+  BAZEL_ARGS+=("--config=${CLI_BAZEL_CONFIG}")
+fi
+
+BAZEL_ARGS+=(
   "--test_env=TORCH_TPU_RELAY_BUCKET=${CLI_BUCKET}"
   "--run_under=//ci/tools/relay_mailbox:worker_main"
   "--test_timeout=${CLI_TEST_TIMEOUT}"
@@ -307,10 +312,6 @@ BAZEL_ARGS=(
   "--test_output=errors"
   "--nocache_test_results"
 )
-
-if [[ -n "$CLI_BAZEL_CONFIG" ]]; then
-  BAZEL_ARGS+=("--config=${CLI_BAZEL_CONFIG}")
-fi
 
 if [[ ${#CLI_BAZEL_FLAGS[@]} -gt 0 ]]; then
   BAZEL_ARGS+=("${CLI_BAZEL_FLAGS[@]}")

@@ -218,5 +218,27 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
     self.assertIn("Unknown argument: --bad-flag", res.stderr)
 
 
+  def test_config_flag_precedes_jobs_flags_in_scripts(self):
+    for script_name in ["mailbox_bazel_test.sh", "mailbox_presubmit_pr.sh"]:
+      script_path = os.path.join(REPO_ROOT, "scripts", script_name)
+      with open(script_path) as f:
+        body = f.read()
+      config_idx = body.find("--config=${CLI_BAZEL_CONFIG}")
+      jobs_idx = body.find("--jobs=${CLI_JOBS}")
+      local_jobs_idx = body.find("--local_test_jobs=${CLI_JOBS}")
+      self.assertGreater(config_idx, 0, f"--config missing in {script_name}")
+      self.assertGreater(jobs_idx, config_idx, f"--jobs must follow --config in {script_name}")
+      self.assertGreater(local_jobs_idx, config_idx, f"--local_test_jobs must follow --config in {script_name}")
+
+  def test_stage_timing_breakdown_in_mailbox_bazel_test(self):
+    script_path = os.path.join(REPO_ROOT, "scripts", "mailbox_bazel_test.sh")
+    with open(script_path) as f:
+      body = f.read()
+    self.assertIn("=== Stage Timing Breakdown ===", body)
+    self.assertIn("FLEET_CHECK_ELAPSED", body)
+    self.assertIn("QUERY_ELAPSED", body)
+    self.assertIn("BAZEL_CRITICAL_PATH", body)
+
+
 if __name__ == "__main__":
   unittest.main()

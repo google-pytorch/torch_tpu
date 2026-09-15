@@ -156,12 +156,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+SCRIPT_START_TIME=$(date +%s)
 NOW_TAG="$(date -u +%Y%m%d_%H%M%SZ)"
 if [[ -z "$CLI_OUTPUT_DIR" ]]; then
   CLI_OUTPUT_DIR="${REPO_ROOT}/mailbox_reports/test_${NOW_TAG}"
 fi
 mkdir -p "$CLI_OUTPUT_DIR"
 
+FLEET_CHECK_START=$(date +%s)
 log "Checking fleet status in gs://${CLI_BUCKET}/fleet/..."
 FLEET_COUNT=$(gcloud storage ls "gs://${CLI_BUCKET}/fleet/" 2>/dev/null | grep -c '\.json$' || true)
 if [[ "$FLEET_COUNT" -eq 0 ]]; then
@@ -169,7 +171,10 @@ if [[ "$FLEET_COUNT" -eq 0 ]]; then
 else
   log "Found ${FLEET_COUNT} registered TPU VM(s) in fleet."
 fi
+FLEET_CHECK_END=$(date +%s)
+FLEET_CHECK_ELAPSED=$((FLEET_CHECK_END - FLEET_CHECK_START))
 
+QUERY_START=$(date +%s)
 RESOLVED_TARGETS=()
 
 if [[ ${#CLI_TARGETS[@]} -gt 0 ]]; then
@@ -227,6 +232,9 @@ for tgt in "${RESOLVED_TARGETS[@]}"; do
   FINAL_TARGETS+=("$tgt")
 done
 
+QUERY_END=$(date +%s)
+QUERY_ELAPSED=$((QUERY_END - QUERY_START))
+
 TARGET_COUNT="${#FINAL_TARGETS[@]}"
 log "Resolved ${TARGET_COUNT} target(s) to execute."
 
@@ -244,8 +252,13 @@ if [[ "$CLI_DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-BAZEL_ARGS=(
-  "test"
+BAZEL_ARGS=("test")
+
+if [[ -n "$CLI_BAZEL_CONFIG" ]]; then
+  BAZEL_ARGS+=("--config=${CLI_BAZEL_CONFIG}")
+fi
+
+BAZEL_ARGS+=(
   "--test_env=TORCH_TPU_RELAY_BUCKET=${CLI_BUCKET}"
   "--run_under=//ci/tools/relay_mailbox:worker_main"
   "--test_timeout=${CLI_TEST_TIMEOUT}"
@@ -254,10 +267,6 @@ BAZEL_ARGS=(
   "--test_output=errors"
   "--nocache_test_results"
 )
-
-if [[ -n "$CLI_BAZEL_CONFIG" ]]; then
-  BAZEL_ARGS+=("--config=${CLI_BAZEL_CONFIG}")
-fi
 
 if [[ ${#CLI_BAZEL_FLAGS[@]} -gt 0 ]]; then
   BAZEL_ARGS+=("${CLI_BAZEL_FLAGS[@]}")
@@ -278,17 +287,31 @@ set -e
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
+TOTAL_ELAPSED=$((END_TIME - SCRIPT_START_TIME))
+
+BAZEL_CRITICAL_PATH="N/A"
+if [[ -f "$LOG_FILE" ]]; then
+  CRIT_LINE=$(grep -E "INFO: Elapsed time: .* Critical Path:" "$LOG_FILE" | tail -n 1 || true)
+  if [[ "$CRIT_LINE" =~ Critical\ Path:\ ([0-9.]+)s ]]; then
+    BAZEL_CRITICAL_PATH="${BASH_REMATCH[1]}s"
+  fi
+fi
 
 VERDICT="PASSED"
 [[ "$BAZEL_RC" -ne 0 ]] && VERDICT="FAILED"
 
 log "Bazel execution completed in ${ELAPSED}s with verdict: ${VERDICT} (rc=${BAZEL_RC})"
+log "=== Stage Timing Breakdown ==="
+log "  1. Fleet discovery (GCS):  ${FLEET_CHECK_ELAPSED}s"
+log "  2. Target resolution:      ${QUERY_ELAPSED}s"
+log "  3. Bazel execution total:  ${ELAPSED}s (Critical path: ${BAZEL_CRITICAL_PATH})"
+log "  Total wall clock:          ${TOTAL_ELAPSED}s"
 
 cat > "$REPORT_FILE" <<RPT
 # TPU Mailbox Test Run Report
 
 **Verdict:** ${VERDICT}
-**Wall Clock Time:** ${ELAPSED}s
+**Wall Clock Time:** ${TOTAL_ELAPSED}s
 **Bucket:** \`gs://${CLI_BUCKET}\`
 **Targets Evaluated:** ${TARGET_COUNT}
 **Fleet Capacity:** ${FLEET_COUNT} chips
@@ -299,10 +322,20 @@ cat > "$REPORT_FILE" <<RPT
 | Metric | Value |
 | :--- | :--- |
 | **Status** | **${VERDICT}** |
-| **Duration** | ${ELAPSED}s |
+| **Total Duration** | ${TOTAL_ELAPSED}s |
 | **Exit Code** | ${BAZEL_RC} |
 | **Targets** | ${TARGET_COUNT} |
 | **Fleet Capacity** | ${FLEET_COUNT} chips registered |
+
+## Stage Timing Breakdown
+
+| Stage | Duration |
+| :--- | :--- |
+| **1. Fleet Discovery (GCS)** | ${FLEET_CHECK_ELAPSED}s |
+| **2. Target Resolution** | ${QUERY_ELAPSED}s |
+| **3. Bazel Execution Total** | ${ELAPSED}s |
+| **3a. Test Critical Path** | ${BAZEL_CRITICAL_PATH} |
+| **Total Wall Clock** | **${TOTAL_ELAPSED}s** |
 
 RPT
 
