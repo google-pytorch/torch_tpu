@@ -329,13 +329,6 @@ permanently held.
 
 Flagged, not fixed:
 
-- **`DEFAULT_ZONES` does not describe the fleet.** It is
-  `(europe-west4-b us-central1-a)`
-  ([`spot_tpu_fleet.sh:99`](../scripts/spot_tpu_fleet.sh#L99)) — one empty zone
-  and one real one, missing three of the four zones the 28 VMs actually live in.
-  So a plain `status` reports 8 of 28. `--zone` now works, so there is a flag
-  that fixes it, but the default is still wrong. Left alone until the full
-  reservation lands and the zone list changes anyway.
 - **ControlMaster socket path** `/tmp/tpu_cm_${ip}_22_${ssh_user}` has no local
   UID. Two users on one shared host collide on a `0600` socket. More likely now
   that GCE drivers are supported.

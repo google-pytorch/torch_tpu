@@ -98,8 +98,9 @@ Options:
   --mode MODE           shadow (default) or replacement
   --sha SHA             Commit to report against. Default: the PR's head.
   --pool DIR            Fleet session pool. Default: /tmp/tpu_pool_<user>
-  --zone ZONE           Zone to look for fleet VMs in. Repeatable.
-                        Default: europe-west4-b
+  --zone ZONE           Zone to look for fleet VMs in. Repeatable, required.
+                        Name every zone the fleet spans; naming some of them
+                        just runs on that slice.
   --jobs N              Test actions at once. Default: however many VMs
                         attached. Never set this above the VM count.
   --bazel-config NAME   Default: ci_tpu_v5_relay, which sends compile actions
@@ -188,7 +189,11 @@ parse_args() {
     *) die "--ip-mode must be auto, internal or external, got '${CLI_IP_MODE}'." ;;
   esac
 
-  [[ ${#CLI_ZONES[@]} -gt 0 ]] || CLI_ZONES=("europe-west4-b")
+  # No default zone. It used to be europe-west4-b, which is 8 of the 28 VMs, so
+  # forgetting --zone quietly ran the suite on a quarter of the fleet.
+  [[ ${#CLI_ZONES[@]} -gt 0 ]] || die "--zone is required, once per zone the
+fleet spans. Run 'scripts/spot_tpu_fleet.sh status' with no --zone and it will
+print the flags to paste."
   [[ -n "$CLI_POOL" ]] || CLI_POOL="/tmp/tpu_pool_${USER:-relay}"
 }
 

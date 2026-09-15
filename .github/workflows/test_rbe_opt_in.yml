@@ -244,7 +244,11 @@ jobs:
 
           \`\`\`bash
           git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
-          scripts/relay_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode}
+          # --zone is required and repeats. Leave it off entirely and the error
+          # names every zone the fleet is in, as flags to paste back.
+          scripts/relay_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode} \\
+            --zone europe-west4-b --zone us-south1-a \\
+            --zone us-west1-c --zone us-west4-a
           \`\`\`
 
           ${effect}

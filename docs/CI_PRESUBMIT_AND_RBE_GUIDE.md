@@ -96,7 +96,8 @@ scripts/relay_presubmit_pr.sh --pr <PR> --mode replacement --add-label \
   --zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a
 
 # See the plan without touching hardware.
-scripts/relay_presubmit_pr.sh --pr <PR> --dry-run
+scripts/relay_presubmit_pr.sh --pr <PR> --dry-run \
+  --zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a
 
 # Run presubmits with TPU v5 bypassed and nothing in its place.
 gh workflow run presubmit.yml -f bypass-tpu-v5=true
@@ -115,19 +116,22 @@ None of this needs a pull request. `relay_bazel_test.sh` takes bazel labels,
 borrows the fleet, runs, and gives the VMs back:
 
 ```bash
+# --zone is required and repeats. `spot_tpu_fleet.sh status` with no --zone
+# prints the flags for wherever the fleet is today.
+zones=(--zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a)
+
 # One target.
-scripts/relay_bazel_test.sh //tests/pallas:pallas_test \
-  --zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test "${zones[@]}"
 
 # Hunting a flake: same target, twenty times, spread across the chips.
-scripts/relay_bazel_test.sh //tests/pallas:pallas_test -- --runs_per_test=20
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test "${zones[@]}" -- --runs_per_test=20
 
 # A whole package. Patterns go through `bazel query tests(...)`, so only test
 # rules come back.
-scripts/relay_bazel_test.sh //tests/pallas/...
+scripts/relay_bazel_test.sh //tests/pallas/... "${zones[@]}"
 
 # Everything in a subtree carrying a tag.
-scripts/relay_bazel_test.sh --scope //tests/pallas/... --filter presubmit-v5
+scripts/relay_bazel_test.sh --scope //tests/pallas/... --filter presubmit-v5 "${zones[@]}"
 ```
 
 It gives the fleet back however it exits, Ctrl-C included. `--keep` leaves it
@@ -330,7 +334,9 @@ scripts/spot_tpu_fleet.sh up --size 8 --on-demand \
   --deadline-minutes 0     # 0 disables the auto-teardown deadline
 ```
 
-Check what is running with `scripts/spot_tpu_fleet.sh status --pool /tmp/tpu_pool`.
+Check what is running with `scripts/spot_tpu_fleet.sh status --pool /tmp/tpu_pool
+--zone <zone>`. Run it with no `--zone` and it refuses, but the error names every
+zone the fleet is in, formatted as flags to paste back.
 
 > [!CAUTION]
 > These VMs bill until deleted. A standing fleet is a standing cost. Tear it
@@ -371,11 +377,15 @@ Check out the PR head, then point the driver at the PR:
 ```bash
 git fetch origin pull/<PR>/head && git checkout FETCH_HEAD
 
+# --zone is required and repeats. `spot_tpu_fleet.sh status` with no --zone
+# prints the flags for wherever the fleet is today.
+zones=(--zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a)
+
 # Advisory. Reports under "TPU v5e relay (shadow)". Never blocks the PR.
-scripts/relay_presubmit_pr.sh --pr <PR> --mode shadow
+scripts/relay_presubmit_pr.sh --pr <PR> --mode shadow "${zones[@]}"
 
 # Gating. Reports under "Presubmit on linux-x86-ct5lp-224-8tpu".
-scripts/relay_presubmit_pr.sh --pr <PR> --mode replacement --add-label
+scripts/relay_presubmit_pr.sh --pr <PR> --mode replacement --add-label "${zones[@]}"
 ```
 
 What the driver does, in order:
@@ -424,7 +434,8 @@ scripts/run_presubmit_v5_relay.sh
 scripts/run_presubmit_v5_relay.sh --dry-run
 
 # Spread the suite over a fleet. Each test leases one VM for its lifetime.
-scripts/spot_tpu_fleet.sh up --size 8 --pool /tmp/tpu_pool
+# --zone is required and repeats, on up, down, attach, status and prepare.
+scripts/spot_tpu_fleet.sh up --size 8 --pool /tmp/tpu_pool --zone europe-west4-b
 scripts/run_presubmit_v5_relay.sh --session-pool=/tmp/tpu_pool --jobs 8
 scripts/spot_tpu_fleet.sh down --pool /tmp/tpu_pool --zone europe-west4-b
 

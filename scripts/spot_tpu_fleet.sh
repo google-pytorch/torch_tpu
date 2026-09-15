@@ -30,6 +30,17 @@
 #   scripts/spot_tpu_fleet.sh status [--pool DIR] [--zone ZONE]
 #   scripts/spot_tpu_fleet.sh prepare [--zone ZONE] [--name-prefix PREFIX]
 #
+# --zone is required everywhere it appears, and repeats: name every zone the
+# fleet spans. There is no default on purpose. A default goes stale as soon as
+# the fleet moves, and a short zone list does not fail -- it quietly runs on
+# that slice and reports the rest as busy or missing. Run any of these with no
+# --zone and the error prints the flags to paste:
+#
+#   scripts/spot_tpu_fleet.sh status
+#   ERROR [spot_tpu_fleet]: No --zone given. The fleet is in: --zone ...
+#
+# `detach` and `ip-mode` do not take --zone; neither one walks the fleet.
+#
 # `up` arms a detached deadline that runs `down` after --deadline-minutes, so a
 # fleet cannot outlive a crashed orchestrator. Pass 0 to turn it off. `down`
 # cancels it.
@@ -103,11 +114,11 @@ readonly DEFAULT_POOL="/tmp/torch_tpu_relay/pool"
 # widened delete.
 readonly VM_NAME_PREFIX="spot-tpu-v5e-"
 
-# Spot capacity moves around between zones, so spread the fleet rather than
-# betting the whole run on one zone having room. us-east5-a is deliberately
-# absent: rbe-tpu-oss has no v5e reservation there and every create returns
-# "Reservation not found".
-readonly DEFAULT_ZONES=("europe-west4-b" "us-central1-a")
+# There is deliberately no default zone list. One used to live here and it went
+# stale the moment the fleet moved: it named a zone that had been emptied and
+# missed three that were full. A short zone list fails quietly rather than
+# loudly -- you attach 8 of 28 VMs, or you are told the fleet is busy while 20
+# chips sit idle. require_zones() asks for the list instead of guessing at it.
 
 POOL_DIR="$DEFAULT_POOL"
 FLEET_SIZE=10
@@ -316,9 +327,41 @@ parse_args() {
     auto|internal|external) ;;
     *) die "--ip-mode must be auto, internal or external, got '$IP_MODE'." ;;
   esac
-  [[ ${#ZONES[@]} -gt 0 ]] || ZONES=("${DEFAULT_ZONES[@]}")
   REAPER_PID_FILE="${POOL_DIR}/reaper.pid"
   resolve_ip_mode
+}
+
+# The zones the fleet is actually in, one per line. `--zone=-` searches every
+# zone the project can reach, which is the only way to answer this without
+# already knowing the answer.
+discover_fleet_zones() {
+  gcloud compute tpus tpu-vm list \
+    --zone=- --project="$ALLOWED_PROJECT" \
+    --filter="name~${VM_NAME_PREFIX}" \
+    --format="value(name.segment(-3))" 2>/dev/null | sort -u
+}
+
+# Refuses to run on a guessed zone list. Every subcommand that walks the fleet
+# needs to know where it is, and getting a short list back is silent: the
+# missing VMs look like VMs that do not exist, or like VMs somebody else holds.
+# The error prints the flags to paste, so it stays right when the fleet moves.
+require_zones() {
+  [[ ${#ZONES[@]} -eq 0 ]] || return 0
+
+  local found flags="" zone
+  found="$(discover_fleet_zones)"
+  [[ -n "$found" ]] || die "No --zone given, and no ${VM_NAME_PREFIX}* VMs were
+found anywhere in ${ALLOWED_PROJECT}. Either the fleet is down, or this identity
+cannot see it. Pass --zone once per zone if you know where it is."
+
+  while read -r zone; do
+    [[ -n "$zone" ]] && flags+=" --zone ${zone}"
+  done <<<"$found"
+
+  die "No --zone given. The fleet is in:${flags}
+
+Re-run with all of those. Naming only some of them does not fail, it just runs
+on that slice of the fleet and reports the rest as busy or missing."
 }
 
 # Brings up one VM and drops its session file in the pool. Runs as a background
@@ -1011,8 +1054,10 @@ cmd_prepare() {
 
 cmd_status() {
   local zone
-  # ZONES, not DEFAULT_ZONES: parse_args already falls back to the defaults, and
-  # reading them directly here threw away --zone without saying so.
+  # require_zones guarantees this is non-empty, and guarantees it came from the
+  # caller. An earlier version read the default list here and threw --zone away
+  # without saying so, which sent anyone debugging fleet state to the wrong
+  # zones.
   for zone in "${ZONES[@]}"; do
     echo "-- ${zone}"
     gcloud compute tpus tpu-vm list \
@@ -1057,6 +1102,14 @@ main() {
     *)
       [[ "$ATTACH_NAME_PREFIX_SET" != "true" ]] \
         || die "--name-prefix only applies to 'attach' and 'prepare', not '${subcommand}'." ;;
+  esac
+
+  # `detach` works off the session files in the pool and `ip-mode` touches no
+  # hardware at all, so neither needs to know where the fleet is. Everything
+  # else walks it zone by zone and silently skips the zones it was not told
+  # about.
+  case "$subcommand" in
+    up|down|attach|prepare|status|deadline) require_zones ;;
   esac
 
   case "$subcommand" in

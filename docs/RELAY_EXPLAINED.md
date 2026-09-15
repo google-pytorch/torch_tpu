@@ -132,9 +132,10 @@ It started as a presubmit-only tool, tied to pull requests. It is not any more.
 You can run any bazel test on the fleet:
 
 ```
-scripts/relay_bazel_test.sh //tests/pallas:pallas_test
-scripts/relay_bazel_test.sh //tests/pallas:pallas_test -- --runs_per_test=20
-scripts/relay_bazel_test.sh //tests/...
+zones=(--zone europe-west4-b --zone us-south1-a --zone us-west1-c --zone us-west4-a)
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test "${zones[@]}"
+scripts/relay_bazel_test.sh //tests/pallas:pallas_test "${zones[@]}" -- --runs_per_test=20
+scripts/relay_bazel_test.sh //tests/... "${zones[@]}"
 ```
 
 It borrows the fleet, runs, and gives the machines back however it exits,

@@ -86,8 +86,9 @@ Options:
   --pool DIR            Session pool. Default: /tmp/tpu_relay_test_<user>
                         If it already holds sessions, those VMs are reused and
                         left attached on exit, because they are not ours.
-  --zone ZONE           Zone to look for fleet VMs in. Repeatable.
-                        Default: whatever spot_tpu_fleet.sh uses.
+  --zone ZONE           Zone to look for fleet VMs in. Repeatable, required.
+                        Name every zone the fleet spans; naming some of them
+                        just runs on that slice.
   --jobs N              Tests at once. Default: however many VMs attached.
                         Never set this above the VM count.
   --bazel-config NAME   Default: ci_tpu_v5_relay, which sends compile actions
@@ -174,6 +175,11 @@ parse_args() {
   if [[ ${#CLI_TARGETS[@]} -eq 0 && -z "$CLI_SCOPE" ]]; then
     die "name at least one target, or pass --scope. Try --help."
   fi
+  # spot_tpu_fleet.sh would refuse this too, but catching it here means
+  # --dry-run says so instead of printing a command that cannot run.
+  [[ ${#CLI_ZONES[@]} -gt 0 ]] || die "--zone is required, once per zone the
+fleet spans. Run 'scripts/spot_tpu_fleet.sh status' with no --zone and it will
+print the flags to paste."
 
   [[ -n "$CLI_POOL" ]] || CLI_POOL="/tmp/tpu_relay_test_${USER:-relay}"
   [[ -n "$CLI_OUTPUT_DIR" ]] \

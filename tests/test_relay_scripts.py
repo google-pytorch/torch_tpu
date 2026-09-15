@@ -1690,6 +1690,8 @@ class TestDeadlineReaperOutlivesItsParent(
             self.pool,
             "--deadline-minutes",
             "9999",
+            "--zone",
+            "europe-west4-b",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1729,6 +1731,8 @@ class TestDeadlineReaperOutlivesItsParent(
             self.pool,
             "--deadline-minutes",
             "9999",
+            "--zone",
+            "europe-west4-b",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1784,6 +1788,8 @@ class TestDeadlineReaperOutlivesItsParent(
             self.pool,
             "--deadline-minutes",
             "9999",
+            "--zone",
+            "europe-west4-b",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1803,6 +1809,8 @@ class TestDeadlineReaperOutlivesItsParent(
             self.pool,
             "--deadline-minutes",
             "9999",
+            "--zone",
+            "europe-west4-b",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -2962,6 +2970,9 @@ class RelayDriverTestCase(
         "--output-dir",
         self.out,
         "--skip-head-check",
+        # Required: the driver refuses to guess a zone list.
+        "--zone",
+        "europe-west4-b",
     ]
 
   def stub_everything(self, ip_mode="external", **relay_kwargs):
@@ -3100,7 +3111,8 @@ class TestRelayDriverPreflight(RelayDriverTestCase):
   def test_it_refuses_to_report_on_a_tree_that_is_not_the_pr_head(self):
     self.stub_everything()
     result = self.run_driver(
-        "--pr", "3730", "--pool", self.pool, "--output-dir", self.out
+        "--pr", "3730", "--pool", self.pool, "--output-dir", self.out,
+        "--zone", "europe-west4-b",
     )
     self.assertNotEqual(result.returncode, 0)
     self.assertIn("Reporting a verdict for code you did not run", result.stderr)
@@ -3255,11 +3267,17 @@ class TestRelayDriverFleetHandling(RelayDriverTestCase):
     self.assertIn("--zone us-west1-c", attach)
     self.assertIn("--zone us-west4-a", attach)
 
-  def test_it_defaults_to_europe_west4_b(self):
+  def test_it_refuses_to_run_without_a_zone(self):
+    """The old default was europe-west4-b, 8 of the 28 VMs, so forgetting
+    --zone quietly ran the suite on a quarter of the fleet."""
     self.stub_everything()
-    self.run_driver(*self.default_args())
-    attach = next(call for call in self.fleet_calls() if " attach " in call)
-    self.assertIn("--zone europe-west4-b", attach)
+    result = self.run_driver(
+        "--pr", "3730", "--pool", self.pool, "--output-dir", self.out,
+        "--skip-head-check",
+    )
+    self.assertNotEqual(result.returncode, 0)
+    self.assertIn("--zone is required", result.stderr)
+    self.assertEqual(self.fleet_calls(), [])
 
   def test_it_defaults_the_job_count_to_the_number_of_vms(self):
     """More jobs than VMs leaves tests spinning in the lease retry loop."""
@@ -3807,9 +3825,143 @@ class TestFleetStatusHonoursTheZoneFlag(FleetAttachTestCase):
     self.assertIn("-- us-south1-a", out)
     self.assertIn("-- us-west1-c", out)
 
-  def test_with_no_zone_it_still_falls_back_to_the_defaults(self):
+  def test_with_no_zone_it_refuses_rather_than_guessing(self):
     self.fake_gcloud_with_addresses([])
-    self.assertIn("-- europe-west4-b", self.status().stdout)
+    proc = self.status()
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("No --zone given", proc.stderr)
+
+
+class TestFleetRefusesToGuessZones(FleetAttachTestCase):
+  """There used to be a default zone list, and it was wrong.
+
+  `(europe-west4-b us-central1-a)`: one zone that had been emptied and three
+  real ones missing. Nothing failed. You attached 8 of the 28 VMs, ran four
+  times slower than you meant to, and were told the fleet was busy about the
+  other 20. Guessing is now an error, and the error goes and looks up the real
+  answer so it cannot go stale the way the default did.
+  """
+
+  def fake_gcloud_that_knows_where_the_fleet_is(self, zones, vms=()):
+    """A gcloud whose `list --zone=-` answers with zones, not VM names.
+
+    That is what the real one does with `--format=value(name.segment(-3))`,
+    and telling the two listings apart is the whole point of the discovery
+    call.
+    """
+    zone_file = os.path.join(self.root, "zones.txt")
+    with open(zone_file, "w", encoding="utf-8") as fh:
+      fh.write("".join(f"{zone}\n" for zone in zones))
+    vm_file = os.path.join(self.root, "vms.txt")
+    with open(vm_file, "w", encoding="utf-8") as fh:
+      fh.write("".join(f"{vm}\n" for vm in vms))
+
+    path = os.path.join(self.bin_dir, "gcloud")
+    with open(path, "w", encoding="utf-8") as fh:
+      fh.write(f"""#!/usr/bin/env bash
+printf '%s\\n' "${{*//$'\\n'/ }}" >> "{self.gcloud_log}"
+case "$4" in
+  list)
+    if [[ "$*" == *"--zone=-"* ]]; then
+      cat "{zone_file}"
+    else
+      cat "{vm_file}"
+    fi
+    ;;
+  describe) [[ "$*" == *"externalIp"* ]] && printf '10.0.0.5\\n' ;;
+  ssh) printf 'ci\\n' ;;
+esac
+exit 0
+""")
+    os.chmod(path, 0o755)
+
+  def test_the_error_lists_the_zones_the_fleet_is_actually_in(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is(
+        ["europe-west4-b", "us-south1-a"]
+    )
+    proc = self.run_fleet("status", "--pool", self.pool)
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("--zone europe-west4-b", proc.stderr)
+    self.assertIn("--zone us-south1-a", proc.stderr)
+
+  def test_it_searches_every_zone_to_find_them(self):
+    """Asking zone by zone would need the answer it is trying to produce."""
+    self.fake_gcloud_that_knows_where_the_fleet_is(["us-west4-a"])
+    self.run_fleet("status", "--pool", self.pool)
+    self.assertTrue(
+        any("--zone=-" in call for call in self.gcloud_calls()),
+        self.gcloud_calls(),
+    )
+
+  def test_a_fleet_it_cannot_find_says_so_instead_of_naming_no_zones(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is([])
+    proc = self.run_fleet("status", "--pool", self.pool)
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("no spot-tpu-v5e-* VMs were", proc.stderr)
+    self.assertNotIn("The fleet is in:", proc.stderr)
+
+  def test_attach_stops_before_it_touches_a_vm(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is(
+        ["europe-west4-b"], vms=["spot-tpu-v5e-111-1"]
+    )
+    proc = self.run_fleet("attach", "--pool", self.pool)
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertEqual(self.calls_with_verb("ssh"), [])
+    self.assertEqual(self.sessions(), [])
+
+  def test_prepare_needs_a_zone_too(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is(["europe-west4-b"])
+    proc = self.run_fleet("prepare")
+    self.assertNotEqual(proc.returncode, 0)
+    self.assertIn("No --zone given", proc.stderr)
+
+  def test_detach_does_not_need_one(self):
+    """detach works off the session files in the pool, not off the zones.
+
+    Making it ask would mean a run could attach and then fail to hand the
+    hardware back, which is worse than the bug this guards against.
+    """
+    self.fake_gcloud_that_knows_where_the_fleet_is(["europe-west4-b"])
+    proc = self.run_fleet("detach", "--pool", self.pool)
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+  def test_ip_mode_does_not_need_one(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is(["europe-west4-b"])
+    proc = self.run_fleet("ip-mode")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+  def test_one_zone_is_enough_to_get_past_the_check(self):
+    """The check is about guessing, not about completeness.
+
+    It cannot tell a deliberate single-zone run from a forgotten flag, so it
+    only refuses when it was told nothing at all.
+    """
+    self.fake_gcloud_that_knows_where_the_fleet_is(["europe-west4-b"])
+    proc = self.run_fleet("status", "--pool", self.pool, "--zone", "us-west1-c")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+  def test_a_zone_that_was_given_skips_the_lookup_entirely(self):
+    self.fake_gcloud_that_knows_where_the_fleet_is(["europe-west4-b"])
+    self.run_fleet("status", "--pool", self.pool, "--zone", "us-west1-c")
+    self.assertFalse(
+        any("--zone=-" in call for call in self.gcloud_calls()),
+        self.gcloud_calls(),
+    )
+
+  def test_no_default_zone_list_has_crept_back_in(self):
+    """A default is what caused this. Adding one back would be silent."""
+    with open(FLEET_SCRIPT, encoding="utf-8") as fh:
+      body = fh.read()
+    self.assertNotIn("DEFAULT_ZONES", body)
+
+  def test_the_wrappers_do_not_carry_their_own_default_either(self):
+    """relay_presubmit_pr.sh had a separate default of europe-west4-b, so
+    fixing the fleet script alone would have left it running on 8 of 28."""
+    for script in (RELAY_DRIVER, RELAY_BAZEL_TEST):
+      with open(script, encoding="utf-8") as fh:
+        body = fh.read()
+      self.assertNotIn('CLI_ZONES=("europe-west4-b")', body, script)
+      self.assertIn("--zone is required", body, script)
 
 
 class TestFleetDetachReleasesTheClaim(FleetClaimTestCase):
@@ -4226,6 +4378,9 @@ class RelayBazelTestCase(
         "--output-dir",
         self.out,
         "--no-wait",
+        # Required: the wrapper refuses to guess a zone list.
+        "--zone",
+        "europe-west4-b",
         *extra,
     )
 
