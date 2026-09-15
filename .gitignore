@@ -30,3 +30,4 @@ dist/
 # Test reports
 relay_reports/
 mailbox_reports/
+test_output*/
