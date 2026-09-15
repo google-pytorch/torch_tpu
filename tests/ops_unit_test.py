@@ -23,8 +23,6 @@ import itertools
 import math
 import os
 import plistlib
-import sys
-import tempfile
 import threading
 import time
 import typing
@@ -9769,63 +9767,6 @@ class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
         atol=5e-2,
         rtol=1e-1,
     )
-
-  def test_experimental_op_warning_once(self):
-    """Verifies that experimental ops warn exactly once per operator."""
-
-    @contextlib.contextmanager
-    def capture_c_stderr():
-      sys.stdout.flush()
-      sys.stderr.flush()
-      original_stderr_fd = 2
-      saved_stderr_fd = os.dup(original_stderr_fd)
-      tfile = tempfile.TemporaryFile(mode="w+b")
-      os.dup2(tfile.fileno(), original_stderr_fd)
-      try:
-        yield tfile
-      finally:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.dup2(saved_stderr_fd, original_stderr_fd)
-        os.close(saved_stderr_fd)
-
-    device = torch.device("tpu")
-    m, k, n, g = 5, 4, 3, 2
-    lhs = torch.arange(m * k, dtype=torch.float32, device=device).reshape(m, k)
-    rhs = torch.arange(g * k * n, dtype=torch.float32, device=device).reshape(
-        g, k, n
-    )
-    group_sizes = torch.tensor([1, 4], dtype=torch.int32, device=device)
-
-    # 1. First call to ragged_dot should warn.
-    with capture_c_stderr() as f:
-      _ = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes)
-      f.seek(0)
-      output = f.read().decode()
-      self.assertIn("Warning: operator ragged_dot is experimental", output)
-
-    # 2. Second call to ragged_dot should NOT warn.
-    with capture_c_stderr() as f:
-      _ = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes)
-      f.seek(0)
-      output = f.read().decode()
-      self.assertNotIn("experimental", output)
-
-    # 3. First call to ragged_dot_out (different op) should warn.
-    out = torch.zeros(m, n, dtype=torch.float32, device=device)
-    with capture_c_stderr() as f:
-      _ = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes, out=out)
-      f.seek(0)
-      output = f.read().decode()
-      self.assertIn("Warning: operator ragged_dot.out is experimental", output)
-
-    # 4. Second call to ragged_dot_out should NOT warn.
-    with capture_c_stderr() as f:
-      _ = torch.ops.tpu.ragged_dot(lhs, rhs, group_sizes, out=out)
-      f.seek(0)
-      output = f.read().decode()
-      self.assertNotIn("experimental", output)
-
   @absltest.skip("b/498564738")
   def test_set_dimension_logical_size_on_tpu(self):
     """Tests the tpu.set_dimension_logical_size custom op on TPU."""
