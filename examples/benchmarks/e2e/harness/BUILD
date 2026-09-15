@@ -32,8 +32,17 @@ torch_tpu_py_library(
     testonly = True,
     srcs = ["base_test.py"],
     deps = [
+        ":export",
+        ":flags",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":target",
+        "//examples/benchmarks/e2e:common",
+        "//shims/absl_py/flags",
         "//shims/absl_py/logging",
         "//shims/absl_py/testing:absltest",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
 
@@ -195,7 +204,6 @@ torch_tpu_py_test(
         ":compile",
         ":context",
         ":discovery",
-        ":export",
         ":flags",
         ":measure",
         ":metrics",
@@ -212,6 +220,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
 
@@ -284,7 +293,6 @@ torch_tpu_py_test(
         ":compile",
         ":context",
         ":discovery",
-        ":export",
         ":flags",
         ":measure",
         ":metrics",
@@ -301,6 +309,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
     ],
 )
 

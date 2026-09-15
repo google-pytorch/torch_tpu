@@ -43,3 +43,14 @@ DRY_RUN = flags.DEFINE_bool(
     " written to the test outputs directory specified by environment variable"
     " TEST_UNDECLARED_OUTPUTS_DIR.",
 )
+
+
+RUN_IN_SUBPROCESS = flags.DEFINE_bool(
+    "run_in_subprocess",
+    True,
+    "Whether to run each benchmark case in its own child process. A case that"
+    " crashes the interpreter (a CUDA device-side assert, a SIGSEGV in a"
+    " kernel) or poisons the device context then fails alone instead of"
+    " taking every later case in the shard with it. Disable to run cases"
+    " in-process, e.g. to attach a debugger or use --pdb_post_mortem.",
+)

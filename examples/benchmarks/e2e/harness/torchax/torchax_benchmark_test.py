@@ -25,7 +25,6 @@ Environment & Flags:
 import torch_xla2 as torchax  # pylint: disable=unused-import # noqa: F401
 from torchax import interop  # pylint: disable=unused-import # noqa: F401
 
-from typing import Iterator, Tuple
 import unittest
 from absl import logging
 from absl.testing import absltest
@@ -37,7 +36,6 @@ from examples.benchmarks.e2e.harness import cases
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import context as context_lib
 from examples.benchmarks.e2e.harness import discovery as discovery_lib
-from examples.benchmarks.e2e.harness import export as export_lib
 from examples.benchmarks.e2e.harness import flags as flags_lib
 from examples.benchmarks.e2e.harness import measure as measure_lib
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
@@ -48,6 +46,7 @@ from examples.benchmarks.e2e.harness import step_lib
 from examples.benchmarks.e2e.harness import target as target_lib
 from examples.benchmarks.e2e.harness.torchax import torchax_device_ops
 from examples.benchmarks.e2e.harness.torchax import torchax_step
+from torch_tpu._internal.distributed import multiprocessing
 
 # Framework definition for this binary.
 _FRAMEWORK = mode_lib.Framework.TORCHAX
@@ -62,10 +61,7 @@ torchax.enable_globally()
 torchax.enable_performance_mode()
 
 
-def _cases() -> (
-    Iterator[Tuple[str, registry_lib.BenchmarkSpec, common.RunMode]]
-):
-  return cases.get_cases(_PLATFORM, _FRAMEWORK)
+_CASES = list(cases.get_cases(_PLATFORM, _FRAMEWORK))
 
 
 def _make_run_step(
@@ -94,6 +90,9 @@ def reset_state() -> None:
 class TorchaxBenchmarkTest(base_test.BaseBenchmarkTest, parameterized.TestCase):
   """One test method, parameterized over the registry x mode matrix for TorchAx."""
 
+  framework = _FRAMEWORK
+  platform = _PLATFORM
+  case_params = base_test.case_params(_CASES)
   def test_benchmark_imports(self):
     if failures:
       self.fail(
@@ -101,7 +100,7 @@ class TorchaxBenchmarkTest(base_test.BaseBenchmarkTest, parameterized.TestCase):
           + "\n  ".join(str(f) for f in failures)
       )
 
-  @parameterized.named_parameters(*_cases())
+  @parameterized.named_parameters(*_CASES)
   def test_benchmark(
       self, spec: registry_lib.BenchmarkSpec, mode: common.RunMode
   ):
@@ -145,28 +144,10 @@ class TorchaxBenchmarkTest(base_test.BaseBenchmarkTest, parameterized.TestCase):
     except unittest.SkipTest:
       raise
     except Exception:
-      export_lib.export(
-          export_lib.BenchmarkData(
-              spec_name=spec.name,
-              platform=target.platform,
-              framework=_FRAMEWORK,
-              run_mode=mode,
-              succeeded=False,
-              metrics=metrics_lib.PerformanceMetrics(),
-          )
-      )
+      self.report_result(spec, mode, succeeded=False)
       raise
 
-    export_lib.export(
-        export_lib.BenchmarkData(
-            spec_name=spec.name,
-            platform=target.platform,
-            framework=_FRAMEWORK,
-            run_mode=mode,
-            succeeded=True,
-            metrics=metrics,
-        )
-    )
+    self.report_result(spec, mode, succeeded=True, metrics=metrics)
 
   def _run_and_measure(
       self, spec, mode, device_ops, ctx
@@ -194,4 +175,4 @@ class TorchaxBenchmarkTest(base_test.BaseBenchmarkTest, parameterized.TestCase):
 
 
 if __name__ == "__main__":
-  absltest.main()
+  multiprocessing.handle_test_main(absltest.main)
