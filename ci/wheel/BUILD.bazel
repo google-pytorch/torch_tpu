@@ -133,6 +133,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/utils:test_utils",
         "//src/torch_tpu/_internal/utils:tracer_utils",
         "//src/torch_tpu/ops",
+        "//src/torch_tpu/ops/scaled_mm/kernels:blockwise128_scaled_mm_kernel",
         "//src/torch_tpu/ops/scaled_mm/kernels:blockwise_scaled_mm_kernel",
         "//src/torch_tpu/ops:splash_attention",
         "//src/torch_tpu:_loader",

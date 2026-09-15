@@ -20,11 +20,14 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
+# Shared build-time generator. Dispatches to a per-recipe generator registered
+# in `_RECIPE_GENERATORS`, so every block-scaling recipe must be listed in deps.
 pytype_strict_library(
     # PY_LIBRARY_OK=Build-time kernel generator library.
     name = "scaled_mm_generate",
     srcs = ["scaled_mm_generate.py"],
     deps = [
+        ":blockwise128_scaled_mm_kernel",
         ":blockwise_scaled_mm_kernel",
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
@@ -87,6 +90,59 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//src/torch_tpu",
         "//tests:seed_test_utils",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "blockwise128_scaled_mm_kernel",
+    srcs = ["blockwise128_scaled_mm_kernel.py"],
+    deps = [
+        "//shims/jax:pallas",
+        "//shims/jax:pallas_tpu",
+        "@pypi//jax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "blockwise128_scaled_mm_kernel_test",
+    srcs = ["blockwise128_scaled_mm_kernel_test.py"],
+    main = "blockwise128_scaled_mm_kernel_test.py",
+    run_on_accelerators = [
+        "requires-tpu-v5lite",
+        "requires-tpu-v6e",
+        "requires-tpu-v7x",
+    ],
+    tags = [
+        "nosan",  # *san builds are low-value for accelerator numerics tests.
+        "ok-to-wait-for-v6e-in-presubmit",
+        "ok-to-wait-for-v7x-in-presubmit",
+    ],
+    deps = [
+        ":blockwise128_scaled_mm_kernel",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
+        "@pypi//jax",
+        "@pypi//numpy",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "blockwise128_scaled_mm_kernel_host_test",
+    srcs = ["blockwise128_scaled_mm_kernel_host_test.py"],
+    tags = [
+        # Tests build-time generator scaled_mm_generate (not packaged in runtime wheel).
+        "wheel_test_excluded",
+    ],
+    deps = [
+        ":blockwise128_scaled_mm_kernel",
+        ":scaled_mm_generate",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//src/torch_tpu",
         "@pypi//jax",
         "@pypi//numpy",
     ],

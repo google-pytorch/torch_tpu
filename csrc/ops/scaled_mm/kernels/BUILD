@@ -42,6 +42,54 @@ define_scaled_mm_kernel(
     recipe = "mxfp8",
 )
 
+# BlockWise1x128 (activation) x BlockWise128x128 (weight) FP8 recipe. One
+# target per (out_dtype, has_bias) variant.
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_bf16",
+    block_size = 128,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "bfloat16",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_bf16_bias",
+    block_size = 128,
+    has_bias = True,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "bfloat16",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_f32",
+    block_size = 128,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "float32",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
+define_scaled_mm_kernel(
+    name = "blockwise128_scaled_mm_1x128_128x128_f32_bias",
+    block_size = 128,
+    has_bias = True,
+    in_dtype = "float8_e4m3fn",
+    out_dtype = "float32",
+    recipe = "blockwise_128",
+    tile_k = 1024,
+    tile_m = 512,
+    tile_n = 512,
+)
+
 bzl_library(
     name = "defs_bzl",
     srcs = ["defs.bzl"],

@@ -21,6 +21,7 @@ from absl import app
 from absl import flags
 import jax.numpy as jnp
 from torch_tpu._internal.pallas import pallas_kernel_generate_utils as kernel_utils
+from torch_tpu.ops.scaled_mm.kernels import blockwise128_scaled_mm_kernel as blockwise128_kernels
 from torch_tpu.ops.scaled_mm.kernels import blockwise_scaled_mm_kernel as kernels
 
 _HEADER = flags.DEFINE_string(  # PYTHON_FLAG_OK=Stand-alone build-time kernel generator tool.
@@ -158,8 +159,33 @@ def _generate_mxfp8(
   )
 
 
+def _generate_blockwise_128(
+    *,
+    in_dtype: Any,
+    out_dtype: Any,
+    block_size: int,
+    tile_m: int,
+    tile_n: int,
+    tile_k: int,
+    has_bias: bool = False,
+    **kwargs: Any,
+) -> str:
+  """Generates BlockWise1x128 x BlockWise128x128 StableHLO MLIR module string."""
+  del kwargs
+  return blockwise128_kernels.export_mlir_module(
+      block_size=block_size,
+      out_dtype=out_dtype,
+      in_dtype=in_dtype,
+      tile_m=tile_m,
+      tile_n=tile_n,
+      tile_k=tile_k,
+      has_bias=has_bias,
+  )
+
+
 _RECIPE_GENERATORS: dict[str, Callable[..., str]] = {
     "mxfp8": _generate_mxfp8,
+    "blockwise_128": _generate_blockwise_128,
     # [Extension Point]: Register new block-scaling recipes here.
 }
 
