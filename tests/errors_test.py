@@ -7701,7 +7701,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""replication_pad2d_backward(): expected the input shape to match the output (input grad) shape [1, 1, 5, 5] computed by removing the padding from grad_output, got [1, 1, 4, 4]""",
-        gpu="""gradOutput width unexpected. Expected: 6, Got: 7""",
+        gpu="""grad_output width unexpected. Expected: 6, Got: 7""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten.replication_pad2d_backward(grad_output, inp, padding)
@@ -7714,7 +7714,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""replication_pad3d_backward(): expected the input shape to match the output (input grad) shape [1, 1, 5, 5, 5] computed by removing the padding from the grad_output, got [1, 1, 4, 4, 4]""",
-        gpu="""gradOutput width unexpected. Expected: 6, Got: 7""",
+        gpu="""grad_output width unexpected. Expected: 6, Got: 7""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -7727,7 +7727,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""replication_pad3d_backward(): expected padding at indices 0 and 1 to sum to a value smaller than the grad_output width (at dimension 4) of 6, got 8 (4 + 4)""",
-        gpu="""gradOutput width unexpected. Expected: 12, Got: 6""",
+        gpu="""grad_output width unexpected. Expected: 12, Got: 6""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -7740,7 +7740,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""replication_pad3d_backward(): expected padding at indices 2 and 3 to sum to a value smaller than the grad_output height (at dimension 3) of 6, got 8 (4 + 4)""",
-        gpu="""gradOutput height unexpected. Expected: 12, Got: 6""",
+        gpu="""grad_output height unexpected. Expected: 12, Got: 6""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)
@@ -7753,7 +7753,7 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         RuntimeError,
         tpu="""replication_pad3d_backward(): expected padding at indices 4 and 5 to sum to a value smaller than the grad_output depth (at dimension 2) of 6, got 8 (4 + 4)""",
-        gpu="""gradOutput depth unexpected. Expected: 12, Got: 6""",
+        gpu="""grad_output depth unexpected. Expected: 12, Got: 6""",
         message_reviewed_by="wan",
     ):
       torch.ops.aten.replication_pad3d_backward(grad_output, inp, padding)

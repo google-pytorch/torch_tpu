@@ -113,6 +113,7 @@ UNREGISTERED_OPS = frozenset([
     '_philox_uniform_',
     '_resize_output_',
     '_sample_dirichlet',
+    '_scaled_addmm.out',
     '_scaled_dot_product_attention_math_for_mps',
     '_scaled_dot_product_flash_attention',
     '_scaled_dot_product_flash_attention.quantized',
