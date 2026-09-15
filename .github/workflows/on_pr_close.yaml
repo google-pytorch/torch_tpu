@@ -36,7 +36,7 @@ jobs:
       # 15s clears it with margin. Do not raise this much past 20s: the
       # `GitHub Actions Scan` run is also a cancellation target and finishes on
       # its own 21-65s in, so a longer wait just races that one instead.
-      - name: Wait for same-event runs to finalize
+      - name: Wait for PR-closure actions to finalize
         run: sleep 15
 
       - name: Cancel runs using upstream Mergify action
