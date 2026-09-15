@@ -40,6 +40,10 @@ class TestMode(enum.Enum):
   GET_INT_ENV_ONCE_VALID = "get_int_env_once_valid"
   GET_INT_ENV_ONCE_INVALID = "get_int_env_once_invalid"
   GET_INT_ENV_ONCE_MEMOIZED = "get_int_env_once_memoized"
+  GET_STR_ENV_ONCE_UNSET = "get_str_env_once_unset"
+  GET_STR_ENV_ONCE_SET = "get_str_env_once_set"
+  GET_STR_ENV_ONCE_EMPTY = "get_str_env_once_empty"
+  GET_STR_ENV_ONCE_MEMOIZED = "get_str_env_once_memoized"
 
 
 _TEST_MODE = flags.DEFINE_enum_class(
@@ -153,6 +157,33 @@ class EnvTest(seed_test_utils.RepeatableTest):
         env.get_int_env_once("TORCH_TPU_INTERNAL_HANDSHAKE_PORT"), 12345
     )
 
+  def test_get_str_env_once_unset(self) -> None:
+    self.assertIsNone(env.get_str_env_once("MASTER_ADDR"))
+    self.assertEqual(
+        env.get_str_env_once("MASTER_ADDR", default_value="localhost"),
+        "localhost",
+    )
+
+  def test_get_str_env_once_set(self) -> None:
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+    # The default value is ignored when the variable is set.
+    self.assertEqual(
+        env.get_str_env_once("MASTER_ADDR", default_value="localhost"),
+        "worker0",
+    )
+
+  def test_get_str_env_once_empty(self) -> None:
+    # An empty value is still a value, so the default value is ignored.
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "")
+    self.assertEqual(
+        env.get_str_env_once("MASTER_ADDR", default_value="localhost"), ""
+    )
+
+  def test_get_str_env_once_memoized(self) -> None:
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+    os.environ["MASTER_ADDR"] = "worker1"
+    self.assertEqual(env.get_str_env_once("MASTER_ADDR"), "worker0")
+
 
 class ParentEnvTest(
     subprocess_test_utils.SubprocessTestMixin,
@@ -225,6 +256,30 @@ class ParentEnvTest(
     self.run_sub_test(
         TestMode.GET_INT_ENV_ONCE_MEMOIZED,
         env_updates={"TORCH_TPU_INTERNAL_HANDSHAKE_PORT": "12345"},
+    )
+
+  def test_get_str_env_once_unset(self) -> None:
+    self.run_sub_test(
+        TestMode.GET_STR_ENV_ONCE_UNSET,
+        env_removals=["MASTER_ADDR"],
+    )
+
+  def test_get_str_env_once_set(self) -> None:
+    self.run_sub_test(
+        TestMode.GET_STR_ENV_ONCE_SET,
+        env_updates={"MASTER_ADDR": "worker0"},
+    )
+
+  def test_get_str_env_once_empty(self) -> None:
+    self.run_sub_test(
+        TestMode.GET_STR_ENV_ONCE_EMPTY,
+        env_updates={"MASTER_ADDR": ""},
+    )
+
+  def test_get_str_env_once_memoized(self) -> None:
+    self.run_sub_test(
+        TestMode.GET_STR_ENV_ONCE_MEMOIZED,
+        env_updates={"MASTER_ADDR": "worker0"},
     )
 
 

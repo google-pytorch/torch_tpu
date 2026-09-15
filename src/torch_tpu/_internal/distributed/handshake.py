@@ -1284,7 +1284,7 @@ class _ZMQClient:
     self._master_addr = (
         master_addr
         if master_addr is not None
-        else os.environ.get("MASTER_ADDR", "localhost")
+        else env.get_str_env_once("MASTER_ADDR", default_value="localhost")
     )
 
     self._context = zmq.Context()  # pyrefly: ignore[missing-attribute]

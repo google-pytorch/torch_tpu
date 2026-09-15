@@ -15,6 +15,7 @@
  */
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 
 #include "absl/log/absl_log.h"
@@ -71,6 +72,23 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
   return value.has_value() ? value : default_value;
 }
 
+// Like PyGetBooleanEnvOnce(), but for string environment variables. Unlike the
+// Boolean and integer variants, the value needs no parsing, so it is returned
+// as is, including when it is the empty string.
+std::optional<std::string> PyGetStringEnvOnce(
+    std::string_view name, std::optional<std::string> default_value) {
+  std::optional<std::string> value;
+  if (name == kMasterAddrEnvVar) {
+    value = GetEnvOnce<kMasterAddrEnvVar>();
+  } else {
+    ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
+        << "Before reading string environment variable " << name
+        << " from Python, it must be added to the body of "
+           "PyGetStringEnvOnce().";
+  }
+  return value.has_value() ? value : default_value;
+}
+
 }  // namespace
 
 TT_PYBIND11_MODULE(env, m) {
@@ -92,6 +110,10 @@ TT_PYBIND11_MODULE(env, m) {
         pybind11::arg("default_value") = std::optional<int64_t>(),
         "Returns the integer value of the given environment variable, or "
         "`default_value` if it is unset or cannot be parsed as an integer.");
+  m.def("get_str_env_once", &PyGetStringEnvOnce, pybind11::arg("name"),
+        pybind11::arg("default_value") = std::optional<std::string>(),
+        "Returns the value of the given environment variable, or "
+        "`default_value` if it is unset.");
 }
 
 }  // namespace torch_tpu
