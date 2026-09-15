@@ -23,6 +23,12 @@ DEFAULT_REPO="google-pytorch/torch_tpu"
 DEFAULT_FILTER="presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5lite:8"
 DEFAULT_SCOPE="//tests/..."
 
+readonly REPLACE_LABEL="ci:replace-tpu-v5"
+readonly SHADOW_LABEL="ci:relay-tpu-v5"
+readonly COMMENT_MARKER="<!-- torch-tpu-v5e-mailbox -->"
+readonly GATING_CONTEXT="Presubmit on linux-x86-ct5lp-224-8tpu"
+readonly SHADOW_CONTEXT="TPU v5e relay (shadow)"
+
 CLI_PR=""
 CLI_REPO="$DEFAULT_REPO"
 CLI_MODE="shadow"
@@ -35,6 +41,8 @@ CLI_BAZEL_FLAGS=()
 CLI_OUTPUT_DIR=""
 CLI_NO_REPORT=false
 CLI_DRY_RUN=false
+CLI_ADD_LABEL=false
+CLI_SKIP_HEAD_CHECK=false
 CLI_TEST_TIMEOUT="900"
 CLI_SCOPE="$DEFAULT_SCOPE"
 CLI_FILTER="$DEFAULT_FILTER"
@@ -49,7 +57,7 @@ Executes the torch_tpu single-chip presubmit suite on Cloud TPU v5e hardware
 via the GCS mailbox runner.
 
 Modes:
-  shadow       Advisory run. Reports under "TPU v5e mailbox (shadow)" and
+  shadow       Advisory run. Reports under "TPU v5e relay (shadow)" and
                does not block PR merge (default).
   replacement  Gating run. Reports under "Presubmit on linux-x86-ct5lp-224-8tpu",
                resolving the required status check.
@@ -65,7 +73,9 @@ Options:
   --bazel-config NAME   Bazel config to inherit (default: ci_tpu_v5_mailbox).
   --bazel-flag FLAG     Extra flag passed to bazel test. Can be repeated.
   --output-dir DIR      Directory to write execution reports and logs.
-  --no-report           Do not post commit statuses or comments to GitHub.
+  --add-label           Add the mode's label to the PR (ci:replace-tpu-v5 or ci:relay-tpu-v5).
+  --skip-head-check     Run even if the local checkout is not at the PR head commit.
+  --no-report           Do not post commit statuses, labels, or comments to GitHub.
   --dry-run             Resolve targets and show execution plan without running.
   -h, --help            Show this help.
 HELP
@@ -74,44 +84,63 @@ HELP
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr)
+      [[ $# -ge 2 ]] || { echo "ERROR: --pr requires an argument." >&2; exit 2; }
       CLI_PR="$2"
       shift 2
       ;;
     --repo)
+      [[ $# -ge 2 ]] || { echo "ERROR: --repo requires an argument." >&2; exit 2; }
       CLI_REPO="$2"
       shift 2
       ;;
     --mode)
+      [[ $# -ge 2 ]] || { echo "ERROR: --mode requires an argument." >&2; exit 2; }
       CLI_MODE="$2"
       shift 2
       ;;
     --sha)
+      [[ $# -ge 2 ]] || { echo "ERROR: --sha requires an argument." >&2; exit 2; }
       CLI_SHA="$2"
       shift 2
       ;;
     --bucket)
+      [[ $# -ge 2 ]] || { echo "ERROR: --bucket requires an argument." >&2; exit 2; }
       CLI_BUCKET="$2"
       shift 2
       ;;
     --target)
+      [[ $# -ge 2 ]] || { echo "ERROR: --target requires an argument." >&2; exit 2; }
       CLI_TARGETS+=("$2")
       shift 2
       ;;
     --jobs)
+      [[ $# -ge 2 ]] || { echo "ERROR: --jobs requires an argument." >&2; exit 2; }
+      [[ "$2" =~ ^[0-9]+$ ]] || { echo "ERROR: --jobs must be a number." >&2; exit 2; }
       CLI_JOBS="$2"
       shift 2
       ;;
     --bazel-config)
+      [[ $# -ge 2 ]] || { echo "ERROR: --bazel-config requires an argument." >&2; exit 2; }
       CLI_BAZEL_CONFIG="$2"
       shift 2
       ;;
     --bazel-flag)
+      [[ $# -ge 2 ]] || { echo "ERROR: --bazel-flag requires an argument." >&2; exit 2; }
       CLI_BAZEL_FLAGS+=("$2")
       shift 2
       ;;
     --output-dir)
+      [[ $# -ge 2 ]] || { echo "ERROR: --output-dir requires an argument." >&2; exit 2; }
       CLI_OUTPUT_DIR="$2"
       shift 2
+      ;;
+    --add-label)
+      CLI_ADD_LABEL=true
+      shift
+      ;;
+    --skip-head-check)
+      CLI_SKIP_HEAD_CHECK=true
+      shift
       ;;
     --no-report)
       CLI_NO_REPORT=true
@@ -138,10 +167,12 @@ if [[ "$CLI_MODE" != "shadow" && "$CLI_MODE" != "replacement" ]]; then
   exit 2
 fi
 
-GATING_CONTEXT="Presubmit on linux-x86-ct5lp-224-8tpu"
-SHADOW_CONTEXT="TPU v5e mailbox (shadow)"
 TARGET_CONTEXT="$SHADOW_CONTEXT"
-[[ "$CLI_MODE" == "replacement" ]] && TARGET_CONTEXT="$GATING_CONTEXT"
+TARGET_LABEL="$SHADOW_LABEL"
+if [[ "$CLI_MODE" == "replacement" ]]; then
+  TARGET_CONTEXT="$GATING_CONTEXT"
+  TARGET_LABEL="$REPLACE_LABEL"
+fi
 
 post_status() {
   local sha="$1" state="$2" description="$3" context="$4"
@@ -172,6 +203,15 @@ if [[ -n "$CLI_PR" && -z "$CLI_SHA" ]]; then
   fi
 fi
 
+if [[ -n "$CLI_SHA" && "$CLI_SKIP_HEAD_CHECK" == "false" ]]; then
+  LOCAL_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$LOCAL_SHA" && "$LOCAL_SHA" != "$CLI_SHA" ]]; then
+    echo "WARNING: Local checkout (${LOCAL_SHA:0:10}) does not match PR #${CLI_PR} head (${CLI_SHA:0:10})." >&2
+    echo "Tests will run against local files rather than the PR commit." >&2
+    echo "Pass --skip-head-check to proceed anyway." >&2
+  fi
+fi
+
 echo "========================================================================"
 echo "TPU Mailbox Presubmit Pipeline"
 echo "========================================================================"
@@ -180,6 +220,8 @@ echo "Output Directory:${CLI_OUTPUT_DIR}"
 echo "Mode:            ${CLI_MODE}"
 [[ -n "$CLI_PR" ]]  && echo "Pull Request:    #${CLI_PR} (${CLI_REPO})"
 [[ -n "$CLI_SHA" ]] && echo "Commit SHA:      ${CLI_SHA}"
+echo "Context:         ${TARGET_CONTEXT}"
+echo "Target Label:    ${TARGET_LABEL}"
 echo "========================================================================"
 
 echo "Checking fleet status in gs://${CLI_BUCKET}/fleet/..."
@@ -234,7 +276,20 @@ fi
 if [[ "$CLI_DRY_RUN" == "true" ]]; then
   echo "[DRY RUN] Execution plan confirmed. Resolved targets ($TARGET_COUNT):"
   printf "  %s\n" "${RESOLVED_TARGETS[@]}"
+  if [[ "$CLI_ADD_LABEL" == "true" && -n "$CLI_PR" ]]; then
+    echo "[DRY RUN] Would add label '${TARGET_LABEL}' to PR #${CLI_PR}"
+  fi
+  echo "[DRY RUN] Would report under context: '${TARGET_CONTEXT}'"
   exit 0
+fi
+
+if [[ -n "$CLI_PR" && "$CLI_ADD_LABEL" == "true" && "$CLI_NO_REPORT" == "false" ]]; then
+  if command -v gh >/dev/null 2>&1; then
+    echo "Adding label '${TARGET_LABEL}' to PR #${CLI_PR}..."
+    gh pr edit "$CLI_PR" -R "$CLI_REPO" --add-label "$TARGET_LABEL" || {
+      echo "WARNING: Failed to add label '${TARGET_LABEL}' to PR #${CLI_PR}." >&2
+    }
+  fi
 fi
 
 if [[ -n "$CLI_SHA" && "$CLI_NO_REPORT" == "false" ]]; then
@@ -284,10 +339,12 @@ STATUS_STATE="success"
 echo "Bazel execution completed in ${ELAPSED}s with verdict: ${VERDICT} (rc=${BAZEL_RC})"
 
 cat > "$REPORT_FILE" <<RPT
+${COMMENT_MARKER}
 # TPU Mailbox Presubmit Report
 
 **Verdict:** ${VERDICT}
 **Mode:** ${CLI_MODE}
+**Context:** \`${TARGET_CONTEXT}\`
 **Wall Clock Time:** ${ELAPSED}s
 **Bucket:** \`gs://${CLI_BUCKET}\`
 **Targets Evaluated:** ${TARGET_COUNT}
@@ -321,10 +378,18 @@ fi
 
 if [[ -n "$CLI_PR" && "$CLI_NO_REPORT" == "false" ]]; then
   if command -v gh >/dev/null 2>&1; then
-    echo "Posting report to PR #${CLI_PR} on ${CLI_REPO}..."
-    gh pr comment "$CLI_PR" -R "$CLI_REPO" --body-file "$REPORT_FILE" || {
-      echo "WARNING: Failed to post comment to PR #${CLI_PR}." >&2
-    }
+    EXISTING_COMMENT_ID="$(gh api "repos/${CLI_REPO}/issues/${CLI_PR}/comments" --jq ".[] | select(.body | contains(\"${COMMENT_MARKER}\")) | .id" 2>/dev/null | tail -n 1 || true)"
+    if [[ -n "$EXISTING_COMMENT_ID" ]]; then
+      echo "Updating existing report comment ${EXISTING_COMMENT_ID} on PR #${CLI_PR}..."
+      gh api -X PATCH "repos/${CLI_REPO}/issues/comments/${EXISTING_COMMENT_ID}" -f body="$(cat "$REPORT_FILE")" >/dev/null 2>&1 || {
+        echo "WARNING: Failed to update comment on PR #${CLI_PR}." >&2
+      }
+    else
+      echo "Posting report to PR #${CLI_PR} on ${CLI_REPO}..."
+      gh pr comment "$CLI_PR" -R "$CLI_REPO" --body-file "$REPORT_FILE" || {
+        echo "WARNING: Failed to post comment to PR #${CLI_PR}." >&2
+      }
+    fi
   fi
 fi
 
