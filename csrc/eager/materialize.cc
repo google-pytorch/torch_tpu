@@ -68,7 +68,6 @@
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 namespace {
@@ -193,6 +192,167 @@ CompilationSpec GetCompilationSpecForTraversal(
   return common.compilation_spec.Copy();
 }
 
+void SplitSingleTraversal(
+    absl_nonnull std::unique_ptr<Traversal> pre_split_traversal,
+    absl::flat_hash_set<const DeviceBufferList*>& required_outputs,
+    std::vector<absl_nonnull std::unique_ptr<Traversal>>& post_split_traversals,
+    absl::Status& first_error) {
+  const auto core_pinning_mode = pre_split_traversal->core_pinning_mode();
+  for (const auto& output : pre_split_traversal->outputs()) {
+    required_outputs.insert(output.device_buffer_list().get());
+  }
+  auto split_traversals_or =
+      SplitTraversal(std::move(pre_split_traversal), required_outputs);
+  required_outputs.clear();
+  if (!split_traversals_or.ok()) {
+    if (first_error.ok()) {
+      first_error = split_traversals_or.status();
+    }
+    return;
+  }
+  // Retain the core pinning mode when splitting traversals.
+  if (core_pinning_mode != CorePinningMode::kUnpinned) {
+    for (auto& split_traversal : *split_traversals_or) {
+      split_traversal->SetCorePinningMode(core_pinning_mode);
+    }
+  }
+  post_split_traversals.insert(
+      post_split_traversals.end(),
+      std::make_move_iterator(split_traversals_or->begin()),
+      std::make_move_iterator(split_traversals_or->end()));
+}
+
+bool DependsOnPlaceholder(
+    const SharedDeviceBufferList& node,
+    absl::flat_hash_map<const DeviceBufferList*, bool>& memo) {
+  if (node == nullptr) return false;
+  if (node->is_placeholder()) return true;
+  auto it = memo.find(node.get());
+  if (it != memo.end()) return it->second;
+
+  const auto deferred_op = node->deferred_op();
+  if (!deferred_op) {
+    memo[node.get()] = false;
+    return false;
+  }
+
+  memo[node.get()] = false;
+  for (const auto& input : deferred_op->inputs()) {
+    if (input.is_placeholder() ||
+        DependsOnPlaceholder(input.device_buffer_list(), memo)) {
+      memo[node.get()] = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool OutputDependsOnPlaceholder(
+    const DeviceBufferRef& ref,
+    absl::flat_hash_map<const DeviceBufferList*, bool>& memo) {
+  if (ref.is_placeholder()) return true;
+  return DependsOnPlaceholder(ref.device_buffer_list(), memo);
+}
+
+void PruneTraversalPlaceholderOutputs(
+    absl_nonnull std::unique_ptr<Traversal> traversal,
+    absl::flat_hash_map<const DeviceBufferList*, bool>& memo,
+    std::vector<absl_nonnull std::unique_ptr<Traversal>>& clean_traversals,
+    absl::Status& first_error) {
+  std::vector<DeviceBufferRef> clean_outputs;
+  for (const auto& output : traversal->outputs()) {
+    if (!OutputDependsOnPlaceholder(output, memo)) {
+      clean_outputs.push_back(output);
+    }
+  }
+
+  if (clean_outputs.empty()) {
+    ABSL_VLOG(1) << "Skipping traversal containing only placeholder outputs";
+    return;
+  }
+
+  if (clean_outputs.size() == traversal->outputs().size()) {
+    clean_traversals.push_back(std::move(traversal));
+    return;
+  }
+
+  ABSL_VLOG(1) << "Pruning placeholder outputs from traversal: kept "
+               << clean_outputs.size() << " of " << traversal->outputs().size()
+               << " outputs";
+  const auto core_pinning_mode = traversal->core_pinning_mode();
+  auto clean_traversal_or = Traversal::Create(std::move(clean_outputs));
+  if (clean_traversal_or.ok()) {
+    if (core_pinning_mode != CorePinningMode::kUnpinned) {
+      (*clean_traversal_or)->SetCorePinningMode(core_pinning_mode);
+    }
+    clean_traversals.push_back(std::move(*clean_traversal_or));
+  } else if (first_error.ok()) {
+    first_error = clean_traversal_or.status();
+  }
+}
+
+bool HasAnyPlaceholderArgumentOrOutput(const Traversal& traversal) {
+  for (const DeviceBufferRef& arg : traversal.arguments()) {
+    if (arg.is_placeholder()) {
+      return true;
+    }
+  }
+  for (const DeviceBufferRef& out : traversal.outputs()) {
+    if (out.is_placeholder()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Eager ops traced over placeholder tensors (e.g. aten::clone during
+// direct_compile) leave abandoned DeferredOps on the events queue. Drop any
+// output that transitively depends on a placeholder so the real ops sharing
+// this traversal can still materialize.
+//
+// Performance Optimization:
+//   1. Global O(1) Guard (`DeviceBufferList::HasActivePlaceholders()`):
+//      Placeholders only exist during FX graph tracing (`CreatePlaceholder`).
+//      In normal Eager Default, Eager Optimized, and Compiled runtime execution
+//      (after tracing completes), `HasActivePlaceholders()` is false. Checking
+//      this atomic counter avoids iterating over traversal arguments/outputs
+//      or allocating `placeholder_memo` hash maps on every materialization.
+//   2. Per-Traversal Fast Path (`HasAnyPlaceholderArgumentOrOutput`):
+//      Even if placeholders are active in the process, most traversals do not
+//      involve placeholders. We only construct the recursive DAG memoization
+//      map (`placeholder_memo`) and prune outputs if at least one traversal
+//      directly references a placeholder argument or output.
+std::vector<absl_nonnull std::unique_ptr<Traversal>>
+FilterPlaceholderDependentTraversals(
+    std::vector<absl_nonnull std::unique_ptr<Traversal>>&& traversals,
+    absl::Status& first_error) {
+  if (!DeviceBufferList::HasActivePlaceholders()) {
+    return std::move(traversals);
+  }
+  const bool any_has_placeholder =
+      std::any_of(traversals.begin(), traversals.end(),
+                  [](const absl_nonnull std::unique_ptr<Traversal>& traversal) {
+                    return HasAnyPlaceholderArgumentOrOutput(*traversal);
+                  });
+  if (!any_has_placeholder) {
+    return std::move(traversals);
+  }
+
+  absl::flat_hash_map<const DeviceBufferList*, bool> placeholder_memo;
+  std::vector<absl_nonnull std::unique_ptr<Traversal>> clean_traversals;
+  clean_traversals.reserve(traversals.size());
+
+  for (auto& traversal : traversals) {
+    if (!HasAnyPlaceholderArgumentOrOutput(*traversal)) {
+      clean_traversals.push_back(std::move(traversal));
+      continue;
+    }
+    PruneTraversalPlaceholderOutputs(std::move(traversal), placeholder_memo,
+                                     clean_traversals, first_error);
+  }
+  return clean_traversals;
+}
+
 // Converts a sequence of Traversals to a sequence of ExecutionTasks.
 // If materialization_mode is kSplitGraph, then there may be more returned
 // tasks than there were original traversals; otherwise, there will be exactly
@@ -201,107 +361,16 @@ MaterializationStages ApplySplitMode(
     std::vector<absl_nonnull std::unique_ptr<Traversal>>&& traversals,
     const MaterializationTaskCommon& common, mlir::MLIRContext& mlir_context) {
   MaterializationStages result;
-
-  // Eager ops traced over placeholder tensors (e.g. aten::clone during
-  // direct_compile) leave abandoned DeferredOps on the events queue. Drop any
-  // output that transitively depends on a placeholder so the real ops sharing
-  // this traversal can still materialize.
-  absl::flat_hash_map<const DeviceBufferList*, bool> placeholder_memo;
-  auto depends_on_placeholder =
-      [&placeholder_memo](auto& self,
-                          const SharedDeviceBufferList& node) -> bool {
-    if (node == nullptr) return false;
-    if (node->is_placeholder()) return true;
-    auto it = placeholder_memo.find(node.get());
-    if (it != placeholder_memo.end()) return it->second;
-
-    const auto deferred_op = node->deferred_op();
-    if (!deferred_op) {
-      placeholder_memo[node.get()] = false;
-      return false;
-    }
-
-    placeholder_memo[node.get()] = false;
-    for (const auto& input : deferred_op->inputs()) {
-      if (input.is_placeholder() || self(self, input.device_buffer_list())) {
-        placeholder_memo[node.get()] = true;
-        return true;
-      }
-    }
-    return false;
-  };
-
-  auto output_depends_on_placeholder =
-      [&depends_on_placeholder](const DeviceBufferRef& ref) -> bool {
-    if (ref.is_placeholder()) return true;
-    return depends_on_placeholder(depends_on_placeholder,
-                                  ref.device_buffer_list());
-  };
-
-  std::vector<absl_nonnull std::unique_ptr<Traversal>> clean_traversals;
-  clean_traversals.reserve(traversals.size());
-
-  for (auto& traversal : traversals) {
-    std::vector<DeviceBufferRef> clean_outputs;
-    for (const auto& output : traversal->outputs()) {
-      if (!output_depends_on_placeholder(output)) {
-        clean_outputs.push_back(output);
-      }
-    }
-
-    if (clean_outputs.empty()) {
-      ABSL_VLOG(1) << "Skipping traversal containing only placeholder outputs";
-      continue;
-    }
-
-    if (clean_outputs.size() == traversal->outputs().size()) {
-      clean_traversals.push_back(std::move(traversal));
-    } else {
-      ABSL_VLOG(1) << "Pruning placeholder outputs from traversal: kept "
-                   << clean_outputs.size() << " of "
-                   << traversal->outputs().size() << " outputs";
-      const auto core_pinning_mode = traversal->core_pinning_mode();
-      auto clean_traversal_or = Traversal::Create(std::move(clean_outputs));
-      if (clean_traversal_or.ok()) {
-        if (core_pinning_mode != CorePinningMode::kUnpinned) {
-          (*clean_traversal_or)->SetCorePinningMode(core_pinning_mode);
-        }
-        clean_traversals.push_back(std::move(*clean_traversal_or));
-      } else if (result.first_error.ok()) {
-        result.first_error = clean_traversal_or.status();
-      }
-    }
-  }
-  traversals = std::move(clean_traversals);
+  traversals = FilterPlaceholderDependentTraversals(std::move(traversals),
+                                                    result.first_error);
 
   if (common.materialization_mode == MaterializationMode::kSplitGraph) {
     tsl::profiler::TraceMe t("SplitTraversal");
     std::vector<absl_nonnull std::unique_ptr<Traversal>> post_split_traversals;
     absl::flat_hash_set<const DeviceBufferList*> required_outputs;
     for (auto& pre_split_traversal : traversals) {
-      const auto core_pinning_mode = pre_split_traversal->core_pinning_mode();
-
-      for (const auto& output : pre_split_traversal->outputs()) {
-        required_outputs.insert(output.device_buffer_list().get());
-      }
-      auto split_traversals_or =
-          SplitTraversal(std::move(pre_split_traversal), required_outputs);
-      if (split_traversals_or.ok()) {
-        // Retain the core pinning mode when splitting traversals.
-        if (core_pinning_mode != CorePinningMode::kUnpinned) {
-          for (auto& split_traversal : *split_traversals_or) {
-            split_traversal->SetCorePinningMode(core_pinning_mode);
-          }
-        }
-
-        post_split_traversals.insert(
-            post_split_traversals.end(),
-            std::make_move_iterator(split_traversals_or->begin()),
-            std::make_move_iterator(split_traversals_or->end()));
-      } else if (result.first_error.ok()) {
-        result.first_error = split_traversals_or.status();
-      }
-      required_outputs.clear();
+      SplitSingleTraversal(std::move(pre_split_traversal), required_outputs,
+                           post_split_traversals, result.first_error);
     }
     std::swap(traversals, post_split_traversals);
   }
@@ -621,6 +690,54 @@ class MaterializationWorker {
   }
 
  private:
+  static void CompleteNodesMaterializationTask(
+      NodesMaterializationTask& nodes_task, const absl::Status& first_error) {
+    ABSL_VLOG(2) << "[MaterializationWorker] NodesMaterializationTask "
+                    "processed, setting completion promise";
+    if (!first_error.ok()) {
+      // If PrepareMaterializationTraversals succeeded, then all nodes should
+      // either be in the pending-materialization state or already failed.
+      // But if it failed, we need to fail them here to unblock waiters.
+      for (const auto& node : nodes_task.nodes_to_materialize) {
+        if (!node->is_materializing()) {
+          node->SetAsError(first_error);
+        }
+      }
+    }
+    nodes_task.completion_promise.Set(first_error);
+  }
+
+  static void CompleteMaterializationTask(MaterializationTask& task,
+                                          const absl::Status& first_error) {
+    if (auto* nodes_task = std::get_if<NodesMaterializationTask>(&task.kind)) {
+      CompleteNodesMaterializationTask(*nodes_task, first_error);
+      return;
+    }
+
+    if (auto* stream_task =
+            std::get_if<StreamMaterializationTask>(&task.kind)) {
+      if (first_error.ok()) {
+        ABSL_VLOG(2) << "[MaterializationWorker] StreamMaterializationTask "
+                        "processed, setting completion promise";
+        stream_task->completion_promise.Set(EventSnapshot::Record(
+            stream_task->device_index, stream_task->stream_id));
+      } else {
+        stream_task->completion_promise.Set(first_error);
+      }
+      return;
+    }
+
+    auto& device_task = std::get<DeviceMaterializationTask>(task.kind);
+    ABSL_VLOG(2) << "[MaterializationWorker] DeviceMaterializationTask "
+                    "processed, setting completion promise";
+    if (first_error.ok()) {
+      device_task.completion_promise.Set(
+          RecordDeviceSnapshots(device_task.device_index));
+    } else {
+      device_task.completion_promise.Set(first_error);
+    }
+  }
+
   // Processes a single materialization task.
   // Returns true if the loop should continue, or false if the worker should
   // shutdown.
@@ -648,45 +765,7 @@ class MaterializationWorker {
     // Set the completion promise for the task.
     // If there were any errors, this typically indicates a compilation
     // failure, rather than an execution failure.
-    if (auto* nodes_task = std::get_if<NodesMaterializationTask>(&task.kind)) {
-      ABSL_VLOG(2) << "[MaterializationWorker] NodesMaterializationTask "
-                      "processed, setting completion promise";
-      if (!materialization_stages.first_error.ok()) {
-        // If PrepareMaterializationTraversals succeeded, then all nodes should
-        // either be in the pending-materialization state or already failed.
-        // But if it failed, we need to fail them here to unblock waiters.
-        for (const auto& node : nodes_task->nodes_to_materialize) {
-          if (node->is_materializing()) continue;
-          node->SetAsError(materialization_stages.first_error);
-        }
-      }
-      nodes_task->completion_promise.Set(materialization_stages.first_error);
-      return true;
-    }
-
-    if (auto* stream_task =
-            std::get_if<StreamMaterializationTask>(&task.kind)) {
-      if (materialization_stages.first_error.ok()) {
-        ABSL_VLOG(2) << "[MaterializationWorker] StreamMaterializationTask "
-                        "processed, setting completion promise";
-        stream_task->completion_promise.Set(EventSnapshot::Record(
-            stream_task->device_index, stream_task->stream_id));
-      } else {
-        stream_task->completion_promise.Set(materialization_stages.first_error);
-      }
-      return true;
-    }
-
-    auto& device_task = std::get<DeviceMaterializationTask>(task.kind);
-
-    ABSL_VLOG(2) << "[MaterializationWorker] DeviceMaterializationTask "
-                    "processed, setting completion promise";
-    if (materialization_stages.first_error.ok()) {
-      device_task.completion_promise.Set(
-          RecordDeviceSnapshots(device_task.device_index));
-    } else {
-      device_task.completion_promise.Set(materialization_stages.first_error);
-    }
+    CompleteMaterializationTask(task, materialization_stages.first_error);
     return true;
   }
 
@@ -809,39 +888,11 @@ MaterializationWorker& GetMaterializationWorker() {
 }
 
 // Common pathway for all Materialize() overloads.
+// Precondition: `nodes_to_materialize` is non-empty, contains no placeholders,
+// and contains only unique deferred nodes.
 absl::Status MaterializeImpl(
-    std::vector<SharedDeviceBufferList>& nodes_to_materialize,
+    const std::vector<SharedDeviceBufferList>& nodes_to_materialize,
     MaterializationReason reason, MaterializationMode materialization_mode) {
-  if (nodes_to_materialize.empty()) {
-    return absl::OkStatus();
-  }
-
-  if (std::any_of(nodes_to_materialize.begin(), nodes_to_materialize.end(),
-                  [](const SharedDeviceBufferList& node) {
-                    return node != nullptr && node->is_placeholder();
-                  })) {
-    return TT_ERROR(error::kInternal)
-           << "cannot Materialize() a placeholder tensor or a tensor that "
-              "depends on a placeholder. \nPlaceholder tensors should only "
-              "appear in compiled mode, which should never try to "
-              "materialize tensors";
-  }
-
-  // Fast-path: deduplicate and prune non-deferred nodes in-place. If no
-  // deferred nodes remain, return synchronously without profiler scopes or
-  // inter-thread task handoffs to the MaterializationWorker.
-  {
-    absl::flat_hash_set<const DeviceBufferList*> unique_nodes;
-    std::erase_if(nodes_to_materialize,
-                  [&unique_nodes](const SharedDeviceBufferList& node) {
-                    return node == nullptr || !node->is_deferred() ||
-                           !unique_nodes.insert(node.get()).second;
-                  });
-  }
-  if (nodes_to_materialize.empty()) {
-    return absl::OkStatus();
-  }
-
   tsl::profiler::TraceMe t("MaterializeImpl");
   ABSL_VLOG(1) << "[MaterializeImpl] Materializing "
                << nodes_to_materialize.size() << " nodes";
@@ -861,6 +912,72 @@ absl::Status MaterializeImpl(
   return absl::OkStatus();
 }
 
+inline const SharedDeviceBufferList& GetDeviceBufferList(
+    const SharedDeviceBufferList& node) {
+  return node;
+}
+
+inline const SharedDeviceBufferList& GetDeviceBufferList(
+    const DeviceBufferRef& buffer_ref) {
+  return buffer_ref.device_buffer_list();
+}
+
+// Common implementation for Materialize(Span<SharedDeviceBufferList>) and
+// Materialize(Span<DeviceBufferRef>).
+//
+// Performance Invariants & Rationale:
+//   1. Zero-Allocation Fast Path When Already Materialized:
+//      `Materialize` is frequently invoked on step boundaries or explicit sync
+//      points (e.g., `torch_tpu.sync.synchronize(tensors, wait=False)`) where
+//      some or all tensors may already be materializing or materialized (such
+//      as in DeferNever / Eager Default mode). By counting `num_deferred` in a
+//      lightweight first pass, we return `absl::OkStatus()` immediately with
+//      zero heap allocations and without acquiring `MaterializationWorker`
+//      mutexes when `num_deferred == 0`.
+//   2. Single-Allocation Exact Reservation (`reserve(num_deferred)`):
+//      When deferred nodes exist, reserving `num_deferred` upfront guarantees
+//      exactly one heap allocation and avoids vector growth/reallocation on the
+//      main Python thread.
+//   3. O(N) Insertion (No Main-Thread O(N^2) Linear Scan):
+//      We intentionally do not deduplicate `nodes_to_materialize` via an O(N^2)
+//      linear scan on the dispatch thread, because
+//      `PrepareMaterializationTraversals` on the background
+//      `MaterializationWorker` thread already deduplicates nodes per stream in
+//      O(1) amortized time using `stream_node_set`.
+template <typename T>
+absl::Status MaterializeSpan(absl::Span<const T> items,
+                             MaterializationReason reason,
+                             MaterializationMode materialization_mode) {
+  const bool check_placeholders = DeviceBufferList::HasActivePlaceholders();
+  size_t num_deferred = 0;
+  for (const T& item : items) {
+    const SharedDeviceBufferList& node = GetDeviceBufferList(item);
+    if (node == nullptr) continue;
+    if (check_placeholders && node->is_placeholder()) {
+      return TT_ERROR(error::kInternal)
+             << "cannot Materialize() a placeholder tensor or a tensor that "
+                "depends on a placeholder. \nPlaceholder tensors should only "
+                "appear in compiled mode, which should never try to "
+                "materialize tensors";
+    }
+    if (node->is_deferred()) {
+      ++num_deferred;
+    }
+  }
+  if (num_deferred == 0) {
+    return absl::OkStatus();
+  }
+  std::vector<SharedDeviceBufferList> nodes_to_materialize;
+  nodes_to_materialize.reserve(num_deferred);
+  for (const T& item : items) {
+    const SharedDeviceBufferList& node = GetDeviceBufferList(item);
+    if (node != nullptr && node->is_deferred()) {
+      nodes_to_materialize.push_back(node);
+    }
+  }
+  return MaterializeImpl(nodes_to_materialize, reason, materialization_mode);
+}
+
 }  // namespace
 
 void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
@@ -868,33 +985,13 @@ void ShutDownMaterializationState() { GetMaterializationWorker().Shutdown(); }
 absl::Status Materialize(absl::Span<const SharedDeviceBufferList> nodes,
                          MaterializationReason reason,
                          MaterializationMode materialization_mode) {
-  if (nodes.empty()) {
-    return absl::OkStatus();
-  }
-  // Optimistically assume that all nodes are deferred.
-  // Copy to a vector to allow for deduplication inside MaterializeImpl.
-  // Non-deferred nodes are skipped inside the MaterializationWorker
-  std::vector<SharedDeviceBufferList> nodes_to_materialize(nodes.begin(),
-                                                           nodes.end());
-  return MaterializeImpl(nodes_to_materialize, reason, materialization_mode);
+  return MaterializeSpan(nodes, reason, materialization_mode);
 }
 
 absl::Status Materialize(absl::Span<const DeviceBufferRef> buffer_refs,
                          MaterializationReason reason,
                          MaterializationMode materialization_mode) {
-  if (buffer_refs.empty()) {
-    return absl::OkStatus();
-  }
-  // Optimistically assume that all refs are deferred and unique.
-  // Deduplication happens in MaterializeImpl.
-  // Non-deferred nodes are skipped inside the MaterializationWorker.
-  std::vector<SharedDeviceBufferList> nodes_to_materialize;
-  nodes_to_materialize.reserve(buffer_refs.size());
-  for (const DeviceBufferRef& buffer_ref : buffer_refs) {
-    nodes_to_materialize.push_back(buffer_ref.device_buffer_list());
-  }
-
-  return MaterializeImpl(nodes_to_materialize, reason, materialization_mode);
+  return MaterializeSpan(buffer_refs, reason, materialization_mode);
 }
 
 absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(

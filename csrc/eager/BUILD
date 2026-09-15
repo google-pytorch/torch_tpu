@@ -418,7 +418,6 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:future",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 

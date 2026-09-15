@@ -444,13 +444,39 @@ absl::StatusOr<std::vector<DeviceBufferRef>> DeviceBufferList::CreateDeferred(
   return device_buffer_refs;
 }
 
+namespace {
+// Tracks the number of live compiled-mode placeholder DeviceBufferList
+// instances across the process.
+//
+// Why relaxed memory ordering is safe:
+//   - Placeholders are created on the Python/dispatch thread during FX graph
+//     tracing and destroyed when their Python tensor references are GC'd.
+//   - `HasActivePlaceholders()` is queried on the dispatch thread (in
+//     `MaterializeSpan`) or on the MaterializationWorker thread (after task
+//     enqueue synchronization via `materialize_mu_`, which provides full
+//     release-acquire memory ordering).
+std::atomic<int64_t> g_active_placeholder_count{0};
+}  // namespace
+
+bool DeviceBufferList::HasActivePlaceholders() {
+  return g_active_placeholder_count.load(std::memory_order_relaxed) > 0;
+}
+
 absl::StatusOr<DeviceBufferRef> DeviceBufferList::CreatePlaceholder(
     Dimensions dimensions, mlir::ElementType element_type,
     bool is_pinned_host) {
   TT_RETURN_IF_ERROR(ValidateTensorByteSize(dimensions, element_type));
+  g_active_placeholder_count.fetch_add(1, std::memory_order_relaxed);
   // Can't use make_shared because the constructor is private.
-  auto device_buffer = std::shared_ptr<DeviceBufferList>(new DeviceBufferList(
-      std::move(dimensions), element_type, /*placeholder=*/true));
+  // Attach a custom deleter to decrement the active placeholder count exactly
+  // when the last SharedDeviceBufferList reference is destroyed.
+  auto device_buffer = std::shared_ptr<DeviceBufferList>(
+      new DeviceBufferList(std::move(dimensions), element_type,
+                           /*placeholder=*/true),
+      [](DeviceBufferList* ptr) {
+        g_active_placeholder_count.fetch_sub(1, std::memory_order_relaxed);
+        delete ptr;
+      });
   if (is_pinned_host) {
     device_buffer->set_is_pinned_host();
   }

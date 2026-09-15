@@ -47,6 +47,7 @@ namespace torch_tpu {
 // However, because views are ephemeral, future calls to .cpu() on the tensors
 // will re-execute the view logic (using the cached compilation).
 absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors);
+absl::Status SynchronizeTensors(absl::Span<const at::Tensor* const> tensors);
 
 // Whether to wait for execution to complete.
 enum class WaitOnExecution {

@@ -47,7 +47,6 @@ torch_tpu_py_library(
     deps = [
         ":_tpu_torch_sync",
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
     ],
 )
 
@@ -73,7 +72,9 @@ pybind_extension(
         "//csrc/ops:python_context",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
+        "//shims/torch/c10/core:base_headers",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
     ],

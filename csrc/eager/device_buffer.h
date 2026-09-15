@@ -636,6 +636,18 @@ class DeviceBufferList {
   // The execution may or may not have completed.
   [[nodiscard]] bool is_executing() const { return data_.is_executing(); }
 
+  // Returns true if any compiled-mode placeholder DeviceBufferList is currently
+  // alive anywhere in the process.
+  //
+  // Placeholders are only created during FX graph tracing / compilation
+  // (via CreatePlaceholder) to represent symbolic inputs to a compiled
+  // executable. During normal Eager Default, Eager Optimized, and steady-state
+  // Compiled runtime execution, no placeholder buffers exist. This O(1) atomic
+  // query allows Materialize() and ApplySplitMode() to completely bypass
+  // expensive O(N) traversal/argument/output scanning for abandoned placeholder
+  // dependencies when no placeholders are active.
+  [[nodiscard]] static bool HasActivePlaceholders();
+
   // Returns true if this DeviceBufferList has finished materialization.
   // It may have succeeded or failed.
   [[nodiscard]] bool is_materialized() const { return data_.is_materialized(); }

@@ -19,7 +19,6 @@ import os
 import torch
 import torch.distributed.tensor as dt
 from torch.utils import _pytree
-from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.sync import _tpu_torch_sync
 
 
@@ -34,43 +33,9 @@ def _maybe_unwrap(tensor: torch.Tensor) -> torch.Tensor:
 
 # TODO: add ways to support all these methods through public API features
 # (streams, events, etc)
-def synchronize(
-    tensors: torch.Tensor | list[torch.Tensor] | None = None, wait: bool = False
-) -> None:
-  """Forces a materialization of one or more TPU tensors.
-
-  Args:
-    tensors: what to synchronize. If None, synchronizes the entire graph of
-      deferred operations. Otherwise, synchronizes only the specified tensor or
-      list of tensors.
-    wait: Whether to wait for the tensor(s) to be ready. If wait is False, the
-      function will compiled a graph to compute the tensors and enqueue it for
-      execution, but will not wait for the results. If wait is True, the
-      function will also wait for the results to be ready.
-  """
-  if tensors is None:
-    current_device_id = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
-    _device_ops_backend._synchronize_device(current_device_id, wait)  # pylint: disable=protected-access
-  elif isinstance(tensors, list):
-    _tpu_torch_sync._synchronize_list(  # pylint: disable=protected-access
-        [_maybe_unwrap(t) for t in tensors], wait
-    )
-  else:
-    _tpu_torch_sync._synchronize_tensor(  # pylint: disable=protected-access
-        _maybe_unwrap(tensors), wait
-    )
-
-
-def is_materializing(tensor: torch.Tensor) -> bool:
-  return _tpu_torch_sync._is_materializing(  # pylint: disable=protected-access
-      _maybe_unwrap(tensor)
-  )
-
-
-def is_materialized(tensor: torch.Tensor) -> bool:
-  return _tpu_torch_sync._is_materialized(  # pylint: disable=protected-access
-      _maybe_unwrap(tensor)
-  )
+synchronize = _tpu_torch_sync.synchronize
+is_materializing = _tpu_torch_sync.is_materializing
+is_materialized = _tpu_torch_sync.is_materialized
 
 
 def _dump_computation(
