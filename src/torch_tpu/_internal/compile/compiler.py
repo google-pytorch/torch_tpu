@@ -25,7 +25,6 @@ import collections
 from collections.abc import Sequence
 import concurrent.futures
 import dataclasses
-import os
 from typing import Any
 
 import torch
@@ -39,6 +38,7 @@ from torch._subclasses.fake_tensor import FakeTensor
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.fx.passes import graph_transform_observer
 from torch.utils import _pytree
+from torch_tpu._internal import env
 from torch_tpu._internal import export as torch_tpu_export
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
@@ -352,8 +352,9 @@ class StaticCompiler(Compiler):
         placeholder_args = _create_storage_aware_placeholders(
             example_inputs,
             bounds,
-            enabled=os.environ.get("TORCHTPU_STORAGE_AWARE_PLACEHOLDERS", "0")
-            == "1",
+            enabled=env.get_bool_env_once(
+                "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS", default_value=False
+            ),
         )
 
         if argument_layouts is None:

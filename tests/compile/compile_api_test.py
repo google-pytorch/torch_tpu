@@ -14,7 +14,6 @@
 
 """Directly test the PyBind11 API for compiled mode, without using Dynamo."""
 
-import os
 import re
 import textwrap
 from typing import TypeAlias
@@ -1416,8 +1415,10 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     )
 
   def test_traverse_and_compile_shared_storage_deduplication(self):
-    with absltest.mock.patch.dict(
-        os.environ, {'TORCHTPU_STORAGE_AWARE_PLACEHOLDERS': '1'}
+    # The knob is read through the memoizing env getter, which cannot observe a
+    # mutation of os.environ made after the first read.
+    with absltest.mock.patch.object(
+        compiler.env, 'get_bool_env_once', return_value=True
     ):
 
       @torch.compile

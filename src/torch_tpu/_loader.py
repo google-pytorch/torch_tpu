@@ -352,14 +352,18 @@ def load(allow_xla_backend: bool | None = None) -> None:
   # On autoload restore the original autoload value
   os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = _OLD_AUTOLOAD_ENV
 
+  from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
+
+  if allow_xla_backend is None:
+    allow_xla_backend = env.get_bool_env_once(
+        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND", default_value=False
+    )
+
   global _LOADED
   if hardware.get_tpu_device_count():
     _init_device("tpu")
     _LOADED = True
-  elif allow_xla_backend or (
-      allow_xla_backend is None
-      and int(os.environ.get("TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND", 0))
-  ):
+  elif allow_xla_backend:
     if hardware.has_nvidia_gpu():
       _init_device("xla_cuda")
     else:

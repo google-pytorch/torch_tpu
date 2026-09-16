@@ -55,6 +55,9 @@ inline constexpr char kMasterPortEnvVar[] = "MASTER_PORT";  // Set by launchers.
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
 inline constexpr char kRankEnvVar[] = "RANK";  // Set by launchers.
+// If set to "1" or "true", the splash attention backward pass is computed with
+// vmap.
+inline constexpr char kSplashUseVmapBwdEnvVar[] = "SPLASH_USE_VMAP_BWD";
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // If set to "1", C++ stack traces are appended to error messages.
@@ -62,6 +65,8 @@ inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
 // https://docs.pytorch.org/docs/stable/debugging_environment_variables.html#pytorch-debug-environment-variables
 inline constexpr char kTorchShowCppStacktracesEnvVar[] =
     "TORCH_SHOW_CPP_STACKTRACES";
+// If set to "1" or "true", enables verbose debug output.
+inline constexpr char kTorchTpuDebugEnvVar[] = "TORCH_TPU_DEBUG";
 // If both TORCH_TPU_DEFER_AND_FUSE and TPU_DEFER_AND_FUSE are set,
 // TORCH_TPU_DEFER_AND_FUSE takes precedence.
 inline constexpr char kTorchTpuDeferAndFuseEnvVar[] =
@@ -79,6 +84,10 @@ inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
+// If set to "1" or "true", allows loading the xla_cuda and xla_cpu backends on
+// machines without a TPU.
+inline constexpr char kTorchTpuInternalAllowXlaBackendEnvVar[] =
+    "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND";
 // Specifies the repeated op detection mode. If not set, "safe" mode is used.
 // Supported modes:
 // - "safe": Uses MaterializationMode::kSplitGraph when a repeated sequence is
@@ -163,6 +172,11 @@ inline constexpr char kTorchTpuTopologyEnvVar[] =
     "TORCH_TPU_TOPOLOGY";  // Set by Torch TPU specific launchers.
 // If set, enables structured logging for tlparse.
 inline constexpr char kTorchTraceEnvVar[] = "TORCH_TRACE";
+// If set to "1" or "true", the compiler accounts for the storage backing
+// placeholders. Note the missing underscore between TORCH and TPU, which is
+// how this env var has always been spelled.
+inline constexpr char kTorchtpuStorageAwarePlaceholdersEnvVar[] =
+    "TORCHTPU_STORAGE_AWARE_PLACEHOLDERS";
 inline constexpr char kTpuChipsPerHostBoundsEnvVar[] =
     "TPU_CHIPS_PER_HOST_BOUNDS";  // Read by Google Cloud.
 inline constexpr char kTpuChipsPerProcessBoundsEnvVar[] =
@@ -224,11 +238,14 @@ inline constexpr auto kEnvVarToStage =
         // public API contract.
         {kNprocEnvVar, SymbolStage::InternalApi()},
         {kRankEnvVar, std::nullopt},
+        {kSplashUseVmapBwdEnvVar, std::nullopt},
         {kTmpdirEnvVar, SymbolStage::Stable()},
         {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuDebugEnvVar, std::nullopt},
         {kTorchTpuDeferAndFuseEnvVar, SymbolStage::Experimental()},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
+        {kTorchTpuInternalAllowXlaBackendEnvVar, std::nullopt},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, std::nullopt},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar, std::nullopt},
         {kTorchTpuInternalEnableDebugChecksEnvVar, std::nullopt},
@@ -247,6 +264,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
+        {kTorchtpuStorageAwarePlaceholdersEnvVar, std::nullopt},
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
         {kTpuChipsPerProcessBoundsEnvVar,
          SymbolStage::InternalImplementation()},

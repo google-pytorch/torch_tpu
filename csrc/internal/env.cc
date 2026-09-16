@@ -40,7 +40,13 @@ namespace {
 std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
                                         std::optional<bool> default_value) {
   std::optional<bool> value;
-  if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
+  if (name == kSplashUseVmapBwdEnvVar) {
+    value = GetBooleanEnvOnce<kSplashUseVmapBwdEnvVar>();
+  } else if (name == kTorchTpuDebugEnvVar) {
+    value = GetBooleanEnvOnce<kTorchTpuDebugEnvVar>();
+  } else if (name == kTorchTpuInternalAllowXlaBackendEnvVar) {
+    value = GetBooleanEnvOnce<kTorchTpuInternalAllowXlaBackendEnvVar>();
+  } else if (name == kTorchTpuInternalEnableDebugChecksEnvVar) {
     value = GetBooleanEnvOnce<kTorchTpuInternalEnableDebugChecksEnvVar>();
   } else if (name == kTorchTpuInternalEnableReassociateNormWeightsEnvVar) {
     value = GetBooleanEnvOnce<
@@ -48,6 +54,8 @@ std::optional<bool> PyGetBooleanEnvOnce(std::string_view name,
   } else if (name == kTorchTpuInternalMaterializeCollectiveTensorsEnvVar) {
     value = GetBooleanEnvOnce<
         kTorchTpuInternalMaterializeCollectiveTensorsEnvVar>();
+  } else if (name == kTorchtpuStorageAwarePlaceholdersEnvVar) {
+    value = GetBooleanEnvOnce<kTorchtpuStorageAwarePlaceholdersEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading Boolean environment variable " << name

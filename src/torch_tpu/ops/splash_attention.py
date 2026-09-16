@@ -26,7 +26,6 @@ import typing
 from typing import Optional
 
 from absl import logging
-
 # JAX imports
 import jax
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
@@ -34,6 +33,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel import QKVLayout
 import jax.numpy as jnp
 import torch
+from torch_tpu._internal import env
 
 # torch_tpu Pallas bridge
 from torch_tpu._internal import pallas
@@ -41,7 +41,7 @@ from torch_tpu._internal import pallas
 custom_jax_kernel = pallas.custom_jax_kernel
 
 _DEFAULT_MASK_VALUE = splash_attention_kernel.DEFAULT_MASK_VALUE
-_DEBUG = os.environ.get("TORCH_TPU_DEBUG", "False").lower() == "true"
+_DEBUG = env.get_bool_env_once("TORCH_TPU_DEBUG", default_value=False)
 
 
 def _make_splash_attention_fn(
@@ -509,12 +509,9 @@ def splash_sdpa(
 
   block_q = int(os.environ.get("SPLASH_BLOCK_Q", block_q))
   block_kv = int(os.environ.get("SPLASH_BLOCK_KV", block_kv))
-  if "SPLASH_USE_VMAP_BWD" in os.environ:
-    use_vmap_bwd = os.environ["SPLASH_USE_VMAP_BWD"].lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+  use_vmap_bwd = env.get_bool_env_once(
+      "SPLASH_USE_VMAP_BWD", default_value=use_vmap_bwd
+  )
   if block_dkv != 512:
     block_q_dkv = block_dkv
     block_kv_dkv = block_dkv

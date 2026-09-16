@@ -47,6 +47,7 @@ torch_tpu_py_library(
         "//shims/absl_py/logging",
         "//shims/jax:pallas_tpu_ops",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal/pallas",
         "@pypi//jax",
         "@pypi//torchax",  # build_cleaner: keep
