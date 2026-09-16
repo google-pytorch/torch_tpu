@@ -15,7 +15,6 @@
 """Unit tests for TorchTPU integration using TorchComm directly."""
 
 import datetime
-import os
 from unittest import mock
 from absl.testing import absltest
 import torch
@@ -27,6 +26,27 @@ from tests import seed_test_utils
 import torchcomms
 
 _loader._init_device("tpu")
+
+
+def _mock_int_env(values: dict[str, int]):
+  """Mocks env.get_int_env_once() so that it reports `values`.
+
+  The real reader memoizes in C++, so it cannot be steered by patching the
+  process environment more than once per process.
+
+  Args:
+    values: The environment variables to report as set.
+
+  Returns:
+    A context manager that installs the mock.
+  """
+  return mock.patch.object(
+      torchcomm_tpu.env,
+      "get_int_env_once",
+      side_effect=lambda name, default_value=None: values.get(
+          name, default_value
+      ),
+  )
 
 
 class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
@@ -60,11 +80,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
 
   def test_env_var_configuration(self):
     """Verifies rank and size initialization from TORCHCOMM_* environment variables."""
-    env_patch = {
-        "TORCHCOMM_RANK": "3",
-        "TORCHCOMM_SIZE": "16",
-    }
-    with mock.patch.dict(os.environ, env_patch):
+    with _mock_int_env({"TORCHCOMM_RANK": 3, "TORCHCOMM_SIZE": 16}):
       comm = torchcomms.new_comm(
           "tpu",
           torch.device("cpu"),
@@ -76,15 +92,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
 
   def test_rank_size_fallback_to_rank_world_size(self):
     """Verifies fallback to standard RANK and WORLD_SIZE environment variables."""
-    env_patch = {
-        "RANK": "1",
-        "WORLD_SIZE": "4",
-    }
-    with mock.patch.dict(os.environ, env_patch, clear=False), mock.patch.dict(
-        os.environ, {"TORCHCOMM_RANK": "", "TORCHCOMM_SIZE": ""}
-    ):
-      os.environ.pop("TORCHCOMM_RANK", None)
-      os.environ.pop("TORCHCOMM_SIZE", None)
+    with _mock_int_env({"RANK": 1, "WORLD_SIZE": 4}):
       comm = torchcomms.new_comm(
           "tpu",
           torch.device("cpu"),
@@ -119,11 +127,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
 
   def test_split_subgroup(self):
     """Verifies splitting a communicator into a subgroup using TorchComm.split."""
-    env_patch = {
-        "TORCHCOMM_RANK": "0",
-        "TORCHCOMM_SIZE": "4",
-    }
-    with mock.patch.dict(os.environ, env_patch):
+    with _mock_int_env({"TORCHCOMM_RANK": 0, "TORCHCOMM_SIZE": 4}):
       comm = torchcomms.new_comm(
           "tpu",
           torch.device("cpu"),
@@ -326,11 +330,7 @@ class TorchCommsTPUTest(seed_test_utils.RepeatableTest):
 
   def test_torchcomms_send_recv(self):
     """Verifies point-to-point send and recv operations."""
-    env_patch = {
-        "TORCHCOMM_RANK": "0",
-        "TORCHCOMM_SIZE": "2",
-    }
-    with mock.patch.dict(os.environ, env_patch):
+    with _mock_int_env({"TORCHCOMM_RANK": 0, "TORCHCOMM_SIZE": 2}):
       comm = torchcomms.new_comm("tpu", torch.device("cpu"), name="test_sr")
       mock_pg = mock.MagicMock()
       mock_pg.experimental_send = mock.MagicMock()

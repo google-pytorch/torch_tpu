@@ -22,7 +22,6 @@ import concurrent.futures
 import dataclasses
 import functools
 import json
-import os
 import queue
 import struct
 import threading
@@ -62,17 +61,11 @@ def _get_handshake_timeout_s() -> int:
     The timeout in seconds.
 
   Raises:
-    ValueError: If `TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S` cannot be parsed as
-      an integer or is negative.
+    ValueError: If `TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S` is negative.
   """
-  env_val = os.environ.get("TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S", "60")
-  try:
-    timeout_s = int(env_val)
-  except ValueError as e:
-    raise ValueError(
-        "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be an integer, got"
-        f" {env_val!r}."
-    ) from e
+  timeout_s = env.get_int_env_once(
+      "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S", default_value=60
+  )
   if timeout_s < 0:
     raise ValueError(
         "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be non-negative, got"

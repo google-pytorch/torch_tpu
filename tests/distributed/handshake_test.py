@@ -377,13 +377,16 @@ class GetHandshakeTimeoutMsTest(seed_test_utils.RepeatableTest):
   """Unit tests for _get_handshake_timeout_s environment variable parser."""
 
   def test_default_timeout(self) -> None:
-    with mock.patch.dict(os.environ, {}, clear=True):
+    # Returning the caller-supplied default stands in for an unset variable.
+    with mock.patch.object(
+        env,
+        "get_int_env_once",
+        side_effect=lambda name, default_value: default_value,
+    ):
       self.assertEqual(_get_handshake_timeout_s(), 60)
 
   def test_custom_valid_timeout(self) -> None:
-    with mock.patch.dict(
-        os.environ, {"TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "5"}
-    ):
+    with mock.patch.object(env, "get_int_env_once", return_value=5):
       self.assertEqual(_get_handshake_timeout_s(), 5)
 
 

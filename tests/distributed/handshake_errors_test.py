@@ -16,7 +16,6 @@
 
 import asyncio
 import json
-import os
 from unittest import mock
 
 from absl.testing import absltest
@@ -180,20 +179,8 @@ class CollectiveHandshakeResponseTest(seed_test_utils.RepeatableTest):
 class GetHandshakeTimeoutMsTest(seed_test_utils.RepeatableTest):
   """Unit tests for _get_handshake_timeout_s error handling."""
 
-  def test_invalid_string_timeout(self) -> None:
-    with mock.patch.dict(
-        os.environ, {"TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "invalid"}
-    ):
-      with self.assertRaisesRegex(
-          ValueError,
-          "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be an integer",
-      ):
-        _get_handshake_timeout_s()
-
   def test_negative_timeout(self) -> None:
-    with mock.patch.dict(
-        os.environ, {"TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S": "-100"}
-    ):
+    with mock.patch.object(env, "get_int_env_once", return_value=-100):
       with self.assertRaisesRegex(
           ValueError,
           "TORCH_TPU_INTERNAL_HANDSHAKE_TIMEOUT_S must be non-negative",

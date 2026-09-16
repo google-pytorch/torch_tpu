@@ -29,11 +29,12 @@ from tests import seed_test_utils
 def _mock_env(values: dict[str, str]):
   """Makes the environment look exactly like `values` to the wrapper.
 
-  `multihost_wrapper` reads string variables through `torch_tpu._internal.env`,
-  whose getters memoize on first read, and writes them through
-  `torch_tpu._internal.env_utils`, which memoizes too. Patching `os.environ`
-  alone would therefore only take effect in whichever test happens to run
-  first. This patches all three so that each test sees a clean environment.
+  `multihost_wrapper` reads string and integer variables through
+  `torch_tpu._internal.env`, whose getters memoize on first read, and writes
+  them through `torch_tpu._internal.env_utils`, which memoizes too. Patching
+  `os.environ` alone would therefore only take effect in whichever test happens
+  to run first. This patches all of them so that each test sees a clean
+  environment.
 
   Args:
     values: The environment variables to make visible.
@@ -46,6 +47,9 @@ def _mock_env(values: dict[str, str]):
   def get_str_env_once(name, default_value=None):
     return values.get(name, default_value)
 
+  def get_int_env_once(name, default_value=None):
+    return int(values[name]) if name in values else default_value
+
   with contextlib.ExitStack() as stack:
     stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
     stack.enter_context(
@@ -54,9 +58,10 @@ def _mock_env(values: dict[str, str]):
     stack.enter_context(
         mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
     )
+    stack.enter_context(
+        mock.patch.object(env, "get_int_env_once", side_effect=get_int_env_once)
+    )
     yield
-
-
 class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
 
   def test_prepare_tpu_environment_multihost(self):

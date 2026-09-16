@@ -20,7 +20,6 @@ Uses torch_tpu._internal.pallas.custom_jax_kernel() to bridge JAX -> PyTorch.
 
 import hashlib
 import math
-import os
 import sys
 import typing
 from typing import Optional
@@ -507,17 +506,18 @@ def splash_sdpa(
     Output tensor of scaled dot-product attention.
   """
 
-  block_q = int(os.environ.get("SPLASH_BLOCK_Q", block_q))
-  block_kv = int(os.environ.get("SPLASH_BLOCK_KV", block_kv))
+  block_q = env.get_int_env_once("SPLASH_BLOCK_Q", default_value=block_q)
+  block_kv = env.get_int_env_once("SPLASH_BLOCK_KV", default_value=block_kv)
   use_vmap_bwd = env.get_bool_env_once(
       "SPLASH_USE_VMAP_BWD", default_value=use_vmap_bwd
   )
   if block_dkv != 512:
     block_q_dkv = block_dkv
     block_kv_dkv = block_dkv
-  if "SPLASH_BLOCK_DKV" in os.environ:
-    block_q_dkv = int(os.environ["SPLASH_BLOCK_DKV"])
-    block_kv_dkv = int(os.environ["SPLASH_BLOCK_DKV"])
+  block_dkv_override = env.get_int_env_once("SPLASH_BLOCK_DKV")
+  if block_dkv_override is not None:
+    block_q_dkv = block_dkv_override
+    block_kv_dkv = block_dkv_override
 
   _, n_heads, seq_len, _ = q.shape
   n_kv_heads = k.shape[1]

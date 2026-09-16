@@ -35,6 +35,7 @@ torch_tpu_py_library(
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
     ],
 )
 
@@ -109,6 +110,7 @@ torch_tpu_py_library(
         ":tpu_distributed",  # buildcleaner: keep
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
     ],
 )
 

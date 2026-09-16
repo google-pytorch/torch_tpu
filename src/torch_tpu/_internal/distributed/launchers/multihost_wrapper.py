@@ -67,9 +67,11 @@ def prepare_tpu_environment() -> None:
 
   def build_slicebuilder_addresses() -> str:
     """Returns one address per device across all worker hosts."""
-    base_port = int(os.environ.get("TORCH_TPU_BASE_PORT", 8070))
+    base_port = env.get_int_env_once("TORCH_TPU_BASE_PORT", default_value=8070)
     # 8 devices per host is true for all current platforms.
-    devices_per_host = int(os.environ.get("TORCH_TPU_DEVICES_PER_HOST", 8))
+    devices_per_host = env.get_int_env_once(
+        "TORCH_TPU_DEVICES_PER_HOST", default_value=8
+    )
     return ",".join(
         f"{host}:{base_port + i}"
         for host in worker_hostnames

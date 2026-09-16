@@ -13,11 +13,11 @@
 # limitations under the License.
 
 """GPU-specific boilerplate we need to run on multiple GPUs."""
-import os
 
 from absl import logging
 import torch
 import torch.distributed as dist
+from torch_tpu._internal import env
 
 
 def run_in_workers(worker_fn, *worker_args):
@@ -30,9 +30,14 @@ def run_in_workers(worker_fn, *worker_args):
     *worker_args: Additional arguments to be passed to `worker_fn`.
   """
   # Retrieve rank and world_size from environment variables
-  rank = int(os.environ["RANK"])
-  world_size = int(os.environ["WORLD_SIZE"])
-  local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+  rank = env.get_int_env_once("RANK")
+  world_size = env.get_int_env_once("WORLD_SIZE")
+  local_rank = env.get_int_env_once("LOCAL_RANK", default_value=0)
+  if rank is None or world_size is None:
+    raise RuntimeError(
+        "RANK and WORLD_SIZE must be set to integers when running distributed"
+        " workers"
+    )
 
   logging.info(
       "CUDA gdist worker %d/%d (local %d) starting...",

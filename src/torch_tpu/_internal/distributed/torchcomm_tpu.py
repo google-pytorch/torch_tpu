@@ -21,13 +21,13 @@ TorchTPU with PyTorch's `torchcomms` subsystem and `torch.distributed`.
 from __future__ import annotations
 
 import datetime
-import os
 from typing import Any
 
 from absl import logging
 import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
+from torch_tpu._internal import env
 from torch_tpu._internal.distributed import tpu_distributed
 
 try:
@@ -36,6 +36,24 @@ try:
   _TorchCommBackendBase = torchcomms.TorchCommBackend  # pyrefly: ignore[invalid-inheritance]
 except Exception:
   _TorchCommBackendBase = object
+
+
+def _get_first_int_env_once(names: tuple[str, ...], default_value: int) -> int:
+  """Returns the value of the first of `names` that is set to an integer.
+
+  Args:
+    names: The environment variables to try, in order of decreasing precedence.
+    default_value: Returned when none of `names` is set to an integer.
+
+  Returns:
+    The value of the first variable that is set to an integer, or
+    `default_value`.
+  """
+  for name in names:
+    value = env.get_int_env_once(name)
+    if value is not None:
+      return value
+  return default_value
 
 
 def _to_dist_reduce_op(op: Any) -> Any:
@@ -121,21 +139,15 @@ class TorchCommsTPU(_TorchCommBackendBase):  # pyrefly: ignore[invalid-inheritan
     if group_rank is not None:
       self._rank = int(group_rank)
     else:
-      self._rank = int(
-          os.environ.get(
-              "TORCHCOMM_RANK",
-              os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")),
-          )
+      self._rank = _get_first_int_env_once(
+          ("TORCHCOMM_RANK", "RANK", "LOCAL_RANK"), default_value=0
       )
 
     if group_size is not None:
       self._size = int(group_size)
     else:
-      self._size = int(
-          os.environ.get(
-              "TORCHCOMM_SIZE",
-              os.environ.get("WORLD_SIZE", "1"),
-          )
+      self._size = _get_first_int_env_once(
+          ("TORCHCOMM_SIZE", "WORLD_SIZE"), default_value=1
       )
 
     self._name = str(name or f"torchcomm_tpu_{self._rank}_{self._size}")
