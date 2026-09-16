@@ -28,6 +28,7 @@
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/ops/sparse_coo/sparse_coo_aten_kernels.h"
 #include "torch/headeronly/core/DeviceType.h"
 #include "torch/headeronly/core/Layout.h"
 #include "torch/headeronly/core/MemoryFormat.h"
@@ -41,6 +42,10 @@ at::Tensor AtenToCopy(const at::Tensor& self,
                       std::optional<at::Device> device,
                       std::optional<bool> pin_memory, bool non_blocking,
                       std::optional<at::MemoryFormat> memory_format) {
+  if (self.is_sparse()) {
+    return AtenToCopySparse(self, dtype, layout, device, pin_memory,
+                            non_blocking, memory_format);
+  }
   TT_KERNEL(
       OpName::kToCopy, _,
       // Note: these cache key arguments are ignored for the compiled param keys

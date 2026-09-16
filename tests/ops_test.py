@@ -107,6 +107,9 @@ FLOAT_DTYPES = op_testing.FLOAT_DTYPES
 INTEGRAL_DTYPES = op_testing.INTEGRAL_DTYPES
 UNQUANTIZED_NUMERIC_DTYPES = op_testing.UNQUANTIZED_NUMERIC_DTYPES
 ALL_NUMERIC_DTYPES = op_testing.ALL_NUMERIC_DTYPES
+_SPARSE_COO_EXCLUDE_DTYPES = tuple(
+    set(ALL_NUMERIC_DTYPES) - set(FLOAT_DTYPES) - set(INTEGRAL_DTYPES)
+)
 
 CheckValueMode = test_utils.CheckValueMode
 
@@ -4089,6 +4092,137 @@ class TestOps(op_testing.OpInfoTestBase):
         "_softmax_backward_data",
         # TODO(b/557286629): support data sampling for non-floating-point dtypes.
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
+    )
+
+  def test_sparse_coo_add(self):
+    self.do_test_op(
+        "sparse_coo_add",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_add_dense_sparse(self):
+    self.do_test_op(
+        "sparse_coo_add_dense_sparse",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_clone(self):
+    self.do_test_op(
+        "sparse_coo_clone",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_coalesce(self):
+    self.do_test_op(
+        "sparse_coo_coalesce",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_copy_(self):
+    self.do_test_op(
+        "sparse_coo_copy_",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_empty_like(self):
+    self.do_test_op(
+        "sparse_coo_empty_like",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_mul(self):
+    self.do_test_op(
+        "sparse_coo_mul",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_neg(self):
+    self.do_test_op(
+        "sparse_coo_neg",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES + (torch.uint8, torch.bool),
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES
+        + (torch.uint8, torch.bool),
+    )
+
+  def test_sparse_coo_sub(self):
+    self.do_test_op(
+        "sparse_coo_sub",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES + (torch.uint8, torch.bool),
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES
+        + (torch.uint8, torch.bool),
+    )
+
+  def test_sparse_coo_sub_dense_sparse(self):
+    self.do_test_op(
+        "sparse_coo_sub_dense_sparse",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES + (torch.uint8, torch.bool),
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES
+        + (torch.uint8, torch.bool),
+    )
+
+  def test_sparse_coo_to_dense(self):
+    self.do_test_op(
+        "sparse_coo_to_dense",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+    )
+
+  def test_sparse_coo_zero_(self):
+    self.do_test_op(
+        "sparse_coo_zero_",
+        check_grad=False,
+        check_dynamism=False,
+        check_op_failures=False,
+        check_inplace_op_failures=False,
+        exclude_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
+        exclude_inplace_dtypes=_SPARSE_COO_EXCLUDE_DTYPES,
     )
 
   def test_split(self):

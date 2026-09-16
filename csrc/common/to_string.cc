@@ -26,7 +26,6 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "csrc/common/macro_utils.h"
-#include "csrc/common/utils.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/Types.h"
 #include "torch/csrc/distributed/c10d/Types.hpp"
@@ -104,6 +103,19 @@ std::string ToString(const at::Tensor& tensor, const std::string& name) {
   }
   if (!tensor.defined()) {
     absl::StrAppend(&result, "undefined");
+    return result;
+  }
+  if (tensor.is_sparse()) {
+    absl::StrAppend(                                            //
+        &result,                                                //
+        "shape=[", absl::StrJoin(tensor.sizes(), ", "), "], ",  //
+        "layout=Sparse, ",                                      //
+        "numel=", tensor.numel(), ", ",                         //
+        "dtype=", tensor.scalar_type(), ", ",                   //
+        "device=", ToString(tensor.device()), ", ",             //
+        "sparse_dim=", tensor.sparse_dim(), ", ",               //
+        "dense_dim=", tensor.dense_dim(), ", ",                 //
+        "nnz=", tensor._nnz());
     return result;
   }
   absl::StrAppend(                                                //

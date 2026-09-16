@@ -412,6 +412,8 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "sigmoid",
     "softmax",
     "sort",
+    "sparse_coo_mul",
+    "sparse_coo_neg",
     "split_with_sizes_copy",
     "std",
     "take",
@@ -1759,6 +1761,260 @@ def _sample_inputs_fused_adagrad(
   )
 
 
+def _make_sparse_coo_sample_tensor(
+    shape: Sequence[int],
+    sparse_dim: int,
+    nnz: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    *,
+    coalesced: bool = True,
+) -> torch.Tensor:
+  """Helper to create a sparse COO sample tensor for testing."""
+  dense_dim = len(shape) - sparse_dim
+  if nnz == 0:
+    return torch.ops.aten._sparse_coo_tensor_with_dims(
+        sparse_dim,
+        dense_dim,
+        shape,
+        dtype=dtype,
+        layout=torch.sparse_coo,
+        device=device,
+    )
+  indices = torch.stack(
+      [
+          torch.randint(
+              0, max(1, shape[d]), (nnz,), device=device, dtype=torch.int64
+          )
+          for d in range(sparse_dim)
+      ],
+      dim=0,
+  )
+  if not coalesced and nnz >= 2:
+    indices[:, 1] = indices[:, 0]
+  values_shape = (nnz, *shape[sparse_dim:])
+  values = common_utils.make_tensor(
+      values_shape, dtype=dtype, device=device, low=-5, high=5
+  )
+  sp = torch.sparse_coo_tensor(
+      indices, values, size=shape, dtype=dtype, device=device
+  )
+  if coalesced:
+    sp = sp.coalesce()
+  return sp
+
+
+def _sample_inputs_sparse_coo_binary(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  del op_info, requires_grad, kwargs
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 4, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (5, 6), 2, 3, device, dtype, coalesced=True
+          ),
+      ),
+      kwargs={"alpha": 1},
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 5, device, dtype, coalesced=False
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (5, 6), 2, 4, device, dtype, coalesced=True
+          ),
+      ),
+      kwargs={"alpha": 2},
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 5, 3), 2, 3, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 5, 3), 2, 3, device, dtype, coalesced=True
+          ),
+      ),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 4), 2, 0, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 4), 2, 3, device, dtype, coalesced=True
+          ),
+      ),
+  )
+
+
+def _sample_inputs_dense_sparse_binary(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  del op_info, requires_grad, kwargs
+  yield SampleInput(
+      common_utils.make_tensor(
+          (5, 6), dtype=dtype, device=device, low=-5, high=5
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (5, 6), 2, 4, device, dtype, coalesced=True
+          ),
+      ),
+      kwargs={"alpha": 1},
+  )
+  yield SampleInput(
+      common_utils.make_tensor(
+          (5, 6), dtype=dtype, device=device, low=-5, high=5
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (5, 6), 2, 5, device, dtype, coalesced=False
+          ),
+      ),
+      kwargs={"alpha": 2},
+  )
+  yield SampleInput(
+      common_utils.make_tensor(
+          (4, 5, 3), dtype=dtype, device=device, low=-5, high=5
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 5, 3), 2, 3, device, dtype, coalesced=True
+          ),
+      ),
+  )
+  yield SampleInput(
+      common_utils.make_tensor(
+          (4, 4), dtype=dtype, device=device, low=-5, high=5
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 4), 2, 0, device, dtype, coalesced=True
+          ),
+      ),
+  )
+
+
+def _sample_inputs_sparse_coo_mul(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  del op_info, requires_grad, kwargs
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 4, device, dtype, coalesced=True
+      ),
+      args=(torch.tensor(3, dtype=dtype, device=device),),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 5, device, dtype, coalesced=False
+      ),
+      args=(torch.tensor(2, dtype=dtype, device=device),),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 5, 3), 2, 3, device, dtype, coalesced=True
+      ),
+      args=(torch.tensor(4, dtype=dtype, device=device),),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 4), 2, 0, device, dtype, coalesced=True
+      ),
+      args=(torch.tensor(2, dtype=dtype, device=device),),
+  )
+
+
+def _sample_inputs_sparse_coo_unary(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  del op_info, requires_grad, kwargs
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor((8,), 1, 4, device, dtype, coalesced=True)
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 4, device, dtype, coalesced=True
+      )
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 5, device, dtype, coalesced=False
+      )
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 5, 3), 2, 4, device, dtype, coalesced=False
+      )
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 4), 2, 0, device, dtype, coalesced=True
+      )
+  )
+
+
+def _sample_inputs_sparse_coo_copy_(
+    op_info: OpInfo,
+    device: torch.device,
+    dtype: torch.dtype,
+    requires_grad: bool,
+    **kwargs: Any,
+) -> Iterable[SampleInput]:
+  del op_info, requires_grad, kwargs
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (5, 6), 2, 2, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (5, 6), 2, 4, device, dtype, coalesced=True
+          ),
+      ),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 5, 3), 2, 1, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 5, 3), 2, 3, device, dtype, coalesced=True
+          ),
+      ),
+  )
+  yield SampleInput(
+      _make_sparse_coo_sample_tensor(
+          (4, 4), 2, 3, device, dtype, coalesced=True
+      ),
+      args=(
+          _make_sparse_coo_sample_tensor(
+              (4, 4), 2, 0, device, dtype, coalesced=True
+          ),
+      ),
+  )
+
+
 # Ops not included in the list of tested ops for pytorch.
 _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
     OpInfo(
@@ -1942,6 +2198,122 @@ _ADDITIONAL_TORCH_TPU_OPS: Final[Sequence[OpInfo]] = [
         supports_fwgrad_bwgrad=True,
         supports_out=False,
         supports_cow_input_no_materialize_backward=False,
+    ),
+    OpInfo(
+        "sparse_coo_add",
+        op=torch.add,
+        inplace_variant=lambda x, y, **kwargs: x.add_(y, **kwargs),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_sparse_coo_binary,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_add_dense_sparse",
+        op=torch.add,
+        inplace_variant=lambda x, y, **kwargs: x.add_(y, **kwargs),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_dense_sparse_binary,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_sub",
+        op=torch.sub,
+        inplace_variant=lambda x, y, **kwargs: x.sub_(y, **kwargs),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_sparse_coo_binary,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_sub_dense_sparse",
+        op=torch.sub,
+        inplace_variant=lambda x, y, **kwargs: x.sub_(y, **kwargs),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_dense_sparse_binary,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_mul",
+        op=torch.mul,
+        inplace_variant=lambda x, y: x.mul_(y),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_sparse_coo_mul,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_neg",
+        op=torch.neg,
+        inplace_variant=lambda x: x.neg_(),
+        dtypes=common_dtype.all_types_and(torch.bfloat16, torch.float16),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=True,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_coalesce",
+        op=lambda x: x.coalesce(),
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_to_dense",
+        op=lambda x: x.to_dense(),
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_clone",
+        op=torch.clone,
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_zero_",
+        op=lambda x: x.clone().zero_(),
+        inplace_variant=lambda x: x.zero_(),
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_empty_like",
+        op=lambda x: torch.empty_like(x).zero_(),
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_unary,
+        supports_out=False,
+        supports_autograd=False,
+    ),
+    OpInfo(
+        "sparse_coo_copy_",
+        op=lambda x, y: x.clone().copy_(y),
+        inplace_variant=lambda x, y: x.copy_(y),
+        dtypes=common_dtype.all_types_and(
+            torch.bfloat16, torch.float16, torch.bool
+        ),
+        sample_inputs_func=_sample_inputs_sparse_coo_copy_,
+        supports_out=False,
+        supports_autograd=False,
     ),
 ]
 for _op_info in _ADDITIONAL_TORCH_TPU_OPS:
@@ -2756,6 +3128,15 @@ def _prepare_zero_element_out_tensors(
         # encountered is always the primary result tensor.
         dtype = out_dtype_override
         override_applied = True
+      if obj.layout == torch.sparse_coo:
+        return torch.ops.aten._sparse_coo_tensor_with_dims(
+            obj.sparse_dim(),
+            obj.dense_dim(),
+            (0,) * obj.ndim,
+            dtype=dtype,
+            layout=torch.sparse_coo,
+            device=obj.device,
+        )
       return torch.empty((0,), dtype=dtype, device=obj.device)
     return obj
 
@@ -2848,6 +3229,17 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
             # contiguous() needs a copy kernel the sub-byte dtypes don't have.
             x.view(torch.uint8).contiguous()
         })
+      if x.layout == torch.sparse_coo:
+        return {
+            "$$sparse_coo": {
+                "sparse_dim": x.sparse_dim(),
+                "dense_dim": x.dense_dim(),
+                "size": list(x.shape),
+                "is_coalesced": x.is_coalesced(),
+                "indices": _to_plistlib_compatible(x._indices().contiguous()),
+                "values": _to_plistlib_compatible(x._values().contiguous()),
+            }
+        }
       # st.save() doesn't handle non-contiguous tensors or non-strided tensors.
       if x.layout != torch.strided:
         x = x.to_dense()
@@ -3002,6 +3394,21 @@ def _from_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
       # The tensor is not complex-typed.
       return d[""]
     if isinstance(x, dict):
+      if "$$sparse_coo" in x:
+        info = x["$$sparse_coo"]
+        indices = _from_plistlib_compatible(info["indices"])
+        values = _from_plistlib_compatible(info["values"])
+        return torch.ops.aten._sparse_coo_tensor_with_dims_and_tensors(
+            info["sparse_dim"],
+            info["dense_dim"],
+            info["size"],
+            indices,
+            values,
+            dtype=values.dtype,
+            layout=torch.sparse_coo,
+            device=values.device,
+            is_coalesced=info["is_coalesced"],
+        )
       if "$$tuple" in x:
         return tuple(_from_plistlib_compatible(e) for e in x["$$tuple"])
       if "$$dtype" in x:
@@ -3317,10 +3724,21 @@ def _compiled_supports_op(
       return any(has_empty(i) for i in t)
     return isinstance(t, torch.Tensor) and t.numel() == 0
 
+  def has_sparse(t: torch.Tensor | Sequence[Any] | Mapping[Any, Any]) -> bool:
+    """Returns true if `t` is (or contains) a sparse tensor."""
+    if isinstance(t, (list, tuple)):
+      return any(has_sparse(i) for i in t)
+    if isinstance(t, dict):
+      return any(has_sparse(v) for v in t.values())
+    return isinstance(t, torch.Tensor) and t.layout != torch.strided
+
   if (
       has_empty(device_op_input.input_value)
       or has_empty(device_op_input.args)
       or has_empty(device_op_input.kwargs)
+      or has_sparse(device_op_input.input_value)
+      or has_sparse(device_op_input.args)
+      or has_sparse(device_op_input.kwargs)
   ):
     return False
 

@@ -6156,6 +6156,501 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_scalar)
 
+  def test_sparse_coo_tensor_creation_and_metadata(self):
+    """Tests creation, metadata inspection, copy, clone, zero_, and device/dtype conversions for SparsePrivateUse1 COO tensors."""
+    indices_cpu = torch.tensor([[0, 2, 1], [1, 0, 2]], dtype=torch.long)
+    values_cpu = torch.tensor(
+        [[1.5, -2.0], [3.0, 4.5], [-1.0, 0.5]], dtype=torch.float32
+    )
+    size = (3, 4, 2)
+
+    def run_creation_and_ops(device):
+      sp = torch.sparse_coo_tensor(
+          to(indices_cpu, device=device),
+          to(values_cpu, device=device),
+          size,
+          device=device,
+      )
+      self.assertTrue(sp.is_sparse)
+      self.assertEqual(sp.layout, torch.sparse_coo)
+      self.assertEqual(sp.sparse_dim(), 2)
+      self.assertEqual(sp.dense_dim(), 1)
+      self.assertEqual(sp._nnz(), 3)
+      self.assertFalse(sp.is_coalesced())
+
+      # Test clone and to_dense
+      sp_clone = sp.clone()
+      self.assertTrue(sp_clone.is_sparse)
+      self.assertEqual(sp_clone._nnz(), 3)
+
+      # Test coalesce and coalesced accessors (indices() and values())
+      sp_coal = sp.coalesce()
+      self.assertTrue(sp_coal.is_coalesced())
+      idx_coal = sp_coal.indices()
+      val_coal = sp_coal.values()
+
+      # Test copy_ between sparse tensors and zero_()
+      sp_empty = torch.empty(size, layout=torch.sparse_coo, device=device)
+      self.assertTrue(sp_empty.is_sparse)
+      self.assertEqual(sp_empty._nnz(), 0)
+      sp_empty.copy_(sp)
+      dense_copied = sp_empty.to_dense()
+      sp_empty.zero_()
+      self.assertEqual(sp_empty._nnz(), 0)
+      dense_zeroed = sp_empty.to_dense()
+
+      # Test empty_like
+      sp_like = torch.empty_like(sp)
+      self.assertTrue(sp_like.is_sparse)
+      self.assertEqual(sp_like.shape, sp.shape)
+
+      # Test dtype conversion
+      sp_bf16 = sp.to(torch.bfloat16)
+      self.assertEqual(sp_bf16.dtype, torch.bfloat16)
+      dense_bf16 = sp_bf16.to_dense().to(torch.float32)
+
+      return (
+          sp.to_dense(),
+          sp_clone.to_dense(),
+          idx_coal,
+          val_coal,
+          dense_copied,
+          dense_zeroed,
+          dense_bf16,
+      )
+
+    self.assert_close_tpu_vs_cpu(run_creation_and_ops)
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_sparse_coo_coalesce(self, dtype):
+    """Tests _coalesce for 1D, 2D, hybrid, already-coalesced, and empty sparse COO tensors."""
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-5
+    tol_opt = 2e-2 if dtype in (torch.bfloat16, torch.float16) else None
+
+    # 1. 1D sparse + 1D dense with duplicates and unsorted indices
+    idx_1d = torch.tensor([[3, 1, 3, 0, 1]], dtype=torch.long)
+    val_1d = torch.tensor(
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [9.0, 10.0]],
+        dtype=dtype,
+    )
+
+    # 2. 2D sparse + 1D dense (hybrid) with duplicates and unsorted coordinates
+    idx_2d = torch.tensor([[2, 0, 2, 1, 0], [1, 3, 1, 2, 3]], dtype=torch.long)
+    val_2d = torch.tensor(
+        [[1.0, -1.0], [2.0, 3.0], [4.0, 5.0], [-2.0, 0.5], [1.5, -0.5]],
+        dtype=dtype,
+    )
+
+    def run_coalesce_cases(device):
+      sp1 = torch.sparse_coo_tensor(
+          to(idx_1d, device=device),
+          to(val_1d, device=device),
+          (5, 2),
+          device=device,
+      )
+      self.assertFalse(sp1.is_coalesced())
+      c1 = sp1.coalesce()
+      self.assertTrue(c1.is_coalesced())
+      self.assertEqual(c1._nnz(), 3)
+      self.assertEqual(sp1.to_dense(), c1.to_dense(), atol=tol, rtol=tol)
+
+      # Calling coalesce() on an already-coalesced tensor
+      c1_again = c1.coalesce()
+      self.assertTrue(c1_again.is_coalesced())
+
+      sp2 = torch.sparse_coo_tensor(
+          to(idx_2d, device=device),
+          to(val_2d, device=device),
+          (3, 4, 2),
+          device=device,
+      )
+      c2 = sp2.coalesce()
+      self.assertTrue(c2.is_coalesced())
+      self.assertEqual(c2._nnz(), 3)
+      self.assertEqual(sp2.to_dense(), c2.to_dense(), atol=tol, rtol=tol)
+
+      # Empty sparse tensor coalesce
+      sp_empty = torch.sparse_coo_tensor(
+          torch.empty((2, 0), dtype=torch.long, device=device),
+          torch.empty((0, 2), dtype=dtype, device=device),
+          (3, 4, 2),
+          device=device,
+      )
+      c_empty = sp_empty.coalesce()
+      self.assertTrue(c_empty.is_coalesced())
+      self.assertEqual(c_empty._nnz(), 0)
+
+      return (
+          c1.indices(),
+          c1.values(),
+          c2.indices(),
+          c2.values(),
+          c_empty.to_dense(),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_coalesce_cases, atol=tol_opt, rtol=tol_opt)
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_sparse_coo_add_sub(self, dtype):
+    """Tests dense + sparse, sparse + sparse addition/subtraction, non-contiguous out, and empty operand edge cases."""
+    tol_opt = 2e-2 if dtype in (torch.bfloat16, torch.float16) else None
+
+    dense_base = torch.randn(4, 3, dtype=dtype)
+    idx1 = torch.tensor([[2, 0, 2]], dtype=torch.long)
+    val1 = torch.tensor(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [-0.5, 1.5, -2.0]], dtype=dtype
+    )
+    idx2 = torch.tensor([[1, 2]], dtype=torch.long)
+    val2 = torch.tensor([[0.5, -1.0, 2.0], [3.0, 0.0, -1.0]], dtype=dtype)
+
+    # 2D sparse + 1D dense
+    dense_3d_base = torch.randn(3, 4, 2, dtype=dtype)
+    idx_2d = torch.tensor([[2, 0, 2], [1, 3, 1]], dtype=torch.long)
+    val_2d = torch.tensor([[1.0, -1.0], [2.0, 3.0], [0.5, 1.5]], dtype=dtype)
+
+    def run_add_sub_cases(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      d = to(dense_base.clone(), device=device).to(compute_dtype)
+      sp1 = torch.sparse_coo_tensor(
+          to(idx1, device=device),
+          to(val1, device=device).to(compute_dtype),
+          (4, 3),
+          device=device,
+      )
+      sp2 = torch.sparse_coo_tensor(
+          to(idx2, device=device),
+          to(val2, device=device).to(compute_dtype),
+          (4, 3),
+          device=device,
+      )
+      sp_empty = torch.sparse_coo_tensor(
+          torch.empty((1, 0), dtype=torch.long, device=device),
+          torch.empty((0, 3), dtype=compute_dtype, device=device),
+          (4, 3),
+          device=device,
+      )
+
+      # 1. dense + sparse (out-of-place, in-place, and with alpha)
+      res_dense_add = torch.add(d, sp1, alpha=0.5)
+      res_dense_sub = torch.sub(d, sp1, alpha=0.5)
+      d_inplace = d.clone()
+      d_inplace.add_(sp1, alpha=-0.25)
+      d_sub_inplace = d.clone()
+      d_sub_inplace.sub_(sp2, alpha=0.5)
+
+      # 2. Out-of-place add into distinct output tensor and non-contiguous output tensor
+      out_distinct = torch.empty_like(d)
+      torch.add(d, sp1, alpha=1.0, out=out_distinct)
+
+      d_transposed_base = to(torch.randn(3, 4, dtype=dtype), device=device).to(
+          compute_dtype
+      )
+      non_contig_out = d_transposed_base.t()  # shape (4, 3), non-contiguous
+      self.assertFalse(non_contig_out.is_contiguous())
+      torch.add(d, sp1, alpha=0.5, out=non_contig_out)
+
+      # 3. 2D sparse + 3D dense
+      d3 = to(dense_3d_base.clone(), device=device).to(compute_dtype)
+      sp_2d = torch.sparse_coo_tensor(
+          to(idx_2d, device=device),
+          to(val_2d, device=device).to(compute_dtype),
+          (3, 4, 2),
+          device=device,
+      )
+      res_3d = d3.add(sp_2d, alpha=-0.5)
+
+      # 4. sparse + sparse and sparse - sparse
+      sp_sum = torch.add(sp1, sp2, alpha=0.5)
+      sp_diff = torch.sub(sp1, sp2, alpha=0.5)
+      self.assertTrue(sp_sum.is_sparse)
+      self.assertTrue(sp_diff.is_sparse)
+
+      # 5. Empty operand edge cases for sparse + sparse and dense + sparse
+      res_dense_plus_empty = torch.add(d, sp_empty, alpha=2.0)
+      sp_empty_plus_sp1_alpha1 = torch.add(sp_empty, sp1, alpha=1.0)
+      sp_empty_plus_sp1_alpha2 = torch.add(sp_empty, sp1, alpha=2.0)
+      sp_sp1_plus_empty = torch.add(sp1, sp_empty, alpha=2.0)
+
+      return (
+          res_dense_add.to(dtype),
+          res_dense_sub.to(dtype),
+          d_inplace.to(dtype),
+          d_sub_inplace.to(dtype),
+          out_distinct.to(dtype),
+          non_contig_out.clone().to(dtype),
+          res_3d.to(dtype),
+          sp_sum.to_dense().to(dtype),
+          sp_diff.to_dense().to(dtype),
+          res_dense_plus_empty.to(dtype),
+          sp_empty_plus_sp1_alpha1.to_dense().to(dtype),
+          sp_empty_plus_sp1_alpha2.to_dense().to(dtype),
+          sp_sp1_plus_empty.to_dense().to(dtype),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_add_sub_cases, atol=tol_opt, rtol=tol_opt)
+
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_sparse_coo_mul_neg(self, dtype):
+    """Tests scalar multiplication (mul, mul_, mul.out) and negation (neg, neg_, neg.out) on sparse COO tensors."""
+    tol_opt = 2e-2 if dtype in (torch.bfloat16, torch.float16) else None
+    idx = torch.tensor([[0, 2, 1], [1, 0, 2]], dtype=torch.long)
+    val = torch.tensor([[1.5, -2.0], [3.0, 4.5], [-1.0, 0.5]], dtype=dtype)
+
+    def run_mul_neg_cases(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      sp = torch.sparse_coo_tensor(
+          to(idx, device=device),
+          to(val, device=device).to(compute_dtype),
+          (3, 3, 2),
+          device=device,
+      )
+      scalar_t = torch.tensor(2.5, dtype=compute_dtype, device=device)
+
+      # 1. sp * scalar_t and scalar_t * sp
+      res_mul1 = sp * scalar_t
+      res_mul2 = scalar_t * sp
+      self.assertTrue(res_mul1.is_sparse)
+      self.assertTrue(res_mul2.is_sparse)
+
+      # 2. In-place mul_ and mul.out
+      sp_inplace = sp.clone()
+      sp_inplace.mul_(scalar_t)
+      sp_out = torch.empty_like(sp)
+      torch.mul(sp, scalar_t, out=sp_out)
+
+      # 3. Negation (-sp, neg_(), neg.out)
+      res_neg = -sp
+      sp_neg_inplace = sp.clone()
+      sp_neg_inplace.neg_()
+      sp_neg_out = torch.empty_like(sp)
+      torch.neg(sp, out=sp_neg_out)
+
+      # 4. Empty sparse tensor mul and neg
+      sp_empty = torch.sparse_coo_tensor(
+          torch.empty((2, 0), dtype=torch.long, device=device),
+          torch.empty((0, 2), dtype=compute_dtype, device=device),
+          (3, 3, 2),
+          device=device,
+      )
+      res_empty_mul = sp_empty * scalar_t
+      res_empty_neg = -sp_empty
+
+      return (
+          res_mul1.to_dense().to(dtype),
+          res_mul2.to_dense().to(dtype),
+          sp_inplace.to_dense().to(dtype),
+          sp_out.to_dense().to(dtype),
+          res_neg.to_dense().to(dtype),
+          sp_neg_inplace.to_dense().to(dtype),
+          sp_neg_out.to_dense().to(dtype),
+          res_empty_mul.to_dense().to(dtype),
+          res_empty_neg.to_dense().to(dtype),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_mul_neg_cases, atol=tol_opt, rtol=tol_opt)
+
+  def test_sparse_coo_corner_cases(self):
+    """Tests non-redundant corner cases for sparse COO ops on TPU.
+
+    Covers:
+    1. Out-variant shape resizing from (0, 0) / (0,) and promotional upcasting
+       (float32 -> float64) for add, sub, mul, neg, and dense+sparse add.
+    2. In-place self-aliasing (sp.add_(sp) and sp.sub_(sp)).
+    3. Duplicate coordinates whose values cancel to exact 0.0 during coalesce().
+    4. Cross-device copy_ (CPU <-> TPU) for uncoalesced hybrid sparse tensors.
+    5. High-dimensional hybrid (sparse_dim=3, dense_dim=2) and purely sparse
+       (sparse_dim=3, dense_dim=0) tensors.
+    6. Direct aten.embedding_sparse_backward with padding_idx=-1 and boundary
+       indices (0 and num_weights - 1).
+    """
+    idx1 = torch.tensor([[0, 2, 1], [1, 0, 2]], dtype=torch.long)
+    val1 = torch.tensor(
+        [[1.5, -2.0], [3.0, 4.5], [-1.0, 0.5]], dtype=torch.float32
+    )
+    idx2 = torch.tensor([[1, 2], [2, 0]], dtype=torch.long)
+    val2 = torch.tensor([[2.0, -0.5], [-1.5, 1.0]], dtype=torch.float32)
+    dense_fp32 = torch.randn(3, 3, 2, dtype=torch.float32)
+
+    # 3. Duplicate coordinates cancelling to exact zero
+    idx_cancel = torch.tensor([[1, 0, 1], [2, 1, 2]], dtype=torch.long)
+    val_cancel = torch.tensor([3.5, 2.0, -3.5], dtype=torch.float32)
+
+    # 5. High-dimensional 5D (3 sparse + 2 dense) and purely sparse 3D (0 dense)
+    idx_5d = torch.tensor([[0, 1, 0], [1, 0, 1], [2, 1, 2]], dtype=torch.long)
+    val_5d = torch.randn(3, 2, 2, dtype=torch.float32)
+    dense_5d = torch.randn(2, 2, 3, 2, 2, dtype=torch.float32)
+
+    idx_3d_pure = torch.tensor(
+        [[1, 0, 1], [2, 1, 2], [0, 2, 0]], dtype=torch.long
+    )
+    val_3d_pure = torch.tensor([1.25, -2.5, 0.75], dtype=torch.float32)
+
+    # 6. Direct embedding_sparse_backward inputs
+    emb_grad = torch.randn(2, 3, 4, dtype=torch.float32)
+    emb_indices = torch.tensor([[0, 7, 3], [7, 0, 2]], dtype=torch.long)
+
+    def run_corner_cases(device):
+      sp1 = torch.sparse_coo_tensor(
+          to(idx1, device=device),
+          to(val1, device=device),
+          (3, 3, 2),
+          device=device,
+      )
+      sp2 = torch.sparse_coo_tensor(
+          to(idx2, device=device),
+          to(val2, device=device),
+          (3, 3, 2),
+          device=device,
+      )
+      d = to(dense_fp32.clone(), device=device)
+
+      # Case 1: Out-variant shape resizing from empty (0, 0, 0) + promotional upcasting to float64
+      sp_out_add = torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          1,
+          (0, 0, 0),
+          dtype=torch.float64,
+          layout=torch.sparse_coo,
+          device=device,
+      )
+      torch.add(sp1, sp2, alpha=0.5, out=sp_out_add)
+      self.assertEqual(sp_out_add.dtype, torch.float64)
+      self.assertEqual(sp_out_add.shape, (3, 3, 2))
+
+      sp_out_sub = torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          1,
+          (0, 0, 0),
+          dtype=torch.float64,
+          layout=torch.sparse_coo,
+          device=device,
+      )
+      torch.sub(sp1, sp2, alpha=0.5, out=sp_out_sub)
+
+      sp_out_mul = torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          1,
+          (0, 0, 0),
+          dtype=torch.float64,
+          layout=torch.sparse_coo,
+          device=device,
+      )
+      torch.mul(sp1, 2.5, out=sp_out_mul)
+
+      sp_out_neg = torch.ops.aten._sparse_coo_tensor_with_dims(
+          2,
+          1,
+          (0, 0, 0),
+          dtype=torch.float64,
+          layout=torch.sparse_coo,
+          device=device,
+      )
+      torch.neg(sp1, out=sp_out_neg)
+
+      dense_out_add = torch.empty((0,), dtype=torch.float64, device=device)
+      torch.add(d, sp1, alpha=1.5, out=dense_out_add)
+      self.assertEqual(dense_out_add.dtype, torch.float64)
+      self.assertEqual(dense_out_add.shape, (3, 3, 2))
+
+      # Case 2: In-place self-aliasing (add_ and sub_ with self)
+      sp_self_add = sp1.clone()
+      sp_self_add.add_(sp_self_add, alpha=2.0)
+      sp_self_sub = sp1.clone()
+      sp_self_sub.sub_(sp_self_sub)
+
+      # Case 3: Duplicate coordinates cancelling to exact 0.0 during coalesce()
+      sp_cancel = torch.sparse_coo_tensor(
+          to(idx_cancel, device=device),
+          to(val_cancel, device=device),
+          (3, 3),
+          device=device,
+      )
+      sp_cancel_coal = sp_cancel.coalesce()
+      self.assertTrue(sp_cancel_coal.is_coalesced())
+
+      # Case 5: High-dimensional 5D hybrid and 3D purely sparse tensors
+      sp5 = torch.sparse_coo_tensor(
+          to(idx_5d, device=device),
+          to(val_5d, device=device),
+          (2, 2, 3, 2, 2),
+          device=device,
+      )
+      d5 = to(dense_5d.clone(), device=device)
+      sp5_coal = sp5.coalesce()
+      res_5d_dense_add = torch.add(d5, sp5)
+
+      sp3_pure = torch.sparse_coo_tensor(
+          to(idx_3d_pure, device=device),
+          to(val_3d_pure, device=device),
+          (2, 3, 3),
+          device=device,
+      )
+      sp3_pure_coal = sp3_pure.coalesce()
+
+      # Case 6: Direct aten.embedding_sparse_backward (padding_idx=-1 and boundary padding_idx=0)
+      eg = to(emb_grad, device=device)
+      ei = to(emb_indices, device=device)
+      bwd_no_pad = torch.ops.aten.embedding_sparse_backward(
+          eg, ei, num_weights=8, padding_idx=-1, scale_grad_by_freq=False
+      )
+      bwd_pad0 = torch.ops.aten.embedding_sparse_backward(
+          eg, ei, num_weights=8, padding_idx=0, scale_grad_by_freq=False
+      )
+
+      return (
+          sp_out_add.to_dense(),
+          sp_out_sub.to_dense(),
+          sp_out_mul.to_dense(),
+          sp_out_neg.to_dense(),
+          dense_out_add,
+          sp_self_add.to_dense(),
+          sp_self_sub.to_dense(),
+          sp_cancel_coal.indices(),
+          sp_cancel_coal.values(),
+          sp_cancel_coal.to_dense(),
+          sp5_coal.to_dense(),
+          res_5d_dense_add,
+          sp3_pure_coal.indices(),
+          sp3_pure_coal.values(),
+          bwd_no_pad.to_dense(),
+          bwd_pad0.to_dense(),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_corner_cases)
+
+    # Case 4: Cross-device copy_ (CPU <-> TPU) for uncoalesced hybrid sparse tensor
+    sp_cpu_src = torch.sparse_coo_tensor(idx1, val1, (3, 3, 2), device="cpu")
+    self.assertFalse(sp_cpu_src.is_coalesced())
+    sp_tpu_dst = torch.empty((3, 3, 2), layout=torch.sparse_coo, device="tpu")
+    sp_tpu_dst.copy_(sp_cpu_src)
+    self.assertFalse(sp_tpu_dst.is_coalesced())
+    self.assertEqual(sp_tpu_dst._nnz(), 3)
+
+    sp_cpu_roundtrip = torch.empty(
+        (3, 3, 2), layout=torch.sparse_coo, device="cpu"
+    )
+    sp_cpu_roundtrip.copy_(sp_tpu_dst)
+    self.assertFalse(sp_cpu_roundtrip.is_coalesced())
+    self.assertEqual(sp_cpu_roundtrip.to_dense(), sp_cpu_src.to_dense())
+
   @parameterized.named_parameters(
       ("1d_empty_indices", 16, (0,)),
       ("2d_empty_indices", 16, (2, 0)),

@@ -116,7 +116,11 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     sparse = to_sparse_fn(dense)
     encoded = op_testing._to_plistlib_compatible(sparse)
     restored = op_testing._from_plistlib_compatible(encoded)
-    test_utils.assert_close(restored, dense)
+    if sparse.layout == torch.sparse_coo:
+      self.assertEqual(restored.layout, torch.sparse_coo)
+      test_utils.assert_close(restored, sparse)
+    else:
+      test_utils.assert_close(restored, dense)
 
   def test_supports_out(self):
     add_op = next(op for op in op_db if op.name == "add")

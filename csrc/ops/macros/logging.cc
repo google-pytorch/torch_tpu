@@ -92,6 +92,9 @@ namespace internal {
   static Regex kArrayRef(R"(\bc10::ArrayRef\b)");
   type_name_str = std::regex_replace(type_name_str, *kArrayRef, "at::ArrayRef");
 
+  static Regex kScalar(R"(\bc10::Scalar\b)");
+  type_name_str = std::regex_replace(type_name_str, *kScalar, "at::Scalar");
+
   static Regex kScalarType(R"(\bc10::ScalarType\b)");
   type_name_str =
       std::regex_replace(type_name_str, *kScalarType, "at::ScalarType");

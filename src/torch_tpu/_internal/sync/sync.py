@@ -32,6 +32,13 @@ def _maybe_unwrap(tensor: torch.Tensor) -> torch.Tensor:
   return tensor
 
 
+def _expand_sparse(tensor: torch.Tensor) -> list[torch.Tensor]:
+  t = _maybe_unwrap(tensor)
+  if t.is_sparse:
+    return [t._indices(), t._values()]  # pylint: disable=protected-access
+  return [t]
+
+
 # TODO: add ways to support all these methods through public API features
 # (streams, events, etc)
 def synchronize(
@@ -52,13 +59,16 @@ def synchronize(
     current_device_id = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
     _device_ops_backend._synchronize_device(current_device_id, wait)  # pylint: disable=protected-access
   elif isinstance(tensors, list):
-    _tpu_torch_sync._synchronize_list(  # pylint: disable=protected-access
-        [_maybe_unwrap(t) for t in tensors], wait
-    )
+    unwrapped = []
+    for t in tensors:
+      unwrapped.extend(_expand_sparse(t))
+    _tpu_torch_sync._synchronize_list(unwrapped, wait)  # pylint: disable=protected-access
   else:
-    _tpu_torch_sync._synchronize_tensor(  # pylint: disable=protected-access
-        _maybe_unwrap(tensors), wait
-    )
+    unwrapped = _expand_sparse(tensors)
+    if len(unwrapped) == 1:
+      _tpu_torch_sync._synchronize_tensor(unwrapped[0], wait)  # pylint: disable=protected-access
+    else:
+      _tpu_torch_sync._synchronize_list(unwrapped, wait)  # pylint: disable=protected-access
 
 
 def is_materializing(tensor: torch.Tensor) -> bool:

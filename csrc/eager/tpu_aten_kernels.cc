@@ -199,6 +199,7 @@
 #include "csrc/ops/softmax/softmax_aten_kernels.h"
 #include "csrc/ops/softplus/softplus_aten_kernels.h"
 #include "csrc/ops/sort/sort_aten_kernels.h"
+#include "csrc/ops/sparse_coo/sparse_coo_aten_kernels.h"
 #include "csrc/ops/split_with_sizes_copy/split_with_sizes_copy_aten_kernels.h"
 #include "csrc/ops/take/take_aten_kernels.h"
 #include "csrc/ops/tanh/tanh_aten_kernels.h"
@@ -1100,6 +1101,52 @@ void TpuSparseOpFallback(const c10::OperatorHandle& op,
 //   torch.sparse.mm(...)
 TORCH_LIBRARY_IMPL(_, SparsePrivateUse1, m) {
   m.fallback(torch::CppFunction::makeFromBoxedFunction<&TpuSparseOpFallback>());
+}
+
+// Defines how aten ops are dispatched to C++ functions for sparse COO TPU
+// tensors (SparsePrivateUse1).
+TORCH_LIBRARY_IMPL(aten, SparsePrivateUse1, m) {
+  // All entries should be registered by ImplStable() as we don't want to
+  // generate any warning for standard aten ops.
+  // go/keep-sorted start
+  ImplStable<OpName::kAddOut>(m, AtenAddOutSparse);
+  ImplStable<OpName::kAddTensor>(m, AtenAddSparse);
+  ImplStable<OpName::kAdd_Tensor>(m, AtenAdd_Sparse);
+  ImplStable<OpName::kClone>(m, AtenCloneSparse);
+  ImplStable<OpName::kCoalesce>(m, AtenCoalesceSparse);
+  ImplStable<OpName::kCoalesced_>(m, AtenCoalesced_Sparse);
+  ImplStable<OpName::kCopySparseToSparse_>(m, AtenCopySparseToSparse_);
+  ImplStable<OpName::kCopy_>(m, AtenCopy_Sparse);
+  ImplStable<OpName::kDenseDim>(m, AtenDenseDimSparse);
+  ImplStable<OpName::kDimI>(m, AtenSparseDimSparse);
+  ImplStable<OpName::kDimV>(m, AtenDenseDimSparse);
+  ImplStable<OpName::kEmptyLike>(m, AtenEmptyLikeSparseCoo);
+  ImplStable<OpName::kEmptyMemoryFormat>(m, AtenEmptySparseSymInt);
+  ImplStable<OpName::kIndices>(m, AtenIndicesSparse);
+  ImplStable<OpName::kIndicesInternal>(m, AtenIndicesInternalSparse);
+  ImplStable<OpName::kIsCoalesced>(m, AtenIsCoalescedSparse);
+  ImplStable<OpName::kMulOut>(m, AtenMulOutSparse);
+  ImplStable<OpName::kMulTensor>(m, AtenMulSparse);
+  ImplStable<OpName::kMul_Tensor>(m, AtenMul_Sparse);
+  ImplStable<OpName::kNeg>(m, AtenNegSparse);
+  ImplStable<OpName::kNegOut>(m, AtenNegOutSparse);
+  ImplStable<OpName::kNeg_>(m, AtenNeg_Sparse);
+  ImplStable<OpName::kNnz>(m, AtenNnzSparse);
+  ImplStable<OpName::kSparseCooTensorWithDims>(m, AtenSparseCooTensorWithDims);
+  ImplStable<OpName::kSparseCooTensorWithDimsAndTensors>(
+      m, AtenSparseCooTensorWithDimsAndTensors);
+  ImplStable<OpName::kSparseDim>(m, AtenSparseDimSparse);
+  ImplStable<OpName::kSparseResizeAndClear_>(m, AtenSparseResizeAndClear_);
+  ImplStable<OpName::kSparseResize_>(m, AtenSparseResize_);
+  ImplStable<OpName::kSubOut>(m, AtenSubOutSparse);
+  ImplStable<OpName::kSubTensor>(m, AtenSubSparse);
+  ImplStable<OpName::kSub_Tensor>(m, AtenSub_Sparse);
+  ImplStable<OpName::kToCopy>(m, AtenToCopySparse);
+  ImplStable<OpName::kToDense>(m, AtenToDenseSparse);
+  ImplStable<OpName::kValues>(m, AtenValuesSparse);
+  ImplStable<OpName::kValuesInternal>(m, AtenValuesInternalSparse);
+  ImplStable<OpName::kZero_>(m, AtenZero_Sparse);
+  // go/keep-sorted end
 }
 
 // TODO: (b/448113143) -- Once TPU is upstreamed, remove this fallthrough

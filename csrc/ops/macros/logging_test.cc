@@ -26,6 +26,7 @@
 #include "ATen/ops/ones.h"
 #include "absl/log/absl_log.h"
 #include "c10/core/Device.h"
+#include "c10/core/Scalar.h"
 #include "c10/util/Optional.h"
 #include "csrc/ops/op_names.h"
 #include "gmock/gmock.h"
@@ -200,17 +201,18 @@ std::vector<std::string> FuncWithComplexType(
     // This type has a `,` in the name.
     const std::array<bool, 3>& arg2,
     // This type has an alias.
-    c10::OptionalArrayRef<int64_t> arg3) {
+    c10::OptionalArrayRef<int64_t> arg3, const c10::Scalar& arg4) {
   ABSL_LOG(INFO) << __PRETTY_FUNCTION__;
   return internal::ParseArgTypesOrEmpty(__PRETTY_FUNCTION__);
 }
 
 TEST(ParseArgTypesOrEmpty, FuncWithComplexType) {
   std::array<bool, 3> arr = {true, false, true};
-  EXPECT_THAT(FuncWithComplexType(c10::List<c10::optional<at::Tensor>>(), arr,
-                                  std::nullopt),
-              ElementsAre("c10::List<std::optional<at::Tensor>>",
-                          "std::array<bool, 3>", "at::OptionalIntArrayRef"));
+  EXPECT_THAT(
+      FuncWithComplexType(c10::List<c10::optional<at::Tensor>>(), arr,
+                          std::nullopt, c10::Scalar(1)),
+      ElementsAre("c10::List<std::optional<at::Tensor>>", "std::array<bool, 3>",
+                  "at::OptionalIntArrayRef", "at::Scalar"));
 }
 
 }  // namespace

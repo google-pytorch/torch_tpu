@@ -17,15 +17,22 @@
 #include "csrc/ops/copy_from/copy_from_aten_kernels.h"
 
 #include <string>
+#include <utility>
 
+#include "ATen/SparseTensorImpl.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
 #include "absl/status/statusor.h"
 #include "c10/core/Device.h"
+#include "c10/core/DispatchKey.h"
+#include "c10/core/DispatchKeySet.h"
+#include "c10/core/ScalarTypeToTypeMeta.h"
 #include "c10/core/TensorImpl.h"
 #include "c10/core/TensorOptions.h"
 #include "c10/util/Optional.h"
+#include "c10/util/intrusive_ptr.h"
+#include "c10/util/typeid.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/device_type.h"
@@ -75,6 +82,108 @@ absl::StatusOr<CopyType> GetCopyType(const at::Tensor& src,
          << src.device().type() << "' to '" << dest.device().type() << "'";
 }
 
+struct SparseBuffers {
+  at::Tensor indices;  // UNINITIALIZED_TENSOR_OK=Struct field initialized by
+                       // aggregate construction
+  at::Tensor values;   // UNINITIALIZED_TENSOR_OK=Struct field initialized by
+                       // aggregate construction
+};
+
+SparseBuffers CopySparseBuffers(const at::Tensor& src_sparse,
+                                const at::Tensor& target_ref,
+                                CopyType to_copy_type, bool non_blocking) {
+  const at::Tensor src_indices = src_sparse._indices();
+  const at::Tensor src_values = src_sparse._values();
+  at::Tensor dest_indices;  // UNINITIALIZED_TENSOR_OK=initialized in switch
+  at::Tensor dest_values;   // UNINITIALIZED_TENSOR_OK=initialized in switch
+  switch (to_copy_type) {
+    case CopyType::kTpuToCpu:
+      dest_indices = at::empty(src_indices.sizes(),
+                               src_indices.options().device(c10::kCPU));
+      dest_values = at::empty(src_values.sizes(),
+                              src_values.options().device(c10::kCPU).dtype(
+                                  target_ref.scalar_type()));
+      break;
+    case CopyType::kCpuToTpu:
+    case CopyType::kTpuToTpu:
+      TT_ASSIGN_OR_THROW(
+          dest_indices,
+          MakeEmptyTensor(src_indices.sizes(), src_indices.scalar_type(),
+                          target_ref.device()));
+      TT_ASSIGN_OR_THROW(dest_values, MakeEmptyTensor(src_values.sizes(),
+                                                      target_ref.scalar_type(),
+                                                      target_ref.device()));
+      break;
+  }
+  CopyTensor(src_indices, dest_indices, non_blocking);
+  CopyTensor(src_values, dest_values, non_blocking);
+  return {dest_indices, dest_values};
+}
+
+struct TpuSparseTensorImpl final : public at::SparseTensorImpl {
+  TpuSparseTensorImpl(const at::DispatchKeySet key_set,
+                      const caffe2::TypeMeta data_type,
+                      const c10::Device device)
+      : at::SparseTensorImpl(at::DispatchKeySet(c10::DispatchKey::SparseCPU),
+                             data_type) {
+    key_set_ = key_set;
+    device_opt_ = device;
+  }
+};
+
+at::Tensor CopySparseTensor(const at::Tensor& src_sparse,
+                            const at::Tensor& target_ref, CopyType to_copy_type,
+                            bool non_blocking) {
+  auto [dest_indices, dest_values] =
+      CopySparseBuffers(src_sparse, target_ref, to_copy_type, non_blocking);
+  const c10::DispatchKey dispatch_key =
+      dest_values.device().is_cpu() ? c10::DispatchKey::SparseCPU
+                                    : c10::DispatchKey::SparsePrivateUse1;
+  auto impl = c10::make_intrusive<TpuSparseTensorImpl>(
+      at::DispatchKeySet(dispatch_key),
+      c10::scalarTypeToTypeMeta(dest_values.scalar_type()),
+      dest_values.device());
+  impl->raw_resize_(src_sparse.sparse_dim(), src_sparse.dense_dim(),
+                    src_sparse.sizes());
+  impl->set_indices_and_values_unsafe(
+      at::Tensor(dest_indices.unsafeGetTensorImpl()->shallow_copy_and_detach(
+          dest_indices.unsafeGetTensorImpl()->version_counter(), true)),
+      at::Tensor(dest_values.unsafeGetTensorImpl()->shallow_copy_and_detach(
+          dest_values.unsafeGetTensorImpl()->version_counter(), true)));
+  impl->set_coalesced(src_sparse.is_coalesced());
+  return at::Tensor(std::move(impl));
+}
+
+void CopyTensorGrad(const at::Tensor& src, const at::Tensor& self_dest,
+                    CopyType to_copy_type, bool non_blocking) {
+  if (!src.grad().defined()) {
+    return;
+  }
+  if (src.grad().is_sparse()) {
+    self_dest.mutable_grad() =
+        CopySparseTensor(src.grad(), self_dest, to_copy_type, non_blocking);
+    return;
+  }
+  at::Tensor dest_grad = self_dest.grad();
+  if (!dest_grad.defined()) {
+    switch (to_copy_type) {
+      case CopyType::kTpuToCpu:
+        // at::empty here dispatches directly to the native CPU allocator and
+        // does not make the parent op composite.
+        dest_grad = at::empty(self_dest.sizes(), self_dest.options());
+        break;
+      case CopyType::kCpuToTpu:
+      case CopyType::kTpuToTpu:
+        TT_ASSIGN_OR_THROW(dest_grad, MakeEmptyTensor(self_dest.sizes(),
+                                                      self_dest.scalar_type(),
+                                                      self_dest.device()));
+        break;
+    }
+    self_dest.mutable_grad() = dest_grad;
+  }
+  CopyTensor(src.grad(), dest_grad, non_blocking);
+}
+
 }  // namespace
 
 at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
@@ -116,22 +225,7 @@ at::Tensor CopyTensor(const at::Tensor& src, const at::Tensor& self_dest,
   }
 
   // Also copy the gradient if it exists on the src.
-  if (src.grad().defined()) {
-    at::Tensor dest_grad = self_dest.grad();
-    if (!dest_grad.defined()) {
-      if (to_copy_type == CopyType::kTpuToCpu) {
-        // at::empty here dispatches directly to the native CPU allocator and
-        // does not make the parent op composite.
-        dest_grad = at::empty(self_dest.sizes(), self_dest.options());
-      } else {
-        TT_ASSIGN_OR_THROW(dest_grad, MakeEmptyTensor(self_dest.sizes(),
-                                                      self_dest.scalar_type(),
-                                                      self_dest.device()));
-      }
-      self_dest.mutable_grad() = dest_grad;
-    }
-    CopyTensor(src.grad(), dest_grad, non_blocking);
-  }
+  CopyTensorGrad(src, self_dest, to_copy_type, non_blocking);
   return self_dest;
 }
 

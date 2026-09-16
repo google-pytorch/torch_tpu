@@ -838,6 +838,7 @@ torch_tpu_cc_library(
         "//csrc/ops/softmax:softmax_aten_kernels",
         "//csrc/ops/softplus:softplus_aten_kernels",
         "//csrc/ops/sort:sort_aten_kernels",
+        "//csrc/ops/sparse_coo:sparse_coo_aten_kernels",
         "//csrc/ops/split_with_sizes_copy:split_with_sizes_copy_aten_kernels",
         "//csrc/ops/take:take_aten_kernels",
         "//csrc/ops/tanh:tanh_aten_kernels",

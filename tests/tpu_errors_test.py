@@ -3204,13 +3204,189 @@ module {
   def test_sparse_ops_not_supported(self):
     indices = torch.tensor([[0, 1], [1, 2]], device="tpu")
     values = torch.tensor([1.0, 2.0], device="tpu")
+    sp = torch.sparse_coo_tensor(indices, values, (2, 3), device="tpu")
+    dense = torch.ones(2, 3, device="tpu")
     # TODO(b/540532086): Update the error message once issue is resolved.
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""aten::_sparse_coo_tensor_with_dims_and_tensors(): sparse operators are not supported on TPU yet""",
-        message_reviewed_by="wan",
-    ):
-      torch.sparse_coo_tensor(indices, values, (2, 3), device="tpu")
+    with self.subTest("fallback_op"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""aten::sparse_mask(): sparse operators are not supported on TPU yet""",
+          message_reviewed_by="wan",
+      ):
+        torch.ops.aten.sparse_mask(dense, sp)
+
+    with self.subTest("add_sparse_dense"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): add(sparse, dense) is not supported; use add(dense, sparse) instead""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(sp, dense, out=sp)
+
+    with self.subTest("mul_sparse_non_scalar"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mul(): only multiplication of a sparse tensor with a 0-dim scalar tensor is supported on TPU""",
+          message_reviewed_by="wan",
+      ):
+        torch.mul(sp, dense)
+
+    with self.subTest("add_dense_sparse_out_sparse"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected dense output tensor when adding dense and sparse tensors, got sparse""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(dense, sp, out=sp)
+
+    sp_wrong = torch.sparse_coo_tensor(
+        torch.tensor([[0], [0]], device="tpu"),
+        torch.tensor([1.0], device="tpu"),
+        (3, 3),
+    )
+    with self.subTest("add_dense_sparse_size_mismatch"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(dense, sp_wrong, out=dense)
+
+    with self.subTest("add_sparse_sparse_out_dense"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected sparse output tensor when adding two sparse tensors, got dense""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(sp, sp, out=dense)
+
+    with self.subTest("add_sparse_sparse_size_mismatch"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected 'self' and 'other' to have same size, got [2, 3] and [3, 3]""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(sp, sp_wrong, out=sp)
+
+    sp_1d = torch.sparse_coo_tensor(
+        torch.tensor([[0]], device="tpu"),
+        torch.tensor([[1.0, 2.0, 3.0]], device="tpu"),
+        (2, 3),
+    )
+    with self.subTest("add_sparse_sparse_dim_mismatch"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected matching sparse_dim and dense_dim, got (2, 0) and (1, 1)""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(sp, sp_1d, out=sp)
+
+    dense_i32 = torch.zeros(2, 3, dtype=torch.int32, device="tpu")
+    sp_i32 = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([1, 2], dtype=torch.int32, device="tpu"),
+        (2, 3),
+        device="tpu",
+    )
+    with self.subTest("add_dense_sparse_out_dtype_cast"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(dense, sp, out=dense_i32)
+
+    with self.subTest("add_sparse_sparse_out_dtype_cast"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""add(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          message_reviewed_by="wan",
+      ):
+        torch.add(sp, sp, out=sp_i32)
+
+    with self.subTest("clone_sparse_memory_format"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""clone(): unsupported memory format option for sparse tensor""",
+          message_reviewed_by="wan",
+      ):
+        sp.clone(memory_format=torch.channels_last)
+
+    with self.subTest("mul_sparse_out_dtype_cast"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""mul(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          message_reviewed_by="wan",
+      ):
+        torch.mul(sp, torch.tensor(2.0, device="tpu"), out=sp_i32)
+
+    sp_bool = torch.sparse_coo_tensor(
+        indices,
+        torch.tensor([True, False], device="tpu"),
+        (2, 3),
+        device="tpu",
+    )
+    with self.subTest("neg_sparse_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""neg(): expected non-bool tensor for negation, got Bool""",
+          message_reviewed_by="wan",
+      ):
+        torch.neg(sp_bool)
+
+    with self.subTest("neg_sparse_out_dtype_cast"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""neg(): expected result dtype to be castable to 'out' dtype, got Float and Int""",
+          message_reviewed_by="wan",
+      ):
+        torch.neg(sp, out=sp_i32)
+
+    with self.subTest("sub_sparse_bool"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""sub(): expected non-bool tensors for subtraction, got Bool and Bool""",
+          message_reviewed_by="wan",
+      ):
+        torch.sub(sp_bool, sp_bool)
+
+    with self.subTest("to_dense_sparse_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""to_dense(): dtype argument is not supported by sparse_to_dense""",
+          message_reviewed_by="wan",
+      ):
+        sp.to_dense(dtype=torch.float64)
+
+    with self.subTest("copy_sparse_dense"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""copy_(): copy_() between dense and sparse tensors is not implemented""",
+          message_reviewed_by="wan",
+      ):
+        sp.copy_(dense)
+
+    sp_uncoalesced = torch.sparse_coo_tensor(
+        torch.tensor([[0, 0], [1, 1]], device="tpu"),
+        values,
+        (2, 3),
+        device="tpu",
+    )
+    with self.subTest("indices_uncoalesced"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""indices(): cannot get indices on an uncoalesced tensor, please call .coalesce() first""",
+          message_reviewed_by="wan",
+      ):
+        sp_uncoalesced.indices()
+
+    with self.subTest("values_uncoalesced"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""values(): cannot get values on an uncoalesced tensor, please call .coalesce() first""",
+          message_reviewed_by="wan",
+      ):
+        sp_uncoalesced.values()
 
   @et.why_tpu_only("PReLU weight shape broadcastability check on TPU.")
   def test_prelu_kernel_weight_shape_not_broadcastable(self):

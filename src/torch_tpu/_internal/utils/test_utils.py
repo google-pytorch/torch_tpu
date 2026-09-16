@@ -359,6 +359,10 @@ def compute_optimal_tolerances(
 
   actual = actual.detach().cpu()
   expected = expected.detach().cpu()
+  if actual.layout == torch.sparse_coo:
+    actual = actual.to_dense()
+  if expected.layout == torch.sparse_coo:
+    expected = expected.to_dense()
 
   if actual.dtype.is_complex:
     actual = actual.to(torch.complex128)
@@ -592,6 +596,34 @@ def _assert_tensor_close(
         f"      Actual tensor:\n{actual}"
     )
     raise AssertionError(msg)
+
+  if expected.layout != actual.layout:
+    msg = (
+        f"{preamble}Tensor layout mismatch:\n"
+        f"Expected tensor layout: {expected.layout}\n"
+        f"  Actual tensor layout: {actual.layout}.\n"
+        f"      Expected tensor:\n{expected}\n\n"
+        f"      Actual tensor:\n{actual}"
+    )
+    raise AssertionError(msg)
+
+  if expected.layout == torch.sparse_coo:
+    if (
+        expected.sparse_dim() != actual.sparse_dim()
+        or expected.dense_dim() != actual.dense_dim()
+    ):
+      msg = (
+          f"{preamble}Sparse tensor dim mismatch:\n"
+          f"Expected sparse_dim={expected.sparse_dim()},"
+          f" dense_dim={expected.dense_dim()}\n"
+          f"  Actual sparse_dim={actual.sparse_dim()},"
+          f" dense_dim={actual.dense_dim()}.\n"
+          f"      Expected tensor:\n{expected}\n\n"
+          f"      Actual tensor:\n{actual}"
+      )
+      raise AssertionError(msg)
+    actual = actual.to_dense()
+    expected = expected.to_dense()
 
   # Sub-byte dtypes have no CPU kernels for comparison math; decode them into
   # standard dtypes first.
