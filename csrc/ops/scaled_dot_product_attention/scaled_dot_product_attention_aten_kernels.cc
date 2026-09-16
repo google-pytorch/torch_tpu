@@ -276,17 +276,18 @@ AtenScaledDotProductFusedAttentionOverrideableBackward(
             "allow_fp16_bf16_reduction", allow_half_precision_reduction_math));
 
         TT_ASSIGN_OR_THROW(
-            auto out, ScaledDotProductFusedAttentionShloBackward(
-                          grad_out, query, key, value, attn_bias, logsumexp,
-                          scale, is_causal, allow_half_precision_reduction_math,
-                          std::move(param_keys)));
+            auto bwd_results,
+            ScaledDotProductFusedAttentionShloBackward(
+                grad_out, query, key, value, attn_bias, logsumexp, scale,
+                is_causal, allow_half_precision_reduction_math,
+                std::move(param_keys), out));
 
         return std::make_tuple(
-            grad_input_mask[0] ? std::get<0>(out)
+            grad_input_mask[0] ? std::get<0>(bwd_results)
                                : at::zeros({0}, grad_out.options()),
-            grad_input_mask[1] ? std::get<1>(out)
+            grad_input_mask[1] ? std::get<1>(bwd_results)
                                : at::zeros({0}, grad_out.options()),
-            grad_input_mask[2] ? std::get<2>(out)
+            grad_input_mask[2] ? std::get<2>(bwd_results)
                                : at::zeros({0}, grad_out.options()),
             at::zeros({0}, grad_out.options()));
       });
@@ -386,11 +387,11 @@ AtenScaledDotProductFlashAttentionBackward(
              IgnoreInCacheKey(scale, "Delegates to implementation")),
             {
               TT_ASSIGN_OR_THROW(
-                  auto out, CreateFlashAttentionBackwardKernel(
-                                grad_out, query, key, value, out, logsumexp,
-                                attn_mask, scale, is_causal));
+                  auto result, CreateFlashAttentionBackwardKernel(
+                                   grad_out, query, key, value, out, logsumexp,
+                                   attn_mask, scale, is_causal));
 
-              return out;
+              return result;
             });
 }
 
