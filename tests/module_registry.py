@@ -2514,7 +2514,7 @@ class TransformersProvider(BaseProvider):
   """
 
   _FILES = resources.files("examples").joinpath(
-      "huggingface_transformers/model_configs"
+      "benchmarks/huggingface_transformers/model_configs"
   )
 
   def __init__(
@@ -2770,7 +2770,7 @@ class DiffusersProvider(BaseProvider):
   """
 
   _FILES = resources.files("examples").joinpath(
-      "huggingface_diffusers/model_configs"
+      "benchmarks/huggingface_diffusers/model_configs"
   )
 
   def __init__(self, base_path: str | None = None):

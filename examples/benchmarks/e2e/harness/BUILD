@@ -186,7 +186,7 @@ torch_tpu_py_test(
         "--post_warmup_steps=0",
     ],
     data = [
-        "//examples/huggingface_transformers:model_configs_data",
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v5e_1x1",
@@ -276,7 +276,7 @@ torch_tpu_py_test(
     timeout = "long",
     srcs = ["torch_benchmark_test.py"],
     data = [
-        "//examples/huggingface_transformers:model_configs_data",
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
     ],
     env = {
         "BENCHMARK_PLATFORM": "v7_1x1x1",
@@ -319,7 +319,7 @@ pytype_strict_binary(
     testonly = 1,
     srcs = ["distributed_runner.py"],
     data = [
-        "//examples/huggingface_transformers:model_configs_data",
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
     ],
     deps = [
         ":distributed_runner_lib",

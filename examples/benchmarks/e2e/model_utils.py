@@ -143,7 +143,7 @@ def set_default_dtype(dtype: torch.dtype):
 
 def _get_base_wan_transformer_config():
   # Reference config:
-  # third_party/py/torch_tpu/examples/huggingface_diffusers/model_configs/Wan-AI/Wan2.2-TI2V-5B-Diffusers/transformer/config.json
+  # third_party/py/torch_tpu/examples/benchmarks/huggingface_diffusers/model_configs/Wan-AI/Wan2.2-TI2V-5B-Diffusers/transformer/config.json
   return {
       "attention_head_dim": 128,
       "cross_attn_norm": True,
@@ -463,7 +463,7 @@ def huggingface_llm_model_builder(
   """Returns the huggingface LLM model.
 
   See supported models in
-  `third_party/py/torch_tpu/examples/huggingface_transformers/model_configs`.
+  `third_party/py/torch_tpu/examples/benchmarks/huggingface_transformers/model_configs`.
 
   Args:
       model_and_input_args: The model and input args.
@@ -2979,7 +2979,7 @@ def huggingface_resnet_model_builder(
   """Returns a Hugging Face ResNet model with custom vision inputs.
 
   See supported models in
-  `third_party/py/torch_tpu/examples/huggingface_transformers/model_configs`.
+  `third_party/py/torch_tpu/examples/benchmarks/huggingface_transformers/model_configs`.
 
   Args:
       model_and_input_args: The model and input args.

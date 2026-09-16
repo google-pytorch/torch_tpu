@@ -183,8 +183,8 @@ torch_tpu_py_library(
     name = "module_registry",
     srcs = ["module_registry.py"],
     data = [
-        "//examples/huggingface_diffusers:model_configs_data",
-        "//examples/huggingface_transformers:model_configs_data",
+        "//examples/benchmarks/huggingface_diffusers:model_configs_data",
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
     ],
     visibility = ["//:__subpackages__"],
     deps = [

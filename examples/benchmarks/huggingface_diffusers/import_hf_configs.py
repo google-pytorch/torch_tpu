@@ -35,7 +35,7 @@ _MODEL_ID = flags.DEFINE_string(
 
 _OUTPUT_DIR = flags.DEFINE_string(
     "output_dir",
-    "third_party/py/torch_tpu/examples/huggingface_diffusers/model_configs",
+    "third_party/py/torch_tpu/examples/benchmarks/huggingface_diffusers/model_configs",
     "The directory to save the model configurations to.",
 )
 

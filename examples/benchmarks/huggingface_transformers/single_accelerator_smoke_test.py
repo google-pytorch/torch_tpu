@@ -21,7 +21,8 @@ from absl.testing import parameterized
 import torch
 from torch_tpu._internal.utils import log_utils
 from examples import paths
-from examples.huggingface_transformers import model_configs
+from examples.benchmarks.huggingface_transformers import model_configs
+from tests import seed_test_utils
 import transformers
 
 log_utils.log_to_stderr()
@@ -36,7 +37,7 @@ _DEVICE = flags.DEFINE_enum(
 )
 
 
-class SingleAcceleratorSmokeTest(parameterized.TestCase):
+class SingleAcceleratorSmokeTest(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()

@@ -112,7 +112,7 @@ torch_tpu_py_test(
     ],
     deps = [
         "//examples:paths",
-        "//examples/huggingface_transformers:model_configs",
+        "//examples/benchmarks/huggingface_transformers:model_configs",
         "//shims/absl_py:app",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",

@@ -18,7 +18,7 @@ from typing import Final, Sequence
 
 from absl import app
 from absl import flags
-from examples.huggingface_transformers import generate
+from examples.benchmarks.huggingface_transformers import generate
 
 _MODEL_ID = flags.DEFINE_string(
     "model_id",

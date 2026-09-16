@@ -17,12 +17,12 @@
 This script traces the aten ops in the HuggingFace Transformers models.
 It is useful for identifying missing aten ops.
 
-See third_party/py/torch_tpu/examples/huggingface_transformers/README.md for
+See third_party/py/torch_tpu/examples/benchmarks/huggingface_transformers/README.md for
 more details.
 
 Usage:
 ```
-blaze run //examples/huggingface_transformers:trace_ops -- \
+blaze run //examples/benchmarks/huggingface_transformers:trace_ops -- \
   --alsologtostderr
   --model_id=<model/name>
 ```
@@ -37,7 +37,7 @@ import torch
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import tracer_utils
 from torch_tpu._internal.utils import utils
-from examples.huggingface_transformers import model_configs
+from examples.benchmarks.huggingface_transformers import model_configs
 import transformers
 
 

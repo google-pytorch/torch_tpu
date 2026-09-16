@@ -48,7 +48,7 @@ class SDXLSmokeTest(seed_test_utils.RepeatableTest):
 
   # Model path with weights
   MODEL_PATH = f"{paths.XM_HOME}weights/huggingface/stabilityai/stable-diffusion-xl-base-1.0"
-  CODE_MODEL_PATH = "third_party/py/torch_tpu/examples/huggingface_diffusers/model_configs/stabilityai/stable-diffusion-xl-base-1.0"
+  CODE_MODEL_PATH = "third_party/py/torch_tpu/examples/benchmarks/huggingface_diffusers/model_configs/stabilityai/stable-diffusion-xl-base-1.0"
   # Model path on codebase with configs only
   D_TYPE = torch.bfloat16
 

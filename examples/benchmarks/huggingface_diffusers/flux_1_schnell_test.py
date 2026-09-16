@@ -47,7 +47,7 @@ _DEVICE = flags.DEFINE_enum(
 class Flux1SmokeTest(seed_test_utils.RepeatableTest):
 
   MODEL_PATH = f"{XM_HOME}weights/huggingface/black-forest-labs/FLUX.1-schnell/"
-  CODE_MODEL_PATH = "third_party/py/torch_tpu/examples/huggingface_diffusers/model_configs/black-forest-labs/FLUX.1-schnell"
+  CODE_MODEL_PATH = "third_party/py/torch_tpu/examples/benchmarks/huggingface_diffusers/model_configs/black-forest-labs/FLUX.1-schnell"
   D_TYPE = torch.bfloat16
 
   def setUp(self):

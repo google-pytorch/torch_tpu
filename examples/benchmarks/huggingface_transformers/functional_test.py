@@ -26,7 +26,7 @@ import torch
 from torch.nn import attention
 from torch_tpu._internal.utils import log_utils
 from torch_tpu._internal.utils import utils
-from examples.huggingface_transformers import model_configs
+from examples.benchmarks.huggingface_transformers import model_configs
 from tests import seed_test_utils
 import transformers
 
