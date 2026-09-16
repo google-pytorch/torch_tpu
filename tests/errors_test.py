@@ -2196,6 +2196,18 @@ Device-side assertion tracking was not enabled by user.""",
           torch.tensor([[0, 1], [2, 3]], device=et.device()),
       )
 
+  def test_index_put_boolean_mask_values_expandable_to_self_shape_mismatch_error(
+      self,
+  ):
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""shape mismatch: value tensor of shape [2, 1] cannot be broadcast to indexing result of shape [2, 1, 2]""",
+        tpu="""index_put_(): value tensor of shape [2, 1] cannot be broadcast to indexing result of shape [2, 1, 2]""",
+    ):
+      tensor = torch.zeros(2, 2, 2, device=et.device())
+      mask = torch.tensor([False, True], device=et.device())
+      tensor[:, mask, :] = torch.tensor([[10.0], [20.0]], device=et.device())
+
   def test_index_put_dtype_mismatch_error(self):
     with et.assert_raises_message(
         RuntimeError,

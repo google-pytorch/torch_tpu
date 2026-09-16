@@ -299,12 +299,15 @@ absl::StatusOr<Dimensions> GetValuesBroadcastShape(
   return values_broadcast_shape;
 }
 
-//
-// Returns true if the indices list contains a single boolean index tensor.
-//
-bool CanUseIndicesAsMask(
+struct BooleanMaskInfo {
+  int64_t index_start_dim;
+  int64_t mask_dim;
+};
+
+// Returns mask info if the indices list contains a single boolean index tensor.
+std::optional<BooleanMaskInfo> GetSingleBooleanMaskInfo(
     const c10::List<std::optional<at::Tensor>>& indices_list_opt) {
-  bool found_mask = false;
+  std::optional<BooleanMaskInfo> mask_info;
   for (int64_t i = 0; i < indices_list_opt.size(); ++i) {
     auto maybe_tensor = indices_list_opt[i];
     if (!maybe_tensor.has_value() || !maybe_tensor.value().defined()) {
@@ -312,45 +315,57 @@ bool CanUseIndicesAsMask(
     }
     const auto& index_tensor = maybe_tensor.value();
     if (index_tensor.scalar_type() == c10::ScalarType::Bool) {
-      if (found_mask) {
+      if (mask_info.has_value()) {
         // Only one boolean mask is allowed.
-        return false;
+        return std::nullopt;
       }
-      found_mask = true;
+      mask_info = BooleanMaskInfo{
+          .index_start_dim = i,
+          .mask_dim = index_tensor.dim(),
+      };
     } else {
-      return false;
+      return std::nullopt;
     }
   }
-  return true;
+  return mask_info;
 }
 
-inline bool IsValuesScalar(const at::Tensor& values) {
-  return values.dim() == 0 && values.numel() == 1;
-}
-
-// When the values tensor is a scalar and the indices contain a boolean mask, we
-// can use the more efficient stablehlo.select to implement the index_put
-// operation.
+// Returns true if the values tensor can be broadcast into self for a boolean
+// mask index_put lowering using stablehlo.select.
 //
-// self[mask] = scalar_value
+// In PyTorch semantics, self[..., mask, ...] = values replaces the indexed
+// slice of shape (leading_dims, K, trailing_dims) with values, where K is the
+// number of True elements in mask.
+// For stablehlo.select to be mathematically equivalent, values must not vary
+// across the masked dimensions (i.e. any dimension in values corresponding to
+// a masked dimension in self must have size 1 or be omitted).
+bool CanUseSelectWithValues(const at::Tensor& self, const at::Tensor& values,
+                            int64_t index_start_dim, int64_t mask_dim) {
+  Dimensions target_shape;
+  for (int64_t i = 0; i < index_start_dim; ++i) {
+    target_shape.push_back(self.size(i));
+  }
+  target_shape.push_back(1);
+  for (int64_t i = index_start_dim + mask_dim; i < self.dim(); ++i) {
+    target_shape.push_back(self.size(i));
+  }
+  return at::is_expandable_to(values.sizes(), target_shape);
+}
+
+// When the indices contain a boolean mask and the values tensor does not vary
+// across the masked dimensions, we use the more efficient stablehlo.select to
+// implement the index_put operation without host CPU synchronization.
+//
+// self[mask] = broadcastable_value
 //
 // This function dispatches to the appropriate StableHLO implementation based
 // on the presence of a boolean mask in the indices.
-absl::Status IndexPutWithBooleanMask(
-    const at::Tensor& self,
-    const c10::List<std::optional<at::Tensor>>& indices_list_opt,
-    const at::Tensor& values, const bool accumulate, at::Tensor& out) {
-  int64_t mask_index = 0;
-  for (; mask_index < indices_list_opt.size(); ++mask_index) {
-    auto maybe_tensor = indices_list_opt[mask_index];
-    if (!maybe_tensor.has_value() || !maybe_tensor.value().defined()) {
-      continue;
-    }
-    break;
-  }
-  auto maybe_tensor = indices_list_opt[mask_index];
-  int64_t self_dim = mask_index;
-  const auto& mask = maybe_tensor.value();
+absl::Status IndexPutWithBooleanMask(const at::Tensor& self,
+                                     const at::Tensor& mask,
+                                     int64_t index_start_dim,
+                                     const at::Tensor& values,
+                                     const bool accumulate, at::Tensor& out) {
+  int64_t self_dim = index_start_dim;
   for (int64_t mask_dim = 0; mask_dim < mask.dim(); ++mask_dim) {
     TT_RET_CHECK(self_dim < self.dim() &&
                      mask.sizes()[mask_dim] == self.sizes()[self_dim],
@@ -361,8 +376,6 @@ absl::Status IndexPutWithBooleanMask(
         << self.sizes();
     self_dim++;
   }
-  // mask tensor indexes the self tensor at mask_index
-  const int64_t index_start_dim = mask_index;
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op creates cache keys
                         // successfully.
       auto param_keys,
@@ -489,15 +502,20 @@ absl::Status IndexPutHelper(
 
   TT_RETURN_IF_ERROR(ValidateIndicesType(indices_list_opt));
 
-  if (IsValuesScalar(values) && CanUseIndicesAsMask(indices_list_opt)) {
-    // For scenarios where the values tensor is a scalar and the indices
-    // contain a boolean mask, we can use the more efficient stablehlo.select
-    // to implement the index_put operation.
+  const auto mask_info = GetSingleBooleanMaskInfo(indices_list_opt);
+  if (mask_info.has_value() &&
+      CanUseSelectWithValues(self, values, mask_info->index_start_dim,
+                             mask_info->mask_dim)) {
+    // For scenarios where the indices contain a boolean mask and values can be
+    // broadcast to self without varying across the masked dimensions, we can
+    // use the more efficient stablehlo.select to implement the index_put
+    // operation without host synchronization.
     //
-    // self[mask] = scalar_value
+    // self[mask] = broadcastable_value
     //
-    return IndexPutWithBooleanMask(self, indices_list_opt, values, accumulate,
-                                   out);
+    return IndexPutWithBooleanMask(
+        self, indices_list_opt[mask_info->index_start_dim].value(),
+        mask_info->index_start_dim, values, accumulate, out);
   }
   return IndexPut(self, indices_list_opt, values, accumulate, out);
 }

@@ -62,7 +62,8 @@ absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
 //   self: The 'self' tensor to be updated.
 //   mask: The boolean mask tensor.
 //   index_start_dim: The starting dimension in self indexed by the mask tensor.
-//   values: The 'values' tensor providing the updates. This must be a scalar.
+//   values: The 'values' tensor providing the updates. This can be a scalar
+//           or broadcastable to self.
 //   accumulate: A boolean flag. If true, the elements from the 'values' tensor
 //               are added to the existing elements in the 'self' tensor at the
 //               indexed locations. If false, the elements are overwritten.

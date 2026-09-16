@@ -1216,6 +1216,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "index_put_op_test",
     srcs = ["index_put_op_unit_test.py"],
+    args = ["--test_mode=torch_tpu_vs_cpu"],
     main = "index_put_op_unit_test.py",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",

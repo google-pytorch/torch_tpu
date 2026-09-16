@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
@@ -200,41 +199,52 @@ absl::StatusOr<mlir::MlirOp> ApplySelect(mlir::MlirOp self, mlir::MlirOp mask,
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
   const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
   const mlir::RankedTensorType values_type = GetTensorTypeOrDie(values);
-  ABSL_CHECK_EQ(values_type.getRank(), 0);  // CRASH_OK=values is a scalar
+  const int64_t self_rank = self_type.getRank();
+  const int64_t mask_rank = mask_type.getRank();
+  const int64_t values_rank = values_type.getRank();
 
-  // Reshape mask to:
-  // [1, 1, ... , 1, D(dim0), D(dim1), ... , D(dim(maskRank-1)), 1, 1, ... , 1]
-  Indices mask_shape(self_type.getRank(), 1);
-  int64_t start_dim = index_start_dim;
-  for (int64_t mask_dim = 0; mask_dim < mask_type.getRank(); ++mask_dim) {
-    mask_shape[start_dim++] = mask_type.getDimSize(mask_dim);
+  Indices mask_broadcast_dims;
+  mask_broadcast_dims.reserve(mask_rank);
+  for (int64_t i = 0; i < mask_rank; ++i) {
+    mask_broadcast_dims.push_back(index_start_dim + i);
   }
 
-  mlir::MlirOp reshaped_mask = stablehlo::Reshape(mask, mask_shape);
-  const mlir::RankedTensorType reshaped_mask_type =
-      GetTensorTypeOrDie(reshaped_mask);
-  ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] reshaped mask: "
-               << reshaped_mask.ToString();
+  // Example: self[B, T, H, D] indexed by mask[T, H] at index_start_dim=1
+  // (`self[:, mask, :]`), with values[1, D].
+  // - PyTorch replaces the masked axes (T, H at dims 1, 2) with a single dim N
+  //   making shape [B, N, D].
+  // - target_to_self_dims = {0, 1, 3} records the corresponding self axis for
+  //   each dim of [B, N, D] (B -> 0, collapsed N -> 1, D -> 3).
+  // - Since values[1, D] right-aligns to [B, N, D], taking the last 2 entries
+  //   gives values_broadcast_dims = {1, 3} for stablehlo.broadcast_in_dim.
+  const int64_t target_rank = self_rank - mask_rank + 1;
+  const int64_t rank_offset = target_rank - values_rank;
+  // PyTorch 0-D boolean masks insert a virtual dimension of size 1 at
+  // index_start_dim in the indexing result; squeezing it aligns values with
+  // self.
+  if (mask_rank == 0 && index_start_dim >= rank_offset) {
+    TT_ASSIGN_OR_RETURN(values,
+                        Squeeze(values, {index_start_dim - rank_offset}));
+  }
+  Indices target_to_self_dims;
+  target_to_self_dims.reserve(target_rank);
+  for (int64_t d = 0; d < index_start_dim; ++d) {
+    target_to_self_dims.push_back(d);
+  }
+  if (mask_rank > 0) {
+    target_to_self_dims.push_back(index_start_dim);
+  }
+  for (int64_t d = index_start_dim + mask_rank; d < self_rank; ++d) {
+    target_to_self_dims.push_back(d);
+  }
+  const int64_t values_squeezed_rank = GetTensorTypeOrDie(values).getRank();
+  Indices values_broadcast_dims(
+      target_to_self_dims.end() - values_squeezed_rank,
+      target_to_self_dims.end());
 
-  // Broadcast everything to a common shape.
-  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=mask is reshaped to a shape
-                        // that is broadcastable to self. values is a scalar
-                        // and hence is broadcastable to self.
-      const Dimensions common_broadcast_shape,
-      InferSize(reshaped_mask_type.getShape(), self_type.getShape(),
-                values_type.getShape()));
-
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=self is being broadcasted to
-                       // common_broadcast_shape, hence should always succeeds.
-      self, BroadcastIfNeeded(self, common_broadcast_shape));
-
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=mask is being broadcasted to
-                       // common_broadcast_shape, hence should always succeeds.
-      mask, BroadcastIfNeeded(reshaped_mask, common_broadcast_shape));
-
-  TT_ASSIGN_OR_CRASH(  // CRASH_OK=values is being broadcasted to
-                       // common_broadcast_shape, hence should always succeeds.
-      values, BroadcastIfNeeded(values, common_broadcast_shape));
+  TT_ASSIGN_OR_RETURN(mask, BroadcastIfNeeded(mask, self, mask_broadcast_dims));
+  TT_ASSIGN_OR_RETURN(values,
+                      BroadcastIfNeeded(values, self, values_broadcast_dims));
 
   ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] self: " << self.ToString();
   ABSL_VLOG(1) << "[BuildIndexPutSelectShlo] mask: " << mask.ToString();

@@ -1438,5 +1438,50 @@ class SymMaxMinTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_index_put_boolean_mask_dynamic(self):
+    # Regression test for t5gemma-2 pattern: index_put_ with a 2D boolean mask
+    # on a 3D tensor with dynamic sequence length under bounded dynamism.
+    def fn(embeddings, mask, eoi_embedding):
+      embeddings = embeddings.clone()
+      embeddings[mask] = eoi_embedding
+      return embeddings
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    batch_size = 2
+    seq_len = 6
+    hidden_dim = 8
+    embeddings = torch.randn(
+        batch_size, seq_len, hidden_dim, device=self.device
+    )
+    mask = torch.tensor(
+        [
+            [True, False, True, False, False, True],
+            [False, True, False, True, False, False],
+        ],
+        dtype=torch.bool,
+        device=self.device,
+    )
+    eoi_embedding = torch.randn(hidden_dim, device=self.device)
+
+    torch._dynamo.mark_dynamic(embeddings, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(mask, 1, min=2, max=16)
+
+    out = compiled(embeddings, mask, eoi_embedding)
+    expected = fn(embeddings, mask, eoi_embedding)
+    utils.assert_close(out, expected)
+
+
 if __name__ == "__main__":
   absltest.main()

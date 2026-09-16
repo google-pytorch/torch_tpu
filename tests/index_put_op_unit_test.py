@@ -31,12 +31,17 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
       self, device, self_tensor, indices_tuple, values_tensor, accumulate=False
   ):
     t = to(self_tensor, device)
-    # Ensure indices are on the correct device
-    indices = tuple(to(i, device) for i in indices_tuple if i is not None)
     values = to(values_tensor, device)
 
     t_clone = t.clone()
-    t_clone.index_put_(indices, values, accumulate=accumulate)
+    if any(i is None for i in indices_tuple):
+      indices = [
+          to(i, device) if i is not None else None for i in indices_tuple
+      ]
+      torch.ops.aten._index_put_impl_(t_clone, indices, values, accumulate)
+    else:
+      indices = tuple(to(i, device) for i in indices_tuple)
+      t_clone.index_put_(indices, values, accumulate=accumulate)
     return t_clone
 
   # pointwise update
@@ -367,6 +372,176 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
             (torch.tensor([True, False]),),
             torch.tensor(77.0, dtype=torch.float32),
             accumulate=True,
+        )
+    )
+
+  # 1D values tensor broadcast to 3D self (t5gemma-2 pattern: self[mask] = values)
+  def test_boolean_mask_1d_values_broadcast_3d(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 4, 8, dtype=torch.float32),
+            (
+                torch.tensor(
+                    [[True, False, True, False], [False, True, False, True]]
+                ),
+            ),
+            torch.ones(8, dtype=torch.float32) * 42.0,
+        )
+    )
+
+  # 1D values tensor broadcast to 3D self with accumulate=True
+  def test_boolean_mask_1d_values_broadcast_3d_accumulate(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.ones(2, 4, 8, dtype=torch.float32),
+            (
+                torch.tensor(
+                    [[True, False, True, False], [False, True, False, True]]
+                ),
+            ),
+            torch.ones(8, dtype=torch.float32) * 42.0,
+            accumulate=True,
+        )
+    )
+
+  # 1D values tensor broadcast to 2D self
+  def test_boolean_mask_trailing_broadcast_2d(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(3, 5, dtype=torch.float32),
+            (torch.tensor([True, False, True]),),
+            torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.float32),
+        )
+    )
+
+  # (1, 8) values tensor broadcast to 2D mask on (2, 4, 8) self, and
+  # (1, 1, 8) values tensor broadcast to 1D mask on (2, 4, 8) self
+  def test_boolean_mask_1_1_values_broadcast_3d(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 4, 8, dtype=torch.float32),
+            (
+                torch.tensor(
+                    [[True, False, True, False], [False, True, False, True]]
+                ),
+            ),
+            torch.ones(1, 8, dtype=torch.float32) * 42.0,
+        )
+    )
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 4, 8, dtype=torch.float32),
+            (torch.tensor([True, False]),),
+            torch.ones(1, 1, 8, dtype=torch.float32) * 42.0,
+        )
+    )
+
+  # Leading None index with trailing broadcast
+  def test_boolean_mask_leading_none_trailing_broadcast(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 4, 8, dtype=torch.float32),
+            (None, torch.tensor([True, False, True, False])),
+            torch.tensor(
+                [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], dtype=torch.float32
+            ),
+        )
+    )
+
+  # 0D boolean mask with broadcastable values
+  def test_boolean_0d_mask_broadcast_values(self):
+    def fn1(device):
+      t = torch.zeros(3, 4, dtype=torch.float32, device=device)
+      m = torch.tensor(True, device=device)
+      t[m] = torch.ones(1, 3, 4, dtype=torch.float32, device=device) * 42.0
+      return t
+
+    self.assert_close_tpu_vs_cpu(fn1)
+
+    tpu_device = torch.device("tpu")
+    # Direct dispatch to ATen kernel with 0D boolean mask at index_start_dim=0
+    t_tpu = torch.zeros(3, 4, dtype=torch.float32, device=tpu_device)
+    torch.ops.aten._index_put_impl_(
+        t_tpu,
+        [torch.tensor(True, device=tpu_device)],
+        torch.ones(1, 3, 4, dtype=torch.float32, device=tpu_device) * 42.0,
+        False,
+    )
+    self.assert_close(
+        golden_result=torch.full((3, 4), 42.0, dtype=torch.float32),
+        torch_tpu_result=t_tpu.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # Direct dispatch to ATen kernel with 0D boolean mask at index_start_dim=1
+    t_tpu_2 = torch.zeros(3, 4, dtype=torch.float32, device=tpu_device)
+    torch.ops.aten._index_put_impl_(
+        t_tpu_2,
+        [None, torch.tensor(True, device=tpu_device)],
+        torch.ones(3, 1, 4, dtype=torch.float32, device=tpu_device) * 17.0,
+        False,
+    )
+    self.assert_close(
+        golden_result=torch.full((3, 4), 17.0, dtype=torch.float32),
+        torch_tpu_result=t_tpu_2.cpu(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+  # When values tensor varies across masked dimension (e.g. shape (K, D) where K == num_true),
+  # it cannot be lowered via stablehlo.select and must fall back to positional index_put.
+  def test_boolean_mask_positional_fallback_when_values_vary_across_mask(self):
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(4, 8, dtype=torch.float32),
+            (torch.tensor([True, False, False, True]),),
+            torch.arange(16, dtype=torch.float32).reshape(2, 8),
+        )
+    )
+
+  # When values tensor is expandable to self.sizes() but varies across a masked
+  # dimension (values.size(val_dim) > 1), CanUseSelectWithValues must return
+  # False so that index_put falls back to positional scatter instead of select.
+  def test_boolean_mask_positional_fallback_when_values_expandable_to_self(
+      self,
+  ):
+    # 2D mask (2, 2) with K=2 True elements and 1D values (2,) expandable to (2, 2).
+    # True elements at (0, 1) and (1, 0): scatter sets self[0, 1]=10, self[1, 0]=20,
+    # whereas select would set self[0, 1]=20, self[1, 0]=10.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 2, dtype=torch.float32),
+            (torch.tensor([[False, True], [True, False]]),),
+            torch.tensor([10.0, 20.0], dtype=torch.float32),
+        )
+    )
+    # 3D self (2, 2, 2) with leading None and 2D mask (2, 2), values (1, 2):
+    # index_start_dim=1, mask_dim=2, values_rank=2, rank_diff=1.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 2, 2, dtype=torch.float32),
+            (None, torch.tensor([[False, True], [True, False]])),
+            torch.tensor([[10.0, 20.0]], dtype=torch.float32),
+        )
+    )
+    # 3D self (2, 2, 2) with 2D mask (2, 2) at dim 0, values (2, 1):
+    # index_start_dim=0, mask_dim=2, values_rank=2, rank_diff=1.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: self._run_index_put(
+            device,
+            torch.zeros(2, 2, 2, dtype=torch.float32),
+            (torch.tensor([[False, True], [True, False]]),),
+            torch.tensor([[10.0], [20.0]], dtype=torch.float32),
         )
     )
 
@@ -820,6 +995,73 @@ class IndexPutTest(TorchTpuVsCpuTestBase):
     compiled = torch.compile(fn, fullgraph=True)
     result = compiled(to(columns, device), to(values, device)).cpu()
     self.assertTrue(torch.equal(result, expected))
+
+  def test_boolean_mask_broadcast_values_compiled(self):
+    # Regtest for t5gemma2: boolean mask index_put with broadcastable 1D values
+    # tensor in compiled mode must not trigger host CPU synchronization.
+    def fn(embeddings, mask, eoi_embedding):
+      embeddings = embeddings.clone()
+      embeddings[mask] = eoi_embedding
+      return embeddings
+
+    embeddings = torch.randn(2, 4, 8, dtype=torch.float32)
+    mask = torch.tensor(
+        [[True, False, True, False], [False, True, False, True]],
+        dtype=torch.bool,
+    )
+    eoi_embedding = torch.randn(8, dtype=torch.float32)
+    expected = fn(embeddings, mask, eoi_embedding)
+
+    device = torch.device("tpu")
+    compiled = torch.compile(fn, fullgraph=True)
+    result = compiled(
+        to(embeddings, device), to(mask, device), to(eoi_embedding, device)
+    ).cpu()
+    self.assert_close(
+        golden_result=expected, torch_tpu_result=result, rtol=1e-5, atol=1e-5
+    )
+
+    # Leading None dimensions (index_start_dim > 0) with full rank values
+    def fn_leading_none(x, m, v):
+      x = x.clone()
+      x[:, :, m] = v
+      return x
+
+    x_4d = torch.randn(2, 3, 4, 8, dtype=torch.float32)
+    mask_1d = torch.tensor([True, False, True, False], dtype=torch.bool)
+    vals_4d = torch.randn(2, 3, 1, 8, dtype=torch.float32)
+    expected_4d = fn_leading_none(x_4d, mask_1d, vals_4d)
+    compiled_leading_none = torch.compile(fn_leading_none, fullgraph=True)
+    result_4d = compiled_leading_none(
+        to(x_4d, device), to(mask_1d, device), to(vals_4d, device)
+    ).cpu()
+    self.assert_close(
+        golden_result=expected_4d,
+        torch_tpu_result=result_4d,
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    # Mask covering trailing dimensions (index_start_dim + mask_dim == self.dim())
+    def fn_trailing_mask(x, m, v):
+      x = x.clone()
+      x[:, m] = v
+      return x
+
+    x_3d = torch.randn(2, 4, 8, dtype=torch.float32)
+    mask_2d = torch.ones(4, 8, dtype=torch.bool)
+    vals_2d = torch.randn(2, 1, dtype=torch.float32)
+    expected_3d = fn_trailing_mask(x_3d, mask_2d, vals_2d)
+    compiled_trailing = torch.compile(fn_trailing_mask, fullgraph=True)
+    result_3d = compiled_trailing(
+        to(x_3d, device), to(mask_2d, device), to(vals_2d, device)
+    ).cpu()
+    self.assert_close(
+        golden_result=expected_3d,
+        torch_tpu_result=result_3d,
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 if __name__ == "__main__":
