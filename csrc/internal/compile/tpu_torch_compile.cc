@@ -33,6 +33,7 @@
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
@@ -1228,7 +1229,12 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
            py::arg("dimensions") = std::vector<int64_t>(),  // INT_VEC_OK
            py::arg("is_dynamic") = false)
       .def_readwrite("dimensions", &OutputShape::dimensions)
-      .def_readwrite("is_dynamic", &OutputShape::is_dynamic);
+      .def_readwrite("is_dynamic", &OutputShape::is_dynamic)
+      .def("__repr__", [](const OutputShape& s) {
+        return absl::StrCat("OutputShape(dimensions=", ToString(s.dimensions),
+                            ", is_dynamic=", s.is_dynamic ? "True" : "False",
+                            ")");
+      });
 
   py::implicitly_convertible<py::tuple, TensorInfo>();
   py::implicitly_convertible<py::tuple, TensorBounds>();

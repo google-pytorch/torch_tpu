@@ -68,14 +68,14 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(new_placeholders, len(placeholders) + 1)
 
-    # Verify that set_dimension_logical_size was inserted
-    set_dim_nodes = list(
+    # Verify that pad_real_to_static was inserted
+    pad_nodes = list(
         captured_gm.graph.find_nodes(
             op="call_function",
-            target=torch.ops.tpu.set_dimension_logical_size,
+            target=torch.ops.tpu.pad_real_to_static,
         )
     )
-    self.assertLen(set_dim_nodes, 1)
+    self.assertLen(pad_nodes, 1)
 
   def test_handle_generative_ops_pass(self):
     captured_gm = None
@@ -243,17 +243,17 @@ class GraphTransformationsTest(seed_test_utils.RepeatableTest):
     )
     self.assertLen(new_placeholders, len(placeholders) + 1)
 
-    # Verify that both set_dimension_logical_size nodes use the SAME placeholder
-    set_dim_nodes = list(
+    # Verify that both pad_real_to_static nodes use the SAME placeholder
+    pad_nodes = list(
         captured_gm.graph.find_nodes(
             op="call_function",
-            target=torch.ops.tpu.set_dimension_logical_size,
+            target=torch.ops.tpu.pad_real_to_static,
         )
     )
-    self.assertLen(set_dim_nodes, 2)
+    self.assertLen(pad_nodes, 2)
 
-    size_input_0 = set_dim_nodes[0].args[2]
-    size_input_1 = set_dim_nodes[1].args[2]
+    size_input_0 = pad_nodes[0].args[1][0]
+    size_input_1 = pad_nodes[1].args[1][0]
     self.assertEqual(size_input_0, size_input_1)
     self.assertEqual(size_input_0.op, "placeholder")
     self.assertTrue(size_input_0.name.endswith("_size"))

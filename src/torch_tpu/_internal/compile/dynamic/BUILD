@@ -119,6 +119,7 @@ torch_tpu_py_library(
         ":symbol_bounds",
         ":view_ops_passes",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/utils",
     ],
 )
 

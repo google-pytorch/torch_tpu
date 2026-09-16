@@ -50,6 +50,12 @@ class CompileTest(seed_test_utils.RepeatableTest):
       for inputs, per_case_mark_info in zip(
           test_inputs, mark_dynamic_tests_info
       ):
+        inputs = [
+            input.to(torch.int32)
+            if isinstance(input, torch.Tensor) and input.dtype == torch.int64
+            else input
+            for input in inputs
+        ]
         expected = func(*inputs)
         device_inputs = [input.to(self.device) for input in inputs]
         for input_tensor, input_mark_info in zip(
@@ -483,6 +489,21 @@ class CompileTest(seed_test_utils.RepeatableTest):
     expected = x.to("cpu") * 4
     utils.assert_close(out, expected)
     self.assertEqual(scale_out, 8)
+
+  def test_add_simple_64bit(self):
+    def simple(x):
+      return x + 3.0
+
+    compiled = torch.compile(
+        simple, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x = torch.ones(2, 3, device="tpu", dtype=torch.int64)
+    torch._dynamo.mark_dynamic(x, 0, min=1, max=4)
+
+    out = compiled(x)
+    expected = torch.full((2, 3), 4.0, device="cpu")
+    utils.assert_close(out.cpu(), expected)
 
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
@@ -1020,7 +1041,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
     )
 
     grid = torch.tensor(
-        [[1, 24, 48], [1, 24, 48]], dtype=torch.int64, device=self.device
+        [[1, 24, 48], [1, 24, 48]], dtype=torch.int32, device=self.device
     )
     torch._dynamo.mark_dynamic(grid, 0, min=1, max=32)
 
@@ -1073,7 +1094,7 @@ class DynamicSliceTest(seed_test_utils.RepeatableTest):
     )
 
     grid = torch.tensor(
-        [[1, 24, 48], [1, 24, 48]], dtype=torch.int64, device=self.device
+        [[1, 24, 48], [1, 24, 48]], dtype=torch.int32, device=self.device
     )
     torch._dynamo.mark_dynamic(grid, 0, min=1, max=32)
 

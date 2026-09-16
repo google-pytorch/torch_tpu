@@ -28,6 +28,7 @@ from torch_tpu._internal.compile.dynamic import view_decomposition as decompose
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
+from torch_tpu._internal.compile.dynamic.graph_transformations import can_use_pad_real_to_static
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 
 
@@ -168,7 +169,17 @@ def _compute_output_shapes(
     output_shapes = [s for s in raw_output_shapes if s is not None]
 
   logging.debug(
-      "[_DynamicTpuCompiledExecutable] Output shapes: %s", output_shapes
+      "[_DynamicTpuCompiledExecutable] Output shapes: %s",
+      LazyString(
+          lambda: "["
+          + ", ".join(
+              f"OutputShape(dimensions={s.dimensions},"
+              f" is_dynamic={s.is_dynamic})"
+              for s in output_shapes
+              if s is not None
+          )
+          + "]"
+      ),
   )
   return output_shapes
 
@@ -230,6 +241,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     )
 
     self._precomputed_bounds_list = self._precompute_bounds_list()
+    self._use_pad_subgraph = not can_use_pad_real_to_static(sym_shape_manager)
     self._default_scalar_tensor_cache = {}
     self._prepare_input_packing_plan()
     self._backend_device = None
@@ -479,10 +491,14 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     tensor_args, tensor_info = self._get_pad_subgraph_inputs(args)
 
-    # Run pad subgraph first (no model_executable needed)
-    pad_outputs = self._compile_and_execute_pad_subgraph(
-        tensor_args, tensor_info
-    )
+    # Run pad subgraph first if needed (for libtpu < 0.0.48 or 64-bit/128-bit
+    # tensors)
+    if self._use_pad_subgraph:
+      pad_outputs = self._compile_and_execute_pad_subgraph(
+          tensor_args, tensor_info
+      )
+    else:
+      pad_outputs = tensor_args
 
     # Construct inputs for the model executable
     model_inputs = self._get_model_inputs(args, pad_outputs)
@@ -490,6 +506,12 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     # Extract layouts of the constructed model_inputs to construct layout_key
     # and argument_layouts
     layout_key, argument_layouts = self._get_model_inputs_layouts(model_inputs)
+
+    logging.debug(
+        "[DynamicTpuBackend] Layout key: %s, argument layouts: %s",
+        layout_key,
+        argument_layouts,
+    )
 
     # Check cache, compile if miss
     if layout_key not in self.model_executables:

@@ -31,6 +31,7 @@ from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
+from torch_tpu._internal.utils import utils
 
 ConvertConstantSymIntsPass = (
     convert_constant_symints_pass.ConvertConstantSymIntsPass
@@ -41,53 +42,10 @@ HandleGenerativeOpsPass = generative_ops_pass.HandleGenerativeOpsPass
 
 
 class HandleDynamicInputTensorPass:
-  """Dynamic input tensor transformation pass.
+  """Dynamic input tensor transformation pass using pad_real_to_static.
 
-  This pass does the following:
-  - Identifies input tensors with dynamic dimensions (tensors with SymInt in
-    their shape).
-  - Replaces all usage of the input tensor with the output of a chain of
-    `set_dimension_logical_size` ops, each operating on the output of the
-    previous one, and taking the new placeholder as the size input.
-  - Modifies the graph in-place.
-
-  Note: set_dimension_logical_size lowers down to
-    stablehlo.set_dimension_size.
-
-  Example:
-    Model:
-      def forward(x: torch.Tensor):
-          z = x + 10
-          return z
-
-    Input FX Graph:
-      def forward(self, arg0_1: "Sym(s27)", s27_size: "i32[]",
-                 arg1_1: "Sym(s53)", s53_size: "i32[]",
-                 arg2_1: "i64[1, s27, s53]"):
-          add: "f32[1, s27, s53]" = torch.ops.aten.add.Tensor(arg2_1, 10)
-          return (add,)
-
-    Modified FX Graph:
-      def forward(
-          self,
-          arg0_1: "Sym(s27)",
-          s27_size: "i32[]",
-          arg1_1: "Sym(s53)",
-          s53_size: "i32[]",
-          arg2_1: "i64[1, s27, s53]",
-      ):
-        set_dimension_logical_size_1: "i64[1, s27, s53]" =
-            torch.ops.tpu.set_dimension_logical_size(
-                arg2_1, 1, s27_size)
-
-        set_dimension_logical_size_2: "i64[1, s27, s53]" =
-            torch.ops.tpu.set_dimension_logical_size(
-                set_dimension_logical_size_1, 2, s53_size)
-
-        add: "f32[1, s27, s53]" = torch.ops.aten.add.Tensor(
-            set_dimension_logical_size_2, 10)
-
-        return (add,)
+  Identifies input tensors with dynamic dimensions (SymInts in shape) and
+  replaces their usages with the output of `torch.ops.tpu.pad_real_to_static`.
   """
 
   def __init__(
@@ -100,10 +58,90 @@ class HandleDynamicInputTensorPass:
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
     """Runs the op insertion pass."""
-
     for idx, node in enumerate(self._placeholders):
       tensor_metadata = self._sym_shape_manager.input_tensors_metadata.get(idx)
-      if tensor_metadata is None:
+      if tensor_metadata is None or not tensor_metadata.dynamic_dims:
+        continue
+
+      bounded_shape = self._sym_shape_manager.get_bounded_shape(idx)
+      self._process_node(
+          graph_module,
+          node,
+          tensor_metadata.dynamic_dims,
+          bounded_shape,
+      )
+
+  def _process_node(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+      dynamic_dims: Sequence[int],
+      static_shape: list[int],
+  ) -> None:
+    """Processes a single placeholder node and inserts pad_real_to_static."""
+    original_users = set(node.users.keys())
+    target_shape = node.meta["val"].shape
+    rank = len(target_shape)
+    dynamic_dims_set = set(dynamic_dims)
+    is_dynamic = [i in dynamic_dims_set for i in range(rank)]
+
+    shape_tensors = []
+    for dim in range(rank):
+      dim_arg = target_shape[dim]
+      size_tensor_node = self._sym_shape_manager.ensure_tensor(
+          graph_module, dim_arg, node, dtype=torch.int32
+      )
+      shape_tensors.append(size_tensor_node)
+
+    with graph_module.graph.inserting_after(node):
+      pad_node = graph_module.graph.call_function(
+          torch.ops.tpu.pad_real_to_static,
+          args=(node, shape_tensors, list(static_shape), is_dynamic),
+      )
+      pad_node.meta = node.meta.copy()
+
+    node.replace_all_uses_with(
+        pad_node, delete_user_cb=lambda u: u in original_users
+    )
+
+
+def can_use_pad_real_to_static(
+    sym_shape_manager: SymShapeManager,
+) -> bool:
+  """Returns True if dynamic input tensors can be lowered to pad_real_to_static."""
+  if not utils.libtpu_at_least((0, 0, 48)):
+    return False
+  for idx, metadata in sym_shape_manager.input_tensors_metadata.items():
+    if metadata.dynamic_dims:
+      arg = sym_shape_manager.example_inputs[idx]
+      # dtype.itemsize is the element size in bytes (8 bytes = 64-bit,
+      # 16 bytes = 128-bit).
+      if isinstance(arg, torch.Tensor) and arg.dtype.itemsize in (8, 16):
+        return False
+  return True
+
+
+class HandleDynamicInputTensorSetDimensionSizePass:
+  """Dynamic input tensor transformation pass using set_dimension_logical_size.
+
+  Used when PadRealToStatic cannot be used (e.g., libtpu < 0.0.48 or when any
+  dynamic input tensor is 64-bit/128-bit, as XLA does not support rewriting
+  64-bit/128-bit element types for PadRealToStatic).
+  """
+
+  def __init__(
+      self,
+      sym_shape_manager: SymShapeManager,
+      placeholders: list[torch.fx.Node],
+  ):
+    self._sym_shape_manager = sym_shape_manager
+    self._placeholders = placeholders
+
+  def __call__(self, graph_module: torch.fx.GraphModule) -> None:
+    """Runs the op insertion pass."""
+    for idx, node in enumerate(self._placeholders):
+      tensor_metadata = self._sym_shape_manager.input_tensors_metadata.get(idx)
+      if tensor_metadata is None or not tensor_metadata.dynamic_dims:
         continue
 
       self._process_node(graph_module, node, tensor_metadata.dynamic_dims)
@@ -186,7 +224,9 @@ class ScanInputsCreatePlaceholdersPass:
           size_ph = graph_module.graph.placeholder(
               ph_name, type_expr=torch.Tensor
           )
-          size_ph.meta["val"] = torch.empty((), dtype=torch.int32)
+          size_ph.meta["val"] = torch.empty(
+              (), dtype=torch.int32, device=sym_utils.get_target_device(node)
+          )
 
         # Store the first placeholder encountered for this sym_str.
         first_size_ph = (
@@ -387,9 +427,18 @@ def apply_dynamism_transformations(
   )
 
   # Updates ops that have input tensors with dynamic dimensions.
-  GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
-      HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
-  )
+  if can_use_pad_real_to_static(sym_shape_manager):
+    GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
+        HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
+    )
+  else:
+    GraphTransformObserver(
+        graph_module, "handle_dynamic_inputs_set_dimension_size"
+    ).apply_gm_pass(
+        HandleDynamicInputTensorSetDimensionSizePass(
+            sym_shape_manager, original_placeholders
+        )
+    )
 
   # Updates the generative ops that have dynamic scalar inputs.
   GraphTransformObserver(graph_module, "handle_generative_ops").apply_gm_pass(
