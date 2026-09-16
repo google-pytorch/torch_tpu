@@ -2659,21 +2659,6 @@ class TransformersProvider(BaseProvider):
       model_fn = lambda: model_cls.from_pretrained(  # pyrefly: ignore[missing-attribute]
           str(model_dir_or_repo_id), **kwargs
       )
-
-      def _load_preprocessor():
-        try:
-          return transformers.AutoProcessor.from_pretrained(
-              str(model_dir_or_repo_id)
-          )
-        except Exception:  # pylint: disable=broad-except
-          try:
-            return transformers.AutoTokenizer.from_pretrained(
-                str(model_dir_or_repo_id)
-            )
-          except Exception:  # pylint: disable=broad-except
-            return None
-
-      preprocessor_fn = _load_preprocessor
     else:
       architectures = getattr(config, "architectures", [])
       model_cls = transformers.AutoModel
@@ -2709,7 +2694,21 @@ class TransformersProvider(BaseProvider):
         return m
 
       model_fn = _create_model
-      preprocessor_fn = None
+
+    def _load_preprocessor():
+      try:
+        return transformers.AutoProcessor.from_pretrained(
+            str(model_dir_or_repo_id)
+        )
+      except Exception:  # pylint: disable=broad-except
+        try:
+          return transformers.AutoTokenizer.from_pretrained(
+              str(model_dir_or_repo_id)
+          )
+        except Exception:  # pylint: disable=broad-except
+          return None
+
+    preprocessor_fn = _load_preprocessor
 
     def _input_fn(
         shape=None, device="cpu"

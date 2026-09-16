@@ -263,6 +263,9 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     out = model(**kwargs)
 
     self.assertEqual(out.logits.shape, expected_logits_shape)
+    self.assertIsNotNone(module_spec.preprocessor_factory)
+    tokenizer = module_spec.preprocessor_factory()
+    self.assertIsNotNone(tokenizer)
 
   def test_transformers_with_modify_config_hook(self):
     def modify_config(config):
