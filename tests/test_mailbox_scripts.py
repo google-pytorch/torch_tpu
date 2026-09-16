@@ -255,6 +255,38 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
       body = f.read()
     self.assertIn('BAZEL_ARGS+=("--config=ci_tpu_v5_presubmit")', body)
 
+  def test_label_is_verified_by_read_back_not_exit_code(self):
+    """gh can exit 0 with the label mutation having silently failed."""
+    with open(MAILBOX_PRESUBMIT_PR) as f:
+      body = f.read()
+    self.assertIn("gh pr view", body)
+    self.assertIn("--json labels", body)
+    self.assertIn("label_applied=true", body)
+
+  def test_replacement_mode_aborts_when_label_cannot_be_applied(self):
+    """A green gating status must never be posted without the label."""
+    with open(MAILBOX_PRESUBMIT_PR) as f:
+      body = f.read()
+    abort_block = body.split('if [[ "$label_applied" == "false" ]]; then')[1]
+    guard, _, remainder = abort_block.partition('if [[ "$CLI_MODE" == "replacement" ]]; then')
+    self.assertEqual(guard.strip(), "")
+    self.assertIn("exit 1", remainder.split("fi")[0])
+
+  def test_shadow_mode_only_warns_when_label_cannot_be_applied(self):
+    with open(MAILBOX_PRESUBMIT_PR) as f:
+      body = f.read()
+    abort_block = body.split('if [[ "$label_applied" == "false" ]]; then')[1]
+    self.assertIn("WARNING: failed to add label", abort_block)
+
+  def test_label_check_runs_before_any_status_is_posted(self):
+    """Aborting after posting 'pending' would leave the PR wedged."""
+    with open(MAILBOX_PRESUBMIT_PR) as f:
+      body = f.read()
+    self.assertLess(
+        body.index('if [[ "$label_applied" == "false" ]]; then'),
+        body.index('post_status "$CLI_SHA" "pending"'),
+    )
+
 
 if __name__ == "__main__":
   unittest.main()

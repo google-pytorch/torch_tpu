@@ -17,10 +17,10 @@ Before running tests, ensure you have:
 
 ## 1. Running Presubmits on a Pull Request
 
-Run `scripts/mailbox_presubmit_pr.sh` pointing to your PR:
+Run `scripts/rbe_tpu/rbe_tpu_presubmit_pr.sh` pointing to your PR:
 
 ```bash
-scripts/mailbox_presubmit_pr.sh --pr <PR_NUMBER> --mode replacement --add-label
+scripts/rbe_tpu/rbe_tpu_presubmit_pr.sh --pr <PR_NUMBER> --mode replacement --add-label
 ```
 
 Leave it running. It will execute the full presubmit suite across the 28 chips and publish results directly to GitHub.
@@ -29,29 +29,41 @@ Leave it running. It will execute the full presubmit suite across the 28 chips a
 
 | Mode | Label Applied | Status Context | When to Use |
 | :--- | :--- | :--- | :--- |
-| `--mode replacement` | `ci:replace-tpu-v5` | `Presubmit on linux-x86-ct5lp-224-8tpu` | You want the fast run to satisfy the gating check. The label skips the standard ct5lp job in CI. |
+| `--mode replacement` | `ci:replace-tpu-v5` | `Presubmit on linux-x86-ct5lp-224-8tpu` | You want the fast run to satisfy the gating check. |
 | `--mode shadow` | `ci:relay-tpu-v5` | `TPU v5e relay (shadow)` | Advisory run. Runs alongside normal CI without affecting merge gating. |
 
 Both modes run the identical test suite on the identical hardware.
+
+> **The label does not cancel the ct5lp job.** `presubmit.yml` never reads
+> `ci:replace-tpu-v5`; the ct5lp matrix entry is not gated on it. What the label does is trigger
+> the `hardware_handoff` job in `test_rbe_opt_in.yml`, whose first step holds the required check
+> open with a pending status so branch protection cannot go green before the fleet run reports.
+> The real 8-TPU job still runs to completion on the shared runner. What you save is waiting for
+> it, not the runner time itself.
+
+In `replacement` mode the script refuses to run if it cannot apply the label. Publishing a green
+verdict under the gating context while the normal workflow is unaware of the fleet run would leave
+two rows with the same name on your PR, so the script exits instead of posting. Add the label by
+hand and re-run, or use `--mode shadow`.
 
 ---
 
 ## 2. Running Arbitrary Bazel Tests (No PR Needed)
 
-You do not need a pull request to run tests on the fleet. Use `scripts/mailbox_bazel_test.sh`:
+You do not need a pull request to run tests on the fleet. Use `scripts/rbe_tpu/rbe_tpu_bazel_test.sh`:
 
 ```bash
 # Run a single target
-scripts/mailbox_bazel_test.sh //tests/pallas:pallas_test
+scripts/rbe_tpu/rbe_tpu_bazel_test.sh //tests/pallas:pallas_test
 
 # Run with custom bazel flags after `--`
-scripts/mailbox_bazel_test.sh //tests/pallas:pallas_test -- --runs_per_test=20
+scripts/rbe_tpu/rbe_tpu_bazel_test.sh //tests/pallas:pallas_test -- --runs_per_test=20
 
 # Run an entire package
-scripts/mailbox_bazel_test.sh //tests/pallas/...
+scripts/rbe_tpu/rbe_tpu_bazel_test.sh //tests/pallas/...
 
 # Run with a tag filter
-scripts/mailbox_bazel_test.sh --scope //tests/... --filter presubmit-v5
+scripts/rbe_tpu/rbe_tpu_bazel_test.sh --scope //tests/... --filter presubmit-v5
 ```
 
 Patterns go through `bazel query tests(...)`, so only test rules are selected. Any flags after `--` pass straight to `bazel test`.

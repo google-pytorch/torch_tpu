@@ -289,11 +289,32 @@ if [[ "$CLI_DRY_RUN" == "true" ]]; then
 fi
 
 if [[ -n "$CLI_PR" && "$CLI_ADD_LABEL" == "true" && "$CLI_NO_REPORT" == "false" ]]; then
+  label_applied=false
   if command -v gh >/dev/null 2>&1; then
     echo "Adding label '${TARGET_LABEL}' to PR #${CLI_PR}..."
-    gh pr edit "$CLI_PR" -R "$CLI_REPO" --add-label "$TARGET_LABEL" || {
-      echo "WARNING: Failed to add label '${TARGET_LABEL}' to PR #${CLI_PR}." >&2
-    }
+    gh pr edit "$CLI_PR" -R "$CLI_REPO" --add-label "$TARGET_LABEL" || true
+    # gh can exit non-zero, or exit zero with the GraphQL mutation having failed
+    # (see the Projects-classic deprecation), so read the label back instead of
+    # trusting the exit code.
+    if gh pr view "$CLI_PR" -R "$CLI_REPO" --json labels --jq '.labels[].name' 2>/dev/null \
+        | grep -qxF "$TARGET_LABEL"; then
+      label_applied=true
+    fi
+  else
+    echo "WARNING: gh not found, cannot apply label '${TARGET_LABEL}'." >&2
+  fi
+
+  if [[ "$label_applied" == "false" ]]; then
+    if [[ "$CLI_MODE" == "replacement" ]]; then
+      echo "ERROR: could not apply '${TARGET_LABEL}' to PR #${CLI_PR}." >&2
+      echo "Replacement mode publishes under '${GATING_CONTEXT}', the context branch" >&2
+      echo "protection requires. Without the label the normal workflow never learns a" >&2
+      echo "fleet run is happening, so a verdict posted here would sit next to the real" >&2
+      echo "ct5lp job wearing its name. Refusing to post." >&2
+      echo "Add the label by hand and re-run, or use --mode shadow." >&2
+      exit 1
+    fi
+    echo "WARNING: failed to add label '${TARGET_LABEL}' to PR #${CLI_PR}." >&2
   fi
 fi
 
