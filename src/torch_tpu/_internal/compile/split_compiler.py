@@ -393,19 +393,11 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
 
 
 class _SplitCompiledExecutable(CompiledArtifact):
-  """A CompiledArtifact supporting split submodules.
-
-  Supports two structural modes:
-  1. Leaf Mode (num_partitions <= 1): Holds a single CompiledArtifact.
-     Bypasses split_module to eliminate FX parameter upgrading and HBM OOM.
-     Does NOT have a `_split_gm` attribute.
-  2. Composite Mode (num_partitions > 1): Holds a partitioned GraphModule
-     stitching compiled submodules across collective operations.
-  """
+  """A CompiledArtifact supporting split submodules."""
 
   def __init__(
       self,
-      target: torch.fx.GraphModule | CompiledArtifact,
+      target: torch.fx.GraphModule,
       recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
       pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
       graph_module: torch.fx.GraphModule | None = None,
@@ -413,7 +405,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
     """Initializes a _SplitCompiledExecutable.
 
     Args:
-      target: The split GraphModule or compiled leaf artifact.
+      target: The split GraphModule.
       recompile_fn: Optional callable for recompiling the graph.
       pg_to_num_collectives: Mapping of ProcessGroupId to collective counts for
         this executable.
@@ -426,17 +418,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
     )
     self._graph_module = graph_module
 
-    if isinstance(target, torch.fx.GraphModule):
-      self._split_gm = target
-      self._leaf_executable: CompiledArtifact | None = None
-    elif isinstance(target, CompiledArtifact):
-      self._leaf_executable = target
-      # Note: self._split_gm is deliberately NOT set in Leaf Mode
-    else:
-      raise TypeError(
-          "Expected torch.fx.GraphModule or CompiledArtifact, got"
-          f" {type(target)}"
-      )
+    self._split_gm = target
 
   def _maybe_handshake_and_recompile(self) -> None:
     """Verifies rank consensus on dispatch when running in DISPATCH_STAGE."""
@@ -445,8 +427,7 @@ class _SplitCompiledExecutable(CompiledArtifact):
 
     self.resolve()
     executable_fingerprint = self.fingerprint()
-    if not executable_fingerprint:
-      return
+    assert executable_fingerprint, "Executable fingerprint is empty."
 
     fingerprints_match = _submit_handshake(
         executable_fingerprint,
@@ -455,18 +436,13 @@ class _SplitCompiledExecutable(CompiledArtifact):
     )
 
     if not fingerprints_match:
-      assert self.recompile_fn is not None
       new_exec = self.recompile_fn()
       new_exec.resolve()
       self.__dict__.clear()
       self.__dict__.update(new_exec.__dict__)
 
   def __call__(self, *args: Any, **kwargs: Any) -> Any:
-    if self.recompile_fn is not None:
-      self._maybe_handshake_and_recompile()
-
-    if self._leaf_executable is not None:
-      return self._leaf_executable(*args, **kwargs)
+    self._maybe_handshake_and_recompile()
 
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]  # pyrefly: ignore[bad-assignment]
@@ -486,11 +462,10 @@ class _SplitCompiledExecutable(CompiledArtifact):
       A tuple (callable, args_tuple) used by the pickle module to
       serialize the object.
     """
-    target = self._leaf_executable if self.is_leaf_mode else self._split_gm
     return (
         _unpickle_split_compiled_executable,
         (
-            target,
+            self._split_gm,
             self.recompile_fn,
             self.pg_to_num_collectives,
             self._graph_module,
@@ -498,14 +473,8 @@ class _SplitCompiledExecutable(CompiledArtifact):
     )
 
   @property
-  def is_leaf_mode(self) -> bool:
-    return self._leaf_executable is not None
-
-  @property
   def compiled_executables(self) -> Sequence[CompiledArtifact]:
     """Returns the list of underlying compiled executables."""
-    if self._leaf_executable is not None:
-      return [self._leaf_executable]
     return [
         module.submod
         for module in self._split_gm.children()
@@ -556,8 +525,8 @@ class _SplitCompiledExecutable(CompiledArtifact):
 
 
 def _unpickle_split_compiled_executable(
-    target: torch.fx.GraphModule | CompiledArtifact,
-    recompile_fn: Callable[[], Any] | None = None,
+    target: torch.fx.GraphModule,
+    recompile_fn: Callable[[], "_SplitCompiledExecutable"] | None = None,
     pg_to_num_collectives: dict[ProcessGroupId, int] | None = None,
     graph_module: torch.fx.GraphModule | None = None,
 ) -> _SplitCompiledExecutable:
@@ -567,7 +536,7 @@ def _unpickle_split_compiled_executable(
   _SplitCompiledExecutable.__reduce__, enabling the object to be unpickled.
 
   Args:
-    target: The split GraphModule or compiled leaf artifact.
+    target: The split GraphModule.
     recompile_fn: Callable for recompiling the graph.
     pg_to_num_collectives: The mapping of process groups to collective counts.
     graph_module: The optional unpartitioned graph module.
@@ -682,20 +651,18 @@ class SplitCompiler(compiler.Compiler):
         num_partitions,
     )
 
-    if num_partitions <= 1:
-      logging.info(
-          "Skipping split because there is only %d partition", num_partitions
-      )
-      leaf_exec = self.base_compiler(
-          graph_module,
-          example_inputs,
-          is_fwd=is_fwd,
-          module_name=module_name,
-          **kwargs,
-      )
-      return _SplitCompiledExecutable(
-          target=leaf_exec, graph_module=graph_module
-      )
+    # WARNING: agents tend to fix regressions by falling back to the base_compiler
+    # if the number of partitions is 1.
+    # This is because the split_module pass will sometimes do things that are
+    # incompatible with the downstream torch_tpu stack so short circuiting masks
+    # these issues.
+    # The proper fix isn't to avoid splitting onto a single partition but
+    # rather investigating what the incompatibility with the torch_tpu stack
+    # is, and addressing that issue by altering or adding a consolidating fx pass.
+    # The reason we ALWAYS want to go down the split_module path is that if we
+    # skip it we are potentially going to hit the exact same issue once we have
+    # to do actual splits. This will result in us solving the exact same
+    # problem, just at a later, more convoluted stage.
 
     split_gm = split_module(
         graph_module,
