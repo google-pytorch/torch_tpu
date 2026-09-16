@@ -26,13 +26,38 @@ permissions:
   pull-requests: write
 
 jobs:
+  build_wheel:
+    name: Build torch_tpu wheel
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"  # Tag infrastructure-public-image-2c74567ee8e0
+      # Disable ipc isolation to prevent shm limit issues.
+      options: --ipc=host
+    permissions:
+      contents: read
+    outputs:
+      gcs_wheel_path: ${{ steps.build.outputs.gcs_wheel_path }}
+    steps:
+      - name: Checkout TorchTPU
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Build and upload wheel
+        id: build
+        uses: ./.github/actions/build-wheel
+        with:
+          python_version: 3.12
   run_benchmarks:
     name: Run TorchTPU benchmarks
+    needs: [build_wheel]
     uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@aa854ba7bdb77966a9cc1a013417f1c1a208c4c0 # main
     with:
-      registry_file: "examples/benchmarks/benchmark_registry.pbtxt"
+      registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
       bap_ref: "aa854ba7bdb77966a9cc1a013417f1c1a208c4c0"
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
       pub_sub_gcp_topic_id: "private-torch-tpu-prod"
       runner: "linux-x86-n4-16"
+      custom_env_vars: |
+        TORCH_TPU_WHEEL=${{ needs.build_wheel.outputs.gcs_wheel_path }}
+        TORCH_TPU_PYTHON_VERSION=3.12

@@ -37,6 +37,10 @@ oss_target(
     torch_tpu_py_library,
     name = "export_adapter",
     srcs = ["export_adapter.py"],
+    deps = [
+        "//shims/absl_py/logging",
+        "@pypi//tensorboardx",
+    ],
 )
 
 oss_target(
