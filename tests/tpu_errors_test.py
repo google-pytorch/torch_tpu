@@ -948,7 +948,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""custom_kernel(): materialization failed with: unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
+        tpu="""call_custom_kernel(): materialization failed with: unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
     ):
       outputs = tpu_torch_pallas.call_custom_kernel(
           name, kernel_key, inputs=inputs, output_shapes=output_shapes

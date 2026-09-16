@@ -28,6 +28,7 @@
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/layout_utils.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -192,7 +193,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
 
 }  // namespace
 
-PYBIND11_MODULE(tpu_torch_pallas, m) {
+TT_PYBIND11_MODULE(tpu_torch_pallas, m) {
   m.def("register_custom_kernel", PyRegisterCustomKernel,  //
         py::arg("name"), py::arg("kernel_key"),
         py::kw_only(),  // Everything after this is keyword-only
