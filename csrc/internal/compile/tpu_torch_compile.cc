@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -30,10 +31,14 @@
 #include "ATen/core/Generator.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
@@ -80,6 +85,8 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "torch/csrc/Generator.h"
+#include "torch/csrc/autograd/python_variable.h"
 #include "torch/extension.h"  // IWYU pragma: keep for aten::Tensor pybind type
 #include "torch/headeronly/core/ScalarType.h"
 #include "tsl/platform/fingerprint.h"
@@ -575,19 +582,6 @@ CompileResult PyTraverseAndCompile(
   return result;
 }
 
-// Executes a compiled PJRT executable with the given arguments.
-//
-// Args:
-//   executable: The loaded PJRT executable to run.
-//   argument_tensors: A list of PyTorch tensors to pass as inputs.
-//   output_shapes: Optional list of shapes for the output tensors.
-std::vector<at::Tensor> PyExecuteCompiledModel(
-    const SharedLoadedExecutableWithMetadata& executable,
-    const std::vector<at::Tensor>& argument_tensors,
-    const std::vector<OutputShape>& output_shapes) {
-  return ExecuteCompiledModel(executable, argument_tensors, output_shapes);
-}
-
 void PyPushEnableTracebacks(std::optional<bool> enabled) {
   const EnableTracebacksContextState state =
       enabled.has_value()
@@ -756,7 +750,6 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
     const std::vector<Shape>& output_shapes,
     UniqueCompileOptions compile_options, bool build_mlir_module,
     bool is_caching_disabled, bool compile_dynamic_adapter = false) {
-  CompileResult result;
   std::optional<ContextedModule> contexted_module;
 
   // Create the MLIR module before compilation, since GetOrCompile consumes the
@@ -767,27 +760,34 @@ absl::StatusOr<CompileResult> CompileModuleWithCache(
   }
 
   if (is_caching_disabled) {
-    TT_ASSIGN_OR_RETURN(result.executable,
+    TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
                         CompileMlirExecutable(
                             xla::MaybeOwningMlirModule(contexted_module->get()),
                             std::move(compile_options)));
-  } else {
-    TT_ASSIGN_OR_RETURN(
-        CompiledKernel compiled_kernel,
-        CompilationCache::GetInstance().GetOrCompile(
-            cache_key, input_shapes, output_shapes, std::move(builder),
-            std::move(compile_options), compile_dynamic_adapter));
-
-    TT_ASSIGN_OR_RETURN(result.executable,
-                        compiled_kernel.fixed_shape_kernel.get(),
-                        _.SetPrepend() << "Failed to get fixed shape kernel: ");
+    absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
+    if (build_mlir_module) {
+      module = std::make_shared<ContextedModule>(std::move(*contexted_module));
+    }
+    return CompileResult{.module = std::move(module),
+                         .executable = std::move(executable)};
   }
 
+  TT_ASSIGN_OR_RETURN(
+      CompiledKernel compiled_kernel,
+      CompilationCache::GetInstance().GetOrCompile(
+          cache_key, input_shapes, output_shapes, std::move(builder),
+          std::move(compile_options), compile_dynamic_adapter));
+
+  TT_ASSIGN_OR_RETURN(SharedLoadedExecutableWithMetadata executable,
+                      compiled_kernel.fixed_shape_kernel.get(),
+                      _.SetPrepend() << "Failed to get fixed shape kernel: ");
+
+  absl_nullable std::shared_ptr<ContextedModule> module = nullptr;
   if (build_mlir_module) {
-    result.module =
-        std::make_shared<ContextedModule>(std::move(*contexted_module));
+    module = std::make_shared<ContextedModule>(std::move(*contexted_module));
   }
-  return result;
+  return CompileResult{.module = std::move(module),
+                       .executable = std::move(executable)};
 }
 
 }  // namespace
@@ -934,20 +934,19 @@ CompileResult PyGetDynamicPadModule(
                                              : CompilationMode::kFastRuntime;
   CompilationSpec compilation_spec = GetCompilationSpec(compilation_mode);
 
-  CompileResult result;
   std::optional<ContextedModule> contexted_module;
 
   TT_ASSIGN_OR_THROW(contexted_module, ContextedModule::Make(pad_builder),
                      _ << "failed to build MLIR module");
 
   TT_ASSIGN_OR_THROW(
-      result.executable,
+      SharedLoadedExecutableWithMetadata executable,
       CompileMlirExecutable(xla::MaybeOwningMlirModule(contexted_module->get()),
                             std::move(compilation_spec.xla_compile_options)));
 
-  result.module =
-      std::make_shared<ContextedModule>(std::move(*contexted_module));
-  return result;
+  return CompileResult{
+      .module = std::make_shared<ContextedModule>(std::move(*contexted_module)),
+      .executable = std::move(executable)};
 }
 
 // Precompiles the slice subgraph for the given shapes. Doesn't wait for the
@@ -1066,21 +1065,26 @@ py::bytes PySerializeExecutable(
   return py::bytes(serialized);
 }
 
-SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
-    py::bytes& serialized_bytes) {
-  const auto data = py::cast<std::string_view>(serialized_bytes);
+absl::StatusOr<SharedLoadedExecutableWithMetadata> LoadSerializedExecutableImpl(
+    std::string_view data) {
   xla::PjRtClient* const client = PjrtBackend::GetInstance().GetClient();
-  TT_CHECK_THROW(client != nullptr, error::kFailedPrecondition)
+  TT_RET_CHECK(client != nullptr, error::kFailedPrecondition)
       << "PjRtClient must be initialized before loading a serialized "
          "executable.";
-  TT_ASSIGN_OR_THROW(
+  TT_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::PjRtLoadedExecutable> pjrt_executable,
       AdaptXlaError(client->LoadSerializedExecutable(
                         data, /* options= */ std::nullopt, xla::LoadOptions()),
                     /* context= */ "failed to load serialized executable"));
+  return LoadedExecutableWithMetadata::MakeShared(std::move(pjrt_executable));
+}
+
+SharedLoadedExecutableWithMetadata PyLoadSerializedExecutable(
+    py::bytes& serialized_bytes) {
+  const auto data = py::cast<std::string_view>(serialized_bytes);
   TT_ASSIGN_OR_THROW(
       SharedLoadedExecutableWithMetadata executable,
-      LoadedExecutableWithMetadata::MakeShared(std::move(pjrt_executable)),
+      LoadSerializedExecutableImpl(data),
       _.SetPrepend()
           << "Failed to create SharedLoadedExecutableWithMetadata: ");
   return executable;
@@ -1110,10 +1114,27 @@ bool PyIsConstantTensor(const at::Tensor& tensor) {
          deferred_op->op_name() == OpName::kTorchTpuInternalConstant;
 }
 
-at::Tensor PyForceStrides(
-    const at::Tensor& tensor,
-    const std::vector<int64_t>& target_strides,  // INT_VEC_OK
-    int64_t target_storage_offset) {
+bool IsPhysicallyContiguousLayout(at::IntArrayRef shape, at::IntArrayRef stride,
+                                  int64_t storage_offset) {
+  if (storage_offset != 0 || shape.size() != stride.size()) {
+    return false;
+  }
+  int64_t expected_stride = 1;
+  for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+    if (shape[i] == 0) {
+      return true;
+    }
+    if (shape[i] > 1 && stride[i] != expected_stride) {
+      return false;
+    }
+    expected_stride *= std::max<int64_t>(shape[i], 1);
+  }
+  return true;
+}
+
+at::Tensor ForceStrides(const at::Tensor& tensor,
+                        const Dimensions& target_strides,
+                        int64_t target_storage_offset) {
   TT_CHECK_THROW(tensor.dim() == target_strides.size(), error::kInvalidArgument)
       << "target strides must have the same number of dimensions "
       << "as the tensor, got " << tensor.ndimension() << " and "
@@ -1121,19 +1142,44 @@ at::Tensor PyForceStrides(
   TT_CHECK_THROW(target_storage_offset >= 0, error::kInvalidArgument)
       << "target_storage_offset must be non-negative";
 
-  if (tensor.strides() == target_strides &&
+  const at::IntArrayRef target_strides_ref(target_strides.data(),
+                                           target_strides.size());
+  if (tensor.strides() == target_strides_ref &&
       tensor.storage_offset() == target_storage_offset) {
     return tensor;
+  }
+
+  // Fast path: if the tensor is already contiguous with zero storage offset and
+  // the target layout only differs in strides along size-1 dimensions (e.g.
+  // shape (1, 32, 512) with stride (512, 512, 1)), every element maps to the
+  // exact same physical memory address. Update TensorImpl stride metadata on a
+  // shallow alias without allocating a new device buffer or launching a TPU
+  // copy kernel via ContiguousToView.
+  if (target_storage_offset == 0 && tensor.storage_offset() == 0 &&
+      tensor.is_contiguous() &&
+      IsPhysicallyContiguousLayout(tensor.sizes(), target_strides_ref,
+                                   target_storage_offset)) {
+    at::Tensor view = tensor.alias();
+    view.unsafeGetTensorImpl()->set_sizes_and_strides(tensor.sizes(),
+                                                      target_strides_ref, 0);
+    return view;
   }
 
   TT_ASSIGN_OR_THROW(DeviceBufferRef contiguous_buffer, GetBuffer(tensor));
 
   ScopedPythonContextCapturer capturer(OpName::kForceStrides);
-  TT_ASSIGN_OR_THROW(
-      at::Tensor view_tensor,
-      ContiguousToView(std::move(contiguous_buffer),
-                       CopyIntVector(target_strides), target_storage_offset));
+  TT_ASSIGN_OR_THROW(at::Tensor view_tensor,
+                     ContiguousToView(std::move(contiguous_buffer),
+                                      target_strides, target_storage_offset));
   return view_tensor;
+}
+
+at::Tensor PyForceStrides(
+    const at::Tensor& tensor,
+    const std::vector<int64_t>& target_strides,  // INT_VEC_OK
+    int64_t target_storage_offset) {
+  return ForceStrides(tensor, CopyIntVector(target_strides),
+                      target_storage_offset);
 }
 
 // A context manager for locking multiple generators' mutexes.
@@ -1204,7 +1250,678 @@ class MultiGeneratorLocker {
   std::vector<std::unique_lock<std::mutex>> locks_;              //  NOLINT
 };
 
+// Reconstructs the original FX graph output structure from flattened MLIR
+// outputs.
+//
+// In compiled mode, FX graphs return nested Python structures (e.g., tuples,
+// lists, dicts, or single leaf tensors) where multiple output leaves may alias
+// the same deduplicated tensor output from the compiled PJRT executable, pass
+// through an input argument directly, or evaluate to None. This class caches
+// the output schema at compile time so that runtime execution can reconstruct
+// the FX output structure in C++ without PyTree/Python overhead.
+using RawPyObjPtr = std::decay_t<decltype(py::handle().ptr())>;
+
+class FxOutputReconstructor {
+ public:
+  // Specifies how a single leaf in the flattened FX output maps to runtime
+  // values.
+  enum class EntryType : uint8_t {
+    kDedupedTensor,         // Indexes into `deduped_outputs`.
+    kNonTensorPassthrough,  // Indexes into runtime `inputs` sequence.
+    kNone,                  // Evaluates to Python `None`.
+  };
+
+  struct Entry {
+    EntryType type;
+    int index;
+    bool needs_clone = false;
+    bool can_move = false;
+    bool needs_layout_check = true;
+  };
+
+  // Expected tensor layout metadata for each deduplicated output tensor.
+  struct ExpectedTensorLayout {
+    at::ScalarType dtype;
+    Dimensions shape;
+    Dimensions stride;
+    int64_t storage_offset;
+    bool is_dynamic = false;
+    bool is_standard_contiguous = false;
+    bool is_physically_contiguous = false;
+
+    bool MatchesTensor(const at::Tensor& tensor) const {
+      if (is_standard_contiguous && tensor.is_contiguous() &&
+          tensor.storage_offset() == 0) {
+        return tensor.scalar_type() == dtype &&
+               tensor.sizes() == at::IntArrayRef(shape.data(), shape.size());
+      }
+      return tensor.scalar_type() == dtype &&
+             tensor.storage_offset() == storage_offset &&
+             tensor.sizes() == at::IntArrayRef(shape.data(), shape.size()) &&
+             tensor.strides() == at::IntArrayRef(stride.data(), stride.size());
+    }
+  };
+
+  static bool IsStandardContiguousLayout(const Dimensions& shape,
+                                         const Dimensions& stride,
+                                         int64_t storage_offset) {
+    if (storage_offset != 0 || shape.size() != stride.size()) {
+      return false;
+    }
+    int64_t expected_stride = 1;
+    for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+      if (stride[i] != expected_stride) {
+        return false;
+      }
+      expected_stride *= std::max<int64_t>(shape[i], 1);
+    }
+    return true;
+  }
+
+  // Fast-path categories for PyTree unflattening.
+  enum class SpecKind : uint8_t {
+    kLeaf,       // Single leaf output (returns the leaf object directly).
+    kFlatTuple,  // 1-level flat tuple of leaves (constructed via PyTuple_New).
+    kFlatList,   // 1-level flat list of leaves (constructed via PyList_New).
+    kGeneral,    // Arbitrary nested PyTree (delegates to spec.unflatten()).
+  };
+
+  static Dimensions ParseDimensions(py::handle seq) {
+    Dimensions dims;
+    for (py::handle val : seq) {
+      dims.push_back(val.cast<int64_t>());
+    }
+    return dims;
+  }
+
+  static Entry ParseEntry(py::handle item) {
+    if (item.is_none()) {
+      return {EntryType::kNone, 0};
+    }
+    if (py::hasattr(item, "tensor_idx")) {
+      return {EntryType::kDedupedTensor, item.attr("tensor_idx").cast<int>()};
+    }
+    if (py::hasattr(item, "input_idx")) {
+      return {EntryType::kNonTensorPassthrough,
+              item.attr("input_idx").cast<int>()};
+    }
+    throw py::value_error("unexpected item in output_map");  // For pybind11.
+  }
+
+  static SpecKind DetermineSpecKind(const py::object& spec_py) {
+    if (spec_py.attr("is_leaf")().cast<bool>()) {
+      return SpecKind::kLeaf;
+    }
+    const int num_nodes = spec_py.attr("num_nodes").cast<int>();
+    const int num_leaves = spec_py.attr("num_leaves").cast<int>();
+    const int num_children = spec_py.attr("num_children").cast<int>();
+    // A PyTree is a 1-level flat container if it consists of exactly 1 root
+    // container node plus `num_leaves` direct leaf children.
+    if (num_nodes == num_leaves + 1 && num_children == num_leaves) {
+      const py::object type_obj = spec_py.attr("type");
+      if (type_obj.is(py::tuple().get_type())) {
+        return SpecKind::kFlatTuple;
+      }
+      if (type_obj.is(py::list().get_type())) {
+        return SpecKind::kFlatList;
+      }
+    }
+    return SpecKind::kGeneral;
+  }
+
+  FxOutputReconstructor(py::object output_map, py::object expected_layouts,
+                        py::object spec,
+                        py::object dynamic_outputs = py::none())
+      : spec_kind_(DetermineSpecKind(spec)),
+        output_map_py_(std::move(output_map)),
+        expected_layouts_py_(std::move(expected_layouts)),
+        spec_py_(std::move(spec)),
+        dynamic_outputs_py_(std::move(dynamic_outputs)) {
+    for (py::handle item : output_map_py_) {
+      entries_.push_back(ParseEntry(item));
+    }
+
+    absl::flat_hash_map<int, int> tensor_ref_counts;
+    for (const Entry& entry : entries_) {
+      if (entry.type == EntryType::kDedupedTensor) {
+        tensor_ref_counts[entry.index]++;
+      }
+    }
+    absl::flat_hash_set<int> seen_tensors;
+    for (Entry& entry : entries_) {
+      if (entry.type == EntryType::kDedupedTensor) {
+        const bool is_first = seen_tensors.insert(entry.index).second;
+        entry.needs_clone = !is_first;
+        entry.can_move = is_first && (tensor_ref_counts[entry.index] == 1);
+      }
+    }
+
+    InitExpectedLayouts();
+  }
+
+  void InitExpectedLayouts() {
+    std::vector<bool> dynamic_flags;
+    if (!dynamic_outputs_py_.is_none()) {
+      dynamic_flags = dynamic_outputs_py_.cast<std::vector<bool>>();
+    }
+
+    size_t idx = 0;
+    for (py::handle item : expected_layouts_py_) {
+      ExpectedTensorLayout layout;
+      layout.dtype = item.attr("dtype").cast<at::ScalarType>();
+      layout.shape = ParseDimensions(item.attr("shape"));
+      layout.stride = ParseDimensions(item.attr("stride"));
+      layout.storage_offset = item.attr("storage_offset").cast<int64_t>();
+      layout.is_dynamic = idx < dynamic_flags.size() && dynamic_flags[idx];
+      layout.is_standard_contiguous = IsStandardContiguousLayout(
+          layout.shape, layout.stride, layout.storage_offset);
+      layout.is_physically_contiguous = IsPhysicallyContiguousLayout(
+          at::IntArrayRef(layout.shape.data(), layout.shape.size()),
+          at::IntArrayRef(layout.stride.data(), layout.stride.size()),
+          layout.storage_offset);
+      layouts_.push_back(std::move(layout));
+      ++idx;
+    }
+
+    // Precompute whether each deduplicated output requires a runtime
+    // stride/layout verification. Fresh PJRT buffers returned by
+    // ExecuteCompiledModel are allocated by the runtime with standard
+    // contiguous row-major strides and zero storage offset. When
+    // `outputs_are_fresh_pjrt` is true (the hot path in
+    // CompiledExecutableRunner::RunFast), we skip `layout.MatchesTensor()`
+    // completely unless the expected FX output explicitly specified a
+    // non-standard strided/transposed layout
+    // (`!layout.is_standard_contiguous`).
+    for (Entry& entry : entries_) {
+      if (entry.type == EntryType::kDedupedTensor && entry.index >= 0 &&
+          static_cast<size_t>(entry.index) < layouts_.size()) {
+        const ExpectedTensorLayout& layout = layouts_[entry.index];
+        entry.needs_layout_check =
+            !layout.is_dynamic && !layout.is_standard_contiguous;
+      }
+    }
+  }
+
+  // Reconstructs the FX graph output structure from runtime `inputs_handle` and
+  // `deduped_outputs`.
+  //
+  // Performance note: This method uses direct Python C-API calls
+  // (`PyTuple_New`, `PyTuple_SET_ITEM`, `PyList_New`, `PyList_SET_ITEM`, and
+  // `THPVariable_Wrap`) instead of pybind11 wrappers or Python-level PyTree
+  // unflattening for leaf, flat tuple, and flat list outputs. This avoids
+  // intermediate Python object allocations, dictionary lookups, and reference
+  // counting overhead on every compiled step.
+  py::object Reconstruct(py::handle inputs_handle,
+                         absl::Span<at::Tensor> deduped_outputs,
+                         bool outputs_are_fresh_pjrt = false) const {
+    RawPyObjPtr inputs_ptr = inputs_handle.ptr();
+    if (spec_kind_ == SpecKind::kLeaf && entries_.size() == 1) {
+      return py::reinterpret_steal<py::object>(GetReconstructedLeafNewRef(
+          0, inputs_ptr, deduped_outputs, outputs_are_fresh_pjrt));
+    }
+
+    if (spec_kind_ == SpecKind::kFlatTuple) {
+      RawPyObjPtr tuple_ptr = PyTuple_New(entries_.size());
+      if (!tuple_ptr) {
+        throw py::error_already_set();  // Propagate Python C-API error.
+      }
+      for (size_t i = 0; i < entries_.size(); ++i) {
+        PyTuple_SET_ITEM(
+            tuple_ptr, i,
+            GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
+                                       outputs_are_fresh_pjrt));
+      }
+      return py::reinterpret_steal<py::object>(tuple_ptr);
+    }
+
+    RawPyObjPtr list_ptr = PyList_New(entries_.size());
+    if (!list_ptr) {
+      throw py::error_already_set();  // Propagate Python C-API error.
+    }
+    for (size_t i = 0; i < entries_.size(); ++i) {
+      PyList_SET_ITEM(list_ptr, i,
+                      GetReconstructedLeafNewRef(i, inputs_ptr, deduped_outputs,
+                                                 outputs_are_fresh_pjrt));
+    }
+    py::object list = py::reinterpret_steal<py::object>(list_ptr);
+    if (spec_kind_ == SpecKind::kFlatList) {
+      return list;
+    }
+    return spec_py_.attr("unflatten")(list);
+  }
+
+  py::object Call(py::handle inputs,
+                  std::vector<at::Tensor> deduped_outputs) const {
+    return Reconstruct(inputs, absl::MakeSpan(deduped_outputs),
+                       /*outputs_are_fresh_pjrt=*/false);
+  }
+
+  // Enables pickle serialization (`__reduce__`) for compiled artifact caching.
+  py::tuple Reduce() const {
+    py::object cls =
+        py::module_::import("torch_tpu._internal.compile.tpu_torch_compile")
+            .attr("FxOutputReconstructor");
+    return py::make_tuple(
+        cls, py::make_tuple(output_map_py_, expected_layouts_py_, spec_py_,
+                            dynamic_outputs_py_));
+  }
+
+ private:
+  static RawPyObjPtr GetInputItemNewRef(RawPyObjPtr inputs_ptr, int index) {
+    if (PyTuple_CheckExact(inputs_ptr)) {
+      RawPyObjPtr item = PyTuple_GET_ITEM(inputs_ptr, index);
+      Py_INCREF(item);
+      return item;
+    }
+    if (PyList_CheckExact(inputs_ptr)) {
+      RawPyObjPtr item = PyList_GET_ITEM(inputs_ptr, index);
+      Py_INCREF(item);
+      return item;
+    }
+    RawPyObjPtr item = PySequence_GetItem(inputs_ptr, index);
+    if (!item) {
+      throw py::error_already_set();  // Propagate Python C-API error.
+    }
+    return item;
+  }
+
+  RawPyObjPtr GetReconstructedLeafNewRef(size_t i, RawPyObjPtr inputs_ptr,
+                                         absl::Span<at::Tensor> deduped_outputs,
+                                         bool outputs_are_fresh_pjrt) const {
+    const Entry& entry = entries_[i];
+    if (entry.type == EntryType::kNone) {
+      Py_INCREF(Py_None);
+      return Py_None;
+    }
+    if (entry.type == EntryType::kNonTensorPassthrough) {
+      return GetInputItemNewRef(inputs_ptr, entry.index);
+    }
+    const int idx = entry.index;
+    at::Tensor tensor = [&]() {
+      if (entry.needs_clone) {
+        return deduped_outputs[idx].clone();
+      }
+      if (entry.can_move) {
+        return std::move(deduped_outputs[idx]);
+      }
+      return deduped_outputs[idx];
+    }();
+    const ExpectedTensorLayout& layout = layouts_[idx];
+    if ((entry.needs_layout_check || !outputs_are_fresh_pjrt) &&
+        !layout.is_dynamic && !layout.MatchesTensor(tensor)) {
+      if (outputs_are_fresh_pjrt && entry.can_move &&
+          layout.is_physically_contiguous) {
+        tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+            at::IntArrayRef(layout.shape.data(), layout.shape.size()),
+            at::IntArrayRef(layout.stride.data(), layout.stride.size()),
+            layout.storage_offset);
+      } else {
+        tensor = ForceStrides(tensor, layout.stride, layout.storage_offset);
+      }
+    }
+    return THPVariable_Wrap(std::move(tensor));
+  }
+
+  std::vector<Entry> entries_;
+  std::vector<ExpectedTensorLayout> layouts_;
+  SpecKind spec_kind_;
+  py::object output_map_py_;
+  py::object expected_layouts_py_;
+  py::object spec_py_;
+  py::object dynamic_outputs_py_;
+};
+
+// Dynamo's boxed calling convention passes compiled graph inputs as either
+// `*args` (a tuple of arguments) or a single boxed `[arg0, arg1, ...]` list
+// inside a 1-element tuple `(boxed_list,)`. UnboxSingleSequenceArg unwraps
+// that outer 1-element tuple/list without allocating a new Python container.
+RawPyObjPtr UnboxSingleSequenceArg(RawPyObjPtr args_ptr,
+                                   py::object* unboxed_holder) {
+  if (PyTuple_CheckExact(args_ptr) && PyTuple_GET_SIZE(args_ptr) == 1) {
+    RawPyObjPtr first = PyTuple_GET_ITEM(args_ptr, 0);
+    if (PyList_CheckExact(first) || PyTuple_CheckExact(first)) {
+      return first;
+    }
+  } else if (PyList_CheckExact(args_ptr) && PyList_GET_SIZE(args_ptr) == 1) {
+    RawPyObjPtr first = PyList_GET_ITEM(args_ptr, 0);
+    if (PyList_CheckExact(first) || PyTuple_CheckExact(first)) {
+      return first;
+    }
+  } else if (PySequence_Check(args_ptr) && PySequence_Size(args_ptr) == 1) {
+    *unboxed_holder =
+        py::reinterpret_steal<py::object>(PySequence_GetItem(args_ptr, 0));
+    if (py::isinstance<py::list>(*unboxed_holder) ||
+        py::isinstance<py::tuple>(*unboxed_holder)) {
+      return unboxed_holder->ptr();
+    }
+  }
+  return args_ptr;
+}
+
+// Fast-path argument unpacker that traverses the contiguous internal
+// `PyObject*` array of a `PyTupleObject` or `PyListObject`.
+//
+// Why pointers (`const at::Tensor*`) instead of value copies (`at::Tensor`)?
+// Copying an `at::Tensor` increments the atomic reference count of its
+// `c10::TensorImpl`. For a model with 100+ parameters/inputs, copying tensors
+// into a `std::vector<at::Tensor>` on every step incurs 200+ atomic
+// increment/decrement operations on the hot path. Because the caller holds the
+// Python GIL and the input container (`args_ptr`) remains alive throughout the
+// call, taking raw pointers directly to `THPVariable_Unpack(item)` is 100%
+// zero-copy and requires zero atomic reference count operations.
+void UnpackInputTensorsAndGeneratorsFromFastArray(
+    const RawPyObjPtr* items, Py_ssize_t n,
+    absl::InlinedVector<const at::Tensor*, 128>* argument_tensor_ptrs,
+    absl::InlinedVector<at::Generator, 2>* generators) {
+  argument_tensor_ptrs->reserve(n);
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    RawPyObjPtr item = items[i];
+    if (THPVariable_Check(item)) {
+      argument_tensor_ptrs->push_back(&THPVariable_Unpack(item));
+    } else if (generators != nullptr && THPGenerator_Check(item)) {
+      at::Generator gen = THPGenerator_Unwrap(item);
+      generators->push_back(GetDefaultDeviceGenerator(gen.device().index()));
+    }
+  }
+}
+
+void UnpackInputTensorPointers(
+    RawPyObjPtr args_ptr,
+    absl::InlinedVector<const at::Tensor*, 128>* argument_tensor_ptrs,
+    std::vector<at::Tensor>* fallback_tensors,
+    absl::InlinedVector<at::Generator, 2>* generators = nullptr) {
+  if (PyList_CheckExact(args_ptr)) {
+    const Py_ssize_t n = PyList_GET_SIZE(args_ptr);
+    if (n > 0) {
+      UnpackInputTensorsAndGeneratorsFromFastArray(
+          &PyList_GET_ITEM(args_ptr, 0), n, argument_tensor_ptrs, generators);
+    }
+    return;
+  }
+  if (PyTuple_CheckExact(args_ptr)) {
+    const Py_ssize_t n = PyTuple_GET_SIZE(args_ptr);
+    if (n > 0) {
+      UnpackInputTensorsAndGeneratorsFromFastArray(
+          &PyTuple_GET_ITEM(args_ptr, 0), n, argument_tensor_ptrs, generators);
+    }
+    return;
+  }
+  py::sequence seq = py::reinterpret_borrow<py::sequence>(args_ptr);
+  fallback_tensors->reserve(seq.size());
+  for (py::handle item : seq) {
+    if (THPVariable_Check(item.ptr())) {
+      fallback_tensors->push_back(THPVariable_Unpack(item.ptr()));
+    } else if (generators != nullptr && THPGenerator_Check(item.ptr())) {
+      at::Generator gen = THPGenerator_Unwrap(item.ptr());
+      generators->push_back(GetDefaultDeviceGenerator(gen.device().index()));
+    }
+  }
+  argument_tensor_ptrs->reserve(fallback_tensors->size());
+  for (const at::Tensor& t : *fallback_tensors) {
+    argument_tensor_ptrs->push_back(&t);
+  }
+}
+
+std::vector<OutputShape> ParseOutputShapes(py::handle output_shapes_obj) {
+  if (output_shapes_obj.is_none()) {
+    return {};
+  }
+  RawPyObjPtr shapes_ptr = output_shapes_obj.ptr();
+  const bool is_empty_seq =
+      (PyTuple_CheckExact(shapes_ptr) && PyTuple_GET_SIZE(shapes_ptr) == 0) ||
+      (PyList_CheckExact(shapes_ptr) && PyList_GET_SIZE(shapes_ptr) == 0);
+  if (is_empty_seq) {
+    return {};
+  }
+  return output_shapes_obj.cast<std::vector<OutputShape>>();
+}
+
+// Executes a compiled PJRT executable with the given arguments.
+py::object PyExecuteCompiledModel(
+    const SharedLoadedExecutableWithMetadata& executable, py::handle py_args,
+    py::handle output_shapes_obj = py::none(),
+    py::handle reconstruct_fn = py::none()) {
+  py::object unboxed_holder;
+  RawPyObjPtr args_ptr = UnboxSingleSequenceArg(py_args.ptr(), &unboxed_holder);
+
+  absl::InlinedVector<const at::Tensor*, 128> argument_tensor_ptrs;
+  std::vector<at::Tensor> fallback_tensors;
+  UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs, &fallback_tensors);
+
+  std::vector<OutputShape> parsed_output_shapes =
+      ParseOutputShapes(output_shapes_obj);
+
+  std::vector<at::Tensor> outputs = ExecuteCompiledModel(
+      executable, argument_tensor_ptrs, parsed_output_shapes);
+
+  if (reconstruct_fn.is_none()) {
+    return py::cast(outputs);
+  }
+  if (py::isinstance<FxOutputReconstructor>(reconstruct_fn)) {
+    const auto& reconstructor =
+        reconstruct_fn.cast<const FxOutputReconstructor&>();
+    return reconstructor.Reconstruct(
+        py::reinterpret_borrow<py::object>(args_ptr), absl::MakeSpan(outputs),
+        /*outputs_are_fresh_pjrt=*/true);
+  }
+  return reconstruct_fn(py::reinterpret_borrow<py::object>(args_ptr),
+                        py::cast(outputs));
+}
+
+// RAII lock guard for one or more PyTorch RNG generators.
+//
+// Concurrency and GIL invariants:
+// 1. Deadlock prevention: When multiple generators are present, their mutex
+//    pointers are sorted in ascending memory address order and deduplicated
+//    before acquisition.
+// 2. Optimistic non-blocking fast path: In the common case of a single
+//    uncontended generator (`try_lock()`), the mutex is acquired immediately
+//    WITHOUT releasing the Python GIL (`py::gil_scoped_release`). Dropping and
+//    re-acquiring the GIL costs ~150-300ns of thread-state transitions;
+//    avoiding it when uncontended keeps RNG-bearing graphs fast.
+// 3. Deadlock-safe slow path: If `try_lock()` fails (or multiple generators
+//    must be locked), the Python GIL is released BEFORE blocking on
+//    `std::mutex::lock()`. This prevents ABBA deadlocks between the Python GIL
+//    and generator mutexes if another C++ thread holds the generator lock while
+//    waiting for the GIL.
+class ScopedGeneratorLocks {
+ public:
+  explicit ScopedGeneratorLocks(absl::Span<at::Generator> generators) {
+    if (generators.empty()) {
+      return;
+    }
+    absl::InlinedVector<std::mutex*, 2> unique_mutexes;
+    for (at::Generator& gen : generators) {
+      unique_mutexes.push_back(&gen.mutex());
+    }
+    if (unique_mutexes.size() > 1) {
+      std::sort(unique_mutexes.begin(), unique_mutexes.end());
+      unique_mutexes.erase(
+          std::unique(unique_mutexes.begin(), unique_mutexes.end()),
+          unique_mutexes.end());
+    }
+    locks_.reserve(unique_mutexes.size());
+    if (unique_mutexes.size() == 1 && unique_mutexes[0]->try_lock()) {
+      locks_.emplace_back(*unique_mutexes[0], std::adopt_lock);
+      return;
+    }
+    py::gil_scoped_release release;
+    for (std::mutex* m : unique_mutexes) {
+      locks_.emplace_back(*m);
+    }
+  }
+
+ private:
+  absl::InlinedVector<std::unique_lock<std::mutex>, 2> locks_;
+};
+
+// Pre-bound compiled executable runner that caches the unpacked C++ executable,
+// output shapes, and FxOutputReconstructor pointer to bypass per-step pybind11
+// type-registry hash table lookups and Python dispatch overhead.
+//
+// Why this exists:
+// Calling a standard pybind11-bound function like `execute_compiled_model(exe,
+// args, shapes, reconstruct)` from Python requires pybind11 to look up the C++
+// type of `exe`, `shapes`, and `reconstruct` in its global
+// `registered_types_py` hash map on every call, followed by multiple
+// Python-to-C++ transition steps for RNG state extraction and output PyTree
+// reconstruction.
+//
+// `CompiledExecutableRunner` is instantiated once when
+// `TorchTpuCompiledExecutable` is created and caches raw C++
+// pointers/structures (`executable_`, `cached_output_shapes_`, and
+// `reconstructor_ptr_`). Its `RunFast` entry point executes the entire
+// step—unboxing inputs, extracting zero-copy `const at::Tensor*` pointers,
+// locking and updating C++ RNG generator state tensors, invoking PJRT
+// execution, and reconstructing the output PyTree—in a single C++ call.
+class CompiledExecutableRunner {
+ public:
+  CompiledExecutableRunner(SharedLoadedExecutableWithMetadata executable,
+                           std::vector<OutputShape> cached_output_shapes,
+                           py::object reconstruct_fn,
+                           bool updates_default_generator_state = false)
+      : executable_(std::move(executable)),
+        cached_output_shapes_(std::move(cached_output_shapes)),
+        reconstruct_fn_(std::move(reconstruct_fn)),
+        updates_default_generator_state_(updates_default_generator_state) {
+    // Pre-allocate the output shape metadata for the common 1-generator case so
+    // `RunFast` does not allocate or copy `std::vector<OutputShape>` at
+    // runtime.
+    if (!cached_output_shapes_.empty()) {
+      cached_output_shapes_with_1_gen_ = cached_output_shapes_;
+      cached_output_shapes_with_1_gen_.push_back(OutputShape{
+          std::vector<int64_t>{2}, /*is_dynamic=*/false});  // INT_VEC_OK
+    }
+    if (!reconstruct_fn_.is_none() &&
+        py::isinstance<FxOutputReconstructor>(reconstruct_fn_)) {
+      reconstructor_ptr_ =
+          &reconstruct_fn_.cast<const FxOutputReconstructor&>();
+    }
+  }
+
+  py::object RunFast(py::handle py_args) const {
+    py::object unboxed_holder;
+    RawPyObjPtr args_ptr =
+        UnboxSingleSequenceArg(py_args.ptr(), &unboxed_holder);
+
+    absl::InlinedVector<const at::Tensor*, 128> argument_tensor_ptrs;
+    std::vector<at::Tensor> fallback_tensors;
+    absl::InlinedVector<at::Generator, 2> generators;
+    UnpackInputTensorPointers(args_ptr, &argument_tensor_ptrs,
+                              &fallback_tensors, &generators);
+    if (updates_default_generator_state_) {
+      generators.push_back(GetDefaultDeviceGenerator(-1));
+    }
+
+    // Fast path for deterministic / RNG-free executables: dispatch directly to
+    // PJRT and reconstruct outputs without acquiring generator locks.
+    if (generators.empty()) {
+      std::vector<at::Tensor> outputs = ExecuteCompiledModel(
+          executable_, argument_tensor_ptrs, cached_output_shapes_);
+      return FormatUserOutputs(args_ptr, outputs, outputs.size());
+    }
+
+    return RunWithGenerators(args_ptr, argument_tensor_ptrs,
+                             absl::MakeSpan(generators));
+  }
+
+ private:
+  py::object FormatUserOutputs(RawPyObjPtr args_ptr,
+                               std::vector<at::Tensor>& outputs,
+                               size_t user_outputs_count) const {
+    absl::Span<at::Tensor> user_outputs =
+        absl::MakeSpan(outputs).subspan(0, user_outputs_count);
+    if (reconstructor_ptr_ != nullptr) {
+      return reconstructor_ptr_->Reconstruct(
+          py::reinterpret_borrow<py::object>(args_ptr), user_outputs,
+          /*outputs_are_fresh_pjrt=*/true);
+    }
+    outputs.resize(user_outputs_count);
+    if (reconstruct_fn_.is_none()) {
+      return py::cast(std::move(outputs));
+    }
+    return reconstruct_fn_(py::reinterpret_borrow<py::object>(args_ptr),
+                           py::cast(std::move(outputs)));
+  }
+
+  py::object RunWithGenerators(
+      RawPyObjPtr args_ptr,
+      absl::InlinedVector<const at::Tensor*, 128>& argument_tensor_ptrs,
+      absl::Span<at::Generator> generators) const {
+    // RNG-stateful path: lock all participating device generators, append their
+    // current state tensors to the executable's input arguments, run PJRT
+    // execution, and atomically update each generator's state tensor with the
+    // trailing state outputs produced by the compiled graph.
+    std::vector<at::Tensor> outputs;
+    size_t user_outputs_count = 0;
+    {
+      ScopedGeneratorLocks gen_locks(generators);
+      absl::InlinedVector<at::Tensor, 2> device_state_tensors;
+      device_state_tensors.reserve(generators.size());
+      for (const at::Generator& gen : generators) {
+        device_state_tensors.push_back(PyGetDeviceStateTensor(gen));
+        argument_tensor_ptrs.push_back(&device_state_tensors.back());
+      }
+
+      absl::Span<const OutputShape> exec_output_shapes = cached_output_shapes_;
+      std::vector<OutputShape> dynamic_output_shapes_with_gens;
+      if (!cached_output_shapes_.empty()) {
+        if (generators.size() == 1 &&
+            !cached_output_shapes_with_1_gen_.empty()) {
+          exec_output_shapes = cached_output_shapes_with_1_gen_;
+        } else {
+          dynamic_output_shapes_with_gens = cached_output_shapes_;
+          dynamic_output_shapes_with_gens.reserve(cached_output_shapes_.size() +
+                                                  generators.size());
+          for (size_t i = 0; i < generators.size(); ++i) {
+            dynamic_output_shapes_with_gens.push_back(OutputShape{
+                std::vector<int64_t>{2}, /*is_dynamic=*/false});  // INT_VEC_OK
+          }
+          exec_output_shapes = dynamic_output_shapes_with_gens;
+        }
+      }
+
+      outputs = ExecuteCompiledModel(executable_, argument_tensor_ptrs,
+                                     exec_output_shapes);
+
+      const size_t num_gens = generators.size();
+      user_outputs_count = outputs.size() - num_gens;
+      for (size_t i = 0; i < num_gens; ++i) {
+        PySetDeviceStateTensor(generators[i],
+                               std::move(outputs[user_outputs_count + i]));
+      }
+    }
+
+    return FormatUserOutputs(args_ptr, outputs, user_outputs_count);
+  }
+  SharedLoadedExecutableWithMetadata executable_;
+  std::vector<OutputShape> cached_output_shapes_;
+  std::vector<OutputShape> cached_output_shapes_with_1_gen_;
+  py::object reconstruct_fn_;
+  const FxOutputReconstructor* reconstructor_ptr_ = nullptr;
+  bool updates_default_generator_state_ = false;
+};
+
 TT_PYBIND11_MODULE(tpu_torch_compile, m) {
+  PyBindClass<FxOutputReconstructor>(
+      m, "FxOutputReconstructor",
+      "Reconstructs original FX graph output structure from flattened MLIR "
+      "outputs.")
+      .def(py::init<py::object, py::object, py::object, py::object>(),
+           py::arg("output_map"), py::arg("expected_layouts"), py::arg("spec"),
+           py::arg("dynamic_outputs") = py::none())
+      .def(
+          "__call__",
+          [](const FxOutputReconstructor& self, py::handle inputs,
+             std::vector<at::Tensor> deduped_outputs) {
+            return self.Call(inputs, std::move(deduped_outputs));
+          },
+          py::arg("inputs"), py::arg("deduped_outputs"))
+      .def("__reduce__",
+           [](const FxOutputReconstructor& self) { return self.Reduce(); });
+  m.attr("FxOutputReconstructor").attr("__module__") =
+      "torch_tpu._internal.compile.tpu_torch_compile";
+
   PyBindClass<TensorInfo>(m, "TensorInfo")
       .def(py::init([](const py::tuple& t) {
         return TensorInfo{t[0].cast<std::vector<int64_t>>(),  // INT_VEC_OK
@@ -1283,7 +2000,8 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("execute", PyExecuteCompiledModel,
         // Type: PjRtLoadedExecutable
         py::arg("executable"), py::arg("argument_tensors"),
-        py::arg("output_shapes") = std::vector<OutputShape>(),
+        py::arg("output_shapes") = py::none(),
+        py::arg("reconstruct_fn") = py::none(),
         "Executes a compiled PJRT executable with the given arguments.\n\n"
         "Args:\n"
         "  executable: The loaded PJRT executable to run.\n"
@@ -1295,6 +2013,23 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
         "    from the executable.\n"
         "    This is useful for bounded dynamic programs where the actual\n"
         "    output shape might differ from the static upper bound.");
+  m.def(
+      "make_compiled_runner",
+      [](SharedLoadedExecutableWithMetadata executable,
+         py::handle output_shapes_obj, py::object reconstruct_fn,
+         bool updates_default_generator_state) {
+        auto runner = std::make_shared<CompiledExecutableRunner>(
+            std::move(executable), ParseOutputShapes(output_shapes_obj),
+            std::move(reconstruct_fn), updates_default_generator_state);
+        return py::cpp_function(internal::WrapWithErrorHandling(
+            "execute", [runner](py::handle py_args) -> py::object {
+              return runner->RunFast(py_args);
+            }));
+      },
+      py::arg("executable"), py::arg("output_shapes") = py::none(),
+      py::arg("reconstruct_fn") = py::none(),
+      py::arg("updates_default_generator_state") = false,
+      "Creates a pre-bound C++ runner callable for zero-lookup fast dispatch.");
   m.def("placeholder", PyMakePlaceholder, py::arg("sizes"), py::arg("dtype"),
         py::arg("requires_grad") = false, py::arg("is_pinned_host") = false);
   m.def("placeholder_like", PyMakePlaceholderLike, py::arg("arg_tensor"),

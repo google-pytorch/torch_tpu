@@ -18,7 +18,6 @@ from collections.abc import Callable, Mapping, Sequence
 import contextlib
 import copy
 import dataclasses
-import functools
 import threading
 from typing import Any, TypeAlias
 
@@ -258,66 +257,6 @@ class _TensorLayout:
   stride: tuple[int, ...]
   storage_offset: int
 
-  def matches_tensor(self, tensor: torch.Tensor) -> bool:
-    return (
-        tensor.dtype == self.dtype
-        and tensor.shape == self.shape
-        and tensor.stride() == self.stride
-        and tensor.storage_offset() == self.storage_offset
-    )
-
-
-def _reconstruct_fx_outputs(
-    inputs: Sequence[Any],
-    deduped_outputs: Sequence[torch.Tensor],
-    expected_layouts: Sequence[_TensorLayout],
-    output_map: Sequence[_DedupedTensorOutput | _NonTensorPassthrough | None],
-    spec: pytree.TreeSpec,
-    dynamic_outputs: Sequence[bool] | None = None,
-) -> Any:
-  """Restores the original FX output structure from flattened MLIR outputs."""
-  reconstructed_flat: list[Any] = []
-  output_used = [False] * len(deduped_outputs)
-  for item in output_map:
-    if isinstance(item, _DedupedTensorOutput):
-      idx = item.tensor_idx
-
-      # Get the contiguous output and the expected layout it should have.
-      expected_layout = expected_layouts[idx]
-      if output_used[idx]:
-        # Duplicate outputs should have independent storage; in-place mutations
-        # to one should not affect the other. We clone() every output after the
-        # first use to ensure this behavior holds.
-        contiguous_output_tensor = deduped_outputs[idx].clone()
-      else:
-        contiguous_output_tensor = deduped_outputs[idx]
-        output_used[idx] = True
-
-      is_dynamic = (
-          dynamic_outputs[idx]
-          if dynamic_outputs is not None and idx < len(dynamic_outputs)
-          else False
-      )
-
-      # Force the contiguous output to have the expected layout.
-      # b/514662948: avoid the copy/slice for broadcasted return values
-      if expected_layout.matches_tensor(contiguous_output_tensor) or is_dynamic:
-        reconstructed_flat.append(contiguous_output_tensor)
-      else:
-        reconstructed_flat.append(
-            tpu_torch_compile.force_strides(
-                contiguous_output_tensor,
-                expected_layout.stride,
-                expected_layout.storage_offset,
-            )
-        )
-    elif isinstance(item, _NonTensorPassthrough):
-      reconstructed_flat.append(inputs[item.input_idx])
-    elif item is None:
-      reconstructed_flat.append(None)
-
-  return pytree.tree_unflatten(reconstructed_flat, spec)
-
 
 def _map_unused_fake_inputs_to_outputs(
     gm: torch.fx.GraphModule,
@@ -458,12 +397,11 @@ def _process_fx_outputs(
 
   return (
       deduped_outputs,
-      functools.partial(
-          _reconstruct_fx_outputs,
-          output_map=output_map,
-          expected_layouts=expected_layouts,
-          spec=spec,
-          dynamic_outputs=deduped_dynamic_outputs,
+      tpu_torch_compile.FxOutputReconstructor(
+          output_map,
+          expected_layouts,
+          spec,
+          deduped_dynamic_outputs,
       ),
       deduped_dynamic_outputs,
       unique_output_indices,

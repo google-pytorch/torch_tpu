@@ -270,6 +270,28 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       ]
     else:
       self._cached_dynamic_output_shapes = None
+    # Construct the pre-bound C++ runner (`CompiledExecutableRunner`) eagerly at
+    # initialization time whenever the executable is backed by a real PJRT
+    # `LoadedExecutableWithMetadata`.
+    #
+    # Unlike older versions that fell back to Python execution for graphs with
+    # RNG state updates or dynamic outputs, `CompiledExecutableRunner::RunFast`
+    # handles deterministic graphs, dynamic output shapes, and RNG generator
+    # locking/state tensor updates entirely in C++. Pre-binding here eliminates
+    # per-step Python dispatch and pybind11 type-registry lookups on every call.
+    if isinstance(
+        self._executable, tpu_torch_compile.LoadedExecutableWithMetadata
+    ):
+      self._fast_runner: Callable[..., Any] | None = (
+          tpu_torch_compile.make_compiled_runner(
+              self._executable,
+              self._cached_dynamic_output_shapes or (),
+              self._reconstruct_fx_outputs_fn,
+              self._updates_default_generator_state,
+          )
+      )
+    else:
+      self._fast_runner = None
     self._has_generator_args: bool | None = None
 
   @property
@@ -393,51 +415,40 @@ class TorchTpuCompiledExecutable(CompiledArtifact):
       are made to match the expected output of the original FX graph,
       potentially after being processed by `reconstruct_fx_outputs_fn`.
     """
-    # AOTAutograd with SerializableAOTDispatchCompiler packs runtime arguments
-    # into a single outer list or tuple (i.e., fn([t1, t2, ...])). Unwrap it
-    # here to restore the flat argument sequence expected by the executable.
-    if len(args) == 1 and isinstance(args[0], (list, tuple)):
-      args = args[0]  # pyrefly: ignore[bad-assignment]
+    if self._fast_runner is not None and not output_shapes:
+      return self._fast_runner(args)
 
-    # Fast path: deterministic execution without RNG state mutation.
-    # Dynamo guards guarantee that argument types (including torch.Generator)
-    # are invariant across executions for a given compiled graph artifact.
-    # We cache this check on first invocation to bypass accelerator querying,
-    # generator dictionary lookups, and MultiGeneratorLocker context entry.
     if self._has_generator_args is None:
+      unboxed = (
+          args[0]
+          if len(args) == 1 and isinstance(args[0], (list, tuple))
+          else args
+      )
       self._has_generator_args = self._updates_default_generator_state or any(
-          isinstance(arg, torch.Generator) for arg in args
+          isinstance(arg, torch.Generator) for arg in unboxed
       )
 
     if not self._has_generator_args:
-      # Filter non-tensor arguments (e.g. constant scalars captured in MLIR).
-      executable_args = self._take_tensor_args(args)
-
-      # Determine output shapes expected by the C++ dispatch runtime.
-      if output_shapes:
-        # Normalize caller- or tracer-specified output shapes (e.g. dynamic).
+      if not output_shapes:
+        executable_output_shapes = (
+            self._cached_dynamic_output_shapes
+            if self._has_dynamic_outputs and self._cached_dynamic_output_shapes
+            else ()
+        )
+      else:
         executable_output_shapes = [
             _normalize_output_shape(s) for s in output_shapes
         ]
-      elif self._has_dynamic_outputs and self._cached_dynamic_output_shapes:
-        # Fast reuse of precomputed dynamic output shapes for this executable.
-        executable_output_shapes = self._cached_dynamic_output_shapes
-      else:
-        # Static shape fast path: empty tuple signals C++ runtime to borrow
-        # executable->output_shapes() directly without heap vector copies.
-        executable_output_shapes = ()
 
-      outputs = tpu_torch_compile.execute(
+      return tpu_torch_compile.execute(
           self._executable,
-          executable_args,
+          args,
           executable_output_shapes,
+          self._reconstruct_fx_outputs_fn,
       )
 
-      # Reconstruct nested container structures (e.g., tuples, dicts, views)
-      # if required by the original PyTorch FX graph schema.
-      if self._reconstruct_fx_outputs_fn is not None:
-        outputs = self._reconstruct_fx_outputs_fn(args, outputs)
-      return outputs
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+      args = args[0]  # pyrefly: ignore[bad-assignment]
 
     device = torch.accelerator.current_accelerator()
     device_module = getattr(torch, device.type)

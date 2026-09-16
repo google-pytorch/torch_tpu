@@ -70,21 +70,39 @@
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
 namespace {
 
+inline const at::Tensor& DerefTensor(const at::Tensor& t) { return t; }
+inline const at::Tensor& DerefTensor(const at::Tensor* t) { return *t; }
+
+// Checks whether a base DeviceBufferRef requires explicit materialization
+// before being passed to a compiled PJRT executable.
+//
+// In steady-state compiled execution (and when inputs come from previous
+// compiled steps or materialized parameters), `node->is_deferred()` is false.
+// Tracking `has_deferred_or_placeholder` during argument preparation allows us
+// to bypass `Materialize(argument_buffer_refs)` completely when all inputs are
+// already materialized/pending on the device stream.
+bool NeedsMaterialize(const DeviceBufferRef& buffer_ref) {
+  const auto& node = buffer_ref.device_buffer_list();
+  return node != nullptr && (node->is_deferred() || node->is_placeholder());
+}
+
 // To call a compiled PjRtExecutable, we need to get materialized base buffers
 // for each argument tensor, in the same shape expected by the executable.
 // This **must** match the logic in tpu_torch_compile's PyMakePlaceholderLike.
-absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
-    absl::Span<const at::Tensor> argument_tensors) {
+template <typename TensorSpan>
+absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
+    TensorSpan argument_tensors) {
   // Get each argument buffer ref's expected contiguous base shape.
   std::vector<DeviceBufferRef> argument_buffer_refs;
   argument_buffer_refs.reserve(argument_tensors.size());
-  for (const at::Tensor& argument_tensor : argument_tensors) {
+  bool has_deferred_or_placeholder = false;
+  for (const auto& item : argument_tensors) {
+    const at::Tensor& argument_tensor = DerefTensor(item);
     // If argument_tensor is contiguous with offset 0, then we know that
     // base_sizes and base_stride below would be the same as
     // `argument_tensor`, and skipping GetContiguousBaseShape saves some
@@ -94,6 +112,9 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
           DeviceBufferRef buffer_ref, GetBuffer(argument_tensor),
           _.SetPrepend() << "failed to get buffer from argument tensor: "
                          << ToString(argument_tensor));
+      if (NeedsMaterialize(buffer_ref)) {
+        has_deferred_or_placeholder = true;
+      }
       argument_buffer_refs.push_back(std::move(buffer_ref));
       continue;
     }
@@ -112,12 +133,17 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
                         _.SetPrepend()
                             << "failed to get buffer from argument tensor: "
                             << ToString(argument_tensor));
+    if (NeedsMaterialize(buffer_ref)) {
+      has_deferred_or_placeholder = true;
+    }
     argument_buffer_refs.push_back(std::move(buffer_ref));
   }
 
-  // Materialize the argument buffers.
-  TT_RETURN_IF_ERROR(Materialize(argument_buffer_refs,
-                                 MaterializationReason::kCompileModeExecution));
+  // Materialize the argument buffers if any are still deferred.
+  if (has_deferred_or_placeholder) {
+    TT_RETURN_IF_ERROR(Materialize(
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
+  }
 
   // After materialization, each argument buffer will be a materialized,
   // contiguous tensor which the compiled executable can safely apply view
@@ -127,11 +153,56 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
 
 // Deduplicated Path: If we have argument_indices, populate only the unique
 // base buffers expected by the executable.
-absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
-    absl::Span<const at::Tensor> argument_tensors,
-    const Indices& argument_indices) {
+//
+// Performance Rationale:
+//   - During FX graph compilation, `argument_indices` assigns a 0-based index
+//     (`0, 1, 2, ...`) to each unique underlying storage buffer sequentially
+//     upon its first appearance in the argument list. Aliased views or
+//     duplicate arguments reuse the existing `base_idx <
+//     argument_buffer_refs.size()`.
+//   - Fast Path (`base_idx == argument_buffer_refs.size()`): We populate
+//     `argument_buffer_refs` in a single pass with zero `std::optional`
+//     allocations and skip duplicate `GetBaseBuffer` lookups whenever
+//     `base_idx < argument_buffer_refs.size()`.
+//   - Fallback (`base_idx > argument_buffer_refs.size()`): If indices are ever
+//     non-sequential, we safely fall back to the indexed `std::optional` table.
+template <typename TensorSpan>
+absl::StatusOr<std::vector<DeviceBufferRef>>
+PrepareCompiledModeArgumentsNonSequentialFallback(
+    TensorSpan argument_tensors, const Indices& argument_indices,
+    bool* has_deferred_or_placeholder) {
+  int64_t num_base =
+      *std::max_element(argument_indices.begin(), argument_indices.end()) + 1;
+  std::vector<std::optional<DeviceBufferRef>> base_buffer_refs(num_base);
+  for (size_t j = 0; j < argument_tensors.size(); ++j) {
+    int64_t idx = argument_indices[j];
+    if (!base_buffer_refs[idx].has_value()) {
+      const at::Tensor& tensor = DerefTensor(argument_tensors[j]);
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
+                          _.SetPrepend()
+                              << "failed to get buffer from argument tensor: "
+                              << ToString(tensor));
+      base_buffer_refs[idx] = std::move(buffer_ref);
+    }
+  }
+  std::vector<DeviceBufferRef> argument_buffer_refs;
+  argument_buffer_refs.reserve(num_base);
+  for (int64_t j = 0; j < num_base; ++j) {
+    ABSL_CHECK(base_buffer_refs[j].has_value())  // CRASH_OK
+        << "base argument " << j << " was not populated";
+    if (NeedsMaterialize(*base_buffer_refs[j])) {
+      *has_deferred_or_placeholder = true;
+    }
+    argument_buffer_refs.push_back(std::move(*base_buffer_refs[j]));
+  }
+  return argument_buffer_refs;
+}
+
+template <typename TensorSpan>
+absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArgumentsImpl(
+    TensorSpan argument_tensors, const Indices& argument_indices) {
   if (argument_indices.empty()) {
-    return PrepareCompiledModeArguments(argument_tensors);
+    return PrepareCompiledModeArgumentsImpl(argument_tensors);
   }
 
   TT_RET_CHECK(argument_tensors.size() == argument_indices.size(),
@@ -140,30 +211,36 @@ absl::StatusOr<std::vector<DeviceBufferRef>> PrepareCompiledModeArguments(
       << ") does not match compiled argument indices ("
       << argument_indices.size() << ")";
 
-  int64_t num_base =
-      *std::max_element(argument_indices.begin(), argument_indices.end()) + 1;
-  std::vector<std::optional<DeviceBufferRef>> base_buffer_refs(num_base);
+  std::vector<DeviceBufferRef> argument_buffer_refs;
+  argument_buffer_refs.reserve(argument_tensors.size());
+  bool has_deferred_or_placeholder = false;
   for (size_t i = 0; i < argument_tensors.size(); ++i) {
-    int64_t base_idx = argument_indices[i];
-    if (!base_buffer_refs[base_idx].has_value()) {
-      TT_ASSIGN_OR_RETURN(
-          DeviceBufferRef buffer_ref, GetBaseBuffer(argument_tensors[i]),
-          _.SetPrepend() << "failed to get buffer from argument tensor: "
-                         << ToString(argument_tensors[i]));
-      base_buffer_refs[base_idx] = std::move(buffer_ref);
+    const int64_t base_idx = argument_indices[i];
+    if (base_idx == static_cast<int64_t>(argument_buffer_refs.size())) {
+      const at::Tensor& tensor = DerefTensor(argument_tensors[i]);
+      TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor),
+                          _.SetPrepend()
+                              << "failed to get buffer from argument tensor: "
+                              << ToString(tensor));
+      if (NeedsMaterialize(buffer_ref)) {
+        has_deferred_or_placeholder = true;
+      }
+      argument_buffer_refs.push_back(std::move(buffer_ref));
+    } else if (base_idx > static_cast<int64_t>(argument_buffer_refs.size())) {
+      // Fallback if argument_indices are not sequentially assigned on first
+      // appearance.
+      TT_ASSIGN_OR_RETURN(argument_buffer_refs,
+                          PrepareCompiledModeArgumentsNonSequentialFallback(
+                              argument_tensors, argument_indices,
+                              &has_deferred_or_placeholder));
+      break;
     }
   }
 
-  std::vector<DeviceBufferRef> argument_buffer_refs;
-  argument_buffer_refs.reserve(num_base);
-  for (int64_t i = 0; i < num_base; ++i) {
-    ABSL_CHECK(base_buffer_refs[i].has_value())  // CRASH_OK
-        << "base argument " << i << " was not populated";
-    argument_buffer_refs.push_back(std::move(*base_buffer_refs[i]));
+  if (has_deferred_or_placeholder) {
+    TT_RETURN_IF_ERROR(Materialize(
+        argument_buffer_refs, MaterializationReason::kCompileModeExecution));
   }
-
-  TT_RETURN_IF_ERROR(Materialize(argument_buffer_refs,
-                                 MaterializationReason::kCompileModeExecution));
   return argument_buffer_refs;
 }
 
@@ -487,14 +564,10 @@ absl::StatusOr<std::vector<Shape>> GetOutputShapes(
   return result_shapes;
 }
 
-}  // namespace
-
-// This is bound to Python function tpu_torch_compile.execute(), and thus
-// allowed to throw exceptions.
-std::vector<at::Tensor> ExecuteCompiledModel(
+template <typename TensorSpan>
+std::vector<at::Tensor> ExecuteCompiledModelImpl(
     const SharedLoadedExecutableWithMetadata& executable,
-    absl::Span<const at::Tensor> argument_tensors,
-    absl::Span<const OutputShape> output_shapes) {
+    TensorSpan argument_tensors, absl::Span<const OutputShape> output_shapes) {
   // Fast path: for static shapes (output_shapes is empty), the executable
   // already owns the precomputed output shapes. Borrowing an absl::Span avoids
   // allocating and deep-copying a std::vector<Shape> on every single step.
@@ -509,7 +582,7 @@ std::vector<at::Tensor> ExecuteCompiledModel(
   }
   // Get the materialized buffers for the bases of the argument tensors.
   TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> argument_buffer_refs,
-                     PrepareCompiledModeArguments(
+                     PrepareCompiledModeArgumentsImpl(
                          argument_tensors, executable->argument_indices()),
                      _.SetPrepend()
                          << "failed to prepare compiled mode arguments: ");
@@ -527,6 +600,24 @@ std::vector<at::Tensor> ExecuteCompiledModel(
   }
 
   return output_tensors;
+}
+
+}  // namespace
+
+// This is bound to Python function tpu_torch_compile.execute(), and thus
+// allowed to throw exceptions.
+std::vector<at::Tensor> ExecuteCompiledModel(
+    const SharedLoadedExecutableWithMetadata& executable,
+    absl::Span<const at::Tensor> argument_tensors,
+    absl::Span<const OutputShape> output_shapes) {
+  return ExecuteCompiledModelImpl(executable, argument_tensors, output_shapes);
+}
+
+std::vector<at::Tensor> ExecuteCompiledModel(
+    const SharedLoadedExecutableWithMetadata& executable,
+    absl::Span<const at::Tensor* const> argument_tensors,
+    absl::Span<const OutputShape> output_shapes) {
+  return ExecuteCompiledModelImpl(executable, argument_tensors, output_shapes);
 }
 
 absl::StatusOr<at::Tensor> MakeConstantTensor(const at::Tensor& cpu_tensor) {

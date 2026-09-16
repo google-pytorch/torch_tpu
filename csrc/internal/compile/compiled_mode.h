@@ -181,6 +181,11 @@ std::vector<at::Tensor> ExecuteCompiledModel(
     absl::Span<const at::Tensor> argument_tensors,
     absl::Span<const OutputShape> output_shapes = {});
 
+std::vector<at::Tensor> ExecuteCompiledModel(
+    const SharedLoadedExecutableWithMetadata& executable,
+    absl::Span<const at::Tensor* const> argument_tensors,
+    absl::Span<const OutputShape> output_shapes = {});
+
 // Creates a TPU tensor that represents the constant value of the CPU tensor.
 // This makes a copy of the CPU tensor data.
 absl::StatusOr<at::Tensor> MakeConstantTensor(const at::Tensor& cpu_tensor);
