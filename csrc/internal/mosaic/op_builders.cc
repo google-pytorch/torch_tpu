@@ -125,9 +125,9 @@ mlir::Attribute GetDimensionSemanticsAttr(MLIRContext* context,
 
 std::unique_ptr<MLIRContext> CreateMlirContextWithDialects() {
   DialectRegistry registry;
-  registry
-      .insert<func::FuncDialect, memref::MemRefDialect, vector::VectorDialect,
-              scf::SCFDialect, tpu::TPUDialect, math::MathDialect>();
+  registry.insert<arith::ArithDialect, func::FuncDialect, memref::MemRefDialect,
+                  vector::VectorDialect, scf::SCFDialect, tpu::TPUDialect,
+                  math::MathDialect>();
   auto context = std::make_unique<MLIRContext>(registry);
   context->loadAllAvailableDialects();
   context->allowUnregisteredDialects();
