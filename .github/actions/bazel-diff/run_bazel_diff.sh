@@ -25,10 +25,18 @@ CURRENT_SHA="${3:-HEAD}"
 BAZEL_CONFIG="${4}"
 EXTRA_FLAGS="${5}"
 DISABLE_BAZEL_DIFF="${6:-false}"
+TEST_RUNNER="${7:-bazel}"
+DEVICE="${8:-}"
+EXTRA_PYTEST_FLAGS="${9:-}"
 
 if [ -n "$WORKSPACE_DIR" ] && [ -d "$WORKSPACE_DIR" ]; then
   WORKSPACE_DIR="$(cd "$WORKSPACE_DIR" && pwd)"
   cd "$WORKSPACE_DIR"
+fi
+
+# Resolve CURRENT_SHA before any git checkout moves HEAD
+if [ "$CURRENT_SHA" == "HEAD" ] || [ -z "$CURRENT_SHA" ]; then
+  CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "$CURRENT_SHA")
 fi
 
 # Resolve effective base SHA via centralized helper. If CURRENT_SHA is a merge
@@ -82,7 +90,7 @@ if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
   NON_DOC_FILES=$(echo "$CHANGED_FILES" | grep -v -E '(\.md$|^docs/|(^|/)OWNERS|^LICENSE|^\.clang|^\.gitignore|^\.vscode/|\.png$|\.jpg$|\.jpeg$|\.svg$|\.webp$|\.gif$)' || true)
   if [ -z "$NON_DOC_FILES" ]; then
     echo "All modified files are documentation or repository metadata."
-    echo "No test targets impacted by these changes. Skipping Bazel entirely!"
+    echo "No test targets impacted by these changes. Skipping test execution entirely!"
     exit 0
   fi
 fi
@@ -92,6 +100,17 @@ fi
 # back to running all tests.
 if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
   echo "No BASE_SHA provided (not a PR), bazel-diff disabled via PR label or global configuration files modified. Skipping bazel-diff and running all tests."
+
+  if [ "$TEST_RUNNER" == "pytest" ]; then
+    echo "Running all tests via pytest..."
+    python3 "${WORKSPACE_DIR}/ci/tools/run_pytest_targets.py" \
+      --mode=full \
+      ${BAZEL_CONFIG:+--bazel-config="$BAZEL_CONFIG"} \
+      ${DEVICE:+--device="$DEVICE"} \
+      --workspace-dir="$WORKSPACE_DIR" \
+      ${EXTRA_PYTEST_FLAGS:+--extra-pytest-flags="$EXTRA_PYTEST_FLAGS"}
+    exit $?
+  fi
 
   set +e
   eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS //...
@@ -137,13 +156,25 @@ java -jar /tmp/bazel-diff.jar get-impacted-targets \
   -w "$WORKSPACE_DIR" \
   -o "$WORKSPACE_DIR/impacted_targets.txt"
 
-echo "--- Running Impacted Bazel Tests ---"
+echo "--- Running Impacted Tests ---"
 if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
   TARGET_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
   echo "Found $TARGET_COUNT impacted target(s)."
   echo "--- Impacted Targets List ---"
   cat "$WORKSPACE_DIR/impacted_targets.txt"
   echo "-----------------------------"
+
+  if [ "$TEST_RUNNER" == "pytest" ]; then
+    echo "Running impacted tests via pytest..."
+    python3 "${WORKSPACE_DIR}/ci/tools/run_pytest_targets.py" \
+      --mode=diff \
+      --targets-file="$WORKSPACE_DIR/impacted_targets.txt" \
+      ${BAZEL_CONFIG:+--bazel-config="$BAZEL_CONFIG"} \
+      ${DEVICE:+--device="$DEVICE"} \
+      --workspace-dir="$WORKSPACE_DIR" \
+      ${EXTRA_PYTEST_FLAGS:+--extra-pytest-flags="$EXTRA_PYTEST_FLAGS"}
+    exit $?
+  fi
 
   # Disable Bash's "exit on error" to manually evaluate Bazel's exit code
   set +e
@@ -169,5 +200,5 @@ if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
     exit $BAZEL_EXIT_CODE
   fi
 else
-  echo "No tests impacted by these changes. Skipping Bazel entirely!"
+  echo "No tests impacted by these changes. Skipping test execution entirely!"
 fi

@@ -36,10 +36,22 @@ inputs:
     description: 'Set to true to completely bypass bazel-diff'
     required: false
     default: 'false'
+  test_runner:
+    description: 'Test runner to execute ("bazel" or "pytest")'
+    required: false
+    default: 'bazel'
+  device:
+    description: 'Target device for pytest runner ("cpu" or "tpu")'
+    required: false
+    default: ''
+  extra_pytest_flags:
+    description: 'Additional flags passed directly to pytest'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
   steps:
     - name: Execute bazel-diff script
-      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}"
+      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}" "${{ inputs.test_runner }}" "${{ inputs.device }}" "${{ inputs.extra_pytest_flags }}"
       shell: bash
