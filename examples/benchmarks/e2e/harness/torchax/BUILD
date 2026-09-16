@@ -81,6 +81,7 @@ torch_tpu_py_test(
     notest_oss = "requires huggingface configs from internal infra",
     shard_count = 50,
     tags = [
+        "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
