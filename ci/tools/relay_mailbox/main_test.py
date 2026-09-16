@@ -19,6 +19,8 @@ from __future__ import annotations
 import io
 import pathlib
 import sys
+import tarfile
+import tempfile
 import unittest
 from unittest import mock
 
@@ -177,6 +179,29 @@ class WorkerMainRunTest(
         outputs=outputs,
     )
     return worker_main.worker_lib.Dispatch(result, tpu="tpu-a")
+
+
+class PackRunfilesLayerTest(unittest.TestCase):
+
+  def test_includes_csrc_test_binaries_but_excludes_common_solibs(self):
+    temp = tempfile.TemporaryDirectory()
+    self.addCleanup(temp.cleanup)
+    root = pathlib.Path(temp.name)
+
+    cpp_bin = root / "_main" / "csrc" / "api" / "tensor_buffer_test_bin"
+    cpp_bin.parent.mkdir(parents=True, exist_ok=True)
+    cpp_bin.write_bytes(b"ELF-binary")
+
+    common_so = root / "_main" / "csrc" / "common" / "libpywrap_torch_tpu_common.so"
+    common_so.parent.mkdir(parents=True, exist_ok=True)
+    common_so.write_bytes(b"huge-solib")
+
+    data = worker_main.pack_runfiles_layer(root)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+      names = tar.getnames()
+
+    self.assertIn("_main/csrc/api/tensor_buffer_test_bin", names)
+    self.assertNotIn("_main/csrc/common/libpywrap_torch_tpu_common.so", names)
 
 
 if __name__ == "__main__":

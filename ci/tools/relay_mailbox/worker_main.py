@@ -102,7 +102,7 @@ def pack_runfiles_layer(runfiles_dir: pathlib.Path) -> bytes:
     for root, dirs, files in os.walk(runfiles_dir):
       dirs[:] = [
           d for d in dirs
-          if d not in ("_solib_x86_64", "csrc", "__pycache__")
+          if d not in ("_solib_x86_64", "__pycache__")
           and not d.startswith("rules_python")
       ]
       for name in list(dirs):
@@ -122,7 +122,7 @@ def pack_runfiles_layer(runfiles_dir: pathlib.Path) -> bytes:
         ):
           continue
         p = os.path.join(root, f)
-        if p.endswith(".so") and "torch_tpu/common" in p:
+        if p.endswith(".so") and ("torch_tpu/common" in p or "csrc/common" in p):
           continue
         arcname = os.path.relpath(p, runfiles_dir)
         if os.path.islink(p):
