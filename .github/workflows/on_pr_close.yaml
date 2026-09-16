@@ -49,7 +49,11 @@ jobs:
     # By default, jobs with `needs` only run if dependencies succeed. Use
     # `always()` so cleanup still runs to delete any already-cancelled runs even
     # if the upstream cancellation job encountered an error.
-    if: always()
+    #
+    # Skip PRs from forks. GitHub gives those a read-only token, ignoring the
+    # `actions: write` requested below, so every delete would 403 and fail the
+    # job.
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       actions: write  # Delete workflow runs.
       contents: read  # Check out delete_cancelled_pr_runs.py.
