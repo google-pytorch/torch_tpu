@@ -20,10 +20,11 @@ import subprocess
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAILBOX_BAZEL_TEST = os.path.join(REPO_ROOT, "scripts", "mailbox_bazel_test.sh")
-MAILBOX_PRESUBMIT_PR = os.path.join(
-    REPO_ROOT, "scripts", "mailbox_presubmit_pr.sh"
-)
+SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
+if not os.path.isdir(SCRIPTS_DIR):
+  SCRIPTS_DIR = os.path.join(REPO_ROOT, "oss", "scripts")
+MAILBOX_BAZEL_TEST = os.path.join(SCRIPTS_DIR, "mailbox_bazel_test.sh")
+MAILBOX_PRESUBMIT_PR = os.path.join(SCRIPTS_DIR, "mailbox_presubmit_pr.sh")
 
 
 class TestMailboxBazelTestCLI(unittest.TestCase):
@@ -220,7 +221,7 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
 
   def test_config_flag_precedes_jobs_flags_in_scripts(self):
     for script_name in ["mailbox_bazel_test.sh", "mailbox_presubmit_pr.sh"]:
-      script_path = os.path.join(REPO_ROOT, "scripts", script_name)
+      script_path = os.path.join(SCRIPTS_DIR, script_name)
       with open(script_path) as f:
         body = f.read()
       config_idx = body.find("--config=${CLI_BAZEL_CONFIG}")
@@ -231,7 +232,7 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
       self.assertGreater(local_jobs_idx, config_idx, f"--local_test_jobs must follow --config in {script_name}")
 
   def test_stage_timing_breakdown_in_mailbox_bazel_test(self):
-    script_path = os.path.join(REPO_ROOT, "scripts", "mailbox_bazel_test.sh")
+    script_path = os.path.join(SCRIPTS_DIR, "mailbox_bazel_test.sh")
     with open(script_path) as f:
       body = f.read()
     self.assertIn("=== Stage Timing Breakdown ===", body)
@@ -241,13 +242,15 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
 
   def test_bazelrc_decouples_mailbox_from_presubmit_filters(self):
     bazelrc_path = os.path.join(REPO_ROOT, ".bazelrc")
+    if not os.path.exists(bazelrc_path):
+      bazelrc_path = os.path.join(REPO_ROOT, "oss", ".bazelrc")
     with open(bazelrc_path) as f:
       body = f.read()
     self.assertIn("common:ci_tpu_v5_mailbox --config=ci_tpu_base", body)
     self.assertNotIn("common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit", body)
 
   def test_presubmit_script_adds_presubmit_config_for_full_suite(self):
-    script_path = os.path.join(REPO_ROOT, "scripts", "mailbox_presubmit_pr.sh")
+    script_path = os.path.join(SCRIPTS_DIR, "mailbox_presubmit_pr.sh")
     with open(script_path) as f:
       body = f.read()
     self.assertIn('BAZEL_ARGS+=("--config=ci_tpu_v5_presubmit")', body)

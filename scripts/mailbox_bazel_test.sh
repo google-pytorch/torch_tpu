@@ -1,1 +1,1 @@
-rbe_tpu_bazel_test.sh
+rbe_tpu/mailbox_bazel_test.sh

@@ -1,1 +1,1 @@
-rbe_tpu_presubmit_pr.sh
+rbe_tpu/mailbox_presubmit_pr.sh

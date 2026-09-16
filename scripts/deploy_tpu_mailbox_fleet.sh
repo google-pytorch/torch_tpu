@@ -1,1 +1,1 @@
-deploy_rbe_tpu_fleet.sh
+rbe_tpu/deploy_tpu_mailbox_fleet.sh
