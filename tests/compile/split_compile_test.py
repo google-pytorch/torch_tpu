@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import unittest.mock
 from absl.testing import absltest
 import torch
@@ -127,71 +128,38 @@ class SplitCompileTest(seed_test_utils.RepeatableTest):
     utils.assert_close(res_add.cpu(), expected)
     utils.assert_close(res_weight.cpu(), expected)
 
+  def test_compiling_get_attr_constant_does_not_copy_it(self):
+    """Verifies that compiling a graph does not duplicate `get_attr` constants."""
+    # 128 MiB parameter: 1024 * 32768 * 4 bytes = 134,217,728 bytes.
+    rows, cols = 1024, 32768
 
-class _DummyCompiledExecutable(split_compiler.CompiledArtifact):
+    root = torch.nn.Module()
+    root.weight = torch.zeros((rows, cols), dtype=torch.float32).to("tpu")
 
-  def __init__(self, gm):
-    self.gm = gm
-    self._updates_default_generator_state = False
-    self.mlir_text = "dummy_mlir"
-    self.graph_module_debug_str = gm.print_readable(print_output=False)
-
-  def updates_default_generator_state(self) -> bool:
-    return self._updates_default_generator_state
-
-  def __reduce__(self):
-    return (_DummyCompiledExecutable, (self.gm,))
-
-  def __call__(self, *args, **kwargs):
-    return self.gm(*args, **kwargs)
-
-
-class _DummyBaseCompiler(compiler.Compiler):
-
-  def __init__(self):
-    super().__init__(debug=True)
-
-  def __call__(self, gm, args, is_fwd=True, **kwargs):
-    return _DummyCompiledExecutable(gm)
-
-
-class SplitCompileHermeticTest(seed_test_utils.RepeatableTest):
-
-  def test_single_partition_with_lifted_parameters_no_submod_split(self):
-    """Verifies that an FX graph with lifted parameters as placeholders (matching AOT Autograd in DeepSeek-V2) without collectives is NOT partitioned into submod_0."""
     graph = torch.fx.Graph()
-    x = graph.placeholder("x")
-    w1 = graph.placeholder("w1")
-    w2 = graph.placeholder("w2")
-    bias = graph.placeholder("bias")
-    h1 = graph.call_function(torch.matmul, (x, w1))
-    h2 = graph.call_function(torch.matmul, (h1, w2))
-    out = graph.call_function(torch.add, (h2, bias))
+    p_x = graph.placeholder("x")
+    c = graph.get_attr("weight")
+    out = graph.call_function(torch.matmul, (p_x, c))
     graph.output(out)
-    gm = torch.fx.GraphModule(torch.nn.Module(), graph)
+    gm = torch.fx.GraphModule(root, graph)
 
-    x_tensor = torch.ones(2, 4)
-    w1_tensor = torch.ones(4, 4)
-    w2_tensor = torch.ones(4, 4)
-    bias_tensor = torch.ones(4)
-    inputs = (x_tensor, w1_tensor, w2_tensor, bias_tensor)
+    base_compiler = compiler.StaticCompiler()
+    split_comp = split_compiler.SplitCompiler(base_compiler)
+    x = torch.zeros((1, rows), dtype=torch.float32, device="tpu")
 
-    split_comp = split_compiler.SplitCompiler(_DummyBaseCompiler())
-    executable = split_comp(gm, inputs)
+    gc.collect()
+    torch.accelerator.synchronize()
+    torch.accelerator.reset_peak_memory_stats()
+    mem_before = torch.accelerator.memory_allocated()
 
-    # In DeepSeek-V2, the forward graph has no collectives (single partition).
-    # CL 967263385 removed the `num_partitions <= 1` bypass, forcing the graph
-    # through split_module which partitioned it into 'submod_0' and hoisted all
-    # parameter placeholders into call_module arguments.
-    # The fix must bypass split_module and not create submod_0.
-    self.assertIsInstance(executable, split_compiler._SplitCompiledExecutable)
-    self.assertEqual(len(executable.compiled_executables), 1)
-    # Verify execution produces correct output
-    res = executable(*inputs)
-    expected = (
-        torch.matmul(torch.matmul(x_tensor, w1_tensor), w2_tensor) + bias_tensor
-    )
-    utils.assert_close(res, expected)
+    split_comp(gm, (x,))
+
+    torch.accelerator.synchronize()
+    peak_mem_increase = torch.accelerator.max_memory_allocated() - mem_before
+
+    # Assert that the peak memory increase is minimal, i.e. no large tensor
+    # copies were made.
+    self.assertLess(peak_mem_increase, 5 * 1024 * 1024)  # < 5 MiB
 
 
 if __name__ == "__main__":

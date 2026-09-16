@@ -18,7 +18,8 @@ This module contains the logic for splitting a GraphModule on collective
 operations and compiling it's submodules.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+import contextlib
 import copy
 import functools
 import operator
@@ -244,6 +245,32 @@ class _WrapperModule(torch.nn.Module):
     return x
 
 
+@contextlib.contextmanager
+def _allow_non_fake_inputs(
+    fake_mode: torch._subclasses.fake_tensor.FakeTensorMode,  # pylint: disable=protected-access
+) -> Iterator[None]:
+  """Temporarily lets `fake_mode` accept real tensors alongside fake ones.
+
+  Submodules produced by `split_module` keep their constant weights as real
+  `get_attr` tensors, so tracing them under a fake mode mixes real and fake
+  operands. This relaxes the check for the duration of the block only,
+  following the example of `ExternKernel._allow_non_fake_constant_args` in
+  `torch._inductor.ir`.
+
+  Args:
+    fake_mode: The fake mode to relax.
+
+  Yields:
+    None.
+  """
+  previous = fake_mode.allow_non_fake_inputs
+  fake_mode.allow_non_fake_inputs = True
+  try:
+    yield
+  finally:
+    fake_mode.allow_non_fake_inputs = previous
+
+
 class _SubmodCompiler(torch.fx.interpreter.Interpreter):
   """Interpreter to propagate shape information and compile submodules.
 
@@ -339,16 +366,21 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     if n.op == "call_module":
       real_mod = self.fetch_attr(str(n.target))
 
-      # Deepcopy the submodule before compiling to prevent compiler-time
-      # metadata mutation and structural corruption of nodes/inputs.
+      # Copy the submodule's graph before compiling to prevent compiler-time
+      # metadata mutation and structural corruption of nodes/inputs. Only the
+      # graph structure is copied; tensor attributes are shared by reference so
+      # that large weights are not duplicated and constant tensors keep their
+      # underlying device buffers.
       with unset_fake_temporarily():
-        comp_mod = copy.deepcopy(real_mod)
+        comp_mod = torch.fx.GraphModule(real_mod, copy.deepcopy(real_mod.graph))
       compiled_submod_real = self.compile_submod(
           comp_mod, new_args, kwargs, submod_name=str(n.target)
       )
 
-      # Propagate fake output shapes to downstream submodules
-      with self.fake_mode:
+      # Propagate fake output shapes to downstream submodules. The submodule's
+      # sunk-in constants are real (not fake) tensors, so the fake mode is
+      # relaxed to accept them.
+      with self.fake_mode, _allow_non_fake_inputs(self.fake_mode):
         fake_out = real_mod(*new_args, **kwargs)
 
       # Stitch the compiled submodule back into the parent GraphModule

@@ -115,6 +115,7 @@ torch_tpu_py_test(
         reason = "Offload heavy TorchDynamo/Inductor compilation suites to TPU v7",
     ),
     tags = [
+        "requires-mem:28g",
         "requires-net:external",
         "requires-tpu-v5lite",
     ],
