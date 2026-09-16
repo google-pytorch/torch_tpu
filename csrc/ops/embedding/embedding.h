@@ -44,9 +44,21 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagBackwardShlo(
     at::SymInt num_weights, bool scale_grad_by_freq, int64_t mode, bool sparse,
     std::optional<mlir::MlirOp> per_sample_weights, int64_t padding_idx);
 
+absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagSparseBackwardIndexGradShlo(
+    mlir::MlirOp grad, mlir::MlirOp indices, mlir::MlirOp offsets,
+    mlir::MlirOp offset2bag, mlir::MlirOp bag_size, int64_t mode,
+    std::optional<mlir::MlirOp> per_sample_weights, int64_t padding_idx);
+
 absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp indices, at::SymInt num_weights,
     at::SymInt padding_idx, bool scale_grad_by_freq);
+
+absl::StatusOr<std::array<mlir::MlirOp, 2>>
+BuildEmbeddingSparseBackwardNoPadShlo(mlir::MlirOp grad_output,
+                                      mlir::MlirOp indices);
+
+absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildEmbeddingSparseBackwardPadShlo(
+    mlir::MlirOp grad_output, mlir::MlirOp indices, int64_t padding_idx);
 
 absl::StatusOr<mlir::MlirOp> BuildEmbeddingRenormShlo(mlir::MlirOp weight,
                                                       mlir::MlirOp indices,

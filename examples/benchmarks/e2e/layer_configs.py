@@ -1299,6 +1299,68 @@ EMBEDDING_CONFIGS = (
     ),
 )
 
+SPARSE_EMBEDDING_CONFIGS = (
+    # Default config for smoke test.
+    EmbeddingConfig(
+        batch_size=1,
+        seq_len=128,
+        num_embeddings=128,
+        embedding_dim=128,
+    ),
+    # BERT token embedding vocabulary (~94 MB in fp32)
+    EmbeddingConfig(
+        batch_size=32,
+        seq_len=128,
+        num_embeddings=30522,
+        embedding_dim=768,
+    ),
+    # Large LLM token embedding table (e.g. Llama-3 / Gemma scale, ~2.1 GB in fp32)
+    EmbeddingConfig(
+        batch_size=16,
+        seq_len=512,
+        num_embeddings=128256,
+        embedding_dim=4096,
+    ),
+    # Recommendation / DLRM categorical embedding table (100k items, ~51 MB in fp32)
+    EmbeddingConfig(
+        batch_size=256,
+        seq_len=64,
+        num_embeddings=100000,
+        embedding_dim=128,
+    ),
+)
+
+SPARSE_EMBEDDING_BAG_CONFIGS = (
+    # Default config for smoke test.
+    EmbeddingConfig(
+        batch_size=1,
+        seq_len=16,
+        num_embeddings=128,
+        embedding_dim=128,
+    ),
+    # Recommendation / DLRM categorical bag (100k items, bag size 32)
+    EmbeddingConfig(
+        batch_size=256,
+        seq_len=32,
+        num_embeddings=100000,
+        embedding_dim=128,
+    ),
+    # Large multi-hot DLRM table (500k items, bag size 64)
+    EmbeddingConfig(
+        batch_size=512,
+        seq_len=64,
+        num_embeddings=500000,
+        embedding_dim=128,
+    ),
+    # High-dimensional item/query bag (128k items, dim 512)
+    EmbeddingConfig(
+        batch_size=128,
+        seq_len=32,
+        num_embeddings=128256,
+        embedding_dim=512,
+    ),
+)
+
 
 @dataclasses.dataclass
 class DropoutConfig:

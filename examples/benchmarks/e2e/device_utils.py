@@ -277,7 +277,15 @@ def reset_peak_memory_stats(device):
 
 def _collect_tensors(tensors: Any) -> Sequence[torch.Tensor]:
   leaves, _ = tree_flatten(tensors)
-  return [l for l in leaves if isinstance(l, torch.Tensor)]
+  collected = []
+  for l in leaves:
+    if isinstance(l, torch.Tensor):
+      if l.is_sparse:
+        # pylint: disable=protected-access
+        collected.extend([l._indices(), l._values()])
+      else:
+        collected.append(l)
+  return collected
 
 
 def synchronize(

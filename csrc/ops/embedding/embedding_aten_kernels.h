@@ -66,6 +66,16 @@ at::Tensor AtenEmbeddingDenseBackward(const at::Tensor& grad_output,
                                       at::SymInt padding_idx,
                                       bool scale_grad_by_freq);
 
+at::Tensor AtenEmbeddingSparseBackward(const at::Tensor& grad,
+                                       const at::Tensor& indices,
+                                       int64_t num_weights, int64_t padding_idx,
+                                       bool scale_grad_by_freq);
+
+at::Tensor AtenEmbeddingBackward(const at::Tensor& grad,
+                                 const at::Tensor& indices,
+                                 at::SymInt num_weights, at::SymInt padding_idx,
+                                 bool scale_grad_by_freq, bool sparse);
+
 }  // namespace torch_tpu
 
 #endif  // TORCH_TPU_CSRC_OPS_EMBEDDING_EMBEDDING_ATEN_KERNELS_H_

@@ -124,6 +124,48 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(loss)
     self.assertFalse(torch.isnan(loss))
 
+  def test_torch_compile_sparse_embedding_no_optimizer(self):
+    model = torch.nn.Embedding(128, 64, sparse=True).to(device=self.device)
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=None,
+        compile_fn=torch.compile,
+    )
+
+    x = torch.randint(0, 128, (16, 8), device=self.device)
+    target = torch.randn((16, 8, 64), device=self.device)
+
+    train_step = trainer.make_compiled_train_step(x, target)
+    loss = train_step(x, target)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+    self.assertIsNotNone(model.weight.grad)
+    self.assertTrue(model.weight.grad.is_sparse)
+    self.assertFalse(torch.isnan(model.weight.grad._values()).any())  # pylint: disable=protected-access
+
+  def test_torch_compile_sparse_embedding_bag_no_optimizer(self):
+    model = torch.nn.EmbeddingBag(128, 64, sparse=True, mode="sum").to(
+        device=self.device
+    )
+    trainer = single_trace_trainer.SingleTraceTrainer(
+        model=model,
+        optimizer=None,
+        compile_fn=torch.compile,
+    )
+
+    x = torch.randint(0, 128, (16, 8), device=self.device)
+    target = torch.randn((16, 64), device=self.device)
+
+    train_step = trainer.make_compiled_train_step(x, target)
+    loss = train_step(x, target)
+
+    self.assertIsNotNone(loss)
+    self.assertFalse(torch.isnan(loss))
+    self.assertIsNotNone(model.weight.grad)
+    self.assertTrue(model.weight.grad.is_sparse)
+    self.assertFalse(torch.isnan(model.weight.grad._values()).any())  # pylint: disable=protected-access
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -6370,6 +6370,20 @@ Supported combinations for non-constant padding:
           torch.tensor([0, 1], dtype=torch.int64, device=et.device()),
       )
 
+  def test_embedding_sparse_scale_grad_by_freq_error(self):
+    weight = torch.randn(4, 3, device=et.device(), requires_grad=True)
+    indices = torch.tensor([0, 1, 0], dtype=torch.long, device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""embedding_sparse_backward(): scale_grad_by_freq not supported with sparse gradients""",
+        gpu="""embedding_backward: scale_grad_by_freq not supported with sparse gradients""",
+        message_reviewed_by="wan",
+    ):
+      out = torch.nn.functional.embedding(
+          indices, weight, sparse=True, scale_grad_by_freq=True
+      )
+      out.sum().backward()
+
   def test_native_layer_norm_int(self):
     inp = torch.ones(5, 5, device=et.device(), dtype=torch.int32)
     normalized_shape = (5,)

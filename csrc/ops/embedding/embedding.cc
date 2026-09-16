@@ -16,6 +16,7 @@
 
 #include "csrc/ops/embedding/embedding.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -27,14 +28,17 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
+#include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/reductions/reductions.h"
 #include "csrc/ops/reductions/sum.h"
 #include "csrc/ops/unary.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Value.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -291,6 +295,228 @@ absl::StatusOr<mlir::MlirOp> BuildRenormRow(mlir::MlirBuilder& builder,
   return result;
 }
 
+absl::StatusOr<mlir::MlirOp> ApplyPerSampleWeights(
+    mlir::MlirOp tensor, const std::optional<mlir::MlirOp>& per_sample_weights,
+    bool needs_upcast) {
+  if (!per_sample_weights.has_value()) {
+    return tensor;
+  }
+  mlir::MlirOp psw = *per_sample_weights;
+  if (GetTensorTypeOrDie(psw).getRank() != 1) {
+    psw = Flatten(psw);
+  }
+  if (needs_upcast) {
+    TT_ASSIGN_OR_RETURN(psw, PromoteFloatDtype(psw));
+  }
+  TT_ASSIGN_OR_RETURN(auto psw_unsqueezed, Unsqueeze(psw, 1));
+  TT_ASSIGN_OR_RETURN(auto psw_bcst, BroadcastIfNeeded(psw_unsqueezed, tensor));
+  return mlir::stablehlo::Mul(tensor, psw_bcst);
+}
+
+struct MaskedPaddingResult {
+  mlir::MlirOp gathered;
+  mlir::MlirOp is_padding;
+};
+
+absl::StatusOr<MaskedPaddingResult> MaskPaddingIndices(
+    mlir::MlirBuilder& builder, mlir::MlirOp gathered,
+    mlir::MlirOp flattened_indices, int64_t padding_idx, int64_t mode,
+    mlir::Type acc_elem_type) {
+  if (padding_idx < 0) {
+    return MaskedPaddingResult{gathered, mlir::MlirOp()};
+  }
+  auto pad_idx_scalar = MakeScalarConstant(
+      builder, padding_idx,
+      GetTensorTypeOrDie(flattened_indices).getElementType());
+  TT_ASSIGN_OR_RETURN(auto pad_idx_bcst,
+                      BroadcastIfNeeded(pad_idx_scalar, flattened_indices));
+  auto is_padding =
+      mlir::stablehlo::Compare(flattened_indices, pad_idx_bcst,
+                               mlir::stablehlo::ComparisonDirection::EQ);
+  TT_ASSIGN_OR_RETURN(auto is_pad_u, Unsqueeze(is_padding, 1));
+  TT_ASSIGN_OR_RETURN(auto mask_bcst, BroadcastIfNeeded(is_pad_u, gathered));
+  auto fill_scalar =
+      MakeScalarConstant(builder, mode == 2 ? -INFINITY : 0.0, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto fill_bcst, BroadcastIfNeeded(fill_scalar, gathered));
+  return MaskedPaddingResult{
+      mlir::stablehlo::Select(mask_bcst, fill_bcst, gathered), is_padding};
+}
+
+absl::StatusOr<mlir::MlirOp> BuildBagSize(
+    mlir::MlirBuilder& builder, mlir::MlirOp bag_size_init,
+    mlir::MlirOp scatter_indices, int64_t num_indices, int64_t padding_idx,
+    mlir::MlirOp is_padding, mlir::Type i64_type) {
+  mlir::MlirOp ones_indices = mlir::stablehlo::Constant(
+      builder, mlir::DenseElementsAttr::get(
+                   mlir::RankedTensorType::get({num_indices}, i64_type),
+                   builder.getOpBuilder().getIntegerAttr(i64_type, 1)));
+  if (padding_idx >= 0) {
+    auto zero_i64 = MakeScalarConstant(builder, 0, i64_type);
+    TT_ASSIGN_OR_RETURN(auto zero_i64_bcst,
+                        BroadcastIfNeeded(zero_i64, ones_indices));
+    ones_indices =
+        mlir::stablehlo::Select(is_padding, zero_i64_bcst, ones_indices);
+  }
+  return BuildSimpleScatter(builder, bag_size_init, scatter_indices,
+                            ones_indices, HasWindow::kNo);
+}
+
+absl::StatusOr<mlir::MlirOp> ScaleByBagSize(mlir::MlirBuilder& builder,
+                                            mlir::MlirOp output,
+                                            mlir::MlirOp bag_size,
+                                            mlir::Type acc_elem_type) {
+  auto bag_size_float =
+      mlir::stablehlo::ConvertElementType(bag_size, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto bs_unsqueezed, Unsqueeze(bag_size_float, 1));
+  TT_ASSIGN_OR_RETURN(auto bs_bcst, BroadcastIfNeeded(bs_unsqueezed, output));
+  auto zeros_float = MakeScalarConstant(builder, 0.0, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto zeros_bcst, BroadcastIfNeeded(zeros_float, bs_bcst));
+  auto is_empty = mlir::stablehlo::Compare(
+      bs_bcst, zeros_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+  auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto ones_bcst, BroadcastIfNeeded(ones_float, bs_bcst));
+  auto safe_divisor = mlir::stablehlo::Select(is_empty, ones_bcst, bs_bcst);
+  return mlir::stablehlo::Div(output, safe_divisor);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildMeanBagBackward(mlir::MlirBuilder& builder,
+                                                  mlir::MlirOp grad_indices,
+                                                  mlir::MlirOp bag_size,
+                                                  mlir::MlirOp offset2bag,
+                                                  mlir::MlirOp zeros_float,
+                                                  mlir::Type acc_elem_type) {
+  auto bag_size_float =
+      mlir::stablehlo::ConvertElementType(bag_size, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(
+      auto bs_g, BuildEmbeddingGather(builder, bag_size_float, offset2bag));
+  TT_ASSIGN_OR_RETURN(auto bs_u, Unsqueeze(bs_g, 1));
+  TT_ASSIGN_OR_RETURN(auto bs_b, BroadcastIfNeeded(bs_u, grad_indices));
+  TT_ASSIGN_OR_RETURN(auto zeros_bcst_bs, BroadcastIfNeeded(zeros_float, bs_b));
+  auto is_zero = mlir::stablehlo::Compare(
+      bs_b, zeros_bcst_bs, mlir::stablehlo::ComparisonDirection::EQ);
+  auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto ones_bcst, BroadcastIfNeeded(ones_float, bs_b));
+  auto safe_bs = mlir::stablehlo::Select(is_zero, ones_bcst, bs_b);
+  return mlir::stablehlo::Div(grad_indices, safe_bs);
+}
+
+absl::StatusOr<mlir::MlirOp> BuildMaxBagBackward(
+    mlir::MlirBuilder& builder, mlir::MlirOp acc_grad, mlir::MlirOp max_indices,
+    int64_t num_indices, int64_t emb_dim, mlir::MlirOp zeros_float,
+    mlir::Type acc_elem_type, mlir::Type i64_type) {
+  auto gi_init = mlir::stablehlo::Constant(
+      builder,
+      mlir::DenseElementsAttr::get(
+          mlir::RankedTensorType::get({num_indices, emb_dim}, acc_elem_type),
+          builder.getOpBuilder().getZeroAttr(acc_elem_type)));
+  auto d1i = mlir::stablehlo::Iota(
+      builder, mlir::RankedTensorType::get({emb_dim}, i64_type), 0);
+  TT_ASSIGN_OR_RETURN(auto d1b, BroadcastIfNeeded(d1i, max_indices));
+  TT_ASSIGN_OR_RETURN(auto mu, Unsqueeze(max_indices, 2));
+  TT_ASSIGN_OR_RETURN(auto d1u, Unsqueeze(d1b, 2));
+  auto coords = mlir::stablehlo::Concatenate(builder, {mu, d1u}, 2);
+  auto neg1_scalar = MakeScalarConstant(builder, -1, i64_type);
+  TT_ASSIGN_OR_RETURN(auto neg1_bcst,
+                      BroadcastIfNeeded(neg1_scalar, max_indices));
+  auto is_v = mlir::stablehlo::Compare(
+      max_indices, neg1_bcst, mlir::stablehlo::ComparisonDirection::GT);
+  TT_ASSIGN_OR_RETURN(auto isv_u, Unsqueeze(is_v, 2));
+  TT_ASSIGN_OR_RETURN(auto isv_b, BroadcastIfNeeded(isv_u, coords));
+  auto zero_c = mlir::stablehlo::Constant(
+      builder, mlir::DenseElementsAttr::get(
+                   GetTensorTypeOrDie(coords),
+                   builder.getOpBuilder().getI64IntegerAttr(0)));
+  auto safe_coords = mlir::stablehlo::Select(isv_b, coords, zero_c);
+  auto body = [acc_elem_type](mlir::RegionBuilder& rb) {
+    mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+        acc_elem_type, rb.getRegion(), rb.getOpBuilder());
+  };
+  TT_ASSIGN_OR_RETURN(auto ag_zero_bcst,
+                      BroadcastIfNeeded(zeros_float, acc_grad));
+  auto safe_updates = mlir::stablehlo::Select(is_v, acc_grad, ag_zero_bcst);
+  auto scatter_dims = mlir::stablehlo::ScatterDimensionNumbersAttr::get(
+      &builder.getContext(), {}, {0, 1}, {}, {}, {0, 1}, 2);
+  return mlir::stablehlo::Scatter({gi_init}, safe_coords, {safe_updates}, body,
+                                  scatter_dims)[0];
+}
+
+absl::StatusOr<mlir::MlirOp> ZeroOutPaddingGradIndices(
+    mlir::MlirBuilder& builder, mlir::MlirOp grad_indices,
+    mlir::MlirOp flattened_indices, int64_t padding_idx,
+    mlir::MlirOp zeros_float) {
+  if (padding_idx < 0) {
+    return grad_indices;
+  }
+  auto pad_scalar = MakeScalarConstant(
+      builder, padding_idx,
+      GetTensorTypeOrDie(flattened_indices).getElementType());
+  TT_ASSIGN_OR_RETURN(auto pad_bcst,
+                      BroadcastIfNeeded(pad_scalar, flattened_indices));
+  auto is_p = mlir::stablehlo::Compare(
+      flattened_indices, pad_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+  TT_ASSIGN_OR_RETURN(auto isp_u, Unsqueeze(is_p, 1));
+  TT_ASSIGN_OR_RETURN(auto mask_bcst, BroadcastIfNeeded(isp_u, grad_indices));
+  TT_ASSIGN_OR_RETURN(auto fill_bcst,
+                      BroadcastIfNeeded(zeros_float, grad_indices));
+  return mlir::stablehlo::Select(mask_bcst, fill_bcst, grad_indices);
+}
+
+absl::StatusOr<mlir::MlirOp> ScaleGradByFrequency(
+    mlir::MlirBuilder& builder, mlir::MlirOp grad_indices,
+    mlir::MlirOp flattened_indices, int64_t num_indices, int64_t nw,
+    mlir::MlirOp zeros_float, mlir::Type acc_elem_type, mlir::Type i64_type) {
+  auto counts_init = mlir::stablehlo::Constant(
+      builder, mlir::DenseElementsAttr::get(
+                   mlir::RankedTensorType::get({nw}, i64_type),
+                   builder.getOpBuilder().getZeroAttr(i64_type)));
+  TT_ASSIGN_OR_RETURN(auto fi_u, Unsqueeze(flattened_indices, 1));
+  auto ones_indices_v = mlir::stablehlo::Constant(
+      builder, mlir::DenseElementsAttr::get(
+                   mlir::RankedTensorType::get({num_indices}, i64_type),
+                   builder.getOpBuilder().getIntegerAttr(i64_type, 1)));
+  auto counts = BuildSimpleScatter(builder, counts_init, fi_u, ones_indices_v,
+                                   HasWindow::kNo);
+  auto counts_acc = mlir::stablehlo::ConvertElementType(counts, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(
+      auto ci_g, BuildEmbeddingGather(builder, counts_acc, flattened_indices));
+  TT_ASSIGN_OR_RETURN(auto ci_u, Unsqueeze(ci_g, 1));
+  TT_ASSIGN_OR_RETURN(auto ci_b, BroadcastIfNeeded(ci_u, grad_indices));
+  TT_ASSIGN_OR_RETURN(auto zeros_bcst_c, BroadcastIfNeeded(zeros_float, ci_b));
+  auto is_z = mlir::stablehlo::Compare(
+      ci_b, zeros_bcst_c, mlir::stablehlo::ComparisonDirection::EQ);
+  auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
+  TT_ASSIGN_OR_RETURN(auto ones_bcst, BroadcastIfNeeded(ones_float, ci_b));
+  auto safe_c = mlir::stablehlo::Select(is_z, ones_bcst, ci_b);
+  return mlir::stablehlo::Div(grad_indices, safe_c);
+}
+
+absl::StatusOr<mlir::MlirOp> ResolveMeanBagSize(
+    mlir::MlirBuilder& builder, mlir::MlirOp bag_size,
+    mlir::MlirOp active_offset2bag, mlir::MlirOp flattened_indices,
+    int64_t batch_size, int64_t num_indices, int64_t padding_idx,
+    mlir::Type i64_type) {
+  if (GetTensorTypeOrDie(bag_size).getDimSize(0) > 0) {
+    return bag_size;
+  }
+  auto bag_size_init = mlir::stablehlo::Constant(
+      builder, mlir::DenseElementsAttr::get(
+                   mlir::RankedTensorType::get({batch_size}, i64_type),
+                   builder.getOpBuilder().getZeroAttr(i64_type)));
+  TT_ASSIGN_OR_RETURN(auto scatter_indices, Unsqueeze(active_offset2bag, 1));
+  mlir::MlirOp is_padding;
+  if (padding_idx >= 0) {
+    auto pad_scalar = MakeScalarConstant(
+        builder, padding_idx,
+        GetTensorTypeOrDie(flattened_indices).getElementType());
+    TT_ASSIGN_OR_RETURN(auto pad_bcst,
+                        BroadcastIfNeeded(pad_scalar, flattened_indices));
+    is_padding = mlir::stablehlo::Compare(
+        flattened_indices, pad_bcst, mlir::stablehlo::ComparisonDirection::EQ);
+  }
+  return BuildBagSize(builder, bag_size_init, scatter_indices, num_indices,
+                      padding_idx, is_padding, i64_type);
+}
+
 }  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildEmbeddingShlo(mlir::MlirOp weight,
@@ -379,34 +605,13 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp gathered,
       BuildEmbeddingGather(builder, acc_weight, flattened_indices));
-  if (per_sample_weights.has_value()) {
-    mlir::MlirOp psw = *per_sample_weights;
-    if (GetTensorTypeOrDie(psw).getRank() != 1) psw = Flatten(psw);
-    if (needs_upcast) {
-      TT_ASSIGN_OR_RETURN(psw, PromoteFloatDtype(psw));
-    }
-    TT_ASSIGN_OR_RETURN(auto psw_unsqueezed, Unsqueeze(psw, 1));
-    TT_ASSIGN_OR_RETURN(auto psw_bcst,
-                        BroadcastIfNeeded(psw_unsqueezed, gathered));
-    gathered = mlir::stablehlo::Mul(gathered, psw_bcst);
-  }
-  mlir::MlirOp is_padding;
-  if (padding_idx >= 0) {
-    auto pad_idx_scalar = MakeScalarConstant(
-        builder, padding_idx, GetTensorTypeOrDie(indices).getElementType());
-    TT_ASSIGN_OR_RETURN(auto pad_idx_bcst,
-                        BroadcastIfNeeded(pad_idx_scalar, flattened_indices));
-    is_padding =
-        mlir::stablehlo::Compare(flattened_indices, pad_idx_bcst,
-                                 mlir::stablehlo::ComparisonDirection::EQ);
-    TT_ASSIGN_OR_RETURN(auto is_pad_u, Unsqueeze(is_padding, 1));
-    TT_ASSIGN_OR_RETURN(auto mask_bcst, BroadcastIfNeeded(is_pad_u, gathered));
-    auto fill_scalar =
-        MakeScalarConstant(builder, mode == 2 ? -INFINITY : 0.0, acc_elem_type);
-    TT_ASSIGN_OR_RETURN(auto fill_bcst,
-                        BroadcastIfNeeded(fill_scalar, gathered));
-    gathered = mlir::stablehlo::Select(mask_bcst, fill_bcst, gathered);
-  }
+  TT_ASSIGN_OR_RETURN(
+      gathered,
+      ApplyPerSampleWeights(gathered, per_sample_weights, needs_upcast));
+  TT_ASSIGN_OR_RETURN((auto [masked_gathered, is_padding]),
+                      MaskPaddingIndices(builder, gathered, flattened_indices,
+                                         padding_idx, mode, acc_elem_type));
+  gathered = masked_gathered;
   TT_ASSIGN_OR_RETURN(mlir::MlirOp offset2bag,
                       BuildOffset2Bag(builder, flattened_indices, offsets,
                                       i64_type, batch_size));
@@ -416,22 +621,6 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
   mlir::MlirOp max_indices;
 
   auto bag_mode = static_cast<EmbeddingBagMode>(mode);
-
-  auto build_bag_size = [&]() -> absl::StatusOr<mlir::MlirOp> {
-    mlir::MlirOp ones_indices = mlir::stablehlo::Constant(
-        builder, mlir::DenseElementsAttr::get(
-                     mlir::RankedTensorType::get({num_indices}, i64_type),
-                     builder.getOpBuilder().getIntegerAttr(i64_type, 1)));
-    if (padding_idx >= 0) {
-      auto zero_i64 = MakeScalarConstant(builder, 0, i64_type);
-      TT_ASSIGN_OR_RETURN(auto zero_i64_bcst,
-                          BroadcastIfNeeded(zero_i64, ones_indices));
-      ones_indices =
-          mlir::stablehlo::Select(is_padding, zero_i64_bcst, ones_indices);
-    }
-    return BuildSimpleScatter(builder, bag_size_init, scatter_indices,
-                              ones_indices, HasWindow::kNo);
-  };
 
   switch (bag_mode) {
     case EmbeddingBagMode::kSum: {
@@ -444,25 +633,14 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
     case EmbeddingBagMode::kMean: {
       output = BuildSimpleScatter(builder, output_init, scatter_indices,
                                   gathered, HasWindow::kYes);
-      TT_ASSIGN_OR_RETURN(final_bag_size, build_bag_size());
+      TT_ASSIGN_OR_RETURN(
+          final_bag_size,
+          BuildBagSize(builder, bag_size_init, scatter_indices, num_indices,
+                       padding_idx, is_padding, i64_type));
       max_indices = final_bag_size;
-
-      // Scale output by bag_size
-      auto bag_size_float =
-          mlir::stablehlo::ConvertElementType(final_bag_size, acc_elem_type);
-      TT_ASSIGN_OR_RETURN(auto bs_unsqueezed, Unsqueeze(bag_size_float, 1));
-      TT_ASSIGN_OR_RETURN(auto bs_bcst,
-                          BroadcastIfNeeded(bs_unsqueezed, output));
-      auto zeros_float = MakeScalarConstant(builder, 0.0, acc_elem_type);
-      TT_ASSIGN_OR_RETURN(auto zeros_bcst,
-                          BroadcastIfNeeded(zeros_float, bs_bcst));
-      auto is_empty = mlir::stablehlo::Compare(
-          bs_bcst, zeros_bcst, mlir::stablehlo::ComparisonDirection::EQ);
-      auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
-      TT_ASSIGN_OR_RETURN(auto ones_bcst,
-                          BroadcastIfNeeded(ones_float, bs_bcst));
-      auto safe_divisor = mlir::stablehlo::Select(is_empty, ones_bcst, bs_bcst);
-      output = mlir::stablehlo::Div(output, safe_divisor);
+      TT_ASSIGN_OR_RETURN(
+          output,
+          ScaleByBagSize(builder, output, final_bag_size, acc_elem_type));
       break;
     }
     case EmbeddingBagMode::kMax: {
@@ -485,7 +663,10 @@ absl::StatusOr<MlirOpResults<4>> BuildEmbeddingBagShlo(
                           BroadcastIfNeeded(zero_scalar, output));
       output = mlir::stablehlo::Select(is_neg_inf, zero_bcst, output);
 
-      TT_ASSIGN_OR_RETURN(final_bag_size, build_bag_size());
+      TT_ASSIGN_OR_RETURN(
+          final_bag_size,
+          BuildBagSize(builder, bag_size_init, scatter_indices, num_indices,
+                       padding_idx, is_padding, i64_type));
       break;
     }
   }
@@ -555,113 +736,33 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagBackwardShlo(
       TT_ASSIGN_OR_RETURN(grad_indices,
                           BuildEmbeddingGather(builder, acc_grad, offset2bag));
       if (bag_mode == EmbeddingBagMode::kMean) {
-        auto bag_size_float =
-            mlir::stablehlo::ConvertElementType(bag_size, acc_elem_type);
         TT_ASSIGN_OR_RETURN(
-            auto bs_g,
-            BuildEmbeddingGather(builder, bag_size_float, offset2bag));
-        TT_ASSIGN_OR_RETURN(auto bs_u, Unsqueeze(bs_g, 1));
-        TT_ASSIGN_OR_RETURN(auto bs_b, BroadcastIfNeeded(bs_u, grad_indices));
-        TT_ASSIGN_OR_RETURN(auto zeros_bcst_bs,
-                            BroadcastIfNeeded(zeros_float, bs_b));
-        auto is_zero = mlir::stablehlo::Compare(
-            bs_b, zeros_bcst_bs, mlir::stablehlo::ComparisonDirection::EQ);
-        auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
-        TT_ASSIGN_OR_RETURN(auto ones_bcst,
-                            BroadcastIfNeeded(ones_float, bs_b));
-        auto safe_bs = mlir::stablehlo::Select(is_zero, ones_bcst, bs_b);
-        grad_indices = mlir::stablehlo::Div(grad_indices, safe_bs);
+            grad_indices,
+            BuildMeanBagBackward(builder, grad_indices, bag_size, offset2bag,
+                                 zeros_float, acc_elem_type));
       }
-      if (per_sample_weights.has_value()) {
-        mlir::MlirOp psw = *per_sample_weights;
-        if (GetTensorTypeOrDie(psw).getRank() != 1) psw = Flatten(psw);
-        if (needs_upcast) {
-          TT_ASSIGN_OR_RETURN(psw, PromoteFloatDtype(psw));
-        }
-        TT_ASSIGN_OR_RETURN(auto psw_u, Unsqueeze(psw, 1));
-        TT_ASSIGN_OR_RETURN(auto psw_b, BroadcastIfNeeded(psw_u, grad_indices));
-        grad_indices = mlir::stablehlo::Mul(grad_indices, psw_b);
-      }
+      TT_ASSIGN_OR_RETURN(
+          grad_indices, ApplyPerSampleWeights(grad_indices, per_sample_weights,
+                                              needs_upcast));
       break;
     }
     case EmbeddingBagMode::kMax: {
-      auto gi_init = mlir::stablehlo::Constant(
-          builder, mlir::DenseElementsAttr::get(
-                       mlir::RankedTensorType::get({num_indices, emb_dim},
-                                                   acc_elem_type),
-                       builder.getOpBuilder().getZeroAttr(acc_elem_type)));
-      auto d1i = mlir::stablehlo::Iota(
-          builder, mlir::RankedTensorType::get({emb_dim}, i64_type), 0);
-      TT_ASSIGN_OR_RETURN(auto d1b, BroadcastIfNeeded(d1i, max_indices));
-      TT_ASSIGN_OR_RETURN(auto mu, Unsqueeze(max_indices, 2));
-      TT_ASSIGN_OR_RETURN(auto d1u, Unsqueeze(d1b, 2));
-      auto coords = mlir::stablehlo::Concatenate(builder, {mu, d1u}, 2);
-      auto neg1_scalar = MakeScalarConstant(builder, -1, i64_type);
-      TT_ASSIGN_OR_RETURN(auto neg1_bcst,
-                          BroadcastIfNeeded(neg1_scalar, max_indices));
-      auto is_v = mlir::stablehlo::Compare(
-          max_indices, neg1_bcst, mlir::stablehlo::ComparisonDirection::GT);
-      TT_ASSIGN_OR_RETURN(auto isv_u, Unsqueeze(is_v, 2));
-      TT_ASSIGN_OR_RETURN(auto isv_b, BroadcastIfNeeded(isv_u, coords));
-      auto zero_c = mlir::stablehlo::Constant(
-          builder, mlir::DenseElementsAttr::get(
-                       GetTensorTypeOrDie(coords),
-                       builder.getOpBuilder().getI64IntegerAttr(0)));
-      auto safe_coords = mlir::stablehlo::Select(isv_b, coords, zero_c);
-      auto body = [acc_elem_type](mlir::RegionBuilder& rb) {
-        mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
-            acc_elem_type, rb.getRegion(), rb.getOpBuilder());
-      };
-      TT_ASSIGN_OR_RETURN(auto ag_zero_bcst,
-                          BroadcastIfNeeded(zeros_float, acc_grad));
-      auto safe_updates = mlir::stablehlo::Select(is_v, acc_grad, ag_zero_bcst);
-      auto scatter_dims = mlir::stablehlo::ScatterDimensionNumbersAttr::get(
-          &builder.getContext(), {}, {0, 1}, {}, {}, {0, 1}, 2);
-      grad_indices = mlir::stablehlo::Scatter(
-          {gi_init}, safe_coords, {safe_updates}, body, scatter_dims)[0];
+      TT_ASSIGN_OR_RETURN(
+          grad_indices,
+          BuildMaxBagBackward(builder, acc_grad, max_indices, num_indices,
+                              emb_dim, zeros_float, acc_elem_type, i64_type));
       break;
     }
   }
-  if (padding_idx >= 0) {
-    auto pad_scalar = MakeScalarConstant(
-        builder, padding_idx,
-        GetTensorTypeOrDie(flattened_indices).getElementType());
-    TT_ASSIGN_OR_RETURN(auto pad_bcst,
-                        BroadcastIfNeeded(pad_scalar, flattened_indices));
-    auto is_p = mlir::stablehlo::Compare(
-        flattened_indices, pad_bcst, mlir::stablehlo::ComparisonDirection::EQ);
-    TT_ASSIGN_OR_RETURN(auto isp_u, Unsqueeze(is_p, 1));
-    TT_ASSIGN_OR_RETURN(auto mask_bcst, BroadcastIfNeeded(isp_u, grad_indices));
-    TT_ASSIGN_OR_RETURN(auto fill_bcst,
-                        BroadcastIfNeeded(zeros_float, grad_indices));
-    grad_indices = mlir::stablehlo::Select(mask_bcst, fill_bcst, grad_indices);
-  }
+  TT_ASSIGN_OR_RETURN(
+      grad_indices,
+      ZeroOutPaddingGradIndices(builder, grad_indices, flattened_indices,
+                                padding_idx, zeros_float));
   if (scale_grad_by_freq) {
-    auto counts_init = mlir::stablehlo::Constant(
-        builder, mlir::DenseElementsAttr::get(
-                     mlir::RankedTensorType::get({nw}, i64_type),
-                     builder.getOpBuilder().getZeroAttr(i64_type)));
-    TT_ASSIGN_OR_RETURN(auto fi_u, Unsqueeze(flattened_indices, 1));
-    auto ones_indices_v = mlir::stablehlo::Constant(
-        builder, mlir::DenseElementsAttr::get(
-                     mlir::RankedTensorType::get({num_indices}, i64_type),
-                     builder.getOpBuilder().getIntegerAttr(i64_type, 1)));
-    auto counts = BuildSimpleScatter(builder, counts_init, fi_u, ones_indices_v,
-                                     HasWindow::kNo);
-    auto counts_acc =
-        mlir::stablehlo::ConvertElementType(counts, acc_elem_type);
-    TT_ASSIGN_OR_RETURN(auto ci_g, BuildEmbeddingGather(builder, counts_acc,
-                                                        flattened_indices));
-    TT_ASSIGN_OR_RETURN(auto ci_u, Unsqueeze(ci_g, 1));
-    TT_ASSIGN_OR_RETURN(auto ci_b, BroadcastIfNeeded(ci_u, grad_indices));
-    TT_ASSIGN_OR_RETURN(auto zeros_bcst_c,
-                        BroadcastIfNeeded(zeros_float, ci_b));
-    auto is_z = mlir::stablehlo::Compare(
-        ci_b, zeros_bcst_c, mlir::stablehlo::ComparisonDirection::EQ);
-    auto ones_float = MakeScalarConstant(builder, 1.0, acc_elem_type);
-    TT_ASSIGN_OR_RETURN(auto ones_bcst, BroadcastIfNeeded(ones_float, ci_b));
-    auto safe_c = mlir::stablehlo::Select(is_z, ones_bcst, ci_b);
-    grad_indices = mlir::stablehlo::Div(grad_indices, safe_c);
+    TT_ASSIGN_OR_RETURN(
+        grad_indices, ScaleGradByFrequency(
+                          builder, grad_indices, flattened_indices, num_indices,
+                          nw, zeros_float, acc_elem_type, i64_type));
   }
   TT_ASSIGN_OR_RETURN(auto si_v, Unsqueeze(flattened_indices, 1));
   auto grad_weight = BuildSimpleScatter(builder, grad_weight_init, si_v,
@@ -671,6 +772,65 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagBackwardShlo(
         mlir::stablehlo::ConvertElementType(grad_weight, grad_elem_type);
   }
   return grad_weight;
+}
+
+absl::StatusOr<mlir::MlirOp> BuildEmbeddingBagSparseBackwardIndexGradShlo(
+    mlir::MlirOp grad, mlir::MlirOp indices, mlir::MlirOp offsets,
+    mlir::MlirOp offset2bag, mlir::MlirOp bag_size, int64_t mode,
+    std::optional<mlir::MlirOp> per_sample_weights, int64_t padding_idx) {
+  mlir::MlirBuilder& builder = grad.getBuilder();
+  const auto grad_type = GetTensorTypeOrDie(grad);
+  const auto grad_elem_type = grad_type.getElementType();
+  const int64_t batch_size = grad_type.getDimSize(0);
+  const int64_t emb_dim = grad_type.getDimSize(1);
+  bool needs_upcast = grad_elem_type.isF16() || grad_elem_type.isBF16();
+  mlir::Type acc_elem_type =
+      needs_upcast ? builder.getOpBuilder().getF32Type() : grad_elem_type;
+  mlir::Type i64_type = builder.getOpBuilder().getI64Type();
+  mlir::MlirOp acc_grad = grad;
+  if (needs_upcast) {
+    TT_ASSIGN_OR_RETURN(acc_grad, PromoteFloatDtype(acc_grad));
+  }
+  mlir::MlirOp flattened_indices = indices;
+  if (GetTensorTypeOrDie(indices).getRank() != 1) {
+    flattened_indices = Flatten(indices);
+  }
+  const int64_t num_indices =
+      GetTensorTypeOrDie(flattened_indices).getDimSize(0);
+  if (num_indices == 0) {
+    return mlir::stablehlo::Constant(
+        builder, mlir::DenseElementsAttr::get(
+                     mlir::RankedTensorType::get({0, emb_dim}, grad_elem_type),
+                     builder.getOpBuilder().getZeroAttr(grad_elem_type)));
+  }
+  mlir::MlirOp active_offset2bag = offset2bag;
+  if (GetTensorTypeOrDie(offset2bag).getDimSize(0) == 0) {
+    TT_ASSIGN_OR_RETURN(active_offset2bag,
+                        BuildOffset2Bag(builder, flattened_indices, offsets,
+                                        i64_type, batch_size));
+  }
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp index_grad,
+      BuildEmbeddingGather(builder, acc_grad, active_offset2bag));
+  if (static_cast<EmbeddingBagMode>(mode) == EmbeddingBagMode::kMean) {
+    auto zeros_float = MakeScalarConstant(builder, 0.0, acc_elem_type);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp active_bag_size,
+                        ResolveMeanBagSize(builder, bag_size, active_offset2bag,
+                                           flattened_indices, batch_size,
+                                           num_indices, padding_idx, i64_type));
+    TT_ASSIGN_OR_RETURN(
+        index_grad,
+        BuildMeanBagBackward(builder, index_grad, active_bag_size,
+                             active_offset2bag, zeros_float, acc_elem_type));
+  }
+  TT_ASSIGN_OR_RETURN(
+      index_grad,
+      ApplyPerSampleWeights(index_grad, per_sample_weights, needs_upcast));
+  if (needs_upcast) {
+    index_grad =
+        mlir::stablehlo::ConvertElementType(index_grad, grad_elem_type);
+  }
+  return index_grad;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildEmbeddingDenseBackwardShlo(
@@ -815,6 +975,101 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingRenormShlo(mlir::MlirOp weight,
   TT_ASSIGN_OR_RETURN(
       auto rs, BuildEmbeddingGather(weight.getBuilder(), weight, indices));
   return BuildRenormRow(weight.getBuilder(), rs, max_norm, norm_type);
+}
+
+namespace {
+
+void BuildSparseMaskDescIotaAscComparator(mlir::RegionBuilder& rb) {
+  auto& b = rb.getOpBuilder();
+  const mlir::Location loc = rb.getRegion().getLoc();
+  mlir::Block* block = rb.getRegion().empty() ? b.createBlock(&rb.getRegion())
+                                              : &rb.getRegion().front();
+  const mlir::RankedTensorType scalar_i1 =
+      mlir::RankedTensorType::get({}, b.getI1Type());
+  const mlir::RankedTensorType scalar_i64 =
+      mlir::RankedTensorType::get({}, b.getI64Type());
+  block->addArguments({scalar_i1, scalar_i1, scalar_i64, scalar_i64},
+                      {loc, loc, loc, loc});
+  const mlir::Value lhs_mask = block->getArgument(0);
+  const mlir::Value rhs_mask = block->getArgument(1);
+  const mlir::Value lhs_iota = block->getArgument(2);
+  const mlir::Value rhs_iota = block->getArgument(3);
+
+  const mlir::Value gt_mask = mlir::stablehlo::CompareOp::create(
+      b, loc, lhs_mask, rhs_mask, mlir::stablehlo::ComparisonDirection::GT,
+      mlir::stablehlo::ComparisonType::UNSIGNED);
+  const mlir::Value eq_mask = mlir::stablehlo::CompareOp::create(
+      b, loc, lhs_mask, rhs_mask, mlir::stablehlo::ComparisonDirection::EQ,
+      mlir::stablehlo::ComparisonType::UNSIGNED);
+  const mlir::Value lt_iota = mlir::stablehlo::CompareOp::create(
+      b, loc, lhs_iota, rhs_iota, mlir::stablehlo::ComparisonDirection::LT,
+      mlir::stablehlo::ComparisonType::SIGNED);
+  const mlir::Value res =
+      mlir::stablehlo::SelectOp::create(b, loc, eq_mask, lt_iota, gt_mask);
+  mlir::stablehlo::ReturnOp::create(b, loc, res);
+}
+
+}  // namespace
+
+absl::StatusOr<std::array<mlir::MlirOp, 2>>
+BuildEmbeddingSparseBackwardNoPadShlo(mlir::MlirOp grad_output,
+                                      mlir::MlirOp indices) {
+  const int64_t total_indices = GetTensorTypeOrDie(indices).getNumElements();
+  const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_output);
+  const int64_t num_features = grad_type.getDimSize(grad_type.getRank() - 1);
+  mlir::MlirOp index_2d = mlir::stablehlo::Reshape(indices, {1, total_indices});
+  TT_ASSIGN_OR_RETURN(index_2d, CastIfNeeded(index_2d, mlir::ElementType::I64));
+  mlir::MlirOp values_2d =
+      mlir::stablehlo::Reshape(grad_output, {total_indices, num_features});
+  return std::array<mlir::MlirOp, 2>{index_2d, values_2d};
+}
+
+absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildEmbeddingSparseBackwardPadShlo(
+    mlir::MlirOp grad_output, mlir::MlirOp indices, const int64_t padding_idx) {
+  auto& builder = grad_output.getBuilder();
+  const int64_t total_indices = GetTensorTypeOrDie(indices).getNumElements();
+  const mlir::RankedTensorType grad_type = GetTensorTypeOrDie(grad_output);
+  const int64_t num_features = grad_type.getDimSize(grad_type.getRank() - 1);
+
+  mlir::MlirOp flat_indices =
+      mlir::stablehlo::Reshape(indices, {total_indices});
+  TT_ASSIGN_OR_RETURN(flat_indices,
+                      CastIfNeeded(flat_indices, mlir::ElementType::I64));
+  mlir::MlirOp flat_grad =
+      mlir::stablehlo::Reshape(grad_output, {total_indices, num_features});
+
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp pad_cst,
+                      MakeConstant(builder, at::Scalar(padding_idx),
+                                   mlir::ElementType::I64, {total_indices}));
+  mlir::MlirOp mask = mlir::stablehlo::Compare(
+      flat_indices, pad_cst, mlir::stablehlo::ComparisonDirection::NE);
+
+  const auto i64_type = builder.getOpBuilder().getI64Type();
+  mlir::MlirOp mask_i64 = mlir::stablehlo::ConvertElementType(mask, i64_type);
+  mlir::MlirOp zero_i64 = MakeScalarConstant(builder, 0, i64_type);
+  mlir::MlirOp count_op = mlir::stablehlo::Reduce(
+      builder, {mask_i64}, {zero_i64},
+      [](mlir::RegionBuilder& rb) {
+        auto& b = rb.getOpBuilder();
+        mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+            b.getI64Type(), rb.getRegion(), b);
+      },
+      {0})[0];
+
+  const auto iota_type =
+      mlir::makeTensorType(builder.getContext(), {total_indices}, i64_type);
+  mlir::MlirOp iota = mlir::stablehlo::Iota(builder, iota_type, 0);
+  const auto sorted = mlir::stablehlo::Sort(
+      builder, {mask, iota}, BuildSparseMaskDescIotaAscComparator,
+      /*dimension=*/0, /*is_stable=*/false);
+  mlir::MlirOp compacted_indices_1d =
+      BuildIndexSelectShlo(flat_indices, /*dim=*/0, sorted[1]);
+  mlir::MlirOp compacted_indices_2d =
+      mlir::stablehlo::Reshape(compacted_indices_1d, {1, total_indices});
+  mlir::MlirOp compacted_values =
+      BuildIndexSelectShlo(flat_grad, /*dim=*/0, sorted[1]);
+  return std::array<mlir::MlirOp, 3>{compacted_indices_2d, compacted_values,
+                                     count_op};
 }
 
 }  // namespace torch_tpu

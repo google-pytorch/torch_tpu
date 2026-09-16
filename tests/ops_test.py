@@ -2326,10 +2326,6 @@ class TestOps(op_testing.OpInfoTestBase):
                 torch.float4_e2m1fn_x2,
             ),
         },
-        # TODO: add support for sparse embeddings.
-        skip_if=lambda device, variant, op_input: op_input.kwargs.get(
-            "sparse", False
-        ),
     )
 
   # TODO(b/529376045): Scan HLO lowering failing on GitHub

@@ -6156,6 +6156,299 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(run_scalar)
 
+  @parameterized.named_parameters(
+      ("float32", torch.float32),
+      ("bfloat16", torch.bfloat16),
+      ("float16", torch.float16),
+  )
+  def test_embedding_sparse(self, dtype):
+    """Tests aten.embedding and aten.embedding.out with sparse=True."""
+    vocab_size = 16
+    embedding_dim = 8
+    # Include repeated indices and padding_idx=2 to test uncoalesced sparse
+    # gradients and padding masking.
+    indices = torch.tensor([[1, 2, 5, 1], [5, 0, 2, 5]], dtype=torch.long)
+    weight = torch.randn(vocab_size, embedding_dim, dtype=dtype)
+    grad_out = torch.randn(2, 4, embedding_dim, dtype=dtype)
+    tol = 2e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-5
+
+    # 1. Forward and backward with padding_idx and repeated indices
+    def run_sparse_fwd_bwd(device):
+      w = to(weight.clone(), device=device).requires_grad_(True)
+      idx = to(indices, device=device)
+      go = to(grad_out, device=device)
+      out = torch.nn.functional.embedding(idx, w, padding_idx=2, sparse=True)
+      out.backward(go)
+      self.assertTrue(w.grad.is_sparse)
+      self.assertEqual(w.grad.layout, torch.sparse_coo)
+      # Verify both to_dense() and coalesce() work on the sparse gradient
+      dense_from_to_dense = w.grad.to_dense()
+      dense_from_coalesce = w.grad.coalesce().to_dense()
+      self.assertEqual(
+          dense_from_to_dense, dense_from_coalesce, atol=tol, rtol=tol
+      )
+      return out, dense_from_to_dense
+
+    tol_opt = 2e-2 if dtype in (torch.bfloat16, torch.float16) else None
+    self.assert_close_tpu_vs_cpu(run_sparse_fwd_bwd, atol=tol_opt, rtol=tol_opt)
+
+    # 2. Multiple backward passes (sparse + sparse gradient accumulation)
+    # and dense parameter update (dense + sparse add_ / sub_)
+    def run_accum_and_step(device):
+      # PyTorch CPU does not implement cadd_sparse for Half (float16), so
+      # compute the CPU reference in float32 and cast back to float16.
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      w = (
+          to(weight.clone(), device=device)
+          .to(compute_dtype)
+          .requires_grad_(True)
+      )
+      idx = to(indices, device=device)
+      go1 = to(grad_out, device=device).to(compute_dtype)
+      go2 = to(grad_out * 0.5, device=device).to(compute_dtype)
+      out1 = torch.nn.functional.embedding(idx, w, padding_idx=2, sparse=True)
+      out1.backward(go1)
+      out2 = torch.nn.functional.embedding(idx, w, padding_idx=2, sparse=True)
+      out2.backward(go2)
+      self.assertTrue(w.grad.is_sparse)
+      grad_dense = w.grad.to_dense()
+      # Simulate optimizer step: dense.add_(sparse, alpha=-lr)
+      with torch.no_grad():
+        w.add_(w.grad, alpha=-0.1)
+      return grad_dense.to(dtype), w.detach().to(dtype)
+
+    self.assert_close_tpu_vs_cpu(run_accum_and_step, atol=tol_opt, rtol=tol_opt)
+
+    # 3. aten.embedding.out with sparse=True
+    def run_sparse_out(device):
+      w = to(weight, device=device)
+      idx = to(indices, device=device)
+      out = torch.empty(2, 4, embedding_dim, dtype=dtype, device=device)
+      res = torch.ops.aten.embedding.out(
+          w, idx, padding_idx=2, sparse=True, out=out
+      )
+      self.assertIs(res, out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(run_sparse_out)
+
+    # 4. End-to-end nn.Embedding(sparse=True) with torch.optim.SGD
+    def run_sgd_steps(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      emb = torch.nn.Embedding(
+          vocab_size,
+          embedding_dim,
+          padding_idx=2,
+          sparse=True,
+          device=device,
+          dtype=compute_dtype,
+      )
+      with torch.no_grad():
+        emb.weight.copy_(to(weight, device=device).to(compute_dtype))
+      opt = torch.optim.SGD(emb.parameters(), lr=0.1)
+      idx = to(indices, device=device)
+      go1 = to(grad_out, device=device).to(compute_dtype)
+      go2 = to(grad_out * 0.5, device=device).to(compute_dtype)
+
+      opt.zero_grad()
+      out1 = emb(idx)
+      out1.backward(go1)
+      opt.step()
+
+      opt.zero_grad()
+      out2 = emb(idx)
+      out2.backward(go2)
+      opt.step()
+      return emb.weight.detach().to(dtype)
+
+    self.assert_close_tpu_vs_cpu(run_sgd_steps, atol=tol_opt, rtol=tol_opt)
+
+  @parameterized.parameters(torch.float32, torch.bfloat16, torch.float16)
+  def test_embedding_bag_sparse(self, dtype):
+    """Tests nn.EmbeddingBag and aten._embedding_bag_backward with sparse=True."""
+    vocab_size = 12
+    embedding_dim = 4
+    weight = torch.randn(vocab_size, embedding_dim, dtype=dtype)
+    indices = torch.tensor([1, 2, 4, 2, 5, 1, 0, 2], dtype=torch.long)
+    offsets = torch.tensor([0, 3, 5], dtype=torch.long)
+    per_sample_weights = torch.tensor(
+        [0.5, 1.5, 2.0, 0.8, 1.2, 0.3, 1.0, 0.7], dtype=dtype
+    )
+    grad_out = torch.randn(3, embedding_dim, dtype=dtype)
+    tol = 1e-2 if dtype in (torch.bfloat16, torch.float16) else 1e-5
+
+    # 1. Forward + backward for mode='sum' (with/without padding_idx and per_sample_weights)
+    for mode, psw in [
+        ("sum", None),
+        ("sum", per_sample_weights),
+        ("mean", None),
+    ]:
+      for pad_idx in [None, 2]:
+
+        def run_bag_sparse(device, mode=mode, psw=psw, pad_idx=pad_idx):
+          is_cpu_fp16 = (
+              torch.device(device).type == "cpu" and dtype == torch.float16
+          )
+          compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+          w = (
+              to(weight, device=device)
+              .to(compute_dtype)
+              .detach()
+              .requires_grad_(True)
+          )
+          idx = to(indices, device=device)
+          off = to(offsets, device=device)
+          psw_dev = (
+              to(psw, device=device).to(compute_dtype)
+              if psw is not None
+              else None
+          )
+          go = to(grad_out, device=device).to(compute_dtype)
+          out = torch.nn.functional.embedding_bag(
+              idx,
+              w,
+              off,
+              mode=mode,
+              sparse=True,
+              per_sample_weights=psw_dev,
+              padding_idx=pad_idx,
+          )
+          out.backward(go)
+          self.assertIsNotNone(w.grad)
+          self.assertTrue(w.grad.is_sparse)
+          return out.to(dtype), w.grad.to_dense().to(dtype)
+
+        self.assert_close_tpu_vs_cpu(run_bag_sparse, atol=tol, rtol=tol)
+
+    # 2. End-to-end nn.EmbeddingBag(sparse=True) multi-step SGD optimization
+    def run_bag_sgd_steps(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      bag = torch.nn.EmbeddingBag(
+          vocab_size,
+          embedding_dim,
+          mode="sum",
+          padding_idx=2,
+          sparse=True,
+          device=device,
+          dtype=compute_dtype,
+      )
+      with torch.no_grad():
+        bag.weight.copy_(to(weight, device=device).to(compute_dtype))
+      opt = torch.optim.SGD(bag.parameters(), lr=0.1)
+      idx = to(indices, device=device)
+      off = to(offsets, device=device)
+      go1 = to(grad_out, device=device).to(compute_dtype)
+      go2 = to(grad_out * 0.5, device=device).to(compute_dtype)
+
+      opt.zero_grad()
+      out1 = bag(idx, off)
+      out1.backward(go1)
+      self.assertTrue(bag.weight.grad.is_sparse)
+      opt.step()
+
+      opt.zero_grad()
+      out2 = bag(idx, off)
+      out2.backward(go2)
+      self.assertTrue(bag.weight.grad.is_sparse)
+      opt.step()
+      return bag.weight.detach().to(dtype)
+
+    self.assert_close_tpu_vs_cpu(run_bag_sgd_steps, atol=tol, rtol=tol)
+
+    # 3. Direct aten._embedding_bag_backward with empty offset2bag / empty indices
+    def run_direct_sparse_bwd(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      go = to(grad_out, device=device).to(compute_dtype)
+      idx = to(indices, device=device)
+      off = to(offsets, device=device)
+      empty_long = torch.empty(0, dtype=torch.long, device=device)
+      bwd_auto_offset2bag = torch.ops.aten._embedding_bag_backward(
+          go,
+          idx,
+          off,
+          empty_long,
+          empty_long,
+          empty_long,
+          vocab_size,
+          False,
+          0,
+          True,
+          None,
+          2,
+      )
+      self.assertTrue(bwd_auto_offset2bag.is_sparse)
+      go_empty = torch.zeros(
+          1, embedding_dim, device=device, dtype=compute_dtype
+      )
+      off_empty = torch.tensor([0], dtype=torch.long, device=device)
+      bwd_empty = torch.ops.aten._embedding_bag_backward(
+          go_empty,
+          empty_long,
+          off_empty,
+          empty_long,
+          empty_long,
+          empty_long,
+          vocab_size,
+          False,
+          0,
+          True,
+          None,
+          -1,
+      )
+      self.assertTrue(bwd_empty.is_sparse)
+      return (
+          bwd_auto_offset2bag.to_dense().to(dtype),
+          bwd_empty.to_dense().to(dtype),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_direct_sparse_bwd, atol=tol, rtol=tol)
+
+    # 5. Edge case: all indices equal to padding_idx (produces nnz=0 gradient)
+    def run_all_padding_indices(device):
+      is_cpu_fp16 = (
+          torch.device(device).type == "cpu" and dtype == torch.float16
+      )
+      compute_dtype = torch.float32 if is_cpu_fp16 else dtype
+      w = (
+          to(weight.clone(), device=device)
+          .to(compute_dtype)
+          .requires_grad_(True)
+      )
+      pad_idx = torch.full((2, 3), 2, dtype=torch.long, device=device)
+      go_pad = to(
+          torch.randn(2, 3, embedding_dim, dtype=dtype), device=device
+      ).to(compute_dtype)
+      out = torch.nn.functional.embedding(
+          pad_idx, w, padding_idx=2, sparse=True
+      )
+      out.backward(go_pad)
+      self.assertTrue(w.grad.is_sparse)
+      self.assertEqual(w.grad._nnz(), 0)
+      dense_grad = w.grad.to_dense()
+      coalesced_grad = w.grad.coalesce().to_dense()
+      with torch.no_grad():
+        w.add_(w.grad, alpha=-0.1)
+      return (
+          out.to(dtype),
+          dense_grad.to(dtype),
+          coalesced_grad.to(dtype),
+          w.detach().to(dtype),
+      )
+
+    self.assert_close_tpu_vs_cpu(run_all_padding_indices)
+
   def test_sparse_coo_tensor_creation_and_metadata(self):
     """Tests creation, metadata inspection, copy, clone, zero_, and device/dtype conversions for SparsePrivateUse1 COO tensors."""
     indices_cpu = torch.tensor([[0, 2, 1], [1, 0, 2]], dtype=torch.long)

@@ -25,9 +25,11 @@
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
+#include "ATen/ops/empty.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
+#include "c10/core/TensorOptions.h"
 #include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
@@ -40,13 +42,18 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/ops/copy_from/tpu_to_cpu.h"
 #include "csrc/ops/embedding/embedding.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "csrc/ops/sparse_coo/sparse_coo.h"
+#include "csrc/ops/sparse_coo/sparse_coo_aten_kernels.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
+#include "torch/headeronly/core/DeviceType.h"
+#include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
 namespace {
@@ -67,7 +74,7 @@ absl::Status ValidateStaticShape(const at::Tensor& tensor,
 }
 
 absl::Status ValidateEmbeddingArgs(const at::Tensor& weight,
-                                   const at::Tensor& indices, bool sparse) {
+                                   const at::Tensor& indices) {
   TT_RET_CHECK(weight.dim() == 2, error::kInvalidArgument)
       << "expected weight to be 2-D, got " << ToString(weight.sizes());
   TT_RET_CHECK(
@@ -75,8 +82,6 @@ absl::Status ValidateEmbeddingArgs(const at::Tensor& weight,
       error::kInvalidArgument)
       << "expected indices to be int64 or int32, got "
       << ToString(indices.scalar_type());
-  TT_RET_CHECK(!sparse, error::kPythonNotImplementedError)
-      << "sparse is not yet supported";
   TT_RETURN_IF_ERROR(ValidateStaticShape(weight, "weight"));
   TT_RETURN_IF_ERROR(ValidateStaticShape(indices, "indices"));
   return absl::OkStatus();
@@ -108,6 +113,144 @@ absl::StatusOr<DeviceBufferRef> BuildAndDispatchEmbedding(
                            .op_param_cache_keys = std::move(pk)});
 }
 
+absl::StatusOr<int64_t> ExtractValidCount(const at::Tensor& count_tensor) {
+  at::Tensor count_cpu = at::empty(
+      {}, at::TensorOptions().dtype(c10::ScalarType::Long).device(at::kCPU));
+  TT_RETURN_IF_ERROR(
+      CopyTpuToCpu(count_tensor, count_cpu, /*non_blocking=*/false));
+  return count_cpu.item<int64_t>();
+}
+
+at::Tensor MakeEmptySparseEmbeddingGrad(const at::Tensor& grad,
+                                        const int64_t num_weights,
+                                        const int64_t num_features) {
+  TT_ASSIGN_OR_THROW(
+      at::Tensor empty_indices,
+      MakeEmptyTensor({1, 0}, c10::ScalarType::Long, grad.device()));
+  TT_ASSIGN_OR_THROW(
+      at::Tensor empty_values,
+      MakeEmptyTensor({0, num_features}, grad.scalar_type(), grad.device()));
+  return MakeSparseCooTensor(/*sparse_dim=*/1, /*dense_dim=*/1,
+                             {num_weights, num_features}, empty_indices,
+                             empty_values, /*is_coalesced=*/true);
+}
+
+absl::Status ValidateEmbeddingBagSparseBackwardArgs(const at::Tensor& indices,
+                                                    bool scale_grad_by_freq,
+                                                    int64_t mode,
+                                                    bool has_psw) {
+  TT_RET_CHECK(!scale_grad_by_freq, error::kInvalidArgument)
+      << "scale_grad_by_freq not supported with sparse gradients";
+  TT_RET_CHECK(
+      indices.scalar_type() == at::kLong || indices.scalar_type() == at::kInt,
+      error::kInvalidArgument)
+      << "expected indices to be int64 or int32, got "
+      << ToString(indices.scalar_type());
+  TT_RET_CHECK(mode == static_cast<int64_t>(EmbeddingBagMode::kSum) ||
+                   mode == static_cast<int64_t>(EmbeddingBagMode::kMean),
+               error::kInvalidArgument)
+      << "expected mode to be sum (0) or mean (1) for sparse "
+         "embedding_bag_backward, got "
+      << mode;
+  if (has_psw) {
+    TT_RET_CHECK(mode == static_cast<int64_t>(EmbeddingBagMode::kSum),
+                 error::kInvalidArgument)
+        << "per_sample_weights only supported for mode='sum'";
+  }
+  return absl::OkStatus();
+}
+
+at::Tensor DispatchEmbeddingSparseBackward(const at::Tensor& grad,
+                                           const at::Tensor& indices,
+                                           const int64_t num_weights,
+                                           const int64_t padding_idx,
+                                           const bool scale_grad_by_freq,
+                                           OpParamCacheKeys&& pk) {
+  const int64_t num_features = grad.size(-1);
+  const int64_t total_indices = indices.numel();
+  if (total_indices == 0 || grad.numel() == 0) {
+    return MakeEmptySparseEmbeddingGrad(grad, num_weights, num_features);
+  }
+
+  TT_ASSIGN_OR_THROW(const auto val_dtype,
+                     ConvertTo<mlir::ElementType>(grad.scalar_type()));
+  TT_ASSIGN_OR_THROW(const auto i64_dtype,
+                     ConvertTo<mlir::ElementType>(at::kLong));
+  const Dimensions ind_dims = {1, total_indices};
+  const Dimensions val_dims = {total_indices, num_features};
+
+  if (padding_idx < 0) {
+    const std::array<mlir::ElementType, 2> out_dtypes = {i64_dtype, val_dtype};
+    const std::array<absl::Span<const int64_t>, 2> out_dims_list = {ind_dims,
+                                                                    val_dims};
+    const auto builder_fn = [](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+      return BuildEmbeddingSparseBackwardNoPadShlo(inputs[0], inputs[1]);
+    };
+    TT_ASSIGN_OR_THROW(
+        auto results,
+        (DispatchOp<2, 2>(builder_fn, {grad, indices},
+                          {.out_dtypes = out_dtypes,
+                           .out_dims_list = out_dims_list,
+                           .op_param_cache_keys = std::move(pk)})));
+    return MakeSparseCooTensor(
+        /*sparse_dim=*/1, /*dense_dim=*/1, {num_weights, num_features},
+        MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1])),
+        /*is_coalesced=*/false);
+  }
+
+  const Dimensions count_dims = {};
+  const std::array<mlir::ElementType, 3> out_dtypes = {i64_dtype, val_dtype,
+                                                       i64_dtype};
+  const std::array<absl::Span<const int64_t>, 3> out_dims_list = {
+      ind_dims, val_dims, count_dims};
+  const auto pad_builder_fn =
+      [padding_idx](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+        return BuildEmbeddingSparseBackwardPadShlo(inputs[0], inputs[1],
+                                                   padding_idx);
+      };
+  TT_ASSIGN_OR_THROW(
+      auto pad_results,
+      (DispatchOp<2, 3>(pad_builder_fn, {grad, indices},
+                        {.out_dtypes = out_dtypes,
+                         .out_dims_list = out_dims_list,
+                         .op_param_cache_keys = std::move(pk)})));
+  const at::Tensor compacted_indices = MakeTensor(std::move(pad_results[0]));
+  const at::Tensor compacted_values = MakeTensor(std::move(pad_results[1]));
+  const at::Tensor count_tensor = MakeTensor(std::move(pad_results[2]));
+  TT_ASSIGN_OR_THROW(const int64_t valid_count,
+                     ExtractValidCount(count_tensor));
+  if (valid_count == 0) {
+    return MakeEmptySparseEmbeddingGrad(grad, num_weights, num_features);
+  }
+  if (valid_count == total_indices) {
+    return MakeSparseCooTensor(/*sparse_dim=*/1, /*dense_dim=*/1,
+                               {num_weights, num_features}, compacted_indices,
+                               compacted_values, /*is_coalesced=*/false);
+  }
+
+  const Dimensions sliced_ind_dims = {1, valid_count};
+  const Dimensions sliced_val_dims = {valid_count, num_features};
+  const std::array<mlir::ElementType, 2> slice_dtypes = {i64_dtype, val_dtype};
+  const std::array<absl::Span<const int64_t>, 2> slice_dims_list = {
+      sliced_ind_dims, sliced_val_dims};
+  TT_ASSIGN_OR_THROW(auto slice_pk, TT_MAKE_OP_PARAM_CACHE_KEYS(valid_count));
+  const auto slice_builder_fn =
+      [valid_count](FixedSizeSpan<mlir::MlirOp, 2> inputs) {
+        return BuildSliceCoalescedShlo(inputs[0], inputs[1], valid_count);
+      };
+  TT_ASSIGN_OR_THROW(
+      auto slice_results,
+      (DispatchOp<2, 2>(slice_builder_fn, {compacted_indices, compacted_values},
+                        {.out_dtypes = slice_dtypes,
+                         .out_dims_list = slice_dims_list,
+                         .op_param_cache_keys = std::move(slice_pk)})));
+  return MakeSparseCooTensor(/*sparse_dim=*/1, /*dense_dim=*/1,
+                             {num_weights, num_features},
+                             MakeTensor(std::move(slice_results[0])),
+                             MakeTensor(std::move(slice_results[1])),
+                             /*is_coalesced=*/false);
+}
+
 }  // namespace
 
 // Note: `padding_idx`, `scale_grad_by_freq`, and `sparse` are wrapped in
@@ -133,7 +276,7 @@ at::Tensor AtenEmbedding(const at::Tensor& weight, const at::Tensor& indices,
        IgnoreInCacheKey(scale_grad_by_freq, "Unused in forward"),
        IgnoreInCacheKey(sparse, "Unused in forward")),
       {
-        TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices, sparse));
+        TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices));
         Dimensions out_dims = GetEmbeddingOutputDims(weight, indices);
         TT_ASSIGN_OR_THROW(auto result,
                            BuildAndDispatchEmbedding(weight, indices, out_dims,
@@ -152,7 +295,7 @@ at::Tensor& AtenEmbeddingOut(const at::Tensor& weight,
        IgnoreInCacheKey(scale_grad_by_freq, "Unused in forward"),
        IgnoreInCacheKey(sparse, "Unused in forward"), out),
       {
-        TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices, sparse));
+        TT_THROW_IF_ERROR(ValidateEmbeddingArgs(weight, indices));
         TT_CHECK_THROW(out.scalar_type() == weight.scalar_type(),
                        error::kInvalidArgument)
             << "expected out tensor to have dtype "
@@ -271,6 +414,41 @@ at::Tensor AtenEmbeddingBagBackward(
             per_sample_weights.has_value() && per_sample_weights->defined();
         int64_t nw_val = num_weights.expect_int();
 
+        if (sparse) {
+          TT_THROW_IF_ERROR(ValidateEmbeddingBagSparseBackwardArgs(
+              indices, scale_grad_by_freq, mode, has_psw));
+          if (indices.numel() == 0 || grad.numel() == 0) {
+            return MakeEmptySparseEmbeddingGrad(grad, nw_val, grad.size(-1));
+          }
+          auto index_grad_builder_fn = [mode, padding_idx, has_psw](
+                                           absl::Span<mlir::MlirOp> inputs,
+                                           mlir::MlirBuilder& builder) {
+            std::optional<mlir::MlirOp> psw;
+            if (has_psw) psw = inputs[5];
+            return BuildEmbeddingBagSparseBackwardIndexGradShlo(
+                inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], mode,
+                psw, padding_idx);
+          };
+          std::vector<at::Tensor> inputs = {grad, indices, offsets, offset2bag,
+                                            bag_size};
+          if (has_psw) inputs.push_back(*per_sample_weights);
+          TT_ASSIGN_OR_THROW(auto result_dtype,
+                             ConvertTo<mlir::ElementType>(grad.scalar_type()));
+          TT_ASSIGN_OR_THROW(auto index_grad_buf,
+                             (DispatchOp<kDynamicSize, 1>(
+                                 index_grad_builder_fn, inputs,
+                                 {.out_dtype = result_dtype,
+                                  .out_dims = {indices.numel(), grad.size(-1)},
+                                  .op_param_cache_keys = std::move(pk)})));
+          at::Tensor index_grad = MakeTensor(std::move(index_grad_buf));
+          TT_ASSIGN_OR_THROW(auto sparse_pk,
+                             TT_MAKE_OP_PARAM_CACHE_KEYS(nw_val, padding_idx,
+                                                         scale_grad_by_freq));
+          return DispatchEmbeddingSparseBackward(
+              index_grad, indices, nw_val, padding_idx, scale_grad_by_freq,
+              std::move(sparse_pk));
+        }
+
         auto builder_fn =
             [nw_val, scale_grad_by_freq, mode, sparse, padding_idx, has_psw](
                 absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
@@ -363,6 +541,41 @@ at::Tensor& AtenEmbeddingRenorm_(at::Tensor& self, const at::Tensor& indices,
         self.index_put_({indices}, MakeTensor(std::move(renorm_rows)));
         return self;
       });
+}
+
+at::Tensor AtenEmbeddingSparseBackward(const at::Tensor& grad,
+                                       const at::Tensor& indices,
+                                       const int64_t num_weights,
+                                       const int64_t padding_idx,
+                                       const bool scale_grad_by_freq) {
+  TT_KERNEL(OpName::kEmbeddingSparseBackward, pk,
+            (grad, indices, num_weights, padding_idx, scale_grad_by_freq), {
+              TT_CHECK_THROW(!scale_grad_by_freq, error::kInvalidArgument)
+                  << "scale_grad_by_freq not supported with sparse gradients";
+              TT_CHECK_THROW(indices.scalar_type() == at::kLong ||
+                                 indices.scalar_type() == at::kInt,
+                             error::kInvalidArgument)
+                  << "expected indices to be int64 or int32, got "
+                  << ToString(indices.scalar_type());
+              return DispatchEmbeddingSparseBackward(
+                  grad, indices, num_weights, padding_idx, scale_grad_by_freq,
+                  std::move(pk));
+            });
+}
+
+at::Tensor AtenEmbeddingBackward(const at::Tensor& grad,
+                                 const at::Tensor& indices,
+                                 const at::SymInt num_weights,
+                                 const at::SymInt padding_idx,
+                                 const bool scale_grad_by_freq,
+                                 const bool sparse) {
+  if (sparse) {
+    return AtenEmbeddingSparseBackward(grad, indices, num_weights.expect_int(),
+                                       padding_idx.expect_int(),
+                                       scale_grad_by_freq);
+  }
+  return AtenEmbeddingDenseBackward(grad, indices, num_weights, padding_idx,
+                                    scale_grad_by_freq);
 }
 
 }  // namespace torch_tpu

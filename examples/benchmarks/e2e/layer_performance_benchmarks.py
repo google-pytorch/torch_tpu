@@ -39,6 +39,8 @@ _LAYERNORM_LAYER_BENCHMARK_NAME = "layernorm"
 _CONV2D_LAYER_BENCHMARK_NAME = "conv2d"
 _RMSNORM_LAYER_BENCHMARK_NAME = "rmsnorm"
 _EMBEDDING_LAYER_BENCHMARK_NAME = "embedding"
+_SPARSE_EMBEDDING_LAYER_BENCHMARK_NAME = "sparse_embedding"
+_SPARSE_EMBEDDING_BAG_LAYER_BENCHMARK_NAME = "sparse_embedding_bag"
 _DROPOUT_LAYER_BENCHMARK_NAME = "dropout"
 _TANH_LAYER_BENCHMARK_NAME = "tanh"
 _GELU_ACTIVATION_BENCHMARK_NAME = "gelu_activation"
@@ -397,6 +399,70 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
     microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
     self.run_performance_benchmark_test(
         config, _EMBEDDING_LAYER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.SPARSE_EMBEDDING_CONFIGS
+      )
+  )
+  def test_sparse_embedding(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nn.Embedding",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "num_embeddings": layer_config.num_embeddings,
+                "embedding_dim": layer_config.embedding_dim,
+                "sparse": True,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _SPARSE_EMBEDDING_LAYER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES,
+          (True, False),
+          layer_configs.SPARSE_EMBEDDING_BAG_CONFIGS,
+      )
+  )
+  def test_sparse_embedding_bag(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="nn.EmbeddingBag",
+            batch_size=layer_config.batch_size,
+            sequence_length=layer_config.seq_len,
+            custom_kwargs={
+                "num_embeddings": layer_config.num_embeddings,
+                "embedding_dim": layer_config.embedding_dim,
+                "sparse": True,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _SPARSE_EMBEDDING_BAG_LAYER_BENCHMARK_NAME, microbenchmark_name
     )
 
   @parameterized.named_parameters(

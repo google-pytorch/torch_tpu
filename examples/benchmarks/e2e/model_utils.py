@@ -838,19 +838,22 @@ def ml_layer_model_builder(
   elif model_name == "nn.Embedding":
     num_embeddings = kwargs["num_embeddings"]
     embedding_dim = kwargs["embedding_dim"]
+    sparse = kwargs.get("sparse", False)
 
     class EmbeddingModel(torch.nn.Module):
 
-      def __init__(self, num_embeddings, embedding_dim, dtype):
+      def __init__(self, num_embeddings, embedding_dim, sparse, dtype):
         super().__init__()
         self.embedding = torch.nn.Embedding(
-            num_embeddings, embedding_dim, dtype=dtype
+            num_embeddings, embedding_dim, sparse=sparse, dtype=dtype
         )
 
       def forward(self, x):
         return self.embedding(x)
 
-    model = EmbeddingModel(num_embeddings, embedding_dim, dtype=weights_dtype)
+    model = EmbeddingModel(
+        num_embeddings, embedding_dim, sparse=sparse, dtype=weights_dtype
+    )
     example_inputs = _generate_inputs(
         batch_size,
         sequence_length,
@@ -859,6 +862,45 @@ def ml_layer_model_builder(
             num_embeddings,
             (bs, seq),
             dtype=torch.int32,  # Using int32 as per the reference
+            device=device,
+        ),
+    )
+  elif model_name == "nn.EmbeddingBag":
+    num_embeddings = kwargs["num_embeddings"]
+    embedding_dim = kwargs["embedding_dim"]
+    mode = kwargs.get("mode", "sum")
+    sparse = kwargs.get("sparse", False)
+
+    class EmbeddingBagModel(torch.nn.Module):
+
+      def __init__(self, num_embeddings, embedding_dim, mode, sparse, dtype):
+        super().__init__()
+        self.embedding_bag = torch.nn.EmbeddingBag(
+            num_embeddings,
+            embedding_dim,
+            mode=mode,
+            sparse=sparse,
+            dtype=dtype,
+        )
+
+      def forward(self, x):
+        return self.embedding_bag(x)
+
+    model = EmbeddingBagModel(
+        num_embeddings,
+        embedding_dim,
+        mode=mode,
+        sparse=sparse,
+        dtype=weights_dtype,
+    )
+    example_inputs = _generate_inputs(
+        batch_size,
+        sequence_length,
+        lambda bs, seq: torch.randint(
+            0,
+            num_embeddings,
+            (bs, seq),
+            dtype=torch.int32,
             device=device,
         ),
     )

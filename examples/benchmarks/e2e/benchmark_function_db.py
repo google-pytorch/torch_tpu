@@ -260,6 +260,7 @@ def simple_train_factory() -> (
       optimizer: torch.optim.Optimizer | None = None,
   ) -> torch.Tensor:
     del optimizer  # Unused in simple training step
+    model.zero_grad(set_to_none=True)
     with _sdpa_kernel_if_not_cuda():
       if isinstance(inputs, tuple):
         y_pred = model(*inputs)

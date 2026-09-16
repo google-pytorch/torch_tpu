@@ -444,10 +444,13 @@ REGISTRATION_OVERRIDES = frozenset([
     # decomposition in order to workaround a bug in PyTorch core.
     'ctc_loss',
     'ctc_loss.Tensor',
-    # embedding and embedding.out are registered to provide a direct StableHLO
-    # Gather lowering on TPU, overriding the default PyTorch decomposition.
+    # embedding, embedding.out, embedding_backward, and embedding_sparse_backward
+    # are registered to provide direct StableHLO lowerings on TPU, overriding
+    # the default PyTorch decomposition.
     'embedding',
     'embedding.out',
+    'embedding_backward',
+    'embedding_sparse_backward',
     'gather',
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.

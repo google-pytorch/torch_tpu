@@ -1024,16 +1024,6 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       ):
         torch.ops.aten.embedding(weight, indices)
 
-    with self.subTest("sparse"):
-      weight = torch.ones(10, 4, device=et.device())
-      indices = torch.zeros(1, dtype=torch.int64, device=et.device())
-      with et.assert_raises_message(
-          NotImplementedError,
-          tpu="""embedding(): sparse is not yet supported""",
-          message_reviewed_by="wan",
-      ):
-        torch.ops.aten.embedding(weight, indices, -1, False, True)
-
     with self.subTest("out_dtype"):
       weight = torch.ones(10, 4, dtype=torch.float32, device=et.device())
       indices = torch.zeros(1, dtype=torch.int64, device=et.device())
@@ -3387,6 +3377,122 @@ module {
           message_reviewed_by="wan",
       ):
         sp_uncoalesced.values()
+
+    with self.subTest("embedding_sparse_backward_scale_grad_by_freq"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_sparse_backward(): scale_grad_by_freq not supported with sparse gradients""",
+          message_reviewed_by="wan",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(2, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            5,
+            -1,
+            True,
+        )
+
+    with self.subTest("embedding_sparse_backward_invalid_indices_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_sparse_backward(): expected indices to be int64 or int32, got float32""",
+          message_reviewed_by="wan",
+      ):
+        torch.ops.aten.embedding_sparse_backward(
+            torch.ones(2, 3, device="tpu"),
+            torch.tensor([0.0, 1.0], dtype=torch.float32, device="tpu"),
+            5,
+            -1,
+            False,
+        )
+
+    with self.subTest("embedding_bag_backward_sparse_scale_grad_by_freq"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_bag_backward(): scale_grad_by_freq not supported with sparse gradients""",
+          message_reviewed_by="wan",
+      ):
+        empty = torch.empty(0, dtype=torch.long, device="tpu")
+        torch.ops.aten._embedding_bag_backward(
+            torch.ones(1, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            torch.tensor([0], dtype=torch.long, device="tpu"),
+            empty,
+            empty,
+            empty,
+            5,
+            True,
+            0,
+            True,
+            None,
+            -1,
+        )
+
+    with self.subTest("embedding_bag_backward_sparse_invalid_indices_dtype"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_bag_backward(): expected indices to be int64 or int32, got float32""",
+          message_reviewed_by="wan",
+      ):
+        empty = torch.empty(0, dtype=torch.long, device="tpu")
+        torch.ops.aten._embedding_bag_backward(
+            torch.ones(1, 3, device="tpu"),
+            torch.tensor([0.0, 1.0], dtype=torch.float32, device="tpu"),
+            torch.tensor([0], dtype=torch.long, device="tpu"),
+            empty,
+            empty,
+            empty,
+            5,
+            False,
+            0,
+            True,
+            None,
+            -1,
+        )
+
+    with self.subTest("embedding_bag_backward_sparse_invalid_mode"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_bag_backward(): expected mode to be sum (0) or mean (1) for sparse embedding_bag_backward, got 2""",
+          message_reviewed_by="wan",
+      ):
+        empty = torch.empty(0, dtype=torch.long, device="tpu")
+        torch.ops.aten._embedding_bag_backward(
+            torch.ones(1, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            torch.tensor([0], dtype=torch.long, device="tpu"),
+            empty,
+            empty,
+            empty,
+            5,
+            False,
+            2,
+            True,
+            None,
+            -1,
+        )
+
+    with self.subTest("embedding_bag_backward_sparse_psw_invalid_mode"):
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu="""embedding_bag_backward(): per_sample_weights only supported for mode='sum'""",
+          message_reviewed_by="wan",
+      ):
+        empty = torch.empty(0, dtype=torch.long, device="tpu")
+        torch.ops.aten._embedding_bag_backward(
+            torch.ones(1, 3, device="tpu"),
+            torch.tensor([0, 1], dtype=torch.long, device="tpu"),
+            torch.tensor([0], dtype=torch.long, device="tpu"),
+            empty,
+            empty,
+            empty,
+            5,
+            False,
+            1,
+            True,
+            torch.ones(2, device="tpu"),
+            -1,
+        )
 
   @et.why_tpu_only("PReLU weight shape broadcastability check on TPU.")
   def test_prelu_kernel_weight_shape_not_broadcastable(self):
