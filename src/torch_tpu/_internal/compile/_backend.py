@@ -155,7 +155,7 @@ def _is_ao_op(node: torch.fx.Node, op_name: str) -> bool:
 
 
 def _is_view_node(node: torch.fx.Node) -> bool:
-  """Returns whether `node` is an aliasing view or container unpack operation."""
+  """Returns whether `node` is a view, container unpack, or `index_select`."""
   if node.op != "call_function":
     return False
 
@@ -171,7 +171,10 @@ def _is_view_node(node: torch.fx.Node) -> bool:
   is_unsafe_view = target_overload == getattr(
       torch.ops.aten, "_unsafe_view", None
   )
-  return is_unsafe_view
+  is_index_select = target_overload == getattr(
+      torch.ops.aten, "index_select", None
+  )
+  return is_unsafe_view or is_index_select
 
 
 def _extract_tensor_node(node: torch.fx.Node) -> torch.fx.Node | None:

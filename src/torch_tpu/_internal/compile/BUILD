@@ -120,6 +120,8 @@ torch_tpu_py_library(
     name = "scan",
     srcs = ["scan.py"],
     deps = [
+        ":compiler",
+        ":tpu_backend",
         ":tpu_torch_compile",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/export",

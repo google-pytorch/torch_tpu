@@ -16,11 +16,24 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import torch
 from torch._higher_order_ops import scan
+import torch.fx
 import torch.utils._pytree as pytree
+from torch_tpu._internal.compile import scan as tpu_scan
+from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
+
+try:
+  # Importing `offload_ops` registers the `ao.offload` and `ao.reload` custom
+  # ops that the offloaded scan bodies below are built from.
+  # pylint: disable=g-import-not-at-top
+  from torch._functorch._activation_offloading import offload_ops
+
+  _HAS_AO_OPS = offload_ops is not None
+except (ImportError, AttributeError):
+  _HAS_AO_OPS = False
 
 
 def _compile_and_run(fn, *args, **kwargs):
@@ -392,6 +405,149 @@ class ScanLoweringTest(seed_test_utils.RepeatableTest):
         hlo,
         msg="scan was unexpectedly unrolled: stablehlo.while not found",
     )
+
+
+def _offloaded_body(*, reload_slice=True):
+  """Builds a scan body that reads one row of a stack kept on the host.
+
+  Matches the shape produced by torchtitan's offload pass: the full stack is a
+  single body operand, and the body indexes one row out of it with the loop
+  counter. The reload therefore applies to the row, not to the operand.
+
+  Args:
+    reload_slice: Whether to copy the row back with `ao.reload`.
+  """
+  graph = torch.fx.Graph()
+  stack = graph.placeholder("stack")
+  row = graph.placeholder("row")
+  sliced = graph.call_function(
+      torch.ops.aten.index_select.default, (stack, 0, row)
+  )
+  out = sliced
+  if reload_slice:
+    out = graph.call_function(
+        torch.ops.ao.reload.default, (sliced, torch.device("cpu"), [4], [1])
+    )
+  graph.output((out,))
+  return torch.fx.GraphModule(torch.nn.Module(), graph)
+
+
+@absltest.skipIf(
+    not _HAS_AO_OPS,
+    "`torch._functorch._activation_offloading.offload_ops` is not available in "
+    "this PyTorch version",
+)
+class PinOffloadedBodyArgsTest(seed_test_utils.RepeatableTest):
+  """Tests which body operands get marked as host memory."""
+
+  def test_reloaded_operand_is_pinned_to_host(self):
+    args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+    pinned = tpu_scan._pin_offloaded_body_args(_offloaded_body(), args)
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
+    self.assertEqual(pinned[0].shape, args[0].shape)
+    self.assertEqual(pinned[0].dtype, args[0].dtype)
+
+  def test_loop_counter_is_not_pinned(self):
+    # `index_select(stack, 0, row)` takes the stack and the loop counter. Only
+    # the stack reaches the reload; following the other arguments would pin the
+    # counter to host memory as well.
+    args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+    pinned = tpu_scan._pin_offloaded_body_args(_offloaded_body(), args)
+    self.assertIs(pinned[1], args[1])
+
+  def test_body_with_no_reload_is_left_alone(self):
+    args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+    pinned = tpu_scan._pin_offloaded_body_args(
+        _offloaded_body(reload_slice=False), args
+    )
+    self.assertIs(pinned[0], args[0])
+    self.assertIs(pinned[1], args[1])
+
+  def test_operand_offloaded_inside_the_body_is_not_pinned(self):
+    # The body offloads the operand itself, so it arrived on device.
+    graph = torch.fx.Graph()
+    x = graph.placeholder("x")
+    offloaded = graph.call_function(torch.ops.ao.offload.default, (x,))
+    reloaded = graph.call_function(
+        torch.ops.ao.reload.default, (offloaded, torch.device("cpu"), [4], [1])
+    )
+    graph.output((reloaded,))
+    body = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    args = [torch.zeros(8, 4)]
+    pinned = tpu_scan._pin_offloaded_body_args(body, args)
+    self.assertIs(pinned[0], args[0])
+
+  def test_saved_for_offloading_meta_pins_without_a_reload(self):
+    args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+    body = _offloaded_body(reload_slice=False)
+    stack = next(n for n in body.graph.nodes if n.op == "placeholder")
+    stack.meta["saved_for_offloading"] = True
+    pinned = tpu_scan._pin_offloaded_body_args(body, args)
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
+
+  def test_eager_body_is_passed_through(self):
+    # An eager or exported combine_fn exposes no graph to inspect, so the args
+    # are returned unchanged. Callers need not distinguish the two cases.
+    args = [torch.zeros(8, 4), torch.zeros(1, dtype=torch.int64)]
+    self.assertIs(tpu_scan._pin_offloaded_body_args(lambda *a: a, args), args)
+
+  def test_to_placeholder_preserves_pinned_host(self):
+    pinned_in = tpu_torch_compile.placeholder(
+        [8, 4], torch.float32, is_pinned_host=True
+    )
+    unpinned_in = tpu_torch_compile.placeholder(
+        [8, 4], torch.float32, is_pinned_host=False
+    )
+    self.assertTrue(
+        tpu_torch_compile.is_pinned_host(
+            tpu_scan._to_placeholder(pinned_in, shape=[4])
+        )
+    )
+    self.assertFalse(
+        tpu_torch_compile.is_pinned_host(
+            tpu_scan._to_placeholder(unpinned_in, shape=[4])
+        )
+    )
+
+  def test_mixed_pre_pinned_and_reloaded_operands(self):
+    graph = torch.fx.Graph()
+    reloaded_unpinned = graph.placeholder("reloaded_unpinned")
+    reloaded_prepinned = graph.placeholder("reloaded_prepinned")
+    unreloaded_prepinned = graph.placeholder("unreloaded_prepinned")
+    unreloaded_unpinned = graph.placeholder("unreloaded_unpinned")
+
+    r1 = graph.call_function(
+        torch.ops.ao.reload.default,
+        (reloaded_unpinned, torch.device("cpu"), [4], [1]),
+    )
+    r2 = graph.call_function(
+        torch.ops.ao.reload.default,
+        (reloaded_prepinned, torch.device("cpu"), [4], [1]),
+    )
+    graph.output((r1, r2, unreloaded_prepinned, unreloaded_unpinned))
+    body = torch.fx.GraphModule(torch.nn.Module(), graph)
+
+    args = [
+        tpu_torch_compile.placeholder([4], torch.float32, is_pinned_host=False),
+        tpu_torch_compile.placeholder([4], torch.float32, is_pinned_host=True),
+        tpu_torch_compile.placeholder([4], torch.float32, is_pinned_host=True),
+        tpu_torch_compile.placeholder([4], torch.float32, is_pinned_host=False),
+    ]
+    pinned = tpu_scan._pin_offloaded_body_args(body, args)
+
+    # Unpinned + reloaded -> replaced with new pinned placeholder.
+    self.assertIsNot(pinned[0], args[0])
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[0]))
+    # Pre-pinned + reloaded -> skipped (already pinned), identity preserved.
+    self.assertIs(pinned[1], args[1])
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[1]))
+    # Pre-pinned + unreloaded -> identity preserved, remains pinned.
+    self.assertIs(pinned[2], args[2])
+    self.assertTrue(tpu_torch_compile.is_pinned_host(pinned[2]))
+    # Unpinned + unreloaded -> identity preserved, remains unpinned.
+    self.assertIs(pinned[3], args[3])
+    self.assertFalse(tpu_torch_compile.is_pinned_host(pinned[3]))
 
 
 if __name__ == "__main__":

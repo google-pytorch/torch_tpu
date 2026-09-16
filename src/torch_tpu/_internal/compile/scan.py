@@ -17,6 +17,8 @@
 import torch
 import torch.export
 import torch.utils._pytree as pytree
+from torch_tpu._internal.compile import _backend
+from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.export import export
 
@@ -32,7 +34,57 @@ def _to_placeholder(t, shape=None):
     return t
   if shape is None:
     shape = list(t.shape)
-  return tpu_torch_compile.placeholder(shape, t.dtype, t.requires_grad)
+  return tpu_torch_compile.placeholder(
+      shape,
+      t.dtype,
+      t.requires_grad,
+      is_pinned_host=compiler.is_pinned_host_tensor(t),
+  )
+
+
+def _pin_offloaded_body_args(combine_fn, body_args):
+  """Returns `body_args` with the offloaded operands marked as host memory.
+
+  The scan body is compiled as a standalone program, so every operand is
+  allocated HBM. That includes activations already offloaded to host, which can
+  be large enough to exhaust HBM on their own. Marking them as host memory keeps
+  them out of the HBM total.
+
+  An operand counts as offloaded if `ao.reload` copies it back from the host, or
+  if the offload pass tagged its placeholder `saved_for_offloading`.
+
+  `_backend._mark_pinned_host_inputs` does the same for the top-level graph, but
+  does not see this compile.
+
+  Args:
+    combine_fn: The body function. Only a `GraphModule` can be inspected; any
+      other callable is returned unchanged.
+    body_args: The body operands, in the same order as the body placeholders.
+  """
+  if not isinstance(combine_fn, torch.fx.GraphModule):
+    return body_args
+
+  # pylint: disable=protected-access
+  reloaded = set()
+  for node in combine_fn.graph.nodes:
+    if _backend._is_ao_op(node, "reload"):
+      source = _backend._get_reload_source_placeholder(
+          _backend._extract_tensor_node(node)
+      )
+      if source is not None:
+        reloaded.add(source)
+  # pylint: enable=protected-access
+
+  placeholders = [n for n in combine_fn.graph.nodes if n.op == "placeholder"]
+  pinned = list(body_args)
+  for i, (node, arg) in enumerate(zip(placeholders, body_args, strict=True)):
+    if (
+        isinstance(arg, torch.Tensor)
+        and not compiler.is_pinned_host_tensor(arg)
+        and (node in reloaded or node.meta.get("saved_for_offloading", False))
+    ):
+      pinned[i] = tpu_torch_compile.placeholder_like(arg, is_pinned_host=True)
+  return pinned
 
 
 def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
@@ -97,6 +149,7 @@ def _handle_scan_impl(combine_fn, init, xs, additional_inputs, reverse=False):
 
   # Compile the body sub-graph to MLIR.
   body_args = init_args + x_list + extra_args
+  body_args = _pin_offloaded_body_args(actual_combine_fn, body_args)
   body_mlir = export.fx_to_mlir(actual_combine_fn, args=body_args)
 
   # Call the C++ binding to create a deferred scan operation.

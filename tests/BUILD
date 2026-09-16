@@ -2453,6 +2453,8 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile:debug",
+        "//src/torch_tpu/_internal/compile:scan",
+        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
 )
