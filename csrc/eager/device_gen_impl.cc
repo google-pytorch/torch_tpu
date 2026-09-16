@@ -244,7 +244,7 @@ absl::Status DeviceGeneratorState::WriteStateToDevice(uint64_t seed,
   TT_ASSIGN_OR_RETURN(
       auto new_rng_state,
       CreateDeviceRngStateTensor(device_state_tensor_.device(), seed, offset));
-  return SetDeviceStateTensor(new_rng_state);
+  return SetDeviceStateTensor(std::move(new_rng_state));
 }
 
 c10::intrusive_ptr<DeviceGeneratorState> DeviceGeneratorState::clone() const {
@@ -291,18 +291,21 @@ at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
 
   auto& generator = generators_[idx];
   c10::call_once(generator_init_flags_[idx], [&] {
-    generator = at::make_generator<DeviceGeneratorImpl>(idx);
-    auto* gen_impl = generator->get<DeviceGeneratorImpl>();
+    auto gen = at::make_generator<DeviceGeneratorImpl>(idx);
+    auto* gen_impl = gen.get<DeviceGeneratorImpl>();
     auto random = c10::detail::getNonDeterministicRandom(false);
     auto status = InitDefaultGenerator(gen_impl, random);
     if (!status.ok()) {
       generator = status;
+    } else {
+      generator = std::move(gen);
     }
   });
 
   // IMPORTANT: if the generator failed to initialize before, we must fail now
   // instead of returning an uninitialized generator.
   TT_THROW_IF_ERROR(generator.status());
+  ABSL_CHECK_OK(generator);  // CRASH_OK=satisfying ClangTidy
   return *generator;
 }
 
@@ -321,160 +324,17 @@ at::Generator DeviceGenerators::CreateGenerator(c10::DeviceIndex idx) const {
   return at::make_generator<DeviceGeneratorImpl>(idx);
 }
 
-/*static*/ c10::DeviceType DeviceGeneratorImpl::device_type() {
+/*static*/ c10::DeviceType DeviceGeneratorImplBase::device_type() {
   return c10::DeviceType::PrivateUse1;
 }
 
-at::Tensor DeviceGeneratorImpl::DeviceStateTensor() const {
-  return state_->DeviceStateTensor();
-}
-
-absl::Status DeviceGeneratorImpl::SetDeviceStateTensor(
-    at::Tensor device_state_tensor) {
-  TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(device_state_tensor));
-  return state_->SetDeviceStateTensor(std::move(device_state_tensor));
-}
-
-DeviceGeneratorImpl::DeviceGeneratorImpl(c10::DeviceIndex device_index)
+DeviceGeneratorImplBase::DeviceGeneratorImplBase(
+    const c10::DeviceIndex device_index)
     : c10::GeneratorImpl(
           c10::Device(c10::DeviceType::PrivateUse1, device_index),
-          c10::DispatchKeySet(c10::DispatchKey::PrivateUse1)) {
-  TT_ASSIGN_OR_THROW(auto tensor,
-                     CreateDeviceRngStateTensor(this->device(), 0, 0));
-  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
-}
+          c10::DispatchKeySet(c10::DispatchKey::PrivateUse1)) {}
 
-DeviceGeneratorImpl::DeviceGeneratorImpl(c10::DeviceIndex device_index,
-                                         at::Tensor rng_state)
-    : DeviceGeneratorImpl(device_index) {
-  if (ValidateDeviceStateTensor(rng_state).ok()) {
-    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state));
-  } else {
-    // Already initialized in delegating constructor.
-    set_state(*rng_state.to(at::kCPU).view(at::kByte).unsafeGetTensorImpl());
-  }
-}
-
-DeviceGeneratorImpl::DeviceGeneratorImpl(
-    c10::DeviceIndex device_index,
-    c10::intrusive_ptr<DeviceGeneratorState> state)
-    : c10::GeneratorImpl(
-          c10::Device(c10::DeviceType::PrivateUse1, device_index),
-          c10::DispatchKeySet(c10::DispatchKey::PrivateUse1)),
-      state_(std::move(state)) {}
-
-void DeviceGeneratorImpl::set_current_seed(uint64_t seed) {
-  // set_current_seed() is invoked by PyTorch and behaves like an op.
-  TT_KERNEL(OpName::kRngSetSeed, _,
-            (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")),
-            { TT_THROW_IF_ERROR(state_->WriteStateToDevice(seed, 0)); });
-}
-
-void DeviceGeneratorImpl::set_offset(uint64_t offset) {
-  // set_offset() is invoked by PyTorch and behaves like an op.
-  TT_KERNEL(OpName::kRngSetOffset, _,
-            (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
-              TT_ASSIGN_OR_THROW(
-                  auto rng_state_buffer,
-                  UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
-              auto new_rng_state = MakeTensor(std::move(rng_state_buffer),
-                                              this->device().index());
-              TT_THROW_IF_ERROR(SetDeviceStateTensor(new_rng_state));
-            });
-}
-
-uint64_t DeviceGeneratorImpl::get_offset() const {
-  return state_->DeviceStateTensor()[1].item<int64_t>();
-}
-
-uint64_t DeviceGeneratorImpl::current_seed() const {
-  return state_->DeviceStateTensor()[0].item<int64_t>();
-}
-
-uint64_t DeviceGeneratorImpl::seed() {
-  // seed() is invoked by PyTorch and behaves like an op.
-  TT_KERNEL(OpName::kRngSeed, _, (), {
-    auto random = c10::detail::getNonDeterministicRandom(false);
-    TT_THROW_IF_ERROR(state_->WriteStateToDevice(random, 0));
-    return random;
-  });
-}
-
-c10::intrusive_ptr<c10::TensorImpl> DeviceGeneratorImpl::get_state() const {
-  // Gets the current internal state of DeviceGeneratorImpl. The internal
-  // state is returned as a CPU byte tensor.
-  ABSL_VLOG(1) << "[get_state]";
-
-  // Exclude the Python dispatch key to prevent FakeTensorMode and other
-  // Python-level dispatch modes from intercepting internal eager tensor
-  // allocations and operations in this scope.
-  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
-
-  return state_->DeviceStateTensor()
-      .view(at::kByte)
-      .to(at::kCPU)
-      .getIntrusivePtr();
-}
-
-// Sets the internal state of DeviceGeneratorImpl. The new internal state
-// must be a strided CPU byte tensor and have appropriate size.
-void DeviceGeneratorImpl::set_state(const c10::TensorImpl& new_state_impl) {
-  ABSL_VLOG(1) << "[DeviceGeneratorImpl::set_state]" << new_state_impl.dtype();
-
-  // Exclude the Python dispatch key to prevent FakeTensorMode and other
-  // Python-level dispatch modes from intercepting internal eager tensor
-  // allocations and operations in this scope.
-  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
-
-  auto impl_ptr = c10::intrusive_ptr<c10::TensorImpl>::reclaim_copy(
-      const_cast<c10::TensorImpl*>(&new_state_impl));
-  at::Tensor new_state = at::Tensor(std::move(impl_ptr));
-
-  TT_CHECK_THROW(new_state.device().type() == at::kCPU &&
-                     new_state.dtype() == at::kByte &&
-                     new_state.layout() == at::kStrided,
-                 error::kFailedPrecondition)
-      << "expect rng state to be a torch.ByteTensor";
-  TT_CHECK_THROW(new_state.is_contiguous(), error::kFailedPrecondition)
-      << "expect rng state to be contiguous";
-  TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
-                 error::kFailedPrecondition)
-      << "expect rng state to be shape (16,), got " << new_state.sizes();
-  TT_THROW_IF_ERROR(
-      SetDeviceStateTensor(new_state.view(at::kUInt64).to(device())));
-}
-
-void DeviceGeneratorImpl::graphsafe_set_state(
-    const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
-  auto* other = dynamic_cast<DeviceGeneratorImpl*>(state.get());
-  TT_CHECK_THROW(other != nullptr, error::kInvalidArgument)
-      << "Expected DeviceGeneratorImpl in graphsafe_set_state";
-  ABSL_CHECK(other != nullptr);  // CRASH_OK=satisfying ClangTidy
-  state_ = other->state_;
-}
-
-c10::intrusive_ptr<c10::GeneratorImpl>
-DeviceGeneratorImpl::graphsafe_get_state() const {
-  return c10::make_intrusive<DeviceGeneratorImpl>(device().index(), state_);
-}
-
-DeviceGeneratorImpl* DeviceGeneratorImpl::clone_impl() const {
-  // Exclude the Python dispatch key to prevent FakeTensorMode and other
-  // Python-level dispatch modes from intercepting internal eager tensor
-  // allocations and operations in this scope.
-  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
-
-  return new DeviceGeneratorImpl(device().index(), state_->clone());
-}
-
-at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {
-  // Fail early with an actionable error (e.g., VFIO collision) rather than
-  // crashing later on an uninitialized device dereference.
-  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
-  return DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
-}
-
-absl::Status DeviceGeneratorImpl::ValidateDeviceStateTensor(
+absl::Status DeviceGeneratorImplBase::ValidateDeviceStateTensor(
     const at::Tensor& rng_state) const {
   TT_RET_CHECK(rng_state.device() == device(), error::kFailedPrecondition)
       << "expected rng_state to be on device " << device() << ", got "
@@ -488,13 +348,13 @@ absl::Status DeviceGeneratorImpl::ValidateDeviceStateTensor(
   return absl::OkStatus();
 }
 
-absl::Status DeviceGeneratorImpl::AdvanceDeviceStateTensor(int64_t num_elements,
-                                                           int64_t bit_width) {
+absl::Status DeviceGeneratorImplBase::AdvanceDeviceStateTensor(
+    int64_t num_elements, int64_t bit_width) {
   ABSL_CHECK_GE(num_elements, 0)  // CRASH_OK
       << "num_elements must be non-negative.";
   ABSL_CHECK_GE(bit_width, 0) << "bit_width must be non-negative.";  // CRASH_OK
 
-  auto rng_input_state = state_->DeviceStateTensor();
+  auto rng_input_state = DeviceStateTensor();
   if (num_elements == 0 || bit_width == 0) {
     return absl::OkStatus();
   }
@@ -529,9 +389,157 @@ absl::Status DeviceGeneratorImpl::AdvanceDeviceStateTensor(int64_t num_elements,
   // Give back the updated state to the generator.
   auto rng_output_state =
       MakeTensor(std::move(rng_output_state_buf), this->device().index());
-  TT_RETURN_IF_ERROR(SetDeviceStateTensor(rng_output_state));
+  TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(rng_output_state));
+  TT_RETURN_IF_ERROR(SetDeviceStateTensor(std::move(rng_output_state)));
 
   return absl::OkStatus();
+}
+
+// ============================================================================
+// EagerModeDeviceGeneratorImpl (non-export mode)
+// ============================================================================
+
+EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
+    const c10::DeviceIndex device_index)
+    : DeviceGeneratorImplBase(device_index) {
+  TT_ASSIGN_OR_THROW(auto tensor,
+                     CreateDeviceRngStateTensor(this->device(), 0, 0));
+  state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+}
+
+EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
+    const c10::DeviceIndex device_index,
+    c10::intrusive_ptr<DeviceGeneratorState> state)
+    : DeviceGeneratorImplBase(device_index), state_(std::move(state)) {}
+
+EagerModeDeviceGeneratorImpl::EagerModeDeviceGeneratorImpl(
+    const c10::DeviceIndex device_index, at::Tensor rng_state)
+    : DeviceGeneratorImplBase(device_index) {
+  if (ValidateDeviceStateTensor(rng_state).ok()) {
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(rng_state));
+  } else {
+    TT_ASSIGN_OR_THROW(auto tensor,
+                       CreateDeviceRngStateTensor(this->device(), 0, 0));
+    state_ = c10::make_intrusive<DeviceGeneratorState>(std::move(tensor));
+    set_state(*rng_state.to(at::kCPU).view(at::kByte).unsafeGetTensorImpl());
+  }
+}
+
+at::Tensor EagerModeDeviceGeneratorImpl::DeviceStateTensor() const {
+  return state_->DeviceStateTensor();
+}
+
+absl::Status EagerModeDeviceGeneratorImpl::SetDeviceStateTensor(at::Tensor t) {
+  TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(t));
+  return state_->SetDeviceStateTensor(std::move(t));
+}
+
+void EagerModeDeviceGeneratorImpl::set_current_seed(uint64_t seed) {
+  // set_current_seed() is invoked by PyTorch and behaves like an op.
+  TT_KERNEL(OpName::kRngSetSeed, _,
+            (IgnoreInCacheKey(seed, "delegates to WriteStateToDevice")),
+            { TT_THROW_IF_ERROR(state_->WriteStateToDevice(seed, 0)); });
+}
+
+void EagerModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
+  // set_offset() is invoked by PyTorch and behaves like an op.
+  TT_KERNEL(OpName::kRngSetOffset, _,
+            (IgnoreInCacheKey(offset, "delegates to UpdateRngOffset()")), {
+              TT_ASSIGN_OR_THROW(
+                  auto rng_state_buffer,
+                  UpdateDeviceRngOffset(state_->DeviceStateTensor(), offset));
+              auto new_rng_state = MakeTensor(std::move(rng_state_buffer),
+                                              this->device().index());
+              TT_THROW_IF_ERROR(ValidateDeviceStateTensor(new_rng_state));
+              TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(new_rng_state)));
+            });
+}
+
+uint64_t EagerModeDeviceGeneratorImpl::get_offset() const {
+  return state_->DeviceStateTensor()[1].item<int64_t>();
+}
+
+uint64_t EagerModeDeviceGeneratorImpl::current_seed() const {
+  return state_->DeviceStateTensor()[0].item<int64_t>();
+}
+
+uint64_t EagerModeDeviceGeneratorImpl::seed() {
+  // seed() is invoked by PyTorch and behaves like an op.
+  TT_KERNEL(OpName::kRngSeed, _, (), {
+    auto random = c10::detail::getNonDeterministicRandom(false);
+    TT_THROW_IF_ERROR(state_->WriteStateToDevice(random, 0));
+    return random;
+  });
+}
+
+c10::intrusive_ptr<c10::TensorImpl> EagerModeDeviceGeneratorImpl::get_state()
+    const {
+  ABSL_VLOG(1) << "[get_state]";
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  return state_->DeviceStateTensor()
+      .view(at::kByte)
+      .to(at::kCPU)
+      .getIntrusivePtr();
+}
+
+void EagerModeDeviceGeneratorImpl::set_state(
+    const c10::TensorImpl& new_state_impl) {
+  ABSL_VLOG(1) << "[EagerModeDeviceGeneratorImpl::set_state]"
+               << new_state_impl.dtype();
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+
+  auto impl_ptr = c10::intrusive_ptr<c10::TensorImpl>::reclaim_copy(
+      const_cast<c10::TensorImpl*>(&new_state_impl));
+  at::Tensor new_state = at::Tensor(std::move(impl_ptr));
+
+  TT_CHECK_THROW(new_state.device().type() == at::kCPU &&
+                     new_state.dtype() == at::kByte &&
+                     new_state.layout() == at::kStrided,
+                 error::kFailedPrecondition)
+      << "expect rng state to be a torch.ByteTensor";
+  TT_CHECK_THROW(new_state.is_contiguous(), error::kFailedPrecondition)
+      << "expect rng state to be contiguous";
+  TT_CHECK_THROW(new_state.sizes() == c10::IntArrayRef({16}),
+                 error::kFailedPrecondition)
+      << "expect rng state to be shape (16,), got " << new_state.sizes();
+  at::Tensor state_tensor = new_state.view(at::kUInt64).to(device());
+  TT_THROW_IF_ERROR(ValidateDeviceStateTensor(state_tensor));
+  TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+}
+
+c10::intrusive_ptr<c10::GeneratorImpl>
+EagerModeDeviceGeneratorImpl::graphsafe_get_state() const {
+  return c10::make_intrusive<EagerModeDeviceGeneratorImpl>(device().index(),
+                                                           state_);
+}
+
+void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
+    const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
+  if (const auto* eager_other =
+          dynamic_cast<const EagerModeDeviceGeneratorImpl*>(state.get())) {
+    state_ = eager_other->state_;
+    return;
+  }
+  if (const auto* base_other =
+          dynamic_cast<const DeviceGeneratorImplBase*>(state.get())) {
+    at::Tensor state_tensor = base_other->DeviceStateTensor();
+    TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+    return;
+  }
+  TT_CHECK_THROW(false, error::kInvalidArgument)
+      << "Expected DeviceGeneratorImplBase in graphsafe_set_state";
+}
+
+DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  return new EagerModeDeviceGeneratorImpl(device().index(), state_->clone());
+}
+
+at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {
+  // Fail early with an actionable error (e.g., VFIO collision) rather than
+  // crashing later on an uninitialized device dereference.
+  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
+  return DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
 }
 
 at::Generator MakeDeviceGenerator(c10::DeviceIndex idx) {

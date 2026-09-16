@@ -36,7 +36,8 @@
 namespace torch_tpu {
 
 class DeviceBufferRef;
-class DeviceGeneratorImpl;
+class EagerModeDeviceGeneratorImpl;
+using DeviceGeneratorImpl = EagerModeDeviceGeneratorImpl;
 
 // Initializes the default generator with the given seed.
 absl::Status InitDefaultGenerator(DeviceGeneratorImpl* gen_impl, uint64_t seed);
@@ -94,72 +95,102 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
 at::Tensor PyGetDeviceStateTensor(at::Generator gen);
 void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
 
-// A wrapper on a tensor of two integers, representing the current state (seed
-// and offset) of the generator. Given these, we can deterministically generate
-// random bits. Kernels that require random bits, will use this tensor as an
-// extra argument, and will output the new state of the generator.
-class DeviceGeneratorImpl : public c10::GeneratorImpl {
+// Unified base class for TPU RNG generators.
+class DeviceGeneratorImplBase : public c10::GeneratorImpl {
  public:
-  explicit DeviceGeneratorImpl(c10::DeviceIndex device_index = -1);
-  DeviceGeneratorImpl(c10::DeviceIndex device_index, at::Tensor rng_state);
-  DeviceGeneratorImpl(c10::DeviceIndex device_index,
-                      c10::intrusive_ptr<DeviceGeneratorState> state);
-
   // This class is neither copyable nor movable.
-  DeviceGeneratorImpl(const DeviceGeneratorImpl&) = delete;
-  DeviceGeneratorImpl& operator=(const DeviceGeneratorImpl&) = delete;
-  DeviceGeneratorImpl(DeviceGeneratorImpl&&) = delete;
-  DeviceGeneratorImpl& operator=(DeviceGeneratorImpl&&) = delete;
+  DeviceGeneratorImplBase(const DeviceGeneratorImplBase&) = delete;
+  DeviceGeneratorImplBase& operator=(const DeviceGeneratorImplBase&) = delete;
+  DeviceGeneratorImplBase(DeviceGeneratorImplBase&&) = delete;
+  DeviceGeneratorImplBase& operator=(DeviceGeneratorImplBase&&) = delete;
 
-  ~DeviceGeneratorImpl() override = default;
+  ~DeviceGeneratorImplBase() override = default;
 
-  uint64_t get_offset() const override;
-  uint64_t current_seed() const override;
-  uint64_t seed() override;
-  c10::intrusive_ptr<c10::TensorImpl> get_state() const override;
-  c10::intrusive_ptr<c10::GeneratorImpl> graphsafe_get_state() const override;
+  // Advances the underlying RNG state tensor by the specified number of random
+  // bits consumed by a kernel execution.
+  absl::Status AdvanceDeviceStateTensor(int64_t num_elements,
+                                        int64_t bit_width);
+
+  // Returns the active TPU RNG state tensor {seed, offset}.
+  virtual at::Tensor DeviceStateTensor() const = 0;
 
   static c10::DeviceType device_type();
 
   // Validates the shape, dtype, and device of the RNG state tensor.
   absl::Status ValidateDeviceStateTensor(const at::Tensor& rng_state) const;
 
-  // Advances the generator's state by the amount specified
-  // (num_elements * bit_width).
-  absl::Status AdvanceDeviceStateTensor(int64_t num_elements,
-                                        int64_t bit_width);
-
-  // Returns the internal TPU RNG state tensor.
-  // This is a 1D uint64 tensor of 2 elements: {seed, offset}.
-  at::Tensor DeviceStateTensor() const;
+ protected:
+  // Constructs the generator base on the specified TPU device. If device_index
+  // is -1, the generator is bound to the current accelerator device.
+  explicit DeviceGeneratorImplBase(c10::DeviceIndex device_index = -1);
 
  private:
-  friend absl::Status InitDefaultGenerator(DeviceGeneratorImpl* gen_impl,
-                                           uint64_t seed);
-
-  template <typename DispatchFunc>
-  friend absl::StatusOr<std::vector<DeviceBufferRef>> DispatchRngOpGeneral(
-      c10::optional<at::Generator> generator, DispatchFunc dispatch_func);
+  friend class EagerModeDeviceGeneratorImpl;
 
   friend at::Tensor PyGetDeviceStateTensor(at::Generator gen);
   friend void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
 
-  DeviceGeneratorImpl* clone_impl() const override;
+  DeviceGeneratorImplBase* clone_impl() const override = 0;
+
+  // The following RNG state accessors are private as it is dangerous to
+  // modify the state directly, and only approved friends are intended to call
+  // them. Note that callers holding a c10::GeneratorImpl reference or pointer
+  // can still invoke these virtual methods through base dispatch, so this
+  // provides interface guidance rather than strict access protection.
+
+  uint64_t seed() override = 0;
+  void set_current_seed(uint64_t seed) override = 0;
+  void set_offset(uint64_t offset) override = 0;
+  void set_state(const c10::TensorImpl& new_state) override = 0;
+  void graphsafe_set_state(
+      const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override = 0;
+
+  // Overwrites the active TPU RNG state tensor.
+  // `t` must be a 1D tensor of dtype UInt64 and size 2 containing
+  // {seed, offset} on this generator's TPU device.
+  virtual absl::Status SetDeviceStateTensor(at::Tensor t) = 0;
+};
+
+// Concrete generator implementation used during normal eager execution.
+// Throttles host-device synchronization and manages state via
+// DeviceGeneratorState.
+class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
+ public:
+  explicit EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index = -1);
+  EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
+                               at::Tensor rng_state);
+  EagerModeDeviceGeneratorImpl(c10::DeviceIndex device_index,
+                               c10::intrusive_ptr<DeviceGeneratorState> state);
+
+  at::Tensor DeviceStateTensor() const override;
+
+  // Implement eager RNG read accessors.
+  uint64_t get_offset() const override;
+  uint64_t current_seed() const override;
+  c10::intrusive_ptr<c10::TensorImpl> get_state() const override;
+  c10::intrusive_ptr<c10::GeneratorImpl> graphsafe_get_state() const override;
+
+ private:
+  friend absl::Status InitDefaultGenerator(
+      EagerModeDeviceGeneratorImpl* gen_impl, uint64_t seed);
+
+  friend at::Tensor PyGetDeviceStateTensor(at::Generator gen);
+  friend void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
+
+  DeviceGeneratorImplBase* clone_impl() const override;
 
   // The following RNG state accessors are private as it's dangerous to modify
   // the state. Only approved friends are allowed to call them.
 
+  uint64_t seed() override;
   void set_current_seed(uint64_t seed) override;
   void set_offset(uint64_t offset) override;
   void set_state(const c10::TensorImpl& new_state) override;
   void graphsafe_set_state(
       const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override;
 
-  // Sets the internal TPU RNG state tensor.
-  // Validates the shape, dtype, and device of the provided tensor.
-  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor);
+  absl::Status SetDeviceStateTensor(at::Tensor t) override;
 
-  // 1D uint64 tensor of 2 elements: {seed, offset}
   c10::intrusive_ptr<DeviceGeneratorState> state_;
 };
 
