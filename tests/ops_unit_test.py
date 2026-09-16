@@ -10475,6 +10475,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute)
 
+  @parameterized.named_parameters(
+      ("crop_left_and_pad_right", (-2, 3), False),
+      ("pad_left_and_crop_right", (3, -2), False),
+      ("crop_entire_input_and_pad_right", (-5, 4), False),
+      ("pad_left_and_crop_entire_input", (4, -5), False),
+      ("crop_left_exceeding_input", (-8, 10), True),
+      ("crop_right_exceeding_input", (10, -8), True),
+  )
+  def test_constant_pad_nd_negative_padding_overflow(self, pad, allow_failure):
+    x = torch.arange(1, 6, dtype=torch.float32)
+
+    def compute(device):
+      return torch.nn.functional.pad(to(x, device), pad, "constant", 0.0)
+
+    self.assert_close_tpu_vs_cpu(compute, allow_failure=allow_failure)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

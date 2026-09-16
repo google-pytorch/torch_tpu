@@ -430,6 +430,9 @@ REGISTRATION_OVERRIDES = frozenset([
     # avg_pool1d is registered to provide a direct 1D pooling lowering on TPU,
     # overriding the default PyTorch decomposition.
     'avg_pool1d',
+    # constant_pad_nd is registered to lower directly to StableHLO Concatenate
+    # instead of empty + fill_ + slice.copy_ (DynamicUpdateSlice).
+    'constant_pad_nd',
     'convolution',
     'convolution.out',
     'convolution_backward',
@@ -473,6 +476,13 @@ REGISTRATION_OVERRIDES = frozenset([
     # repeat_interleave.self_int is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_int',
+    # select_backward is registered to lower directly to a single StableHLO
+    # DynamicUpdateSlice operation instead of zeros + select + copy_.
+    'select_backward',
+    # slice_backward is registered to lower directly to a single StableHLO
+    # DynamicUpdateSlice, Concatenate, or Pad operation instead of zeros +
+    # slice + copy_.
+    'slice_backward',
     # split_with_sizes_copy.out is used by PyTorch's FSDP2 wrapper. The default
     # decomposition performs 2-d reshapes that are inefficient on TPU.
     'split_with_sizes_copy.out',
