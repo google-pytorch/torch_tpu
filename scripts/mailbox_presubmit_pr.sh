@@ -300,6 +300,9 @@ fi
 BAZEL_ARGS=("test")
 
 if [[ -n "$CLI_BAZEL_CONFIG" ]]; then
+  if [[ ${#CLI_TARGETS[@]} -eq 0 && "$CLI_BAZEL_CONFIG" == "ci_tpu_v5_mailbox" ]]; then
+    BAZEL_ARGS+=("--config=ci_tpu_v5_presubmit")
+  fi
   BAZEL_ARGS+=("--config=${CLI_BAZEL_CONFIG}")
 fi
 

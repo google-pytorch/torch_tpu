@@ -239,6 +239,19 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
     self.assertIn("QUERY_ELAPSED", body)
     self.assertIn("BAZEL_CRITICAL_PATH", body)
 
+  def test_bazelrc_decouples_mailbox_from_presubmit_filters(self):
+    bazelrc_path = os.path.join(REPO_ROOT, ".bazelrc")
+    with open(bazelrc_path) as f:
+      body = f.read()
+    self.assertIn("common:ci_tpu_v5_mailbox --config=ci_tpu_base", body)
+    self.assertNotIn("common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit", body)
+
+  def test_presubmit_script_adds_presubmit_config_for_full_suite(self):
+    script_path = os.path.join(REPO_ROOT, "scripts", "mailbox_presubmit_pr.sh")
+    with open(script_path) as f:
+      body = f.read()
+    self.assertIn('BAZEL_ARGS+=("--config=ci_tpu_v5_presubmit")', body)
+
 
 if __name__ == "__main__":
   unittest.main()

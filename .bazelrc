@@ -364,7 +364,7 @@ common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fai
 # Dispatches test actions via GCS mailbox protocol to standing TPU v5e fleet.
 # Unlike SSH relay, this works from any machine with bucket access (including
 # external developers and GitHub Actions runners) without SSH or VPC peering.
-common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit
+common:ci_tpu_v5_mailbox --config=ci_tpu_base
 common:ci_tpu_v5_mailbox --remote_download_outputs=all
 common:ci_tpu_v5_mailbox --test_env=TORCH_TPU_RELAY_BUCKET=torch-tpu-mailbox-eval
 common:ci_tpu_v5_mailbox --run_under=//ci/tools/relay_mailbox:worker_main

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import random
 import subprocess
 import time
@@ -113,18 +114,47 @@ class Client:
 
 
 class _MetadataTokenSource:
-  """Fetches and caches an access token from the GCE metadata server."""
+  """Fetches and caches an access token from user ADC or GCE metadata."""
 
-  def __init__(self, opener, time_fn=time.time):
+  def __init__(
+      self,
+      opener,
+      time_fn=time.time,
+      run_fn=subprocess.run,
+      adc_path: str | None = None,
+  ):
     self._opener = opener
     self._time_fn = time_fn
+    self._run_fn = run_fn
+    self._adc_path = adc_path
     self._token = ""
     self._expires_at = 0.0
+
+  def _user_adc_exists(self) -> bool:
+    path = (
+        self._adc_path
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.path.expanduser(
+            "~/.config/gcloud/application_default_credentials.json"
+        )
+    )
+    return os.path.exists(path)
 
   def token(self) -> str:
     """Returns a valid access token, fetching a new one when needed."""
     if self._token and self._time_fn() < self._expires_at:
       return self._token
+
+    if self._user_adc_exists():
+      try:
+        cmd = ["gcloud", "auth", "application-default", "print-access-token"]
+        proc = self._run_fn(cmd, capture_output=True, text=True, check=True)
+        self._token = proc.stdout.strip()
+        self._expires_at = self._time_fn() + 1800.0
+        return self._token
+      except Exception:
+        pass
+
     try:
       request = urllib.request.Request(
           _METADATA_HOST + _TOKEN_PATH,
@@ -141,11 +171,11 @@ class _MetadataTokenSource:
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, KeyError, OSError):
       try:
         cmd = ["gcloud", "auth", "application-default", "print-access-token"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = self._run_fn(cmd, capture_output=True, text=True, check=True)
         self._token = proc.stdout.strip()
       except Exception:
         cmd = ["gcloud", "auth", "print-access-token"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = self._run_fn(cmd, capture_output=True, text=True, check=True)
         self._token = proc.stdout.strip()
       self._expires_at = self._time_fn() + 1800.0
       return self._token
