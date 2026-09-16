@@ -9149,6 +9149,48 @@ Device-side assertion tracking was not enabled by user.""",
           torch.int32,
       )
 
+  def test_scaled_mm_v2_out_dtype_mismatch(self):
+    (
+        self_tpu,
+        mat2_tpu,
+        scale_a_tpu,
+        recipe_a,
+        swizzle_a,
+        scale_b_tpu,
+        recipe_b,
+        swizzle_b,
+    ) = et.get_scaled_mm_v2_default_inputs()
+    out = torch.empty(
+        self_tpu.size(0),
+        mat2_tpu.size(1),
+        device=et.device(),
+        dtype=torch.int32,
+    )
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected the output dtype to be float32, got int32""",
+        gpu=re.compile(
+            r".*(Expected out tensor to have dtype.*|torch\._scaled_mm.*is"
+            r" only supported on CUDA devices).*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="jihonggan",
+    ):
+      torch._scaled_mm_v2(
+          self_tpu,
+          mat2_tpu,
+          scale_a_tpu,
+          recipe_a,
+          swizzle_a,
+          scale_b_tpu,
+          recipe_b,
+          swizzle_b,
+          None,
+          torch.float32,
+          out=out,
+      )
+
   def test_fft_c2c_non_complex_input(self):
     t = torch.ones(4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(

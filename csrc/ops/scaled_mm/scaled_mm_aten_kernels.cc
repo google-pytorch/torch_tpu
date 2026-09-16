@@ -634,6 +634,8 @@ absl::Status ScaledMmOut(const at::Tensor& self, const at::Tensor& mat2,
   Dimensions output_dims = {self.size(0), mat2.size(1)};
   at::ScalarType target_scalar_type =
       out_dtype.has_value() ? *out_dtype : self.scalar_type();
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, target_scalar_type,
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
@@ -741,6 +743,8 @@ absl::Status ScaledMmV2Out(const at::Tensor& self, const at::Tensor& mat2,
   Dimensions output_dims = {self.size(0), mat2.size(1)};
   at::ScalarType target_scalar_type =
       out_dtype.has_value() ? *out_dtype : self.scalar_type();
+  TT_RETURN_IF_ERROR(ValidateOutDtype(out, target_scalar_type,
+                                      /*allow_out_dtype_cast=*/false));
   TT_ASSIGN_OR_RETURN(mlir::ElementType target_elem_dtype,
                       ConvertTo<mlir::ElementType>(target_scalar_type));
 
