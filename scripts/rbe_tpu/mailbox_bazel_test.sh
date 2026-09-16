@@ -1,1 +1,0 @@
-rbe_tpu_bazel_test.sh

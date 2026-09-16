@@ -7,8 +7,8 @@ common --announce_rc
 common --check_visibility=false
 
 # The default comes form XLA's setup, which is 3.13,
-# while we have 3.12 configured.
-common --repo_env=HERMETIC_PYTHON_VERSION=3.12
+# while we have 3.14 configured.
+common --repo_env=HERMETIC_PYTHON_VERSION=3.14
 
 common --enable_bzlmod=true --enable_workspace=false
 
@@ -367,7 +367,7 @@ common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fai
 common:rbe_tpu --config=ci_tpu_base
 common:rbe_tpu --remote_download_outputs=all
 common:rbe_tpu --test_env=TORCH_TPU_RELAY_BUCKET=torch-tpu-mailbox-eval
-common:rbe_tpu --run_under=//ci/tools/rbe_tpu:worker_main
+common:rbe_tpu --run_under=//rbe_tpu:worker_main
 common:rbe_tpu --local_test_jobs=28
 common:rbe_tpu --bes_backend=
 common:rbe_tpu --bes_results_url=

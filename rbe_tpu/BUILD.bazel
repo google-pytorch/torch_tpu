@@ -1,0 +1,110 @@
+# Copyright 2026 Google LLC
+# ...
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
+
+py_library(
+    name = "rbe_tpu",
+    srcs = glob(["src/rbe_tpu/**/*.py"]),
+    imports = ["src"],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "fake_gcs",
+    srcs = ["tests/fake_gcs.py"],
+    imports = ["src"],
+    visibility = ["//visibility:public"],
+    deps = [":rbe_tpu"],
+)
+
+py_binary(
+    name = "agent_main",
+    srcs = ["src/rbe_tpu/agent/main.py"],
+    imports = ["src"],
+    main = "src/rbe_tpu/agent/main.py",
+    deps = [":rbe_tpu"],
+)
+
+py_binary(
+    name = "worker_main",
+    srcs = ["src/rbe_tpu/worker/main.py"],
+    imports = ["src"],
+    main = "src/rbe_tpu/worker/main.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "gcs_test",
+    srcs = ["tests/test_gcs.py"],
+    imports = ["src"],
+    main = "tests/test_gcs.py",
+    deps = [
+        ":fake_gcs",
+        ":rbe_tpu",
+    ],
+)
+
+py_test(
+    name = "binding_test",
+    srcs = ["tests/test_binding.py"],
+    imports = ["src"],
+    main = "tests/test_binding.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "health_test",
+    srcs = ["tests/test_health.py"],
+    imports = ["src"],
+    main = "tests/test_health.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "agent_test",
+    srcs = ["tests/test_agent.py"],
+    imports = ["src"],
+    main = "tests/test_agent.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "worker_test",
+    srcs = ["tests/test_worker.py"],
+    imports = ["src"],
+    main = "tests/test_worker.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "runner_test",
+    srcs = ["tests/test_runner.py"],
+    imports = ["src"],
+    main = "tests/test_runner.py",
+    deps = [":rbe_tpu"],
+)
+
+py_test(
+    name = "integration_test",
+    srcs = ["tests/test_integration.py"],
+    imports = ["src"],
+    main = "tests/test_integration.py",
+    deps = [
+        ":fake_gcs",
+        ":rbe_tpu",
+    ],
+)
+
+py_test(
+    name = "main_test",
+    srcs = ["tests/test_main.py"],
+    imports = ["src"],
+    main = "tests/test_main.py",
+    deps = [
+        ":agent_main",
+        ":rbe_tpu",
+        ":worker_main",
+    ],
+)

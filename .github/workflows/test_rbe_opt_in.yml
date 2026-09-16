@@ -202,7 +202,7 @@ jobs:
 
           \`\`\`bash
           git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
-          scripts/mailbox_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode}
+          rbe_tpu/deploy/rbe_tpu_presubmit_pr.sh --pr ${PR_NUMBER} --mode ${mode}
           \`\`\`
 
           ### Alternative: SSH Relay (Corp network required)
