@@ -24,13 +24,13 @@
 #include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
@@ -44,26 +44,93 @@ namespace torch_tpu {
 
 using BufferRefToVarMap = absl::flat_hash_map<DeviceBufferRef, std::string>;
 
-absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
+namespace {
+
+inline const at::Tensor& DerefTensor(const at::Tensor& tensor) {
+  return tensor;
+}
+
+inline const at::Tensor& DerefTensor(const at::Tensor* tensor) {
+  return *tensor;
+}
+
+inline bool NeedsExplicitSyncMaterialization(
+    const DeviceBufferRef& buffer_ref) {
+  const auto& node = buffer_ref.device_buffer_list();
+  return node->is_deferred() || node->is_placeholder();
+}
+
+absl::Status AwaitUniqueDeviceBufferLists(
+    absl::Span<const DeviceBufferRef> buffer_refs) {
+  // Wait for all unique DeviceBufferLists to be ready. Multiple output tensors
+  // from a single compiled execution or fused eager graph share the same
+  // DeviceBufferList, and DeviceBufferList::Synchronize() awaits all buffers in
+  // the list. Deduplicating prevents redundant O(N^2) GetReadyFuture().Await()
+  // calls.
+  absl::InlinedVector<const DeviceBufferList*, 16> synced_lists;
+  for (const DeviceBufferRef& buffer_ref : buffer_refs) {
+    const DeviceBufferList* list_ptr = buffer_ref.device_buffer_list().get();
+    bool already_synced = false;
+    for (const DeviceBufferList* existing : synced_lists) {
+      if (existing == list_ptr) {
+        already_synced = true;
+        break;
+      }
+    }
+    if (!already_synced) {
+      synced_lists.push_back(list_ptr);
+      TT_RETURN_IF_ERROR(buffer_ref.Synchronize());
+    }
+  }
+  return absl::OkStatus();
+}
+
+template <typename TensorSpan>
+absl::Status SynchronizeTensorsImpl(TensorSpan tensors) {
+  if (tensors.empty()) {
+    return absl::OkStatus();
+  }
+  if (tensors.size() == 1) {
+    TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
+                        GetBaseBuffer(DerefTensor(tensors[0])));
+    if (NeedsExplicitSyncMaterialization(buffer_ref)) {
+      TT_RETURN_IF_ERROR(Materialize(absl::MakeConstSpan(&buffer_ref, 1),
+                                     MaterializationReason::kExplicitSync));
+    }
+    return buffer_ref.Synchronize();
+  }
+
   // Materialize the tensors and get their base DeviceBufferRefs.
   // Don't materialize views--they are ephemeral and re-materialized every time,
   // so there's no point in materializing a copy only to discard it.
-  std::vector<DeviceBufferRef> buffer_refs;
+  absl::InlinedVector<DeviceBufferRef, 16> buffer_refs;
   buffer_refs.reserve(tensors.size());
-  for (const at::Tensor& tensor : tensors) {
+  bool has_deferred_or_placeholder = false;
+  for (const auto& item : tensors) {
+    const at::Tensor& tensor = DerefTensor(item);
     TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+    if (NeedsExplicitSyncMaterialization(buffer_ref)) {
+      has_deferred_or_placeholder = true;
+    }
     buffer_refs.push_back(std::move(buffer_ref));
   }
 
-  TT_RETURN_IF_ERROR(
-      Materialize(buffer_refs, MaterializationReason::kExplicitSync));
-
-  // Wait for all of the PjRtBuffers to be ready.
-  for (const DeviceBufferRef& buffer_ref : buffer_refs) {
-    TT_RETURN_IF_ERROR(buffer_ref.Synchronize());
+  if (has_deferred_or_placeholder) {
+    TT_RETURN_IF_ERROR(
+        Materialize(buffer_refs, MaterializationReason::kExplicitSync));
   }
 
-  return absl::OkStatus();
+  return AwaitUniqueDeviceBufferLists(buffer_refs);
+}
+
+}  // namespace
+
+absl::Status SynchronizeTensors(absl::Span<const at::Tensor> tensors) {
+  return SynchronizeTensorsImpl(tensors);
+}
+
+absl::Status SynchronizeTensors(absl::Span<const at::Tensor* const> tensors) {
+  return SynchronizeTensorsImpl(tensors);
 }
 
 absl::StatusOr<bool> IsMaterializing(const at::Tensor& tensor) {

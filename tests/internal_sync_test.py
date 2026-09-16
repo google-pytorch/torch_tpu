@@ -448,6 +448,56 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     # Verify that the MLIR string contains the expected operations
     self.assertIn("stablehlo.add", mlir_str)
 
+  def test_sync_tensor_subclass_wrappers(self):
+    class _LocalTensorSubclass(torch.Tensor):
+      pass
+
+    class _ElemTensorSubclass(torch.Tensor):
+      pass
+
+    x = torch.ones(10, device=torch.device("tpu")) + 1.0
+    y = torch.ones(10, device=torch.device("tpu")) + 2.0
+
+    # Create wrapper tensor subclasses with ._local_tensor (like DTensor) and
+    # .elem (like FakeTensor) whose outer storage is on CPU.
+    dt_wrapper = _LocalTensorSubclass(torch.empty(0))
+    dt_wrapper._local_tensor = x
+
+    elem_wrapper = _ElemTensorSubclass(torch.empty(0))
+    elem_wrapper.elem = y
+
+    self.assertFalse(sync.is_materializing(dt_wrapper))
+    self.assertFalse(sync.is_materializing(elem_wrapper))
+
+    # Single-tensor synchronize on wrapper subclass
+    sync.synchronize(dt_wrapper, wait=False)
+    self.assertTrue(sync.is_materializing(dt_wrapper))
+    self.assertTrue(sync.is_materializing(x))
+    self.assertFalse(sync.is_materializing(elem_wrapper))
+
+    # Sequence synchronize on list of wrapper subclasses
+    sync.synchronize([dt_wrapper, elem_wrapper], wait=True)
+    self.assertTrue(sync.is_materialized(dt_wrapper))
+    self.assertTrue(sync.is_materialized(elem_wrapper))
+    self.assertTrue(sync.is_materialized(x))
+    self.assertTrue(sync.is_materialized(y))
+
+  def test_sync_sparse_coo_tensor(self):
+    indices = torch.tensor([[0, 1], [1, 0]], device=torch.device("tpu"))
+    values = torch.tensor([3.0, 4.0], device=torch.device("tpu")) + 1.0
+    sparse_tensor = torch.sparse_coo_tensor(indices, values, (2, 2))
+
+    # Single-tensor synchronize on sparse COO tensor
+    sync.synchronize(sparse_tensor, wait=True)
+    self.assertTrue(sync.is_materialized(sparse_tensor._indices()))
+    self.assertTrue(sync.is_materialized(sparse_tensor._values()))
+
+    # List synchronize on sparse COO tensor
+    values2 = torch.tensor([5.0, 6.0], device=torch.device("tpu")) + 2.0
+    sparse_tensor2 = torch.sparse_coo_tensor(indices, values2, (2, 2))
+    sync.synchronize([sparse_tensor2], wait=True)
+    self.assertTrue(sync.is_materialized(sparse_tensor2._values()))
+
 
 if __name__ == "__main__":
   absltest.main()

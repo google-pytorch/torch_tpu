@@ -13,15 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/TensorBody.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/core/impl/DeviceGuardImplInterface.h"
+#include "c10/util/python_stub.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/eager/device_buffer.h"
@@ -43,21 +46,88 @@ using BufferRefToVarMap = absl::flat_hash_map<DeviceBufferRef, std::string>;
 
 namespace {
 
-bool AllTensorsAreOnDevice(absl::Span<const at::Tensor> tensors) {
+at::Tensor UnwrapTensor(py::handle obj) {
+  if (THPVariable_CheckExact(obj.ptr())) {
+    return THPVariable_Unpack(obj.ptr());
+  }
+  if (py::hasattr(obj, "_local_tensor")) {
+    return UnwrapTensor(obj.attr("_local_tensor"));
+  }
+  if (py::hasattr(obj, "elem")) {
+    return UnwrapTensor(obj.attr("elem"));
+  }
+  if (THPVariable_Check(obj.ptr())) {
+    return THPVariable_Unpack(obj.ptr());
+  }
+  throw py::type_error("expected torch.Tensor");  // For pybind11.
+}
+
+bool AllTensorsAreDenseOnDevice(absl::Span<const at::Tensor> tensors) {
   for (const at::Tensor& tensor : tensors) {
-    if (tensor.device().type() != GetPrivateUse1DeviceType()) {
+    if (tensor.device().type() != GetPrivateUse1DeviceType() ||
+        tensor.is_sparse()) {
       return false;
     }
   }
   return true;
 }
 
-void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
-  std::vector<at::Tensor> tpu_tensors;
-  absl::Span<const at::Tensor> tensors_span = absl::MakeConstSpan(tensors);
-  if (!AllTensorsAreOnDevice(tensors)) {
+void PySyncSpanNoWait(absl::Span<const at::Tensor> tensors_span) {
+  absl::InlinedVector<DeviceBufferRef, 16> buffer_refs;
+  buffer_refs.reserve(tensors_span.size());
+  bool has_deferred_or_placeholder = false;
+  for (const at::Tensor& tensor : tensors_span) {
+    TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
+    const auto& node = buffer_ref.device_buffer_list();
+    if (node->is_deferred() || node->is_placeholder()) {
+      has_deferred_or_placeholder = true;
+    }
+    buffer_refs.push_back(std::move(buffer_ref));
+  }
+
+  if (!has_deferred_or_placeholder) {
+    return;
+  }
+
+  // Why we must release the GIL:
+  //   Materialize() may wait on or contend for internal mutexes with
+  //   background threads (such as async H2D copy threads or compilation
+  //   workers). Background H2D threads hold references to host at::Tensor
+  //   objects to keep memory alive during transfer; if a background thread
+  //   drops the last reference to a tensor with a Python custom deleter or
+  //   PyObject wrapper, it must acquire the GIL to clean it up. Holding the
+  //   GIL here while blocking/waiting on those threads causes an AB-BA
+  //   deadlock.
+  //
+  // Why it is safe to release the GIL:
+  //   1. All input at::Tensor objects have already been converted into pure
+  //      C++ DeviceBufferRef handles (`buffer_refs`) above.
+  //   2. Materialize() operates exclusively on C++ DeviceBufferRef handles
+  //      and PJRT/MLIR runtime structures without accessing any PyObject* or
+  //      Python interpreter state.
+  //   3. If Materialize() fails and TT_THROW_IF_ERROR throws a C++ exception,
+  //      RAII stack unwinding destroys `release` and re-acquires the GIL
+  //      before pybind11 catches the exception and converts it to Python.
+  py::gil_scoped_release release;
+  TT_THROW_IF_ERROR(
+      Materialize(buffer_refs, MaterializationReason::kExplicitSync));
+}
+
+void PySyncSpan(absl::Span<const at::Tensor> tensors, bool wait) {
+  absl::InlinedVector<at::Tensor, 16> tpu_tensors;
+  absl::Span<const at::Tensor> tensors_span = tensors;
+  if (!AllTensorsAreDenseOnDevice(tensors)) {
     for (const at::Tensor& tensor : tensors) {
-      if (tensor.device().type() == GetPrivateUse1DeviceType()) {
+      if (tensor.is_sparse()) {
+        const at::Tensor indices = tensor._indices();
+        const at::Tensor values = tensor._values();
+        if (indices.device().type() == GetPrivateUse1DeviceType()) {
+          tpu_tensors.push_back(indices);
+        }
+        if (values.device().type() == GetPrivateUse1DeviceType()) {
+          tpu_tensors.push_back(values);
+        }
+      } else if (tensor.device().type() == GetPrivateUse1DeviceType()) {
         tpu_tensors.push_back(tensor);
       }
     }
@@ -65,60 +135,224 @@ void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
   }
 
   if (wait) {
-    // To achieve non blocking H2D copies torch_tpu has to ensure the host data
-    // is alive during the duration of the transfer.
-    // To do this we hold onto the at::Tensor object backing the memory.
-    // If `torch_tpu` holds the last reference to said at::Tensor it will need
-    // access to the GIL in order to release the memory.
-
-    // Deadlock Example:
-    // Main/Python thread (executing this code)
-    //   - blocks until tensors are ready
-    //   - holds GIL
-    // H2D thread
-    //   - holds (last) reference to at::Tensor
-    //   - performs H2D copy
-    //   - attempts to acquire GIL to cleanup at::Tensor
-
-    // H2D thread would wait forever for the GIL since the main thread would
-    // hold onto it.
-    // Thus we must release the GIL here before waiting for the H2D copy to
-    // complete.
-
+    // Release the GIL to prevent deadlocks with background H2D transfer threads
+    // that may hold the last reference to a Python-backed at::Tensor and need
+    // to acquire the GIL to destroy it while this thread waits for transfers
+    // to complete. This is safe because SynchronizeTensors operates purely on
+    // C++ tensor/buffer structures without invoking Python C APIs, and stack
+    // unwinding re-acquires the GIL before pybind11 translates any C++
+    // exception.
     py::gil_scoped_release release;
-    // SynchronizeTensors is Materialize(base buffer refs) + wait
     TT_THROW_IF_ERROR(SynchronizeTensors(tensors_span));
   } else {
-    // Don't materialize views--they are ephemeral and re-materialized every
-    // time, so there's no point in materializing a copy only to discard it.
-    std::vector<DeviceBufferRef> buffer_refs;
-    buffer_refs.reserve(tensors_span.size());
-    for (const at::Tensor& tensor : tensors_span) {
-      TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
-      buffer_refs.push_back(std::move(buffer_ref));
-    }
+    PySyncSpanNoWait(tensors_span);
+  }
+}
 
+void PySync(const std::vector<at::Tensor>& tensors, bool wait) {
+  PySyncSpan(tensors, wait);
+}
+
+// Fast-path C++ synchronization for a single PyObject* representing a standard
+// `torch.Tensor` (`THPVariable`).
+//
+// Performance Rationale:
+//   - Returns `false` if `ptr` is a Python wrapper subclass (such as `DTensor`
+//     with `_local_tensor` or `elem` attributes) or a sparse COO tensor,
+//     falling back to the `UnwrapTensor` / `PySyncSpan` path.
+//   - Unpacks the underlying `at::Tensor` via `THPVariable_Unpack` without
+//     constructing a temporary `pybind11::object` or incrementing C++ shared
+//     pointer reference counts.
+//   - When `wait == true`, immediately releases the GIL before invoking
+//     `SynchronizeTensors` so background H2D/execution threads or PJRT host
+//     callbacks are never blocked by the main thread holding the GIL.
+//   - When `wait == false`, checks `node->is_deferred() ||
+//   node->is_placeholder()`
+//     before releasing the GIL or calling `Materialize`, avoiding GIL release
+//     overhead when the tensor is already materializing/materialized.
+bool TrySyncSingleTensorFast(PyObject* ptr, bool wait) {
+  if (!THPVariable_CheckExact(ptr)) {
+    return false;
+  }
+  const at::Tensor& t = THPVariable_Unpack(ptr);
+  if (t.is_sparse()) {
+    return false;
+  }
+  if (t.device().type() != GetPrivateUse1DeviceType()) {
+    return true;
+  }
+  if (wait) {
+    py::gil_scoped_release release;
+    TT_THROW_IF_ERROR(SynchronizeTensors(absl::MakeConstSpan(&t, 1)));
+    return true;
+  }
+  TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(t));
+  const auto& node = buffer_ref.device_buffer_list();
+  if (node->is_deferred() || node->is_placeholder()) {
+    py::gil_scoped_release release;
+    TT_THROW_IF_ERROR(Materialize(absl::MakeConstSpan(&buffer_ref, 1),
+                                  MaterializationReason::kExplicitSync));
+  }
+  return true;
+}
+
+// Fast-path C++ synchronization for a contiguous `PyObject* const*` array
+// extracted directly from a Python `list` (`PyList_GET_ITEM`) or `tuple`
+// (`PyTuple_GET_ITEM`).
+//
+// Performance Rationale:
+//   - Avoids pybind11 `std::vector<at::Tensor>` type-caster conversion, which
+//     would otherwise heap-allocate a `std::vector` and construct/destroy N
+//     copied `at::Tensor` objects (each performing atomic refcount increments
+//     on `c10::TensorImpl`).
+//   - Instead, stores raw `const at::Tensor*` pointers into a stack-allocated
+//     `absl::InlinedVector<const at::Tensor*, 16>` pointing directly into the
+//     lifetime-guaranteed Python sequence elements.
+bool TrySyncTensorArrayFast(PyObject* const* items, Py_ssize_t size,
+                            bool wait) {
+  absl::InlinedVector<const at::Tensor*, 16> tpu_tensor_ptrs;
+  tpu_tensor_ptrs.reserve(size);
+  for (Py_ssize_t i = 0; i < size; ++i) {
+    PyObject* item = items[i];
+    if (!THPVariable_CheckExact(item)) {
+      return false;
+    }
+    const at::Tensor& t = THPVariable_Unpack(item);
+    if (t.is_sparse()) {
+      return false;
+    }
+    if (t.device().type() == GetPrivateUse1DeviceType()) {
+      tpu_tensor_ptrs.push_back(&t);
+    }
+  }
+  if (tpu_tensor_ptrs.empty()) {
+    return true;
+  }
+  if (wait) {
+    py::gil_scoped_release release;
+    TT_THROW_IF_ERROR(SynchronizeTensors(tpu_tensor_ptrs));
+    return true;
+  }
+  absl::InlinedVector<DeviceBufferRef, 16> buffer_refs;
+  buffer_refs.reserve(tpu_tensor_ptrs.size());
+  bool has_deferred_or_placeholder = false;
+  for (const at::Tensor* tensor_ptr : tpu_tensor_ptrs) {
+    TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(*tensor_ptr));
+    const auto& node = buffer_ref.device_buffer_list();
+    if (node->is_deferred() || node->is_placeholder()) {
+      has_deferred_or_placeholder = true;
+    }
+    buffer_refs.push_back(std::move(buffer_ref));
+  }
+  if (has_deferred_or_placeholder) {
+    py::gil_scoped_release release;
     TT_THROW_IF_ERROR(
         Materialize(buffer_refs, MaterializationReason::kExplicitSync));
   }
+  return true;
 }
 
-bool PyIsMaterializing(const at::Tensor& tensor) {
+// Synchronizes the entire active TPU device when `synchronize(None, wait=...)`
+// is called from Python. Caches the `DeviceGuardImplInterface*` pointer in a
+// function-local static to avoid repeated registry lookups.
+void PySynchronizeDevice(bool wait) {
+  static const c10::impl::DeviceGuardImplInterface* const impl =
+      c10::impl::getDeviceGuardImpl(GetPrivateUse1DeviceType());
+  if (impl == nullptr) {
+    throw py::value_error("tpu deviceguardimpl not found");  // For pybind11.
+  }
+  const c10::DeviceIndex device_index = impl->getDevice().index();
+  py::gil_scoped_release release;
+  if (wait) {
+    impl->synchronizeDevice(device_index);
+  } else {
+    TT_THROW_IF_ERROR(
+        MaterializeDevice(device_index, MaterializationReason::kExplicitSync));
+  }
+}
+
+void PySynchronizeSequence(PyObject* ptr, bool wait) {
+  const Py_ssize_t size =
+      PyList_CheckExact(ptr) ? PyList_GET_SIZE(ptr) : PyTuple_GET_SIZE(ptr);
+  if (size == 0) {
+    return;
+  }
+  auto* const* items = PyList_CheckExact(ptr) ? &PyList_GET_ITEM(ptr, 0)
+                                              : &PyTuple_GET_ITEM(ptr, 0);
+  if (size == 1) {
+    if (!TrySyncSingleTensorFast(items[0], wait)) {
+      const at::Tensor t = UnwrapTensor(items[0]);
+      PySyncSpan(absl::MakeConstSpan(&t, 1), wait);
+    }
+    return;
+  }
+  if (TrySyncTensorArrayFast(items, size, wait)) {
+    return;
+  }
+  absl::InlinedVector<at::Tensor, 16> unwrapped;
+  unwrapped.reserve(size);
+  for (Py_ssize_t i = 0; i < size; ++i) {
+    unwrapped.push_back(UnwrapTensor(items[i]));
+  }
+  PySyncSpan(unwrapped, wait);
+}
+
+// Unified C++ entry point for `torch_tpu.sync.synchronize(tensors, wait)`.
+//
+// Dispatches directly in C++ based on the exact Python object type:
+//   - `None`: global device synchronization (`PySynchronizeDevice`).
+//   - `list` / `tuple` of size 1: single-tensor fast path
+//   (`TrySyncSingleTensorFast`).
+//   - `list` / `tuple` of size > 1: zero-copy pointer array fast path
+//     (`TrySyncTensorArrayFast`).
+//   - Single `torch.Tensor`: single-tensor fast path
+//   (`TrySyncSingleTensorFast`).
+//   - Fallback: unwraps Tensor subclasses (e.g., `DTensor`) via `UnwrapTensor`.
+void PySynchronize(py::handle tensors, bool wait) {
+  if (tensors.is_none()) {
+    PySynchronizeDevice(wait);
+    return;
+  }
+  auto* ptr = tensors.ptr();
+  if (PyList_CheckExact(ptr) || PyTuple_CheckExact(ptr)) {
+    PySynchronizeSequence(ptr, wait);
+    return;
+  }
+  if (py::isinstance<py::list>(tensors)) {
+    const py::list tensor_list = py::reinterpret_borrow<py::list>(tensors);
+    absl::InlinedVector<at::Tensor, 16> unwrapped;
+    unwrapped.reserve(tensor_list.size());
+    for (py::handle item : tensor_list) {
+      unwrapped.push_back(UnwrapTensor(item));
+    }
+    PySyncSpan(unwrapped, wait);
+    return;
+  }
+  if (!TrySyncSingleTensorFast(ptr, wait)) {
+    const at::Tensor t = UnwrapTensor(tensors);
+    PySyncSpan(absl::MakeConstSpan(&t, 1), wait);
+  }
+}
+
+bool PyIsMaterializing(py::handle tensor_obj) {
+  const at::Tensor tensor = UnwrapTensor(tensor_obj);
   TT_CHECK_THROW(tensor.device().type() == GetPrivateUse1DeviceType(),
                  error::kInvalidArgument)
       << "tensor is not on the PrivateUse1 device";
-  TT_ASSIGN_OR_THROW(bool is_materializing, IsMaterializing(tensor));
+  TT_ASSIGN_OR_THROW(const bool is_materializing, IsMaterializing(tensor));
   return is_materializing;
 }
 
-bool PyIsMaterialized(const at::Tensor& tensor) {
+bool PyIsMaterialized(py::handle tensor_obj) {
+  const at::Tensor tensor = UnwrapTensor(tensor_obj);
   TT_CHECK_THROW(tensor.device().type() == GetPrivateUse1DeviceType(),
                  error::kInvalidArgument)
       << "tensor is not on the PrivateUse1 device";
-  if (!PyIsMaterializing(tensor)) {
+  TT_ASSIGN_OR_THROW(const bool is_materializing, IsMaterializing(tensor));
+  if (!is_materializing) {
     return false;
   }
-  TT_ASSIGN_OR_THROW(bool is_materialized, IsMaterialized(tensor));
+  TT_ASSIGN_OR_THROW(const bool is_materialized, IsMaterialized(tensor));
   return is_materialized;
 }
 
@@ -175,21 +409,33 @@ std::string PyGetComputationMlir(const std::vector<at::Tensor>& tensors) {
 }  // namespace
 
 PYBIND11_MODULE(_tpu_torch_sync, m) {
+  m.def("synchronize", &PySynchronize, py::arg("tensors") = py::none(),
+        py::arg("wait") = false,
+        py::doc("Forces a materialization of one or more TPU tensors."));
   m.def("_synchronize_list", &PySync, py::arg("tensors"),
         py::arg("wait") = false,
         py::doc("Forces a materialization of a list of TPU tensors, optionally "
                 "waiting for them to be ready."));
   m.def(
       "_synchronize_tensor",
-      [](const at::Tensor& tensor, bool wait) { PySync({tensor}, wait); },
+      [](const at::Tensor& tensor, bool wait) {
+        PySyncSpan(absl::MakeConstSpan(&tensor, 1), wait);
+      },
       py::arg("tensor"), py::arg("wait") = false,
       py::doc("Forces a materialization of single TPU tensor, optionally "
               "waiting for it to be ready."));
 
+  m.def("is_materializing", &PyIsMaterializing, py::arg("tensor"),
+        py::doc(
+            "Checks if the tensor has started materializing to a PjRtBuffer."));
   m.def("_is_materializing", &PyIsMaterializing, py::arg("tensor"),
         py::doc(
             "Checks if the tensor has started materializing to a PjRtBuffer."));
 
+  m.def(
+      "is_materialized", &PyIsMaterialized, py::arg("tensor"),
+      py::doc("Checks if the tensor has completed execution and is ready to be "
+              "copied to CPU."));
   m.def(
       "_is_materialized", &PyIsMaterialized, py::arg("tensor"),
       py::doc("Checks if the tensor has completed execution and is ready to be "
