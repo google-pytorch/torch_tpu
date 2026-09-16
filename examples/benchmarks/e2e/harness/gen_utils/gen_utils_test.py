@@ -26,6 +26,7 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
         model_id="foo/bar-baz_123",
         provider="",
         model_type="",
+        category="",
         pipeline_tag="",
         downloads=0,
         downloads_all_time=0,
@@ -54,9 +55,10 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
 
   def test_model_entry_get_extra_config(self):
     entry = gen_utils.ModelEntry(
-        model_id="albert-base-v2-finetuned-squad",
+        model_id="sentence-transformers/all-MiniLM-L6-v2",
         provider="",
         model_type="",
+        category="",
         pipeline_tag="",
         downloads=0,
         downloads_all_time=0,
@@ -71,6 +73,14 @@ class GenUtilsTest(seed_test_utils.RepeatableTest):
     config = entry.get_extra_config(is_training=True, suffix="gen")
     self.assertIsNotNone(config)
     self.assertIn("compiled", config.skipped_run_modes)
+
+  def test_iter_models_csv(self):
+    models = list(gen_utils.iter_models_csv())
+    for model in models:
+      self.assertTrue(model.model_id)
+      self.assertTrue(model.provider)
+      self.assertTrue(model.model_type)
+      self.assertTrue(model.category)
 
 
 if __name__ == "__main__":

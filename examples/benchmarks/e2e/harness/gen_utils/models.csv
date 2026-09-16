@@ -1,201 +1,201 @@
-provider,model_id,model_type,pipeline_tag,downloads,downloads_all_time,likes,created_at,trending_score,params_est,is_finetune,base_model,tier
-sentence-transformers,sentence-transformers/all-MiniLM-L6-v2,bert,sentence-similarity,248516777,3350003631,5093,2022-03-02T23:29:05+00:00,24,22713728,True,nreimers/MiniLM-L6-H384-uncased,Tier 3
-transformers,google-bert/bert-base-uncased,bert,fill-mask,78430360,3065033292,2711,2022-03-02T23:29:04+00:00,1.5,110106428,False,,Tier 3
-transformers,meta-llama/Llama-3.2-1B-Instruct,llama,text-generation,9991558,86870453,1536,2024-09-18T15:12:47+00:00,5,1235814400,True,,Tier 3
-sentence-transformers,BAAI/bge-small-en-v1.5,bert,feature-extraction,65211911,316319458,515,2023-09-12T05:20:55+00:00,1.5,33360512,True,,Tier 3
-transformers,google/electra-base-discriminator,electra,unknown,54637196,810827085,142,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-sentence-transformers,cross-encoder/ms-marco-MiniLM-L6-v2,bert,text-ranking,83870749,379718397,285,2022-03-02T23:29:05+00:00,3,22714113,True,cross-encoder/ms-marco-MiniLM-L12-v2,Tier 3
-transformers,Qwen/Qwen2.5-VL-7B-Instruct,qwen2_5_vl,image-text-to-text,9910072,82858543,1638,2025-01-26T09:26:37+00:00,9,8292166656,True,,Tier 3
-transformers,google-t5/t5-small,t5,translation,27245112,215033952,576,2022-03-02T23:29:04+00:00,5,60506880,False,,Tier 3
-transformers,openai/whisper-large-v3-turbo,whisper,automatic-speech-recognition,8055662,101936069,3174,2024-10-01T07:39:28+00:00,10,808878080,True,openai/whisper-large-v3,Tier 3
-transformers,openai/clip-vit-base-patch32,clip,zero-shot-image-classification,23354949,637387690,982,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
-transformers,ProsusAI/finbert,bert,text-classification,7356134,109713113,1203,2022-03-02T23:29:04+00:00,5,0,False,,Tier 3
-transformers,Falconsai/nsfw_image_detection,vit,image-classification,8528031,1375298321,1143,2023-10-13T23:50:01+00:00,1,85800194,False,,Tier 3
-transformers,laion/clap-htsat-fused,clap,audio-classification,9799608,188371778,117,2023-02-16T20:45:11+00:00,0,153558316,False,,Tier 3
-transformers,facebook/dinov2-small,dinov2,image-feature-extraction,2831376,49608235,69,2023-07-31T16:53:09+00:00,0,22056576,False,,Tier 3
-transformers,google/gemma-4-12B-it,gemma4_unified,any-to-any,2828880,4619272,1323,2026-05-23T01:17:15+00:00,30,11959730224,True,google/gemma-4-12B,Tier 3
-transformers,facebook/detr-resnet-50,detr,object-detection,2341913,26796115,965,2022-03-02T23:29:05+00:00,4,41631008,False,,Tier 3
-transformers,dslim/bert-base-NER,bert,token-classification,1618082,93334782,722,2022-03-02T23:29:05+00:00,1,108317193,False,,Tier 3
-transformers,IDEA-Research/grounding-dino-tiny,grounding-dino,zero-shot-object-detection,1597284,20754514,107,2023-09-25T00:59:34+00:00,0,172277902,False,,Tier 3
-transformers,facebook/bart-large-mnli,bart,zero-shot-classification,3308293,155373332,1587,2022-03-02T23:29:05+00:00,2,407344133,False,,Tier 3
-transformers,Salesforce/blip-image-captioning-base,blip,image-to-text,1606043,64340854,867,2022-12-12T15:19:02+00:00,1,0,False,,Tier 3
-transformers,CIDAS/clipseg-rd64-refined,clipseg,image-segmentation,1105443,149805644,140,2022-11-01T14:25:57+00:00,0,150748019,False,,Tier 3
-transformers,facebook/sam-vit-base,sam,mask-generation,1990426,15737232,171,2023-04-19T14:15:29+00:00,1,93735728,False,,Tier 3
-transformers,facebook/musicgen-medium,musicgen,text-to-audio,1931838,27662984,164,2023-06-08T17:28:18+00:00,0,0,False,,Tier 3
-transformers,depth-anything/Depth-Anything-V2-Small-hf,depth_anything,depth-estimation,1426369,18692031,40,2024-06-18T10:01:15+00:00,1,24785089,False,,Tier 3
-transformers,Qwen/Qwen2-Audio-7B-Instruct,qwen2_audio,audio-text-to-text,646749,6227077,550,2024-07-31T09:22:21+00:00,2,8397094912,True,,Tier 3
-transformers,wasmdashai/lahja-sa-ahmad-v1,vits,text-to-speech,250749,250749,4,2026-07-16T07:12:19+00:00,3,36284784,True,wasmdashai/vits-ar-sa-A,Tier 3
-transformers,MCG-NJU/videomae-base,videomae,video-classification,272912,3939083,55,2022-08-03T09:27:59+00:00,0,94210944,False,,Tier 3
-transformers,distilbert/distilbert-base-cased-distilled-squad,distilbert,question-answering,247949,25922368,269,2022-03-02T23:29:04+00:00,0,65192450,False,,Tier 3
-transformers,vidore/colpali-v1.3-hf,colpali,visual-document-retrieval,254029,1044420,26,2024-11-28T22:30:37+00:00,0,2924613488,True,vidore/colpaligemma-3b-pt-448-base,Tier 3
-transformers,usyd-community/vitpose-plus-base,vitpose,keypoint-detection,294912,37491410,33,2025-01-08T12:42:22+00:00,1,125396497,False,,Tier 3
-transformers,google/timesfm-2.5-200m-transformers,timesfm2_5,time-series-forecasting,200617,620952,125,2026-02-19T22:08:53+00:00,1,231289280,False,,Tier 3
-transformers,google/pegasus-xsum,pegasus,summarization,170032,12499534,222,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-transformers,llava-hf/LLaVA-NeXT-Video-7B-hf,llava_next_video,video-text-to-text,186867,2730765,126,2024-06-05T13:28:32+00:00,0,7063431168,True,,Tier 3
-transformers,dandelin/vilt-b32-finetuned-vqa,vilt,visual-question-answering,116602,6071019,424,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
-transformers,google/tapas-large-finetuned-sqa,tapas,table-question-answering,51499,445850,7,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
-diffusers,google/ddpm-cifar10-32,DDPMPipeline,unconditional-image-generation,35141,1479878,87,2022-06-16T12:53:22+00:00,2,35746307,False,,Tier 3
-transformers,impira/layoutlm-document-qa,layoutlm,document-question-answering,26517,2960696,1182,2022-08-07T21:07:19+00:00,1,127793412,False,,Tier 3
-transformers,caidas/swin2SR-classical-sr-x2-64,swin2sr,image-to-image,16048,4131760,46,2022-12-16T14:05:18+00:00,2,12091571,False,,Tier 3
-transformers,HKUSTAudio/xcodec2,xcodec2,audio-to-audio,4666,519616,101,2025-01-07T06:07:24+00:00,0,822739130,False,,Tier 3
-diffusers,UnfilteredAI/NSFW-GEN-ANIME,StableDiffusionXLPipeline,text-to-image,3426,221690,196,2024-04-14T08:25:02+00:00,0.1,3468838944,True,OEvortex/PixelGen,Tier 3
-transformers,edbeeching/decision-transformer-gym-hopper-medium,decision_transformer,reinforcement-learning,1333,187131,7,2022-03-16T08:20:31+00:00,0,0,False,,Tier 3
-transformers,LIAMF-USP/roberta-large-finetuned-race,roberta,multiple-choice,769,345973,11,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-diffusers,DuoNeural/Cosmos3-Nano-GPTQ-4bit,Cosmos3OmniPipeline,text-to-video,175,365,1,2026-06-02T13:39:49+00:00,0,0,True,nvidia/Cosmos3-Nano,Tier 3
-sentence-transformers,BAAI/bge-m3,xlm-roberta,sentence-similarity,34670275,229963555,3241,2024-01-27T17:07:29+00:00,15,0,False,,Tier 3
-transformers,FacebookAI/xlm-roberta-base,xlm-roberta,fill-mask,23494945,679945521,873,2022-03-02T23:29:04+00:00,4,278885778,False,,Tier 3
-transformers,Qwen/Qwen3-0.6B,qwen3,text-generation,26124974,162352705,1430,2025-04-27T03:40:08+00:00,17,751632384,True,Qwen/Qwen3-0.6B-Base,Tier 3
-sentence-transformers,intfloat/multilingual-e5-large,xlm-roberta,feature-extraction,12353921,93376694,1227,2023-06-30T07:38:19+00:00,1,559890946,False,,Tier 3
-transformers,facebook/contriever,bert,unknown,7430720,167868991,96,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
-sentence-transformers,cross-encoder/mmarco-mMiniLMv2-L12-H384-v1,xlm-roberta,text-ranking,2492882,8800876,76,2022-06-01T08:27:31+00:00,1,117641603,True,nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large,Tier 3
-transformers,Qwen/Qwen3.5-9B,qwen3_5,image-text-to-text,9228130,37411598,1727,2026-02-27T12:58:26+00:00,19,9653104368,True,Qwen/Qwen3.5-9B-Base,Tier 3
-transformers,Helsinki-NLP/opus-mt-nl-en,marian,translation,1158164,17004838,10,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,facebook/wav2vec2-base-960h,wav2vec2,automatic-speech-recognition,1461778,114328495,399,2022-03-02T23:29:05+00:00,1,94395552,False,,Tier 3
-transformers,google/siglip-so400m-patch14-384,siglip,zero-shot-image-classification,2125887,80993794,681,2024-01-08T13:38:32+00:00,0,877960498,False,,Tier 3
-transformers,distilbert/distilbert-base-uncased-finetuned-sst-2-english,distilbert,text-classification,3840845,394343547,928,2022-03-02T23:29:04+00:00,1,66955010,True,,Tier 3
-transformers,microsoft/resnet-50,resnet,image-classification,990608,571704984,497,2022-03-16T15:42:43+00:00,0,25610152,False,,Tier 3
-transformers,audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim,wav2vec2,audio-classification,537095,14598965,173,2022-04-06T12:40:02+00:00,1,165336707,False,,Tier 3
-transformers,google/vit-base-patch16-224-in21k,vit,image-feature-extraction,889263,231383375,413,2022-03-02T23:29:05+00:00,2,86389248,False,,Tier 3
-transformers,Qwen/Qwen2.5-Omni-3B,qwen2_5_omni,any-to-any,1735342,8077099,343,2025-04-30T03:22:47+00:00,3,5537120672,False,,Tier 3
-transformers,microsoft/table-transformer-structure-recognition,table-transformer,object-detection,1799493,35873832,225,2022-10-14T09:19:57+00:00,1,28847819,False,,Tier 3
-transformers,Davlan/xlm-roberta-large-ner-hrl,xlm-roberta,token-classification,492865,3290185,15,2022-03-02T23:29:04+00:00,0,558850571,False,,Tier 3
-transformers,google/owlv2-base-patch16-ensemble,owlv2,zero-shot-object-detection,1578376,25626310,127,2023-10-13T09:27:09+00:00,0,154966791,False,,Tier 3
-transformers,joeddav/xlm-roberta-large-xnli,xlm-roberta,zero-shot-classification,321568,13940294,292,2022-03-02T23:29:05+00:00,1,560943621,False,,Tier 3
-transformers,kha-white/manga-ocr-base,vision-encoder-decoder,image-to-text,434413,7552888,176,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-transformers,facebook/mask2former-swin-large-ade-semantic,mask2former,image-segmentation,751474,3816177,21,2023-01-05T12:25:00+00:00,0,215986594,False,,Tier 3
-transformers,facebook/sam2-hiera-base-plus,sam2_video,mask-generation,139566,525870,12,2024-08-02T19:09:30+00:00,0,80834178,False,,Tier 3
-transformers,facebook/musicgen-melody,musicgen_melody,text-to-audio,8491,96268,255,2023-06-08T17:27:38+00:00,1,1557389894,False,,Tier 3
-transformers,Intel/dpt-hybrid-midas,dpt,depth-estimation,219297,21190639,111,2022-12-06T09:12:55+00:00,0,0,False,,Tier 3
-transformers,microsoft/VibeVoice-ASR-HF,vibevoice_asr,audio-text-to-text,351027,1881620,162,2026-03-02T02:48:09+00:00,3,8330325888,False,,Tier 3
-transformers,sesame/csm-1b,csm,text-to-speech,255097,1635884,2413,2025-03-06T15:36:45+00:00,4,1552791552,False,,Tier 3
-transformers,facebook/vjepa2-vitl-fpc64-256,vjepa2,video-classification,256415,1356853,204,2025-05-31T09:02:35+00:00,0,325971328,False,,Tier 3
-transformers,google-bert/bert-large-uncased-whole-word-masking-finetuned-squad,bert,question-answering,55994,37238348,188,2022-03-02T23:29:04+00:00,0,335143938,True,,Tier 3
-transformers,vidore/colqwen2-v1.0-hf,colqwen2,visual-document-retrieval,43340,553249,23,2025-02-11T10:48:50+00:00,0,2209182336,True,vidore/colqwen2-base,Tier 3
-transformers,ETH-CVG/lightglue_superpoint,lightglue,keypoint-detection,12776,16140171,65,2025-02-20T15:52:56+00:00,0,13744594,False,,Tier 3
-transformers,K-Iwa/time-anchor-modernbert-32m,modernbert,time-series-forecasting,13443,14581,2,2026-06-12T02:07:06+00:00,1,33419528,False,,Tier 3
-transformers,csebuetnlp/mT5_multilingual_XLSum,mt5,summarization,10152,2436815,327,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
-transformers,google/deplot,pix2struct,visual-question-answering,36441,715968,319,2023-04-03T11:05:38+00:00,1,282285696,False,,Tier 3
-diffusers,MiniT2I/MiniT2I,MiniT2IPipeline,text-to-image,872,1052,23,2026-06-14T00:45:42+00:00,2,0,False,,Tier 3
-transformers,JazibEijaz/bert-base-uncased-finetuned-swag-e1-b16-l5e5,bert,multiple-choice,15,657,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-sentence-transformers,sentence-transformers/all-mpnet-base-v2,mpnet,sentence-similarity,29737160,1288509117,1332,2022-03-02T23:29:05+00:00,0.5,109486978,False,,Tier 3
-transformers,FacebookAI/roberta-large,roberta,fill-mask,12225546,638724620,311,2022-03-02T23:29:04+00:00,0.5,355412571,False,,Tier 3
-transformers,openai-community/gpt2,gpt2,text-generation,13741183,894136557,3359,2022-03-02T23:29:04+00:00,10,137022720,False,,Tier 3
-sentence-transformers,ibm-granite/granite-embedding-small-english-r2,modernbert,feature-extraction,2759509,12393948,74,2025-07-17T20:41:53+00:00,0,47662464,False,,Tier 3
-transformers,facebook/wav2vec2-base,wav2vec2,unknown,3465050,37721846,124,2022-03-02T23:29:05+00:00,2,0,False,,Tier 3
-transformers,Qwen/Qwen3-VL-8B-Instruct,qwen3_vl,image-text-to-text,4902186,42567543,1000,2025-10-11T07:23:39+00:00,10,8767123696,True,,Tier 3
-transformers,facebook/nllb-200-distilled-600M,m2m_100,translation,2331116,27168386,936,2022-07-08T09:43:57+00:00,4,600000000,False,,Tier 3
-transformers,Qwen/Qwen3-ASR-1.7B,qwen3_asr,automatic-speech-recognition,1490625,8540359,934,2026-01-28T03:22:40+00:00,9,2349217408,False,,Tier 3
-transformers,google/siglip2-base-patch16-naflex,siglip2,zero-shot-image-classification,977390,7955016,35,2025-02-18T11:39:16+00:00,0,375234050,False,,Tier 3
-transformers,meta-llama/Prompt-Guard-86M,deberta-v2,text-classification,4371496,8339976,354,2024-07-21T19:18:13+00:00,3,278811651,False,,Tier 3
-transformers,Freepik/nsfw_image_detector,timm_wrapper,image-classification,463797,8540176,58,2025-04-10T08:59:44+00:00,0,86351620,True,timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k,Tier 3
-transformers,MIT/ast-finetuned-audioset-10-10-0.4593,audio-spectrogram-transformer,audio-classification,499288,2183968670,360,2022-11-14T18:41:48+00:00,0,86594063,True,,Tier 3
-transformers,camenduru/dinov3-vitl16-pretrain-lvd1689m,dinov3_vit,image-feature-extraction,300655,865812,12,2025-12-17T08:19:47+00:00,0,303129600,True,facebook/dinov3-vit7b16-pretrain-lvd1689m,Tier 3
-transformers,google/gemma-4-31B-it-assistant,gemma4_assistant,any-to-any,1446306,2202675,313,2026-04-23T18:55:29+00:00,0,469518596,True,,Tier 3
-transformers,hustvl/yolos-small,yolos,object-detection,728579,11558103,95,2022-04-26T09:38:22+00:00,0,30684768,False,,Tier 3
-transformers,openai/privacy-filter,openai_privacy_filter,token-classification,419312,1032056,1705,2026-04-17T21:38:35+00:00,7,1399486865,False,,Tier 3
-transformers,google/owlvit-base-patch32,owlvit,zero-shot-object-detection,295554,16417100,150,2022-07-05T06:30:01+00:00,0,153232471,False,,Tier 3
-transformers,KheireddineDaouadi/ZeroAraElectra,electra,zero-shot-classification,9,2316,0,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,microsoft/kosmos-2-patch14-224,kosmos-2,image-to-text,171931,4324896,184,2023-10-02T16:09:33+00:00,0,1664485376,False,,Tier 3
-transformers,nvidia/segformer-b0-finetuned-ade-512-512,segformer,image-segmentation,372541,8540736,193,2022-03-02T23:29:05+00:00,2,3753206,True,,Tier 3
-transformers,jetjodh/sam3,sam3_video,mask-generation,23159,42871,12,2025-11-25T01:57:48+00:00,0,859922360,False,,Tier 3
-transformers,espnet/fastspeech2_conformer,fastspeech2_conformer,text-to-audio,2138,58111,7,2023-06-06T22:25:02+00:00,0,0,False,,Tier 3
-transformers,Intel/zoedepth-nyu-kitti,zoedepth,depth-estimation,103842,22031774,22,2024-04-30T20:22:35+00:00,1,345073307,False,,Tier 3
-transformers,nvidia/audio-flamingo-3-hf,audioflamingo3,audio-text-to-text,247200,1211309,189,2025-10-24T17:38:40+00:00,2,8267215360,True,,Tier 3
-transformers,bosonai/higgs-tts-2-3b-base,higgs_audio_v2,text-to-speech,126153,3505338,689,2025-07-01T15:45:49+00:00,0,5771283456,False,,Tier 3
-transformers,microsoft/xclip-base-patch32,xclip,video-classification,106320,6046345,114,2022-08-25T13:06:15+00:00,0,196585855,False,,Tier 3
-transformers,tau/splinter-base,splinter,question-answering,75824,754336,1,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-sentence-transformers,Haon-Chen/e5-omni-7B,qwen2_5_omni_thinker,visual-document-retrieval,36962,159198,8,2026-01-06T06:56:56+00:00,0,8931813888,True,Qwen/Qwen2.5-Omni-7B,Tier 3
-transformers,facebook/sapiens2-pose-0.4b,sapiens2,keypoint-detection,9163,20464,9,2026-04-23T17:37:48+00:00,2,425677380,True,facebook/sapiens2-pretrain-0.4b,Tier 3
-transformers,ibm-granite/granite-timeseries-patchtst,patchtst,time-series-forecasting,5883,135969,20,2024-01-19T03:31:34+00:00,0,616032,False,,Tier 3
-transformers,IlyaGusev/rut5_base_sum_gazeta,t5,summarization,7818,168013,19,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,microsoft/git-large-vqav2,git,visual-question-answering,723,39600,22,2023-01-02T11:07:38+00:00,1,394857407,False,,Tier 3
-diffusers,Disty0/GLM-Image-SDNQ-4bit-dynamic,GlmImagePipeline,text-to-image,124,2106,16,2026-01-14T12:34:23+00:00,0,3846494272,True,zai-org/GLM-Image,Tier 3
-transformers,LIAMF-USP/aristo-roberta,roberta,multiple-choice,13,17775,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-sentence-transformers,pkshatech/GLuCoSE-base-ja-v2,luke,sentence-similarity,211882,1039064,24,2024-08-22T03:16:48+00:00,0,133067008,True,pkshatech/GLuCoSE-base-ja,Tier 3
-transformers,distilbert/distilbert-base-uncased,distilbert,fill-mask,9899355,671143744,916,2022-03-02T23:29:04+00:00,1,66985530,False,,Tier 3
-transformers,facebook/opt-125m,opt,text-generation,15753943,187821081,281,2022-05-11T08:25:17+00:00,0.5,125000000,False,,Tier 3
-transformers,facebook/w2v-bert-2.0,wav2vec2-bert,feature-extraction,2135128,36428273,224,2023-12-19T07:41:49+00:00,1,580493120,False,,Tier 3
-transformers,TostAI/nsfw-image-detection-large,focalnet,unknown,3235518,11831099,21,2024-09-13T19:18:59+00:00,2,87126219,False,,Tier 3
-transformers,zai-org/GLM-OCR,glm_ocr,image-text-to-text,3508456,26118508,1938,2026-01-30T04:24:21+00:00,17,1325258240,False,,Tier 3
-transformers,K024/mt5-zh-ja-en-trimmed,mt5,translation,125,68205,57,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,nvidia/parakeet-ctc-1.1b,parakeet_ctc,automatic-speech-recognition,1035777,6524677,51,2023-12-28T15:27:57+00:00,1,1062626305,False,,Tier 3
-transformers,OFA-Sys/chinese-clip-vit-base-patch16,chinese_clip,zero-shot-image-classification,329747,2531194,133,2022-11-09T08:14:09+00:00,0,0,False,,Tier 3
-transformers,SamLowe/roberta-base-go_emotions,roberta,text-classification,1008926,97137977,682,2022-09-15T13:04:21+00:00,2,124667678,False,,Tier 3
-transformers,microsoft/swinv2-tiny-patch4-window16-256,swinv2,image-classification,402280,10057500,14,2022-06-14T06:17:52+00:00,0,0,False,,Tier 3
-transformers,ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition,wav2vec2,audio-classification,15265,3304096,251,2022-03-02T23:29:05+00:00,1,316496520,False,,Tier 3
-transformers,facebook/dinov2-with-registers-base,dinov2_with_registers,image-feature-extraction,82870,1994121,11,2024-12-20T17:20:43+00:00,0,86583552,False,,Tier 3
-transformers,google/gemma-4-12B-it-assistant,gemma4_unified_assistant,any-to-any,109045,160201,101,2026-05-23T01:17:47+00:00,0,422856964,True,,Tier 3
-transformers,PaddlePaddle/PP-DocLayoutV3_safetensors,pp_doclayout_v3,object-detection,667371,1903846,31,2026-01-20T09:56:56+00:00,0,33288957,True,PaddlePaddle/PP-DocLayoutV3,Tier 3
-transformers,Davlan/distilbert-base-multilingual-cased-ner-hrl,distilbert,token-classification,160666,46446324,83,2022-03-02T23:29:04+00:00,0,134741001,False,,Tier 3
-transformers,iSEE-Laboratory/llmdet_base,mm-grounding-dino,zero-shot-object-detection,33499,5141163,10,2025-05-30T10:10:59+00:00,0,233473940,False,,Tier 3
-transformers,ClaudeYang/awesome_fb_model,bart,zero-shot-classification,14,3821,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,optimum-intel-internal-testing/pix2struct-tiny-random,pix2struct,image-to-text,109168,484924,0,2025-10-21T10:03:08+00:00,0,0,False,,Tier 3
-transformers,shi-labs/oneformer_ade20k_swin_large,oneformer,image-segmentation,108276,2620525,35,2022-11-15T19:00:56+00:00,0,0,False,,Tier 3
-transformers,yonigozlan/EdgeTAM-hf,edgetam_video,mask-generation,9571,80509,72,2025-09-26T21:26:11+00:00,0,13943298,False,,Tier 3
-transformers,espnet/fastspeech2_conformer_with_hifigan,fastspeech2_conformer_with_hifigan,text-to-audio,1663,20490,1,2023-07-20T23:08:32+00:00,0,0,False,,Tier 3
-transformers,apple/DepthPro-hf,depth_pro,depth-estimation,18353,421284,106,2024-11-27T13:52:11+00:00,0,951991330,False,,Tier 3
-transformers,nvidia/music-flamingo-2601-hf,musicflamingo,audio-text-to-text,134092,549617,106,2026-01-01T09:33:48+00:00,0,8267215360,False,,Tier 3
-transformers,suno/bark-small,bark,text-to-speech,71144,1385877,261,2023-07-18T13:50:46+00:00,1,0,False,,Tier 3
-transformers,google/vivit-b-16x2-kinetics400,vivit,video-classification,38950,1450969,41,2022-11-23T21:21:55+00:00,0,0,False,,Tier 3
-transformers,AmazonScience/qanlu,roberta,question-answering,113,14942,13,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,magic-leap-community/superpoint,superpoint,keypoint-detection,8569,16268203,26,2024-03-13T17:24:17+00:00,0,1300865,False,,Tier 3
-transformers,ibm-granite/granite-timeseries-patchtsmixer,patchtsmixer,time-series-forecasting,5654,59045,23,2023-09-15T13:14:46+00:00,0,196144,False,,Tier 3
-transformers,IlyaGusev/mbart_ru_sum_gazeta,mbart,summarization,440,1107969,66,2022-03-02T23:29:04+00:00,0,867129515,False,,Tier 3
-transformers,JazibEijaz/bert-base-uncased-finetuned-semeval2020-task4a-append-e2-b32-l5e5,bert,multiple-choice,14,614,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-transformers,Alibaba-NLP/gte-modernbert-base,modernbert,sentence-similarity,134084,2000580,200,2025-01-20T03:03:48+00:00,1,149014272,True,answerdotai/ModernBERT-base,Tier 3
-transformers,answerdotai/ModernBERT-base,modernbert,fill-mask,7635413,54596973,1074,2024-12-11T11:38:06+00:00,2,149655232,False,,Tier 3
-transformers,Qwen/Qwen2.5-1.5B-Instruct,qwen2,text-generation,13154575,199101877,776,2024-09-17T14:10:29+00:00,1.5,1543714304,True,Qwen/Qwen2.5-1.5B,Tier 3
-sentence-transformers,BAAI/bge-multilingual-gemma2,gemma2,feature-extraction,1280305,10343439,203,2024-07-25T16:55:46+00:00,0,9241713152,False,,Tier 3
-transformers,google/flan-t5-base,t5,unknown,1825955,62183671,1087,2022-10-21T10:02:31+00:00,1,247577856,False,,Tier 3
-transformers,Qwen/Qwen2-VL-2B-Instruct,qwen2_vl,image-text-to-text,3293639,44421803,516,2024-08-28T09:02:15+00:00,1,2208985600,True,Qwen/Qwen2-VL-2B,Tier 3
-transformers,Thalesian/cuneiformBase-400m,umt5,translation,103,6508,4,2026-02-19T23:51:30+00:00,0,395678976,True,google/umt5-base,Tier 3
-transformers,nvidia/nemotron-3.5-asr-streaming-0.6b,nemotron3_5_asr,automatic-speech-recognition,546643,572120,884,2026-05-15T21:52:25+00:00,60,637997088,False,,Tier 3
-transformers,facebook/metaclip-2-worldwide-giant-378,metaclip_2,zero-shot-image-classification,62291,169125,13,2025-08-16T11:26:00+00:00,0,3631197057,False,,Tier 3
-transformers,cardiffnlp/twitter-xlm-roberta-base-sentiment,xlm-roberta,text-classification,1030352,53302622,271,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
-transformers,facebook/convnextv2-tiny-1k-224,convnextv2,image-classification,188340,2412617,6,2023-02-17T14:03:53+00:00,0,28635496,False,,Tier 3
-transformers,Bagus/wav2vec2-xlsr-japanese-speech-emotion-recognition,wav2vec2,audio-classification,489,18471,5,2022-03-02T23:29:04+00:00,0,316492420,False,,Tier 3
-transformers,facebook/ijepa_vith14_1k,ijepa,image-feature-extraction,13063,547336,17,2024-08-25T15:01:05+00:00,0,630762240,False,,Tier 3
-transformers,deepseek-community/Janus-Pro-1B,janus,any-to-any,52756,673211,16,2025-03-01T14:42:15+00:00,0,2076636811,False,,Tier 3
-transformers,PekingU/rtdetr_r101vd_coco_o365,rt_detr,object-detection,292984,5030820,18,2024-06-05T00:42:49+00:00,0,76798700,False,,Tier 3
-transformers,Jean-Baptiste/camembert-ner,camembert,token-classification,117596,89994386,121,2022-03-02T23:29:04+00:00,0,110035719,False,,Tier 3
-transformers,omlab/omdet-turbo-swin-tiny-hf,omdet-turbo,zero-shot-object-detection,17115,798986,42,2024-09-24T16:52:34+00:00,0,115428310,False,,Tier 3
-transformers,Jiva/xlm-roberta-large-it-mnli,xlm-roberta,zero-shot-classification,31,65416,8,2022-03-02T23:29:04+00:00,0,559894021,True,,Tier 3
-transformers,alibaba-damo/mgp-str-base,mgp-str,image-to-text,84972,988750,65,2022-11-23T13:38:30+00:00,0,147952305,False,,Tier 3
-transformers,tue-mps/coco_panoptic_eomt_large_640,eomt,image-segmentation,44448,303292,13,2025-03-26T17:28:05+00:00,0,316695824,False,,Tier 3
-transformers,syscv-community/sam-hq-vit-base,sam_hq,mask-generation,7727,113044,12,2025-02-18T15:46:48+00:00,0,94806832,False,,Tier 3
-transformers,ylacombe/musicgen-melody-bella-ciao,musicgen_melody_decoder,text-to-audio,24,3302,0,2024-02-08T19:48:18+00:00,0,1387570176,True,ylacombe/musicgen-melody,Tier 3
-transformers,vinvino02/glpn-kitti,glpn,depth-estimation,4014,1924615,9,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-transformers,facebook/hf-seamless-m4t-medium,seamless_m4t,text-to-speech,86821,975760,32,2023-08-28T16:30:57+00:00,0,0,False,,Tier 3
-transformers,facebook/timesformer-base-finetuned-k600,timesformer,video-classification,28965,383007,12,2022-10-07T20:53:42+00:00,0,0,True,,Tier 3
-transformers,AlexKay/xlm-roberta-large-qa-multilingual-finedtuned-ru,xlm-roberta,question-answering,110,420241,50,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,huggingface/time-series-transformer-tourism-monthly,time_series_transformer,time-series-forecasting,2150,142447,31,2022-09-26T14:37:22+00:00,0,30537,False,,Tier 3
-transformers,Callidior/bert2bert-base-arxiv-titlegen,encoder-decoder,summarization,227,46481,13,2022-03-02T23:29:04+00:00,0,247364410,False,,Tier 3
-transformers,Junmai/klue-roberta-large-copa-finetuned-v1,roberta,multiple-choice,11,1420,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-sentence-transformers,shibing624/text2vec-base-chinese-paraphrase,ernie,sentence-similarity,111034,1917697,78,2023-06-19T12:48:16+00:00,0,117946880,False,,Tier 3
-transformers,microsoft/deberta-v3-base,deberta-v2,fill-mask,2616606,67953290,430,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-transformers,google/gemma-3-1b-it,gemma3_text,text-generation,3974832,42825483,1059,2025-03-10T12:09:00+00:00,5,999885952,True,google/gemma-3-1b-pt,Tier 3
-transformers,microsoft/wavlm-base-plus,wavlm,feature-extraction,1212989,22413557,40,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
-transformers,docling-project/docling-layout-heron,rt_detr_v2,unknown,1852403,10210586,45,2025-04-15T12:36:48+00:00,0,42889979,False,,Tier 3
-transformers,llava-hf/llava-1.5-7b-hf,llava,image-text-to-text,3091461,36362535,368,2023-12-05T09:31:24+00:00,1,7063427072,True,,Tier 3
-transformers,datnth1709/VietAI-NLP-ITN,encoder-decoder,translation,6,516,1,2022-09-22T19:22:12+00:00,1,0,True,,Tier 3
-transformers,ibm-granite/granite-speech-3.3-2b,granite_speech,automatic-speech-recognition,513572,2639660,55,2025-04-28T15:25:29+00:00,0,3009285376,True,ibm-granite/granite-3.3-2b-instruct,Tier 3
-transformers,BAAI/AltCLIP,altclip,zero-shot-image-classification,49160,1114918,32,2022-11-15T03:22:10+00:00,0,0,False,,Tier 3
-transformers,microsoft/deberta-base-mnli,deberta,text-classification,72087,2303223,9,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
-transformers,Organika/sdxl-detector,swin,image-classification,133803,715251,57,2023-12-31T04:54:35+00:00,0,86802898,False,,Tier 3
-transformers,Bagus/wav2vec2-xlsr-greek-speech-emotion-recognition,wav2vec2,audio-classification,32,1805,1,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
-transformers,czczup/textnet-base,textnet,image-feature-extraction,2666,16663,4,2024-12-24T10:10:58+00:00,0,13552064,False,,Tier 3
-transformers,Aryn/deformable-detr-DocLayNet,deformable_detr,object-detection,16423,1019281,51,2024-03-19T00:46:32+00:00,0,41145648,False,,Tier 3
-transformers,Jean-Baptiste/roberta-large-ner-english,roberta,token-classification,34006,13154413,79,2022-03-02T23:29:04+00:00,0,354315783,False,,Tier 3
-transformers,IDEA-Research/grounding-dino-base,grounding-dino,zero-shot-object-detection,1167634,29851908,199,2023-09-25T01:27:30+00:00,2,232810880,False,,Tier 3
-transformers,microsoft/git-base,git,image-to-text,11764,13312001,111,2022-12-06T09:22:35+00:00,0,176620287,False,,Tier 3
-transformers,microsoft/beit-base-finetuned-ade-640-640,beit,image-segmentation,37971,135110,13,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
-transformers,vil-uob/sam3-litetext-s0,sam3_lite_text,mask-generation,5588,20680,19,2026-03-26T19:59:11+00:00,0,529232438,False,,Tier 3
-transformers,facebook/musicgen-small,musicgen,text-to-audio,208481,11080579,498,2023-06-08T17:28:01+00:00,2,591087174,False,,Tier 3
-transformers,depth-anything/prompt-depth-anything-vits-hf,prompt_depth_anything,depth-estimation,651,27311,5,2024-12-23T05:53:53+00:00,0,25083073,False,,Tier 3
-transformers,nineninesix/gepard-1.0,qwen3_5_text,text-to-speech,8524,8524,117,2026-06-22T06:34:26+00:00,30,555694169,True,nineninesix/qwen3_5-full-attn-only-14,Tier 3
-transformers,MCG-NJU/videomae-base-finetuned-kinetics,videomae,video-classification,42390,3937777,52,2022-07-08T15:01:34+00:00,1,86534800,True,,Tier 3
-transformers,Akari/albert-base-v2-finetuned-squad,albert,question-answering,28,1756,1,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-transformers,ELiRF/NASES,bart,summarization,90,12968,3,2022-03-02T23:29:04+00:00,0,415271520,False,,Tier 3
-transformers,JazibEijaz/bert-base-uncased-finetuned-semeval2020-task4b-base-e2-b32-l3e5,bert,multiple-choice,13,449,0,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
-sentence-transformers,nvidia/Nemotron-3-Embed-1B-BF16,ministral3,sentence-similarity,61708,61708,70,2026-07-14T07:32:18+00:00,69,1140918272,True,mistralai/Ministral-3-3B-Instruct-2512,Tier 3
-transformers,facebook/esm2_t33_650M_UR50D,esm,fill-mask,1148942,46742498,86,2022-09-27T14:36:16+00:00,1,652358616,False,,Tier 3
+provider,model_id,model_type,category,pipeline_tag,downloads,downloads_all_time,likes,created_at,trending_score,params_est,is_finetune,base_model,tier
+transformers,sentence-transformers/all-MiniLM-L6-v2,bert,Natural Language Processing,sentence-similarity,257599358,3490114484,5165,2022-03-02T23:29:05+00:00,31,22713728,True,nreimers/MiniLM-L6-H384-uncased,Tier 3
+transformers,google-bert/bert-base-uncased,bert,Natural Language Processing,fill-mask,114894026,3138334438,2725,2022-03-02T23:29:04+00:00,9,110106428,False,,Tier 3
+transformers,meta-llama/Llama-3.2-1B-Instruct,llama,Natural Language Processing,text-generation,10100649,92330036,1550,2024-09-18T15:12:47+00:00,2,1235814400,False,,Tier 3
+transformers,BAAI/bge-small-en-v1.5,bert,Natural Language Processing,feature-extraction,72470174,356408634,521,2023-09-12T05:20:55+00:00,3,33360512,False,,Tier 3
+transformers,google/electra-base-discriminator,electra,Other,unknown,55807204,841709327,148,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
+transformers,cross-encoder/ms-marco-MiniLM-L6-v2,bert,Natural Language Processing,text-ranking,89120995,428487446,293,2022-03-02T23:29:05+00:00,0,22714113,True,cross-encoder/ms-marco-MiniLM-L12-v2,Tier 3
+transformers,jonatasgrosman/wav2vec2-large-xlsr-53-portuguese,wav2vec2,Audio,automatic-speech-recognition,4466381,169312946,55,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,openai/clip-vit-base-patch32,clip,Computer Vision,zero-shot-image-classification,22864326,648898270,992,2022-03-02T23:29:05+00:00,2,0,False,,Tier 3
+transformers,Qwen/Qwen3.5-9B,qwen3_5,Multimodal,image-text-to-text,12236962,44857373,1783,2026-02-27T12:58:26+00:00,20,9653104368,True,Qwen/Qwen3.5-9B-Base,Tier 3
+transformers,ProsusAI/finbert,bert,Natural Language Processing,text-classification,5708974,112214627,1209,2022-03-02T23:29:04+00:00,5,0,False,,Tier 3
+transformers,google-t5/t5-small,t5,Natural Language Processing,translation,25286314,227212736,588,2022-03-02T23:29:04+00:00,6,60506880,False,,Tier 3
+transformers,Falconsai/nsfw_image_detection,vit,Computer Vision,image-classification,5672806,1378059094,1152,2023-10-13T23:50:01+00:00,0.2,85800194,False,,Tier 3
+transformers,StanfordAIMI/stanford-deidentifier-base,bert,Natural Language Processing,token-classification,1950042,24180197,82,2022-06-16T18:24:42+00:00,0,0,False,,Tier 3
+transformers,google/gemma-4-E4B-it,gemma4,Multimodal,any-to-any,5838034,24120232,1440,2026-03-02T19:57:40+00:00,19,7996156490,True,google/gemma-4-E4B,Tier 3
+transformers,laion/clap-htsat-fused,clap,Audio,audio-classification,6707789,192095637,121,2023-02-16T20:45:11+00:00,0.5,153558316,False,,Tier 3
+transformers,facebook/dinov2-small,dinov2,Computer Vision,image-feature-extraction,3997535,51981997,70,2023-07-31T16:53:09+00:00,0,22056576,False,,Tier 3
+transformers,facebook/bart-large-mnli,bart,Natural Language Processing,zero-shot-classification,3216066,157048532,1594,2022-03-02T23:29:05+00:00,3,407344133,False,,Tier 3
+transformers,microsoft/table-transformer-structure-recognition,table-transformer,Computer Vision,object-detection,1510628,36617511,226,2022-10-14T09:19:57+00:00,1,28847819,False,,Tier 3
+transformers,Salesforce/blip-image-captioning-base,blip,Computer Vision,image-to-text,1967668,65514073,873,2022-12-12T15:19:02+00:00,6,0,False,,Tier 3
+transformers,IDEA-Research/grounding-dino-base,grounding-dino,Computer Vision,zero-shot-object-detection,1278036,30534720,200,2023-09-25T01:27:30+00:00,1,232810880,False,,Tier 3
+transformers,nvidia/segformer-b0-finetuned-ade-512-512,segformer,Computer Vision,image-segmentation,376162,8733489,195,2022-03-02T23:29:05+00:00,1,3753206,True,,Tier 3
+transformers,facebook/bart-large-cnn,bart,Natural Language Processing,summarization,1553028,146336590,1606,2022-03-02T23:29:05+00:00,1,406290432,False,,Tier 3
+transformers,ahotrod/electra_large_discriminator_squad2_512,electra,Natural Language Processing,question-answering,901266,11873890,7,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,facebook/musicgen-medium,musicgen,Audio,text-to-audio,1986800,28720625,164,2023-06-08T17:28:18+00:00,0,0,False,,Tier 3
+transformers,wasmdashai/lahja-sa-ahmad-v1,vits,Audio,text-to-speech,265471,265471,5,2026-07-16T07:12:19+00:00,0,36284784,True,wasmdashai/vits-ar-sa-A,Tier 3
+transformers,depth-anything/Depth-Anything-V2-Small-hf,depth_anything,Computer Vision,depth-estimation,1251587,19411374,41,2024-06-18T10:01:15+00:00,0,24785089,False,,Tier 3
+transformers,facebook/sam-vit-base,sam,Computer Vision,mask-generation,575204,16044302,171,2023-04-19T14:15:29+00:00,0,93735728,False,,Tier 3
+transformers,Qwen/Qwen2-Audio-7B-Instruct,qwen2_audio,Multimodal,audio-text-to-text,697172,6564983,551,2024-07-31T09:22:21+00:00,0,8397094912,False,,Tier 3
+transformers,MCG-NJU/videomae-base,videomae,Computer Vision,video-classification,458246,4198313,56,2022-08-03T09:27:59+00:00,0,94210944,False,,Tier 3
+transformers,usyd-community/vitpose-plus-base,vitpose,Computer Vision,keypoint-detection,997227,38351003,33,2025-01-08T12:42:22+00:00,0,125396497,False,,Tier 3
+transformers,microsoft/tapex-base-finetuned-wikisql,bart,Natural Language Processing,table-question-answering,943516,11245603,25,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,Salesforce/blip-vqa-base,blip,Multimodal,visual-question-answering,547595,13357322,194,2022-12-12T17:51:53+00:00,0,384673596,False,,Tier 3
+transformers,vidore/colpali-v1.3-hf,colpali,Multimodal,visual-document-retrieval,235522,1176001,26,2024-11-28T22:30:37+00:00,0,2924613488,True,vidore/colpaligemma-3b-pt-448-base,Tier 3
+transformers,llava-hf/LLaVA-NeXT-Video-7B-hf,llava_next_video,Multimodal,video-text-to-text,192345,2841709,126,2024-06-05T13:28:32+00:00,0,7063431168,False,,Tier 3
+transformers,google/timesfm-2.5-200m-transformers,timesfm2_5,Tabular,time-series-forecasting,101946,665159,129,2026-02-19T22:08:53+00:00,2,231289280,False,,Tier 3
+transformers,impira/layoutlm-document-qa,layoutlm,Multimodal,document-question-answering,69433,3014187,1183,2022-08-07T21:07:19+00:00,0,127793412,False,,Tier 3
+diffusers,google/ddpm-cifar10-32,DDPMPipeline,Computer Vision,unconditional-image-generation,40158,1496952,89,2022-06-16T12:53:22+00:00,1,35746307,False,,Tier 3
+transformers,caidas/swin2SR-classical-sr-x2-64,swin2sr,Computer Vision,image-to-image,17681,4142150,47,2022-12-16T14:05:18+00:00,0,12091571,False,,Tier 3
+transformers,danlou/roberta-large-finetuned-csqa,roberta,Other,multiple-choice,16344,113334,0,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+diffusers,DeepFloyd/IF-I-XL-v1.0,IFPipeline,Computer Vision,text-to-image,2258,2143044,677,2023-04-06T21:22:41+00:00,0,4304695110,False,,Tier 3
+transformers,HKUSTAudio/xcodec2,xcodec2,Audio,audio-to-audio,3561,521042,101,2025-01-07T06:07:24+00:00,0,822739130,False,,Tier 3
+transformers,edbeeching/decision-transformer-gym-hopper-medium,decision_transformer,Reinforcement Learning,reinforcement-learning,1428,187925,7,2022-03-16T08:20:31+00:00,0,0,False,,Tier 3
+transformers,Searchium-ai/clip4clip-webvid150k,clip,Computer Vision,text-to-video,616,184622,46,2023-04-17T16:27:47+00:00,0,151277439,False,,Tier 3
+transformers,BAAI/bge-m3,xlm-roberta,Natural Language Processing,sentence-similarity,35237628,248270479,3304,2024-01-27T17:07:29+00:00,20,0,False,,Tier 3
+transformers,FacebookAI/xlm-roberta-base,xlm-roberta,Natural Language Processing,fill-mask,21268431,689321676,877,2022-03-02T23:29:04+00:00,0.5,278885778,False,,Tier 3
+transformers,Qwen/Qwen3-0.6B,qwen3,Natural Language Processing,text-generation,29023065,179469872,1481,2025-04-27T03:40:08+00:00,20,751632384,True,Qwen/Qwen3-0.6B-Base,Tier 3
+transformers,intfloat/multilingual-e5-large,xlm-roberta,Natural Language Processing,feature-extraction,7665419,97189541,1237,2023-06-30T07:38:19+00:00,1,559890946,False,,Tier 3
+transformers,E-MIMIC/inclusively-reformulation-it5,t5,Other,unknown,3419090,29278164,2,2023-06-23T15:06:30+00:00,0,783098880,False,,Tier 3
+transformers,cross-encoder/mmarco-mMiniLMv2-L12-H384-v1,xlm-roberta,Natural Language Processing,text-ranking,2649676,10004277,78,2022-06-01T08:27:31+00:00,1,117641603,True,nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large,Tier 3
+transformers,openai/whisper-large-v3-turbo,whisper,Audio,automatic-speech-recognition,8698303,106460917,3213,2024-10-01T07:39:28+00:00,13,808878080,True,openai/whisper-large-v3,Tier 3
+transformers,google/siglip-so400m-patch14-384,siglip,Computer Vision,zero-shot-image-classification,2219485,82061649,682,2024-01-08T13:38:32+00:00,1,877960498,False,,Tier 3
+transformers,Qwen/Qwen2.5-VL-7B-Instruct,qwen2_5_vl,Multimodal,image-text-to-text,9332938,88188132,1663,2025-01-26T09:26:37+00:00,7,8292166656,False,,Tier 3
+transformers,cardiffnlp/twitter-roberta-base-sentiment-latest,roberta,Natural Language Processing,text-classification,2658866,322732356,823,2022-03-15T01:21:58+00:00,3,0,False,,Tier 3
+transformers,Helsinki-NLP/opus-mt-nl-en,marian,Natural Language Processing,translation,1183889,17620209,10,2022-03-02T23:29:04+00:00,0,0,False,,Tier 3
+transformers,nvidia/mit-b2,segformer,Computer Vision,image-classification,1501452,5997936,7,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,w11wo/indonesian-roberta-base-posp-tagger,roberta,Natural Language Processing,token-classification,3139738,56115505,10,2022-03-02T23:29:05+00:00,0,124075034,True,flax-community/indonesian-roberta-base,Tier 3
+transformers,google/gemma-4-12B-it,gemma4_unified,Multimodal,any-to-any,3028659,6331144,1392,2026-05-23T01:17:15+00:00,26,11959730224,True,google/gemma-4-12B,Tier 3
+transformers,audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim,wav2vec2,Audio,audio-classification,702138,15063788,173,2022-04-06T12:40:02+00:00,0,165336707,False,,Tier 3
+transformers,google/vit-base-patch16-224-in21k,vit,Computer Vision,image-feature-extraction,938907,231894622,415,2022-03-02T23:29:05+00:00,0,86389248,False,,Tier 3
+transformers,MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7,deberta-v2,Natural Language Processing,zero-shot-classification,790412,7540737,381,2022-08-22T16:59:35+00:00,1,278812163,False,,Tier 3
+transformers,hustvl/yolos-small,yolos,Computer Vision,object-detection,752047,11958098,95,2022-04-26T09:38:22+00:00,0,30684768,False,,Tier 3
+transformers,kha-white/manga-ocr-base,vision-encoder-decoder,Computer Vision,image-to-text,509251,7850548,177,2022-03-02T23:29:05+00:00,1,0,False,,Tier 3
+transformers,google/owlv2-base-patch16-ensemble,owlv2,Computer Vision,zero-shot-object-detection,1496511,26357522,127,2023-10-13T09:27:09+00:00,0,154966791,False,,Tier 3
+transformers,facebook/mask2former-swin-large-ade-semantic,mask2former,Computer Vision,image-segmentation,620907,4054668,23,2023-01-05T12:25:00+00:00,1,215986594,False,,Tier 3
+transformers,google/pegasus-xsum,pegasus,Natural Language Processing,summarization,179417,12593552,222,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,deepset/roberta-base-squad2,roberta,Natural Language Processing,question-answering,518687,91247754,949,2022-03-02T23:29:05+00:00,0,124057092,True,FacebookAI/roberta-base,Tier 3
+transformers,facebook/musicgen-melody,musicgen_melody,Audio,text-to-audio,14960,106083,255,2023-06-08T17:27:38+00:00,0,1557389894,False,,Tier 3
+transformers,bosonai/higgs-tts-2-3b-base,higgs_audio_v2,Audio,text-to-speech,327250,3767858,694,2025-07-01T15:45:49+00:00,0,5771283456,False,,Tier 3
+transformers,Intel/dpt-hybrid-midas,dpt,Computer Vision,depth-estimation,298638,21362022,111,2022-12-06T09:12:55+00:00,0,0,False,,Tier 3
+transformers,facebook/sam2-hiera-base-plus,sam2_video,Computer Vision,mask-generation,142648,602500,12,2024-08-02T19:09:30+00:00,0,80834178,False,,Tier 3
+transformers,nvidia/audio-flamingo-3-hf,audioflamingo3,Multimodal,audio-text-to-text,189116,1309053,190,2025-10-24T17:38:40+00:00,1,8267215360,False,,Tier 3
+transformers,facebook/vjepa2-vitl-fpc64-256,vjepa2,Computer Vision,video-classification,301182,1527173,204,2025-05-31T09:02:35+00:00,0,325971328,False,,Tier 3
+transformers,ETH-CVG/lightglue_superpoint,lightglue,Computer Vision,keypoint-detection,18901,16152354,65,2025-02-20T15:52:56+00:00,0,13744594,False,,Tier 3
+transformers,google/tapas-large-finetuned-sqa,tapas,Natural Language Processing,table-question-answering,55144,474473,7,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,dandelin/vilt-b32-finetuned-vqa,vilt,Multimodal,visual-question-answering,106430,6123319,424,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,Haon-Chen/e5-omni-7B,qwen2_5_omni_thinker,Multimodal,visual-document-retrieval,41909,183054,8,2026-01-06T06:56:56+00:00,0,8931813888,True,Qwen/Qwen2.5-Omni-7B,Tier 3
+transformers,ibm-granite/granite-timeseries-patchtst,patchtst,Tabular,time-series-forecasting,66674,199635,20,2024-01-19T03:31:34+00:00,0,616032,False,,Tier 3
+transformers,naver-clova-ix/donut-base-finetuned-docvqa,vision-encoder-decoder,Multimodal,document-question-answering,66186,2317846,280,2022-07-19T13:58:22+00:00,0,0,True,,Tier 3
+diffusers,akasharidas/ddpm-cifar10-32-dot.in.name,modeling_ddpm,Computer Vision,unconditional-image-generation,17958,34469,0,2025-06-09T17:25:27+00:00,0,35746307,False,,Tier 3
+transformers,caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr,swin2sr,Computer Vision,image-to-image,13675,830225,23,2022-12-16T14:13:44+00:00,0,0,False,,Tier 3
+transformers,LIAMF-USP/roberta-large-finetuned-race,roberta,Other,multiple-choice,1114,346610,11,2022-03-02T23:29:04+00:00,0,0,True,,Tier 3
+diffusers,UnfilteredAI/NSFW-GEN-ANIME,StableDiffusionXLPipeline,Computer Vision,text-to-image,3199,222614,199,2024-04-14T08:25:02+00:00,0.1,3468838944,True,OEvortex/PixelGen,Tier 3
+transformers,microsoft/speecht5_vc,speecht5,Audio,audio-to-audio,2627,124019,112,2023-02-02T13:01:55+00:00,0,0,False,,Tier 3
+diffusers,DuoNeural/Cosmos3-Nano-GPTQ-4bit,Cosmos3OmniPipeline,Computer Vision,text-to-video,169,452,1,2026-06-02T13:39:49+00:00,0,0,True,nvidia/Cosmos3-Nano,Tier 3
+transformers,sentence-transformers/all-mpnet-base-v2,mpnet,Natural Language Processing,sentence-similarity,25794743,1301955890,1337,2022-03-02T23:29:05+00:00,0.5,109486978,False,,Tier 3
+transformers,FacebookAI/roberta-large,roberta,Natural Language Processing,fill-mask,13340464,646614272,317,2022-03-02T23:29:04+00:00,0,355412571,False,,Tier 3
+transformers,openai-community/gpt2,gpt2,Natural Language Processing,text-generation,13645997,901052186,3385,2022-03-02T23:29:04+00:00,6,137022720,False,,Tier 3
+transformers,ibm-granite/granite-embedding-small-english-r2,modernbert,Natural Language Processing,feature-extraction,3681107,14594676,75,2025-07-17T20:41:53+00:00,0,47662464,False,,Tier 3
+transformers,facebook/contriever,bert,Other,unknown,7871181,172141260,96,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,cross-encoder/stsb-roberta-large,roberta,Natural Language Processing,text-ranking,394921,4955948,14,2022-03-02T23:29:05+00:00,0,355361283,True,FacebookAI/roberta-large,Tier 3
+transformers,Qwen/Qwen3-ASR-0.6B,qwen3_asr,Audio,automatic-speech-recognition,4106709,7406972,327,2026-01-28T03:15:39+00:00,4,938008576,False,,Tier 3
+transformers,google/siglip2-base-patch16-naflex,siglip2,Computer Vision,zero-shot-image-classification,1565151,8947973,37,2025-02-18T11:39:16+00:00,2,375234050,False,,Tier 3
+transformers,Qwen/Qwen3-VL-8B-Instruct,qwen3_vl,Multimodal,image-text-to-text,4896095,45169239,1025,2025-10-11T07:23:39+00:00,11,8767123696,False,,Tier 3
+transformers,BAAI/bge-reranker-base,xlm-roberta,Natural Language Processing,text-classification,4666221,43251421,242,2023-09-11T12:30:04+00:00,0,278044931,False,,Tier 3
+transformers,facebook/nllb-200-distilled-600M,m2m_100,Natural Language Processing,translation,1715998,27808524,947,2022-07-08T09:43:57+00:00,5,600000000,False,,Tier 3
+transformers,microsoft/resnet-50,resnet,Computer Vision,image-classification,1083099,572149898,502,2022-03-16T15:42:43+00:00,4,25610152,False,,Tier 3
+transformers,kredor/punctuate-all,xlm-roberta,Natural Language Processing,token-classification,696670,22704599,28,2022-04-09T12:05:11+00:00,0,0,False,,Tier 3
+transformers,Qwen/Qwen2.5-Omni-3B,qwen2_5_omni,Multimodal,any-to-any,1624980,8973417,346,2025-04-30T03:22:47+00:00,2,5537120672,False,,Tier 3
+transformers,MIT/ast-finetuned-audioset-10-10-0.4593,audio-spectrogram-transformer,Audio,audio-classification,988378,2184715115,363,2022-11-14T18:41:48+00:00,1,86594063,True,,Tier 3
+transformers,camenduru/dinov3-vitl16-pretrain-lvd1689m,dinov3_vit,Computer Vision,image-feature-extraction,380673,1097281,15,2025-12-17T08:19:47+00:00,1,303129600,True,facebook/dinov3-vit7b16-pretrain-lvd1689m,Tier 3
+transformers,typeform/distilbert-base-uncased-mnli,distilbert,Natural Language Processing,zero-shot-classification,349422,6601985,45,2022-03-02T23:29:05+00:00,0,66955779,False,,Tier 3
+transformers,facebook/detr-resnet-50,detr,Computer Vision,object-detection,667872,26942681,965,2022-03-02T23:29:05+00:00,0,41631008,False,,Tier 3
+transformers,microsoft/kosmos-2-patch14-224,kosmos-2,Computer Vision,image-to-text,181831,4424887,184,2023-10-02T16:09:33+00:00,0,1664485376,False,,Tier 3
+transformers,google/owlvit-base-patch32,owlvit,Computer Vision,zero-shot-object-detection,223225,16489875,150,2022-07-05T06:30:01+00:00,0,153232471,False,,Tier 3
+transformers,CIDAS/clipseg-rd64-refined,clipseg,Computer Vision,image-segmentation,1101428,150390623,141,2022-11-01T14:25:57+00:00,0,150748019,False,,Tier 3
+transformers,Falconsai/text_summarization,t5,Natural Language Processing,summarization,31316,1987313,302,2023-10-21T00:53:53+00:00,2,60506624,False,,Tier 3
+transformers,deepset/bert-large-uncased-whole-word-masking-squad2,bert,Natural Language Processing,question-answering,197100,14099401,31,2022-03-02T23:29:05+00:00,0,335143938,False,,Tier 3
+transformers,espnet/fastspeech2_conformer,fastspeech2_conformer,Audio,text-to-audio,6238,62729,7,2023-06-06T22:25:02+00:00,0,0,False,,Tier 3
+transformers,sesame/csm-1b,csm,Audio,text-to-speech,213149,1727474,2418,2025-03-06T15:36:45+00:00,2,1552791552,False,,Tier 3
+transformers,Intel/zoedepth-nyu-kitti,zoedepth,Computer Vision,depth-estimation,99393,22080037,22,2024-04-30T20:22:35+00:00,0,345073307,False,,Tier 3
+transformers,syscv-community/sam-hq-vit-base,sam_hq,Computer Vision,mask-generation,24473,131332,12,2025-02-18T15:46:48+00:00,0,94806832,False,,Tier 3
+transformers,microsoft/VibeVoice-ASR-HF,vibevoice_asr,Multimodal,audio-text-to-text,176656,1925912,171,2026-03-02T02:48:09+00:00,4,8330325888,False,,Tier 3
+transformers,microsoft/xclip-base-patch32,xclip,Computer Vision,video-classification,117594,6099368,114,2022-08-25T13:06:15+00:00,0,196585855,False,,Tier 3
+transformers,magic-leap-community/superpoint,superpoint,Computer Vision,keypoint-detection,17519,16279532,26,2024-03-13T17:24:17+00:00,0,1300865,False,,Tier 3
+transformers,microsoft/tapex-large-finetuned-wtq,bart,Natural Language Processing,table-question-answering,788,221351,79,2022-03-10T05:06:08+00:00,0,406341721,True,,Tier 3
+transformers,google/deplot,pix2struct,Multimodal,visual-question-answering,38861,736250,319,2023-04-03T11:05:38+00:00,0,282285696,False,,Tier 3
+transformers,MrLight/dse-qwen2-2b-mrl-v1,qwen2_vl,Multimodal,visual-document-retrieval,29640,631846,68,2024-09-11T07:06:12+00:00,0,2000000000,True,Qwen/Qwen2-VL-2B-Instruct,Tier 3
+transformers,K-Iwa/time-anchor-modernbert-32m,modernbert,Tabular,time-series-forecasting,12462,14636,2,2026-06-12T02:07:06+00:00,0,33419528,False,,Tier 3
+transformers,tiennvcs/layoutlmv2-base-uncased-finetuned-docvqa,layoutlmv2,Multimodal,document-question-answering,676,43640,14,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+diffusers,CompVis/ldm-celebahq-256,LDMPipeline,Computer Vision,unconditional-image-generation,4557,180801,51,2022-07-15T17:28:35+00:00,0,0,False,,Tier 3
+transformers,caidas/swin2SR-lightweight-x2-64,swin2sr,Computer Vision,image-to-image,3093,88194,16,2022-12-16T14:11:39+00:00,0,1005348,False,,Tier 3
+diffusers,DeepFloyd/IF-II-L-v1.0,IFSuperResolutionPipeline,Computer Vision,text-to-image,2505,654076,55,2023-03-21T13:09:58+00:00,1,1243277190,False,,Tier 3
+transformers,sentence-transformers/all-distilroberta-v1,roberta,Natural Language Processing,sentence-similarity,2330425,40772062,44,2022-03-02T23:29:05+00:00,0,82118914,False,,Tier 3
+transformers,distilbert/distilbert-base-uncased,distilbert,Natural Language Processing,fill-mask,9877005,675574827,924,2022-03-02T23:29:04+00:00,0.5,66985530,False,,Tier 3
+transformers,facebook/opt-125m,opt,Natural Language Processing,text-generation,17912365,198380854,286,2022-05-11T08:25:17+00:00,0,125000000,False,,Tier 3
+transformers,laion/clap-htsat-unfused,clap,Natural Language Processing,feature-extraction,731786,6417579,78,2023-02-16T20:47:08+00:00,0,0,False,,Tier 3
+transformers,facebook/wav2vec2-base,wav2vec2,Other,unknown,2943575,39419987,124,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,cross-encoder/qnli-electra-base,electra,Natural Language Processing,text-ranking,32139,1054083,5,2022-03-02T23:29:05+00:00,0,109483521,True,google/electra-base-discriminator,Tier 3
+transformers,nvidia/parakeet-ctc-1.1b,parakeet_ctc,Audio,automatic-speech-recognition,1767337,7538162,52,2023-12-28T15:27:57+00:00,0,1062626305,False,,Tier 3
+transformers,OFA-Sys/chinese-clip-vit-base-patch16,chinese_clip,Computer Vision,zero-shot-image-classification,277884,2633822,134,2022-11-09T08:14:09+00:00,0,0,False,,Tier 3
+transformers,zai-org/GLM-OCR,glm_ocr,Multimodal,image-text-to-text,3742958,28018092,1961,2026-01-30T04:24:21+00:00,14,1325258240,False,,Tier 3
+transformers,distilbert/distilbert-base-uncased-finetuned-sst-2-english,distilbert,Natural Language Processing,text-classification,3654523,396142008,936,2022-03-02T23:29:04+00:00,2,66955010,True,,Tier 3
+transformers,facebook/mbart-large-50-many-to-many-mmt,mbart,Natural Language Processing,translation,86873,9028146,410,2022-03-02T23:29:05+00:00,0,611129542,False,,Tier 3
+transformers,Freepik/nsfw_image_detector,timm_wrapper,Computer Vision,image-classification,591315,8912802,60,2025-04-10T08:59:44+00:00,0,86351620,True,timm/eva02_base_patch14_448.mim_in22k_ft_in22k_in1k,Tier 3
+transformers,openai/privacy-filter,openai_privacy_filter,Natural Language Processing,token-classification,526201,1309079,1716,2026-04-17T21:38:35+00:00,5,1399486865,False,,Tier 3
+transformers,google/gemma-4-31B-it-assistant,gemma4_assistant,Multimodal,any-to-any,1342491,2657997,316,2026-04-23T18:55:29+00:00,2,469518596,False,,Tier 3
+transformers,xbgoose/hubert-large-speech-emotion-recognition-russian-dusha-finetuned,hubert,Audio,audio-classification,248262,4106035,15,2023-05-28T14:27:28+00:00,0,315702405,True,facebook/hubert-large-ls960-ft,Tier 3
+transformers,facebook/dinov2-with-registers-base,dinov2_with_registers,Computer Vision,image-feature-extraction,93191,2045744,11,2024-12-20T17:20:43+00:00,0,86583552,False,,Tier 3
+transformers,cross-encoder/nli-MiniLM2-L6-H768,roberta,Natural Language Processing,zero-shot-classification,259061,1735424,14,2022-03-02T23:29:05+00:00,0,82121221,True,nreimers/MiniLMv2-L6-H768-distilled-from-RoBERTa-Large,Tier 3
+transformers,PaddlePaddle/PP-DocLayoutV3_safetensors,pp_doclayout_v3,Computer Vision,object-detection,816293,2321086,37,2026-01-20T09:56:56+00:00,2,33288957,True,PaddlePaddle/PP-DocLayoutV3,Tier 3
+transformers,alibaba-damo/mgp-str-base,mgp-str,Computer Vision,image-to-text,96478,1039742,65,2022-11-23T13:38:30+00:00,0,147952305,False,,Tier 3
+transformers,iSEE-Laboratory/llmdet_base,mm-grounding-dino,Computer Vision,zero-shot-object-detection,104970,5230232,10,2025-05-30T10:10:59+00:00,0,233473940,False,,Tier 3
+transformers,shi-labs/oneformer_ade20k_swin_tiny,oneformer,Computer Vision,image-segmentation,108496,1619292,17,2022-11-16T21:35:16+00:00,0,0,False,,Tier 3
+transformers,csebuetnlp/mT5_multilingual_XLSum,mt5,Natural Language Processing,summarization,10857,2442489,326,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,distilbert/distilbert-base-cased-distilled-squad,distilbert,Natural Language Processing,question-answering,254518,26037728,269,2022-03-02T23:29:04+00:00,0,65192450,False,,Tier 3
+transformers,espnet/fastspeech2_conformer_with_hifigan,fastspeech2_conformer_with_hifigan,Audio,text-to-audio,5569,24761,1,2023-07-20T23:08:32+00:00,0,0,False,,Tier 3
+transformers,suno/bark-small,bark,Audio,text-to-speech,134834,1468099,261,2023-07-18T13:50:46+00:00,0,0,False,,Tier 3
+transformers,apple/DepthPro-hf,depth_pro,Computer Vision,depth-estimation,28574,441204,107,2024-11-27T13:52:11+00:00,1,951991330,False,,Tier 3
+transformers,yonigozlan/EdgeTAM-hf,edgetam_video,Computer Vision,mask-generation,21994,95825,72,2025-09-26T21:26:11+00:00,0,13943298,False,,Tier 3
+transformers,nvidia/music-flamingo-2601-hf,musicflamingo,Multimodal,audio-text-to-text,47617,561578,110,2026-01-01T09:33:48+00:00,3,8267215360,False,,Tier 3
+transformers,google/vivit-b-16x2-kinetics400,vivit,Computer Vision,video-classification,43992,1469738,41,2022-11-23T21:21:55+00:00,0,0,False,,Tier 3
+transformers,google/tapas-base-finetuned-wtq,tapas,Natural Language Processing,table-question-answering,13826,1228283,235,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,microsoft/git-base-vqav2,git,Multimodal,visual-question-answering,726,24938,21,2022-12-06T11:02:00+00:00,0,177161663,False,,Tier 3
+transformers,vidore/colqwen2-v1.0-hf,colqwen2,Multimodal,visual-document-retrieval,24499,566956,23,2025-02-11T10:48:50+00:00,0,2209182336,True,vidore/colqwen2-base,Tier 3
+transformers,ibm-granite/granite-timeseries-patchtsmixer,patchtsmixer,Tabular,time-series-forecasting,5414,61657,23,2023-09-15T13:14:46+00:00,0,196144,False,,Tier 3
+transformers,impira/layoutlm-invoices,layoutlm,Multimodal,document-question-answering,9307,1194918,228,2022-09-06T17:49:13+00:00,0,127794950,False,,Tier 3
+diffusers,google/ddpm-celebahq-256,DDPMPipeline,Computer Vision,unconditional-image-generation,12740,1274391,56,2022-07-19T10:42:22+00:00,0,0,False,,Tier 3
+transformers,caidas/swin2SR-classical-sr-x4-64,swin2sr,Computer Vision,image-to-image,2700,106787,4,2022-12-16T14:07:21+00:00,0,12239283,False,,Tier 3
+transformers,BAAI/AltCLIP-m9,altclip,Computer Vision,text-to-image,1040,15969,8,2022-11-18T10:46:08+00:00,0,0,False,,Tier 3
+transformers,sentence-transformers/distiluse-base-multilingual-cased-v2,distilbert,Natural Language Processing,sentence-similarity,1174956,46147199,209,2022-03-02T23:29:05+00:00,0,134734080,False,,Tier 3
+transformers,microsoft/mdeberta-v3-base,deberta-v2,Natural Language Processing,fill-mask,4290788,44850747,231,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,trl-internal-testing/tiny-Qwen2ForCausalLM-2.5,qwen2,Natural Language Processing,text-generation,15400419,90149367,18,2024-11-25T15:06:15+00:00,0,2428632,False,,Tier 3
+transformers,microsoft/wavlm-base-plus,wavlm,Natural Language Processing,feature-extraction,945135,22566042,40,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,TostAI/nsfw-image-detection-large,focalnet,Other,unknown,3318938,13614825,22,2024-09-13T19:18:59+00:00,0,87126219,False,,Tier 3
+transformers,ml6team/cross-encoder-mmarco-german-distilbert-base,distilbert,Natural Language Processing,text-ranking,2649,127006,4,2022-04-26T14:28:42+00:00,0,135325441,False,,Tier 3
+transformers,nvidia/nemotron-3.5-asr-streaming-0.6b,nemotron3_5_asr,Audio,automatic-speech-recognition,1037069,1224082,984,2026-05-15T21:52:25+00:00,29,637997088,False,,Tier 3
+transformers,facebook/metaclip-2-worldwide-giant-378,metaclip_2,Computer Vision,zero-shot-image-classification,22576,169293,13,2025-08-16T11:26:00+00:00,0,3631197057,False,,Tier 3
+transformers,llava-hf/llava-1.5-7b-hf,llava,Multimodal,image-text-to-text,3065778,38072298,368,2023-12-05T09:31:24+00:00,0,7063427072,False,,Tier 3
+transformers,meta-llama/Prompt-Guard-86M,deberta-v2,Natural Language Processing,text-classification,4530333,10770744,383,2024-07-21T19:18:13+00:00,6,278811651,False,,Tier 3
+transformers,facebook/wmt19-ru-en,fsmt,Natural Language Processing,translation,15894,1514340,22,2022-03-02T23:29:05+00:00,0,293195776,False,,Tier 3
+transformers,facebook/convnextv2-base-22k-384,convnextv2,Computer Vision,image-classification,202398,774131,2,2023-02-19T06:52:15+00:00,0,88717800,False,,Tier 3
+transformers,gilf/french-camembert-postag-model,camembert,Natural Language Processing,token-classification,192478,16097598,9,2022-03-02T23:29:05+00:00,0,110645022,False,,Tier 3
+transformers,google/gemma-4-12B-it-assistant,gemma4_unified_assistant,Multimodal,any-to-any,114604,208765,103,2026-05-23T01:17:47+00:00,1,422856964,False,,Tier 3
+transformers,Aniemore/wavlm-emotion-russian-resd,wavlm,Audio,audio-classification,3108,63853,3,2023-02-13T17:59:48+00:00,0,316509895,True,jonatasgrosman/exp_w2v2t_ru_wavlm_s363,Tier 3
+transformers,facebook/ijepa_vith14_1k,ijepa,Computer Vision,image-feature-extraction,24865,564985,17,2024-08-25T15:01:05+00:00,0,630762240,False,,Tier 3
+transformers,joeddav/xlm-roberta-large-xnli,xlm-roberta,Natural Language Processing,zero-shot-classification,61265,13970266,293,2022-03-02T23:29:05+00:00,0,560943621,False,,Tier 3
+transformers,PekingU/rtdetr_r101vd_coco_o365,rt_detr,Computer Vision,object-detection,405736,5249640,19,2024-06-05T00:42:49+00:00,1,76798700,False,,Tier 3
+transformers,optimum-intel-internal-testing/pix2struct-tiny-random,pix2struct,Computer Vision,image-to-text,72103,508648,0,2025-10-21T10:03:08+00:00,0,0,False,,Tier 3
+transformers,omlab/omdet-turbo-swin-tiny-hf,omdet-turbo,Computer Vision,zero-shot-object-detection,24282,815362,42,2024-09-24T16:52:34+00:00,0,115428310,False,,Tier 3
+transformers,tue-mps/coco_panoptic_eomt_large_640,eomt,Computer Vision,image-segmentation,76069,356083,14,2025-03-26T17:28:05+00:00,0,316695824,False,,Tier 3
+transformers,google/bigbird-pegasus-large-arxiv,bigbird_pegasus,Natural Language Processing,summarization,8580,688557,65,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,deepset/xlm-roberta-large-squad2,xlm-roberta,Natural Language Processing,question-answering,80252,2249712,57,2022-03-02T23:29:05+00:00,0,559892482,False,,Tier 3
+transformers,ylacombe/musicgen-melody-bella-ciao,musicgen_melody_decoder,Audio,text-to-audio,32,3321,0,2024-02-08T19:48:18+00:00,0,1387570176,True,ylacombe/musicgen-melody,Tier 3
+transformers,facebook/hf-seamless-m4t-medium,seamless_m4t,Audio,text-to-speech,105046,1035557,32,2023-08-28T16:30:57+00:00,0,0,False,,Tier 3
+transformers,vinvino02/glpn-kitti,glpn,Computer Vision,depth-estimation,10625,1932352,9,2022-03-02T23:29:05+00:00,0,0,False,,Tier 3
+transformers,vil-uob/sam3-litetext-s0,sam3_lite_text,Computer Vision,mask-generation,12169,29490,19,2026-03-26T19:59:11+00:00,0,529232438,False,,Tier 3
+transformers,facebook/timesformer-base-finetuned-k600,timesformer,Computer Vision,video-classification,34527,392651,12,2022-10-07T20:53:42+00:00,0,0,True,,Tier 3
+transformers,google/tapas-base-finetuned-sqa,tapas,Natural Language Processing,table-question-answering,5951,158650,7,2022-03-02T23:29:05+00:00,0,0,True,,Tier 3
+transformers,Salesforce/blip-vqa-capfilt-large,blip,Multimodal,visual-question-answering,14237,4263370,54,2022-12-13T11:37:19+00:00,0,0,False,,Tier 3
+transformers,tomaarsen/colmodernvbert-merged-st,modernvbert,Multimodal,visual-document-retrieval,0,0,0,2026-07-21T16:41:19+00:00,0,252100736,True,vidore/colmodernvbert-base,Tier 3
+transformers,huggingface/time-series-transformer-tourism-monthly,time_series_transformer,Tabular,time-series-forecasting,1927,143511,31,2022-09-26T14:37:22+00:00,0,30537,False,,Tier 3
+transformers,fxmarty/tiny-doc-qa-vision-encoder-decoder,vision-encoder-decoder,Multimodal,document-question-answering,3711,3119571,16,2023-06-14T09:03:48+00:00,0,0,False,,Tier 3
+diffusers,google/ddpm-ema-celebahq-256,DDPMPipeline,Computer Vision,unconditional-image-generation,5821,499130,16,2022-07-19T10:42:32+00:00,0,0,False,,Tier 3
+transformers,caidas/swin2SR-compressed-sr-x4-48,swin2sr,Computer Vision,image-to-image,555,14115,4,2022-12-16T14:09:53+00:00,0,12244598,False,,Tier 3
+diffusers,MiniT2I/MiniT2I,MiniT2IPipeline,Computer Vision,text-to-image,616,1500,27,2026-06-14T00:45:42+00:00,1,0,False,,Tier 3
+transformers,hkunlp/instructor-large,t5,Natural Language Processing,sentence-similarity,178008,7785545,524,2022-12-20T05:31:06+00:00,0,0,False,,Tier 3
+transformers,answerdotai/ModernBERT-base,modernbert,Natural Language Processing,fill-mask,6414074,57725112,1080,2024-12-11T11:38:06+00:00,3,149655232,False,,Tier 3
+transformers,google/gemma-3-1b-it,gemma3_text,Natural Language Processing,text-generation,4507610,46156279,1079,2025-03-10T12:09:00+00:00,10,999885952,True,google/gemma-3-1b-pt,Tier 3
+transformers,facebook/w2v-bert-2.0,wav2vec2-bert,Natural Language Processing,feature-extraction,1429466,37092286,224,2023-12-19T07:41:49+00:00,0,580493120,False,,Tier 3
+transformers,CompVis/stable-diffusion-safety-checker,clip,Other,unknown,1116425,108153419,141,2022-08-22T10:22:34+00:00,2,0,False,,Tier 3
