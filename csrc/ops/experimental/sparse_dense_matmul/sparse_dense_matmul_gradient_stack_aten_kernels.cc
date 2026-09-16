@@ -16,7 +16,6 @@
 
 #include "csrc/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_gradient_stack_aten_kernels.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -114,7 +113,6 @@ absl::Status ValidateSparseDenseMatmulGradientStackInputs(
       << stacked_feature_dim;
 
   int64_t total_batch_size = 0;
-  int64_t max_feature_dim = 0;
 
   for (size_t i = 0; i < unstacked_gradients.size(); ++i) {
     const at::Tensor& grad = unstacked_gradients[i];
@@ -126,18 +124,17 @@ absl::Status ValidateSparseDenseMatmulGradientStackInputs(
         << "expected unstacked_gradients[" << i
         << "] to have float32 dtype, got " << ToString(grad.scalar_type());
 
+    TT_RET_CHECK(grad.size(1) <= stacked_feature_dim, error::kInvalidArgument)
+        << "expected unstacked_gradients[" << i << "] dim 1 (" << grad.size(1)
+        << ") to be at most stacked_feature_dim (" << stacked_feature_dim
+        << ")";
+
     total_batch_size += grad.size(0);
-    max_feature_dim = std::max(max_feature_dim, grad.size(1));
   }
 
   TT_RET_CHECK(total_batch_size == stacked_batch_size, error::kInvalidArgument)
       << "expected sum of unstacked gradient batch sizes (" << total_batch_size
       << ") to match stacked_batch_size (" << stacked_batch_size << ")";
-
-  TT_RET_CHECK(max_feature_dim == stacked_feature_dim, error::kInvalidArgument)
-      << "expected maximum unstacked gradient feature dimension ("
-      << max_feature_dim << ") to match stacked_feature_dim ("
-      << stacked_feature_dim << ")";
 
   return absl::OkStatus();
 }

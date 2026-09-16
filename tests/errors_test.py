@@ -12629,7 +12629,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     stacked_2d = torch.empty(64, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected stacked_activations dim 1 (32) to match maximum feature dimension (48)""",
+        tpu="""expected per_feature_dims[1] (48) to be at most stacked_embedding_dim (32)""",
     ):
       torch.ops.tpu.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [16, 48]
@@ -12686,7 +12686,7 @@ class MaskedSoftmaxErrorTest(et.ErrorTestBase):
     g2 = torch.empty(32, 32, device="meta", dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected maximum unstacked gradient feature dimension (32) to match stacked_feature_dim (24)""",
+        tpu="""expected unstacked_gradients[1] dim 1 (32) to be at most stacked_feature_dim (24)""",
     ):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 

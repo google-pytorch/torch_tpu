@@ -87,6 +87,20 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     self.assertEqual(results[0].device.type, "meta")
     self.assertEqual(results[1].device.type, "meta")
 
+  def test_unstack_meta_padded_stacked_dim(self):
+    # Tests that stacked_embedding_dim can exceed max(per_feature_dims) (e.g. padded to 8).
+    stacked = torch.empty(64, 16, device="meta", dtype=torch.float32)
+    per_feature_batch_sizes = [32, 32]
+    per_feature_dims = [8, 12]
+
+    results = torch.ops.tpu.sparse_dense_matmul_activation_unstack(
+        stacked, per_feature_batch_sizes, per_feature_dims
+    )
+
+    self.assertLen(results, 2)
+    self.assertEqual(results[0].shape, torch.Size([32, 8]))
+    self.assertEqual(results[1].shape, torch.Size([32, 12]))
+
   def test_unstack_meta_validation_errors(self):
     stacked_1d = torch.empty(64, device="meta", dtype=torch.float32)
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
@@ -119,7 +133,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
       )
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
-        RuntimeError, "to match maximum feature dimension"
+        RuntimeError, "to be at most stacked_embedding_dim"
     ):
       torch.ops.tpu.sparse_dense_matmul_activation_unstack(
           stacked_2d, [32, 32], [16, 48]
@@ -148,6 +162,15 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     self.assertEqual(result.shape, torch.Size([64, 32]))
     self.assertEqual(result.dtype, torch.float32)
     self.assertEqual(result.device.type, "meta")
+
+  def test_stack_meta_padded_stacked_dim(self):
+    # Tests that stacked_feature_dim can exceed max(unstacked_gradients[i].size(1)).
+    g1 = torch.empty(32, 8, device="meta", dtype=torch.float32)
+    g2 = torch.empty(32, 12, device="meta", dtype=torch.float32)
+
+    result = torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 16)
+
+    self.assertEqual(result.shape, torch.Size([64, 16]))
 
   def test_stack_meta_validation_errors(self):
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
@@ -178,7 +201,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 60, 32)
 
     with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Validates custom op schema errors.
-        RuntimeError, "to match stacked_feature_dim"
+        RuntimeError, "to be at most stacked_feature_dim"
     ):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 24)
 
@@ -192,9 +215,17 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     ):
       torch.ops.tpu.sparse_dense_matmul_gradient_stack([g1, g2], 64, 0)
 
-  @parameterized.parameters(False, True)
+  @parameterized.parameters(
+      (False, [8, 16], 16),
+      (True, [8, 16], 16),
+      (False, [8, 12], 16),
+      (True, [8, 12], 16),
+  )
   def test_sparse_dense_matmul_activation_unstack_on_tpu(
-      self, compile_op: bool
+      self,
+      compile_op: bool,
+      per_feature_dims: list[int],
+      stacked_dim: int,
   ):
     device = torch.device("tpu")
     torch.manual_seed(42)
@@ -202,9 +233,7 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     # 2 features, 2 SparseCores, per_sc_bs = 8, feature_bs = 16, stacked_bs = 32.
     num_sc = 2
     per_feature_batch_sizes = [16, 16]
-    per_feature_dims = [8, 16]
     stacked_batch_size = 32
-    stacked_dim = 16
 
     stacked_activations_cpu = torch.randn(
         stacked_batch_size, stacked_dim, dtype=torch.float32
@@ -221,9 +250,9 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
 
     results_tpu = unstack_fn(stacked_activations_tpu)
 
-    self.assertLen(results_tpu, 2)
-    self.assertEqual(results_tpu[0].shape, torch.Size([16, 8]))
-    self.assertEqual(results_tpu[1].shape, torch.Size([16, 16]))
+    self.assertLen(results_tpu, len(per_feature_dims))
+    for i, dim in enumerate(per_feature_dims):
+      self.assertEqual(results_tpu[i].shape, torch.Size([16, dim]))
 
     golden_results = reference_uninterleave_activations(
         stacked_activations_cpu,
@@ -235,20 +264,28 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     for res_tpu, golden in zip(results_tpu, golden_results):
       self.assert_close(golden_result=golden, torch_tpu_result=res_tpu.cpu())
 
-  @parameterized.parameters(False, True)
-  def test_sparse_dense_matmul_gradient_stack_on_tpu(self, compile_op: bool):
+  @parameterized.parameters(
+      (False, [8, 16], 16),
+      (True, [8, 16], 16),
+      (False, [8, 12], 16),
+      (True, [8, 12], 16),
+  )
+  def test_sparse_dense_matmul_gradient_stack_on_tpu(
+      self,
+      compile_op: bool,
+      feature_dims: list[int],
+      stacked_dim: int,
+  ):
     device = torch.device("tpu")
     torch.manual_seed(42)
 
     num_sc = 2
     stacked_batch_size = 32
-    stacked_dim = 16
 
-    g1_cpu = torch.randn(16, 8, dtype=torch.float32)
-    g2_cpu = torch.randn(16, 16, dtype=torch.float32)
-
-    g1_tpu = g1_cpu.to(device)
-    g2_tpu = g2_cpu.to(device)
+    grads_cpu = [
+        torch.randn(16, dim, dtype=torch.float32) for dim in feature_dims
+    ]
+    grads_tpu = [g.to(device) for g in grads_cpu]
 
     def stack_fn(grads):
       return torch.ops.tpu.sparse_dense_matmul_gradient_stack(
@@ -258,12 +295,12 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
     if compile_op:
       stack_fn = torch.compile(stack_fn, fullgraph=True)
 
-    result_tpu = stack_fn([g1_tpu, g2_tpu])
+    result_tpu = stack_fn(grads_tpu)
 
-    self.assertEqual(result_tpu.shape, torch.Size([32, 16]))
+    self.assertEqual(result_tpu.shape, torch.Size([32, stacked_dim]))
 
     golden_result = reference_interleave_gradients(
-        [g1_cpu, g2_cpu],
+        grads_cpu,
         stacked_batch_size,
         stacked_dim,
         num_sc=num_sc,
@@ -273,25 +310,31 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
         golden_result=golden_result, torch_tpu_result=result_tpu.cpu()
     )
 
-  def test_unstack_stack_autograd_flow_on_tpu(self):
+  @parameterized.parameters(
+      ([8, 16], 16),
+      ([8, 12], 16),
+  )
+  def test_unstack_stack_autograd_flow_on_tpu(
+      self,
+      per_feature_dims: list[int],
+      stacked_dim: int,
+  ):
     device = torch.device("tpu")
     torch.manual_seed(42)
 
     stacked_activations_cpu = torch.randn(
-        32, 16, dtype=torch.float32, requires_grad=True
+        32, stacked_dim, dtype=torch.float32, requires_grad=True
     )
     stacked_activations_tpu = (
         stacked_activations_cpu.detach().clone().to(device).requires_grad_(True)
     )
 
     per_feature_batch_sizes = [16, 16]
-    per_feature_dims = [8, 16]
 
-    g1_cpu = torch.randn(16, 8, dtype=torch.float32)
-    g2_cpu = torch.randn(16, 16, dtype=torch.float32)
-
-    g1_tpu = g1_cpu.to(device)
-    g2_tpu = g2_cpu.to(device)
+    grads_cpu = [
+        torch.randn(16, dim, dtype=torch.float32) for dim in per_feature_dims
+    ]
+    grads_tpu = [g.to(device) for g in grads_cpu]
 
     # CPU reference forward + backward
     golden_unstacked = reference_uninterleave_activations(
@@ -301,9 +344,9 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
         num_sc=2,
     )
     golden_grad = torch.autograd.grad(
-        outputs=[golden_unstacked[0], golden_unstacked[1]],
+        outputs=golden_unstacked,
         inputs=stacked_activations_cpu,
-        grad_outputs=[g1_cpu, g2_cpu],
+        grad_outputs=grads_cpu,
     )[0]
 
     # TPU forward + backward using native custom op autograd
@@ -313,27 +356,36 @@ class SparseDenseMatmulStackingOpsTest(op_testing.TorchTpuTestBase):
         per_feature_dims,
     )
     tpu_grad = torch.autograd.grad(
-        outputs=[tpu_unstacked[0], tpu_unstacked[1]],
+        outputs=tpu_unstacked,
         inputs=stacked_activations_tpu,
-        grad_outputs=[g1_tpu, g2_tpu],
+        grad_outputs=grads_tpu,
     )[0]
 
-    self.assertEqual(tpu_grad.shape, torch.Size([32, 16]))
+    self.assertEqual(tpu_grad.shape, torch.Size([32, stacked_dim]))
     self.assert_close(
         golden_result=golden_grad,
         torch_tpu_result=tpu_grad.cpu(),
     )
 
-  def test_unstack_autograd_partial_output_gradient(self):
+  @parameterized.parameters(
+      ([8, 16], 16),
+      ([8, 12], 16),
+  )
+  def test_unstack_autograd_partial_output_gradient(
+      self,
+      per_feature_dims: list[int],
+      stacked_dim: int,
+  ):
     """Verifies backward pass when downstream loss only uses a subset of features."""
     device = torch.device("tpu")
     torch.manual_seed(42)
 
-    stacked_cpu = torch.randn(32, 16, dtype=torch.float32, requires_grad=True)
+    stacked_cpu = torch.randn(
+        32, stacked_dim, dtype=torch.float32, requires_grad=True
+    )
     stacked_tpu = stacked_cpu.detach().clone().to(device).requires_grad_(True)
 
     per_feature_batch_sizes = [16, 16]
-    per_feature_dims = [8, 16]
 
     golden_unstacked = reference_uninterleave_activations(
         stacked_cpu, per_feature_batch_sizes, per_feature_dims, num_sc=2

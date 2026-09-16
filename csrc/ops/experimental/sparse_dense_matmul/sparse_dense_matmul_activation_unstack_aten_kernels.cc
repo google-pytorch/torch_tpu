@@ -16,7 +16,6 @@
 
 #include "csrc/ops/experimental/sparse_dense_matmul/sparse_dense_matmul_activation_unstack_aten_kernels.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -140,8 +139,8 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
          "size, got "
       << per_feature_batch_sizes.size() << " and " << per_feature_dims.size();
 
+  const int64_t stacked_embedding_dim = stacked_activations.size(1);
   int64_t total_batch_size = 0;
-  int64_t max_feature_dim = 0;
   for (size_t i = 0; i < per_feature_batch_sizes.size(); ++i) {
     TT_RET_CHECK(per_feature_batch_sizes[i] > 0, error::kInvalidArgument)
         << "expected per_feature_batch_sizes[" << i << "] to be positive, got "
@@ -149,19 +148,18 @@ absl::Status ValidateSparseDenseMatmulActivationUnstackInputs(
     TT_RET_CHECK(per_feature_dims[i] > 0, error::kInvalidArgument)
         << "expected per_feature_dims[" << i << "] to be positive, got "
         << per_feature_dims[i];
+    TT_RET_CHECK(per_feature_dims[i] <= stacked_embedding_dim,
+                 error::kInvalidArgument)
+        << "expected per_feature_dims[" << i << "] (" << per_feature_dims[i]
+        << ") to be at most stacked_embedding_dim (" << stacked_embedding_dim
+        << ")";
     total_batch_size += per_feature_batch_sizes[i];
-    max_feature_dim = std::max(max_feature_dim, per_feature_dims[i]);
   }
 
   TT_RET_CHECK(stacked_activations.size(0) == total_batch_size,
                error::kInvalidArgument)
       << "expected stacked_activations dim 0 (" << stacked_activations.size(0)
       << ") to match total stacked batch size (" << total_batch_size << ")";
-
-  TT_RET_CHECK(stacked_activations.size(1) == max_feature_dim,
-               error::kInvalidArgument)
-      << "expected stacked_activations dim 1 (" << stacked_activations.size(1)
-      << ") to match maximum feature dimension (" << max_feature_dim << ")";
 
   return absl::OkStatus();
 }
