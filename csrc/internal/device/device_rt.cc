@@ -232,7 +232,12 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         CompilationCache::ShutDown();
         PjrtBackend::GetInstance().Shutdown();
       },
-      "Shuts down the PjRt runtime.");
+      // Release the GIL before blocking on background worker threads during
+      // shutdown (e.g., via atexit). Background MaterializationWorker threads
+      // may hold the last reference to a Python-backed at::Tensor and attempt
+      // to acquire the GIL in its destructor, which would deadlock if the main
+      // thread held the GIL while waiting for them to join.
+      py::call_guard<py::gil_scoped_release>(), "Shuts down the PjRt runtime.");
 
   m.def("_get_current_stream_id", &PyGetCurrentStreamId,
         py::arg("device_index") = py::none(),

@@ -406,6 +406,7 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
@@ -418,7 +419,6 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:future",
-        "@xla//xla:xla_data_proto_cc",
     ],
 )
 
