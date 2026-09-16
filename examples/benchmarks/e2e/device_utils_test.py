@@ -230,12 +230,46 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     self.assertGreater(mem, 0.0)
 
   def test_get_peak_memory_hbm_xla_cpu_and_jax(self):
-    with mock.patch.object(
+    mock_dev_unsupported = mock.MagicMock()
+    mock_dev_unsupported.memory_stats.return_value = None
+    with mock.patch(
+        'jax.local_devices', return_value=[mock_dev_unsupported]
+    ), mock.patch.object(
         device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
     ) as mock_fallback:
       self.assertEqual(device_utils.get_peak_memory_hbm('xla_cpu'), 42.0)
       self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
       self.assertEqual(mock_fallback.call_count, 2)
+
+    mock_dev_tpu = mock.MagicMock()
+    mock_dev_tpu.memory_stats.return_value = {
+        'peak_bytes_in_use': 256 * 1024 * 1024
+    }
+    with mock.patch('jax.local_devices', return_value=[mock_dev_tpu]):
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 256.0)
+
+    mock_dev_bytes_only = mock.MagicMock()
+    mock_dev_bytes_only.memory_stats.return_value = {
+        'bytes_in_use': 128 * 1024 * 1024
+    }
+    with mock.patch('jax.local_devices', return_value=[mock_dev_bytes_only]):
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 128.0)
+
+    mock_dev_neg = mock.MagicMock()
+    mock_dev_neg.memory_stats.return_value = {'peak_bytes_in_use': -1}
+    with mock.patch(
+        'jax.local_devices', return_value=[mock_dev_neg]
+    ), mock.patch.object(
+        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
+    ):
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
+
+    with mock.patch(
+        'jax.local_devices', side_effect=RuntimeError('JAX unavailable')
+    ), mock.patch.object(
+        device_utils, '_get_peak_hbm_memory_mb', return_value=42.0
+    ):
+      self.assertEqual(device_utils.get_peak_memory_hbm('jax'), 42.0)
 
   def test_get_peak_memory_hbm_unsupported_device(self):
     with self.assertRaises(ValueError):
@@ -260,7 +294,10 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
 
   def test_reset_peak_memory_stats_xla_cpu_and_jax(self):
     device_utils.reset_peak_memory_stats('xla_cpu')
-    device_utils.reset_peak_memory_stats('jax')
+    mock_dev = mock.MagicMock()
+    with mock.patch('jax.local_devices', return_value=[mock_dev]):
+      device_utils.reset_peak_memory_stats('jax')
+      mock_dev.reset_memory_stats.assert_called_once()
 
 
 if __name__ == '__main__':

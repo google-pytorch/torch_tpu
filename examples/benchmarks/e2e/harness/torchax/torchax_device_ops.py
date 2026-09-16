@@ -18,6 +18,8 @@ from typing import Any
 import jax
 from examples.benchmarks.e2e.harness import target as target_lib
 
+_MB = 2**20
+
 
 class DeviceCountMismatch(RuntimeError):
   """Declared platform expects N devices but the host has M."""
@@ -70,13 +72,34 @@ class TorchaxDeviceOps:
 
   def reset_peak_memory(self) -> None:
     """Reset peak memory stats if supported by the underlying JAX backend."""
-    # TODO - b/534438865: Implement this.
-    pass
+    try:
+      for device in jax.local_devices():
+        if hasattr(device, "reset_memory_stats"):
+          device.reset_memory_stats()
+    except Exception:  # pylint: disable=broad-except
+      pass
 
   def peak_memory_mb(self) -> float | None:
-    """Return peak device memory usage in MB, or -1 if unsupported."""
-    # TODO - b/534438865: Implement this.
-    return -1
+    """Return peak device memory usage in MB, or None if unsupported."""
+    try:
+      devices = jax.local_devices()
+      stats = (
+          devices[0].memory_stats()
+          if devices and hasattr(devices[0], "memory_stats")
+          else None
+      )
+      if stats:
+        peak = stats.get("peak_bytes_in_use")
+        peak_bytes = (
+            peak
+            if (peak is not None and peak >= 0)
+            else stats.get("bytes_in_use")
+        )
+        if peak_bytes is not None and peak_bytes >= 0:
+          return float(peak_bytes) / _MB
+    except Exception:  # pylint: disable=broad-except
+      pass
+    return None
 
   def compile_count(self) -> int:
     """Monotonic count of compilations performed so far."""

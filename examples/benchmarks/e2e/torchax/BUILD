@@ -16,6 +16,7 @@ load(
     "//build_files:build_defs.bzl",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
+    "torch_tpu_py_test",
 )
 
 package(
@@ -35,7 +36,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e:performance_utils",
         "//examples/benchmarks/e2e/harness:metrics",
         "//shims/absl_py/logging",
-        "//shims/torch",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/utils:log_utils",
@@ -43,6 +43,23 @@ torch_tpu_py_library(
         "@pypi//numpy",
         "@pypi//optax",
         "@pypi//torchax",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "performance_utils_test",
+    srcs = ["performance_utils_test.py"],
+    deps = [
+        ":performance_utils",
+        "//examples/benchmarks/e2e:benchmark_utils",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e:device_utils",
+        "//examples/benchmarks/e2e:performance_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:flagsaver",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:seed_test_utils",
     ],
 )
 

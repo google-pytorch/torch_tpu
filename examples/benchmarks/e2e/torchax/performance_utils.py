@@ -212,6 +212,18 @@ def _get_device_timings(enable_xprof, session_id) -> tuple[float, float]:
   return total_device_time, avg_device_time
 
 
+def _get_peak_device_memory_mb(
+    enable_xprof: bool, session_id: str | None
+) -> float:
+  """Returns peak HBM usage in MB, using runtime JAX stats or XProf fallback."""
+  xprof_client = (
+      pt_performance_utils.get_xprof_client() if enable_xprof else None
+  )
+  return device_utils.get_peak_memory_hbm(
+      "jax", session_id if enable_xprof else None, xprof_client
+  )
+
+
 def _run_torchax_forward_pass(
     model_jittable: torchax.interop.JittableModule,
     inputs: Any,
@@ -262,6 +274,7 @@ def _run_torchax_forward_pass(
   eval_timings = np.zeros(
       pt_benchmark_utils.POST_WARMUP_STEPS.value, dtype=np.float64
   )
+  device_utils.reset_peak_memory_stats("jax")
   with pt_benchmark_utils.XprofContext(
       "post_warmup_run", enable_xprof
   ) as post_warmup_run_context:
@@ -280,12 +293,9 @@ def _run_torchax_forward_pass(
   _, avg_device_time = _get_device_timings(
       enable_xprof, post_warmup_run_context.session_id
   )
-  peak_device_memory_mb = -1.0
-  if enable_xprof:
-    xprof_client = pt_performance_utils.get_xprof_client()
-    peak_device_memory_mb = device_utils.get_peak_memory_hbm(
-        "jax", post_warmup_run_context.session_id, xprof_client
-    )
+  peak_device_memory_mb = _get_peak_device_memory_mb(
+      enable_xprof, post_warmup_run_context.session_id
+  )
 
   eval_time = np.mean(eval_timings) if len(eval_timings) > 0 else 0.0
 
@@ -473,6 +483,7 @@ def _run_torchax_backward_pass(
   eval_timings = np.zeros(
       pt_benchmark_utils.POST_WARMUP_STEPS.value, dtype=np.float64
   )
+  device_utils.reset_peak_memory_stats("jax")
   with pt_benchmark_utils.XprofContext(
       "post_warmup_run", enable_xprof
   ) as post_warmup_run_context:
@@ -499,12 +510,9 @@ def _run_torchax_backward_pass(
   _, avg_device_time = _get_device_timings(
       enable_xprof, post_warmup_run_context.session_id
   )
-  peak_device_memory_mb = -1.0
-  if enable_xprof:
-    xprof_client = pt_performance_utils.get_xprof_client()
-    peak_device_memory_mb = device_utils.get_peak_memory_hbm(
-        "jax", post_warmup_run_context.session_id, xprof_client
-    )
+  peak_device_memory_mb = _get_peak_device_memory_mb(
+      enable_xprof, post_warmup_run_context.session_id
+  )
 
   eval_time = np.mean(eval_timings) if len(eval_timings) > 0 else 0.0
 

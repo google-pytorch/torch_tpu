@@ -78,7 +78,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness:metrics",
         "//shims/absl_py/flags",
         "//shims/absl_py/logging",
-        "//shims/torch",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
@@ -606,6 +605,7 @@ torch_tpu_py_library(
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
         "//src/torch_tpu/_internal/sync",
+        "@pypi//jax",
         "@pypi//psutil",
     ],
 )

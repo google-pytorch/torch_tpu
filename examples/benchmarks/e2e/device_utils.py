@@ -177,6 +177,31 @@ def get_max_total_device_time(
     return -1.0
 
 
+def _get_jax_peak_memory_mb() -> float | None:
+  """Returns peak HBM usage in MB from JAX device stats, or None if unavailable."""
+  try:
+    import jax  # pylint: disable=g-import-not-at-top
+
+    devices = jax.local_devices()
+    stats = (
+        devices[0].memory_stats()
+        if devices and hasattr(devices[0], 'memory_stats')
+        else None
+    )
+    if stats:
+      peak = stats.get('peak_bytes_in_use')
+      peak_bytes = (
+          peak
+          if (peak is not None and peak >= 0)
+          else stats.get('bytes_in_use')
+      )
+      if peak_bytes is not None and peak_bytes >= 0:
+        return float(peak_bytes) / _BYTES_IN_MB
+  except Exception:  # pylint: disable=broad-except
+    pass
+  return None
+
+
 def get_peak_memory_hbm(
     device,
     session_id: str | None = None,
@@ -214,7 +239,12 @@ def get_peak_memory_hbm(
       except Exception:  # Fallback to XProf if accelerator query fails
         pass
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
-  elif device in ('xla_cpu', 'jax'):
+  elif device == 'jax':
+    jax_peak_mb = _get_jax_peak_memory_mb()
+    if jax_peak_mb is not None:
+      return jax_peak_mb
+    peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
+  elif device == 'xla_cpu':
     peak_memory_usage_mb = _get_peak_hbm_memory_mb(session_id, xprof_client)
   else:
     raise ValueError(f'Unsupported device: {device}')
@@ -230,7 +260,16 @@ def reset_peak_memory_stats(device):
         torch.accelerator.synchronize()
       if hasattr(torch.accelerator, 'reset_peak_memory_stats'):
         torch.accelerator.reset_peak_memory_stats()
-  elif device in ('cpu', 'xla_cpu', 'jax'):
+  elif device == 'jax':
+    try:
+      import jax  # pylint: disable=g-import-not-at-top
+
+      for dev in jax.local_devices():
+        if hasattr(dev, 'reset_memory_stats'):
+          dev.reset_memory_stats()
+    except Exception:  # pylint: disable=broad-except
+      pass
+  elif device in ('cpu', 'xla_cpu'):
     pass
   else:
     raise ValueError(f'Unsupported device: {device}')
@@ -285,28 +324,6 @@ def cache_miss_count(device: str) -> int:
     return getattr(torch, device)._get_cache_misses()
   else:
     raise ValueError(f'Unsupported device: {device}')
-
-
-def get_peak_host_compilation_memory_mb(device: str) -> float | None:
-  """Get peak host compilation memory for the specified device.
-
-  This value represents the entire process. Technical limitations of the
-  underlying infrastructure prevents resetting of this value during eviction.
-
-  Args:
-    device: The device type ('cuda', 'tpu', 'xla_cuda').
-
-  Returns:
-    The peak host compilation memory in MB. None if not supported by the
-    backend, or not available.
-  """
-  if device != 'tpu':
-    return None
-  # pylint: disable=protected-access
-  perf_stats = getattr(torch, 'tpu')._get_cache_stats()
-  if perf_stats.peak_compilation_host_memory_bytes is None:
-    return None
-  return perf_stats.peak_compilation_host_memory_bytes / _BYTES_IN_MB
 
 
 def get_peak_host_compilation_memory_mb(device: str) -> float | None:
