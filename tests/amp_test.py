@@ -21,7 +21,7 @@ from torch_tpu._internal import execution_mode
 from torch_tpu._internal.compile import tpu_torch_compile
 from tests import seed_test_utils
 
-EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 class AmpTest(seed_test_utils.RepeatableTest):
@@ -75,7 +75,7 @@ class AmpTest(seed_test_utils.RepeatableTest):
 
     # Run the forward pass to get the loss.
     # Use FX compile mode so that we can inspect the MLIR as well.
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       loss = model(x, y, actual_dtypes)
 
     # Check that the dtypes are as expected for AMP.
