@@ -155,8 +155,18 @@ class DeleteCancelledPrRunsTest(
     self.addCleanup(sleep_patch.stop)
     # The module logs at INFO/WARNING/ERROR; keep test output readable.
     logging_patch = mock.patch.object(delete_cancelled_pr_runs, "logging")
-    logging_patch.start()
+    self.logging = logging_patch.start()
     self.addCleanup(logging_patch.stop)
+
+  def _last_logged(self, level: str) -> str:
+    """Renders the most recent message logged at `level`, as `logging` would.
+
+    Rendering with `%` also catches a format string whose placeholders do not
+    match its arguments, which the `logging` mock would otherwise hide.
+    """
+    call = getattr(self.logging, level).call_args
+    self.assertIsNotNone(call, f"Nothing was logged at level {level!r}.")
+    return call.args[0] % call.args[1:]
 
   def _install(self, fake: _FakeGh) -> _FakeGh:
     patch = mock.patch.object(delete_cancelled_pr_runs.subprocess, "run", fake)
@@ -338,13 +348,24 @@ class DeleteCancelledPrRunsTest(
 
   def test_reports_runs_that_never_complete(self):
     fake = _FakeGh(
-        list_pages=([_run(1, status="in_progress", conclusion=None)],),
-        statuses={1: ("in_progress",)},
+        list_pages=(
+            [
+                _run(2, status="in_progress", conclusion=None),
+                _run(1, status="in_progress", conclusion=None),
+            ],
+        ),
+        statuses={1: ("in_progress",), 2: ("in_progress",)},
     )
     summary = self._cleanup(fake, poll_attempts=3)
-    self.assertEqual(summary, _summary(unfinished=(1,)))
+    self.assertEqual(summary, _summary(unfinished=(1, 2)))
     # Sleeps happen between attempts, not after the last one.
     self.assertEqual(len(self.slept), 2)
+    self.assertTrue(
+        self._last_logged("warning").endswith(
+            f"\nhttps://github.com/{_REPO}/actions/runs/1"
+            f"\nhttps://github.com/{_REPO}/actions/runs/2"
+        )
+    )
 
   def test_treats_an_already_deleted_run_as_cleaned_up(self):
     fake = _FakeGh(list_pages=([_run(1)],), missing_runs=(1,))
@@ -410,6 +431,23 @@ class DeleteCancelledPrRunsTest(
 
   def test_main_succeeds_when_everything_is_deleted(self):
     self.assertEqual(self._main(_FakeGh(list_pages=([_run(1)],))), 0)
+
+  def test_main_fails_when_a_delete_fails(self):
+    fake = _FakeGh(
+        list_pages=([_run(1), _run(2)],),
+        delete_errors={
+            1: http.HTTPStatus.FORBIDDEN,
+            2: http.HTTPStatus.FORBIDDEN,
+        },
+    )
+    self.assertEqual(self._main(fake), 1)
+    # `delete_run` logs an error per run first; the summary from `main` is last.
+    self.assertEqual(
+        self._last_logged("error"),
+        "Failed to delete 2 workflow run(s):\n"
+        f"https://github.com/{_REPO}/actions/runs/1\n"
+        f"https://github.com/{_REPO}/actions/runs/2",
+    )
 
   def test_main_fails_when_listing_fails(self):
     self.assertEqual(
