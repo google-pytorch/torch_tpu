@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -533,6 +534,126 @@ void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
 DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
   c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
   return new EagerModeDeviceGeneratorImpl(device().index(), state_->clone());
+}
+
+// ============================================================================
+// ExportModeDeviceGeneratorImpl
+// ============================================================================
+
+namespace {
+DeviceGeneratorImplBase& ValidateAndGetEagerBase(
+    const at::Generator& default_generator) {
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against undefined
+                   // generator.
+      default_generator.defined(), error::kInvalidArgument)
+      << "expected defined generator in ExportModeDeviceGeneratorImpl "
+         "constructor";
+  auto* eager_base = default_generator.get<DeviceGeneratorImplBase>();
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against
+                   // non-DeviceGeneratorImplBase generator.
+      eager_base != nullptr, error::kInvalidArgument)
+      << "expected DeviceGeneratorImplBase in ExportModeDeviceGeneratorImpl "
+         "constructor";
+  return *eager_base;
+}
+}  // namespace
+
+ExportModeDeviceGeneratorImpl::ExportModeDeviceGeneratorImpl(
+    DeviceGeneratorImplBase& eager_base)
+    : DeviceGeneratorImplBase(eager_base.device().index()),
+      export_state_(c10::make_intrusive<ExportModeDeviceGeneratorState>(
+          eager_base.DeviceStateTensor().clone())) {}
+
+ExportModeDeviceGeneratorImpl::ExportModeDeviceGeneratorImpl(
+    const at::Generator& default_generator)
+    : ExportModeDeviceGeneratorImpl(
+          ValidateAndGetEagerBase(default_generator)) {}
+
+ExportModeDeviceGeneratorImpl::ExportModeDeviceGeneratorImpl(
+    const c10::DeviceIndex device_index,
+    c10::intrusive_ptr<ExportModeDeviceGeneratorState> state)
+    : DeviceGeneratorImplBase(device_index), export_state_(std::move(state)) {
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against null state.
+      export_state_ != nullptr, error::kInvalidArgument)
+      << "expected non-null state in ExportModeDeviceGeneratorImpl";
+}
+
+at::Tensor ExportModeDeviceGeneratorImpl::DeviceStateTensor() const {
+  return export_state_->DeviceStateTensor();
+}
+
+absl::Status ExportModeDeviceGeneratorImpl::SetDeviceStateTensor(
+    at::Tensor device_state_tensor) {
+  TT_RETURN_IF_ERROR(ValidateDeviceStateTensor(device_state_tensor));
+  return export_state_->SetDeviceStateTensor(std::move(device_state_tensor));
+}
+
+namespace {
+// Helper for unsupported eager accessors. In Python, user-level calls to these
+// generator methods (e.g., manual_seed, seed, get_state, set_state) trigger a
+// Dynamo graph break, falling back to eager execution on the eager generator.
+// Consequently, these methods should never be reached on an export placeholder
+// generator during graph capture; this crash serves as a defensive fail-safe.
+[[noreturn]] void CrashExportModeGeneratorUnsupported(std::string_view name) {
+  ABSL_CHECK(false)  // CRASH_OK
+      << "method " << name
+      << " is not supported in ExportModeDeviceGeneratorImpl";
+}
+}  // namespace
+
+uint64_t ExportModeDeviceGeneratorImpl::get_offset() const {
+  CrashExportModeGeneratorUnsupported("get_offset");
+}
+uint64_t ExportModeDeviceGeneratorImpl::current_seed() const {
+  CrashExportModeGeneratorUnsupported("current_seed");
+}
+uint64_t ExportModeDeviceGeneratorImpl::seed() {
+  CrashExportModeGeneratorUnsupported("seed");
+}
+c10::intrusive_ptr<c10::TensorImpl> ExportModeDeviceGeneratorImpl::get_state()
+    const {
+  CrashExportModeGeneratorUnsupported("get_state");
+}
+void ExportModeDeviceGeneratorImpl::set_current_seed(uint64_t seed) {
+  CrashExportModeGeneratorUnsupported("set_current_seed");
+}
+void ExportModeDeviceGeneratorImpl::set_offset(uint64_t offset) {
+  CrashExportModeGeneratorUnsupported("set_offset");
+}
+void ExportModeDeviceGeneratorImpl::set_state(
+    const c10::TensorImpl& new_state) {
+  CrashExportModeGeneratorUnsupported("set_state");
+}
+
+c10::intrusive_ptr<c10::GeneratorImpl>
+ExportModeDeviceGeneratorImpl::graphsafe_get_state() const {
+  return c10::make_intrusive<ExportModeDeviceGeneratorImpl>(device().index(),
+                                                            export_state_);
+}
+
+void ExportModeDeviceGeneratorImpl::graphsafe_set_state(
+    const c10::intrusive_ptr<c10::GeneratorImpl>& state) {
+  if (const auto* exp_other =
+          dynamic_cast<const ExportModeDeviceGeneratorImpl*>(state.get())) {
+    export_state_ = exp_other->export_state_;
+    return;
+  }
+  if (const auto* base_other =
+          dynamic_cast<const DeviceGeneratorImplBase*>(state.get())) {
+    at::Tensor state_tensor = base_other->DeviceStateTensor();
+    TT_THROW_IF_ERROR(SetDeviceStateTensor(std::move(state_tensor)));
+    return;
+  }
+  TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=Defensive check against
+                   // non-DeviceGeneratorImplBase generator state.
+      false, error::kInvalidArgument)
+      << "Expected DeviceGeneratorImplBase in graphsafe_set_state";
+}
+
+DeviceGeneratorImplBase* ExportModeDeviceGeneratorImpl::clone_impl() const {
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  return new ExportModeDeviceGeneratorImpl(device().index(),
+                                           export_state_->clone());
 }
 
 at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx) {

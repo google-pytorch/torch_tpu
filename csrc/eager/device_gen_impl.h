@@ -91,6 +91,29 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
   int materialize_state_counter_ = 0;
 };
 
+// Lightweight RNG state container for export mode.
+class ExportModeDeviceGeneratorState : public c10::intrusive_ptr_target {
+ public:
+  ExportModeDeviceGeneratorState() = default;
+  explicit ExportModeDeviceGeneratorState(at::Tensor device_state_tensor)
+      : device_state_tensor_(std::move(device_state_tensor)) {}
+
+  c10::intrusive_ptr<ExportModeDeviceGeneratorState> clone() const {
+    return c10::make_intrusive<ExportModeDeviceGeneratorState>(
+        device_state_tensor_.defined() ? device_state_tensor_.clone()
+                                       : device_state_tensor_);
+  }
+
+  at::Tensor DeviceStateTensor() const { return device_state_tensor_; }
+  absl::Status SetDeviceStateTensor(at::Tensor t) {
+    device_state_tensor_ = std::move(t);
+    return absl::OkStatus();
+  }
+
+ private:
+  at::Tensor device_state_tensor_ = at::Tensor();
+};
+
 // Forward declarations for friends.
 at::Tensor PyGetDeviceStateTensor(at::Generator gen);
 void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
@@ -126,6 +149,7 @@ class DeviceGeneratorImplBase : public c10::GeneratorImpl {
 
  private:
   friend class EagerModeDeviceGeneratorImpl;
+  friend class ExportModeDeviceGeneratorImpl;
 
   friend at::Tensor PyGetDeviceStateTensor(at::Generator gen);
   friend void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
@@ -192,6 +216,51 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   absl::Status SetDeviceStateTensor(at::Tensor t) override;
 
   c10::intrusive_ptr<DeviceGeneratorState> state_;
+};
+
+// Concrete generator implementation used exclusively during graph export
+// tracing. Manages symbolic MLIR placeholder state tensors via
+// ExportModeDeviceGeneratorState and triggers fatal check failures if
+// unreachable eager accessors are invoked.
+class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
+ public:
+  // Constructs an export mode generator by cloning the underlying state tensor
+  // of the incoming eager default generator.
+  explicit ExportModeDeviceGeneratorImpl(
+      const at::Generator& default_generator);
+
+  at::Tensor DeviceStateTensor() const override;
+
+  // Export mode does not support eager read accessors.
+  // Implemented to trigger fatal check failures.
+  uint64_t get_offset() const override;
+  uint64_t current_seed() const override;
+  c10::intrusive_ptr<c10::TensorImpl> get_state() const override;
+  c10::intrusive_ptr<c10::GeneratorImpl> graphsafe_get_state() const override;
+
+ private:
+  friend class c10::intrusive_ptr<ExportModeDeviceGeneratorImpl>;
+
+  ExportModeDeviceGeneratorImpl(
+      c10::DeviceIndex device_index,
+      c10::intrusive_ptr<ExportModeDeviceGeneratorState> state);
+  explicit ExportModeDeviceGeneratorImpl(DeviceGeneratorImplBase& eager_base);
+
+  DeviceGeneratorImplBase* clone_impl() const override;
+
+  // The following RNG state accessors are private as it's dangerous to modify
+  // the state. Only approved friends are allowed to call them.
+
+  uint64_t seed() override;
+  void set_current_seed(uint64_t seed) override;
+  void set_offset(uint64_t offset) override;
+  void set_state(const c10::TensorImpl& new_state) override;
+  void graphsafe_set_state(
+      const c10::intrusive_ptr<c10::GeneratorImpl>& new_state) override;
+
+  absl::Status SetDeviceStateTensor(at::Tensor device_state_tensor) override;
+
+  c10::intrusive_ptr<ExportModeDeviceGeneratorState> export_state_;
 };
 
 // Convenience functions.
