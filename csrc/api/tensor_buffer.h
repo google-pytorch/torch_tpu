@@ -71,6 +71,13 @@ class TensorBufferHandle final {
   // Waits for the device buffer to be ready to read and execution to complete.
   absl::Status Synchronize();
 
+  // Converts this buffer handle into a PyTorch at::Tensor on device="tpu".
+  // The handle remains valid and continues referencing the shared buffer.
+  //
+  // NOTE: This is a temporary API to bridge external kernels with TorchTPU and
+  // will be deprecated once integrated custom-call lowerings are supported.
+  absl::StatusOr<at::Tensor> ToTensor() const;
+
  private:
   class Impl;
   explicit TensorBufferHandle(absl_nonnull std::unique_ptr<Impl> impl);
@@ -79,12 +86,22 @@ class TensorBufferHandle final {
 
   friend absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
       const at::Tensor& tensor);
+  friend absl::StatusOr<TensorBufferHandle> MakeTensorBuffer(
+      absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer);
 };
 
 // Extracts the TensorBufferHandle for the given tensor's base buffer.
 // Returns an error if the tensor is not a valid TPU tensor.
 absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
     const at::Tensor& tensor);
+
+// Creates a TensorBufferHandle from an owned materialized PjRtBuffer.
+// The PjRtBuffer must belong to TorchTPU's active PjrtBackend instance.
+//
+// NOTE: This is a temporary API to bridge external kernels with TorchTPU and
+// will be deprecated once integrated custom-call lowerings are supported.
+absl::StatusOr<TensorBufferHandle> MakeTensorBuffer(
+    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer);
 
 }  // namespace torch_tpu
 

@@ -16,6 +16,8 @@
 
 #include "csrc/api/tensor_buffer.h"
 
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -175,6 +177,75 @@ TEST_F(TensorBufferTest, ViewTensorBaseBufferSharing) {
   TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer * view_buf,
                           view_handle.AwaitBuffer());
   EXPECT_EQ(base_buf, view_buf);
+}
+
+TEST_F(TensorBufferTest, CreateTensorBufferFromPjRtBufferAndToTensor) {
+  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
+  ASSERT_NE(client, nullptr);
+  xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
+  ASSERT_NE(device, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtMemorySpace * memory_space,
+                          device->default_memory_space());
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> pjrt_buf,
+      client->BufferFromHostBuffer(
+          data.data(), xla::PrimitiveType::F32, {4},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space,
+          /*device_layout=*/nullptr));
+
+  xla::PjRtBuffer* raw_buf = pjrt_buf.get();
+  TT_ASSERT_OK_AND_ASSIGN(TensorBufferHandle handle,
+                          MakeTensorBuffer(std::move(pjrt_buf)));
+
+  EXPECT_EQ(handle.size_bytes(), 4 * sizeof(float));
+  EXPECT_EQ(handle.num_elements(), 4);
+  EXPECT_THAT(handle.dimensions(), testing::ElementsAre(4));
+  EXPECT_EQ(handle.state(), DeviceBufferState::kMaterialized);
+
+  TT_ASSERT_OK_AND_ASSIGN(at::Tensor tensor, handle.ToTensor());
+  EXPECT_TRUE(tensor.defined());
+  EXPECT_EQ(tensor.numel(), 4);
+  EXPECT_EQ(tensor.scalar_type(), at::kFloat);
+
+  // Verify that the tensor wraps the exact same PjRtBuffer.
+  TT_ASSERT_OK_AND_ASSIGN(TensorBufferHandle extracted_handle,
+                          GetBaseTensorBuffer(tensor));
+  EXPECT_EQ(extracted_handle.num_elements(), 4);
+  EXPECT_EQ(extracted_handle.state(), DeviceBufferState::kMaterialized);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtBuffer * awaited_buf,
+                          extracted_handle.AwaitBuffer());
+  EXPECT_EQ(awaited_buf, raw_buf);
+}
+
+TEST_F(TensorBufferTest, DeletedBufferRejection) {
+  xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
+  ASSERT_NE(client, nullptr);
+  xla::PjRtDevice* device = PjrtBackend::GetInstance().GetDevice();
+  ASSERT_NE(device, nullptr);
+  TT_ASSERT_OK_AND_ASSIGN(xla::PjRtMemorySpace * memory_space,
+                          device->default_memory_space());
+  std::vector<float> data = {1.0f};
+  TT_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<xla::PjRtBuffer> pjrt_buf,
+      client->BufferFromHostBuffer(
+          data.data(), xla::PrimitiveType::F32, {1},
+          /*byte_strides=*/std::nullopt,
+          xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall,
+          /*on_done_with_host_buffer=*/nullptr, memory_space,
+          /*device_layout=*/nullptr));
+
+  pjrt_buf->Delete();
+  auto status_or = MakeTensorBuffer(std::move(pjrt_buf));
+  EXPECT_FALSE(status_or.ok());
+}
+
+TEST_F(TensorBufferTest, NullBufferRejection) {
+  std::unique_ptr<xla::PjRtBuffer> null_buf;
+  auto status_or = MakeTensorBuffer(std::move(null_buf));
+  EXPECT_FALSE(status_or.ok());
 }
 
 }  // namespace

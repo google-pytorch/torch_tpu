@@ -30,6 +30,7 @@
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
+#include "csrc/pjrt/pjrt_state.h"
 #include "xla/pjrt/pjrt_client.h"
 
 namespace torch_tpu {
@@ -107,6 +108,29 @@ absl::StatusOr<TensorBufferHandle> GetBaseTensorBuffer(
   }
   return TensorBufferHandle(
       std::make_unique<TensorBufferHandle::Impl>(std::move(*buffer_ref_or)));
+}
+
+absl::StatusOr<at::Tensor> TensorBufferHandle::ToTensor() const {
+  const int dev_idx = impl_->buffer_ref().device_index();
+  return MakeTensor(impl_->buffer_ref(), dev_idx);
+}
+
+absl::StatusOr<TensorBufferHandle> MakeTensorBuffer(
+    absl_nonnull std::unique_ptr<xla::PjRtBuffer> buffer) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by tensor_buffer_test.
+      buffer != nullptr, error::kInvalidArgument)
+      << "buffer must not be null";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by tensor_buffer_test.
+      !buffer->IsDeleted(), error::kFailedPrecondition)
+      << "cannot create TensorBufferHandle from deleted PjRtBuffer";
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Covered by tensor_buffer_test.
+      buffer->client() == PjrtBackend::GetInstance().GetClient(),
+      error::kInvalidArgument)
+      << "PjRtBuffer must belong to TorchTPU's active PjrtBackend instance";
+  TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref,
+                      DeviceBufferList::CreateMaterialized(std::move(buffer)));
+  return TensorBufferHandle(
+      std::make_unique<TensorBufferHandle::Impl>(std::move(buffer_ref)));
 }
 
 }  // namespace torch_tpu

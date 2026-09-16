@@ -48,6 +48,7 @@ torch_tpu_cc_library(
         "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
+        "//csrc/pjrt:pjrt_state",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/status",
