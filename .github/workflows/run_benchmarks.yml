@@ -90,10 +90,10 @@ jobs:
       !cancelled() &&
       (needs.build_wheel.result == 'success' ||
        needs.build_wheel.result == 'skipped')
-    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@aa854ba7bdb77966a9cc1a013417f1c1a208c4c0 # main
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
       registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
-      bap_ref: "aa854ba7bdb77966a9cc1a013417f1c1a208c4c0"
+      bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       runner: "linux-x86-n4-16"
       benchmark_filter: ${{ inputs.benchmark_filter }}
       environment_filter: ${{ inputs.environment_filter }}

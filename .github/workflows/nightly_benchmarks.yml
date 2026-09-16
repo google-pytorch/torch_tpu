@@ -50,10 +50,10 @@ jobs:
   run_benchmarks:
     name: Run TorchTPU benchmarks
     needs: [build_wheel]
-    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@aa854ba7bdb77966a9cc1a013417f1c1a208c4c0 # main
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
     with:
       registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
-      bap_ref: "aa854ba7bdb77966a9cc1a013417f1c1a208c4c0"
+      bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       publish_metrics: true
       pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
       pub_sub_gcp_topic_id: "private-torch-tpu-prod"
