@@ -225,6 +225,19 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
+    ---
+
+    ### **3d. DataLoader Multiprocessing Deadlock (`num_workers > 0`)**
+    Standard `torch.utils.data.DataLoader(..., num_workers > 0)` defaults to `fork` on Linux. After PJRT client initialization, forking child processes duplicates multithreaded runtime state and device lock handles (`/tmp/libtpu_lockfile`), causing worker processes to hang/deadlock silently before step 0 without raising an exception.
+
+    💡 **Fix**: Always set `num_workers=0` for in-process data loading on TPU, or use Google's [`Grain`](https://github.com/google/grain) library for asynchronous multi-worker pipelines.
+    """)
+  return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+  mo.md(r"""
     ## **4. Diagnostic Tools (Live)**
 
     ### **4a. OpTracer — Find CPU Fallbacks**

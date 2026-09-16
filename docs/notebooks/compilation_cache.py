@@ -145,10 +145,19 @@ def _(mo):
 
     ```python
     train_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=32, shuffle=True,
-        drop_last=True  # CRITICAL for TPU performance
+        dataset,
+        batch_size=32,
+        shuffle=True,
+        drop_last=True,  # CRITICAL: prevents recompilations from odd batch shapes
+        num_workers=0,  # CRITICAL: avoids os.fork deadlock post-PJRT initialization
     )
     ```
+
+    > [!WARNING]
+    > **Data Loading on TPU (`num_workers=0` Recommended)**:
+    > PyTorch's `DataLoader` on Linux defaults to `multiprocessing.get_context("fork")`. Because the TPU runtime (PJRT) initializes multithreaded drivers and acquires hardware device locks (`/tmp/libtpu_lockfile`), forking worker subprocesses causes silent deadlocks before step 0.
+    > 
+    > Always set **`num_workers=0`** to load data in the main process. For high-throughput asynchronous input pipelines, use Google's [`Grain`](https://github.com/google/grain) library (`grain.python.DataLoader`).
     """)
   return
 
