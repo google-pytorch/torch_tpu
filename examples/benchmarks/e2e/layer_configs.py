@@ -2252,3 +2252,32 @@ GRU_CONFIGS = (
         bidirectional=True,
     ),
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class RepeatInterleaveConfig:
+  input_shape: tuple[int, ...]
+  repeats: int
+  dim: int
+
+
+REPEAT_INTERLEAVE_CONFIGS = (
+    # Mamba-3 Config 1 shape (B=1, L=128, G=1 -> H=8, N=128)
+    RepeatInterleaveConfig(
+        input_shape=(1, 128, 1, 128),
+        repeats=8,
+        dim=2,
+    ),
+    # Mamba-3 Config 2 shape (B=8, L=1024, G=8 -> H=64, N=128)
+    RepeatInterleaveConfig(
+        input_shape=(8, 1024, 8, 128),
+        repeats=8,
+        dim=2,
+    ),
+    # LLM GQA KV-head expansion shape (B=4, L=2048, num_kv_heads=8 -> 32, head_dim=128)
+    RepeatInterleaveConfig(
+        input_shape=(4, 2048, 8, 128),
+        repeats=4,
+        dim=2,
+    ),
+)

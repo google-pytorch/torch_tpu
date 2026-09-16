@@ -470,6 +470,9 @@ REGISTRATION_OVERRIDES = frozenset([
     # repeat_interleave.self_Tensor is registered to provide an optimized TPU
     # implementation, overriding the default decomposition.
     'repeat_interleave.self_Tensor',
+    # repeat_interleave.self_int is registered to provide an optimized TPU
+    # implementation, overriding the default decomposition.
+    'repeat_interleave.self_int',
     # split_with_sizes_copy.out is used by PyTorch's FSDP2 wrapper. The default
     # decomposition performs 2-d reshapes that are inefficient on TPU.
     'split_with_sizes_copy.out',

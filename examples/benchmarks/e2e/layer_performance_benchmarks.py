@@ -90,10 +90,14 @@ _LSTM_LAYER_BENCHMARK_NAME = "lstm"
 
 _GRU_LAYER_BENCHMARK_NAME = "gru"
 _MAMBA3_LAYER_BENCHMARK_NAME = "mamba3"
+_REPEAT_INTERLEAVE_BENCHMARK_NAME = "repeat_interleave"
 
 
 _DYNAMIC_SKIPS = {
     "slice_scatter": "Slice scatter dynamic shape support not implemented.",
+    "repeat_interleave": (
+        "Repeat interleave uses explicit custom_kwargs input_shape."
+    ),
     # Blocked by remote TPU/MLIR/JAX C++ backend compiler bugs:
     "nn.Embedding": (
         "Blocked by RankedTensorType MLIR storage uniquer assertion crashes "
@@ -526,6 +530,35 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
     microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
     self.run_performance_benchmark_test(
         config, _SLICE_SCATTER_BENCHMARK_NAME, microbenchmark_name
+    )
+
+  @parameterized.named_parameters(
+      test_utils.generate_layer_test_configs(
+          _ALL_RUN_MODES, (True, False), layer_configs.REPEAT_INTERLEAVE_CONFIGS
+      )
+  )
+  def test_repeat_interleave(self, run_mode, is_training, layer_config):
+    config = performance_utils.PerformanceBenchmarkConfig(
+        supported_platforms=[
+            common.Platform.GFC_1X1X1,
+            common.Platform.B200_1,
+        ],
+        benchmark_category=benchmark_utils.BenchmarkCategory.ML_LAYER,
+        run_mode=run_mode,
+        is_training=is_training,
+        model_and_input_factory=model_utils.ml_layer_model_builder,
+        model_and_input_args=performance_utils.ModelAndInputArgs(
+            model_name="repeat_interleave",
+            custom_kwargs={
+                "input_shape": layer_config.input_shape,
+                "repeats": layer_config.repeats,
+                "dim": layer_config.dim,
+            },
+        ),
+    )
+    microbenchmark_name = test_utils.get_microbenchmark_name(layer_config)
+    self.run_performance_benchmark_test(
+        config, _REPEAT_INTERLEAVE_BENCHMARK_NAME, microbenchmark_name
     )
 
   @parameterized.named_parameters(

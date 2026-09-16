@@ -657,6 +657,8 @@ enum class OpName {
   kRemainderScalarTensor,
   kRemainderTensorOut,
   kRepeat,
+  kRepeatInterleaveBackward,
+  kRepeatInterleaveSelfInt,
   kRepeatInterleaveSelfTensor,
   kReplicationPad1dBackwardGradInput,
   kReplicationPad1dOut,

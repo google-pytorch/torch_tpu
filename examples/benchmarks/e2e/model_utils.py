@@ -1145,6 +1145,31 @@ def ml_layer_model_builder(
         torch.randn(src_shape, dtype=weights_dtype, device=device),
     )
 
+  elif model_name == "repeat_interleave":
+    input_shape = kwargs["input_shape"]
+    repeats = kwargs["repeats"]
+    dim = kwargs["dim"]
+
+    class RepeatInterleaveModel(torch.nn.Module):
+
+      def __init__(self, repeats: int, dim: int):
+        super().__init__()
+        self.repeats = repeats
+        self.dim = dim
+
+      def forward(self, x):
+        return torch.repeat_interleave(x, self.repeats, dim=self.dim)
+
+    model = RepeatInterleaveModel(repeats, dim)
+    example_inputs = (
+        torch.randn(
+            input_shape,
+            dtype=weights_dtype,
+            device=device,
+            requires_grad=is_training,
+        ),
+    )
+
   elif model_name == "nn.AvgPool1d":
     kernel_size = kwargs["kernel_size"]
     stride = kwargs["stride"]

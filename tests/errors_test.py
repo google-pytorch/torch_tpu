@@ -12137,6 +12137,24 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._assert_async.msg(multi_cond, "multiple assertion")
 
+  def test_repeat_interleave_negative_repeats(self):
+    t = torch.tensor([1, 2], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): expected repeats to be greater than or equal to zero, got -1""",
+        gpu="""Repeats must be non-negative""",
+    ):
+      torch.repeat_interleave(t, -1)
+
+  def test_repeat_interleave_invalid_output_size(self):
+    t = torch.tensor([1, 2], device=et.device())
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""repeat_interleave(): allocated size does not match required size""",
+        gpu="""repeat_interleave: Invalid output_size, expected 4 but got 10""",
+    ):
+      torch.repeat_interleave(t, 2, output_size=10)
+
 
 class InputPreprocessingErrorTest(et.ErrorTestBase):
 

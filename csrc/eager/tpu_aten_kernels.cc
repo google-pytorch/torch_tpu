@@ -911,6 +911,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kRelu_>(m, AtenRelu_);
   ImplStable<OpName::kRemainderScalarTensor>(m, AtenRemainderScalarTensor);
   ImplStable<OpName::kRemainderTensorOut>(m, AtenRemainderTensorOut);
+  ImplStable<OpName::kRepeatInterleaveSelfInt>(m, AtenRepeatInterleaveSelfInt);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m, AtenRepeatInterleave);
   ImplStable<OpName::kReplicationPad1dBackwardGradInput>(
       m, AtenReplicationPad1dBackwardGradInput);
@@ -1172,6 +1173,10 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // ctc_loss to our custom forward/backward autograd implementation.
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
+  ImplStable<OpName::kRepeatInterleaveSelfInt>(
+      m, AtenRepeatInterleaveSelfIntAutograd);
+  ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,
+                                                  AtenRepeatInterleaveAutograd);
   // go/keep-sorted end
 }
 
