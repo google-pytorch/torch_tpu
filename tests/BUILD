@@ -379,7 +379,7 @@ _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS = if_oss(
 
 _OPS_TEST_ON_V7_TAGS = if_oss(
     ["requires-tpu-v5lite"],
-    ["ok-to-wait-for-v6e-in-presubmit"],
+    [],
 )
 
 torch_tpu_py_test(
@@ -409,7 +409,6 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -562,7 +561,6 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -604,7 +602,6 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -685,7 +682,6 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -729,7 +725,6 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -812,7 +807,6 @@ torch_tpu_py_test(
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -980,7 +974,6 @@ torch_tpu_py_test(
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
-        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":op_testing",

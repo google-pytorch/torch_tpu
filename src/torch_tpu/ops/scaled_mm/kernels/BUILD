@@ -116,8 +116,6 @@ torch_tpu_py_test(
     ],
     tags = [
         "nosan",  # *san builds are low-value for accelerator numerics tests.
-        "ok-to-wait-for-v6e-in-presubmit",
-        "ok-to-wait-for-v7x-in-presubmit",
     ],
     deps = [
         ":blockwise128_scaled_mm_kernel",

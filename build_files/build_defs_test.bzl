@@ -94,11 +94,14 @@ def _test_py_test_multi_tpu_targets_impl(env, targets):
     """Verifies that torch_tpu_py_test expands multiple requires-TPU tags into per-TPU targets with tag isolation."""
     target_v5_tags = targets.target_v5[_TagsInfo].tags
     target_v6_tags = targets.target_v6[_TagsInfo].tags
+    target_v7_tags = targets.target_v7[_TagsInfo].tags
 
     # Target 1 (v5)
     env.expect.that_collection(target_v5_tags).contains("requires-tpu-v5lite")
     env.expect.that_collection(target_v5_tags).contains("custom_tag")
     env.expect.that_collection(target_v5_tags).not_contains("requires-tpu-v6e")
+    env.expect.that_collection(target_v5_tags).not_contains("requires-tpu-v7x")
+    env.expect.that_collection(target_v5_tags).not_contains("nopresubmit")
 
     # Checking fails-on-tpu tags tests an implementation detail rather than the
     # behavior we care about (a blaze query skipping mismatched TPU runners).
@@ -111,18 +114,36 @@ def _test_py_test_multi_tpu_targets_impl(env, targets):
     env.expect.that_collection(target_v6_tags).contains("requires-tpu-v6e")
     env.expect.that_collection(target_v6_tags).contains("custom_tag")
     env.expect.that_collection(target_v6_tags).not_contains("requires-tpu-v5lite")
+    env.expect.that_collection(target_v6_tags).not_contains("requires-tpu-v7x")
+    env.expect.that_collection(target_v6_tags).contains("nopresubmit")
     env.expect.that_collection(target_v6_tags).contains("fails-on-tpu-v5")
     env.expect.that_collection(target_v6_tags).contains("fails-on-tpu-v7")
     env.expect.that_collection(target_v6_tags).not_contains("fails-on-tpu-v6")
+
+    # Target 3 (v7)
+    env.expect.that_collection(target_v7_tags).contains("requires-tpu-v7x")
+    env.expect.that_collection(target_v7_tags).contains("custom_tag")
+    env.expect.that_collection(target_v7_tags).not_contains("requires-tpu-v5lite")
+    env.expect.that_collection(target_v7_tags).not_contains("requires-tpu-v6e")
+    env.expect.that_collection(target_v7_tags).contains("nopresubmit")
+    env.expect.that_collection(target_v7_tags).contains("fails-on-tpu-v5")
+    env.expect.that_collection(target_v7_tags).contains("fails-on-tpu-v6")
+    env.expect.that_collection(target_v7_tags).not_contains("fails-on-tpu-v7")
 
     # In OSS, the presubmit-v<N> tag picks the runner, so each target must have
     # the one matching its accelerator.
     if is_oss():
         env.expect.that_collection(target_v5_tags).contains("presubmit-v5")
         env.expect.that_collection(target_v5_tags).not_contains("presubmit-v6")
+        env.expect.that_collection(target_v5_tags).not_contains("presubmit-v7")
 
         env.expect.that_collection(target_v6_tags).contains("presubmit-v6")
         env.expect.that_collection(target_v6_tags).not_contains("presubmit-v5")
+        env.expect.that_collection(target_v6_tags).not_contains("presubmit-v7")
+
+        env.expect.that_collection(target_v7_tags).contains("presubmit-v7")
+        env.expect.that_collection(target_v7_tags).not_contains("presubmit-v5")
+        env.expect.that_collection(target_v7_tags).not_contains("presubmit-v6")
 
 def _test_py_test_multi_tpu_targets(name):
     torch_tpu_py_test(
@@ -132,14 +153,17 @@ def _test_py_test_multi_tpu_targets(name):
         is_wheel_test = True,
         tags = [
             "custom_tag",
+            "nofastbuild",
+            "noopt",
+            "notest",
         ],
         run_on_accelerators = [
             "requires-tpu-v5lite",
             "requires-tpu-v6e",
+            "requires-tpu-v7x",
         ],
         nobuild = "Analysis test subject",
         nolocal = "Analysis test subject",
-        notap = "Analysis test subject",
     )
     analysis_test(
         name = name,
@@ -147,10 +171,12 @@ def _test_py_test_multi_tpu_targets(name):
         targets = {
             "target_v5": name + "_subject_" + get_tpu_version_for_testing("requires-tpu-v5lite"),
             "target_v6": name + "_subject_" + get_tpu_version_for_testing("requires-tpu-v6e"),
+            "target_v7": name + "_subject_" + get_tpu_version_for_testing("requires-tpu-v7x"),
         },
         attrs = {
             "target_v5": {"aspects": [tags_aspect]},
             "target_v6": {"aspects": [tags_aspect]},
+            "target_v7": {"aspects": [tags_aspect]},
         },
     )
 
@@ -164,6 +190,7 @@ def _test_py_test_multi_tpu_targets_existing_fails_on_impl(env, targets):
 
     v7_count_v6 = [t for t in target_v6_tags if t == "fails-on-tpu-v7"]
     env.expect.that_int(len(v7_count_v6)).equals(1)
+    env.expect.that_collection(target_v6_tags).not_contains("nopresubmit")
 
 def _test_py_test_multi_tpu_targets_existing_fails_on(name):
     torch_tpu_py_test(
