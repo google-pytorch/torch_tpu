@@ -60,7 +60,7 @@ jobs:
         job_info: [
           {
             runner: "linux-x86-ct6e-180-8tpu",
-            container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996",  # Tag infrastructure-public-image-2c74567ee8e0
+            container: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051",  # Tag infrastructure-public-image-f0ac56f68949 (built 2026-09-21)
           }
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
