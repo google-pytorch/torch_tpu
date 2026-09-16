@@ -106,6 +106,10 @@ static_assert(sizeof(Shape) == 232);
 // Converts an XLA shape to a torch_tpu shape.
 absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape);
 
+// Converts a torch_tpu shape to an XLA shape with concrete dimensions and
+// layout.
+absl::StatusOr<xla::Shape> MakeXlaShape(const Shape& shape);
+
 std::string ToString(const Shape& s);
 
 }  // namespace torch_tpu

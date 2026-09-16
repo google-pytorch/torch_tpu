@@ -16,8 +16,11 @@
 
 #include "csrc/common/layout_utils.h"
 
+#include <cstdint>
+
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/empty.h"
+#include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -127,6 +130,61 @@ TEST(LayoutUtilsTest, ResolveTpuLayout_FP4TensorNonContiguous_ReturnsError) {
 
   auto layout_or = ResolveTpuLayout(tensor);
   EXPECT_EQ(layout_or.status().code(), error::kInvalidArgument);
+}
+
+TEST(LayoutUtilsTest, MakeXlaShapeRoundTripAndDynamism) {
+  Shape src_shape({16, 128}, mlir::ElementType::BF16);
+  CustomLayout layout;
+  layout.minor_to_major = {0, 1};
+  layout.tiles.push_back(Indices({8, 128}));
+  layout.element_size_in_bits = 16;
+  src_shape.set_layout(layout);
+
+  TT_ASSERT_OK_AND_ASSIGN(const xla::Shape xla_shape, MakeXlaShape(src_shape));
+  EXPECT_EQ(xla_shape.element_type(), xla::PrimitiveType::BF16);
+  EXPECT_EQ(xla_shape.dimensions(), absl::Span<const int64_t>({16, 128}));
+  ASSERT_TRUE(xla_shape.has_layout());
+  EXPECT_EQ(xla_shape.layout().minor_to_major(),
+            absl::Span<const int64_t>({0, 1}));
+
+  TT_ASSERT_OK_AND_ASSIGN(const Shape round_trip, MakeShape(xla_shape));
+  EXPECT_EQ(round_trip, src_shape);
+  EXPECT_FALSE(round_trip.on_device_shape_is_dynamic());
+
+  xla::Shape dynamic_xla_shape = xla_shape;
+  dynamic_xla_shape.set_dynamic_dimension(0, true);
+  TT_ASSERT_OK_AND_ASSIGN(const Shape dynamic_shape,
+                          MakeShape(dynamic_xla_shape));
+  EXPECT_TRUE(dynamic_shape.on_device_shape_is_dynamic());
+}
+
+TEST(LayoutUtilsTest, MakeXlaShapeScalarWithCustomLayout) {
+  Shape scalar_shape({}, mlir::ElementType::BF16);
+  CustomLayout layout;
+  layout.element_size_in_bits = 16;
+  scalar_shape.set_layout(layout);
+
+  TT_ASSERT_OK_AND_ASSIGN(const xla::Shape xla_shape,
+                          MakeXlaShape(scalar_shape));
+  EXPECT_EQ(xla_shape.element_type(), xla::PrimitiveType::BF16);
+  EXPECT_TRUE(xla_shape.dimensions().empty());
+  ASSERT_TRUE(xla_shape.has_layout());
+  EXPECT_TRUE(xla_shape.layout().minor_to_major().empty());
+  EXPECT_EQ(xla_shape.layout().element_size_in_bits(), 16);
+
+  TT_ASSERT_OK_AND_ASSIGN(const Shape round_trip, MakeShape(xla_shape));
+  EXPECT_EQ(round_trip, scalar_shape);
+}
+
+TEST(LayoutUtilsTest, MakeXlaShapeInvalidDimensionsOrLayout) {
+  Shape invalid_dim_shape({-5}, mlir::ElementType::F32);
+  EXPECT_FALSE(MakeXlaShape(invalid_dim_shape).ok());
+
+  Shape invalid_layout_shape({16, 128}, mlir::ElementType::F32);
+  CustomLayout invalid_layout;
+  invalid_layout.minor_to_major = {0};
+  invalid_layout_shape.set_layout(invalid_layout);
+  EXPECT_FALSE(MakeXlaShape(invalid_layout_shape).ok());
 }
 
 }  // namespace

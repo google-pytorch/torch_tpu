@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "csrc/common/dimension_types.h"
@@ -26,7 +27,9 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/utils.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
+#include "xla/layout.h"
 #include "xla/shape.h"
+#include "xla/shape_util.h"
 
 namespace torch_tpu {
 
@@ -34,6 +37,7 @@ absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape) {
   TT_ASSIGN_OR_RETURN(mlir::ElementType result_dtype,
                       ConvertTo<mlir::ElementType>(xla_shape.element_type()));
   Shape shape(CopyIntVector(xla_shape.dimensions()), result_dtype);
+  shape.set_on_device_shape_is_dynamic(xla_shape.is_dynamic());
   if (xla_shape.has_layout()) {
     CustomLayout layout;
     layout.minor_to_major = CopyIntVector(xla_shape.layout().minor_to_major());
@@ -46,6 +50,26 @@ absl::StatusOr<Shape> MakeShape(const xla::Shape& xla_shape) {
     shape.set_layout(std::move(layout));
   }
   return shape;
+}
+
+absl::StatusOr<xla::Shape> MakeXlaShape(const Shape& shape) {
+  const xla::PrimitiveType xla_type =
+      ConvertTo<xla::PrimitiveType>(shape.dtype());
+  TT_ASSIGN_OR_RETURN(xla::Shape xla_shape,
+                      xla::ShapeUtil::MakeValidatedShapeWithDescendingLayout(
+                          xla_type, shape.dimensions()));
+  if (shape.layout().has_value()) {
+    const CustomLayout& layout = *shape.layout();
+    std::vector<xla::Tile> tiles;
+    tiles.reserve(layout.tiles.size());
+    for (const Indices& tile_dims : layout.tiles) {
+      tiles.push_back(xla::Tile(tile_dims));
+    }
+    *xla_shape.mutable_layout() =
+        xla::Layout(layout.minor_to_major, tiles, layout.element_size_in_bits);
+    TT_RETURN_IF_ERROR(xla::ShapeUtil::ValidateShape(xla_shape));
+  }
+  return xla_shape;
 }
 
 std::string ToString(const Shape& s) {

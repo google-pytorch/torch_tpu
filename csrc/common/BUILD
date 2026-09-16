@@ -157,6 +157,7 @@ torch_tpu_cc_test(
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/core:base_headers",
+        "@com_google_absl//absl/types:span",
         "@stablehlo//:attr_type_builder_util",
         "@xla//xla:shape_util",
     ],
