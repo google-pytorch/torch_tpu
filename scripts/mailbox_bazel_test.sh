@@ -1,1 +1,0 @@
-rbe_tpu/mailbox_bazel_test.sh

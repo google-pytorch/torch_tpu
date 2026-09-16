@@ -20,9 +20,9 @@ import subprocess
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
+SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts", "rbe_tpu")
 if not os.path.isdir(SCRIPTS_DIR):
-  SCRIPTS_DIR = os.path.join(REPO_ROOT, "oss", "scripts")
+  SCRIPTS_DIR = os.path.join(REPO_ROOT, "oss", "scripts", "rbe_tpu")
 MAILBOX_BAZEL_TEST = os.path.join(SCRIPTS_DIR, "mailbox_bazel_test.sh")
 MAILBOX_PRESUBMIT_PR = os.path.join(SCRIPTS_DIR, "mailbox_presubmit_pr.sh")
 
