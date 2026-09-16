@@ -27,7 +27,9 @@ MAILBOX_BAZEL_TEST = os.path.join(SCRIPTS_DIR, "mailbox_bazel_test.sh")
 MAILBOX_PRESUBMIT_PR = os.path.join(SCRIPTS_DIR, "mailbox_presubmit_pr.sh")
 
 
-class TestMailboxBazelTestCLI(unittest.TestCase):
+class TestMailboxBazelTestCLI(
+    unittest.TestCase  # UNITTEST_OK=CLI script test with no torch_tpu deps
+):
   """Tests command-line handling of scripts/mailbox_bazel_test.sh."""
 
   def run_cmd(self, *args, **env_overrides):
@@ -123,7 +125,9 @@ class TestMailboxBazelTestCLI(unittest.TestCase):
     self.assertEqual(res.returncode, 0, res.stderr)
 
 
-class TestMailboxPresubmitPRCLI(unittest.TestCase):
+class TestMailboxPresubmitPRCLI(
+    unittest.TestCase  # UNITTEST_OK=CLI script test with no torch_tpu deps
+):
   """Tests command-line handling of scripts/mailbox_presubmit_pr.sh."""
 
   def run_cmd(self, *args, **env_overrides):
@@ -218,7 +222,6 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
     self.assertNotEqual(res.returncode, 0)
     self.assertIn("Unknown argument: --bad-flag", res.stderr)
 
-
   def test_config_flag_precedes_jobs_flags_in_scripts(self):
     for script_name in ["mailbox_bazel_test.sh", "mailbox_presubmit_pr.sh"]:
       script_path = os.path.join(SCRIPTS_DIR, script_name)
@@ -228,8 +231,14 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
       jobs_idx = body.find("--jobs=${CLI_JOBS}")
       local_jobs_idx = body.find("--local_test_jobs=${CLI_JOBS}")
       self.assertGreater(config_idx, 0, f"--config missing in {script_name}")
-      self.assertGreater(jobs_idx, config_idx, f"--jobs must follow --config in {script_name}")
-      self.assertGreater(local_jobs_idx, config_idx, f"--local_test_jobs must follow --config in {script_name}")
+      self.assertGreater(
+          jobs_idx, config_idx, f"--jobs must follow --config in {script_name}"
+      )
+      self.assertGreater(
+          local_jobs_idx,
+          config_idx,
+          f"--local_test_jobs must follow --config in {script_name}",
+      )
 
   def test_stage_timing_breakdown_in_mailbox_bazel_test(self):
     script_path = os.path.join(SCRIPTS_DIR, "mailbox_bazel_test.sh")
@@ -247,7 +256,9 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
     with open(bazelrc_path) as f:
       body = f.read()
     self.assertIn("common:ci_tpu_v5_mailbox --config=ci_tpu_base", body)
-    self.assertNotIn("common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit", body)
+    self.assertNotIn(
+        "common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit", body
+    )
 
   def test_presubmit_script_adds_presubmit_config_for_full_suite(self):
     script_path = os.path.join(SCRIPTS_DIR, "mailbox_presubmit_pr.sh")
@@ -268,7 +279,9 @@ class TestMailboxPresubmitPRCLI(unittest.TestCase):
     with open(MAILBOX_PRESUBMIT_PR) as f:
       body = f.read()
     abort_block = body.split('if [[ "$label_applied" == "false" ]]; then')[1]
-    guard, _, remainder = abort_block.partition('if [[ "$CLI_MODE" == "replacement" ]]; then')
+    guard, _, remainder = abort_block.partition(
+        'if [[ "$CLI_MODE" == "replacement" ]]; then'
+    )
     self.assertEqual(guard.strip(), "")
     self.assertIn("exit 1", remainder.split("fi")[0])
 

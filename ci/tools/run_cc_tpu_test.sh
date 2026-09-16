@@ -33,13 +33,16 @@ if [[ "$TEST_BINARY" != /* ]] && [[ "$TEST_BINARY" != ./* ]]; then
   TEST_BINARY="./$TEST_BINARY"
 fi
 
-echo "INFO: Setting environment var TPU_LIBRARY_PATH."
+if [[ -n "$TPU_LIBRARY_PATH" && -f "$TPU_LIBRARY_PATH" ]]; then
+  echo "INFO: Using existing TPU_LIBRARY_PATH=$TPU_LIBRARY_PATH"
+else
+  echo "INFO: Setting environment var TPU_LIBRARY_PATH."
 
-# 1. Find the .whl file in the Runfiles Root (..)
-# Search '..' to catch sibling repositories. In modern Bazel with sibling
-# directory layout, repositories like 'pypi_libtpu' are placed next to the main
-# repository instead of being inside it.
-WHL_FILE=$(find -L .. -name "*.whl" | grep "libtpu" | head -n 1)
+  # 1. Find the .whl file in the Runfiles Root (..)
+  # Search '..' to catch sibling repositories. In modern Bazel with sibling
+  # directory layout, repositories like 'pypi_libtpu' are placed next to the main
+  # repository instead of being inside it.
+  WHL_FILE=$(find -L .. -name "*.whl" | grep "libtpu" | head -n 1)
 
 if [[ -z "$WHL_FILE" ]]; then
   echo "ERROR: Could not find libtpu .whl file in runfiles."
@@ -69,6 +72,7 @@ fi
 ABS_LIBTPU=$(readlink -f "$LIBTPU_SO")
 export TPU_LIBRARY_PATH="$ABS_LIBTPU"
 echo "INFO: Set TPU_LIBRARY_PATH=$TPU_LIBRARY_PATH"
+fi
 
 # 5. Run the binary with any remaining Bazel arguments
 echo "INFO: Executing test binary: $TEST_BINARY $@"
