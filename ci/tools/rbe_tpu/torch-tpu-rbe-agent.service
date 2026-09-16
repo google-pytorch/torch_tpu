@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-EnvironmentFile=-/etc/default/torch-tpu-relay-agent
-ExecStart=/usr/bin/python3 -m ci.tools.relay_mailbox.agent_main
+EnvironmentFile=-/etc/default/torch-tpu-rbe-agent
+ExecStart=/usr/bin/python3 -m ci.tools.rbe_tpu.agent_main
 WorkingDirectory=/opt/torch_tpu
 Restart=always
 RestartSec=5

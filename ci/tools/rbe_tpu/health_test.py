@@ -25,9 +25,9 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
-from ci.tools.relay_mailbox import fake_gcs
-from ci.tools.relay_mailbox import health
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import fake_gcs
+from ci.tools.rbe_tpu import health
+from ci.tools.rbe_tpu import protocol
 
 
 class StubProbe:

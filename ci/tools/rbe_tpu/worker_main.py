@@ -40,9 +40,9 @@ import hashlib
 import io
 import tarfile
 
-from ci.tools.relay_mailbox import config
-from ci.tools.relay_mailbox import protocol
-from ci.tools.relay_mailbox import worker as worker_lib
+from ci.tools.rbe_tpu import config
+from ci.tools.rbe_tpu import protocol
+from ci.tools.rbe_tpu import worker as worker_lib
 
 _FORWARDED_ENV_PREFIXES = (
     "TORCH_",

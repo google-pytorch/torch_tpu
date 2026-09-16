@@ -33,9 +33,9 @@ import os
 import tarfile
 import time
 
-from ci.tools.relay_mailbox import binding as binding_lib
-from ci.tools.relay_mailbox import gcs
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import binding as binding_lib
+from ci.tools.rbe_tpu import gcs
+from ci.tools.rbe_tpu import protocol
 
 # How often the worker re-checks its binding while waiting for a result.
 # Without this a revocation would not be noticed until the item's own

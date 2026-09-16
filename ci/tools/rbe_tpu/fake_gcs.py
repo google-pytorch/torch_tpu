@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import threading
 
-from ci.tools.relay_mailbox import gcs
+from ci.tools.rbe_tpu import gcs
+from ci.tools.rbe_tpu import health
 
 
 class FakeClient(gcs.Client):
@@ -125,3 +126,16 @@ class FakeClock:
 
   def advance(self, seconds: float) -> None:
     self._now += seconds
+
+
+class StubProbe:
+  """A probe the test flips between healthy and broken."""
+
+  def __init__(self, healthy: bool = True):
+    self.healthy = healthy
+    self.calls = 0
+    self.detail = "stub detail"
+
+  def __call__(self) -> health.ProbeResult:
+    self.calls += 1
+    return health.ProbeResult(self.healthy, "stub", self.detail)

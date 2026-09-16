@@ -34,9 +34,9 @@ import subprocess
 import sys
 import tarfile
 
-from ci.tools.relay_mailbox import agent
-from ci.tools.relay_mailbox import gcs
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import agent
+from ci.tools.rbe_tpu import gcs
+from ci.tools.rbe_tpu import protocol
 
 DEFAULT_ROOT = "/tmp/torch_tpu_relay"
 

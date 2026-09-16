@@ -26,10 +26,10 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
-from ci.tools.relay_mailbox import binding as binding_lib
-from ci.tools.relay_mailbox import fake_gcs
-from ci.tools.relay_mailbox import protocol
-from ci.tools.relay_mailbox import worker as worker_lib
+from ci.tools.rbe_tpu import binding as binding_lib
+from ci.tools.rbe_tpu import fake_gcs
+from ci.tools.rbe_tpu import protocol
+from ci.tools.rbe_tpu import worker as worker_lib
 
 
 class Responder:

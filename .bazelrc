@@ -360,17 +360,23 @@ common:ci_tpu_v5 --local_test_jobs=8
 
 common:ci_tpu_v5_presubmit --config=ci_tpu_v5
 common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fails-on-tpu-v5,presubmit-v5
-# GCS Mailbox execution for Cloud TPU v5e hardware.
-# Dispatches test actions via GCS mailbox protocol to standing TPU v5e fleet.
-# Unlike SSH relay, this works from any machine with bucket access (including
-# external developers and GitHub Actions runners) without SSH or VPC peering.
+# Remote Build Execution on TPU v5e hardware (rbe_tpu).
+# Dispatches test actions to standing TPU v5e fleet.
+# Works from any machine with bucket access (including external developers
+# and GitHub Actions runners) without SSH or VPC peering.
+common:rbe_tpu --config=ci_tpu_base
+common:rbe_tpu --remote_download_outputs=all
+common:rbe_tpu --test_env=TORCH_TPU_RELAY_BUCKET=torch-tpu-mailbox-eval
+common:rbe_tpu --run_under=//ci/tools/rbe_tpu:worker_main
+common:rbe_tpu --local_test_jobs=28
+common:rbe_tpu --bes_backend=
+common:rbe_tpu --bes_results_url=
+
+common:ci_rbe_tpu --config=rbe_tpu
+
+# Backwards-compatibility config for mailbox
 common:ci_tpu_v5_mailbox --config=ci_tpu_base
-common:ci_tpu_v5_mailbox --remote_download_outputs=all
-common:ci_tpu_v5_mailbox --test_env=TORCH_TPU_RELAY_BUCKET=torch-tpu-mailbox-eval
-common:ci_tpu_v5_mailbox --run_under=//ci/tools/relay_mailbox:worker_main
-common:ci_tpu_v5_mailbox --local_test_jobs=28
-common:ci_tpu_v5_mailbox --bes_backend=
-common:ci_tpu_v5_mailbox --bes_results_url=
+common:ci_tpu_v5_mailbox --config=rbe_tpu
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base

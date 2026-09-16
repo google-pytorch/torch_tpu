@@ -17,7 +17,7 @@ load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 
 py_library(
-    name = "relay_mailbox",
+    name = "rbe_tpu",
     srcs = [
         "__init__.py",
         "agent.py",
@@ -36,55 +36,55 @@ py_library(
 py_binary(
     name = "agent_main",
     srcs = ["agent_main.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_binary(
     name = "worker_main",
     srcs = ["worker_main.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "gcs_test",
     srcs = ["gcs_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "binding_test",
     srcs = ["binding_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "health_test",
     srcs = ["health_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "agent_test",
     srcs = ["agent_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "worker_test",
     srcs = ["worker_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "runner_test",
     srcs = ["runner_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
     name = "integration_test",
     srcs = ["integration_test.py"],
-    deps = [":relay_mailbox"],
+    deps = [":rbe_tpu"],
 )
 
 py_test(
@@ -92,7 +92,7 @@ py_test(
     srcs = ["main_test.py"],
     deps = [
         ":agent_main",
-        ":relay_mailbox",
+        ":rbe_tpu",
         ":worker_main",
     ],
 )

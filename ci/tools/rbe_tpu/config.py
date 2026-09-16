@@ -20,7 +20,7 @@ import os
 import socket
 import sys
 
-from ci.tools.relay_mailbox import gcs
+from ci.tools.rbe_tpu import gcs
 
 BUCKET_ENV = "TORCH_TPU_RELAY_BUCKET"
 TPU_ENV = "TORCH_TPU_RELAY_TPU"

@@ -30,7 +30,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
-from ci.tools.relay_mailbox import gcs
+from ci.tools.rbe_tpu import gcs
 
 
 class _FakeOpener:

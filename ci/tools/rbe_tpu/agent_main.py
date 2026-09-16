@@ -31,9 +31,9 @@ from __future__ import annotations
 import os
 import sys
 
-from ci.tools.relay_mailbox import agent as agent_lib
-from ci.tools.relay_mailbox import config
-from ci.tools.relay_mailbox import runner as runner_lib
+from ci.tools.rbe_tpu import agent as agent_lib
+from ci.tools.rbe_tpu import config
+from ci.tools.rbe_tpu import runner as runner_lib
 
 
 def build(env, client=None) -> agent_lib.Agent:

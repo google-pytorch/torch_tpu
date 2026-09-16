@@ -73,7 +73,7 @@ Each TPU VM runs the agent daemon under systemd.
 
 ```bash
 gcloud compute tpus tpu-vm ssh "${TPU_NAME}" --zone="${ZONE}" --project=rbe-tpu-oss -- \
-  sudo /opt/torch_tpu/ci/tools/relay_mailbox/install_agent.sh \
+  sudo /opt/torch_tpu/ci/tools/rbe_tpu/install_agent.sh \
     --bucket torch-tpu-relay-mailbox \
     --tpu "${TPU_NAME}"
 ```
@@ -86,9 +86,9 @@ To push updates across all 28 VMs in the fleet:
 for vm in $(gcloud compute tpus tpu-vm list --project=rbe-tpu-oss --format="value(name)"); do
   zone=$(gcloud compute tpus tpu-vm list --project=rbe-tpu-oss --filter="name=$vm" --format="value(zone)")
   echo "Deploying agent to $vm in $zone..."
-  gcloud compute tpus tpu-vm scp --recurse ci/tools/relay_mailbox "${vm}:/tmp/" --zone="$zone" --project=rbe-tpu-oss
+  gcloud compute tpus tpu-vm scp --recurse ci/tools/rbe_tpu "${vm}:/tmp/" --zone="$zone" --project=rbe-tpu-oss
   gcloud compute tpus tpu-vm ssh "$vm" --zone="$zone" --project=rbe-tpu-oss -- \
-    "sudo /tmp/relay_mailbox/install_agent.sh --bucket torch-tpu-relay-mailbox --tpu $vm"
+    "sudo /tmp/rbe_tpu/install_agent.sh --bucket torch-tpu-relay-mailbox --tpu $vm"
 done
 ```
 
@@ -96,8 +96,8 @@ done
 
 On any TPU VM:
 ```bash
-sudo systemctl status torch-tpu-relay-agent
-sudo journalctl -u torch-tpu-relay-agent -f
+sudo systemctl status torch-tpu-rbe-agent
+sudo journalctl -u torch-tpu-rbe-agent -f
 ```
 
 ## 4. RBE Worker Pool Configuration
@@ -116,7 +116,7 @@ Invoke tests pointing to the mailbox worker:
 bazel test //tests/... \
   --config=rbe \
   --test_env=TORCH_TPU_RELAY_BUCKET=torch-tpu-relay-mailbox \
-  --run_under=//ci/tools/relay_mailbox:worker_main
+  --run_under=//ci/tools/rbe_tpu:worker_main
 ```
 
 ## 6. Health Signal and Quarantining

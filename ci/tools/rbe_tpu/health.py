@@ -30,7 +30,7 @@ import shlex
 import subprocess
 import time
 
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import protocol
 
 # Env var holding a shell command that exits 0 when the chip is usable.
 # The default probe below is deliberately weak, and swapping in a real

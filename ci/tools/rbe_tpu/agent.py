@@ -30,10 +30,10 @@ import dataclasses
 import threading
 import time
 
-from ci.tools.relay_mailbox import binding as binding_lib
-from ci.tools.relay_mailbox import gcs
-from ci.tools.relay_mailbox import health as health_lib
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import binding as binding_lib
+from ci.tools.rbe_tpu import gcs
+from ci.tools.rbe_tpu import health as health_lib
+from ci.tools.rbe_tpu import protocol
 
 
 @dataclasses.dataclass(frozen=True)

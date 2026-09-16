@@ -28,8 +28,8 @@ import dataclasses
 import random
 import time
 
-from ci.tools.relay_mailbox import gcs
-from ci.tools.relay_mailbox import protocol
+from ci.tools.rbe_tpu import gcs
+from ci.tools.rbe_tpu import protocol
 
 
 @dataclasses.dataclass(frozen=True)

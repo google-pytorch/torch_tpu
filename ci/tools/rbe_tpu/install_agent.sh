@@ -54,23 +54,23 @@ if [[ -z "$BUCKET" || -z "$TPU_NAME" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_FILE="$SCRIPT_DIR/torch-tpu-relay-agent.service"
+SERVICE_FILE="$SCRIPT_DIR/torch-tpu-rbe-agent.service"
 
-rm -rf "$DEST_DIR/ci/tools/relay_mailbox"
-mkdir -p "$DEST_DIR/ci/tools/relay_mailbox"
-cp -r "$SCRIPT_DIR/." "$DEST_DIR/ci/tools/relay_mailbox/"
+rm -rf "$DEST_DIR/ci/tools/rbe_tpu"
+mkdir -p "$DEST_DIR/ci/tools/rbe_tpu"
+cp -r "$SCRIPT_DIR/." "$DEST_DIR/ci/tools/rbe_tpu/"
 
-cat > /etc/default/torch-tpu-relay-agent <<EOF
+cat > /etc/default/torch-tpu-rbe-agent <<EOF
 TORCH_TPU_RELAY_BUCKET=$BUCKET
 TORCH_TPU_RELAY_TPU=$TPU_NAME
 PYTHONPATH=$DEST_DIR
 EOF
 
-chmod 0600 /etc/default/torch-tpu-relay-agent
+chmod 0600 /etc/default/torch-tpu-rbe-agent
 
-cp "$SERVICE_FILE" /etc/systemd/system/torch-tpu-relay-agent.service
+cp "$SERVICE_FILE" /etc/systemd/system/torch-tpu-rbe-agent.service
 systemctl daemon-reload
-systemctl enable --now torch-tpu-relay-agent.service
-systemctl restart torch-tpu-relay-agent.service
+systemctl enable --now torch-tpu-rbe-agent.service
+systemctl restart torch-tpu-rbe-agent.service
 
-echo "Installed and started torch-tpu-relay-agent for $TPU_NAME against bucket $BUCKET"
+echo "Installed and started torch-tpu-rbe-agent for $TPU_NAME against bucket $BUCKET"
