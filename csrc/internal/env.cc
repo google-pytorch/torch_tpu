@@ -86,8 +86,24 @@ std::optional<int64_t> PyGetIntegerEnvOnce(
 std::optional<std::string> PyGetStringEnvOnce(
     std::string_view name, std::optional<std::string> default_value) {
   std::optional<std::string> value;
-  if (name == kMasterAddrEnvVar) {
+  if (name == kJobCompletionIndexEnvVar) {
+    value = GetEnvOnce<kJobCompletionIndexEnvVar>();
+  } else if (name == kMasterAddrEnvVar) {
     value = GetEnvOnce<kMasterAddrEnvVar>();
+  } else if (name == kMasterPortEnvVar) {
+    value = GetEnvOnce<kMasterPortEnvVar>();
+  } else if (name == kNnodesEnvVar) {
+    value = GetEnvOnce<kNnodesEnvVar>();
+  } else if (name == kNodeRankEnvVar) {
+    value = GetEnvOnce<kNodeRankEnvVar>();
+  } else if (name == kTorchTpuSlicebuilderAddressesEnvVar) {
+    value = GetEnvOnce<kTorchTpuSlicebuilderAddressesEnvVar>();
+  } else if (name == kTorchTpuTopologyEnvVar) {
+    value = GetEnvOnce<kTorchTpuTopologyEnvVar>();
+  } else if (name == kTorchTpuXprofSessionIdEnvVar) {
+    value = GetEnvOnce<kTorchTpuXprofSessionIdEnvVar>();
+  } else if (name == kTpuWorkerHostnamesEnvVar) {
+    value = GetEnvOnce<kTpuWorkerHostnamesEnvVar>();
   } else {
     ABSL_LOG(FATAL)  // CRASH_OK=TorchTPU bug
         << "Before reading string environment variable " << name

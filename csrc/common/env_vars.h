@@ -46,11 +46,19 @@ inline constexpr char kAllowMultipleLibtpuLoadEnvVar[] =
     "ALLOW_MULTIPLE_LIBTPU_LOAD";  // Read by libtpu.
 inline constexpr char kCloudTpuTaskIdEnvVar[] =
     "CLOUD_TPU_TASK_ID";  // Read by Google Cloud.
+// The index of this node within a Kubernetes Indexed Job. Read by TorchTPU
+// launchers to derive NODE_RANK.
+inline constexpr char kJobCompletionIndexEnvVar[] = "JOB_COMPLETION_INDEX";
 inline constexpr char kLibtpuInitArgsEnvVar[] =
     "LIBTPU_INIT_ARGS";  // Set by Google Cloud.
 inline constexpr char kLocalRankEnvVar[] = "LOCAL_RANK";    // Set by launchers.
 inline constexpr char kMasterAddrEnvVar[] = "MASTER_ADDR";  // Set by launchers.
 inline constexpr char kMasterPortEnvVar[] = "MASTER_PORT";  // Set by launchers.
+// The number of nodes in a multi-host job. Set by launchers like torchrun.
+inline constexpr char kNnodesEnvVar[] = "NNODES";
+// The rank of this node within a multi-host job. Set by launchers like
+// torchrun.
+inline constexpr char kNodeRankEnvVar[] = "NODE_RANK";
 // Set by the build system (e.g. bazel) to indicate the number of shards
 // running on the same host.
 inline constexpr char kNprocEnvVar[] = "NPROC";
@@ -170,6 +178,10 @@ inline constexpr char kTorchTpuTier3CompilationCacheRootEnvVar[] =
     "TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT";
 inline constexpr char kTorchTpuTopologyEnvVar[] =
     "TORCH_TPU_TOPOLOGY";  // Set by Torch TPU specific launchers.
+// Identifies the XProf profiling session shared by all workers of a job. Set
+// by Torch TPU specific launchers when it is not already set.
+inline constexpr char kTorchTpuXprofSessionIdEnvVar[] =
+    "TORCH_TPU_XPROF_SESSION_ID";
 // If set, enables structured logging for tlparse.
 inline constexpr char kTorchTraceEnvVar[] = "TORCH_TRACE";
 // If set to "1" or "true", the compiler accounts for the storage backing
@@ -208,6 +220,9 @@ inline constexpr char kTpuProfilerOutputDirEnvVar[] = "TPU_PROFILER_OUTPUT_DIR";
 inline constexpr char kTpuVisibleChipsEnvVar[] = "TPU_VISIBLE_CHIPS";
 // Specifies which TPU devices are visible to this process. Read by libtpu.
 inline constexpr char kTpuVisibleDevicesEnvVar[] = "TPU_VISIBLE_DEVICES";
+// The hostnames of every worker in a multi-host job, comma separated.
+inline constexpr char kTpuWorkerHostnamesEnvVar[] =
+    "TPU_WORKER_HOSTNAMES";  // Set by Google Cloud.
 // How many devices are in this process group. Set by launchers like
 // torchrun.
 inline constexpr char kWorldSizeEnvVar[] = "WORLD_SIZE";
@@ -222,6 +237,7 @@ inline constexpr auto kEnvVarToStage =
         {kAcceleratorTypeEnvVar, SymbolStage::InternalImplementation()},
         {kAllowMultipleLibtpuLoadEnvVar, SymbolStage::InternalImplementation()},
         {kCloudTpuTaskIdEnvVar, SymbolStage::InternalImplementation()},
+        {kJobCompletionIndexEnvVar, std::nullopt},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.
@@ -232,6 +248,8 @@ inline constexpr auto kEnvVarToStage =
         {kLocalRankEnvVar, SymbolStage::Stable()},
         {kMasterAddrEnvVar, std::nullopt},
         {kMasterPortEnvVar, std::nullopt},
+        {kNnodesEnvVar, std::nullopt},
+        {kNodeRankEnvVar, std::nullopt},
         // Marked as Internal because it is an internal build/test runner
         // environment variable used to adjust compilation thread concurrency,
         // controlling TorchTPU internal behavior rather than serving as a
@@ -263,6 +281,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuTier2CompilationCacheEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTier3CompilationCacheRootEnvVar, SymbolStage::Experimental()},
         {kTorchTpuTopologyEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuXprofSessionIdEnvVar, std::nullopt},
         {kTorchTraceEnvVar, SymbolStage::Experimental()},
         {kTorchtpuStorageAwarePlaceholdersEnvVar, std::nullopt},
         {kTpuChipsPerHostBoundsEnvVar, SymbolStage::InternalImplementation()},
@@ -284,6 +303,7 @@ inline constexpr auto kEnvVarToStage =
         // CUDA_VISIBLE_DEVICES that external production consumers and infra
         // rely on. The TorchTPU team is committed to honor this env var.
         {kTpuVisibleDevicesEnvVar, SymbolStage::Stable()},
+        {kTpuWorkerHostnamesEnvVar, std::nullopt},
         {kWorldSizeEnvVar, SymbolStage::Stable()},
         {kXlaFlagsEnvVar, SymbolStage::Experimental()},
         // go/keep-sorted end

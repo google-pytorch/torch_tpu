@@ -43,48 +43,59 @@ import os
 import time
 
 from absl import logging
+from torch_tpu._internal import env
+from torch_tpu._internal import env_utils
 
 
 def prepare_tpu_environment() -> None:
   """Prepares the environment variables required for TPU distributed execution.
 
   To be called in the main process before spawning workers.
+
+  Raises:
+    ValueError: If `TPU_WORKER_HOSTNAMES` or `JOB_COMPLETION_INDEX` is unset.
   """
-  xprof_session_id = os.environ.get("TORCH_TPU_XPROF_SESSION_ID", None)
-  if xprof_session_id is None:
-    xprof_session_id = str(time.time_ns())
-    os.environ["TORCH_TPU_XPROF_SESSION_ID"] = xprof_session_id
+  env_utils.get_and_set_str_env_once(
+      "TORCH_TPU_XPROF_SESSION_ID", lambda: str(time.time_ns())
+  )
 
   # Get open ports on this host for slicebuilder.
-  worker_hostnames_str = os.environ.get("TPU_WORKER_HOSTNAMES")
+  worker_hostnames_str = env.get_str_env_once("TPU_WORKER_HOSTNAMES")
   if not worker_hostnames_str:
     raise ValueError("No TPU_WORKER_HOSTNAMES found.")
-  if "TORCH_TPU_SLICEBUILDER_ADDRESSES" not in os.environ:
-    sb_addresses = []
+  worker_hostnames = worker_hostnames_str.split(",")
+
+  def build_slicebuilder_addresses() -> str:
+    """Returns one address per device across all worker hosts."""
     base_port = int(os.environ.get("TORCH_TPU_BASE_PORT", 8070))
     # 8 devices per host is true for all current platforms.
     devices_per_host = int(os.environ.get("TORCH_TPU_DEVICES_PER_HOST", 8))
-    for host in worker_hostnames_str.split(","):
-      for i in range(devices_per_host):
-        sb_addresses.append(f"{host}:{base_port + i}")
-    os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"] = ",".join(sb_addresses)
+    return ",".join(
+        f"{host}:{base_port + i}"
+        for host in worker_hostnames
+        for i in range(devices_per_host)
+    )
+
+  env_utils.get_and_set_str_env_once(
+      "TORCH_TPU_SLICEBUILDER_ADDRESSES", build_slicebuilder_addresses
+  )
 
   # Set multihost distributed configuration.
-  worker_hostnames = worker_hostnames_str.split(",")
-  num_nodes = len(worker_hostnames)
-  os.environ.setdefault("NNODES", str(num_nodes))
+  env_utils.get_and_set_str_env_once(
+      "NNODES", lambda: str(len(worker_hostnames))
+  )
 
   # Identify node rank.
   # JOB_COMPLETION_INDEX is standard for Kubernetes Indexed Jobs.
-  node_rank = os.environ.get("JOB_COMPLETION_INDEX")
+  node_rank = env.get_str_env_once("JOB_COMPLETION_INDEX")
   if node_rank is None:
     raise ValueError("No JOB_COMPLETION_INDEX found in environment.")
 
   os.environ["NODE_RANK"] = node_rank
 
   # Master address defaults to the first worker in the list.
-  os.environ.setdefault("MASTER_ADDR", worker_hostnames[0])
-  os.environ.setdefault("MASTER_PORT", "29500")
+  env_utils.get_and_set_str_env_once("MASTER_ADDR", lambda: worker_hostnames[0])
+  env_utils.get_and_set_str_env_once("MASTER_PORT", lambda: "29500")
 
 
 if __name__ == "__main__":
@@ -92,19 +103,29 @@ if __name__ == "__main__":
   logging.get_absl_logger().propagate = False
   prepare_tpu_environment()
 
-  host_topology = os.environ.get("TORCH_TPU_TOPOLOGY", "")
-  host_sb_addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES", "")
+  host_topology = env.get_str_env_once("TORCH_TPU_TOPOLOGY", default_value="")
+  host_sb_addresses = env.get_str_env_once(
+      "TORCH_TPU_SLICEBUILDER_ADDRESSES", default_value=""
+  )
+  host_xprof_session_id = env.get_str_env_once(
+      "TORCH_TPU_XPROF_SESSION_ID", default_value=""
+  )
+  host_nnodes = env.get_str_env_once("NNODES")
 
   # Only these prints should go to stdout for shell eval
   print(f'export TORCH_TPU_TOPOLOGY="{host_topology}"')
   print(f'export TORCH_TPU_SLICEBUILDER_ADDRESSES="{host_sb_addresses}"')
-  print(
-      "export"
-      f' TORCH_TPU_XPROF_SESSION_ID="{os.environ.get("TORCH_TPU_XPROF_SESSION_ID", "")}"'
-  )
+  print(f'export TORCH_TPU_XPROF_SESSION_ID="{host_xprof_session_id}"')
 
-  if "NNODES" in os.environ:
-    print(f'export NNODES="{os.environ["NNODES"]}"')
-    print(f'export NODE_RANK="{os.environ.get("NODE_RANK", "0")}"')
-    print(f'export MASTER_ADDR="{os.environ.get("MASTER_ADDR", "localhost")}"')
-    print(f'export MASTER_PORT="{os.environ.get("MASTER_PORT", "29500")}"')
+  if host_nnodes is not None:
+    host_node_rank = env.get_str_env_once("NODE_RANK", default_value="0")
+    host_master_addr = env.get_str_env_once(
+        "MASTER_ADDR", default_value="localhost"
+    )
+    host_master_port = env.get_str_env_once(
+        "MASTER_PORT", default_value="29500"
+    )
+    print(f'export NNODES="{host_nnodes}"')
+    print(f'export NODE_RANK="{host_node_rank}"')
+    print(f'export MASTER_ADDR="{host_master_addr}"')
+    print(f'export MASTER_PORT="{host_master_port}"')

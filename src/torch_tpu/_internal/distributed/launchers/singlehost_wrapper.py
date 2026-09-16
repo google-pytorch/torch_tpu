@@ -37,12 +37,12 @@ Then, torchrun spawns N worker processes, each of which runs `user_logic` with
 RANK, LOCAL_RANK, and WORLD_SIZE set in environment variables.
 """
 
-import os
 import time
 from typing import Any, Callable
 
 from absl import logging
 import portpicker
+from torch_tpu._internal import env_utils
 from torch_tpu._internal.utils import hardware
 from torch_tpu._internal.distributed import multiprocessing
 
@@ -56,11 +56,13 @@ def prepare_tpu_environment(world_size: int | None = None) -> None:
     world_size: If provided, use this as the target device count instead of
       auto-detecting from hardware. Allows sub-slicing only on single-host, in
       supported topologies.
+
+  Raises:
+    ValueError: If no TPU devices are found and `TORCH_TPU_TOPOLOGY` is unset.
   """
-  xprof_session_id = os.environ.get("TORCH_TPU_XPROF_SESSION_ID", None)
-  if xprof_session_id is None:
-    xprof_session_id = str(time.time_ns())
-    os.environ["TORCH_TPU_XPROF_SESSION_ID"] = xprof_session_id
+  xprof_session_id = env_utils.get_and_set_str_env_once(
+      "TORCH_TPU_XPROF_SESSION_ID", lambda: str(time.time_ns())
+  )
   logging.info("TORCH_TPU_XPROF_SESSION_ID: %s", xprof_session_id)
 
   topology = hardware.get_tpu_topology(world_size)
@@ -68,17 +70,25 @@ def prepare_tpu_environment(world_size: int | None = None) -> None:
       world_size if world_size is not None else hardware.get_tpu_device_count()
   )
 
-  # Get open ports on this host for slicebuilder.
-  if "TORCH_TPU_SLICEBUILDER_ADDRESSES" not in os.environ:
-    sb_ports = [portpicker.pick_unused_port() for _ in range(count)]
-    sb_addresses = ",".join([f"localhost:{p}" for p in sb_ports])
-    os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"] = sb_addresses
+  def pick_slicebuilder_addresses() -> str:
+    """Returns addresses for `count` unused ports on this host."""
+    return ",".join(
+        f"localhost:{portpicker.pick_unused_port()}" for _ in range(count)
+    )
 
-  # Detect TPU topology.
-  if "TORCH_TPU_TOPOLOGY" not in os.environ:
+  def require_topology() -> str:
+    """Returns the detected topology, which must not be empty."""
     if topology is None:
       raise ValueError("No TPU devices found.")
-    os.environ["TORCH_TPU_TOPOLOGY"] = topology
+    return topology
+
+  # Get open ports on this host for slicebuilder.
+  env_utils.get_and_set_str_env_once(
+      "TORCH_TPU_SLICEBUILDER_ADDRESSES", pick_slicebuilder_addresses
+  )
+
+  # Detect TPU topology.
+  env_utils.get_and_set_str_env_once("TORCH_TPU_TOPOLOGY", require_topology)
 
 
 class WorkerWrapper:

@@ -14,25 +14,55 @@
 
 """Tests the multihost_wrapper to check all mandatory variables are set."""
 
+import contextlib
 import os
 from unittest import mock
 
 from absl.testing import absltest
+from torch_tpu._internal import env
+from torch_tpu._internal import env_utils
 from torch_tpu._internal.distributed.launchers import multihost_wrapper
 from tests import seed_test_utils
+
+
+@contextlib.contextmanager
+def _mock_env(values: dict[str, str]):
+  """Makes the environment look exactly like `values` to the wrapper.
+
+  `multihost_wrapper` reads string variables through `torch_tpu._internal.env`,
+  whose getters memoize on first read, and writes them through
+  `torch_tpu._internal.env_utils`, which memoizes too. Patching `os.environ`
+  alone would therefore only take effect in whichever test happens to run
+  first. This patches all three so that each test sees a clean environment.
+
+  Args:
+    values: The environment variables to make visible.
+
+  Yields:
+    None. `os.environ` holds `values` for the duration, so a test can assert on
+    what the wrapper wrote.
+  """
+
+  def get_str_env_once(name, default_value=None):
+    return values.get(name, default_value)
+
+  with contextlib.ExitStack() as stack:
+    stack.enter_context(mock.patch.dict(os.environ, values, clear=True))
+    stack.enter_context(
+        mock.patch.dict(env_utils._resolved_values, {}, clear=True)  # pylint: disable=protected-access
+    )
+    stack.enter_context(
+        mock.patch.object(env, "get_str_env_once", side_effect=get_str_env_once)
+    )
+    yield
 
 
 class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
 
   def test_prepare_tpu_environment_multihost(self):
-    with mock.patch.dict(
-        os.environ,
-        {"TPU_WORKER_HOSTNAMES": "host1,host2", "JOB_COMPLETION_INDEX": "0"},
+    with _mock_env(
+        {"TPU_WORKER_HOSTNAMES": "host1,host2", "JOB_COMPLETION_INDEX": "0"}
     ):
-      # Clear existing if any
-      if "TORCH_TPU_SLICEBUILDER_ADDRESSES" in os.environ:
-        del os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"]
-
       multihost_wrapper.prepare_tpu_environment()
 
       addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES")
@@ -61,11 +91,10 @@ class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
       self.assertEqual(address_list, expected)
 
   def test_prepare_tpu_environment_distributed_config(self):
-    env = {
+    with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "1",
-    }
-    with mock.patch.dict(os.environ, env, clear=True):
+    }):
       multihost_wrapper.prepare_tpu_environment()
 
       self.assertEqual(os.environ.get("NNODES"), "2")
@@ -74,18 +103,11 @@ class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
       self.assertEqual(os.environ.get("MASTER_PORT"), "29500")
 
   def test_prepare_tpu_environment_multihost_custom_port(self):
-    with mock.patch.dict(
-        os.environ,
-        {
-            "TPU_WORKER_HOSTNAMES": "h1",
-            "TORCH_TPU_BASE_PORT": "9000",
-            "JOB_COMPLETION_INDEX": "0",
-        },
-    ):
-      # Clear existing if any
-      if "TORCH_TPU_SLICEBUILDER_ADDRESSES" in os.environ:
-        del os.environ["TORCH_TPU_SLICEBUILDER_ADDRESSES"]
-
+    with _mock_env({
+        "TPU_WORKER_HOSTNAMES": "h1",
+        "TORCH_TPU_BASE_PORT": "9000",
+        "JOB_COMPLETION_INDEX": "0",
+    }):
       multihost_wrapper.prepare_tpu_environment()
 
       addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES")
@@ -97,12 +119,11 @@ class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
         self.assertEqual(address_list[i], f"h1:{9000 + i}")
 
   def test_prepare_tpu_environment_custom_devices_per_host(self):
-    env = {
+    with _mock_env({
         "TPU_WORKER_HOSTNAMES": "h1",
         "JOB_COMPLETION_INDEX": "0",
         "TORCH_TPU_DEVICES_PER_HOST": "4",
-    }
-    with mock.patch.dict(os.environ, env, clear=True):
+    }):
       multihost_wrapper.prepare_tpu_environment()
 
       addresses = os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES")
@@ -113,27 +134,36 @@ class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
         self.assertEqual(address_list[i], f"h1:{8070 + i}")
 
   def test_prepare_tpu_environment_preserve_master_addr_and_port(self):
-    env = {
+    with _mock_env({
         "TPU_WORKER_HOSTNAMES": "host1,host2",
         "JOB_COMPLETION_INDEX": "1",
         "MASTER_ADDR": "host_override",
         "MASTER_PORT": "12345",
-    }
-    with mock.patch.dict(os.environ, env, clear=True):
+    }):
       multihost_wrapper.prepare_tpu_environment()
 
       self.assertEqual(os.environ.get("MASTER_ADDR"), "host_override")
       self.assertEqual(os.environ.get("MASTER_PORT"), "12345")
 
+  def test_prepare_tpu_environment_preserve_slicebuilder_addresses(self):
+    with _mock_env({
+        "TPU_WORKER_HOSTNAMES": "h1",
+        "JOB_COMPLETION_INDEX": "0",
+        "TORCH_TPU_SLICEBUILDER_ADDRESSES": "h1:1234",
+    }):
+      multihost_wrapper.prepare_tpu_environment()
+
+      self.assertEqual(
+          os.environ.get("TORCH_TPU_SLICEBUILDER_ADDRESSES"), "h1:1234"
+      )
+
   def test_prepare_tpu_environment_missing_worker_hostnames(self):
-    with mock.patch.dict(os.environ, {"JOB_COMPLETION_INDEX": "0"}, clear=True):
+    with _mock_env({"JOB_COMPLETION_INDEX": "0"}):
       with self.assertRaisesRegex(ValueError, "No TPU_WORKER_HOSTNAMES found."):
         multihost_wrapper.prepare_tpu_environment()
 
   def test_prepare_tpu_environment_missing_completion_index(self):
-    with mock.patch.dict(
-        os.environ, {"TPU_WORKER_HOSTNAMES": "h1"}, clear=True
-    ):
+    with _mock_env({"TPU_WORKER_HOSTNAMES": "h1"}):
       with self.assertRaisesRegex(
           ValueError, "No JOB_COMPLETION_INDEX found in environment."
       ):

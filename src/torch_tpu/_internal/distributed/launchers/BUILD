@@ -30,6 +30,7 @@ torch_tpu_py_library(
     srcs = ["singlehost_wrapper.py"],
     deps = [
         "//shims/absl_py/logging",
+        "//src/torch_tpu/_internal:env_utils",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
         "//src/torch_tpu/_internal/utils:hardware",
         "@pypi//portpicker",
@@ -39,7 +40,11 @@ torch_tpu_py_library(
 torch_tpu_py_library(
     name = "multihost_wrapper",
     srcs = ["multihost_wrapper.py"],
-    deps = ["//shims/absl_py/logging"],
+    deps = [
+        "//shims/absl_py/logging",
+        "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
+    ],
 )
 
 torch_tpu_py_test(
@@ -103,6 +108,8 @@ torch_tpu_py_test(
         ":multihost_wrapper",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal:env",
+        "//src/torch_tpu/_internal:env_utils",
         "//tests:seed_test_utils",
     ],
 )
