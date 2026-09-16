@@ -1343,6 +1343,88 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       torch.ops.tpu.dynamic_reshape(inp, shape, static_shape, is_dynamic)
 
+  @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
+  def test_pad_real_to_static_input_rank_mismatch(self):
+    inp = torch.ones(2, 2, 2, device=et.device())
+    runtime_shape = [
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+    ]
+    static_shape = [2, 2]
+    is_dynamic = [False, False]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad_real_to_static(): expected input rank to match static_shape size, got input rank 3 and static_shape size 2""",
+    ):
+      torch.ops.tpu.pad_real_to_static(
+          inp, runtime_shape, static_shape, is_dynamic
+      )
+
+  @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
+  def test_pad_real_to_static_runtime_shape_size_mismatch(self):
+    inp = torch.ones(2, 2, device=et.device())
+    runtime_shape = [torch.tensor(2, device=et.device(), dtype=torch.int32)]
+    static_shape = [2, 2]
+    is_dynamic = [False, False]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad_real_to_static(): expected runtime_shape list size to match static_shape size, got runtime_shape list size 1 and static_shape size 2""",
+    ):
+      torch.ops.tpu.pad_real_to_static(
+          inp, runtime_shape, static_shape, is_dynamic
+      )
+
+  @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
+  def test_pad_real_to_static_is_dynamic_size_mismatch(self):
+    inp = torch.ones(2, 2, device=et.device())
+    runtime_shape = [
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+    ]
+    static_shape = [2, 2]
+    is_dynamic = [False]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad_real_to_static(): expected is_dynamic size to match static_shape size, got is_dynamic size 1 and static_shape size 2""",
+    ):
+      torch.ops.tpu.pad_real_to_static(
+          inp, runtime_shape, static_shape, is_dynamic
+      )
+
+  @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
+  def test_pad_real_to_static_runtime_shape_not_0d(self):
+    inp = torch.ones(2, 2, device=et.device())
+    runtime_shape = [
+        torch.tensor([2], device=et.device(), dtype=torch.int32),
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+    ]
+    static_shape = [2, 2]
+    is_dynamic = [False, False]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad_real_to_static(): expected runtime_shape tensor at index 0 to be a 0-D (scalar) tensor, got 1-D tensor""",
+    ):
+      torch.ops.tpu.pad_real_to_static(
+          inp, runtime_shape, static_shape, is_dynamic
+      )
+
+  @et.why_tpu_only("The op pad_real_to_static is TPU only for internal use.")
+  def test_pad_real_to_static_runtime_shape_not_int32(self):
+    inp = torch.ones(2, 2, device=et.device())
+    runtime_shape = [
+        torch.tensor(2.0, device=et.device(), dtype=torch.float32),
+        torch.tensor(2, device=et.device(), dtype=torch.int32),
+    ]
+    static_shape = [2, 2]
+    is_dynamic = [False, False]
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""pad_real_to_static(): expected runtime_shape to be a list of int32 tensors, got float32 tensor at index 0""",
+    ):
+      torch.ops.tpu.pad_real_to_static(
+          inp, runtime_shape, static_shape, is_dynamic
+      )
+
   @et.why_tpu_only(
       "TODO: support float16 dtype for `view_as_complex()` on TPU."
   )

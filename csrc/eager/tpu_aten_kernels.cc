@@ -83,6 +83,7 @@
 #include "csrc/ops/dynamic/dynamic_broadcast/dynamic_broadcast.h"
 #include "csrc/ops/dynamic/dynamic_reshape/dynamic_reshape.h"
 #include "csrc/ops/dynamic/dynamic_slice/dynamic_slice.h"
+#include "csrc/ops/dynamic/pad_real_to_static/pad_real_to_static.h"
 #include "csrc/ops/dynamic/set_dimension_logical_size/set_dimension_logical_size.h"
 #include "csrc/ops/elu/elu_aten_kernels.h"
 #include "csrc/ops/embedding/embedding_aten_kernels.h"
@@ -1322,6 +1323,23 @@ TORCH_LIBRARY(tpu, m) {
       "dynamic_slice(Tensor input, Tensor[] start_indices, int[] slice_sizes) "
       "-> Tensor");
 
+  // This op is a torch_tpu custom op for use in torch.compile() mode to pad
+  // dynamic tensors as part of the model module itself. For dynamic dimensions,
+  // the runtime size would be different from run to run and hence provided as
+  // scalar inputs to the op along with size for the static dimensions.
+  //
+  // Args:
+  //   input: The input tensor to pad.
+  //   runtime_shape: List of 0-D (scalar) int32 tensors containing the runtime
+  //     sizes for each dimension (0 to rank - 1).
+  //   static_shape: The static upper bound for the shape.
+  //   is_dynamic: List of booleans indicating which dimensions are dynamic.
+  // Returns:
+  //   The padded tensor, bounded to its dynamic shape.
+  m.def(
+      "pad_real_to_static(Tensor input, Tensor[] runtime_shape, int[] "
+      "static_shape, bool[] is_dynamic) -> Tensor");
+
   // Experimental P2P communication ops for ProcessGroupTpu.
   // Isolated from the public torch.distributed API to safely prototype new
   // behaviors.
@@ -1628,6 +1646,7 @@ TORCH_LIBRARY_IMPL(tpu, PrivateUse1, m) {
   ImplExperimental<OpName::kDynamicBroadcast>(m, DynamicBroadcast);
   ImplExperimental<OpName::kDynamicReshape>(m, DynamicReshape);
   ImplExperimental<OpName::kDynamicSlice>(m, DynamicSlice);
+  ImplExperimental<OpName::kPadRealToStatic>(m, PadRealToStatic);
   ImplExperimental<OpName::kSparseDenseMatmul>(m, AtenSparseDenseMatmul);
   ImplExperimental<OpName::kSparseDenseMatmulGradWithSgd>(
       m, AtenSparseDenseMatmulGradWithSgd);

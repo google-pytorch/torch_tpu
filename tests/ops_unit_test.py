@@ -11240,6 +11240,64 @@ module {{
           torch_tpu_result=current_key.cpu(),
       )
 
+  @oss_utils.skip_in_oss("PadRealToStatic is not supported in OSS libtpu.")
+  def test_pad_real_to_static_dynamic_dimension(self):
+    """Tests torch.ops.tpu.pad_real_to_static with a dynamic dimension."""
+    device = torch.device("tpu")
+    max_dim2 = 1024
+    real_dim2 = 512
+
+    x_ph = tpu_torch_compile.dynamic_placeholder(
+        (2, 4, max_dim2),
+        torch.int32,
+        tpu_torch_compile.TensorBounds(([2], [max_dim2])),
+    )
+    dim0_ph = tpu_torch_compile.placeholder_like(
+        torch.tensor(2, dtype=torch.int32)
+    )
+    dim1_ph = tpu_torch_compile.placeholder_like(
+        torch.tensor(4, dtype=torch.int32)
+    )
+    dim2_ph = tpu_torch_compile.placeholder_like(
+        torch.tensor(real_dim2, dtype=torch.int32)
+    )
+
+    with execution_mode.set_eager_mode(
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      out_ph = torch.ops.tpu.pad_real_to_static(
+          x_ph,
+          [dim0_ph, dim1_ph, dim2_ph],
+          [2, 4, max_dim2],
+          [False, False, True],
+      )
+
+    compile_result = tpu_torch_compile.traverse_and_compile(
+        [out_ph],
+        [x_ph, dim0_ph, dim1_ph, dim2_ph],
+        use_stablehlo_bounds=True,
+    )
+
+    x = (
+        torch.arange(2 * 4 * real_dim2, device="cpu", dtype=torch.int32)
+        .reshape(2, 4, real_dim2)
+        .to(device)
+    )
+    dim0 = torch.tensor(2, device="cpu", dtype=torch.int32).to(device)
+    dim1 = torch.tensor(4, device="cpu", dtype=torch.int32).to(device)
+    dim2 = torch.tensor(real_dim2, device="cpu", dtype=torch.int32).to(device)
+
+    result = tpu_torch_compile.execute(
+        compile_result.executable,
+        [x, dim0, dim1, dim2],
+        [tpu_torch_compile.OutputShape([2, 4, real_dim2])],
+    )
+
+    self.assert_close(
+        golden_result=x.cpu(),
+        torch_tpu_result=result[0].cpu(),
+    )
+
   @parameterized.product(
       dtype=[torch.float32, torch.bfloat16],
   )

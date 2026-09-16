@@ -726,6 +726,7 @@ torch_tpu_cc_library(
         "//csrc/ops/dynamic/dynamic_broadcast",
         "//csrc/ops/dynamic/dynamic_reshape",
         "//csrc/ops/dynamic/dynamic_slice",
+        "//csrc/ops/dynamic/pad_real_to_static",
         "//csrc/ops/dynamic/set_dimension_logical_size",
         "//csrc/ops/elu:elu_aten_kernels",
         "//csrc/ops/embedding:embedding_aten_kernels",

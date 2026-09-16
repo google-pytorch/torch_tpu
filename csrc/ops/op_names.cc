@@ -1205,6 +1205,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "normal.Tensor_Tensor_out";
     case OpName::kNormal_:
       return "normal_";
+    case OpName::kPadRealToStatic:
+      return "pad_real_to_static";
     case OpName::kPadUninitialized_:
       return "pad_uninitialized_";
     case OpName::kPaddedDenseToJaggedForward:
