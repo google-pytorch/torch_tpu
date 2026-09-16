@@ -31,10 +31,10 @@ running this from a TPU VM, a v6e GCE instance is easiest.
 
 The same instructions are available in the user guide linked above.
 
-First use python 3.12 virtual environment
+First create a Python virtual environment:
 
 ```bash
-python3.12 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -103,7 +103,7 @@ Install wheel via:
 
 ```bash
 cd <path_to_repo>
-python3.12 -m venv .venv; source .venv/bin/activate
+python -m venv .venv; source .venv/bin/activate
 # The index-url includes the CPU version of torch at higher priority than the CUDA version.
 pip install ../bazel-bin/ci/wheel/*.whl --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@us-python.pkg.dev/ml-oss-artifacts-transient/torch-tpu-virtual-registry/simple/"
 ```

@@ -73,6 +73,11 @@ jobs:
         uses: google-ml-infra/actions/ci_connection@9f8d7d8d9954430d0fef4a8cce2cb4e3844c200d
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
+      - name: Extract Default Python Version
+        run: |
+          PYTHON_VERSION=$(grep '^DEFAULT_PYTHON_VERSION =' bazel/supported_python_versions.bzl | cut -d '"' -f2)
+          echo "PYTHON_VERSION=${PYTHON_VERSION}" >> "$GITHUB_ENV"
+          echo "Extracted default Python version: ${PYTHON_VERSION}"
       - name: Download PyTorch Nightly Wheel
         run: |
           # dist/local is reserved for the torch wheel this flow builds
@@ -89,14 +94,14 @@ jobs:
           # drift is the unpinned scheduled job's role below, not
           # presubmit's.
           TORCH_PIN=$(grep '^torch==' requirements/requirements_torch_nightly.txt)
-          pip download --no-deps --pre "${TORCH_PIN}" --index-url https://download.pytorch.org/whl/nightly/cpu -d dist/local
+          pip download --no-deps --pre "${TORCH_PIN}" --index-url https://download.pytorch.org/whl/nightly/cpu -d dist/local --python-version "${PYTHON_VERSION}" --only-binary=:all:
           ls -lh dist/local/
 
           # These steps run under `sh`, which has no arrays: the self-hosted
           # runners execute `run:` blocks through the k8s container hook.
           # `set --` puts the glob matches in the positional parameters, so
           # "$1" is the wheel pip just downloaded.
-          set -- "${PWD}"/dist/local/torch-*.whl
+          set -- "$PWD/dist/local/torch-"*.whl
           WHEEL_PATH="$1"
           echo "TORCH_SOURCE=$WHEEL_PATH" >> "$GITHUB_ENV"
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
@@ -112,7 +117,7 @@ jobs:
       # The smoke tests install the freshly built wheel together with the
       # local torch wheel it was built against and exercise it on the CPU.
       - name: Run smoke tests via nox
-        run: uvx nox --force-python 3.12 -s "smoke_test(cpu-local)"
+        run: uvx nox --force-python "${PYTHON_VERSION}" -s "smoke_test(cpu-local)"
 
   build_and_test_wheel:
     name: "Build and Test Wheel on ${{ matrix.job_info.runner }}"
@@ -159,15 +164,22 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
 
+      - name: Extract Default Python Version
+        working-directory: ${{ github.workspace }}/torch_tpu
+        run: |
+          PYTHON_VERSION=$(grep '^DEFAULT_PYTHON_VERSION =' bazel/supported_python_versions.bzl | cut -d '"' -f2)
+          echo "PYTHON_VERSION=${PYTHON_VERSION}" >> "$GITHUB_ENV"
+          echo "Extracted default Python version: ${PYTHON_VERSION}"
+
       - name: Download PyTorch Nightly Wheel
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
           mkdir -p dist
           # Both rules_python and torch_local_repo will automatically ingest it from here.
-          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist
+          pip download --no-deps --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu -d dist --python-version "${PYTHON_VERSION}" --only-binary=:all:
           ls -lh dist/
 
-          set -- "${PWD}"/dist/torch-*.whl
+          set -- "$PWD/dist/torch-"*.whl
           WHEEL_PATH="$1"
           echo "TORCH_SOURCE=$WHEEL_PATH" >> "$GITHUB_ENV"
           echo "Exported TORCH_SOURCE=$WHEEL_PATH"
@@ -191,7 +203,7 @@ jobs:
       - name: Verify Wheel Installation
         working-directory: ${{ github.workspace }}/torch_tpu
         run: |
-          uv run --isolated \
+          uv run --python "${PYTHON_VERSION}" --isolated \
             --with dist/torch-*.whl \
             --with bazel-bin/ci/wheel/torch_tpu-*.whl \
             python -c "import torch_tpu; print('Successfully installed TorchTPU against local nightly PyTorch!')"

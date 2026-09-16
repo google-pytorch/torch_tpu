@@ -22,7 +22,7 @@ load(
     "@xla//third_party/py/rules_pywrap:pywrap.default.bzl",
     "use_pywrap_rules",
 )
-load("//bazel:supported_python_versions.bzl", "SUPPORTED_PYTHON_VERSIONS")
+load("//bazel:supported_python_versions.bzl", "DEFAULT_PYTHON_VERSION", "SUPPORTED_PYTHON_VERSIONS")
 load("//shims/build_cleaner:build_defs.bzl", "register_extension_info")
 load("//shims/build_files:build_defs.bzl", "process_accelerator_tags")
 load("//shims/build_files:torch_version.bzl", "is_backend_dep", "reset_torch_config")
@@ -1023,11 +1023,12 @@ def torch_tpu_py_test(
 
         # 1. Define sets of paths
         # Standard paths for stable PyPI/wheel mode
+        _default_py_version_nodot = DEFAULT_PYTHON_VERSION.replace(".", "")
         std_ld = [
             "../pypi_torch/site-packages/torch/lib",
-            "../rules_python++pip+torch_tpu_pypi_312_torch/site-packages/torch/lib",
+            "../rules_python++pip+torch_tpu_pypi_{}_torch/site-packages/torch/lib".format(_default_py_version_nodot),
             "../pypi_libtpu/site-packages/libtpu",
-            "../rules_python++pip+torch_tpu_pypi_312_libtpu_nightly/site-packages/libtpu",
+            "../rules_python++pip+torch_tpu_pypi_{}_libtpu_nightly/site-packages/libtpu".format(_default_py_version_nodot),
             "../torch_tpu_py_import_unpacked_wheel/torch_tpu/_internal",
             "../torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
             "torch_tpu_py_import_unpacked_wheel/torch_tpu/csrc/common",
@@ -1110,8 +1111,8 @@ def torch_tpu_py_test(
             select_dict["//:wheel_test_with_local_torch_" + v.replace(".", "_")] = env_local
             select_dict["//:wheel_test_" + v.replace(".", "_")] = env_wheel_versions[v.replace(".", "")]
 
-        # Fallback for 3.12 if --test_wheel=True is passed without --define PYTHON_VERSION
-        select_dict["//:wheel_test_enabled"] = env_wheel_versions["312"]
+        # Fallback for default Python if --test_wheel=True is passed without --define PYTHON_VERSION
+        select_dict["//:wheel_test_enabled"] = env_wheel_versions[_default_py_version_nodot]
         select_dict["//conditions:default"] = base_env
 
         test_env = if_oss(select(select_dict), base_env)
