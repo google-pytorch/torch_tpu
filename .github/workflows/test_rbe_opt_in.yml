@@ -49,7 +49,8 @@ env:
   RBE_BAZEL_FLAGS: --bes_backend=
   RBE_EXCLUDED_TARGETS: >-
     -//tests:fp4_test
-    -//tests:ops_unit_test
+    -//tests:ops_unit_test_tpu-v5lite
+    -//tests:ops_unit_test_tpu-v6e
     -//tests:async_transfer_test
     -//tests:ops_unit_test_tier3_cache
     -//tests:ops_unit_test_tier3_cache_no_backup
