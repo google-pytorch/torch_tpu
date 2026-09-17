@@ -89,7 +89,7 @@ TEST_F(EventsQueueTest, GetsLiveDeferredBuffers) {
   // stream materialization or device materialization.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   ASSERT_EQ(traversals.size(), 1);
   const Traversal& traversal = *traversals[0];
   EXPECT_THAT(traversal.arguments(), testing::IsEmpty());
@@ -112,7 +112,7 @@ TEST_F(EventsQueueTest, IgnoresPlaceholderBuffers) {
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -129,7 +129,7 @@ TEST_F(EventsQueueTest, SyncIgnoresEmptyBuffers) {
   // The empty buffer does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -148,7 +148,7 @@ TEST_F(EventsQueueTest, IgnoresAlreadyMaterializedBuffers) {
   // The placeholder does not need to be synced.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -192,7 +192,7 @@ TEST_F(EventsQueueTest, ClearsBuffersAfterMaterialization) {
   // We don't need to sync the buffer anymore.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals, testing::IsEmpty());
 }
 
@@ -214,7 +214,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
 
   // The buffer is no longer tracked.
   TT_ASSERT_OK_AND_ASSIGN(auto traversals1,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals1, testing::IsEmpty());
 
   // Create a second data pointer to the same buffer.
@@ -223,7 +223,7 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   // The buffer is live, but the DeferredOp was cleared and so does not need
   // to be materialized.
   TT_ASSERT_OK_AND_ASSIGN(auto traversals2,
-                          PrepareStreamTraversals(device_index, stream_id));
+                          PrepareStreamTraversals(device_index, stream_id, {}));
   EXPECT_THAT(traversals2, testing::IsEmpty());
 }
 
@@ -688,7 +688,7 @@ TEST_F(EventsQueueTest, PrepareDeviceTraversals) {
 
   // Ask for a plan to materialize the device for a and b (but not c).
   TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareDeviceTraversals(device_index));
+                          PrepareDeviceTraversals(device_index, {}));
 
   // The execution will contain a and b but not c. Only b is output as it is
   // the only executed op with a live DataPtr.
@@ -742,7 +742,7 @@ TEST_F(EventsQueueTest, PrepareStreamTraversals) {
   // Ask for a plan to materialize the stream for a and b (but not c).
   TT_ASSERT_OK_AND_ASSIGN(
       auto traversals,
-      PrepareStreamTraversals(device_index, default_stream_id));
+      PrepareStreamTraversals(device_index, default_stream_id, {}));
 
   // The execution will contain a and b but not c. Only b is output as it is
   // the only executed op with a live DataPtr.
@@ -796,7 +796,7 @@ TEST_F(EventsQueueTest, StreamsMaterializeSeparately) {
   // Ask for a plan to materialize the stream for c (but not a or b)
   TT_ASSERT_OK_AND_ASSIGN(
       auto traversals,
-      PrepareStreamTraversals(device_index, non_default_stream_id));
+      PrepareStreamTraversals(device_index, non_default_stream_id, {}));
 
   // The execution will contain c, but not a or b, even though they were
   // created first; different streams have no relative order.
@@ -838,6 +838,70 @@ TEST_F(EventsQueueTest, PrunesSuccessfulCompletedFutures) {
   EXPECT_TRUE(snapshot->Synchronize().ok());
 }
 
+TEST_F(EventsQueueTest, StreamMustMaterializeEmptyTensors) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create a tensor simulating a torch.empty() call.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto empty_refs,
+      DeviceBufferList::CreateDeferred(OpName::kEmptyMemoryFormat, DummyBuilder,
+                                       {}, OpParamCacheKeys::Empty(), {shape}));
+  auto empty_ref = empty_refs[0];
+  auto empty_list = empty_ref.device_buffer_list();
+  RecordDeferredOpCreated(empty_list);
+  RecordNewDataPtrCreated(empty_ref);
+  const auto device_index = empty_list->device_index();
+  const auto stream = empty_list->stream_id();
+
+  // A normal stream materialization does not materialize the empty tensor.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareStreamTraversals(device_index, stream, /*must_materialize=*/{}));
+  EXPECT_EQ(traversals.size(), 0);
+
+  // A stream materialization that must materialize the empty tensor does so.
+  TT_ASSERT_OK_AND_ASSIGN(
+      traversals, PrepareStreamTraversals(device_index, stream, {empty_list}));
+  ASSERT_EQ(traversals.size(), 1);
+  ASSERT_EQ(traversals[0]->execution_order().size(), 1);
+  EXPECT_EQ(traversals[0]->execution_order()[0], empty_list);
+  ASSERT_EQ(traversals[0]->outputs().size(), 1);
+  EXPECT_EQ(traversals[0]->outputs()[0], empty_ref);
+}
+
+TEST_F(EventsQueueTest, DeviceMustMaterializeEmptyTensors) {
+  ClearAllStreams();
+  ScopedPythonContextCapturer capturer(OpName::kEmpty);
+  Shape shape(Dimensions{8}, mlir::ElementType::F32);
+
+  // Create a tensor simulating a torch.empty() call.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto empty_refs,
+      DeviceBufferList::CreateDeferred(OpName::kEmptyMemoryFormat, DummyBuilder,
+                                       {}, OpParamCacheKeys::Empty(), {shape}));
+  auto empty_ref = empty_refs[0];
+  auto empty_list = empty_ref.device_buffer_list();
+  RecordDeferredOpCreated(empty_list);
+  RecordNewDataPtrCreated(empty_ref);
+  const auto device_index = empty_list->device_index();
+
+  // A normal device materialization does not materialize the empty tensor.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareDeviceTraversals(device_index, /*must_materialize=*/{}));
+  EXPECT_EQ(traversals.size(), 0);
+
+  // A stream materialization that must materialize the empty tensor does so.
+  TT_ASSERT_OK_AND_ASSIGN(traversals,
+                          PrepareDeviceTraversals(device_index, {empty_list}));
+  ASSERT_EQ(traversals.size(), 1);
+  ASSERT_EQ(traversals[0]->execution_order().size(), 1);
+  EXPECT_EQ(traversals[0]->execution_order()[0], empty_list);
+  ASSERT_EQ(traversals[0]->outputs().size(), 1);
+  EXPECT_EQ(traversals[0]->outputs()[0], empty_ref);
+}
 }  // namespace
 
 }  // namespace torch_tpu

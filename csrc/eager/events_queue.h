@@ -76,16 +76,26 @@ PrepareMaterializationTraversals(
 // Returns a sequence of Traversals that, if compiled and executed, would
 // materialize all live tensors created on the given device and stream.
 //
+// Any nodes passed in must_materialize will be materialized, even if they are
+// not live, or are constant-value tensors (such as empty tensors).
+//
 // This clears these nodes from the events queue.
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareStreamTraversals(c10::DeviceIndex device_index, c10::StreamId stream_id);
+PrepareStreamTraversals(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl::Span<const SharedDeviceBufferList> must_materialize);
 
 // Returns a sequence of Traversals that, if compiled and executed, would
 // materialize all live tensors created on the given device.
 //
+// Any nodes passed in must_materialize will be materialized, even if they are
+// not live, or are constant-value tensors (such as empty tensors).
+//
 // This clears these nodes from the events queue.
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareDeviceTraversals(c10::DeviceIndex device_index);
+PrepareDeviceTraversals(
+    c10::DeviceIndex device_index,
+    absl::Span<const SharedDeviceBufferList> must_materialize);
 
 // Tracks that a background materialization has been started for the given
 // outputs on the current stream.

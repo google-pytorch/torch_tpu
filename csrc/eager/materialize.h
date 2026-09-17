@@ -108,7 +108,8 @@ void ShutDownMaterializationState();
 absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
     c10::DeviceIndex device_index, c10::StreamId stream_id,
     MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationMode mode = MaterializationMode::kSplitGraph,
+    absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the current stream.
 // This is an async operation; after the live tensor state has been evaluated,
@@ -117,7 +118,8 @@ absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
 // materialization is complete.
 absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
     MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationMode mode = MaterializationMode::kSplitGraph,
+    absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 // Materializes all live tensors on the given device.
 // This is an async operation; after the live tensor state has been evaluated,
@@ -126,7 +128,8 @@ absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(
 // queried or awaited to determine when the materialization is complete.
 absl::StatusOr<std::vector<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
     c10::DeviceIndex device_index, MaterializationReason reason,
-    MaterializationMode mode = MaterializationMode::kSplitGraph);
+    MaterializationMode mode = MaterializationMode::kSplitGraph,
+    absl::Span<const SharedDeviceBufferList> must_materialize = {});
 
 }  // namespace torch_tpu
 

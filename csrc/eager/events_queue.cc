@@ -1170,34 +1170,74 @@ PrepareMaterializationTraversals(
 }
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareStreamTraversals(c10::DeviceIndex device_index,
-                        c10::StreamId stream_id) {
+PrepareStreamTraversals(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    absl::Span<const SharedDeviceBufferList> must_materialize) {
   StreamState* stream_state = GetOrCreateStreamState(device_index, stream_id);
+  absl::flat_hash_set<const DeviceBufferList*> must_materialize_set;
+  for (const auto& node : must_materialize) {
+#ifndef NDEBUG
+    ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
+                  device_index);
+    ABSL_CHECK_EQ(node->stream_id(),  // CRASH_OK=not visible to Python
+                  stream_id);
+#endif
+    must_materialize_set.insert(node.get());
+  }
   // Do the partitioning of the deferred ops queue.
   // This is the only part than needs to hold the lock.
   std::vector<EventsQueue::DeferredOpEvent> deferred_op_events =
       stream_state->events_queue.TakeAll();
-  return PrepareTraversals(deferred_op_events, /*nodes_to_materialize=*/{},
-                           /*nodes_to_materialize_set=*/{},
+  return PrepareTraversals(deferred_op_events, must_materialize,
+                           must_materialize_set,
                            stream_state->events_queue.core_pinning_mode());
 }
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareDeviceTraversals(c10::DeviceIndex device_index) {
+PrepareDeviceTraversals(
+    c10::DeviceIndex device_index,
+    absl::Span<const SharedDeviceBufferList> must_materialize) {
   // Get all the stream states for the device.
   auto streams = GetDeviceStreamStates(device_index);
 
   std::vector<absl_nonnull std::unique_ptr<Traversal>> device_traversals;
 
+  struct MustMaterializeNodes {
+    std::vector<SharedDeviceBufferList> nodes;
+    absl::flat_hash_set<const DeviceBufferList*> node_set;
+  };
+  absl::flat_hash_map<c10::StreamId, MustMaterializeNodes>
+      must_materialize_by_stream;
+  for (const auto& node : must_materialize) {
+#ifndef NDEBUG
+    ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
+                  device_index);
+#endif
+    auto& stream_nodes = must_materialize_by_stream[node->stream_id()];
+    if (stream_nodes.node_set.insert(node.get()).second) {
+      stream_nodes.nodes.push_back(node);  // intentional copy
+    }
+  }
+
   // Partition each stream's deferred ops queue into separate traversals, and
   // concatenate them into a single list.
-  for (auto* stream : streams) {
+  std::vector<SharedDeviceBufferList> must_materialize_nodes;
+  absl::flat_hash_set<const DeviceBufferList*> must_materialize_node_set;
+  for (c10::StreamId stream_id = 0; stream_id < streams.size(); ++stream_id) {
+    StreamState* stream = streams[stream_id];
     auto deferred_op_events = stream->events_queue.TakeAll();
+    if (auto it = must_materialize_by_stream.find(stream_id);
+        it != must_materialize_by_stream.end()) {
+      must_materialize_nodes = std::move(it->second.nodes);
+      must_materialize_node_set = std::move(it->second.node_set);
+    }
     TT_ASSIGN_OR_RETURN(
         auto stream_traversals,
-        PrepareTraversals(deferred_op_events, /*nodes_to_materialize=*/{},
-                          /*nodes_to_materialize_set=*/{},
+        PrepareTraversals(deferred_op_events, must_materialize_nodes,
+                          must_materialize_node_set,
                           stream->events_queue.core_pinning_mode()));
+    must_materialize_nodes.clear();
+    must_materialize_node_set.clear();
     device_traversals.insert(device_traversals.end(),
                              std::make_move_iterator(stream_traversals.begin()),
                              std::make_move_iterator(stream_traversals.end()));
