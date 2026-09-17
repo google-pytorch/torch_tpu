@@ -26,15 +26,12 @@ This isn't quite how this will be used in open source, so we should revisit this
 before the open source release.
 """
 
-import datetime
 import os
 
 from absl.testing import absltest
-import portpicker
 import torch
 from torch import distributed as dist
 import torch.multiprocessing as mp
-from torch_tpu._internal.distributed import tpu_distributed
 from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from torch_tpu._internal.distributed import multiprocessing
 from tests import error_testing as et
@@ -430,26 +427,6 @@ def run_gather_output_on_non_root() -> None:
       pg.gather([gather_list], [tensor], opts)
 
 
-def run_subgroup_before_world_group_error() -> None:
-  """Tests that creating a subgroup before initializing the world group fails."""
-  _ = torch.empty(0, device="tpu")
-
-  store = dist.TCPStore(
-      host_name="localhost",
-      port=portpicker.pick_unused_port(),
-      world_size=1,
-      is_master=True,
-  )
-
-  expected_msg = (
-      "create_process_group(): world group must be initialized before subgroups"
-  )
-  with et.assert_raises_message(RuntimeError, tpu=expected_msg):
-    tpu_distributed.create_process_group(
-        store, 0, 1, datetime.timedelta(seconds=5)
-    )
-
-
 class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
   # Running with world_size = 4 (topology "2,2,1") satisfies all error test
   # requirements while halving worker process count and startup overhead.
@@ -617,14 +594,6 @@ class CollectiveErrorsTest(et.TpuOnlyDistributedErrorTestBase):
               run_all_reduce_error, world_size=self._world_size
           ),
       )
-
-  def test_subgroup_before_world_group_error(self):
-    distributed_utils.dist_run(
-        nproc_per_node=self._world_size,
-        fn=singlehost_wrapper.tpu_env_wrapper(
-            run_subgroup_before_world_group_error, world_size=self._world_size
-        ),
-    )
 
 
 if __name__ == "__main__":

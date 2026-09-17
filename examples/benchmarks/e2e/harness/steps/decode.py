@@ -210,20 +210,6 @@ class DecodeStepper(common.BaseStepper):
           if hidden_state is not None:
             projected = self._project_hidden_state_to_logits(hidden_state)
             logits = projected if projected is not None else hidden_state
-          elif hasattr(output, "__getitem__"):
-            try:
-              first_item = output[0]
-              if isinstance(first_item, torch.Tensor):
-                if (
-                    vocab_size is not None
-                    and first_item.shape[-1] == vocab_size
-                ):
-                  logits = first_item
-                else:
-                  projected = self._project_hidden_state_to_logits(first_item)
-                  logits = projected if projected is not None else first_item
-            except (IndexError, KeyError, TypeError):
-              pass
 
     assert (
         logits is not None

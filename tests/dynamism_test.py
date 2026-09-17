@@ -230,6 +230,65 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     self._run_bounded_dynamism_test(torch.add, mark_dynamic, *args)
 
+  def test_floor_divide_float(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 0, 2, 10)
+
+    args = (
+        torch.tensor([10.0, -10.0, 25.5, -25.5, 0.0, 7.2]).repeat(2).view(4, 3),
+        torch.tensor([3.0, -3.0, 5.0, -5.0, 5.0, -2.0]).repeat(2).view(4, 3),
+    )
+    self._run_bounded_dynamism_test(torch.floor_divide, mark_dynamic, *args)
+
+  def test_floor_divide_int(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 0, 2, 10)
+
+    args = (
+        torch.tensor([10, -10, 25, -25, 0, 7], dtype=torch.int32)
+        .repeat(2)
+        .view(4, 3),
+        torch.tensor([3, -3, 5, -5, -4, 2], dtype=torch.int32)
+        .repeat(2)
+        .view(4, 3),
+    )
+    self._run_bounded_dynamism_test(torch.floor_divide, mark_dynamic, *args)
+
+  def test_floor_divide_scalar_float(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    args = (
+        torch.tensor([10.0, -10.0, 25.5, -25.5, 0.0, 7.2]).repeat(2).view(4, 3),
+    )
+    fn = lambda x: torch.floor_divide(x, -3.0)
+    self._run_bounded_dynamism_test(fn, mark_dynamic, *args)
+
+  def test_floor_divide_scalar_int(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    args = (
+        torch.tensor([10, -10, 25, -25, 0, 7], dtype=torch.int32)
+        .repeat(2)
+        .view(4, 3),
+    )
+    fn = lambda x: torch.floor_divide(x, -3)
+    self._run_bounded_dynamism_test(fn, mark_dynamic, *args)
+
+  def test_floor_divide_broadcast(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 15)
+
+    args = (
+        torch.tensor([[10.0], [-10.0], [25.5]]),
+        torch.tensor([[3.0, -3.0, 5.0, -2.0]]),
+    )
+    self._run_bounded_dynamism_test(torch.floor_divide, mark_dynamic, *args)
+
   def test_concat_with_dynamic_concat_dim(self):
     def mark_dynamic(x, y):
       dynamism.mark_dynamic(x, 0, 2, 10)

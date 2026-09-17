@@ -179,7 +179,6 @@ untriaged_ops_deny_list: dict[
     "fft.ifft": ALL_MODES,  # expected all dimensions to be static
     "fft.fft": ALL_MODES,  # expected all dimensions to be static
     "flip": ALL_MODES,  # dynamic triage (invalid result)
-    "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
