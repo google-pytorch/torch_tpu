@@ -230,10 +230,16 @@ def _is_getitem_of_collective(node: torch.fx.Node) -> bool:
 class _WrapperModule(torch.nn.Module):
   """Wrapper module for compiled submodules."""
 
-  def __init__(self, submod: Callable[..., Any], unwrap_singleton_tuple: bool):
+  def __init__(
+      self,
+      submod: Callable[..., Any],
+      unwrap_singleton_tuple: bool,
+      num_submod_outputs: int = -1,
+  ):
     super().__init__()
     self.submod = submod
     self.unwrap_singleton_tuple = unwrap_singleton_tuple
+    self.num_submod_outputs = num_submod_outputs
 
   def forward(self, *args: Any) -> Any:
     x = self.submod(*args)
@@ -327,11 +333,13 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     # target specifications. If a submodule's output is a single tensor, we
     # temporarily wrap it into a singleton tuple before compiling.
     unwrap_singleton_tuple = False
+    num_submod_outputs = -1
     for sn in input_mod.graph.nodes:
       if sn.op == "output":
         if not isinstance(sn.args[0], tuple):
           unwrap_singleton_tuple = True
           sn.args = (sn.args,)
+        num_submod_outputs = len(sn.args[0])
 
     input_mod.recompile()
     full_submod_name = self.base_module_name
@@ -344,6 +352,7 @@ class _SubmodCompiler(torch.fx.interpreter.Interpreter):
     wrapper = _WrapperModule(
         compiled_submod_real,
         unwrap_singleton_tuple,
+        num_submod_outputs=num_submod_outputs,
     )
     return wrapper
 
@@ -419,6 +428,217 @@ class _SplitCompiledExecutable(CompiledArtifact):
     self._graph_module = graph_module
 
     self._split_gm = target
+    self._can_build_fast_runner = self.recompile_fn is None
+    self._fast_runner: Callable[..., Any] | None = None
+    if self._can_build_fast_runner and self.is_resolved:
+      self._can_build_fast_runner = False
+      self._fast_runner = self._try_build_fast_runner()
+
+  def _try_build_fast_runner(self) -> Callable[..., Any] | None:
+    """Builds a fast runner bypassing GraphModule.forward if single partition.
+
+    When a compiled graph has no host-dispatched collective operations,
+    `_split_gm` contains exactly one compiled submodule (`call_module`) plus
+    `placeholder`, `operator.getitem`, and `output` nodes. Rather than routing
+    every step through `torch.fx.GraphModule.forward` and `_WrapperModule`,
+    this method analyzes the FX graph structure at compile time and returns a
+    lightweight closure that directly calls the underlying C++ `_fast_runner`,
+    handling any unused placeholder filtering or output tuple/list remapping.
+    """
+    # If runtime collective handshaking is active (DISPATCH_STAGE), per-step
+    # rank consensus verification is required on dispatch.
+    if self.recompile_fn is not None:
+      return None
+
+    placeholders: list[torch.fx.Node] = []
+    placeholder_to_idx: dict[torch.fx.Node, int] = {}
+    call_mod: torch.fx.Node | None = None
+    getitem_to_idx: dict[torch.fx.Node, int] = {}
+    output_node: torch.fx.Node | None = None
+
+    # Phase 1: Inspect the split GraphModule's nodes to verify that it consists
+    # strictly of:
+    #   1. Input `placeholder` nodes (with no default arguments).
+    #   2. Exactly one `call_module` node (the single compiled partition).
+    #   3. Optional `operator.getitem` nodes indexing into `call_mod`'s output.
+    #   4. Exactly one `output` node returning a tuple/list or `call_mod`.
+    # If any other node type (e.g., host-side collectives, `get_attr` constants
+    # that were not sunk, or a second submodule partition) is present, bail out
+    # to None so the standard `torch.fx.GraphModule.forward` path handles it.
+    for n in self._split_gm.graph.nodes:
+      if n.op == "placeholder":
+        if n.args or n.kwargs:
+          return None
+        placeholder_to_idx[n] = len(placeholders)
+        placeholders.append(n)
+      elif n.op == "call_module":
+        # Only a single submodule partition is eligible for fast-path dispatch.
+        if call_mod is not None or n.kwargs:
+          return None
+        call_mod = n
+      elif n.op == "call_function":
+        # The only allowed function calls in the outer split graph are integer
+        # tuple-indexing operations (`operator.getitem(call_mod, idx)`) that
+        # unpack outputs from the single compiled submodule.
+        if (
+            call_mod is None
+            or n.target is not operator.getitem
+            or len(n.args) != 2
+            or n.args[0] is not call_mod
+            or not isinstance(n.args[1], int)
+            or n.kwargs
+        ):
+          return None
+        getitem_to_idx[n] = n.args[1]
+      elif n.op == "output":
+        if output_node is not None:
+          return None
+        output_node = n
+      else:
+        return None
+
+    if call_mod is None or output_node is None:
+      return None
+
+    # Phase 2: Retrieve the compiled submodule from its `_WrapperModule`
+    # container.
+    wrapper = getattr(self._split_gm, str(call_mod.target), None)
+    if not isinstance(wrapper, _WrapperModule):
+      return None
+
+    submod = wrapper.submod
+
+    # Phase 3: Analyze input argument routing from parent placeholders to
+    # `call_mod.args`. `split_module` may eliminate unused parent inputs (such
+    # as unused forward activations in a backward graph) or reorder arguments.
+    arg_indices: list[int] = []
+    for arg in call_mod.args:
+      if not isinstance(arg, torch.fx.Node) or arg not in placeholder_to_idx:
+        return None
+      arg_indices.append(placeholder_to_idx[arg])
+
+    # Check if `call_mod.args` takes all parent placeholders in exact 0..N-1
+    # order. When False, we can pass the input sequence straight through to the
+    # submodule runner without allocating a filtered list comprehension.
+    needs_arg_filter = arg_indices != list(range(len(placeholders)))
+    arg_indices_tuple = tuple(arg_indices)
+
+    # Phase 4: Only `CompiledArtifact` submodules are eligible for fast-path
+    # dispatch. They honor the boxed calling convention (`_boxed_call = True`)
+    # and always return a sequence of outputs, which the singleton unwrapping
+    # and output remapping below rely on. Prefer the pre-bound C++
+    # `_fast_runner` closure when the artifact exposes one.
+    if not isinstance(submod, CompiledArtifact):
+      return None
+
+    fast_sub = getattr(submod, "_fast_runner", None)
+    submod_runner = fast_sub if fast_sub is not None else submod
+
+    unwrap_singleton = getattr(wrapper, "unwrap_singleton_tuple", False)
+    num_submod_outputs = getattr(wrapper, "num_submod_outputs", -1)
+
+    # Phase 5: Analyze output routing from `call_mod` to `output_node`.
+    out_val = output_node.args[0]
+
+    # Case A: The outer graph returns `call_mod` directly (not wrapped in a
+    # tuple or list). Generate minimal closures specialized on whether the
+    # singleton tuple needs unwrapping and whether inputs need filtering.
+    if out_val is call_mod:
+      if unwrap_singleton:
+        if not needs_arg_filter:
+          return lambda unboxed: submod_runner(unboxed)[0]
+        return lambda unboxed: submod_runner(
+            [unboxed[i] for i in arg_indices_tuple]
+        )[0]
+      if not needs_arg_filter:
+        return submod_runner
+      return lambda unboxed: submod_runner(
+          [unboxed[i] for i in arg_indices_tuple]
+      )
+
+    # Case B: The outer graph returns a tuple or list of values (the standard
+    # convention for AOTAutograd forward and backward graphs).
+    if not isinstance(out_val, (tuple, list)):
+      return None
+
+    out_is_list = isinstance(out_val, list)
+    # Build a flat remapping table `out_mapping` where each entry `(kind, idx)`
+    # specifies how to construct the i-th element of the outer graph's output:
+    #   - `kind == 0`: Take element `idx` from `submod_runner`'s output tuple.
+    #   - `kind == 1`: Output a literal `None` (common for non-differentiable
+    #                  input gradient slots in backward graphs).
+    #   - `kind == 2`: Pass through parent input placeholder `unboxed[idx]`
+    #                  unchanged (e.g., mutated buffer or aliased input).
+    out_mapping: list[tuple[int, int]] = []
+    for item in out_val:
+      if item is None:
+        out_mapping.append((1, 0))
+      elif isinstance(item, torch.fx.Node):
+        if unwrap_singleton and item is call_mod:
+          out_mapping.append((0, 0))
+        elif not unwrap_singleton and item in getitem_to_idx:
+          out_mapping.append((0, getitem_to_idx[item]))
+        elif item in placeholder_to_idx:
+          out_mapping.append((2, placeholder_to_idx[item]))
+        else:
+          return None
+      else:
+        return None
+
+    # Phase 6: Check if the output tuple is an exact 1-to-1 identity mapping of
+    # `submod_runner`'s returned tuple (i.e., every output comes from `kind == 0`
+    # at the matching index `i`, and the total count matches `submod`'s outputs).
+    is_identity_output = (
+        not out_is_list
+        and num_submod_outputs >= 0
+        and len(out_mapping) == num_submod_outputs
+        and all(
+            kind == 0 and idx == i for i, (kind, idx) in enumerate(out_mapping)
+        )
+    )
+
+    # Optimal fast path: when the output tuple is an identity mapping of
+    # `submod_runner`'s returned tuple, return `submod_runner` directly (or with
+    # minimal input filtering) without tuple remapping overhead.
+    if is_identity_output:
+      if not needs_arg_filter:
+        return submod_runner
+      return lambda unboxed: submod_runner(
+          [unboxed[i] for i in arg_indices_tuple]
+      )
+
+    out_mapping_tuple = tuple(out_mapping)
+
+    # Phase 7: Return a specialized closure for list or tuple output remapping.
+    if out_is_list:
+
+      def _fast_remap_list_runner(unboxed: Sequence[Any]) -> Any:
+        sub_args = (
+            [unboxed[i] for i in arg_indices_tuple]
+            if needs_arg_filter
+            else unboxed
+        )
+        sub_out = submod_runner(sub_args)
+        return [
+            sub_out[idx] if kind == 0 else (None if kind == 1 else unboxed[idx])
+            for kind, idx in out_mapping_tuple
+        ]
+
+      return _fast_remap_list_runner
+
+    def _fast_remap_runner(unboxed: Sequence[Any]) -> Any:
+      sub_args = (
+          [unboxed[i] for i in arg_indices_tuple]
+          if needs_arg_filter
+          else unboxed
+      )
+      sub_out = submod_runner(sub_args)
+      return tuple(
+          sub_out[idx] if kind == 0 else (None if kind == 1 else unboxed[idx])
+          for kind, idx in out_mapping_tuple
+      )
+
+    return _fast_remap_runner
 
   def _maybe_handshake_and_recompile(self) -> None:
     """Verifies rank consensus on dispatch when running in DISPATCH_STAGE."""
@@ -442,7 +662,21 @@ class _SplitCompiledExecutable(CompiledArtifact):
       self.__dict__.update(new_exec.__dict__)
 
   def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    if self._fast_runner is not None and not kwargs:
+      return self._fast_runner(
+          args[0]
+          if len(args) == 1 and isinstance(args[0], (list, tuple))
+          else args
+      )
     self._maybe_handshake_and_recompile()
+    if self._can_build_fast_runner:
+      self.resolve()
+      if self._fast_runner is not None and not kwargs:
+        return self._fast_runner(
+            args[0]
+            if len(args) == 1 and isinstance(args[0], (list, tuple))
+            else args
+        )
 
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
       args = args[0]  # pyrefly: ignore[bad-assignment]
@@ -508,6 +742,9 @@ class _SplitCompiledExecutable(CompiledArtifact):
     """Waits for any pending background compilation in submodules to complete."""
     for exe in self.compiled_executables:
       exe.resolve()
+    if self._can_build_fast_runner and self.is_resolved:
+      self._can_build_fast_runner = False
+      self._fast_runner = self._try_build_fast_runner()
 
   def _resolve(self) -> None:
     self.resolve()

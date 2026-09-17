@@ -387,6 +387,10 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
   def __call__(self, *args: Any) -> Any:
     logging.debug("[DynamicTpuBackend] Execute Model")
+    # Support AOTAutograd boxed calling convention (`_boxed_call = True`), where
+    # all arguments are passed inside a single list/tuple positional argument.
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+      args = tuple(args[0])
 
     if not args:
       # If no args are passed, we assume there is no dynamic shape and we can
