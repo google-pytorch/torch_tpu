@@ -24,6 +24,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/status_test_utils.h"
+#include "csrc/experimental/precompiled_kernels/kernel_test_utils.h"
 #include "csrc/internal/mosaic/op_builders.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -31,9 +32,6 @@
 #include "mlir/Parser/Parser.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
-#include "xla/pjrt/c_api_client/pjrt_c_api_client.h"
-#include "xla/pjrt/pjrt_api.h"
-#include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/service/hlo_runner.h"
 #include "xla/shape.h"
@@ -42,20 +40,6 @@
 
 namespace torch_tpu {
 namespace {
-
-absl::StatusOr<std::unique_ptr<xla::PjRtClient>> CreateKernelTestClient() {
-  TT_ASSIGN_OR_RETURN(bool initialized,
-                      AdaptXlaError(pjrt::IsPjrtPluginInitialized("tpu"),
-                                    "failed to query test plugin"));
-  if (!initialized) {
-    TT_RETURN_IF_ERROR(AdaptXlaError(pjrt::InitializePjrtPlugin("tpu"),
-                                     "failed to initialize test plugin"));
-  }
-  TT_ASSIGN_OR_RETURN(
-      auto client,
-      AdaptXlaError(xla::GetCApiClient("tpu"), "failed to create test client"));
-  return client;
-}
 
 TEST(DynamicMosaic, CopiesDifferentShapesWithOneExecutable) {
   TT_ASSERT_OK_AND_ASSIGN(auto client, CreateKernelTestClient());

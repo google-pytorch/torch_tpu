@@ -46,6 +46,21 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "kernel_test_utils",
+    testonly = True,
+    srcs = ["kernel_test_utils.cc"],
+    hdrs = ["kernel_test_utils.h"],
+    deps = [
+        "//csrc/common:error_utils",
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla/pjrt:pjrt_api",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
+        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
+    ],
+)
+
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],
@@ -55,6 +70,7 @@ torch_tpu_cc_test(
         "requires-tpu-v7x",
     ],
     deps = [
+        ":kernel_test_utils",
         ":mosaic_custom_call",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
@@ -67,11 +83,7 @@ torch_tpu_cc_test(
         "@xla//xla:literal_util",
         "@xla//xla:shape_layout",
         "@xla//xla:shape_util",
-        "@xla//xla/pjrt:pjrt_api",
-        "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
-        "@xla//xla/pjrt/plugin/xla_tpu:xla_tpu_pjrt_client",  # buildcleaner: keep
         "@xla//xla/service:hlo_runner",
     ],
 )
