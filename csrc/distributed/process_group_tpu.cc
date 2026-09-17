@@ -43,6 +43,7 @@
 #include "ATen/ops/zeros.h"
 #include "absl/algorithm/container.h"
 #include "absl/base/nullability.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -750,11 +751,11 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << ToString(rank_to_device_id_);
 
   if (group_size == device_ids_.size()) {
-    // This new group includes all the devices, so the subgroup list is trivial:
+    is_world_group_ = true;
+    PjrtBackend::GetInstance().SetWorldRankToDeviceId(rank_to_device_id_);
     std::vector<int64_t> rank_to_logical_device_id(group_size);  // INT_VEC_OK
-    for (int i = 0; i < group_size; ++i) {
-      rank_to_logical_device_id[i] = GetLogicalDeviceId(rank_to_device_id_[i]);
-    }
+    std::iota(rank_to_logical_device_id.begin(),
+              rank_to_logical_device_id.end(), 0);
     subgroup_device_ids_ =
         DeviceGroupList({std::move(rank_to_logical_device_id)});
   } else {
@@ -772,6 +773,15 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
                << ", group device ids: " << ToString(rank_to_device_id_)
                << ", all subgroups: " << ToString(subgroup_device_ids_);
 }
+
+void ProcessGroupTpu::shutdown() {
+  if (is_world_group_) {
+    PjrtBackend::GetInstance().ResetWorldRankToDeviceId();
+    is_world_group_ = false;
+  }
+}
+
+ProcessGroupTpu::~ProcessGroupTpu() { shutdown(); }
 
 // Sets the subgroups fingerprint in the given param cache keys.
 #define TT_SET_SUBGROUPS_FINGERPRINT(param_keys) \
@@ -1808,10 +1818,33 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
     // c10d::Store.
     ABSL_CHECK_EQ(group_size, rank_to_device_id_.size())  // CRASH_OK
         << "Inconsistent device subgroup. This is a bug.";
-    int64_t relative_device_id = GetLogicalDeviceId(addressable_device_id_);
+    auto world_rank_to_dev =
+        PjrtBackend::GetInstance().GetWorldRankToDeviceId();
+    TT_CHECK_THROW(world_rank_to_dev.has_value(), error::kFailedPrecondition)
+        << "world group must be initialized before subgroups";
+    ABSL_CHECK_EQ(world_rank_to_dev->size(), world_size)  // CRASH_OK
+        << "Mismatch between TPU slice size (" << world_size
+        << ") and world group size (" << world_rank_to_dev->size() << ")";
+
+    absl::flat_hash_map<int64_t, int64_t> dev_to_world_rank;
+    dev_to_world_rank.reserve(world_rank_to_dev->size());
+    for (int64_t r = 0; r < world_rank_to_dev->size(); ++r) {
+      dev_to_world_rank[(*world_rank_to_dev)[r]] = r;
+    }
+
+    auto self_it = dev_to_world_rank.find(addressable_device_id_);
+    ABSL_CHECK(self_it != dev_to_world_rank.end())  // CRASH_OK
+        << "Could not find current device ID " << addressable_device_id_
+        << " in world rank mapping";
+    int64_t global_rank = self_it->second;
+
+    auto subgroups_accessor = subgroups.accessor<int64_t, 2>();
     for (int i = 0; i < group_size; ++i) {
-      subgroups.index({relative_device_id, i}) =
-          GetLogicalDeviceId(rank_to_device_id_[i]);
+      auto peer_it = dev_to_world_rank.find(rank_to_device_id_[i]);
+      ABSL_CHECK(peer_it != dev_to_world_rank.end())  // CRASH_OK
+          << "Could not find peer device ID " << rank_to_device_id_[i]
+          << " in world rank mapping";
+      subgroups_accessor[global_rank][i] = peer_it->second;
     }
     subgroups = subgroups.to(at::device(GetPrivateUse1DeviceType()));
 
@@ -1847,22 +1880,15 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
 
     // Convert from at::Tensor to a non-pytorch type.
     std::vector<DeviceGroup> result(world_size, DeviceGroup(group_size));
+    auto subgroups_cpu_accessor = subgroups.accessor<int64_t, 2>();
     for (int i = 0; i < world_size; ++i) {
       for (int j = 0; j < group_size; ++j) {
-        result[i][j] = subgroups.index({i, j}).item().toLong();
+        result[i][j] = subgroups_cpu_accessor[i][j];
       }
     }
 
     return DeviceGroupList(std::move(result));
   });
-}
-
-int64_t ProcessGroupTpu::GetLogicalDeviceId(int64_t physical_device_id) const {
-  auto it = absl::c_find(device_ids_, physical_device_id);
-  ABSL_CHECK(it != device_ids_.end())  // CRASH_OK
-      << "Could not map physical ID " << physical_device_id
-      << " to logical ID.";
-  return it - device_ids_.begin();
 }
 
 #if TT_TORCH_VERSION_GE(2, 14)

@@ -240,8 +240,10 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
         "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
+        "@pypi//portpicker",
     ],
 )
 
@@ -268,8 +270,10 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed:tpu_distributed",
         "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests:error_testing",
+        "@pypi//portpicker",
     ],
 )
 
