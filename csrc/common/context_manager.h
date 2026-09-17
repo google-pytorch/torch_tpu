@@ -57,6 +57,22 @@ void CrashIfContextStateAccessIsDisallowed();
 // Intended to be used in the background worker threads only.
 void DisallowThisThreadToAccessContextState();
 
+// RAII guard to temporarily disallow the current thread from accessing
+// thread-local context states, restoring the previous state upon destruction.
+class ScopedDisallowContextStateAccess {
+ public:
+  ScopedDisallowContextStateAccess();
+  ~ScopedDisallowContextStateAccess();
+
+  ScopedDisallowContextStateAccess(const ScopedDisallowContextStateAccess&) =
+      delete;
+  ScopedDisallowContextStateAccess& operator=(
+      const ScopedDisallowContextStateAccess&) = delete;
+
+ private:
+  bool prev_;
+};
+
 // The state for different types of context managers respectively.
 using ContextManagerState = std::variant<
     // go/keep-sorted start
@@ -133,6 +149,41 @@ T GetContextState(GetDefaultStateT get_default_state) {
   auto maybe_state = GetContextState<T>();
   return maybe_state.has_value() ? std::move(maybe_state).value()
                                  : get_default_state();
+}
+
+// Returns a const reference to the context state of the given type from the
+// current python thread's context, or get_default_state() if no context state
+// of the given type is found. Avoids copying shared_ptr states when only read
+// access is needed during synchronous execution.
+//
+// Precondition: `get_default_state()` must return an lvalue reference whose
+// lifetime outlives the caller's use (e.g., backed by a static `NoDestructor`
+// instance), which is enforced at compile time via `static_assert`.
+template <typename T, typename GetDefaultStateT>
+const T& GetContextStateRef(GetDefaultStateT get_default_state) {
+  static_assert(
+      internal::is_alternative_v<T, ContextManagerState>,
+      "T must be one of the alternative types of ContextManagerState.");
+  static_assert(
+      std::is_lvalue_reference_v<std::invoke_result_t<GetDefaultStateT>>,
+      "get_default_state must return an lvalue reference to avoid returning a "
+      "dangling reference to a temporary.");
+  internal::CrashIfContextStateAccessIsDisallowed();
+
+  const auto* untyped_node =
+      c10::ThreadLocalDebugInfo::get(internal::kTpuContextSlot);
+  if (untyped_node != nullptr) {
+    const auto* node = dynamic_cast<const ContextManagerNode*>(untyped_node);
+    ABSL_CHECK(node != nullptr)  // CRASH_OK
+        << "The state in the TorchTPU context slot must be a "
+           "ContextManagerNode.";
+    for (; node != nullptr; node = node->parent()) {
+      if (const T* state = std::get_if<T>(&node->state())) {
+        return *state;
+      }
+    }
+  }
+  return get_default_state();
 }
 
 namespace internal {

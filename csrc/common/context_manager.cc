@@ -31,6 +31,15 @@ void DisallowThisThreadToAccessContextState() {
   allow_context_state_access = false;
 }
 
+ScopedDisallowContextStateAccess::ScopedDisallowContextStateAccess()
+    : prev_(allow_context_state_access) {
+  allow_context_state_access = false;
+}
+
+ScopedDisallowContextStateAccess::~ScopedDisallowContextStateAccess() {
+  allow_context_state_access = prev_;
+}
+
 namespace internal {
 
 void CrashIfContextStateAccessIsDisallowed() {

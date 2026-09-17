@@ -31,6 +31,18 @@ if [ -n "$WORKSPACE_DIR" ] && [ -d "$WORKSPACE_DIR" ]; then
   cd "$WORKSPACE_DIR"
 fi
 
+# Ensure tcmalloc is installed and preloaded for all Bazel test runs on GCP
+# regardless of container image (e.g., ml-build), unless running under TSan/ASan.
+if [[ "$BAZEL_CONFIG" != *"tsan"* ]] && [[ "$BAZEL_CONFIG" != *"asan"* ]]; then
+  if [[ ! -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]] && command -v apt-get >/dev/null 2>&1; then
+    echo "Installing libgoogle-perftools-dev for tcmalloc preload..."
+    apt-get update && apt-get install -y --no-install-recommends libgoogle-perftools-dev || true
+  fi
+  if [[ -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]] && [[ "$EXTRA_FLAGS" != *"LD_PRELOAD"* ]]; then
+    EXTRA_FLAGS="${EXTRA_FLAGS} --test_env=LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4"
+  fi
+fi
+
 # Resolve effective base SHA via centralized helper. If CURRENT_SHA is a merge
 # commit (synthetic PR merge), resolves to CURRENT_SHA^1 to isolate PR changes.
 RESOLVED_BASE="$(bash "${WORKSPACE_DIR}/ci/tools/resolve_base_sha.sh" "${CURRENT_SHA}" "${BASE_SHA}")"

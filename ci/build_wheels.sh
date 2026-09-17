@@ -84,6 +84,12 @@ echo "===> WHEEL_VERSION_EXTRAS: '${WHEEL_VERSION_EXTRAS}'"
 
 mkdir -p "${OUTPUT_DIR}"
 
+# Ensure libtcmalloc is present so it can be bundled into the wheel.
+if [[ ! -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]] && command -v apt-get >/dev/null 2>&1; then
+  echo "===> Installing libgoogle-perftools-dev for tcmalloc wheel bundling..."
+  apt-get update && apt-get install -y --no-install-recommends libgoogle-perftools-dev || true
+fi
+
 for py_ver in "${PY_VERSIONS[@]}"; do
   echo "===> Building wheel for Python ${py_ver}"
   # --config=wheel_common is REQUIRED for a working wheel: it sets
@@ -100,7 +106,48 @@ for py_ver in "${PY_VERSIONS[@]}"; do
     --define PYTHON_VERSION="${py_ver}" \
     ${EXTRA_BAZEL_ARGS[@]+"${EXTRA_BAZEL_ARGS[@]}"}
   cp bazel-bin/ci/wheel/*.whl "${OUTPUT_DIR}/"
+  chmod +w "${OUTPUT_DIR}"/*.whl || true
 done
+
+# Bundle libtcmalloc_minimal.so.4 into built wheels so torch_tpu._ensure_tcmalloc()
+# works out-of-the-box in any container image without requiring apt packages.
+if [[ -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]]; then
+  echo "===> Bundling libtcmalloc_minimal.so.4 into built wheels..."
+  python3 - "${OUTPUT_DIR}" <<'PY'
+import base64
+import glob
+import hashlib
+import os
+import sys
+import zipfile
+
+out_dir = sys.argv[1]
+tcmalloc_src = "/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4"
+arcname = "torch_tpu/lib/libtcmalloc_minimal.so.4"
+
+with open(tcmalloc_src, "rb") as f:
+  data = f.read()
+digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode("ascii").rstrip("=")
+record_entry = f"{arcname},sha256={digest},{len(data)}\n"
+
+for whl_path in glob.glob(os.path.join(out_dir, "*.whl")):
+  with zipfile.ZipFile(whl_path, "r") as zin:
+    if arcname in zin.namelist():
+      continue
+  tmp_whl = whl_path + ".tmp"
+  with zipfile.ZipFile(whl_path, "r") as zin, zipfile.ZipFile(tmp_whl, "w", zipfile.ZIP_DEFLATED) as zout:
+    for item in zin.infolist():
+      content = zin.read(item.filename)
+      if item.filename.endswith(".dist-info/RECORD"):
+        text = content.decode("utf-8")
+        if arcname not in text:
+          text = text.rstrip("\n") + "\n" + record_entry
+        content = text.encode("utf-8")
+      zout.writestr(item, content)
+    zout.writestr(arcname, data)
+  os.replace(tmp_whl, whl_path)
+PY
+fi
 
 echo "===> Built wheels:"
 ls -lh "${OUTPUT_DIR}"

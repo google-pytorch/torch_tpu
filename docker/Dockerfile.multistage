@@ -40,8 +40,10 @@ COPY pyproject.toml .
 # We let uv read pyproject.toml to use the explicit pytorch-cpu index only for torch/torchvision!
 RUN uv pip compile pyproject.toml --all-extras --python-version 3.14 --python-platform x86_64-manylinux_2_31 --resolution lowest-direct --generate-hashes --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match -o requirements.txt && \
     uv pip install --system -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
-# Enable tcmalloc by default for all derived images
-ENV LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4"
+# libgoogle-perftools-dev (installed above) provides libtcmalloc_minimal.so.4.
+# Do NOT set global ENV LD_PRELOAD here so build tools and ASan/TSan runs are
+# unaffected; torch_tpu.__init__._ensure_tcmalloc() and test/benchmark runners
+# enable tcmalloc selectively at runtime.
 
 # =====================================================================
 # Stage 1: Builder Image (torchtpu-builder)

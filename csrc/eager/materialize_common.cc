@@ -282,23 +282,19 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
 }
 
 struct CompiledTraversal {
-  CompilationCacheKey compilation_cache_key;
+  std::optional<CompilationCacheKey> compilation_cache_key;
   CompiledKernel compiled_kernel;
 };
 
 absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
     Traversal& traversal, mlir::MLIRContext& mlir_context,
-    CompilationSpec compilation_spec,
+    const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   // Propagate bounded dynamism annotations if needed.
   if (traversal.IsBoundedDynamic()) {
     TT_RETURN_IF_ERROR(PropagateBoundedDynamism(traversal, mlir_context));
   }
 
-  const CompilationCacheKey compilation_cache_key =
-      traversal.GetCacheKey(compilation_spec.compile_options_key,
-                            /*argument_layouts=*/{},
-                            /*donated_inputs=*/{});
   for (const auto& argument : traversal.arguments()) {
     if (argument.is_placeholder()) {
       return TT_ERROR(error::kInternal)
@@ -319,6 +315,10 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
       // Input isn't ready yet, so we will wait and recheck it during Run().
       continue;
     } else if (const auto deferred_op = argument.deferred_op()) {
+      const CompilationCacheKey compilation_cache_key =
+          traversal.GetCacheKey(compilation_spec.compile_options_key,
+                                /*argument_layouts=*/{},
+                                /*donated_inputs=*/{});
       return TT_ERROR(error::kInternal)
              << "traversal (cache key: " << compilation_cache_key
              << ") has deferred argument " << ToString(deferred_op->op_name())
@@ -344,13 +344,20 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
 
   // Start compiling the traversal.
   ABSL_VLOG(1) << "[ExecutionTask] Compiling traversal";
+  // Only populate compilation_cache_key when ABSL_VLOG_IS_ON(1) is true so we
+  // avoid computing and formatting cache key strings on the non-logging hot
+  // path.
+  std::optional<CompilationCacheKey> compilation_cache_key;
   CompiledKernel compiled_kernel;
   {
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
         compiled_kernel,
-        traversal.Compile(std::move(compilation_spec), out_mlir_text,
-                          /*use_stablehlo_bounds=*/false, argument_layouts));
+        traversal.Compile(
+            compilation_spec, out_mlir_text,
+            /*use_stablehlo_bounds=*/false, argument_layouts,
+            /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
+            ABSL_VLOG_IS_ON(1) ? &compilation_cache_key : nullptr));
   }
   return CompiledTraversal{
       .compilation_cache_key = std::move(compilation_cache_key),
@@ -361,10 +368,10 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     std::string* absl_nullable out_mlir_text) {
   auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, std::move(compilation_spec), out_mlir_text);
+      *traversal, mlir_context, compilation_spec, out_mlir_text);
   if (!compiled_traversal_or.ok()) {
     for (const auto& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
@@ -382,8 +389,9 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   RecordBackgroundMaterialization(traversal->outputs());
 
   std::string task_name;
-  if (ABSL_VLOG_IS_ON(1)) {
-    task_name = absl::StrCat(compiled_traversal_or->compilation_cache_key);
+  if (ABSL_VLOG_IS_ON(1) &&
+      compiled_traversal_or->compilation_cache_key.has_value()) {
+    task_name = absl::StrCat(*compiled_traversal_or->compilation_cache_key);
   }
   Traversal::Parts traversal_parts = traversal->IntoParts();
   return ExecutionTask(std::move(task_name),
@@ -432,12 +440,12 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
     absl_nonnull std::unique_ptr<Traversal> traversal,
-    mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
+    mlir::MLIRContext& mlir_context, const CompilationSpec& compilation_spec,
     MaterializationReason reason) {
   auto event = MaybeStartTraceEvent(reason, *traversal);
   if (!event) {
     return ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                        std::move(compilation_spec),
+                                        compilation_spec,
                                         /*out_mlir_text=*/nullptr);
   }
 
@@ -446,9 +454,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
 
   // Try to build the execution task and capture the MLIR if possible.
   std::string captured_mlir;
-  auto execution_task_or =
-      ExecutionTask::FromTraversal(std::move(traversal), mlir_context,
-                                   std::move(compilation_spec), &captured_mlir);
+  auto execution_task_or = ExecutionTask::FromTraversal(
+      std::move(traversal), mlir_context, compilation_spec, &captured_mlir);
 
   // Whether or not the execution task was created successfully, finish the
   // trace event and return.
@@ -675,6 +682,14 @@ absl::Status ExecutionTask::Run() {
   if (!status.ok()) {
     SetOutputNodesAsError(status);
   }
+  // Explicitly release strong DeviceBufferRef handles and compiled kernel
+  // futures immediately upon completing execution. This ensures intermediate
+  // device buffers whose Python Tensors have gone out of scope can be freed by
+  // PJRT/XLA immediately rather than remaining pinned in HBM while subsequent
+  // tasks execute.
+  arguments_.clear();
+  outputs_.clear();
+  compiled_kernel_ = CompiledKernel{};
   return status;
 }
 

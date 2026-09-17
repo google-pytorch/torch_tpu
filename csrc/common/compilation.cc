@@ -558,10 +558,19 @@ void PopCompilerOptionOverrides() {
   PopContextState<CustomCompilerOptionsContextState>();
 }
 
-CompilationSpec GetCompilationSpec(const CompilationMode mode) {
-  auto current_state = GetContextState<CustomCompilerOptionsContextState>(
+absl_nonnull std::shared_ptr<const CompilationContext> GetCompilationContext() {
+  return GetContextState<CustomCompilerOptionsContextState>(
       GetDefaultCompilationContext);
-  const CompilationSpec& spec = current_state->compilation_specs().at(mode);
+}
+
+const CompilationContext& GetCompilationContextRef() {
+  return *GetContextStateRef<CustomCompilerOptionsContextState>(
+      GetDefaultCompilationContext);
+}
+
+CompilationSpec GetCompilationSpec(const CompilationMode mode) {
+  const auto& current_state = GetCompilationContextRef();
+  const CompilationSpec& spec = current_state.compilation_specs().at(mode);
   // Intentionally make a copy as the input `xla::CompileOptions` object is
   // moved into `PjRtClient::CompileAndLoad` for compilation.
   return spec.Copy();

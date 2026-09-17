@@ -206,11 +206,14 @@ class Traversal {
   // MLIR module is actually built), it is populated with the textual
   // representation of that module.
   absl::StatusOr<CompiledKernel> Compile(
-      CompilationSpec spec, std::string* absl_nullable out_mlir_text = nullptr,
+      const CompilationSpec& spec,
+      std::string* absl_nullable out_mlir_text = nullptr,
       bool use_stablehlo_bounds = false,
       absl::Span<const CustomLayout> argument_layouts = {},
       absl::Span<const int64_t> donated_inputs = {},
-      std::optional<std::string_view> module_name = std::nullopt) const;
+      std::optional<std::string_view> module_name = std::nullopt,
+      std::optional<CompilationCacheKey>* absl_nullable out_cache_key =
+          nullptr) const;
 
   // Returns true if any argument to the traversal has bounded dynamic
   // dimensions marked.
@@ -235,7 +238,7 @@ class Traversal {
   const PythonContext* absl_nullable GetPythonContext() const;
 
   // Sorts the Traversal's execution_order by op creation index.
-  inline void SortByCreationOrder() {
+  void SortByCreationOrder() {
     std::sort(
         execution_order_.begin(), execution_order_.end(),
         [](const SharedDeviceBufferList& a, const SharedDeviceBufferList& b) {

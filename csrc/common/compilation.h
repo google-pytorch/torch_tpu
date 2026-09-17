@@ -177,6 +177,16 @@ absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
 // overrides applied) and its fingerprint.
 [[nodiscard]] CompilationSpec GetCompilationSpec(CompilationMode mode);
 
+// Returns the active thread-local compilation context (containing pre-resolved
+// CompilationSpecs for all compilation modes) without deep-copying
+// xla::CompileOptions.
+[[nodiscard]] absl_nonnull std::shared_ptr<const CompilationContext>
+GetCompilationContext();
+
+// Returns a const reference to the active thread-local compilation context
+// without incrementing/decrementing shared_ptr reference counts.
+[[nodiscard]] const CompilationContext& GetCompilationContextRef();
+
 // Pushes the compile option overrides for the current thread on to the
 // custom compiler option stack. Thread-safe.
 //

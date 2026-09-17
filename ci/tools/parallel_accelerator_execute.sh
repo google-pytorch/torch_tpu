@@ -115,6 +115,11 @@ run_test() {
     for fd in "${LOCK_FDS[@]}"; do
       eval "exec $fd>&-"
     done
+    if [[ "${LD_PRELOAD:-}" != *"tsan"* ]] && [[ "${LD_PRELOAD:-}" != *"asan"* ]]; then
+      if [[ -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]] && [[ "${LD_PRELOAD:-}" != *"tcmalloc"* ]]; then
+        export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4${LD_PRELOAD:+:$LD_PRELOAD}"
+      fi
+    fi
     exec "$TEST_BINARY" "$@"
   ) &
   TEST_PID=$!

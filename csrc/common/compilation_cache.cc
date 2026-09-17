@@ -44,7 +44,6 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
@@ -78,7 +77,6 @@
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/xla.pb.h"
 
 ABSL_FLAG(int32_t, torch_tpu_internal_num_compilation_threads, 0,
           "The number of threads to use for compilation. If 0, use the default "
@@ -505,7 +503,7 @@ CompilationCache::GetOrCreateCacheEntry(
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
   // 2. Try to find a dynamic cache entry. We hold on to the iterator to avoid
-  // having to lookup the shapeless key again later.
+  // having to look up the shapeless key again later.
   std::optional<BoundedDynamicCache::iterator> dynamic_it =
       skip_dynamic_lookup_and_compilation
           ? std::nullopt
@@ -787,7 +785,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
     const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
-    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+    const xla::CompileOptions& compile_options, bool use_dynamic_adapters) {
   // Critical section for cache lookups and insertion.
   TT_ASSIGN_OR_RETURN(
       auto cache_lookup, [&]() -> absl::StatusOr<CacheLookupInternal> {
@@ -798,8 +796,17 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
         lookup.dump_on_cache_miss = dump_on_cache_miss_;
         return lookup;
       }());
+
   // Everything we are recovering from the cache is a shared pointer, so it
   // is safe to access them without the lock.
+
+  // Fast path: for static-shape cache hits (the steady-state case in eager
+  // execution), return immediately without allocating or deep-copying
+  // xla::CompileOptions.
+  if (!cache_lookup.needs_compilation &&
+      !cache_lookup.shape_dynamism_metadata.has_value()) {
+    return CompiledKernel{.fixed_shape_kernel = cache_lookup.executable_future};
+  }
 
   CompiledKernel compiled_kernel{.fixed_shape_kernel =
                                      cache_lookup.executable_future};
@@ -816,7 +823,7 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
       ABSL_VLOG(1) << "Found shape dynamism metadata for key: " << key;
       // Create a copy of the compile options for the adapter.
       auto adapter_compile_options =
-          std::make_unique<xla::CompileOptions>(*compile_options);
+          std::make_unique<xla::CompileOptions>(compile_options);
       TT_ASSIGN_OR_RETURN(
           compiled_kernel.dynamic_kernel_adapter,
           CreateDynamicKernelAdapter(*cache_lookup.shape_dynamism_metadata,
@@ -841,12 +848,24 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
           DebugString(contexted_module_or->get(),
                       DebugStringOptions::kEnableDebugInfo)));
     }
+    // Allocate a heap copy of xla::CompileOptions only on cache miss when
+    // scheduling background compilation.
     EnqueueCompilation(storage_key, *std::move(contexted_module_or),
-                       std::move(compile_options));
+                       std::make_unique<xla::CompileOptions>(compile_options));
     ABSL_VLOG(1) << "[TtPerf] Scheduled compilation for key: " << storage_key;
   }
 
   return compiled_kernel;
+}
+
+absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
+    const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
+    const std::vector<Shape>& output_shapes,
+    MlirComputationBuilder computation_builder,
+    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+  return GetOrCompile(key, input_shapes, output_shapes,
+                      std::move(computation_builder), *compile_options,
+                      use_dynamic_adapters);
 }
 
 void CompilationCache::EnqueueCompilation(
