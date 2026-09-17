@@ -170,7 +170,6 @@ untriaged_ops_deny_list: dict[
     "bmm": {COMPILE},  # numerical mismatch under dynamic compile
     "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
     "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
-    "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
     "eq": ALL_MODES,  # dynamic triage (invalid result)
     "expand": ALL_MODES,  # view op - expand not yet supported
     "expm1": ALL_MODES,  # dynamic triage (result differ)
@@ -328,6 +327,12 @@ def verify_op_supports_dynamism(
   # transposes and permutes can lower to a reshape sometimes (1x3->3x1)
   if op.name in ["t", "t_"]:
     return f"{op.name} op uses a reshape that is not supported with dynamism."
+  # TODO: b/449736443 - View decomposition does not support slicing dynamic dimensions.
+  if op.name in ["diagonal"]:
+    return (
+        f"{op.name} view op requires slicing a dynamic dimension, which is not"
+        " supported."
+    )
 
   ### [TORCHTPU INFRA BUGS] ###
   # TODO: b/449736443 - incompatible buffer shapes at dimension 0;
