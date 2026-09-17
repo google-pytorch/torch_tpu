@@ -166,11 +166,20 @@ def _should_skip_input_marking(
 untriaged_ops_deny_list: dict[
     str, set[DynamismMode] | frozenset[DynamismMode]
 ] = {
+    "addcmul": ALL_MODES,  # dynamic triage (int64 overflow mismatch)
+    "baddbmm": (
+        ALL_MODES
+    ),  # dynamic triage (invalid result or dimension mismatch)
+    "bernoulli": (
+        ALL_MODES
+    ),  # dynamic triage (broadcast dynamic shape in aten kernel)
     "bincount": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
     "bmm": {COMPILE},  # numerical mismatch under dynamic compile
     "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
     "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
     "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
+    "empty": ALL_MODES,  # op has no tensor inputs to mark dynamic
+    "empty_strided": ALL_MODES,  # op has no tensor inputs to mark dynamic
     "eq": ALL_MODES,  # dynamic triage (invalid result)
     "expand": ALL_MODES,  # view op - expand not yet supported
     "expm1": ALL_MODES,  # dynamic triage (result differ)
@@ -181,6 +190,7 @@ untriaged_ops_deny_list: dict[
     "flip": ALL_MODES,  # dynamic triage (invalid result)
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
+    "geqrf": ALL_MODES,  # dynamic triage (sign ambiguity in reflectors)
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_put": ALL_MODES,  # garbage data
@@ -189,10 +199,30 @@ untriaged_ops_deny_list: dict[
     "isin": ALL_MODES,  # materialization failure (negative dimension size)
     "kron": ALL_MODES,  # dynamic triage (invalid result)
     "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
+    "linalg.inv": ALL_MODES,  # dynamic triage (XLA compilation failure)
+    "linalg.lu": ALL_MODES,  # dynamic triage (XLA compilation failure)
     "linalg.lu_factor_ex": (
         ALL_MODES
     ),  # materialization failure (negative dim size)
+    "linalg.lu_solve": (
+        ALL_MODES
+    ),  # dynamic triage (XLA compilation failure / BroadcastIfNeeded)
+    "linalg.qr": (
+        ALL_MODES
+    ),  # dynamic triage (XLA compilation failure / BroadcastIfNeeded)
+    "linalg.solve_ex": ALL_MODES,  # dynamic triage (XLA compilation failure)
+    "linalg.solve_triangular": (
+        ALL_MODES
+    ),  # dynamic triage (XLA compilation failure / BroadcastIfNeeded)
+    "linalg.svd": (
+        ALL_MODES
+    ),  # dynamic triage (XLA compilation failure / BroadcastIfNeeded)
+    "linalg.svdvals": (
+        ALL_MODES
+    ),  # dynamic triage (XLA compilation failure / BroadcastIfNeeded)
+    "log1p": ALL_MODES,  # dynamic triage (numerical difference)
     "logical_and": ALL_MODES,  # dynamic triage (invalid result)
+    "logit": ALL_MODES,  # dynamic triage (invalid result)
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
     "mm": {COMPILE},  # numerical mismatch under dynamic compile
@@ -201,10 +231,26 @@ untriaged_ops_deny_list: dict[
     "neg": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
     "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
+    "nn.functional.conv1d": (
+        ALL_MODES
+    ),  # dynamic triage (incompatible shapes with bias)
+    "nn.functional.conv2d": (
+        ALL_MODES
+    ),  # dynamic triage (incompatible shapes with bias)
+    "nn.functional.conv_transpose1d": (
+        ALL_MODES
+    ),  # dynamic triage (incompatible shapes with bias)
+    "nn.functional.conv_transpose2d": (
+        ALL_MODES
+    ),  # dynamic triage (incompatible shapes with bias)
+    "nn.functional.conv_transpose3d": (
+        ALL_MODES
+    ),  # dynamic triage (incompatible shapes with bias)
     "nn.functional.embedding": ALL_MODES,  # crash in shard 27
     "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
     "nn.functional.grid_sample": ALL_MODES,  #
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
+    "nn.functional.hardtanh": ALL_MODES,  # dynamic triage (data misalignment)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
     "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.max_pool1d": (
@@ -237,6 +283,8 @@ untriaged_ops_deny_list: dict[
     "sign": ALL_MODES,  # dynamic triage (invalid result)
     "sinh": ALL_MODES,  # dynamic triage (invalid result)
     "slice": ALL_MODES,  # reshape reassociation not supported
+    "sort": ALL_MODES,  # dynamic triage (invalid result)
+    "sqrt": ALL_MODES,  # dynamic triage (numerical difference on float64)
     "squeeze": (
         ALL_MODES
     ),  # unsupported view op - enhance view op to detect squeeze
@@ -247,6 +295,9 @@ untriaged_ops_deny_list: dict[
     "take": ALL_MODES,  # dynamic triage (invalid result)
     "tan": ALL_MODES,  # dynamic triage (invalid result)
     "to": ALL_MODES,  # fails numerics (?)
+    "torch.ops.aten._safe_softmax.default": (
+        ALL_MODES
+    ),  # dynamic triage (invalid result)
     "tril": ALL_MODES,  # bad broadcast
     "triu": ALL_MODES,  # bad broadcast, iota-like
     "trunc": ALL_MODES,  # dynamic triage (invalid result)
@@ -258,6 +309,7 @@ untriaged_ops_deny_list: dict[
     "vdot": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
     "view_as_complex": ALL_MODES,  # crash (Aborted)
     "view_as_real": ALL_MODES,  # OK
+    "where": ALL_MODES,  # dynamic triage (mismatch on TPU vs GPU)
     "xlogy": ALL_MODES,  # dynamic triage (invalid result)
     "zeros_like": {COMPILE},  # buffer dimension mismatch
 }
@@ -299,7 +351,11 @@ def verify_op_supports_dynamism(
   # _pytree.tree_flatten to recursively inspect the input_value and args,
   # ensuring that tensors inside lists, tuples, or other nested structures
   # (common in foreach ops) are properly vetted.
-  for value in _pytree.tree_flatten((input_value, args))[0]:
+  flattened = _pytree.tree_flatten((input_value, args))[0]
+  if not flattened or not any(isinstance(v, torch.Tensor) for v in flattened):
+    return f"Op {op.name} has no tensor inputs to mark dynamic."
+
+  for value in flattened:
     skip_input = _should_skip_input_marking(op, value)
     if skip_input:
       return skip_input
@@ -436,6 +492,11 @@ class DynamicOpInfo:
     # Allow picking a list value from input_value for ops like cat, etc.
     input_value = _get_canonical_input_value(self.op_info, input_value)
     candidates = _get_dynamic_dimension_candidates(input_value)
+    if not candidates:
+      logging.warning(
+          "No dynamic dimension candidates for %s", self.op_info.name
+      )
+      return
     random.seed(seed)
     idx = random.choice(candidates)
     input_value_str = utils.get_tensor_summary(input_value, data=False)
