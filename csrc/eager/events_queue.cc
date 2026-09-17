@@ -157,21 +157,45 @@ class NodeMatcher {
   absl::flat_hash_set<const DeviceBufferList* absl_nonnull> large_nodes_;
 };
 
+bool UseBaselineDispatchForBenchmark() {
+  static const bool kBaseline = []() {
+    const char* env = std::getenv("TORCH_TPU_BENCH_BASE");  // GETENV_OK=bench
+    return env != nullptr && std::string_view(env) == "1";
+  }();
+  return kBaseline;
+}
+
 class StreamState {
  public:
   // Records on the events queue that a new c10::DataPtr referencing the given
   // DeviceBufferRef has been created.
   void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref) {
-    // Placeholders and constant tensors are never inserted into the map.
-    if (device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
+    if (UseBaselineDispatchForBenchmark()) {
+      if (device_buffer_ref.is_placeholder() ||
+          device_buffer_ref.is_constant()) {
+        return;
+      }
+      absl::MutexLock lock(mu_);
+      if (!device_buffer_ref.is_materialized()) {
+        live_nodes_[device_buffer_ref.device_buffer_list()]++;
+      } else {
+        live_nodes_.erase(device_buffer_ref.device_buffer_list());
+      }
+      return;
+    }
+    // Placeholders, constant tensors, and buffers that have already started or
+    // finished materializing never need to be inserted into live_nodes_.
+    if (!device_buffer_ref.is_deferred() ||
+        device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
       return;
     }
     absl::MutexLock lock(mu_);
-    if (!device_buffer_ref.is_materialized()) {
+    if (device_buffer_ref.is_deferred()) {
       // Insert or increment the count for the DeviceBufferList.
       live_nodes_[device_buffer_ref.device_buffer_list()]++;
-    } else {
-      // Once the ref has a ready PjRtBuffer, we can stop tracking it.
+    } else if (!live_nodes_.empty()) {
+      // Once the ref has started or finished materializing, we can stop
+      // tracking it.
       live_nodes_.erase(device_buffer_ref.device_buffer_list());
     }
   }
@@ -184,6 +208,9 @@ class StreamState {
       return;
     }
     absl::MutexLock lock(mu_);
+    if (!UseBaselineDispatchForBenchmark() && live_nodes_.empty()) {
+      return;
+    }
     // If the ref is already removed from the map, we do nothing. This can
     // happen if the ref became ready after insertion, or if the queue was
     // cleared.
@@ -191,9 +218,15 @@ class StreamState {
     if (it == live_nodes_.end()) {
       return;
     }
-    // Once the ref is materialized, or the count drops to zero, we can remove
-    // it from the map.
-    if (device_buffer_ref.is_materialized() || --it->second <= 0) {
+    if (UseBaselineDispatchForBenchmark()) {
+      if (device_buffer_ref.is_materialized() || --it->second <= 0) {
+        live_nodes_.erase(it);
+      }
+      return;
+    }
+    // Once the ref is no longer deferred, or the count drops to zero, we can
+    // remove it from the map.
+    if (!device_buffer_ref.is_deferred() || --it->second <= 0) {
       live_nodes_.erase(it);
     }
   }

@@ -540,6 +540,9 @@ def _run_distributed_benchmark(
         ),
     )
   elif platform == common.Platform.GFC_1X1X1:
+    from torch_tpu._internal.distributed.launchers import singlehost_wrapper  # pylint: disable=g-import-not-at-top
+
+    singlehost_wrapper.prepare_tpu_environment(world_size=2)
     distributed_utils.dist_run(
         2,
         run_torch_tpu_task,

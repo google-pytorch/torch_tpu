@@ -57,6 +57,22 @@ void CrashIfContextStateAccessIsDisallowed();
 // Intended to be used in the background worker threads only.
 void DisallowThisThreadToAccessContextState();
 
+// RAII guard to temporarily disallow the current thread from accessing
+// thread-local context states, restoring the previous state upon destruction.
+class ScopedDisallowContextStateAccess {
+ public:
+  ScopedDisallowContextStateAccess();
+  ~ScopedDisallowContextStateAccess();
+
+  ScopedDisallowContextStateAccess(const ScopedDisallowContextStateAccess&) =
+      delete;
+  ScopedDisallowContextStateAccess& operator=(
+      const ScopedDisallowContextStateAccess&) = delete;
+
+ private:
+  bool prev_;
+};
+
 // The state for different types of context managers respectively.
 using ContextManagerState = std::variant<
     // go/keep-sorted start

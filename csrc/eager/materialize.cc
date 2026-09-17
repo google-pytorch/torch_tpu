@@ -304,15 +304,47 @@ MaterializationStages ApplySplitMode(
   traversals = FilterPlaceholderDependentTraversals(std::move(traversals),
                                                     result.first_error);
 
+  static const bool kBaselineDispatch = []() {
+    const char* env = std::getenv("TORCH_TPU_BENCH_BASE");  // GETENV_OK=bench
+    return env != nullptr && std::string_view(env) == "1";
+  }();
+
   if (settings.materialization_mode == MaterializationMode::kSplitGraph) {
-    tsl::profiler::TraceMe t("SplitTraversal");
-    std::vector<absl_nonnull std::unique_ptr<Traversal>> post_split_traversals;
-    absl::flat_hash_set<const DeviceBufferList*> required_outputs;
-    for (auto& pre_split_traversal : traversals) {
-      SplitSingleTraversal(std::move(pre_split_traversal), required_outputs,
-                           post_split_traversals, result.first_error);
+    if (kBaselineDispatch) {
+      tsl::profiler::TraceMe t("SplitTraversal");
+      std::vector<absl_nonnull std::unique_ptr<Traversal>>
+          post_split_traversals;
+      absl::flat_hash_set<const DeviceBufferList*> required_outputs;
+      for (auto& pre_split_traversal : traversals) {
+        SplitSingleTraversal(std::move(pre_split_traversal), required_outputs,
+                             post_split_traversals, result.first_error);
+      }
+      std::swap(traversals, post_split_traversals);
+    } else {
+      // Fast path: 0-op or 1-op traversals cannot contain internal split
+      // points.
+      const bool needs_split_check = std::any_of(
+          traversals.begin(), traversals.end(),
+          [](const absl_nonnull std::unique_ptr<Traversal>& traversal) {
+            return traversal->execution_order().size() > 1;
+          });
+      if (needs_split_check) {
+        tsl::profiler::TraceMe t("SplitTraversal");
+        std::vector<absl_nonnull std::unique_ptr<Traversal>>
+            post_split_traversals;
+        post_split_traversals.reserve(traversals.size());
+        absl::flat_hash_set<const DeviceBufferList*> required_outputs;
+        for (auto& pre_split_traversal : traversals) {
+          if (pre_split_traversal->execution_order().size() <= 1) {
+            post_split_traversals.push_back(std::move(pre_split_traversal));
+            continue;
+          }
+          SplitSingleTraversal(std::move(pre_split_traversal), required_outputs,
+                               post_split_traversals, result.first_error);
+        }
+        std::swap(traversals, post_split_traversals);
+      }
     }
-    std::swap(traversals, post_split_traversals);
   }
 
   if (torch_tpu::GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>()
@@ -452,30 +484,34 @@ using MaterializationOrShutdown =
     std::variant<ShutdownSentinel, MaterializationTask>;
 using ExecutionOrShutdown = std::variant<ShutdownSentinel, ExecutionTask>;
 
+bool UseBaselineMaterializationWorker() {
+  static const bool kBaseline = []() {
+    const char* env = std::getenv("TORCH_TPU_BENCH_BASE");  // GETENV_OK=bench
+    return env != nullptr && std::string_view(env) == "1";
+  }();
+  return kBaseline;
+}
+
 class MaterializationWorker {
  public:
-  // This class is move-only.
-  MaterializationWorker(MaterializationWorker&& other) = default;
-  MaterializationWorker& operator=(MaterializationWorker&& other) = default;
   MaterializationWorker(const MaterializationWorker&) = delete;
   MaterializationWorker& operator=(const MaterializationWorker&) = delete;
+  MaterializationWorker(MaterializationWorker&&) = delete;
+  MaterializationWorker& operator=(MaterializationWorker&&) = delete;
 
-  MaterializationWorker() { StartThreads(); }
+  MaterializationWorker() : mlir_context_(MakeMlirContext()) { StartThreads(); }
 
   ~MaterializationWorker() { Shutdown(); }
 
-  // Shuts down the worker threads. Reordering the shutdown sequence ensures
-  // that materialize_thread_ finishes enqueuing tasks before execute_thread_
-  // shuts down.
   void Shutdown() {
     bool expected_shutdown = false;
-    // The shutdown_ flag prevents duplicate shutdown runs.
     if (shutdown_.compare_exchange_strong(expected_shutdown, true)) {
       {
         absl::MutexLock lock(materialize_mu_);
-        materialize_tasks_.push(ShutdownSentinel{});
+        if (UseBaselineMaterializationWorker()) {
+          materialize_tasks_.push(ShutdownSentinel{});
+        }
       }
-      // Release the lock so that the thread can dequeue until the sentinel.
       if (materialize_thread_.joinable()) {
         materialize_thread_.join();
       }
@@ -495,13 +531,44 @@ class MaterializationWorker {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing stream " << stream_id
                  << " on device " << device_index << " for materialization";
     absl::MutexLock lock(materialize_mu_);
-    // Check shutdown state after acquiring the lock to avoid a time-of-check/
-    // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) return;
-    materialize_tasks_.push(MaterializationTask(device_index, stream_id));
+    if (UseBaselineMaterializationWorker()) {
+      if (shutdown_.load()) return;
+      materialize_tasks_.push(MaterializationTask(device_index, stream_id));
+      return;
+    }
+    MaterializationTask task{
+        .device_index = device_index,
+        .stream_id = stream_id,
+    };
+    if (shutdown_.load()) {
+      FailPendingSnapshotMaterializations(task);
+      return;
+    }
+
+    ScopedDisallowContextStateAccess disallow_context_state_access;
+    auto execution_tasks = ProcessMaterializationTask(task, *mlir_context_);
+    if (execution_tasks.empty()) {
+      return;
+    }
+
+    ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing "
+                 << execution_tasks.size() << " ExecutionTasks";
+    absl::MutexLock execute_lock(execute_mu_);
+    if (shutdown_.load()) {
+      absl::Status shutdown_status =
+          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
+                                       // from Python
+          << "MaterializationWorker is shutting down";
+      for (auto& execution_task : execution_tasks) {
+        execution_task.SetOutputNodesAsError(shutdown_status);
+      }
+      return;
+    }
+    for (auto& execution_task : execution_tasks) {
+      execute_tasks_.push(std::move(execution_task));
+    }
   }
 
-  // Dequeues a materialization task or a shutdown signal.
   MaterializationOrShutdown DequeueMaterializationTask() {
     absl::MutexLock lock(materialize_mu_);
     materialize_mu_.Await(absl::Condition(
@@ -514,7 +581,6 @@ class MaterializationWorker {
     return popped_task;
   }
 
-  // Dequeues an execution task or a shutdown signal.
   ExecutionOrShutdown DequeueExecutionTask() {
     absl::MutexLock lock(execute_mu_);
     execute_mu_.Await(absl::Condition(
@@ -525,15 +591,24 @@ class MaterializationWorker {
     return popped_task;
   }
 
+  std::queue<ExecutionOrShutdown> DequeueExecutionTasks() {
+    absl::MutexLock lock(execute_mu_);
+    execute_mu_.Await(absl::Condition(
+        +[](std::queue<ExecutionOrShutdown>* tasks) { return !tasks->empty(); },
+        &execute_tasks_));
+    std::queue<ExecutionOrShutdown> popped_tasks;
+    std::swap(popped_tasks, execute_tasks_);
+    return popped_tasks;
+  }
+
   void StartThreads() {
-    materialize_thread_ = std::thread([this]() { MaterializeLoop(); });
+    if (UseBaselineMaterializationWorker()) {
+      materialize_thread_ = std::thread([this]() { MaterializeLoop(); });
+    }
     execute_thread_ = std::thread([this]() { ExecuteLoop(); });
   }
 
  private:
-  // Processes a single materialization task.
-  // Returns true if the loop should continue, or false if the worker should
-  // shutdown.
   bool MaterializeLoopStep(mlir::MLIRContext& mlir_context) {
     auto task_or_shutdown = DequeueMaterializationTask();
     if (std::holds_alternative<ShutdownSentinel>(task_or_shutdown)) {
@@ -543,7 +618,6 @@ class MaterializationWorker {
     ABSL_VLOG(1) << "[MaterializationWorker] Processing MaterializationTask";
     auto execution_tasks = ProcessMaterializationTask(task, mlir_context);
 
-    // Enqueue as many execution tasks as were successfully created.
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing "
                  << execution_tasks.size() << " ExecutionTasks";
     absl::MutexLock lock(execute_mu_);
@@ -554,38 +628,75 @@ class MaterializationWorker {
   }
 
   void MaterializeLoop() {
-    // Prevent materialization worker threads from accessing
-    // thread-local context states to enforce they always rely on
-    // resolved configurations passed down from the dispatch thread.
     DisallowThisThreadToAccessContextState();
-
-    // Create the MLIR context outside the loop once and reuse for
-    // materialization tasks.
     absl_nonnull std::unique_ptr<mlir::MLIRContext> mlir_context =
         MakeMlirContext();
     while (MaterializeLoopStep(*mlir_context)) {
-      // MaterializeLoopStep will return false when it dequeues a
-      // ShutdownSentinel.
+    }
+  }
+
+  static void FailPendingSnapshotMaterializations(
+      const MaterializationTask& task) {
+    absl::Status shutdown_status =
+        TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
+                                     // from Python
+        << "MaterializationWorker is shutting down";
+    auto snapshots_to_materialize =
+        PrepareSnapshotMaterializations(task.device_index, task.stream_id);
+    for (auto& snapshot_to_materialize : snapshots_to_materialize) {
+      for (const auto& node : snapshot_to_materialize.must_materialize) {
+        if (!node->is_materializing() && !node->is_materialized()) {
+          node->SetAsError(shutdown_status);
+        }
+      }
+      if (snapshot_to_materialize.execution_task.has_value()) {
+        snapshot_to_materialize.execution_task->SetOutputNodesAsError(
+            shutdown_status);
+      }
+      snapshot_to_materialize.snapshot_promise.Set(shutdown_status);
     }
   }
 
   void ExecuteLoop() {
-    // Prevent execution worker threads from accessing thread-local context
-    // states to enforce they always rely on resolved configurations passed
-    // down from the dispatch thread.
     DisallowThisThreadToAccessContextState();
 
-    while (true) {
-      auto task_or_shutdown = DequeueExecutionTask();
-      if (std::holds_alternative<ShutdownSentinel>(task_or_shutdown)) {
-        break;
+    if (UseBaselineMaterializationWorker()) {
+      while (true) {
+        auto task_or_shutdown = DequeueExecutionTask();
+        if (std::holds_alternative<ShutdownSentinel>(task_or_shutdown)) {
+          break;
+        }
+        auto& task = std::get<ExecutionTask>(task_or_shutdown);
+        ABSL_VLOG(1) << "[MaterializationWorker] Processing ExecutionTask";
+        auto status = task.Run();
+        if (!status.ok()) {
+          ABSL_LOG(ERROR) << "[MaterializationWorker] ExecutionTask failed: "
+                          << status;
+        }
       }
-      auto& task = std::get<ExecutionTask>(task_or_shutdown);
-      ABSL_VLOG(1) << "[MaterializationWorker] Processing ExecutionTask";
-      auto status = task.Run();
-      if (!status.ok()) {
-        ABSL_LOG(ERROR) << "[MaterializationWorker] ExecutionTask failed: "
-                        << status;
+      return;
+    }
+
+    while (true) {
+      std::queue<ExecutionOrShutdown> tasks = DequeueExecutionTasks();
+      bool should_shutdown = false;
+      while (!tasks.empty()) {
+        ExecutionOrShutdown task_or_shutdown = std::move(tasks.front());
+        tasks.pop();
+        if (std::holds_alternative<ShutdownSentinel>(task_or_shutdown)) {
+          should_shutdown = true;
+          break;
+        }
+        auto& task = std::get<ExecutionTask>(task_or_shutdown);
+        ABSL_VLOG(1) << "[MaterializationWorker] Processing ExecutionTask";
+        auto status = task.Run();
+        if (!status.ok()) {
+          ABSL_LOG(ERROR) << "[MaterializationWorker] ExecutionTask failed: "
+                          << status;
+        }
+      }
+      if (should_shutdown) {
+        break;
       }
     }
   }
@@ -594,7 +705,6 @@ class MaterializationWorker {
     absl::MutexLock lock(execute_mu_);
     if (execute_tasks_.empty()) return;
 
-    // execute_tasks_ should be empty, but we clear it to be safe.
     ABSL_LOG(WARNING) << "[MaterializationWorker::Shutdown] "
                       << "execute_tasks_ is not empty after shutdown "
                          "sentinel. Discarding "
@@ -612,22 +722,19 @@ class MaterializationWorker {
       execute_tasks_.pop();
     }
   }
+
   std::thread materialize_thread_;
   std::thread execute_thread_;
 
-  // Set to true when the MaterializationWorker is undergoing shutdown,
-  // preventing concurrent or duplicate shutdown sequences from executing.
   std::atomic<bool> shutdown_{false};
 
   absl::Mutex materialize_mu_;
-  // Queue of materialization tasks. Storing std::variant allows enqueuing
-  // ShutdownSentinel as a shutdown sentinel / poison pill.
   std::queue<MaterializationOrShutdown> materialize_tasks_
+      ABSL_GUARDED_BY(materialize_mu_);
+  absl_nonnull std::unique_ptr<mlir::MLIRContext> mlir_context_
       ABSL_GUARDED_BY(materialize_mu_);
 
   absl::Mutex execute_mu_;
-  // Queue of execution tasks. Storing std::variant allows enqueuing
-  // ShutdownSentinel as a shutdown sentinel / poison pill.
   std::queue<ExecutionOrShutdown> execute_tasks_ ABSL_GUARDED_BY(execute_mu_);
 };
 

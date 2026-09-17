@@ -280,7 +280,7 @@ ExtractArgumentLayoutsIfDifferentFromDefault(const Traversal& traversal) {
 }
 
 struct CompiledTraversal {
-  CompilationCacheKey compilation_cache_key;
+  std::optional<CompilationCacheKey> compilation_cache_key;
   CompiledKernel compiled_kernel;
 };
 
@@ -342,8 +342,12 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
 
   // Start compiling the traversal.
   ABSL_VLOG(1) << "[ExecutionTask] Compiling traversal";
-  CompiledKernel compiled_kernel;
+  static const bool kBaselineDispatch = []() {
+    const char* env = std::getenv("TORCH_TPU_BENCH_BASE");  // GETENV_OK=bench
+    return env != nullptr && std::string_view(env) == "1";
+  }();
   std::optional<CompilationCacheKey> compilation_cache_key;
+  CompiledKernel compiled_kernel;
   {
     tsl::profiler::TraceMe t("CompileTraversal");
     TT_ASSIGN_OR_RETURN(
@@ -351,13 +355,12 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
         traversal.Compile(compilation_spec, out_mlir_text,
                           /*use_stablehlo_bounds=*/false, argument_layouts,
                           /*donated_inputs=*/{}, /*module_name=*/std::nullopt,
-                          &compilation_cache_key));
+                          (kBaselineDispatch || ABSL_VLOG_IS_ON(1))
+                              ? &compilation_cache_key
+                              : nullptr));
   }
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Compile guarantees out_cache_key.
-      compilation_cache_key.has_value(), error::kInternal)
-      << "traversal compilation succeeded without populating cache key";
   return CompiledTraversal{
-      .compilation_cache_key = std::move(*compilation_cache_key),
+      .compilation_cache_key = std::move(compilation_cache_key),
       .compiled_kernel = std::move(compiled_kernel)};
 }
 
@@ -395,8 +398,9 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   }
 
   std::string task_name;
-  if (ABSL_VLOG_IS_ON(1)) {
-    task_name = absl::StrCat(compiled_traversal_or->compilation_cache_key);
+  if (ABSL_VLOG_IS_ON(1) &&
+      compiled_traversal_or->compilation_cache_key.has_value()) {
+    task_name = absl::StrCat(*compiled_traversal_or->compilation_cache_key);
   }
   Traversal::Parts traversal_parts = traversal->IntoParts();
   return ExecutionTask(std::move(task_name),
@@ -688,6 +692,15 @@ absl::Status ExecutionTask::Run() {
   absl::Status status = RunInternal();
   if (!status.ok()) {
     SetOutputNodesAsError(status);
+  }
+  static const bool kBaselineDispatch = []() {
+    const char* env = std::getenv("TORCH_TPU_BENCH_BASE");  // GETENV_OK=bench
+    return env != nullptr && std::string_view(env) == "1";
+  }();
+  if (!kBaselineDispatch) {
+    arguments_.clear();
+    outputs_.clear();
+    compiled_kernel_ = CompiledKernel{};
   }
   return status;
 }

@@ -15,7 +15,7 @@
 name: Run Benchmarks
 
 on:
-  # Allow manual runs from the Actions tab for testing
+  pull_request:
   workflow_dispatch:
     inputs:
       benchmark_filter:
@@ -29,27 +29,20 @@ on:
         type: string
         default: ""
       custom_metadata:
-        description: "JSON string of metadata to append to the benchmark result. Overwrites static metadata from the registry but is overwritten by dynamic metadata from the workload."
+        description: "JSON string of metadata to append to the benchmark result."
         required: false
         type: string
         default: "{}"
       torch_tpu_wheel:
-        description: >-
-          gs:// path to an already-built torch_tpu wheel to benchmark. If empty,
-          build a fresh wheel from the selected ref. Otherwise, the provided
-          wheel is used for running the benchmarks.
+        description: "gs:// path to an already-built torch_tpu wheel to benchmark."
         required: false
         type: string
         default: ""
       python_version:
-        description: >-
-          Python the wheel is built for and the benchmarks run under. One
-          value drives both, which is what keeps them consistent.
+        description: "Python version."
         required: false
         type: choice
-        default: "3.12"
-        # Keep in sync with SUPPORTED_PYTHON_VERSIONS in
-        # bazel/supported_python_versions.bzl.
+        default: "3.14"
         options:
           - "3.11"
           - "3.12"
@@ -66,8 +59,7 @@ jobs:
     if: ${{ !inputs.torch_tpu_wheel }}
     runs-on: linux-x86-n4-16
     container:
-      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"  # Tag infrastructure-public-image-2c74567ee8e0
-      # Disable ipc isolation to prevent shm limit issues.
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:30a9cf2ed330736957b3256dd3df69a13a556ae46626e9ad2ba205fa7a3c0051"
       options: --ipc=host
     permissions:
       contents: read
@@ -76,13 +68,11 @@ jobs:
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ github.ref_name }}
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
         with:
-          python_version: ${{ inputs.python_version }}
+          python_version: ${{ inputs.python_version || '3.14' }}
   run_benchmarks:
     name: Run TorchTPU benchmarks
     needs: [build_wheel]
@@ -90,14 +80,18 @@ jobs:
       !cancelled() &&
       (needs.build_wheel.result == 'success' ||
        needs.build_wheel.result == 'skipped')
-    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91 # main
+    uses: google-ml-infra/bap/.github/workflows/run-benchmarks.yaml@ff212b97420bf479bd492d64e4b549534c22cd91
     with:
       registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       runner: "linux-x86-n4-16"
-      benchmark_filter: ${{ inputs.benchmark_filter }}
-      environment_filter: ${{ inputs.environment_filter }}
-      custom_metadata: ${{ inputs.custom_metadata }}
+      benchmark_filter: ${{ inputs.benchmark_filter || '(model_benchmarks|layer_benchmarks)_(with_cl|without_cl)_.*' }}
+      environment_filter: ${{ inputs.environment_filter || 'tpu-v7' }}
+      publish_metrics: true
+      pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
+      pub_sub_gcp_topic_id: "private-torch-tpu-prod"
+      custom_metadata: >-
+        ${{ inputs.custom_metadata || format('{{"pr_number": "{0}", "sha": "{1}", "mlcompass_execution_mode": "cbuild"}}', github.event.pull_request.number, github.sha) }}
       custom_env_vars: |
         TORCH_TPU_WHEEL=${{ inputs.torch_tpu_wheel || needs.build_wheel.outputs.gcs_wheel_path }}
-        TORCH_TPU_PYTHON_VERSION=${{ inputs.python_version }}
+        TORCH_TPU_PYTHON_VERSION=${{ inputs.python_version || '3.14' }}
