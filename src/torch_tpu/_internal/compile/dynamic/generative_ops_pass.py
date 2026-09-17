@@ -168,7 +168,7 @@ class HandleGenerativeOpsPass:
         ),
         torch.ops.aten.zeros_like.default: self._process_like_op,
         torch.ops.aten.ones_like.default: self._process_like_op,
-        torch.ops.aten.full_like.default: self._process_like_op,
+        torch.ops.aten.full_like.default: self._process_full_like_op,
         torch.ops.aten.empty_like.default: self._process_like_op,
     }
 
@@ -385,7 +385,7 @@ class HandleGenerativeOpsPass:
   ) -> None:
     """Processes *_like generative ops with dynamic shapes (e.g.
 
-    zeros_like, ones_like, full_like, empty_like).
+    zeros_like, ones_like, empty_like).
     """
     val = node.meta.get("val")
     if val is None or not hasattr(val, "shape"):
@@ -407,6 +407,72 @@ class HandleGenerativeOpsPass:
       node.replace_all_uses_with(
           current_node, delete_user_cb=lambda u: u in original_users
       )
+
+  def _process_full_like_op(
+      self,
+      graph_module: torch.fx.GraphModule,
+      node: torch.fx.Node,
+  ) -> None:
+    """Processes full_like generative ops with dynamic shapes or dynamic fill values."""
+    kwargs = node.kwargs.copy()
+    input_tensor = (
+        node.args[0]
+        if node.args
+        else kwargs.pop("self", kwargs.pop("input", None))
+    )
+    fill_value = (
+        node.args[1] if len(node.args) > 1 else kwargs.pop("fill_value", None)
+    )
+    kwargs.pop("fill_value", None)
+    if fill_value is None:
+      raise ValueError(
+          f"Unable to extract fill_value from full_like node {node}"
+      )
+
+    val = node.meta.get("val")
+    dtype = kwargs.get("dtype")
+    if dtype is None and val is not None and hasattr(val, "dtype"):
+      dtype = val.dtype
+
+    with graph_module.graph.inserting_after(node):
+      empty_node = graph_module.graph.call_function(
+          torch.ops.aten.empty_like.default,
+          args=(input_tensor,),
+          kwargs=kwargs,
+      )
+      empty_node.meta = node.meta.copy()
+
+    with graph_module.graph.inserting_after(empty_node):
+      if sym_utils.is_symint(fill_value) or isinstance(
+          fill_value, torch.fx.Node
+      ):
+        fill_tensor = self._sym_shape_manager.ensure_tensor(
+            graph_module, fill_value, node, dtype=dtype
+        )
+        fill_node = graph_module.graph.call_function(
+            torch.ops.aten.fill_.Tensor,
+            args=(empty_node, fill_tensor),
+        )
+      else:
+        fill_node = graph_module.graph.call_function(
+            torch.ops.aten.fill_.Scalar,
+            args=(empty_node, fill_value),
+        )
+      fill_node.meta = node.meta.copy()
+
+    current_node = fill_node
+    if val is not None and hasattr(val, "shape"):
+      for dim, s in enumerate(val.shape):
+        if sym_utils.is_symint(s):
+          tensor_node = self._sym_shape_manager.ensure_tensor(
+              graph_module, s, node
+          )
+          current_node = self._insert_set_dimension_logical_size(
+              graph_module, current_node, tensor_node, dim, node
+          )
+
+    node.replace_all_uses_with(current_node)
+    graph_module.graph.erase_node(node)
 
   def _insert_set_dimension_logical_size(
       self,

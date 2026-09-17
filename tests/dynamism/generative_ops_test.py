@@ -890,6 +890,75 @@ class GenerativeOpsTest(seed_test_utils.RepeatableTest):
     expected = torch.full_like(x1, 42.0)
     utils.assert_close(out1, expected)
 
+  def test_full_like_dynamic_fill_value(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        s0 = x.shape[0]
+        return torch.full_like(x, s0, dtype=torch.int32)
+
+    compiled = torch.compile(
+        Model(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x1 = torch.zeros(4, 8, device=self.device)
+    torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
+
+    out1 = compiled(x1)
+    expected1 = torch.full_like(x1, 4, dtype=torch.int32)
+    utils.assert_close(out1, expected1)
+
+    x2 = torch.zeros(8, 8, device=self.device)
+    out2 = compiled(x2)
+    expected2 = torch.full_like(x2, 8, dtype=torch.int32)
+    utils.assert_close(out2, expected2)
+
+  def test_full_like_dynamic_fill_value_type_promotion(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        s0 = x.shape[0]
+        return torch.full_like(x, fill_value=s0)
+
+    compiled = torch.compile(
+        Model(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x1 = torch.zeros(3, 5, dtype=torch.float32, device=self.device)
+    torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
+
+    out1 = compiled(x1)
+    expected1 = torch.full_like(x1, 3.0, dtype=torch.float32)
+    utils.assert_close(out1, expected1)
+
+    x2 = torch.zeros(6, 5, dtype=torch.float32, device=self.device)
+    out2 = compiled(x2)
+    expected2 = torch.full_like(x2, 6.0, dtype=torch.float32)
+    utils.assert_close(out2, expected2)
+
+  def test_full_like_compound_symint_fill_value(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x):
+        s0 = x.shape[0]
+        return torch.full_like(x, fill_value=s0 * 2 + 1, dtype=torch.int64)
+
+    compiled = torch.compile(
+        Model(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x1 = torch.zeros(4, 4, device=self.device)
+    torch._dynamo.mark_dynamic(x1, 0, min=2, max=16)
+
+    out1 = compiled(x1)
+    expected1 = torch.full_like(x1, 9, dtype=torch.int64)
+    utils.assert_close(out1, expected1)
+
+    x2 = torch.zeros(7, 4, device=self.device)
+    out2 = compiled(x2)
+    expected2 = torch.full_like(x2, 15, dtype=torch.int64)
+    utils.assert_close(out2, expected2)
+
   # =========================================================================
   # torch.empty_like Tests
   # =========================================================================

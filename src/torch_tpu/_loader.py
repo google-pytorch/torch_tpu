@@ -266,10 +266,10 @@ def _init_device_impl(device: str) -> torch.device:
 
   # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.pallas import api as pallas_api  # pylint: disable=g-import-not-at-top
+  from torch_tpu import pallas  # pylint: disable=g-import-not-at-top
 
-  sys.modules["torch.tpu.pallas"] = pallas_api
-  setattr(device_module, "pallas", pallas_api)
+  sys.modules["torch.tpu.pallas"] = pallas
+  setattr(device_module, "pallas", pallas)
 
   # Pass installed libtpu version to C++ runtime if available.
   _set_libtpu_version()

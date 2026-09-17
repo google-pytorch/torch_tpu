@@ -76,7 +76,7 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
-        "//src/torch_tpu/_internal/pallas",
+        "//src/torch_tpu/_internal/pallas:pallas_lib",
         "//src/torch_tpu/_internal/profiler:profiler_config",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
@@ -153,10 +153,10 @@ torch_tpu_py_test(
     name = "env_utils_test",
     srcs = ["env_utils_test.py"],
     deps = [
-        ":seed_test_utils",
         "//shims/absl_py/testing:absltest",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:env_utils",
+        "//tests:seed_test_utils",
     ],
 )
 
@@ -1476,7 +1476,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
     ],
 )
@@ -1547,7 +1546,6 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
         "//src/torch_tpu/_internal/dynamism",
         "//src/torch_tpu/_internal/execution_mode",
-        "//src/torch_tpu/_internal/pallas",
         "//src/torch_tpu/_internal/pallas:tpu_torch_pallas",  # build_cleaner: keep
     ],
 )

@@ -180,7 +180,6 @@ untriaged_ops_deny_list: dict[
     "fft.fft": ALL_MODES,  # expected all dimensions to be static
     "flip": ALL_MODES,  # dynamic triage (invalid result)
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
-    "full_like": {COMPILE},  # buffer dimension mismatch
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_put": ALL_MODES,  # garbage data
@@ -297,10 +296,19 @@ def verify_op_supports_dynamism(
 
   # Verify all input tensors are supported with dynamism. Here we use
   # _pytree.tree_flatten to recursively inspect the input_value and args,
-  # ensuring that tensors inside lists, tuples, or other nested structures
-  # (common in foreach ops) are properly vetted.
-  for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
+  # filtering for tensor objects ensuring that tensors inside lists, tuples, or
+  # other nested structures (common in foreach ops) are properly vetted while
+  # ignoring scalar args.
+  all_tensors = [
+      v
+      for v in _pytree.tree_flatten((input_value, args))[0]
+      if isinstance(v, torch.Tensor)
+  ]
+  if not all_tensors:
+    return f"Input value is not a tensor, got {type(input_value)}."
+
+  for tensor in all_tensors:
+    skip_input = _should_skip_input_marking(op, tensor)
     if skip_input:
       return skip_input
 
