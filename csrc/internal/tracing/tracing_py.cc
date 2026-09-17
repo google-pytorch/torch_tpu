@@ -22,6 +22,7 @@
 #include <utility>
 
 #include "absl/time/time.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -63,7 +64,7 @@ bool PyStructuredLogEnabled() {
 
 }  // namespace
 
-PYBIND11_MODULE(_tpu_torch_tracing, m) {
+TT_PYBIND11_MODULE(_tpu_torch_tracing, m) {
   m.doc() =
       "Pybind exposure of torch_tpu's eager StructuredLogBuffer "
       "for the Python tracing daemon.";

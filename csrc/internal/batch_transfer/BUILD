@@ -29,6 +29,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
         "//csrc/experimental/batch_transfer",
         "//shims/pybind11",
         "//shims/torch:aten",

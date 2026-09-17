@@ -41,10 +41,14 @@ pybind_extension(
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
     wrap_py_init = True,
     deps = [
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
+        "//csrc/common:pybind_error_utils",
         "//csrc/eager:eager_mode",
         "//csrc/eager:tpu_aten_kernels",
     ],

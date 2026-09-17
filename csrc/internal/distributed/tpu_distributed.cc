@@ -22,6 +22,7 @@
 #include "absl/log/check.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/distributed/process_group_tpu.h"
 #include "csrc/distributed/utils.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -79,7 +80,7 @@ std::string DeviceDebugString() {
 
 }  // namespace
 
-PYBIND11_MODULE(tpu_distributed, m) {
+TT_PYBIND11_MODULE(tpu_distributed, m) {
   // Custom distributed backend initialization happens from the Python side,
   // so we need to expose this init function.
   m.def("create_process_group", &MakeProcessGroup);

@@ -15,6 +15,7 @@
  */
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/tpu_aten_kernels.h"
 #include "pybind11/pybind11.h"
@@ -24,8 +25,8 @@ namespace torch_tpu {
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(execution_mode_impl, m) {
-  py::enum_<EagerMode>(m, "EagerMode")
+TT_PYBIND11_MODULE(execution_mode_impl, m) {
+  py::enum_<EagerMode>(GetPyBindHandle(m), "EagerMode")
       .value("DEFER_AND_FUSE", EagerMode::kDeferAndFuse)
       .value("DEFER_NEVER", EagerMode::kDeferNever)
       .value("DEFER_NEVER_AND_LAUNCH_BLOCKING",

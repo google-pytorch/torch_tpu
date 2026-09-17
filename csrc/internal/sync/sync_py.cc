@@ -27,6 +27,7 @@
 #include "c10/util/python_stub.h"
 #include "csrc/common/device_type.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/materialize.h"
 #include "csrc/eager/structured_log_buffer.h"
@@ -408,7 +409,7 @@ std::string PyGetComputationMlir(const std::vector<at::Tensor>& tensors) {
 
 }  // namespace
 
-PYBIND11_MODULE(_tpu_torch_sync, m) {
+TT_PYBIND11_MODULE(_tpu_torch_sync, m) {
   m.def("synchronize", &PySynchronize, py::arg("tensors") = py::none(),
         py::arg("wait") = false,
         py::doc("Forces a materialization of one or more TPU tensors."));

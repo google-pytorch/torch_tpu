@@ -20,6 +20,7 @@
 #include "ATen/core/TensorBody.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/experimental/batch_transfer/batch_transfer.h"
 #include "pybind11/attr.h"
 #include "pybind11/cast.h"
@@ -111,11 +112,12 @@ static void PyAwaitAll(std::vector<TransferFuture>& futures) {
   }
 }
 
-PYBIND11_MODULE(batch_transfer_impl, m) {
-  py::class_<TransferFuture>(m, "TransferFuture")
+TT_PYBIND11_MODULE(batch_transfer_impl, m) {
+  PyBindClass<TransferFuture>(m, "TransferFuture")
       .def(py::init<>())
-      .def("wait", &TransferFuture::Await,
-           py::call_guard<py::gil_scoped_release>());
+      .def(
+          "wait", [](TransferFuture& self) { self.Await(); },
+          py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "batch_transfer_d2h", &PyBatchTransferD2H,  //

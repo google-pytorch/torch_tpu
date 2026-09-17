@@ -37,6 +37,7 @@
 #include "csrc/common/discovery.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/excess_precision.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/distributed/window_tpu.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_gen_impl.h"
@@ -208,8 +209,8 @@ py::dict PyGetLocalDeviceAttributes() {
 
 }  // namespace
 
-PYBIND11_MODULE(_device_ops_backend, m) {
-  py::module::import("torch");
+TT_PYBIND11_MODULE(_device_ops_backend, m) {
+  PyBindModule::Import("torch");
   m.doc() =
       "PjRt backend utilities for PyTorch PrivateUse1 integration. "
       "Core ops are registered via C++ TORCH_LIBRARY_IMPL.";
@@ -258,12 +259,14 @@ PYBIND11_MODULE(_device_ops_backend, m) {
         "d2h copies and deferred operations on the "
         "specified device have completed.");
 
-  py::class_<PyTpuEventBase, py::smart_holder>(m, "TpuEventBase")
-      .def("synchronize", &PyTpuEventBase::Synchronize,
-           py::call_guard<py::gil_scoped_release>(),
-           "Blocks until the recorded event snapshot has completed.")
-      .def("query", &PyTpuEventBase::Query,
-           "Returns whether the recorded event snapshot has completed.");
+  PyBindClass<PyTpuEventBase, py::smart_holder>(m, "TpuEventBase")
+      .def(
+          "synchronize", [](PyTpuEventBase& self) { self.Synchronize(); },
+          py::call_guard<py::gil_scoped_release>(),
+          "Blocks until the recorded event snapshot has completed.")
+      .def(
+          "query", [](PyTpuEventBase& self) { return self.Query(); },
+          "Returns whether the recorded event snapshot has completed.");
 
   m.def("_record_event", &PyRecordEvent, py::arg("device_index") = py::none(),
         py::arg("stream_id") = py::none(),
@@ -414,7 +417,7 @@ PYBIND11_MODULE(_device_ops_backend, m) {
       py::arg("device_index"),
       "Get the eager default generator for the given device index.");
 
-  py::class_<CacheEntryStats>(m, "CacheEntryStats")
+  PyBindClass<CacheEntryStats>(m, "CacheEntryStats")
       .def_property_readonly(
           "compilation_duration",
           [](const CacheEntryStats& stats) {
@@ -433,10 +436,10 @@ PYBIND11_MODULE(_device_ops_backend, m) {
   // Suppress the clang-tidy warning that the variable is destroyed immediately
   // after the definition. We are just using the ctor's side effect to register
   // the class with pybind11.
-  py::class_<PerfStats::EntryStats, CacheEntryStats>(  // NOLINT
+  PyBindClass<PerfStats::EntryStats, CacheEntryStats>(  // NOLINT
       m, "EntryStats");
 
-  py::class_<PerfStats>(m, "PerfStats")
+  PyBindClass<PerfStats>(m, "PerfStats")
       .def_readonly("num_cache_reqs", &PerfStats::num_cache_reqs)
       .def_readonly("num_cache_hits", &PerfStats::num_cache_hits)
       // Gets the peak memory used by the host during compilation. Resetting
@@ -462,7 +465,7 @@ PYBIND11_MODULE(_device_ops_backend, m) {
       "Returns True if this is an optimized build (compiled with -c opt / "
       "NDEBUG defined).");
 
-  py::enum_<CorePinningMode>(m, "CorePinningMode")
+  py::enum_<CorePinningMode>(GetPyBindHandle(m), "CorePinningMode")
       .value("UNPINNED", CorePinningMode::kUnpinned)
       .value("TENSOR_CORE", CorePinningMode::kTensorCore)
       .value("SPARSE_CORE", CorePinningMode::kSparseCore)

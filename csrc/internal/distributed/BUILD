@@ -31,6 +31,7 @@ torch_tpu_cc_library(
     srcs = ["tpu_distributed.cc"],
     deps = [
         "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
         "//csrc/distributed:process_group_tpu",
         "//csrc/distributed:utils",
         "//csrc/pjrt:pjrt_state",

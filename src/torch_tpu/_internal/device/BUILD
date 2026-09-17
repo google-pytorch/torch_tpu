@@ -83,6 +83,7 @@ pybind_extension(
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:excess_precision",
+        "//csrc/common:pybind_error_utils",
         "//csrc/distributed:window_tpu",
         "//csrc/distributed/slicebuilder:discovery",
         "//csrc/eager:current_stream",

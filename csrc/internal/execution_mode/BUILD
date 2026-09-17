@@ -30,6 +30,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
+        "//csrc/common:pybind_error_utils",
         "//csrc/eager:eager_mode",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/pybind11",

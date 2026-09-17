@@ -87,6 +87,7 @@ torch_tpu_cc_library(
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
         "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
         "//shims/pybind11",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",

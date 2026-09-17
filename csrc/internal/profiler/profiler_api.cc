@@ -28,6 +28,7 @@
 #include "csrc/common/context_manager.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/pybind_error_utils.h"
 #include "csrc/internal/profiler/xprof_callback_handler.h"
 #include "pybind11/pybind11.h"
 #include "tsl/platform/path.h"
@@ -228,7 +229,7 @@ static void PyStopTrace(const std::string& filename) {
   TT_THROW_IF_ERROR(TpuProfilerSession::GetInstance().Stop(filename));
 }
 
-PYBIND11_MODULE(_profiler_backend, m) {
+TT_PYBIND11_MODULE(_profiler_backend, m) {
   m.doc() = "PjRt backend for PyTorch profiler.";
 
   m.def("start_trace", &PyStartTrace, py::arg("logdir"),

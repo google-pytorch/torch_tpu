@@ -137,9 +137,13 @@ pybind_extension(
     common_lib_packages = [
         "torch_tpu/csrc/common",
     ],
+    py_deps = [
+        "//shims/torch:pytorch",
+    ],
     wrap_py_init = True,
     deps = [
         "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
         "//csrc/distributed:process_group_tpu",
         "//csrc/distributed:utils",
         "//csrc/pjrt:pjrt_state",

@@ -2115,18 +2115,18 @@ module {
   @et.why_tpu_only("Testing TPU device generator initialization failure.")
   def test_default_generator_init_failure(self):
     tt_testing.reset_default_device_generators()
-    tt_testing.set_init_default_generator_failure("Simulated init failure")
+    tt_testing.set_init_default_generator_failure("simulated init failure")
     try:
       # The first call to default_generators[] should fail.
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""Simulated init failure""",
+          tpu="""get_default_generator(): simulated init failure""",
       ):
         _ = torch.tpu.default_generators[0]
       # Subsequent calls to default_generators[] should fail too.
       with et.assert_raises_message(
           RuntimeError,
-          tpu="""Simulated init failure""",
+          tpu="""get_default_generator(): simulated init failure""",
       ):
         _ = torch.tpu.default_generators[0]
     finally:
@@ -3855,7 +3855,7 @@ module {
   def test_window_num_stripes_non_positive(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected window_num_stripes to be > 0, got 0""",
+        tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got 0""",
         message_reviewed_by="wan",
     ):
       torch.tpu.window_num_stripes = 0
@@ -3864,7 +3864,7 @@ module {
   def test_window_num_stripes_negative(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected window_num_stripes to be > 0, got -1""",
+        tpu="""_set_window_num_stripes(): expected window_num_stripes to be > 0, got -1""",
         message_reviewed_by="wan",
     ):
       torch.tpu.window_num_stripes = -1
@@ -3873,7 +3873,7 @@ module {
   def test_window_stripe_chunk_mb_non_positive(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected window_stripe_chunk_mb to be > 0, got 0""",
+        tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got 0""",
         message_reviewed_by="wan",
     ):
       torch.tpu.window_stripe_chunk_mb = 0
@@ -3882,7 +3882,7 @@ module {
   def test_window_stripe_chunk_mb_negative(self):
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""expected window_stripe_chunk_mb to be > 0, got -1""",
+        tpu="""_set_window_stripe_chunk_mb(): expected window_stripe_chunk_mb to be > 0, got -1""",
         message_reviewed_by="wan",
     ):
       torch.tpu.window_stripe_chunk_mb = -1

@@ -63,6 +63,7 @@ pybind_extension(
     deps = [
         "//csrc/common:device_type",
         "//csrc/common:error_utils",
+        "//csrc/common:pybind_error_utils",
         "//csrc/eager:device_buffer",
         "//csrc/eager:materialize",
         "//csrc/eager:structured_log_buffer",
