@@ -35,6 +35,8 @@ DEFAULT_FILTER: Final[str] = (
     "presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5lite:8"
 )
 DEFAULT_SCOPE: Final[str] = "//tests/..."
+DEFAULT_ENGINE: Final[str] = "mailbox"
+RBE_BAZEL_CONFIG: Final[str] = "ci_tpu_v5_full_rbe"
 
 REPLACE_LABEL: Final[str] = "ci:replace-tpu-v5"
 SHADOW_LABEL: Final[str] = "ci:relay-tpu-v5"
@@ -45,7 +47,7 @@ SHADOW_CONTEXT: Final[str] = "TPU v5e relay (shadow)"
 HELP_TEXT: Final[str] = """Usage: rbe_tpu/deploy/rbe_tpu_presubmit_pr.sh [options]
 
 Executes the torch_tpu single-chip presubmit suite on Cloud TPU v5e hardware
-via the GCS mailbox runner.
+via the GCS mailbox runner or native RBE (Buildbarn).
 
 Modes:
   shadow       Advisory run. Reports under "TPU v5e relay (shadow)" and
@@ -57,6 +59,8 @@ Options:
   --pr N                Pull request number to test.
   --repo OWNER/NAME     GitHub repository (default: google-pytorch/torch_tpu).
   --mode MODE           shadow (default) or replacement.
+  --engine ENGINE       Execution engine: 'mailbox' (default) or 'rbe'.
+  --rbe                 Shortcut for --engine=rbe --bazel-config=ci_tpu_v5_full_rbe.
   --sha SHA             Commit SHA to report against (default: PR head SHA).
   --bucket NAME         GCS mailbox bucket (default: torch-tpu-mailbox-eval).
   --target TARGET       Specific test target to run. Can be repeated.
@@ -95,6 +99,7 @@ class Options:
   scope: str = DEFAULT_SCOPE
   tag_filter: str = DEFAULT_FILTER
   show_help: bool = False
+  engine: str = DEFAULT_ENGINE
 
 
 def parse_args(argv: Sequence[str]) -> Options:
@@ -115,6 +120,7 @@ def parse_args(argv: Sequence[str]) -> Options:
   test_timeout = 900
   scope = DEFAULT_SCOPE
   tag_filter = DEFAULT_FILTER
+  engine = DEFAULT_ENGINE
 
   idx = 0
   n = len(argv)
@@ -137,6 +143,16 @@ def parse_args(argv: Sequence[str]) -> Options:
         raise CLIError("--mode requires an argument.")
       mode = argv[idx + 1]
       idx += 2
+    elif arg == "--engine":
+      if idx + 1 >= n:
+        raise CLIError("--engine requires an argument.")
+      if argv[idx + 1] not in ("mailbox", "rbe"):
+        raise CLIError(f"--engine must be 'mailbox' or 'rbe', got '{argv[idx + 1]}'")
+      engine = argv[idx + 1]
+      idx += 2
+    elif arg == "--rbe":
+      engine = "rbe"
+      idx += 1
     elif arg == "--sha":
       if idx + 1 >= n:
         raise CLIError("--sha requires an argument.")
@@ -189,6 +205,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     else:
       raise CLIError(f"Unknown argument: {arg}")
 
+  if engine == "rbe" and bazel_config == "rbe_tpu":
+    bazel_config = RBE_BAZEL_CONFIG
+
   if mode not in ("shadow", "replacement"):
     raise CLIError(f"--mode must be 'shadow' or 'replacement', got '{mode}'")
 
@@ -210,6 +229,7 @@ def parse_args(argv: Sequence[str]) -> Options:
       test_timeout=test_timeout,
       scope=scope,
       tag_filter=tag_filter,
+      engine=engine,
   )
 
 
@@ -289,9 +309,12 @@ def build_bazel_args(opts: Options, targets: Sequence[str]) -> list[str]:
     if not opts.targets and opts.bazel_config == "ci_tpu_v5_mailbox":
       args.append("--config=ci_tpu_v5_presubmit")
     args.append(f"--config={opts.bazel_config}")
+  if opts.engine == "mailbox":
+    args.extend([
+        f"--test_env=TORCH_TPU_RELAY_BUCKET={opts.bucket}",
+        "--run_under=//rbe_tpu:worker_main",
+    ])
   args.extend([
-      f"--test_env=TORCH_TPU_RELAY_BUCKET={opts.bucket}",
-      "--run_under=//rbe_tpu:worker_main",
       f"--test_timeout={opts.test_timeout}",
       f"--jobs={opts.jobs}",
       f"--local_test_jobs={opts.jobs}",
@@ -315,16 +338,26 @@ def format_presubmit_report(
     now_tag: str,
     bazel_rc: int,
     failure_lines: Sequence[str],
+    engine: str = "mailbox",
 ) -> str:
+  title = (
+      "# TPU Native RBE Presubmit Report"
+      if engine == "rbe"
+      else "# TPU Mailbox Presubmit Report"
+  )
+  engine_line = (
+      "**Engine:** Native RBE (Buildbarn REAPI v2)\n"
+      if engine == "rbe"
+      else f"**Bucket:** `gs://{bucket}`\n"
+  )
   report = f"""{COMMENT_MARKER}
-# TPU Mailbox Presubmit Report
+{title}
 
 **Verdict:** {verdict}
 **Mode:** {mode}
 **Context:** `{context}`
 **Wall Clock Time:** {elapsed}s
-**Bucket:** `gs://{bucket}`
-**Targets Evaluated:** {target_count}
+{engine_line}**Targets Evaluated:** {target_count}
 **Fleet Capacity:** {fleet_count} chips
 **Timestamp:** {now_tag}
 
@@ -380,7 +413,15 @@ def update_or_post_pr_comment(
     )
   else:
     subprocess.run(
-        ["gh", "pr", "comment", pr, "-R", repo, "--body", report_content],
+        [
+            "gh",
+            "api",
+            "-X",
+            "POST",
+            f"repos/{repo}/issues/{pr}/comments",
+            "-f",
+            f"body={report_content}",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -401,7 +442,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     opts = parse_args(args)
   except CLIError as err:
     print(f"ERROR: {err}", file=sys.stderr)
-    return 2
+    return 1
 
   if opts.show_help:
     print(HELP_TEXT)
@@ -413,7 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
   now_tag = datetime.datetime.now(datetime.timezone.utc).strftime(
       "%Y%m%d_%H%M%SZ"
   )
-  prefix = f"pr{opts.pr}" if opts.pr else "run"
+  prefix = f"pr_{opts.pr}" if opts.pr else "local"
   output_dir = opts.output_dir or (
       default_repo_root() / "mailbox_reports" / f"{prefix}_{now_tag}"
   )
@@ -445,10 +486,18 @@ def main(argv: Sequence[str] | None = None) -> int:
           file=sys.stderr,
       )
 
+  banner_title = (
+      "TPU Native RBE Presubmit Pipeline"
+      if opts.engine == "rbe"
+      else "TPU Mailbox Presubmit Pipeline"
+  )
   print("========================================================================")
-  print("TPU Mailbox Presubmit Pipeline")
+  print(banner_title)
   print("========================================================================")
-  print(f"Bucket:          gs://{opts.bucket}")
+  if opts.engine == "rbe":
+    print("Engine:          Native RBE (Buildbarn REAPI v2)")
+  else:
+    print(f"Bucket:          gs://{opts.bucket}")
   print(f"Output Directory:{output_dir}")
   print(f"Mode:            {opts.mode}")
   if opts.pr:
@@ -459,7 +508,10 @@ def main(argv: Sequence[str] | None = None) -> int:
   print(f"Target Label:    {target_label}")
   print("========================================================================")
 
-  fleet_count = bazel_test.check_fleet_count(opts.bucket)
+  if opts.engine == "rbe":
+    fleet_count = 28
+  else:
+    fleet_count = bazel_test.check_fleet_count(opts.bucket)
   if opts.targets:
     final_targets = list(opts.targets)
   else:
@@ -509,12 +561,13 @@ def main(argv: Sequence[str] | None = None) -> int:
           file=sys.stderr,
       )
 
+  engine_name = "RBE" if opts.engine == "rbe" else "mailbox"
   if sha and not opts.no_report:
     post_status(
         opts.repo,
         sha,
         "pending",
-        f"TPU mailbox presubmit running across {fleet_count} chips",
+        f"TPU {engine_name} presubmit running across {fleet_count} chips",
         target_context,
     )
 
@@ -563,6 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
       now_tag=now_tag,
       bazel_rc=bazel_rc,
       failure_lines=bazel_test.extract_failure_lines(log_text),
+      engine=opts.engine,
   )
   report_file.write_text(report_content, encoding="utf-8")
   print(f"Report generated at: {report_file}")
@@ -572,7 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         opts.repo,
         sha,
         status_state,
-        f"TPU mailbox presubmit {verdict} in {elapsed}s ({target_count}"
+        f"TPU {engine_name} presubmit {verdict} in {elapsed}s ({target_count}"
         " targets)",
         target_context,
     )

@@ -124,6 +124,24 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Establish RBE Tunnel
+        if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
+        run: |
+          echo "Starting background tunnel to Buildbarn frontend..."
+          gcloud compute tpus tpu-vm ssh spot-tpu-v5e-1789240098-2504 \
+            --zone=europe-west4-b \
+            --project=rbe-tpu-oss \
+            -- -N -L 8980:10.202.0.3:30980 &
+          TUNNEL_PID=$!
+          echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
+              echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980."
+              break
+            fi
+            sleep 1
+          done
+
       - name: Run Test Suite
         if: >-
           inputs.test_suite == null
@@ -140,6 +158,10 @@ jobs:
             ${RBE_BAZEL_FLAGS} \
             ${EXTRA_FLAGS} \
             -- //tests/... ${RBE_EXCLUDED_TARGETS}
+
+      - name: Teardown RBE Tunnel
+        if: always() && env.TUNNEL_PID != ''
+        run: kill "$TUNNEL_PID" 2>/dev/null || true
 
   hardware_handoff:
     name: "TPU v5e Hardware Runner Handoff"
@@ -197,7 +219,13 @@ jobs:
 
           The presubmit runs single-chip targets on Cloud TPU v5e VMs in \`rbe-tpu-oss\`.
 
-          ### Recommended: GCS Mailbox Protocol (No SSH or VPC required)
+          ### Option 1: Native RBE (Buildbarn REAPI v2 - Recommended)
+          \`\`\`bash
+          git fetch origin pull/${PR_NUMBER}/head && git checkout ${HEAD_SHA}
+          rbe_tpu/deploy/rbe_tpu_presubmit_pr.sh --rbe --pr ${PR_NUMBER} --mode ${mode}
+          \`\`\`
+
+          ### Option 2: GCS Mailbox Protocol (No SSH or VPC required)
           Any developer on the \`torchtpu-dev@\` or \`xla-torchtpu-team@\` lists can run from any terminal:
 
           \`\`\`bash

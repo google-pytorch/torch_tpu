@@ -135,6 +135,16 @@ class TestRBETpuBazelTestCLI(
     )
     self.assertEqual(res.returncode, 0, res.stderr)
 
+  def test_rbe_flags_accepted(self):
+    res = self.run_cmd(
+        "--dry-run",
+        "--rbe",
+        "//tests/pallas:pallas_test",
+    )
+    self.assertEqual(res.returncode, 0, res.stderr)
+    self.assertIn("Using standing Buildbarn RBE pool", res.stdout)
+    self.assertIn("//tests/pallas:pallas_test", res.stdout)
+
 
 class TestBazelTestPythonModule(
     unittest.TestCase  # UNITTEST_OK=Pure Python unit tests for bazel_test CLI
@@ -209,6 +219,18 @@ class TestBazelTestPythonModule(
     self.assertIn("35.1s", report)
     self.assertIn("### Failures", report)
     self.assertIn("FAIL: //csrc/common:compilation_test", report)
+
+  def test_build_bazel_args_rbe_engine_omits_worker_main(self):
+    opts = bazel_test.parse_args([
+        "--rbe",
+        "//tests:fp4_test",
+    ])
+    self.assertEqual(opts.engine, "rbe")
+    self.assertEqual(opts.bazel_config, "ci_tpu_v5_full_rbe")
+    args = bazel_test.build_bazel_args(opts, opts.targets)
+    self.assertNotIn("--run_under=//rbe_tpu:worker_main", args)
+    self.assertFalse(any("TORCH_TPU_RELAY_BUCKET" in a for a in args))
+    self.assertIn("--config=ci_tpu_v5_full_rbe", args)
 
 
 class TestRBETpuPresubmitPRCLI(
@@ -296,6 +318,25 @@ class TestRBETpuPresubmitPRCLI(
         "[DRY RUN] Would add label 'ci:relay-tpu-v5' to PR #3862", res.stdout
     )
 
+  def test_dry_run_rbe_engine(self):
+    res = self.run_cmd(
+        "--dry-run",
+        "--rbe",
+        "--pr",
+        "3862",
+        "--target",
+        "//tests:view_test",
+    )
+    self.assertEqual(res.returncode, 0, res.stderr)
+    self.assertIn("TPU Native RBE Presubmit Pipeline", res.stdout)
+    self.assertIn("Engine:          Native RBE (Buildbarn REAPI v2)", res.stdout)
+    self.assertIn("//tests:view_test", res.stdout)
+
+  def test_reject_invalid_engine(self):
+    res = self.run_cmd("--engine", "invalid")
+    self.assertNotEqual(res.returncode, 0)
+    self.assertIn("--engine must be 'mailbox' or 'rbe'", res.stderr)
+
   def test_reject_invalid_mode(self):
     res = self.run_cmd("--mode", "invalid")
     self.assertNotEqual(res.returncode, 0)
@@ -339,6 +380,19 @@ class TestPresubmitPRPythonModule(
     args = presubmit_pr.build_bazel_args(opts, ["//tests:fp4_test"])
     self.assertIn("--config=ci_tpu_v5_presubmit", args)
     self.assertIn("--config=ci_tpu_v5_mailbox", args)
+
+  def test_presubmit_rbe_engine_omits_worker_main(self):
+    opts = presubmit_pr.parse_args([
+        "--rbe",
+        "--pr",
+        "3862",
+    ])
+    self.assertEqual(opts.engine, "rbe")
+    self.assertEqual(opts.bazel_config, "ci_tpu_v5_full_rbe")
+    args = presubmit_pr.build_bazel_args(opts, ["//tests:fp4_test"])
+    self.assertNotIn("--run_under=//rbe_tpu:worker_main", args)
+    self.assertFalse(any("TORCH_TPU_RELAY_BUCKET" in a for a in args))
+    self.assertIn("--config=ci_tpu_v5_full_rbe", args)
 
   def test_replacement_mode_aborts_when_label_cannot_be_verified(self):
     with mock.patch.object(

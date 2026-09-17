@@ -31,6 +31,8 @@ DEFAULT_BUCKET: Final[str] = "torch-tpu-mailbox-eval"
 DEFAULT_SCOPE: Final[str] = "//tests/..."
 DEFAULT_JOBS: Final[int] = 28
 DEFAULT_BAZEL_CONFIG: Final[str] = "rbe_tpu"
+DEFAULT_ENGINE: Final[str] = "mailbox"
+RBE_BAZEL_CONFIG: Final[str] = "ci_tpu_v5_full_rbe"
 DEFAULT_TIMEOUT_SECONDS: Final[int] = 900
 
 HELP_TEXT: Final[str] = """Usage: rbe_tpu/deploy/rbe_tpu_bazel_test.sh [options] [TARGET...] [-- BAZEL_FLAG...]
@@ -83,6 +85,7 @@ class Options:
   test_timeout: int = DEFAULT_TIMEOUT_SECONDS
   keep: bool = False
   show_help: bool = False
+  engine: str = DEFAULT_ENGINE
 
 
 def log(msg: str) -> None:
@@ -101,6 +104,7 @@ def parse_args(argv: Sequence[str]) -> Options:
   dry_run = False
   test_timeout = DEFAULT_TIMEOUT_SECONDS
   keep = False
+  engine = DEFAULT_ENGINE
 
   idx = 0
   n = len(argv)
@@ -128,6 +132,16 @@ def parse_args(argv: Sequence[str]) -> Options:
         raise CLIError("--bazel-config requires an argument.")
       bazel_config = argv[idx + 1]
       idx += 2
+    elif arg == "--engine":
+      if idx + 1 >= n:
+        raise CLIError("--engine requires an argument.")
+      if argv[idx + 1] not in ("mailbox", "rbe"):
+        raise CLIError(f"--engine must be 'mailbox' or 'rbe', got '{argv[idx + 1]}'")
+      engine = argv[idx + 1]
+      idx += 2
+    elif arg == "--rbe":
+      engine = "rbe"
+      idx += 1
     elif arg == "--bazel-flag":
       if idx + 1 >= n:
         raise CLIError("--bazel-flag requires an argument.")
@@ -167,6 +181,9 @@ def parse_args(argv: Sequence[str]) -> Options:
       targets.append(arg)
       idx += 1
 
+  if engine == "rbe" and bazel_config == DEFAULT_BAZEL_CONFIG:
+    bazel_config = RBE_BAZEL_CONFIG
+
   return Options(
       targets=tuple(targets),
       bazel_flags=tuple(bazel_flags),
@@ -179,6 +196,7 @@ def parse_args(argv: Sequence[str]) -> Options:
       dry_run=dry_run,
       test_timeout=test_timeout,
       keep=keep,
+      engine=engine,
   )
 
 
@@ -281,9 +299,12 @@ def build_bazel_args(opts: Options, targets: Sequence[str]) -> list[str]:
   args = ["test"]
   if opts.bazel_config:
     args.append(f"--config={opts.bazel_config}")
+  if opts.engine == "mailbox":
+    args.extend([
+        f"--test_env=TORCH_TPU_RELAY_BUCKET={opts.bucket}",
+        "--run_under=//rbe_tpu:worker_main",
+    ])
   args.extend([
-      f"--test_env=TORCH_TPU_RELAY_BUCKET={opts.bucket}",
-      "--run_under=//rbe_tpu:worker_main",
       f"--test_timeout={opts.test_timeout}",
       f"--jobs={opts.jobs}",
       f"--local_test_jobs={opts.jobs}",
@@ -325,13 +346,23 @@ def format_report(
     bazel_elapsed: int,
     critical_path: str,
     failure_lines: Sequence[str],
+    engine: str = "mailbox",
 ) -> str:
-  report = f"""# TPU Mailbox Test Run Report
+  title = (
+      "# TPU Native RBE Test Run Report"
+      if engine == "rbe"
+      else "# TPU Mailbox Test Run Report"
+  )
+  engine_line = (
+      "**Engine:** Native RBE (Buildbarn REAPI v2)\n"
+      if engine == "rbe"
+      else f"**Bucket:** `gs://{bucket}`\n"
+  )
+  report = f"""{title}
 
 **Verdict:** {verdict}
 **Wall Clock Time:** {total_elapsed}s
-**Bucket:** `gs://{bucket}`
-**Targets Evaluated:** {target_count}
+{engine_line}**Targets Evaluated:** {target_count}
 **Fleet Capacity:** {fleet_count} chips
 **Timestamp:** {now_tag}
 
@@ -349,7 +380,7 @@ def format_report(
 
 | Stage | Duration |
 | :--- | :--- |
-| **1. Fleet Discovery (GCS)** | {fleet_check_elapsed}s |
+| **1. Fleet Discovery** | {fleet_check_elapsed}s |
 | **2. Target Resolution** | {query_elapsed}s |
 | **3. Bazel Execution Total** | {bazel_elapsed}s |
 | **3a. Test Critical Path** | {critical_path} |
@@ -396,8 +427,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
   fleet_start = int(time.time())
-  fleet_count = check_fleet_count(opts.bucket)
-  fleet_elapsed = int(time.time()) - fleet_start
+  if opts.engine == "rbe":
+    fleet_count = 28
+    fleet_elapsed = int(time.time()) - fleet_start
+    log("Using standing Buildbarn RBE pool (28 TPU v5e chips)")
+  else:
+    fleet_count = check_fleet_count(opts.bucket)
+    fleet_elapsed = int(time.time()) - fleet_start
 
   query_start = int(time.time())
   final_targets = resolve_targets(opts)
@@ -458,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
       f" (rc={bazel_rc})"
   )
   log("=== Stage Timing Breakdown ===")
-  log(f"  1. Fleet discovery (GCS):  {fleet_elapsed}s")
+  log(f"  1. Fleet discovery:        {fleet_elapsed}s")
   log(f"  2. Target resolution:      {query_elapsed}s")
   log(
       f"  3. Bazel execution total:  {bazel_elapsed}s (Critical path:"
@@ -479,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
       bazel_elapsed=bazel_elapsed,
       critical_path=critical_path,
       failure_lines=extract_failure_lines(log_text),
+      engine=opts.engine,
   )
   report_file.write_text(report_content, encoding="utf-8")
   log(f"Report generated at: {report_file}")
