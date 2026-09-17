@@ -24,6 +24,7 @@ from collections.abc import Mapping
 import dataclasses
 from typing import Any, Final, List
 import torch
+from torch_tpu._internal import execution_mode
 from torch_tpu._internal.device import _device_ops_backend
 import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.stream import streams
@@ -63,7 +64,8 @@ class _DefaultGeneratorsProperty:
   """Descriptor that acts exactly like a tuple of default generators.
 
   Mirrors the type and lazy initialization behavior of PyTorch's native
-  `torch.cuda.default_generators`.
+  `torch.cuda.default_generators`, while dynamically reflecting export
+  overrides.
 
   Attributes:
     _cached_default_generators: A lazily-initialized tuple holding the default
@@ -82,9 +84,20 @@ class _DefaultGeneratorsProperty:
   def __get__(self, instance, owner):
     if owner is None:
       return ()
+    owner.current_device()
+    if (
+        execution_mode.eager_mode
+        == execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      generators = []
+      for i in range(owner.device_count()):
+        try:
+          generators.append(_device_ops_backend.get_default_generator(i))
+        except RuntimeError:
+          generators.append(_device_ops_backend.get_eager_default_generator(i))
+      return tuple(generators)
+
     if self._cached_default_generators is None:
-      # Ensure initialized
-      owner.current_device()
       self._cached_default_generators = tuple(
           _device_ops_backend.get_default_generator(i)
           for i in range(owner.device_count())
