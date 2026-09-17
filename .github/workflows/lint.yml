@@ -31,8 +31,10 @@ permissions:
 # Cancel old jobs when they are replaced by new runs
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  # Don't cancel in-progress jobs for main branch
-  cancel-in-progress: ${{ github.ref != 'main' }}
+  # Don't cancel in-progress jobs for main branch. Note this must be
+  # `github.ref_name`, not `github.ref`, which is `refs/heads/main` on main.
+  # See https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context for more details.
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 
 jobs:
