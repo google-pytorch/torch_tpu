@@ -16,6 +16,7 @@
 
 #include "csrc/ops/fft/fft_aten_kernels.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -212,6 +213,14 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
     bool onesided) {
   auto input_type = GetTensorTypeOrDie(input);
 
+  for (int64_t d : dims) {
+    if (input_type.isDynamicDim(d)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected FFT dimension " << d
+             << " to be static, got dynamic dimension";
+    }
+  }
+
   const auto float_type = input_type.getElementType();
 
   auto fft_params = ComputeFftParams(input_type, dims);
@@ -267,6 +276,14 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2cShlo(
     mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
     bool forward) {
   auto input_type = GetTensorTypeOrDie(input);
+
+  for (int64_t d : dims) {
+    if (input_type.isDynamicDim(d)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected FFT dimension " << d
+             << " to be static, got dynamic dimension";
+    }
+  }
 
   auto elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
@@ -338,6 +355,14 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
     int64_t last_dim_size) {
   auto input_type = GetTensorTypeOrDie(input);
 
+  for (int64_t d : dims) {
+    if (input_type.isDynamicDim(d)) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected FFT dimension " << d
+             << " to be static, got dynamic dimension";
+    }
+  }
+
   auto elem_type = input_type.getElementType();
   if (!mlir::isa<mlir::ComplexType>(elem_type)) {
     TT_ASSIGN_OR_RETURN(auto scalar_type, ConvertTo<at::ScalarType>(elem_type));
@@ -398,10 +423,31 @@ absl::StatusOr<mlir::MlirOp> BuildFftC2rShlo(
   return fft_op;
 }
 
-absl::Status FFTValidateStaticShape(const at::Tensor& tensor,
-                                    const std::string_view arg_name) {
+absl::Status FFTValidateStaticDimensions(const at::Tensor& tensor,
+                                         const Dimensions& normalized_dims,
+                                         const std::string_view arg_name) {
   TT_ASSIGN_OR_RETURN(DeviceBufferRef buffer_ref, GetBaseBuffer(tensor));
-  return ValidateStaticShape(tensor, buffer_ref, arg_name);
+  absl::Span<const BoundedDynamicDimension> dynamic_dimensions_info =
+      buffer_ref.dynamic_dimensions();
+  if (dynamic_dimensions_info.empty()) {
+    return absl::OkStatus();
+  }
+  if (tensor.sizes() != buffer_ref.dimensions()) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "expected all dimensions of the " << arg_name
+           << " tensor to be static in the underlying tensor behind a view of "
+              "shape "
+           << ToString(tensor.sizes());
+  }
+  for (const auto& dynamic_dim : dynamic_dimensions_info) {
+    if (std::find(normalized_dims.begin(), normalized_dims.end(),
+                  dynamic_dim.dimension) != normalized_dims.end()) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "expected FFT dimension " << dynamic_dim.dimension << " of the "
+             << arg_name << " tensor to be static, got dynamic dimension";
+    }
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -411,14 +457,10 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
   TT_KERNEL(OpName::kFftR2c, param_keys, (self, dim, normalization, onesided), {
     FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
 
-    // Explicitly check for static shape.
-    // Shape introspection is unsafe with dynamism.
-    // NOTE: This implementation is not dynamism safe. It currently
-    // uses static shape indices, more work is needed to determine how
-    // this op supports bounded dynamic values.
-    TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
     TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+    TT_THROW_IF_ERROR(
+        FFTValidateStaticDimensions(self, normalized_dims, "input"));
+
     auto out_sizes = CopyIntVector(self.sizes());
     if (onesided) {
       const int64_t last_dim = normalized_dims.back();
@@ -456,14 +498,10 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
         FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        TT_THROW_IF_ERROR(
+            FFTValidateStaticDimensions(self, normalized_dims, "input"));
+
         auto out_sizes = CopyIntVector(self.sizes());
         if (onesided) {
           const int64_t last_dim = normalized_dims.back();
@@ -498,14 +536,9 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
   TT_KERNEL(OpName::kFftC2c, param_keys, (self, dim, normalization, forward), {
     FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
 
-    // Explicitly check for static shape.
-    // Shape introspection is unsafe with dynamism.
-    // NOTE: This implementation is not dynamism safe. It currently uses
-    // static shape indices, more work is needed to determine how this op
-    // supports bounded dynamic values.
-    TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
     TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+    TT_THROW_IF_ERROR(
+        FFTValidateStaticDimensions(self, normalized_dims, "input"));
 
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -539,11 +572,9 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
         FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        TT_THROW_IF_ERROR(
+            FFTValidateStaticDimensions(self, normalized_dims, "input"));
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
@@ -572,14 +603,10 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
         FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        TT_THROW_IF_ERROR(
+            FFTValidateStaticDimensions(self, normalized_dims, "input"));
+
         auto out_sizes = CopyIntVector(self.sizes());
         const int64_t last_dim = normalized_dims.back();
         out_sizes[last_dim] = last_dim_size;
@@ -620,14 +647,10 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
         FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
 
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
+        TT_THROW_IF_ERROR(
+            FFTValidateStaticDimensions(self, normalized_dims, "input"));
+
         auto out_sizes = CopyIntVector(self.sizes());
         const int64_t last_dim = normalized_dims.back();
         out_sizes[last_dim] = last_dim_size;

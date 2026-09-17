@@ -4427,7 +4427,11 @@ class OpInfoTestBase(
 
       # Verify op is supported with dynamism.
       skip = self.dynamism_filter_fn(
-          op, op_input.input_value, op_input.args, mode=dynamism_mode
+          op,
+          op_input.input_value,
+          op_input.args,
+          mode=dynamism_mode,
+          kwargs=op_input.kwargs,
       )
       if skip is not None:
         self.skipTest(skip)
@@ -4442,6 +4446,7 @@ class OpInfoTestBase(
           device_op_input.input_value,
           device_op_input.args,
           mode=dynamism_mode,
+          kwargs=device_op_input.kwargs,
       )
 
     if use_compiled and device != torch.device("cpu"):
