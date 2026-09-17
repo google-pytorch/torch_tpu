@@ -14,11 +14,13 @@
 
 """Directly test the PyBind11 API for compiled mode, without using Dynamo."""
 
+import dataclasses
 import functools
 import re
 import textwrap
 import threading
 from typing import TypeAlias
+from unittest import mock
 
 from absl.testing import absltest
 import torch
@@ -28,6 +30,7 @@ from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
 from torch_tpu._internal.compile import tpu_torch_compile
+from torch_tpu._internal.compile import trace_compiler
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.device_utils import annotations
@@ -49,6 +52,20 @@ _MAX_EAGER_INTERLEAVE_ITERATIONS = 1000
 @torch.compile
 def global_compile_plus_one(x):
   return x + 1
+
+
+def _simple_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+  return x + y
+
+
+def _multi_output_pytree_fn(
+    x: torch.Tensor, y: torch.Tensor, label: str = 'default'
+) -> tuple[torch.Tensor, dict[str, torch.Tensor], str]:
+  return x + y, {'diff': x - y, 'prod': x * y}, label
+
+
+def _stochastic_fn(x: torch.Tensor) -> torch.Tensor:
+  return x + torch.randn_like(x)
 
 
 def get_mock_lookup_backend():
@@ -1820,6 +1837,904 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     results = tpu_torch_compile.execute(compile_result.executable, [x, x])
     self.assertLen(results, 1)
     utils.assert_close(results[0].cpu(), (x + x).cpu())
+
+
+class TraceCompilerApiTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest('TPU accelerator not available in this test environment.')
+    tt_testing.reset_eager_state()
+    torch.tpu._clear_cache()
+    self.device = torch.accelerator.current_accelerator()
+
+  def tearDown(self):
+    torch.tpu._clear_cache()
+    super().tearDown()
+
+  def test_trace_and_compile_parallel_compilations(self):
+    """Verifies multiple parallel compilations across shapes maintain correctness."""
+    shapes = [(2 * (i + 1), 16) for i in range(5)]
+    futures = []
+
+    for s in shapes:
+      x = torch.randn(*s, device=self.device)
+      y = torch.randn(*s, device=self.device)
+      fut = trace_compiler.trace_and_compile(
+          _simple_add,
+          (x, y),
+          module_name=f'simple_add_{s[0]}',
+      )
+      futures.append((fut, x, y, s))
+
+    for fut, x, y, expected_shape in futures:
+      compiled = fut.result()
+      res = compiled(x, y)
+      self.assertEqual(res.shape, expected_shape)
+      utils.assert_close(res.cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_concurrent_eager_execution(self):
+    """Ensures eager execution on the main thread is unaffected while async compilation runs."""
+    worker_started = threading.Event()
+    allow_finish = threading.Event()
+
+    orig_async_traverse = tpu_torch_compile.async_traverse_and_compile
+
+    def delayed_async_traverse(*args, **kwargs):
+      worker_started.set()
+      allow_finish.wait(timeout=10.0)
+      return orig_async_traverse(*args, **kwargs)
+
+    x = torch.randn(8, 8, device=self.device)
+    y = torch.randn(8, 8, device=self.device)
+
+    with mock.patch.object(
+        tpu_torch_compile,
+        'async_traverse_and_compile',
+        side_effect=delayed_async_traverse,
+    ):
+      fut = trace_compiler.trace_and_compile(_simple_add, (x, y))
+
+      # Wait for background compilation to start
+      self.assertTrue(worker_started.wait(timeout=5.0))
+
+      # Perform eager computation on main thread concurrently
+      eager_a = torch.ones(16, 16, device=self.device)
+      eager_b = torch.ones(16, 16, device=self.device) * 3.0
+      eager_res = eager_a + eager_b
+      utils.assert_close(eager_res.cpu(), torch.ones(16, 16) * 4.0)
+
+      # Unblock background compilation
+      allow_finish.set()
+
+      compiled = fut.result()
+      res = compiled(x, y)
+      utils.assert_close(res.cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_compilation_cache_hit(self):
+    """Verifies that subsequent compilations hit CompilationCache and return immediately."""
+    x = torch.randn(8, 8, device=self.device)
+    y = torch.randn(8, 8, device=self.device)
+
+    # First compilation: cold start
+    fut1 = trace_compiler.trace_and_compile(_simple_add, (x, y))
+    compiled1 = fut1.result()
+    utils.assert_close(compiled1(x, y).cpu(), (x + y).cpu())
+
+    # Second compilation with same shape: instant cache hit
+    fut2 = trace_compiler.trace_and_compile(_simple_add, (x, y))
+    # On cache hit, the future is resolved immediately upon return
+    self.assertTrue(fut2.done())
+    compiled2 = fut2.result()
+    utils.assert_close(compiled2(x, y).cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_multithreaded_tracing(self):
+    """Verifies that multiple threads tracing concurrently do not race on the eager op queue."""
+
+    def fn_a(a, b):
+      return torch.matmul(a, b) * 2.0
+
+    def fn_b(a, b):
+      return torch.sin(a) + torch.cos(b)
+
+    def thread_worker(fn, shape, results, idx):
+      a = torch.randn(*shape, device=self.device)
+      b = torch.randn(*shape, device=self.device)
+      fut = trace_compiler.trace_and_compile(fn, (a, b))
+      compiled = fut.result()
+      out = compiled(a, b)
+      expected = fn(a, b)
+      utils.assert_close(out.cpu(), expected.cpu())
+      results[idx] = True
+
+    threads = []
+    results = [False] * 4
+    shapes = [(8, 8), (16, 16), (4, 4), (12, 12)]
+    fns = [fn_a, fn_b, fn_a, fn_b]
+
+    for i in range(4):
+      t = threading.Thread(
+          target=thread_worker, args=(fns[i], shapes[i], results, i)
+      )
+      threads.append(t)
+      t.start()
+
+    for t in threads:
+      t.join(timeout=30.0)
+
+    self.assertTrue(all(results))
+
+  def test_trace_and_compile_non_tensor_passthrough_and_complex_pytree(self):
+    x = torch.ones(2, 4, device=self.device) * 5.0
+    y = torch.ones(2, 4, device=self.device) * 2.0
+
+    fut = trace_compiler.trace_and_compile(
+        _multi_output_pytree_fn,
+        (x, y),
+        {'label': 'test_tag'},
+    )
+    compiled = fut.result()
+
+    sum_out, dict_out, label_out = compiled(x, y, label='test_tag')
+
+    utils.assert_close(sum_out.cpu(), torch.ones(2, 4) * 7.0)
+    utils.assert_close(dict_out['diff'].cpu(), torch.ones(2, 4) * 3.0)
+    utils.assert_close(dict_out['prod'].cpu(), torch.ones(2, 4) * 10.0)
+    self.assertEqual(label_out, 'test_tag')
+
+  def test_trace_and_compile_rng_generator_state(self):
+    x = torch.ones(4, 16, device=self.device)
+    fut = trace_compiler.trace_and_compile(_stochastic_fn, (x,))
+    compiled = fut.result()
+
+    torch.manual_seed(42)
+    res1 = compiled(x)
+
+    torch.manual_seed(42)
+    res2 = compiled(x)
+
+    utils.assert_close(res1.cpu(), res2.cpu())
+
+  def test_trace_and_compile_concurrent_eager_rng_mutation(self):
+    """Ensures RNG state mutation happening concurrently in eager mode while compiling stochastic fn is correct."""
+    compilation_started = threading.Event()
+    allow_compilation_to_finish = threading.Event()
+
+    orig_async_traverse = tpu_torch_compile.async_traverse_and_compile
+
+    def delayed_async_traverse(*args, **kwargs):
+      compilation_started.set()
+      allow_compilation_to_finish.wait(timeout=10.0)
+      return orig_async_traverse(*args, **kwargs)
+
+    torch.manual_seed(100)
+    x = torch.ones(8, 8, device=self.device)
+
+    # Step 1: Baseline sequential execution with seed 100
+    eager_val_seq_1 = torch.randn(8, 8, device=self.device)
+    compiled_baseline = trace_compiler.trace_and_compile(
+        _stochastic_fn, (x,)
+    ).result()
+    stochastic_val_seq = compiled_baseline(x)
+    eager_val_seq_2 = torch.randn(8, 8, device=self.device)
+    self.assertFalse(
+        torch.equal(stochastic_val_seq.cpu(), eager_val_seq_2.cpu())
+    )
+
+    # Step 2: Now run with concurrent eager RNG generation while compilation is in-flight
+    torch.manual_seed(100)
+
+    with mock.patch.object(
+        tpu_torch_compile,
+        'async_traverse_and_compile',
+        side_effect=delayed_async_traverse,
+    ):
+      # Eager op 1 before compile
+      eager_val_conc_1 = torch.randn(8, 8, device=self.device)
+      utils.assert_close(eager_val_conc_1.cpu(), eager_val_seq_1.cpu())
+
+      # Launch asynchronous compilation of _stochastic_fn
+      fut = trace_compiler.trace_and_compile(_stochastic_fn, (x,))
+
+      # Wait for compilation to start and pause
+      self.assertTrue(compilation_started.wait(timeout=5.0))
+
+      # Concurrently generate random numbers in eager mode while compilation is active
+      eager_val_during_compile = torch.randn(8, 8, device=self.device)
+
+      # Unblock compilation
+      allow_compilation_to_finish.set()
+
+      compiled_fn = fut.result()
+
+      # Execute compiled stochastic function
+      stochastic_val_conc = compiled_fn(x)
+
+      # Eager op after compiled call
+      eager_val_after_compile = torch.randn(8, 8, device=self.device)
+
+      # Verify all generated tensors are distinct and valid (RNG state advanced at every step)
+      self.assertFalse(
+          torch.equal(eager_val_conc_1.cpu(), eager_val_during_compile.cpu())
+      )
+      self.assertFalse(
+          torch.equal(eager_val_during_compile.cpu(), stochastic_val_conc.cpu())
+      )
+      self.assertFalse(
+          torch.equal(stochastic_val_conc.cpu(), eager_val_after_compile.cpu())
+      )
+
+  def test_trace_and_compile_error_propagation(self):
+    mock_async_result = mock.MagicMock()
+    mock_async_result.is_ready.return_value = False
+    mock_async_result.module = None
+    mock_async_result.get.side_effect = RuntimeError(
+        'Simulated PJRT compiler failure'
+    )
+
+    x = torch.ones(2, 2, device=self.device)
+    with mock.patch.object(
+        tpu_torch_compile,
+        'async_traverse_and_compile',
+        return_value=mock_async_result,
+    ):
+      fut = trace_compiler.trace_and_compile(_simple_add, (x, x))
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing Python Future exception propagation from mocked C++ compile handle
+          RuntimeError, 'Simulated PJRT compiler failure'
+      ):
+        fut.result()
+
+  def test_trace_and_compile_noop_graph(self):
+    def noop_fn(x: torch.Tensor) -> tuple[()]:
+      return ()
+
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(noop_fn, (x,))
+    compiled = fut.result()
+
+    out = compiled(x)
+    self.assertEqual(out, ())
+
+  def test_trace_and_compile_module_name_and_layouts(self):
+    x = torch.randn(2, 3, device=self.device)
+    y = torch.randn(2, 3, device=self.device)
+
+    fut = trace_compiler.trace_and_compile(
+        _simple_add,
+        (x, y),
+        argument_layouts=[[1, 0], [1, 0]],
+        module_name='custom_add_module',
+    )
+    compiled = fut.result()
+    res = compiled(x, y)
+    utils.assert_close(res.cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_debug_boolean(self):
+    x = torch.randn(4, 4, device=self.device)
+    y = torch.randn(4, 4, device=self.device)
+
+    fut = trace_compiler.trace_and_compile(_simple_add, (x, y), debug=True)
+    compiled = fut.result()
+
+    self.assertIsNotNone(compiled.debug)
+    self.assertIsInstance(compiled.debug, TpuCompileDebug)
+    self.assertLen(compiled.debug.stablehlo_forward_text, 1)
+    self.assertIn('stablehlo.add', compiled.debug.stablehlo_forward_text[0])
+    self.assertLen(compiled.debug.compiled_executables, 1)
+    self.assertIs(
+        compiled.debug.compiled_executables[0], compiled.underlying_executable
+    )
+
+    res = compiled(x, y)
+    utils.assert_close(res.cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_debug_disabled_by_default(self):
+    x = torch.randn(4, 4, device=self.device)
+    y = torch.randn(4, 4, device=self.device)
+
+    fut = trace_compiler.trace_and_compile(_simple_add, (x, y))
+    compiled = fut.result()
+
+    self.assertIsNone(compiled.debug)
+
+  def test_trace_and_compile_debug_cache_hit(self):
+    x = torch.randn(6, 6, device=self.device)
+    y = torch.randn(6, 6, device=self.device)
+
+    # Cold start compilation with debug=True
+    fut1 = trace_compiler.trace_and_compile(_simple_add, (x, y), debug=True)
+    compiled1 = fut1.result()
+    self.assertIsNotNone(compiled1.debug)
+    self.assertLen(compiled1.debug.stablehlo_forward_text, 1)
+
+    # Warm cache hit compilation with debug=True
+    fut2 = trace_compiler.trace_and_compile(_simple_add, (x, y), debug=True)
+    self.assertTrue(fut2.done())
+    compiled2 = fut2.result()
+    self.assertIsNotNone(compiled2.debug)
+    self.assertLen(compiled2.debug.stablehlo_forward_text, 1)
+    self.assertIn('stablehlo.add', compiled2.debug.stablehlo_forward_text[0])
+    self.assertLen(compiled2.debug.compiled_executables, 1)
+    utils.assert_close(compiled2(x, y).cpu(), (x + y).cpu())
+
+  def test_trace_and_compile_is_compiling_flag(self):
+    observed_is_compiling = []
+
+    def fn(x: torch.Tensor) -> torch.Tensor:
+      observed_is_compiling.append(torch.compiler.is_compiling())
+      return x + 1.0
+
+    self.assertFalse(torch.compiler.is_compiling())
+    x = torch.randn(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (x,))
+    compiled = fut.result()
+    self.assertFalse(torch.compiler.is_compiling())
+    self.assertEqual(observed_is_compiling, [True])
+
+    out = compiled(x)
+    self.assertFalse(torch.compiler.is_compiling())
+    utils.assert_close(out.cpu(), (x + 1.0).cpu())
+
+  def test_trace_and_compile_non_parameter_non_buffer_tensor_attributes(self):
+    class ModuleWithExtraTensor(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 4, device=device)
+        self.extra_scale = torch.tensor(2.0, device=device)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x) * self.extra_scale
+
+    mod = ModuleWithExtraTensor(device=self.device)
+    x = torch.randn(2, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(mod, (x,))
+    compiled = fut.result()
+    out = compiled(x)
+    expected = mod(x)
+    utils.assert_close(out.cpu(), expected.cpu())
+
+  def test_trace_and_compile_mutable_state_inplace_cache_mutation(self):
+    def mutate_fn(cache: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+      cache.add_(x)
+      return cache
+
+    cache = torch.zeros(4, 4, device=self.device)
+    x = torch.ones(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(mutate_fn, (cache, x))
+    compiled = fut.result()
+
+    out = compiled(cache, x)
+    utils.assert_close(out.cpu(), torch.ones(4, 4))
+    utils.assert_close(cache.cpu(), torch.ones(4, 4))
+
+  def test_trace_and_compile_mutable_state_inplace_cache_mutation_no_return(
+      self,
+  ):
+    def mutate_no_return(cache: torch.Tensor, x: torch.Tensor) -> None:
+      cache.add_(x)
+
+    cache = torch.zeros(4, 4, device=self.device)
+    x = torch.ones(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(mutate_no_return, (cache, x))
+    compiled = fut.result()
+
+    out = compiled(cache, x)
+    self.assertIsNone(out)
+    utils.assert_close(cache.cpu(), torch.ones(4, 4))
+
+  def test_trace_and_compile_runtime_input_shape_guard(self):
+    x = torch.randn(4, 4, device=self.device)
+    y = torch.randn(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(_simple_add, (x, y))
+    compiled = fut.result()
+
+    smaller_shape_x = torch.randn(2, 2, device=self.device)
+    smaller_shape_y = torch.randn(2, 2, device=self.device)
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=shape mismatch
+      compiled(smaller_shape_x, smaller_shape_y)
+
+  def test_trace_and_compile_runtime_input_type_guard(self):
+    x = torch.randn(4, 4, device=self.device)
+    y = torch.randn(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(_simple_add, (x, y))
+    compiled = fut.result()
+
+    # Mismatched device at runtime
+    cpu_x = torch.randn(4, 4, device='cpu')
+    cpu_y = torch.randn(4, 4, device='cpu')
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=device guard
+      compiled(cpu_x, cpu_y)
+
+    # Mismatched dtype at runtime
+    int_x = torch.ones(4, 4, dtype=torch.int32, device=self.device)
+    int_y = torch.ones(4, 4, dtype=torch.int32, device=self.device)
+    with self.assertRaises(TypeError):  # ASSERT_RAISES_OK=dtype guard
+      compiled(int_x, int_y)
+
+    # Non-tensor argument at runtime
+    with self.assertRaises(TypeError):  # ASSERT_RAISES_OK=non-tensor guard
+      compiled(1.0, 2.0)
+
+  def test_trace_and_compile_donated_mutated_input_conflict(self):
+    def mutate_fn(cache: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+      cache.add_(x)
+      return cache
+
+    cache = torch.zeros(4, 4, device=self.device)
+    x = torch.ones(4, 4, device=self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing donation conflict guard
+        ValueError, 'Cannot donate inputs .* that are mutated in-place'
+    ):
+      trace_compiler.trace_and_compile(
+          mutate_fn, (cache, x), donated_inputs=[0]
+      )
+
+  def test_trace_and_compile_aliased_mutated_inputs_error(self):
+    def mutate_aliased(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+      a.add_(1.0)
+      return b
+
+    x = torch.zeros(4, 4, device=self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing aliased mutation guard
+        NotImplementedError, 'aliased input tensors'
+    ):
+      trace_compiler.trace_and_compile(mutate_aliased, (x, x))
+
+  def test_trace_and_compile_exception_safety_cleanup(self):
+    class FailingModule(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.extra_scale = torch.tensor(3.0, device=device)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError('Simulated forward failure')
+
+    mod = FailingModule(device=self.device)
+    orig_tensor = mod.extra_scale
+    x = torch.randn(2, 2, device=self.device)
+
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing exception cleanup
+        RuntimeError, 'Simulated forward failure'
+    ):
+      trace_compiler.trace_and_compile(mod, (x,))
+
+    # Verify mod attributes were restored and not left as placeholders
+    self.assertIs(mod.extra_scale, orig_tensor)
+    self.assertFalse(torch.compiler.is_compiling())
+
+  def test_trace_and_compile_multi_step_mutation_accumulation(self):
+    def mutate_fn(cache: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+      cache.add_(x)
+      return cache
+
+    cache = torch.zeros(4, 4, device=self.device)
+    x = torch.ones(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(mutate_fn, (cache, x))
+    compiled = fut.result()
+
+    # Step 1: 0 + 1 = 1
+    compiled(cache, x)
+    utils.assert_close(cache.cpu(), torch.ones(4, 4))
+
+    # Step 2: 1 + 1 = 2
+    compiled(cache, x)
+    utils.assert_close(cache.cpu(), torch.full((4, 4), 2.0))
+
+    # Step 3: 2 + 1 = 3
+    compiled(cache, x)
+    utils.assert_close(cache.cpu(), torch.full((4, 4), 3.0))
+
+  def test_repro_critical_1_spec_indexing_with_non_tensor_first(self):
+    def fn(label: str, x: torch.Tensor) -> torch.Tensor:
+      if label == 'add':
+        return x + 1.0
+      return x - 1.0
+
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, ('add', x))
+    compiled = fut.result()
+    out = compiled('add', x)
+    utils.assert_close(out.cpu(), torch.full((2, 2), 2.0))
+
+  def test_repro_critical_2_inplace_mutation_returning_slice(self):
+    def fn(cache: torch.Tensor) -> torch.Tensor:
+      cache.add_(1.0)
+      return cache[0]
+
+    cache = torch.zeros(4, 4, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (cache,))
+    compiled = fut.result()
+    out = compiled(cache)
+    utils.assert_close(out.cpu(), torch.ones(4))
+    utils.assert_close(cache.cpu(), torch.ones(4, 4))
+
+  def test_repro_critical_3_computed_non_tensor_return(self):
+    def fn(x: torch.Tensor) -> tuple[torch.Tensor, bool, str]:
+      return x + 1.0, True, 'success'
+
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (x,))
+    compiled = fut.result()
+    out_tensor, out_bool, out_str = compiled(x)
+    utils.assert_close(out_tensor.cpu(), torch.full((2, 2), 2.0))
+    self.assertIs(out_bool, True)
+    self.assertEqual(out_str, 'success')
+
+  def test_repro_critical_4_cleanup_on_setup_exception(self):
+    class ModWithAttr(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.extra = torch.tensor(1.0, device=device)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.extra
+
+    mod = ModWithAttr(device=self.device)
+    orig_tensor = mod.extra
+    x = torch.ones(2, 2, device=self.device)
+
+    # Pass an invalid argument_layout that fails during _build_tracing_placeholders
+    # where all_layouts doesn't match expected dimensions, or simulate failure.
+    # In _build_tracing_placeholders, extra_tensors are set to placeholders on mod.
+    # If an exception is raised before _execute_trace, mod.extra should still be restored.
+    with mock.patch.object(
+        trace_compiler,
+        '_execute_trace',
+        side_effect=RuntimeError('Simulated early failure'),
+    ):
+      with self.assertRaises(RuntimeError):  # ASSERT_RAISES_OK=cleanup test
+        trace_compiler.trace_and_compile(mod, (x,))
+
+    self.assertIs(mod.extra, orig_tensor)
+
+  def test_repro_critical_5_storage_aliasing_subviews(self):
+    def mutate_aliased(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+      a.add_(1.0)
+      return b
+
+    base = torch.zeros(8, device=self.device)
+    a = base[:4]
+    b = base[2:6]  # Overlapping sub-view: shares storage and overlaps!
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=aliased mutation guard
+        NotImplementedError, 'aliased input tensors'
+    ):
+      trace_compiler.trace_and_compile(mutate_aliased, (a, b))
+
+  def test_repro_medium_6_donated_inputs_index_desync(self):
+    def fn(label: str, x: torch.Tensor) -> torch.Tensor:
+      x.add_(1.0)
+      return x
+
+    x = torch.zeros(2, 2, device=self.device)
+    # x is index 1 in flat_inputs ("label", x), but index 0 in argument_tensors [x].
+    # Donating index 0 should be caught as donating a mutated input!
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=donation conflict guard
+        ValueError, 'Cannot donate inputs .* that are mutated in-place'
+    ):
+      trace_compiler.trace_and_compile(fn, ('foo', x), donated_inputs=[0])
+
+  def test_repro_medium_7_shared_extra_tensor_attr(self):
+    class SubMod(torch.nn.Module):
+
+      def __init__(self, tensor):
+        super().__init__()
+        self.scale = tensor
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale
+
+    shared_t = torch.tensor(2.0, device=self.device)
+
+    class ParentMod(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.sub1 = SubMod(shared_t)
+        self.sub2 = SubMod(shared_t)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.sub1(x) + self.sub2(x)
+
+    mod = ParentMod()
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(mod, (x,))
+    compiled = fut.result()
+    out = compiled(x)
+    utils.assert_close(out.cpu(), torch.full((2, 2), 4.0))
+
+  def test_repro_medium_8_mutation_of_extra_tensor_attr(self):
+    class ModWithAttr(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.extra = torch.zeros(2, 2, device=device)
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.extra.add_(1.0)
+        return x + self.extra
+
+    mod = ModWithAttr(device=self.device)
+    x = torch.ones(2, 2, device=self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing extra attr mutation
+        NotImplementedError, 'In-place mutation of .* is not supported'
+    ):
+      trace_compiler.trace_and_compile(mod, (x,))
+
+  def test_repro_medium_10_non_tensor_arg_specialization_guard(self):
+    def fn(x: torch.Tensor, scale: int = 2) -> torch.Tensor:
+      return x * scale
+
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (x, 2))
+    compiled = fut.result()
+    # Calling with scale=5 when compiled with scale=2 should either raise ValueError
+    # on value mismatch or adapt, but must NOT silently return x * 2.
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=testing value guard
+        ValueError, 'Argument value mismatch'
+    ):
+      compiled(x, 5)
+
+  def test_repro_medium_11_mutated_return_object_identity(self):
+    def fn(cache: torch.Tensor) -> torch.Tensor:
+      cache.add_(1.0)
+      return cache
+
+    cache = torch.zeros(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (cache,))
+    compiled = fut.result()
+    out = compiled(cache)
+    self.assertIs(out, cache)
+
+  def test_repro_h1_cleanup_inside_lock(self):
+    cleanup_was_locked = None
+    orig_cleanup = trace_compiler._cleanup_tracing
+
+    def tracking_cleanup(saved):
+      nonlocal cleanup_was_locked
+      cleanup_was_locked = trace_compiler._TRACE_LOCK.locked()
+      orig_cleanup(saved)
+
+    with mock.patch.object(
+        trace_compiler, '_cleanup_tracing', side_effect=tracking_cleanup
+    ):
+      x = torch.ones(2, 2, device=self.device)
+      fut = trace_compiler.trace_and_compile(lambda a: a + 1.0, (x,))
+      fut.result()
+
+    self.assertTrue(
+        cleanup_was_locked,
+        '_cleanup_tracing must be executed while holding _TRACE_LOCK to prevent'
+        ' clearing active generators of other threads.',
+    )
+
+  def test_repro_h2_descriptor_shadowing_mlir_text(self):
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(lambda a: a + 1.0, (x,), debug=True)
+    compiled = fut.result()
+    self.assertIsNotNone(
+        compiled.mlir_text,
+        'compiled.mlir_text must not be None when debug=True is set.',
+    )
+    self.assertIn('stablehlo', compiled.mlir_text)
+
+  def test_repro_m1_runtime_aliased_mutated_inputs(self):
+    def mutate_first(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+      a.add_(1.0)
+      return a
+
+    x = torch.zeros(4, device=self.device)
+    fut = trace_compiler.trace_and_compile(
+        mutate_first,
+        (
+            torch.zeros(4, device=self.device),
+            torch.zeros(4, device=self.device),
+        ),
+    )
+    compiled = fut.result()
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=runtime aliasing check
+        NotImplementedError, 'aliased input tensors'
+    ):
+      compiled(x, x)
+
+  def test_repro_m2_donated_inputs_out_of_bounds(self):
+    x = torch.ones(2, 2, device=self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=donated input bounds check
+        ValueError, 'out of bounds'
+    ):
+      trace_compiler.trace_and_compile(
+          lambda a: a + 1.0, (x,), donated_inputs=[5]
+      )
+
+  def test_repro_m4_bound_method_tracing(self):
+    class LinearMod(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(2, 2, device=device))
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(x, self.weight)
+
+    mod = LinearMod(self.device)
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(mod.forward, (x,))
+    compiled = fut.result()
+    out = compiled(x)
+    utils.assert_close(out.cpu(), torch.full((2, 2), 2.0))
+    # Mod parameters must be tracked dynamically so updating mod.weight affects execution
+    mod.weight.data.fill_(3.0)
+    out2 = compiled(x)
+    utils.assert_close(out2.cpu(), torch.full((2, 2), 6.0))
+
+  def test_repro_m5_multiple_returned_mutated_aliases(self):
+    def fn(cache: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+      cache.add_(1.0)
+      return cache, cache
+
+    cache = torch.zeros(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(fn, (cache,))
+    compiled = fut.result()
+    out1, out2 = compiled(cache)
+    self.assertIs(out1, cache)
+    self.assertIs(out2, cache)
+
+  def test_repro_tied_weights_reparametrization(self):
+    class TiedWeightMod(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.fc1 = torch.nn.Linear(2, 2, bias=False, device=device)
+        self.fc2 = torch.nn.Linear(2, 2, bias=False, device=device)
+        self.fc2.weight = self.fc1.weight
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.fc1(x))
+
+    mod = TiedWeightMod(self.device)
+    mod.fc1.weight.data.fill_(1.0)
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(mod, (x,))
+    compiled = fut.result()
+    out = compiled(x)
+    eager_out = mod(x)
+    utils.assert_close(out.cpu(), eager_out.cpu())
+    mod.fc1.weight.data.fill_(2.0)
+    out2 = compiled(x)
+    eager_out2 = mod(x)
+    utils.assert_close(out2.cpu(), eager_out2.cpu())
+
+  def test_repro_kwarg_reordering(self):
+    def fn(x: torch.Tensor, *, alpha: int = 1, beta: int = 2) -> torch.Tensor:
+      return x * alpha + beta
+
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(
+        fn, (x,), example_kwargs={'alpha': 1, 'beta': 2}
+    )
+    compiled = fut.result()
+    out = compiled(x, beta=2, alpha=1)
+    utils.assert_close(out.cpu(), torch.full((2, 2), 3.0))
+
+  def test_repro_runtime_mutation_aliasing_module_param(self):
+    class Mod(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.ones(2, 2, device=device), requires_grad=False
+        )
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x.add_(1.0)
+        return x + self.weight
+
+    mod = Mod(self.device)
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(mod, (x,))
+    compiled = fut.result()
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=param aliasing guard
+        NotImplementedError, 'aliased input tensors'
+    ):
+      compiled(mod.weight)
+
+  def test_repro_unregistered_dataclass_with_tensors(self):
+    @dataclasses.dataclass
+    class UnregisteredContainer:
+      val: torch.Tensor
+
+    container = UnregisteredContainer(val=torch.ones(2, 2, device=self.device))
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=dataclass registration error
+        TypeError, 'contains tensors but is not registered with PyTree'
+    ):
+      trace_compiler.trace_and_compile(lambda c: c.val + 1.0, (container,))
+
+  def test_repro_graph_module_debug_strs_descriptor(self):
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(lambda a: a + 1.0, (x,))
+    compiled = fut.result()
+    self.assertIsInstance(compiled.graph_module_debug_strs, (list, tuple))
+
+  def test_repro_unregistered_nested_dataclass_with_tensors(self):
+    @dataclasses.dataclass
+    class Inner:
+      val: torch.Tensor
+
+    @dataclasses.dataclass
+    class Outer:
+      inner: Inner
+
+    outer = Outer(inner=Inner(val=torch.ones(2, 2, device=self.device)))
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=dataclass registration error
+        TypeError, 'contains tensors but is not registered with PyTree'
+    ):
+      trace_compiler.trace_and_compile(lambda o: o.inner.val + 1.0, (outer,))
+
+    @dataclasses.dataclass
+    class ContainerWithList:
+      items: list[torch.Tensor]
+
+    container = ContainerWithList(items=[torch.ones(2, 2, device=self.device)])
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=dataclass registration error
+        TypeError, 'contains tensors but is not registered with PyTree'
+    ):
+      trace_compiler.trace_and_compile(lambda c: c.items[0] + 1.0, (container,))
+
+  def test_repro_trace_time_mutation_aliasing_module_param(self):
+    class MutatingMod(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.ones(2, 2, device=device), requires_grad=False
+        )
+
+      def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x.add_(1.0)
+        return x + self.weight
+
+    mod = MutatingMod(self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=trace-time param aliasing guard
+        NotImplementedError, 'aliased input tensors'
+    ):
+      trace_compiler.trace_and_compile(mod, (mod.weight,))
+
+  def test_repro_duplicate_donated_inputs(self):
+    x = torch.ones(2, 2, device=self.device)
+    y = torch.ones(2, 2, device=self.device)
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=duplicate donation guard
+        ValueError, 'Duplicate indices in donated_inputs'
+    ):
+      trace_compiler.trace_and_compile(
+          lambda a, b: a + b, (x, y), donated_inputs=[0, 0]
+      )
+
+  def test_repro_functools_partial_module_extraction(self):
+    class ScaleMod(torch.nn.Module):
+
+      def __init__(self, device):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.ones(2, 2, device=device), requires_grad=False
+        )
+
+      def forward(self, x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        return x * self.weight * scale
+
+    mod = ScaleMod(self.device)
+    partial_fn = functools.partial(mod, scale=3.0)
+    x = torch.ones(2, 2, device=self.device)
+    fut = trace_compiler.trace_and_compile(partial_fn, (x,))
+    compiled = fut.result()
+    out = compiled(x)
+    utils.assert_close(out.cpu(), torch.full((2, 2), 3.0))
+
+    mod.weight.data.fill_(2.0)
+    out2 = compiled(x)
+    utils.assert_close(out2.cpu(), torch.full((2, 2), 6.0))
 
 
 if __name__ == '__main__':

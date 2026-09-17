@@ -23,6 +23,8 @@ from torch_tpu._internal.compile._backend import clear_cache
 from torch_tpu._internal.compile._backend import resolve_compilations
 from torch_tpu._internal.compile._backend import TpuBackend
 from torch_tpu._internal.compile.debug import TpuCompileDebug
+from torch_tpu._internal.compile.trace_compiler import CompiledCallable
+from torch_tpu._internal.compile.trace_compiler import trace_and_compile
 
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")  # pyrefly: ignore[bad-argument-type]
@@ -105,10 +107,12 @@ _patch_flex_attention()
 __all__ = [
     # go/keep-sorted start
     "AsyncCompilationSubmitted",
+    "CompiledCallable",
     "TpuBackend",
     "TpuCompileDebug",
     "async_compile",
     "clear_cache",
     "resolve_compilations",
+    "trace_and_compile",
     # go/keep-sorted end
 ]

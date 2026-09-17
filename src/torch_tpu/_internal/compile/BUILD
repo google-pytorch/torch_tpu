@@ -78,6 +78,19 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "trace_compiler",
+    srcs = ["trace_compiler.py"],
+    deps = [
+        ":debug",
+        ":torch_tpu_compiled_executable",
+        ":tpu_torch_compile",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
+        "//src/torch_tpu/_internal/execution_mode",
+    ],
+)
+
+torch_tpu_py_library(
     name = "compile",
     srcs = [
         "__init__.py",
@@ -90,6 +103,7 @@ torch_tpu_py_library(
         ":debug",
         ":scan",
         ":tpu_backend",
+        ":trace_compiler",
         "//shims/torch:pytorch",
     ],
 )

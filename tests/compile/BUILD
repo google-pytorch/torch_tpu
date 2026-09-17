@@ -131,6 +131,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:compiler",
         "//src/torch_tpu/_internal/compile:torch_tpu_compiled_executable",
         "//src/torch_tpu/_internal/compile:tpu_backend",
+        "//src/torch_tpu/_internal/compile:trace_compiler",
         "//src/torch_tpu/_internal/utils:test_utils",
         "//tests:seed_test_utils",
     ],
@@ -329,6 +330,7 @@ torch_tpu_py_test(
         "//src/torch_tpu/_internal/compile:debug",
         "//src/torch_tpu/_internal/compile:tpu_backend",
         "//src/torch_tpu/_internal/compile:tpu_torch_compile",
+        "//src/torch_tpu/_internal/compile:trace_compiler",
         "//src/torch_tpu/_internal/device_utils:annotations",
         "//src/torch_tpu/_internal/execution_mode",
         "//src/torch_tpu/_internal/utils:test_utils",
@@ -657,6 +659,28 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "trace_compile_benchmark_test",
+    timeout = "eternal",
+    srcs = ["trace_compile_benchmark_test.py"],
+    notap = "Slow benchmark test.",
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal:testing",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
+        "//src/torch_tpu/_internal/compile",
+        "//src/torch_tpu/_internal/compile:trace_compiler",
         "//tests:seed_test_utils",
     ],
 )

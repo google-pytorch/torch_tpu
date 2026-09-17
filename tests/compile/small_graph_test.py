@@ -18,7 +18,7 @@ import dataclasses
 import os
 import pickle
 import re
-from typing import List
+from typing import Any, List, Sequence
 from unittest import mock
 
 from absl.testing import absltest
@@ -27,6 +27,7 @@ from torch_tpu._internal import compile as compile_lib
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import _backend
 from torch_tpu._internal.compile import compiler
+from torch_tpu._internal.compile import trace_compiler
 from torch_tpu._internal.compile.torch_tpu_compiled_executable import NoOpCompiledArtifact
 from torch_tpu._internal.utils import test_utils as utils
 from tests import seed_test_utils
@@ -70,13 +71,47 @@ def _generate_ctc_loss_inputs(*, requires_grad: bool = False) -> CtcLossInputs:
   return CtcLossInputs(log_probs, targets, input_lengths, target_lengths)
 
 
-class FunctionTest(seed_test_utils.RepeatableTest):
+class _FunctionTestBase(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
+    torch._dynamo.reset()
     tt_testing.reset_eager_state()
     os.environ["TORCHDYNAMO_VERBOSE"] = "1"
     os.environ["TORCH_LOGS"] = "+dynamo"
+
+  def tearDown(self):
+    torch._dynamo.reset()
+    super().tearDown()
+
+  def _compile(
+      self,
+      func,
+      inputs_tpu: List[torch.Tensor],
+      serializable: bool = False,
+  ) -> tuple[Any, List[compile_lib.TpuCompileDebug]]:
+    debugs: list[compile_lib.TpuCompileDebug] = []
+    compiled = torch.compile(
+        func,
+        backend="tpu",
+        options={
+            "serializable": serializable,
+            "debug_callback": debugs.append,
+        },
+    )
+    return compiled, debugs
+
+  def _compile_fn(
+      self,
+      func,
+      example_args: Sequence[Any],
+      serializable: bool = False,
+  ) -> Any:
+    return torch.compile(
+        func,
+        backend="tpu",
+        options={"serializable": serializable},
+    )
 
   def _run_and_compare(
       self,
@@ -116,14 +151,8 @@ class FunctionTest(seed_test_utils.RepeatableTest):
       raise ValueError(f"Unsupported result type: {type(result_cpu)}")
 
     # TPU compiled
-    debugs: list[compile_lib.TpuCompileDebug] = []
-    compiled = torch.compile(
-        func,
-        backend="tpu",
-        options={
-            "serializable": serializable,
-            "debug_callback": debugs.append,
-        },
+    compiled, debugs = self._compile(
+        func, inputs_tpu, serializable=serializable
     )
     tpu_compiled_result = _backend.to_device(compiled(*inputs_tpu), "cpu")
     if isinstance(result_cpu, torch.Tensor):
@@ -142,44 +171,8 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     return debugs
 
-  @mock.patch.object(compiler, "trace_structured", autospec=True)
-  def test_trace_structured_called(self, mock_trace_structured):
-    def simple(x, y):
-      return x + y
 
-    inputs = [
-        torch.tensor([0.1, 0.2]),
-        torch.tensor([0.4, 0.5]),
-    ]
-    with mock.patch(
-        "torch._logging._internal.trace_log.handlers", [mock.Mock(level=0)]
-    ):
-      self._run_and_compare(simple, inputs)
-
-    names = [call.args[0] for call in mock_trace_structured.call_args_list]
-    self.assertTrue(all(name == "artifact" for name in names))
-
-    # Extract metadata and evaluate payloads to verify artifacts are actually
-    # created
-    payloads = {
-        call.kwargs["metadata_fn"]()["name"]: call.kwargs["payload_fn"]()
-        for call in mock_trace_structured.call_args_list
-    }
-
-    self.assertIn("torchtpu_fx_graph", payloads)
-    self.assertIn("torchtpu_stablehlo_graph", payloads)
-
-    # Verify the FX graph artifact
-    fx_payload = payloads["torchtpu_fx_graph"]
-    self.assertIsInstance(fx_payload, str)
-    self.assertNotEmpty(fx_payload)
-    self.assertIn("add", fx_payload)  # simple() does x + y
-
-    # Verify the StableHLO artifact
-    mlir_payload = payloads["torchtpu_stablehlo_graph"]
-    self.assertIsInstance(mlir_payload, str)
-    self.assertNotEmpty(mlir_payload)
-    self.assertIn("module", mlir_payload)
+class FunctionTest(_FunctionTestBase):
 
   def test_super_simple(self):
     def simple(x, y):
@@ -231,26 +224,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     x = torch.randn(1, 16, 16, dtype=torch.float32)
     self._run_and_compare(fn, [x])
 
-  def test_to_copy(self):
-    """Test that we can handle to_copy ops in compiled mode.
-
-    Unclear why this is inserting a new op in the deferred graph, but
-    generally ops that take in explicit devices have caused problems in
-    compile. _to_copy should be a no-op in this case is both args are on
-    the same device.
-
-    Note: The test requires both (1) embedded constant and (2) to_copy op to
-    exercise the issue.
-    """
-
-    def simple(x):
-      c = torch.tensor([1, 2, 3, 4, 5], device=x.device)
-      c_copy = torch.ops.aten._to_copy.default(c, device=x.device)
-      return c_copy + x
-
-    x = torch.tensor([1, 2, 3, 4, 5], device=torch.device("tpu"))
-    self._run_and_compare(simple, [x], serializable=False)
-
   def test_simple_handle_input_flip(self):
     # Without CL/794139909, the eager model will follow the invoke order
     # and flip the input from x, y to y, x. See this doc for more details:
@@ -291,14 +264,371 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     # gets in the way.
     input_a = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5]).to(torch.device("tpu"))
     input_b = torch.tensor([0.5, 0.4, 0.3, 0.2, 0.1]).to(torch.device("tpu"))
-    compiled = torch.compile(
+    compiled = self._compile_fn(
         func,
-        backend="tpu",
-        options={"serializable": False},
+        (input_a, input_a),
+        serializable=False,
     )
     res_a = compiled(input_a, input_a).to("cpu")
     res_ab = compiled(input_a, input_b).to("cpu")
     utils.assert_close(res_a.sum(), res_ab.sum(), rtol=1e-3, atol=1e-5)
+
+  def test_default_behavior_without_name(self):
+    def func(a, b):
+      return (a * b).sum()
+
+    inputs_val = [
+        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5], device="tpu"),
+        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6], device="tpu"),
+    ]
+    # Without name in options, standard compilation runs normally
+    v = self._run_and_compare(func, inputs_val)
+    self.assertLen(v, 1)
+
+  def test_multi_output_aten_op(self):
+    func = torch.ops.aten.native_batch_norm
+
+    x = torch.ones(5, 5, 5)
+    weight = torch.ones(5)
+    bias = torch.ones(5)
+    running_mean = torch.ones(5)
+    running_var = torch.ones(5)
+    training = True
+    momentum = 0.5
+    eps = 0.6
+    inputs_val = [
+        x,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        training,
+        momentum,
+        eps,
+    ]
+
+    self._run_and_compare(func, inputs_val)
+
+  def test_input_has_view(self):
+    """Tests that we can handle input tensors that are view ops."""
+
+    def simple(x):
+      a = 0.3 * x
+      return a
+
+    device = torch.device("tpu")
+    input_1 = torch.arange(2, device=device).view(1, 2)
+
+    compiled = self._compile_fn(
+        simple,
+        (input_1,),
+        serializable=False,
+    )
+    actual = compiled(input_1).cpu()
+    expected = torch.tensor([[0.0, 0.3]], device="cpu")
+    utils.assert_close(actual, expected)
+
+  def test_zero_sized_tensor_in_body(self):
+    def func(a):
+      zero_sized = a[..., 2:]
+      b = a + a
+      return (zero_sized, b)
+
+    inputs = [torch.ones(1, 1, 2)]
+
+    self._run_and_compare(func, inputs)
+
+  def test_zero_sized_slice_input(self):
+    def func(a, b):
+      c = b.view((2, 0))
+      d = a + a
+      return (c, d)
+
+    a = torch.ones(1, 1, 2)
+    zero_sized = a[..., 2:]
+    inputs = [a, zero_sized]
+
+    self._run_and_compare(func, inputs)
+
+  def test_zero_sized_inputs(self):
+    def func(x, y):
+      return x.mm(y)
+
+    inputs = [
+        torch.ones(5, 0),
+        torch.ones(0, 10),
+    ]
+    self._run_and_compare(func, inputs)
+
+  def test_empty_size_zero_tensor(self):
+    """Test that we can handle empty size zero tensor."""
+
+    def func(x):
+      return torch.acos(x)
+
+    inputs = [
+        torch.empty(0).reshape(0, 1, 3),
+    ]
+    self._run_and_compare(func, inputs)
+
+  @absltest.skip("Need to fix TPU pass error.")
+  def test_addcdiv_c64(self):
+    # TPU error: Unsupported CVT X64 expansion from c64[] to c128[]
+    def func(arg0_1, arg1_1, arg2_1):
+      div = torch.ops.aten.div.Tensor(arg1_1, arg2_1)
+      mul = torch.ops.aten.mul.Tensor(div, 3.14)
+      add = torch.ops.aten.add.Tensor(arg0_1, mul)
+      return (add,)
+
+    inputs = [
+        torch.tensor(
+            1.0,
+            dtype=torch.complex64,
+            device=torch.device("tpu"),
+        ),
+        torch.tensor(
+            1.0,
+            dtype=torch.complex64,
+            device=torch.device("tpu"),
+        ),
+        torch.tensor(
+            1.0,
+            dtype=torch.complex64,
+            device=torch.device("tpu"),
+        ),
+    ]
+    self._run_and_compare(func, inputs)
+
+  def test_input_is_view(self):
+    """Test that compile works even when an argument is a view."""
+
+    def expects_transposed_input(x):
+      # If x is in a transposed state, this will be valid; it will transpose
+      # back to a contiguous layout, and the flattening view() will be valid.
+      # But if x is in a contiguous layout, then the transpose will cause it to
+      # be non-contiguous, and the flattening view() will fail.
+      return x.t().view(-1)
+
+    x = torch.arange(6).reshape(2, 3).to(torch.device("tpu"))
+    x_t = x.t()
+
+    compiled = self._compile_fn(
+        expects_transposed_input,
+        (x_t,),
+        serializable=False,
+    )
+
+    result = compiled(x_t)
+    expected = torch.arange(6, device="cpu")
+    utils.assert_close(actual=result.cpu(), expected=expected)
+
+  def test_output_is_non_overlapping_view(self):
+    """Test that compile works even when an output is a non-overlapping view."""
+
+    def returns_non_overlapping_output(x):
+      # Returns every odd-offset element of the input.
+      return x.view(-1, 2).t()[1]
+
+    x = torch.arange(6).to(torch.device("tpu"))
+
+    compiled = self._compile_fn(
+        returns_non_overlapping_output,
+        (x,),
+        serializable=False,
+    )
+
+    result = compiled(x)
+    # Logical values: torch.tensor([1, 3, 5])
+    # Physical values: [0, 1, 2, 3, 4, 5]
+    expected = torch.arange(6, device="cpu").view(-1, 2).t()[1]
+
+    # The layout on-device should be the same as the expected layout on CPU.
+    self.assertEqual(result.dtype, expected.dtype)
+    self.assertEqual(result.shape, expected.shape)
+    self.assertEqual(result.stride(), expected.stride())
+    self.assertEqual(result.storage_offset(), expected.storage_offset())
+
+    # The values should be the same as well.
+    utils.assert_close(actual=result.cpu(), expected=expected)
+
+  def test_output_is_broadcast_view(self):
+    """Test that compile works even when an output is a broadcast view."""
+
+    def returns_broadcast_output(x):
+      return x.expand(2, *x.shape)
+
+    x = torch.arange(6).to(torch.device("tpu"))
+
+    compiled = self._compile_fn(
+        returns_broadcast_output,
+        (x,),
+        serializable=False,
+    )
+
+    result = compiled(x)
+    # Logical values: torch.tensor([[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]])
+    # Physical values: [0, 1, 2, 3, 4, 5]
+    expected = torch.arange(6, device="cpu").expand(2, *x.shape)
+
+    # The layout on-device should be the same as the expected layout on CPU.
+    self.assertEqual(result.dtype, expected.dtype)
+    self.assertEqual(result.shape, expected.shape)
+    self.assertEqual(result.stride(), expected.stride())
+    self.assertEqual(result.storage_offset(), expected.storage_offset())
+
+    # The values should be the same as well.
+    utils.assert_close(actual=result.cpu(), expected=expected)
+
+  def test_output_is_overlapping_view(self):
+    """Test that compile works even when an output is an overlapping view."""
+
+    def returns_overlapping_output(x):
+      return x.as_strided(size=(2, 4), stride=(1, 1), storage_offset=1)
+
+    x = torch.arange(6).to(torch.device("tpu"))
+
+    compiled = self._compile_fn(
+        returns_overlapping_output,
+        (x,),
+        serializable=False,
+    )
+
+    result = compiled(x)
+    # Logical values: torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]])
+    # Physical values: [0, 1, 2, 3, 4, 5]
+    expected = torch.arange(6, device="cpu").as_strided(
+        size=(2, 4), stride=(1, 1), storage_offset=1
+    )
+
+    # The layout on-device should be the same as the expected layout on CPU.
+    self.assertEqual(result.dtype, expected.dtype)
+    self.assertEqual(result.shape, expected.shape)
+    self.assertEqual(result.stride(), expected.stride())
+    self.assertEqual(result.storage_offset(), expected.storage_offset())
+
+    # The values should be the same as well.
+    utils.assert_close(actual=result.cpu(), expected=expected)
+
+  def test_shared_storage_transpose_inputs(self):
+    def fn(a, b):
+      return a.matmul(b)
+
+    old_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+      x = torch.randn(32, 32)
+      y = x.t()  # Shares storage with x
+      self._run_and_compare(fn, [x, y])
+    finally:
+      torch.set_float32_matmul_precision(old_precision)
+
+  def test_shared_storage_slice_inputs(self):
+    def fn(a, b):
+      return a + b
+
+    w = torch.randn(100, 32)
+    s1 = w[0:50]
+    s2 = w[50:100]  # Shares storage with s1
+    self._run_and_compare(fn, [s1, s2])
+
+  def test_shared_storage_overlapping_views(self):
+    def fn(a, b):
+      return a * b
+
+    w = torch.randn(64, 64)
+    v1 = w[0:32, 0:32]
+    v2 = w[16:48, 16:48]
+    self._run_and_compare(fn, [v1, v2])
+
+
+class TraceCompileFunctionTest(FunctionTest):
+  """Runs FunctionTest test cases using trace_compiler.trace_and_compile."""
+
+  def _compile(
+      self,
+      func,
+      inputs_tpu: List[torch.Tensor],
+      serializable: bool = False,
+  ) -> tuple[Any, List[compile_lib.TpuCompileDebug]]:
+    del serializable
+    future = trace_compiler.trace_and_compile(
+        func,
+        inputs_tpu,
+        debug=True,
+    )
+    compiled = future.result()
+    return compiled, [compiled.debug]
+
+  def _compile_fn(
+      self,
+      func,
+      example_args: Sequence[Any],
+      serializable: bool = False,
+  ) -> Any:
+    return trace_compiler.trace_and_compile(func, example_args).result()
+
+
+class DynamoFunctionTest(_FunctionTestBase):
+  """Tests specific to PyTorch Dynamo, FX, and AOT Autograd."""
+
+  @mock.patch.object(compiler, "trace_structured", autospec=True)
+  def test_trace_structured_called(self, mock_trace_structured):
+    def simple(x, y):
+      return x + y
+
+    inputs = [
+        torch.tensor([0.1, 0.2]),
+        torch.tensor([0.4, 0.5]),
+    ]
+    with mock.patch(
+        "torch._logging._internal.trace_log.handlers", [mock.Mock(level=0)]
+    ):
+      self._run_and_compare(simple, inputs)
+
+    names = [call.args[0] for call in mock_trace_structured.call_args_list]
+    self.assertTrue(all(name == "artifact" for name in names))
+
+    # Extract metadata and evaluate payloads to verify artifacts are actually
+    # created
+    payloads = {
+        call.kwargs["metadata_fn"]()["name"]: call.kwargs["payload_fn"]()
+        for call in mock_trace_structured.call_args_list
+    }
+
+    self.assertIn("torchtpu_fx_graph", payloads)
+    self.assertIn("torchtpu_stablehlo_graph", payloads)
+
+    # Verify the FX graph artifact
+    fx_payload = payloads["torchtpu_fx_graph"]
+    self.assertIsInstance(fx_payload, str)
+    self.assertNotEmpty(fx_payload)
+    self.assertIn("add", fx_payload)  # simple() does x + y
+
+    # Verify the StableHLO artifact
+    mlir_payload = payloads["torchtpu_stablehlo_graph"]
+    self.assertIsInstance(mlir_payload, str)
+    self.assertNotEmpty(mlir_payload)
+    self.assertIn("module", mlir_payload)
+
+  def test_to_copy(self):
+    """Test that we can handle to_copy ops in compiled mode.
+
+    Unclear why this is inserting a new op in the deferred graph, but
+    generally ops that take in explicit devices have caused problems in
+    compile. _to_copy should be a no-op in this case is both args are on
+    the same device.
+
+    Note: The test requires both (1) embedded constant and (2) to_copy op to
+    exercise the issue.
+    """
+
+    def simple(x):
+      c = torch.tensor([1, 2, 3, 4, 5], device=x.device)
+      c_copy = torch.ops.aten._to_copy.default(c, device=x.device)
+      return c_copy + x
+
+    x = torch.tensor([1, 2, 3, 4, 5], device=torch.device("tpu"))
+    self._run_and_compare(simple, [x], serializable=False)
 
   def test_fx_graph_generates_more_than_one_graph_to_compile(self):
     # The if case trigger a graph break, so tpu_backend will generate two graphs
@@ -390,18 +720,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     self.assertRegex(
         debugs[1].stablehlo_forward_text[0], r"module\s+@gb_test_split\d+_fwd"
     )
-
-  def test_default_behavior_without_name(self):
-    def func(a, b):
-      return (a * b).sum()
-
-    inputs_val = [
-        torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5], device="tpu"),
-        torch.tensor([0.4, 0.5, 0.6, 0.7, 0.6], device="tpu"),
-    ]
-    # Without name in options, standard compilation runs normally
-    v = self._run_and_compare(func, inputs_val)
-    self.assertLen(v, 1)
 
   def test_hlo_naming_sanitization_pressure_test(self):
     """Tests that invalid characters in custom names do not cause crashes."""
@@ -513,121 +831,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
 
     # Execute a function with data dep op
     self._run_and_compare(func, inputs_val)
-
-  def test_multi_output_aten_op(self):
-    func = torch.ops.aten.native_batch_norm
-
-    x = torch.ones(5, 5, 5)
-    weight = torch.ones(5)
-    bias = torch.ones(5)
-    running_mean = torch.ones(5)
-    running_var = torch.ones(5)
-    training = True
-    momentum = 0.5
-    eps = 0.6
-    inputs_val = [
-        x,
-        weight,
-        bias,
-        running_mean,
-        running_var,
-        training,
-        momentum,
-        eps,
-    ]
-
-    self._run_and_compare(func, inputs_val)
-
-  def test_input_has_view(self):
-    """Tests that we can handle input tensors that are view ops."""
-
-    def simple(x):
-      a = 0.3 * x
-      return a
-
-    device = torch.device("tpu")
-    input_1 = torch.arange(2, device=device).view(1, 2)
-
-    compiled = torch.compile(
-        simple,
-        dynamic=False,
-        backend="tpu",
-        options={"serializable": False},
-    )
-    actual = compiled(input_1).cpu()
-    expected = torch.tensor([[0.0, 0.3]], device="cpu")
-    utils.assert_close(actual, expected)
-
-  def test_zero_sized_tensor_in_body(self):
-    def func(a):
-      zero_sized = a[..., 2:]
-      b = a + a
-      return (zero_sized, b)
-
-    inputs = [torch.ones(1, 1, 2)]
-
-    self._run_and_compare(func, inputs)
-
-  def test_zero_sized_slice_input(self):
-    def func(a, b):
-      c = b.view((2, 0))
-      d = a + a
-      return (c, d)
-
-    a = torch.ones(1, 1, 2)
-    zero_sized = a[..., 2:]
-    inputs = [a, zero_sized]
-
-    self._run_and_compare(func, inputs)
-
-  def test_zero_sized_inputs(self):
-    def func(x, y):
-      return x.mm(y)
-
-    inputs = [
-        torch.ones(5, 0),
-        torch.ones(0, 10),
-    ]
-    self._run_and_compare(func, inputs)
-
-  def test_empty_size_zero_tensor(self):
-    """Test that we can handle empty size zero tensor."""
-
-    def func(x):
-      return torch.acos(x)
-
-    inputs = [
-        torch.empty(0).reshape(0, 1, 3),
-    ]
-    self._run_and_compare(func, inputs)
-
-  @absltest.skip("Need to fix TPU pass error.")
-  def test_addcdiv_c64(self):
-    # TPU error: Unsupported CVT X64 expansion from c64[] to c128[]
-    def func(arg0_1, arg1_1, arg2_1):
-      div = torch.ops.aten.div.Tensor(arg1_1, arg2_1)
-      mul = torch.ops.aten.mul.Tensor(div, 3.14)
-      add = torch.ops.aten.add.Tensor(arg0_1, mul)
-      return (add,)
-
-    inputs = [
-        torch.tensor(
-            1.0,
-            dtype=torch.complex64,
-            device=torch.device("tpu"),
-        ),
-        torch.tensor(
-            1.0,
-            dtype=torch.complex64,
-            device=torch.device("tpu"),
-        ),
-        torch.tensor(
-            1.0,
-            dtype=torch.complex64,
-            device=torch.device("tpu"),
-        ),
-    ]
-    self._run_and_compare(func, inputs)
 
   def test_mixed_eager_compiled_mode(self):
     def func(x, y):
@@ -861,147 +1064,6 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     result = executable([x])
     utils.assert_close(result[0].cpu(), expected)
 
-  def test_input_is_view(self):
-    """Test that compile works even when an argument is a view."""
-
-    def expects_transposed_input(x):
-      # If x is in a transposed state, this will be valid; it will transpose
-      # back to a contiguous layout, and the flattening view() will be valid.
-      # But if x is in a contiguous layout, then the transpose will cause it to
-      # be non-contiguous, and the flattening view() will fail.
-      return x.t().view(-1)
-
-    compiled = torch.compile(
-        expects_transposed_input,
-        backend="tpu",
-        options={"serializable": False},
-    )
-
-    x = torch.arange(6).reshape(2, 3).to(torch.device("tpu"))
-    x_t = x.t()
-
-    result = compiled(x_t)
-    expected = torch.arange(6, device="cpu")
-    utils.assert_close(actual=result.cpu(), expected=expected)
-
-  def test_output_is_non_overlapping_view(self):
-    """Test that compile works even when an output is a non-overlapping view."""
-
-    def returns_non_overlapping_output(x):
-      # Returns every odd-offset element of the input.
-      return x.view(-1, 2).t()[1]
-
-    compiled = torch.compile(
-        returns_non_overlapping_output,
-        backend="tpu",
-        options={"serializable": False},
-    )
-
-    x = torch.arange(6).to(torch.device("tpu"))
-
-    result = compiled(x)
-    # Logical values: torch.tensor([1, 3, 5])
-    # Physical values: [0, 1, 2, 3, 4, 5]
-    expected = torch.arange(6, device="cpu").view(-1, 2).t()[1]
-
-    # The layout on-device should be the same as the expected layout on CPU.
-    self.assertEqual(result.dtype, expected.dtype)
-    self.assertEqual(result.shape, expected.shape)
-    self.assertEqual(result.stride(), expected.stride())
-    self.assertEqual(result.storage_offset(), expected.storage_offset())
-
-    # The values should be the same as well.
-    utils.assert_close(actual=result.cpu(), expected=expected)
-
-  def test_output_is_broadcast_view(self):
-    """Test that compile works even when an output is a broadcast view."""
-
-    def returns_broadcast_output(x):
-      return x.expand(2, *x.shape)
-
-    compiled = torch.compile(
-        returns_broadcast_output,
-        backend="tpu",
-        options={"serializable": False},
-    )
-
-    x = torch.arange(6).to(torch.device("tpu"))
-
-    result = compiled(x)
-    # Logical values: torch.tensor([[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]])
-    # Physical values: [0, 1, 2, 3, 4, 5]
-    expected = torch.arange(6, device="cpu").expand(2, *x.shape)
-
-    # The layout on-device should be the same as the expected layout on CPU.
-    self.assertEqual(result.dtype, expected.dtype)
-    self.assertEqual(result.shape, expected.shape)
-    self.assertEqual(result.stride(), expected.stride())
-    self.assertEqual(result.storage_offset(), expected.storage_offset())
-
-    # The values should be the same as well.
-    utils.assert_close(actual=result.cpu(), expected=expected)
-
-  def test_output_is_overlapping_view(self):
-    """Test that compile works even when an output is an overlapping view."""
-
-    def returns_overlapping_output(x):
-      return x.as_strided(size=(2, 4), stride=(1, 1), storage_offset=1)
-
-    compiled = torch.compile(
-        returns_overlapping_output,
-        backend="tpu",
-        options={"serializable": False},
-    )
-
-    x = torch.arange(6).to(torch.device("tpu"))
-
-    result = compiled(x)
-    # Logical values: torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]])
-    # Physical values: [0, 1, 2, 3, 4, 5]
-    expected = torch.arange(6, device="cpu").as_strided(
-        size=(2, 4), stride=(1, 1), storage_offset=1
-    )
-
-    # The layout on-device should be the same as the expected layout on CPU.
-    self.assertEqual(result.dtype, expected.dtype)
-    self.assertEqual(result.shape, expected.shape)
-    self.assertEqual(result.stride(), expected.stride())
-    self.assertEqual(result.storage_offset(), expected.storage_offset())
-
-    # The values should be the same as well.
-    utils.assert_close(actual=result.cpu(), expected=expected)
-
-  def test_shared_storage_transpose_inputs(self):
-    def fn(a, b):
-      return a.matmul(b)
-
-    old_precision = torch.get_float32_matmul_precision()
-    torch.set_float32_matmul_precision("highest")
-    try:
-      x = torch.randn(32, 32)
-      y = x.t()  # Shares storage with x
-      self._run_and_compare(fn, [x, y])
-    finally:
-      torch.set_float32_matmul_precision(old_precision)
-
-  def test_shared_storage_slice_inputs(self):
-    def fn(a, b):
-      return a + b
-
-    w = torch.randn(100, 32)
-    s1 = w[0:50]
-    s2 = w[50:100]  # Shares storage with s1
-    self._run_and_compare(fn, [s1, s2])
-
-  def test_shared_storage_overlapping_views(self):
-    def fn(a, b):
-      return a * b
-
-    w = torch.randn(64, 64)
-    v1 = w[0:32, 0:32]
-    v2 = w[16:48, 16:48]
-    self._run_and_compare(fn, [v1, v2])
-
   def test_different_storage_offsets(self):
     # Reproduction for https://github.com/google-pytorch/torch_tpu/issues/3370
     def scalar_view(offset: int):
@@ -1011,10 +1073,16 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     def add_self(x):
       return x + x
 
+    # Compile and warm up using storage offset 128.
+    _, compile_scalar = scalar_view(128)
+    self.assertEqual(compile_scalar.storage_offset(), 128)
+
     compiled_add_self = torch.compile(
         add_self,
         fullgraph=True,
         dynamic=False,
+        backend="tpu",
+        options={"serializable": False},
     )
 
     # Compile and warm up using storage offset 128.
@@ -1030,19 +1098,60 @@ class FunctionTest(seed_test_utils.RepeatableTest):
     self.assertEqual(output.cpu().item(), 250)
 
 
-class ModuleTest(seed_test_utils.RepeatableTest):
+class _ModuleTestBase(seed_test_utils.RepeatableTest):
 
   def setUp(self):
     super().setUp()
+    torch._dynamo.reset()
     tt_testing.reset_eager_state()
 
     os.environ["TORCHDYNAMO_VERBOSE"] = "1"
     os.environ["TORCH_LOGS"] = "+dynamo"
 
+  def tearDown(self):
+    torch._dynamo.reset()
+    super().tearDown()
+
+  def _compile_module(
+      self,
+      m_tpu: torch.nn.Module,
+      inputs_tpu: Sequence[Any],
+      kwargs_tpu: dict[str, Any] | None = None,
+      serializable: bool = False,
+  ) -> tuple[Any, List[compile_lib.TpuCompileDebug]]:
+    del inputs_tpu, kwargs_tpu
+    debugs: list[compile_lib.TpuCompileDebug] = []
+    compiled = torch.compile(
+        m_tpu,
+        backend="tpu",
+        options={
+            "serializable": serializable,
+            "debug_callback": debugs.append,
+        },
+    )
+    return compiled, debugs
+
+  def _compile_module_fn(
+      self,
+      m_tpu: torch.nn.Module,
+      example_args: Sequence[Any],
+      example_kwargs: dict[str, Any] | None = None,
+      serializable: bool = False,
+  ) -> Any:
+    del example_args, example_kwargs
+    return torch.compile(
+        m_tpu,
+        backend="tpu",
+        options={"serializable": serializable},
+    )
+
   def _run_and_compare(
       self,
       module_class,
-      inputs: List[torch.Tensor],
+      inputs: Sequence[Any],
+      kwargs: dict[str, Any] | None = None,
+      rtol: float = 1e-3,
+      atol: float = 1e-5,
       serializable: bool = False,
   ) -> List[compile_lib.TpuCompileDebug]:
     """Runs module on CPU, TPU eager mode, and TPU compiled mode.
@@ -1050,17 +1159,28 @@ class ModuleTest(seed_test_utils.RepeatableTest):
     Args:
       module_class: The module to test.
       inputs: A list of tensor inputs for the function.
+      kwargs: Optional keyword arguments for the module forward function.
+      rtol: Relative tolerance for comparison.
+      atol: Absolute tolerance for comparison.
       serializable: Controls caching behavior. Use False to force the compiler
         to generate fresh code.
 
     Returns:
       The list of debug objects captured during compilation.
     """
-
+    kwargs = kwargs or {}
     m_cpu = module_class()
-    cpu_results = m_cpu(*inputs)
+    cpu_results = m_cpu(*inputs, **kwargs)
 
     inputs_tpu = _backend.to_device(inputs, torch.device("tpu"))
+    kwargs_tpu = {
+        k: (
+            _backend.to_device(v, torch.device("tpu"))
+            if isinstance(v, (torch.Tensor, list, tuple))
+            else v
+        )
+        for k, v in kwargs.items()
+    }
     # We create a new instance of the module inside a context manager with the
     # tpu device in order for any constants created inside the module's
     # `__init__` method to get allocated on TPU. Without this Dynamo throws a
@@ -1072,19 +1192,17 @@ class ModuleTest(seed_test_utils.RepeatableTest):
     m_tpu.load_state_dict(m_cpu.state_dict())
     m_tpu.to("tpu")
 
-    debugs: list[compile_lib.TpuCompileDebug] = []
-    compiled = torch.compile(
-        m_tpu,
-        backend="tpu",
-        options={
-            "serializable": serializable,
-            "debug_callback": debugs.append,
-        },
+    compiled, debugs = self._compile_module(
+        m_tpu, inputs_tpu, kwargs_tpu=kwargs_tpu, serializable=serializable
     )
-    tpu_results = _backend.to_device(compiled(*inputs_tpu), "cpu")
+    tpu_results = _backend.to_device(compiled(*inputs_tpu, **kwargs_tpu), "cpu")
 
-    utils.assert_close(tpu_results, cpu_results, rtol=1e-3, atol=1e-5)
+    utils.assert_close(tpu_results, cpu_results, rtol=rtol, atol=atol)
     return debugs
+
+
+class ModuleTest(_ModuleTestBase):
+  """Tests running nn.Module with generic compile (e.g. torch.compile)."""
 
   def test_simple_module_compile(self):
     # The if case trigger a graph break, so tpu_backend will generate two graphs
@@ -1109,7 +1227,157 @@ class ModuleTest(seed_test_utils.RepeatableTest):
     v = self._run_and_compare(SimpleModule, inputs)
     self.assertLen(v, 1)
     self.assertIn("stablehlo.multiply", v[0].stablehlo_forward_text[0])
-    self.assertIn("def forward(self,", v[0].post_autograd_fx_forward_code[0])
+    if v[0].post_autograd_fx_forward_code:
+      self.assertIn("def forward(self,", v[0].post_autograd_fx_forward_code[0])
+
+  def test_module_no_tensor_consts(self):
+    class ModuleNoTensorConsts(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.val = 10
+
+      def forward(self, x):
+        return x * self.val
+
+    inputs = [torch.arange(25).reshape(5, 5)]
+    self._run_and_compare(ModuleNoTensorConsts, inputs)
+
+  def test_module_with_buffer(self):
+    class ModuleWithBuffer(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.register_buffer("my_buffer", torch.ones(5, 1))
+
+      def forward(self, x):
+        return x + self.my_buffer
+
+    inputs = [torch.arange(25).reshape(5, 5)]
+    self._run_and_compare(ModuleWithBuffer, inputs)
+
+  def test_geqrf_empty(self):
+    # geqrf under torch.compile with empty inputs is not tested in the standard
+    # ops_test_compiled target because the GPU golden files lack
+    # geqrf samples. This test provides explicit compile-mode coverage for
+    # geqrf with empty inputs.
+    class GeqrfModule(torch.nn.Module):
+
+      def forward(self, x):
+        return torch.geqrf(x)
+
+    for shape in [(4, 0), (0, 4), (0, 0)]:
+      with self.subTest(shape=shape):
+        inputs = [torch.randn(shape)]
+        self._run_and_compare(GeqrfModule, inputs)
+
+  def test_linear_module(self):
+    class LinearModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(8, 16)
+
+      def forward(self, x):
+        return self.linear(x)
+
+    inputs = [torch.randn(4, 8)]
+    self._run_and_compare(LinearModule, inputs, rtol=1e-2, atol=2e-2)
+
+  def test_sequential_module(self):
+    class SequentialModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.seq = torch.nn.Sequential(
+            torch.nn.Linear(8, 16),
+            torch.nn.ReLU(),
+            torch.nn.Linear(16, 4),
+        )
+
+      def forward(self, x):
+        return self.seq(x)
+
+    inputs = [torch.randn(2, 8)]
+    self._run_and_compare(SequentialModule, inputs, rtol=1e-2, atol=2e-2)
+
+  def test_nested_submodules_with_parameters_and_buffers(self):
+    class ChildModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4, 4))
+        self.register_buffer("scale_buf", torch.tensor([1.5, 2.0, 0.5, 1.0]))
+
+      def forward(self, x):
+        return (x @ self.weight) * self.scale_buf
+
+    class ParentModule(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.child1 = ChildModule()
+        self.child2 = ChildModule()
+        self.bias = torch.nn.Parameter(torch.randn(4))
+        self.register_buffer("offset_buf", torch.tensor([0.1, 0.2, 0.3, 0.4]))
+
+      def forward(self, x):
+        return self.child2(self.child1(x)) + self.bias + self.offset_buf
+
+    inputs = [torch.randn(3, 4)]
+    self._run_and_compare(ParentModule, inputs, rtol=1e-2, atol=2e-2)
+
+  def test_module_with_kwargs(self):
+    class ModuleWithKwargs(torch.nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4, 4))
+
+      def forward(self, x, bias, scale=1.0):
+        return (x @ self.weight + bias) * scale
+
+    inputs = [torch.randn(2, 4), torch.randn(4)]
+    self._run_and_compare(
+        ModuleWithKwargs, inputs, kwargs={"scale": 2.5}, rtol=1e-2, atol=2e-2
+    )
+
+
+class TraceCompileModuleTest(ModuleTest):
+  """Runs ModuleTest test cases using trace_compiler.trace_and_compile."""
+
+  def _compile_module(
+      self,
+      m_tpu: torch.nn.Module,
+      inputs_tpu: Sequence[Any],
+      kwargs_tpu: dict[str, Any] | None = None,
+      serializable: bool = False,
+  ) -> tuple[Any, List[compile_lib.TpuCompileDebug]]:
+    del serializable
+    future = trace_compiler.trace_and_compile(
+        m_tpu,
+        inputs_tpu,
+        example_kwargs=kwargs_tpu,
+        debug=True,
+    )
+    compiled = future.result()
+    return compiled, [compiled.debug]
+
+  def _compile_module_fn(
+      self,
+      m_tpu: torch.nn.Module,
+      example_args: Sequence[Any],
+      example_kwargs: dict[str, Any] | None = None,
+      serializable: bool = False,
+  ) -> Any:
+    del serializable
+    return trace_compiler.trace_and_compile(
+        m_tpu, example_args, example_kwargs=example_kwargs
+    ).result()
+
+
+class DynamoModuleTest(_ModuleTestBase):
+  """Tests specific to PyTorch Dynamo for nn.Module."""
 
   def test_module_with_constants(self):
     class ModuleWithConstants(torch.nn.Module):
@@ -1163,19 +1431,6 @@ class ModuleTest(seed_test_utils.RepeatableTest):
     inputs = [torch.arange(25).reshape(5, 5)]
     self._run_and_compare(OuterModuleWithConst, inputs)
 
-  def test_module_no_tensor_consts(self):
-    class ModuleNoTensorConsts(torch.nn.Module):
-
-      def __init__(self):
-        super().__init__()
-        self.val = 10
-
-      def forward(self, x):
-        return x * self.val
-
-    inputs = [torch.arange(25).reshape(5, 5)]
-    self._run_and_compare(ModuleNoTensorConsts, inputs)
-
   def test_module_const_control_flow(self):
     class ModuleConstControlFlow(torch.nn.Module):
 
@@ -1193,19 +1448,6 @@ class ModuleTest(seed_test_utils.RepeatableTest):
 
     inputs = [torch.arange(4, dtype=torch.float32).reshape(2, 2)]
     self._run_and_compare(ModuleConstControlFlow, inputs)
-
-  def test_module_with_buffer(self):
-    class ModuleWithBuffer(torch.nn.Module):
-
-      def __init__(self):
-        super().__init__()
-        self.register_buffer("my_buffer", torch.ones(5, 1))
-
-      def forward(self, x):
-        return x + self.my_buffer
-
-    inputs = [torch.arange(25).reshape(5, 5)]
-    self._run_and_compare(ModuleWithBuffer, inputs)
 
   def test_adam_optimizer(self):
     class SimpleModel(torch.nn.Module):
@@ -1368,21 +1610,6 @@ class ModuleTest(seed_test_utils.RepeatableTest):
         atol=2e-2,
         check_dtype=False,
     )
-
-  def test_geqrf_empty(self):
-    # geqrf under torch.compile with empty inputs is not tested in the standard
-    # ops_test_compiled target because the GPU golden files lack
-    # geqrf samples. This test provides explicit compile-mode coverage for
-    # geqrf with empty inputs.
-    class GeqrfModule(torch.nn.Module):
-
-      def forward(self, x):
-        return torch.geqrf(x)
-
-    for shape in [(4, 0), (0, 4), (0, 0)]:
-      with self.subTest(shape=shape):
-        inputs = [torch.randn(shape)]
-        self._run_and_compare(GeqrfModule, inputs)
 
   def test_masked_fill_inplace_overflow_tensor_value(self):
     # Tests that masked_fill_ with an overflowing tensor value succeeds in TPU
