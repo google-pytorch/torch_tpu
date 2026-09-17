@@ -406,6 +406,14 @@ PYBIND11_MODULE(_device_ops_backend, m) {
       py::arg("device_index"),
       "Get the default generator for the given device index.");
 
+  m.def(
+      "get_eager_default_generator",
+      [](int device_index) -> at::Generator {
+        return GetEagerDefaultDeviceGenerator(device_index);
+      },
+      py::arg("device_index"),
+      "Get the eager default generator for the given device index.");
+
   py::class_<CacheEntryStats>(m, "CacheEntryStats")
       .def_property_readonly(
           "compilation_duration",

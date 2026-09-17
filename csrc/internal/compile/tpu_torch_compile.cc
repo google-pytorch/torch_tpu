@@ -39,6 +39,8 @@
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "c10/core/Device.h"
+#include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
@@ -593,16 +595,41 @@ void PyPushEnableTracebacks(std::optional<bool> enabled) {
 
 }  // namespace
 
-// Returns the internal TPU RNG state tensor from a generator.
-at::Tensor PyGetDeviceStateTensor(at::Generator gen) {
-  auto* device_gen = at::check_generator<DeviceGeneratorImpl>(gen);
+// Returns the internal TPU RNG state tensor {seed, offset} from a generator.
+at::Tensor PyGetDeviceStateTensor(const at::Generator& gen) {
+  auto* device_gen = at::check_generator<DeviceGeneratorImplBase>(gen);
   return device_gen->DeviceStateTensor();
 }
 
-// Sets the internal TPU RNG state tensor on a generator.
-void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state) {
-  auto* device_gen = at::check_generator<DeviceGeneratorImpl>(gen);
+// Sets the internal TPU RNG state tensor {seed, offset} on a generator.
+void PySetDeviceStateTensor(const at::Generator& gen, at::Tensor rng_state) {
+  auto* device_gen = at::check_generator<DeviceGeneratorImplBase>(gen);
   TT_THROW_IF_ERROR(device_gen->SetDeviceStateTensor(std::move(rng_state)));
+}
+
+// Creates a new export-mode generator by cloning the state of an eager
+// generator and wrapping its state tensor in a symbolic MLIR placeholder.
+at::Generator PyMakeExportModeDeviceGenerator(const at::Generator& orig_gen) {
+  auto gen = at::make_generator<ExportModeDeviceGeneratorImpl>(orig_gen);
+
+  // Set placeholder tensor for export mode generator.
+  const at::Tensor device_state_tensor = PyGetDeviceStateTensor(gen);
+  at::Tensor placeholder_tensor =
+      PyMakePlaceholderLike(device_state_tensor, /*is_pinned_host=*/false);
+  PySetDeviceStateTensor(gen, std::move(placeholder_tensor));
+
+  return gen;
+}
+
+// Registers an export-mode generator override for GetDefaultDeviceGenerator().
+void PySetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
+                                           const c10::DeviceIndex idx) {
+  SetExportModeDefaultDeviceGenerator(std::move(gen), idx);
+}
+
+// Clears all registered export-mode default generator overrides.
+void PyClearExportModeDefaultDeviceGenerators() {
+  ClearExportModeDefaultDeviceGenerators();
 }
 
 namespace {
@@ -2158,6 +2185,16 @@ TT_PYBIND11_MODULE(tpu_torch_compile, m) {
   m.def("set_device_state_tensor", PySetDeviceStateTensor, py::arg("generator"),
         py::arg("rng_state"),
         "Sets the internal TPU RNG state tensor on a generator.");
+  m.def("set_export_mode_default_device_generator",
+        &PySetExportModeDefaultDeviceGenerator, py::arg("generator"),
+        py::arg("idx") = -1,
+        "Sets the export-mode default generator for override.");
+  m.def("make_export_mode_device_generator", &PyMakeExportModeDeviceGenerator,
+        py::arg("generator"),
+        "Creates a new export-mode generator for the given generator.");
+  m.def("clear_export_mode_default_device_generators",
+        &PyClearExportModeDefaultDeviceGenerators,
+        "Clears all export-mode default generator overrides.");
   m.def("force_strides", PyForceStrides, py::arg("tensor"),
         py::arg("target_strides"), py::arg("target_storage_offset"),
         "Returns a tensor with equivalent logical values to the input tensor, "

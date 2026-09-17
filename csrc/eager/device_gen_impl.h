@@ -145,8 +145,8 @@ class ExportModeDeviceGeneratorState : public c10::intrusive_ptr_target {
 };
 
 // Forward declarations for friends.
-at::Tensor PyGetDeviceStateTensor(at::Generator gen);
-void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
+at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
+void PySetDeviceStateTensor(const at::Generator& gen, at::Tensor rng_state);
 
 // Abstract base class defining the common interface and pure virtual state
 // tensor accessors for TPU RNG generators across eager and export execution
@@ -182,8 +182,9 @@ class DeviceGeneratorImplBase : public c10::GeneratorImpl {
   friend class EagerModeDeviceGeneratorImpl;
   friend class ExportModeDeviceGeneratorImpl;
 
-  friend at::Tensor PyGetDeviceStateTensor(at::Generator gen);
-  friend void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
+  friend at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
+  friend void PySetDeviceStateTensor(const at::Generator& gen,
+                                     at::Tensor rng_state);
 
   DeviceGeneratorImplBase* clone_impl() const override = 0;
 
@@ -229,8 +230,9 @@ class EagerModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
   friend absl::Status InitDefaultGenerator(
       EagerModeDeviceGeneratorImpl* gen_impl, uint64_t seed);
 
-  friend at::Tensor PyGetDeviceStateTensor(at::Generator gen);
-  friend void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
+  friend at::Tensor PyGetDeviceStateTensor(const at::Generator& gen);
+  friend void PySetDeviceStateTensor(const at::Generator& gen,
+                                     at::Tensor rng_state);
 
   DeviceGeneratorImplBase* clone_impl() const override;
 
