@@ -70,6 +70,7 @@ _TPU_DECOMPOSITIONS = get_decompositions([
     # failing due to placeholder tensor materialization during compilation.
     torch.ops.aten.masked_fill.Tensor,
     torch.ops.aten.masked_fill_.Tensor,
+    torch.ops.aten.native_batch_norm_backward.default,
 ])
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt

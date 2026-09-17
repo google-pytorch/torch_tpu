@@ -80,30 +80,84 @@ absl::StatusOr<MlirOpResults<3>> BuildBatchNormBackward(
              << "save_mean and save_invstd must be provided when training=True";
     }
 
-    auto mean = *save_mean_opt;
-    mean = mlir::stablehlo::ConvertElementType(mean, acc_dtype);
+    const auto mean =
+        mlir::stablehlo::ConvertElementType(*save_mean_opt, acc_dtype);
+    const auto invstd =
+        mlir::stablehlo::ConvertElementType(*save_invstd_opt, acc_dtype);
 
-    auto invstd = *save_invstd_opt;
-    invstd = mlir::stablehlo::ConvertElementType(invstd, acc_dtype);
+    mlir::MlirOp grad_input, grad_weight, grad_bias;
 
-    // Reconstruct variance: variance = 1/invstd^2 - eps
-    auto invstd_sq = mlir::stablehlo::Mul(invstd, invstd);
-    auto one_op = MakeConstantLike(invstd, 1.0);
-    auto var_plus_eps = mlir::stablehlo::Div(one_op, invstd_sq);
-    auto eps_op = MakeConstantLike(invstd, eps);
-    auto variance = mlir::stablehlo::Subtract(var_plus_eps, eps_op);
+    // Broadcasting mean to match input shape
+    TT_ASSIGN_OR_RETURN(
+        const auto broadcasted_mean,
+        Broadcast(mean, input_type.getShape(), {kTorchFeaturesDimensionIndex}));
+    const auto x_minus_mean =
+        mlir::stablehlo::Subtract(input, broadcasted_mean);
 
-    // If training, we can use BatchNormGrad, which is defined for training mode
-    // only and it assumes that the mean and variance are derived from the
-    // current input batch.
-    // Returns in outputs: grad_input, grad_weight, grad_bias
-    auto outputs = mlir::stablehlo::BatchNormGrad(
-        input, weight, mean, variance, grad_out,
-        llvm::APFloat(static_cast<float>(eps)), kTorchFeaturesDimensionIndex);
+    // Broadcasting invstd to match input shape
+    TT_ASSIGN_OR_RETURN(const auto broadcasted_invstd,
+                        Broadcast(invstd, input_type.getShape(),
+                                  {kTorchFeaturesDimensionIndex}));
 
-    auto grad_input = std::move(outputs[0]);
-    auto grad_weight = std::move(outputs[1]);
-    auto grad_bias = std::move(outputs[2]);
+    // Normalized input \hat{X}
+    const auto normalized_input =
+        mlir::stablehlo::Mul(x_minus_mean, broadcasted_invstd);
+
+    // Used to reduce over all dims except the feature dim.
+    Dimensions reduce_dims;
+    int64_t num_elements_per_feature = 1;
+    for (auto i = 0; i < input_dims.size(); ++i) {
+      if (i != kTorchFeaturesDimensionIndex) {
+        reduce_dims.push_back(i);
+        num_elements_per_feature *= input_dims[i];
+      }
+    }
+
+    if (output_mask[2] || output_mask[0]) {
+      // grad_bias = sum(grad_out)
+      TT_ASSIGN_OR_RETURN(grad_bias, BuildSumShlo(grad_out, reduce_dims));
+    } else {
+      TT_ASSIGN_OR_RETURN(grad_bias, MakeZeroSizedTensor(builder, acc_dtype));
+    }
+
+    if (output_mask[1] || output_mask[0]) {
+      // grad_weight = sum(grad_out * \hat{X})
+      const auto grad_out_times_norm =
+          mlir::stablehlo::Mul(grad_out, normalized_input);
+      TT_ASSIGN_OR_RETURN(grad_weight,
+                          BuildSumShlo(grad_out_times_norm, reduce_dims));
+    } else {
+      TT_ASSIGN_OR_RETURN(grad_weight, MakeZeroSizedTensor(builder, acc_dtype));
+    }
+
+    if (output_mask[0]) {
+      const auto num_elements_op = MakeConstantLike(
+          invstd, static_cast<double>(num_elements_per_feature));
+      const auto factor1 = mlir::stablehlo::Div(grad_bias, num_elements_op);
+      const auto factor2 = mlir::stablehlo::Div(grad_weight, num_elements_op);
+      const auto scale = mlir::stablehlo::Mul(weight, invstd);
+
+      TT_ASSIGN_OR_RETURN(const auto broadcasted_factor1,
+                          Broadcast(factor1, input_type.getShape(),
+                                    {kTorchFeaturesDimensionIndex}));
+      TT_ASSIGN_OR_RETURN(const auto broadcasted_factor2,
+                          Broadcast(factor2, input_type.getShape(),
+                                    {kTorchFeaturesDimensionIndex}));
+      TT_ASSIGN_OR_RETURN(const auto broadcasted_scale,
+                          Broadcast(scale, input_type.getShape(),
+                                    {kTorchFeaturesDimensionIndex}));
+
+      // dX = scale_{bc} * (grad_out - factor1_{bc} - \hat{X} * factor2_{bc})
+      const auto norm_times_factor2 =
+          mlir::stablehlo::Mul(normalized_input, broadcasted_factor2);
+      const auto grad_out_minus_factor1 =
+          mlir::stablehlo::Subtract(grad_out, broadcasted_factor1);
+      const auto inner_term =
+          mlir::stablehlo::Subtract(grad_out_minus_factor1, norm_times_factor2);
+      grad_input = mlir::stablehlo::Mul(broadcasted_scale, inner_term);
+    } else {
+      TT_ASSIGN_OR_RETURN(grad_input, MakeZeroSizedTensor(builder, acc_dtype));
+    }
 
     // Cast results back to input precision if needed.
     grad_input = mlir::stablehlo::ConvertElementType(grad_input, input_dtype);

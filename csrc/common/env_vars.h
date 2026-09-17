@@ -101,6 +101,11 @@ inline constexpr char kTorchTpuDevicesPerHostEnvVar[] =
 // TORCH_TPU_ENABLE_DEBUG_CHECKS takes precedence.
 inline constexpr char kTorchTpuEnableDebugChecksEnvVar[] =
     "TORCH_TPU_ENABLE_DEBUG_CHECKS";
+// If set to "1" or "true", enables reciprocal strength reduction in softmax
+// for VPU acceleration. Off by default due to intermediate broadcast buffer
+// overhead in memory-bound LLM decoding loops.
+inline constexpr char kTorchTpuFastNormActivationEnvVar[] =
+    "TORCH_TPU_FAST_NORM_ACTIVATION";
 // Specifies the fixed port number for the handshake server.
 inline constexpr char kTorchTpuHandshakePortEnvVar[] =
     "TORCH_TPU_INTERNAL_HANDSHAKE_PORT";
@@ -288,6 +293,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDeferAndFuseEnvVar, SymbolStage::Experimental()},
         {kTorchTpuDevicesPerHostEnvVar, std::nullopt},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
+        {kTorchTpuFastNormActivationEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalAllowXlaBackendEnvVar, std::nullopt},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},

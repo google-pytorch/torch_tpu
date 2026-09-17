@@ -340,36 +340,36 @@ absl::StatusOr<LayerNormBackwardShloResults> BuildLayerNormBackwardShlo(
   }
 
   // a1 = sum_norm(dy * gamma)
-  // Reduce over norm_dims {1, 2, 3} to get [20], then broadcast to [20, 5, 10,
-  // 10]
-  mlir::MlirOp a1 = mlir::stablehlo::Reduce(builder, dy_gamma, zeros,
-                                            sum_reduce_builder, norm_dims)[0];
-  a1 = mlir::stablehlo::BroadcastInDim(x.getType(), a1, batch_dims);
+  // Reduce over norm_dims {1, 2, 3} to get [20]
+  const mlir::MlirOp a1_red = mlir::stablehlo::Reduce(
+      builder, dy_gamma, zeros, sum_reduce_builder, norm_dims)[0];
 
   // a2 = sum_norm(dy * gamma * x_hat)
-  // Reduce over norm_dims {1, 2, 3} to get [20], then broadcast to [20, 5, 10,
-  // 10]
-  mlir::MlirOp a2_full = mlir::stablehlo::Mul(dy_gamma, x_hat);
-  mlir::MlirOp a2 = mlir::stablehlo::Reduce(builder, a2_full, zeros,
-                                            sum_reduce_builder, norm_dims)[0];
-  a2 = mlir::stablehlo::BroadcastInDim(x.getType(), a2, batch_dims);
+  // Reduce over norm_dims {1, 2, 3} to get [20]
+  const mlir::MlirOp a2_full = mlir::stablehlo::Mul(dy_gamma, x_hat);
+  const mlir::MlirOp a2_red = mlir::stablehlo::Reduce(
+      builder, a2_full, zeros, sum_reduce_builder, norm_dims)[0];
 
-  // dx = (1/N) * rstd * (N * dy_gamma - a1 - x_hat * a2)
   TT_ASSIGN_OR_RETURN(const int64_t n, NumElements(normalized_shape));
-  mlir::MlirOp n_const =
-      MakeScalarConstant(builder, static_cast<double>(n), acc_float_type);
-  mlir::MlirOp n_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), n_const, {});
-  mlir::MlirOp inv_n = MakeScalarConstant(builder, 1.0 / n, acc_float_type);
-  mlir::MlirOp inv_n_bcast =
-      mlir::stablehlo::BroadcastInDim(x.getType(), inv_n, {});
+  const mlir::MlirOp inv_n =
+      MakeScalarConstant(builder, 1.0 / n, acc_float_type);
+  const mlir::MlirOp inv_n_bcast_red =
+      mlir::stablehlo::BroadcastInDim(a1_red.getType(), inv_n, {});
 
-  mlir::MlirOp dx = mlir::stablehlo::Mul(n_bcast, dy_gamma);
-  dx = mlir::stablehlo::Subtract(dx, a1);
-  mlir::MlirOp x_hat_a2 = mlir::stablehlo::Mul(x_hat, a2);
-  dx = mlir::stablehlo::Subtract(dx, x_hat_a2);
-  mlir::MlirOp inv_n_rstd = mlir::stablehlo::Mul(inv_n_bcast, rstd_bcast);
-  dx = mlir::stablehlo::Mul(dx, inv_n_rstd);
+  const mlir::MlirOp a1_scaled = mlir::stablehlo::Mul(a1_red, inv_n_bcast_red);
+  const mlir::MlirOp a1 =
+      mlir::stablehlo::BroadcastInDim(x.getType(), a1_scaled, batch_dims);
+
+  const mlir::MlirOp a2_scaled = mlir::stablehlo::Mul(a2_red, inv_n_bcast_red);
+  const mlir::MlirOp a2 =
+      mlir::stablehlo::BroadcastInDim(x.getType(), a2_scaled, batch_dims);
+
+  // dx = rstd * (dy_gamma - a1 - x_hat * a2)
+  const mlir::MlirOp dy_minus_a1 = mlir::stablehlo::Subtract(dy_gamma, a1);
+  const mlir::MlirOp x_hat_a2 = mlir::stablehlo::Mul(x_hat, a2);
+  const mlir::MlirOp inner_term =
+      mlir::stablehlo::Subtract(dy_minus_a1, x_hat_a2);
+  mlir::MlirOp dx = mlir::stablehlo::Mul(inner_term, rstd_bcast);
 
   if (needs_upcast) {
     dx = mlir::stablehlo::ConvertElementType(dx, orig_elem_type);

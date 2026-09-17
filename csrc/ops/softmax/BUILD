@@ -83,6 +83,7 @@ torch_tpu_cc_library(
     deps = [
         "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
+        "//csrc/common:env_vars",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
         "//csrc/ops:op_builder_utils",
