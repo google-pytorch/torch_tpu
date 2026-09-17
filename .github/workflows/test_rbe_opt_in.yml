@@ -33,6 +33,10 @@ on:
           - 'all'
           - 'tpu_v5e_only'
           - 'cpu_only'
+      test_targets:
+        description: 'Bazel test target(s) to run'
+        type: string
+        default: '//tests/pallas:pallas_test //tests:ops_test_tpu-v5lite'
 
 permissions:
   contents: read
@@ -102,14 +106,29 @@ jobs:
         run: |
           if [ "${BAZEL_CONFIG}" = "ci_tpu_v5_full_rbe" ]; then
             echo "Starting background IAP tunnel to Buildbarn frontend..."
-            gcloud compute start-iap-tunnel \
-              gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
-              --local-host-port=localhost:8980 \
-              --zone=us-east5-a \
-              --project=rbe-tpu-oss \
-              --iap-tunnel-disable-connection-check > /tmp/iap_tunnel.log 2>&1 < /dev/null &
+            run_tunnel() {
+              while true; do
+                gcloud compute start-iap-tunnel \
+                  gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
+                  --local-host-port=localhost:8980 \
+                  --zone=us-east5-a \
+                  --project=rbe-tpu-oss \
+                  --iap-tunnel-disable-connection-check >> /tmp/iap_tunnel.log 2>&1 < /dev/null || true
+                sleep 1
+              done
+            }
+            run_tunnel &
             TUNNEL_PID=$!
-            trap 'kill "$TUNNEL_PID" 2>/dev/null || true' EXIT
+
+            (
+              while true; do
+                sleep 10
+                (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1 || true
+              done
+            ) &
+            KEEPALIVE_PID=$!
+
+            trap 'kill "$TUNNEL_PID" "$KEEPALIVE_PID" 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
 
             CONNECTED=0
             for _ in {1..30}; do
@@ -128,6 +147,8 @@ jobs:
             fi
           fi
 
+          TARGETS="${{ inputs.test_targets || '//tests/pallas:pallas_test //tests:ops_test_tpu-v5lite' }}"
+
           # shellcheck disable=SC2086
           bazel test \
             "--config=${BAZEL_CONFIG}" \
@@ -135,4 +156,4 @@ jobs:
             --test_output=errors \
             ${RBE_BAZEL_FLAGS} \
             ${EXTRA_FLAGS} \
-            -- //tests/... ${RBE_EXCLUDED_TARGETS}
+            -- ${TARGETS}
