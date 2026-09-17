@@ -64,7 +64,6 @@ pybind_extension(
         "//csrc/eager:device_gen_impl",
         "//csrc/eager:events_queue",
         "//csrc/eager:op_dispatcher",
-        "//csrc/eager:repeated_ops_heuristic",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//shims/torch",

@@ -35,7 +35,7 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
     super().setUp()
     tt_testing.reset_eager_state()
     self.old_eager_mode = execution_mode.eager_mode
-    execution_mode.eager_mode = EagerMode.DEFER_AND_FUSE
+    execution_mode.eager_mode = EagerMode.INTERNAL_DEFER_ALL
 
   def tearDown(self):
     execution_mode.eager_mode = self.old_eager_mode
@@ -281,22 +281,24 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         digraph {
           // Vertices:
           0 [shape="box", label=" uint64[2] (materialized)"];
-          1 [shape="box", label=" float32[] (materialized)"];
-          2 [label="uniform_"];
-          3 [shape="box", label="x: float32[2, 3]"];
-          4 [label="sum.IntList_out"];
-          5 [shape="box", label="z: float32[]"];
-          6 [label="pow.out"];
-          7 [shape="box", label="y: float32[2, 3]"];
+          1 [label="uniform_"];
+          2 [shape="box", label="x: float32[2, 3]"];
+          3 [label="sum.IntList_out"];
+          4 [shape="box", label="z: float32[]"];
+          5 [label="scalar_tensor"];
+          6 [shape="box", label=" float32[]"];
+          7 [label="pow.out"];
+          8 [shape="box", label="y: float32[2, 3]"];
 
           // Edges:
-          0 -> 2
+          0 -> 1
+          1 -> 2
           2 -> 3
           3 -> 4
-          4 -> 5
-          3 -> 6
-          1 -> 6
+          5 -> 6
+          2 -> 7
           6 -> 7
+          7 -> 8
         }
         """)
 
@@ -308,46 +310,50 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
       self.assertRegex(s, node_param)
     self.assertLen(s.split("\n"), num_lines)
 
-  # TODO(bawilson): remove leaf node materialization
-  @absltest.skip("Safe rule with leaf nodes forces everything to materialize")
   def test_computation_graphviz_partially_materialized(self):
     expected_before = textwrap.dedent("""\
         Graphviz string: (try pasting in http://graphviz/ to see the graph)
         digraph {
           // Vertices:
-          0 [shape="box", label="z_ones: float32[2, 4] (materialized)"];
-          1 [shape="box", label="four: int64[] (materialized)"];
-          2 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
-          3 [shape="box", label="three: int64[] (materialized)"];
-          4 [shape="box", label="x_ones: float32[2, 3] (materialized)"];
-          5 [shape="box", label="two: int64[] (materialized)"];
-          6 [label="mul"];
-          7 [shape="box", label="z: float32[2, 4]"];
-          8 [label="mul"];
-          9 [shape="box", label="y: float32[3, 4]"];
-          10 [label="mul"];
-          11 [shape="box", label="x: float32[2, 3]"];
-          12 [label="mm.out"];
-          13 [shape="box", label="x_times_y: float32[2, 4]"];
-          14 [label="add.out"];
-          15 [shape="box", label="w: float32[2, 4]"];
+          0 [shape="box", label=" float32[2, 4] (materialized)"];
+          1 [shape="box", label=" float32[3, 4] (materialized)"];
+          2 [shape="box", label=" float32[2, 3] (materialized)"];
+          3 [label="scalar_tensor"];
+          4 [shape="box", label=" int64[]"];
+          5 [label="mul.out"];
+          6 [shape="box", label=" float32[2, 4]"];
+          7 [shape="box", label="scalar_tensor"];
+          8 [shape="box", label=" int64[]"];
+          9 [label="mul.out"];
+          10 [shape="box", label="y: float32[3, 4]"];
+          11 [shape="box", label="scalar_tensor"];
+          12 [shape="box", label=" int64[]"];
+          13 [label="mul.out"];
+          14 [shape="box", label="x: float32[2, 3]"];
+          15 [shape="box", label="mm.out"];
+          16 [shape="box", label=" float32[2, 4]"];
+          17 [shape="box", label="add.out"];
+          18 [shape="box", label="w: float32[2, 4]"];
 
           // Edges:
-          0 -> 6
-          1 -> 6
-          6 -> 7
-          2 -> 8
-          3 -> 8
+          3 -> 4
+          0 -> 5
+          4 -> 5
+          5 -> 6
+          7 -> 8
+          1 -> 9
           8 -> 9
-          4 -> 10
-          5 -> 10
-          10 -> 11
+          9 -> 10
           11 -> 12
-          9 -> 12
+          2 -> 13
           12 -> 13
           13 -> 14
-          7 -> 14
           14 -> 15
+          10 -> 15
+          15 -> 16
+          16 -> 17
+          6 -> 17
+          17 -> 18
         }
         """)
 
@@ -355,16 +361,37 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         Graphviz string: (try pasting in http://graphviz/ to see the graph)
         digraph {
           // Vertices:
-          0 [shape="box", label="w: float32[2, 4] (materialized)"];
-          1 [shape="box", label="y_ones: float32[3, 4] (materialized)"];
-          2 [shape="box", label="three: int64[] (materialized)"];
-          3 [label="mul"];
-          4 [shape="box", label="y: float32[3, 4]"];
+          0 [shape="box", label=" float32[2, 4] (materialized)"];
+          1 [shape="box", label="x: float32[2, 3] (materialized)"];
+          2 [shape="box", label=" float32[3, 4] (materialized)"];
+          3 [label="scalar_tensor"];
+          4 [shape="box", label=" int64[]"];
+          5 [label="mul.out"];
+          6 [shape="box", label=" float32[2, 4]"];
+          7 [label="scalar_tensor"];
+          8 [shape="box", label=" int64[]"];
+          9 [label="mul.out"];
+          10 [shape="box", label="y: float32[3, 4]"];
+          11 [label="mm.out"];
+          12 [shape="box", label=" float32[2, 4]"];
+          13 [shape="box", label="add.out"];
+          14 [shape="box", label="w: float32[2, 4]"];
 
           // Edges:
-          1 -> 3
-          2 -> 3
           3 -> 4
+          0 -> 5
+          4 -> 5
+          5 -> 6
+          7 -> 8
+          2 -> 9
+          8 -> 9
+          9 -> 10
+          1 -> 11
+          10 -> 11
+          11 -> 12
+          12 -> 13
+          6 -> 13
+          13 -> 14
         }
         """)
     # Create materialized leaf inputs by doing a host to device copy.
@@ -404,22 +431,27 @@ class InternalSyncTest(absltest.TestCase):  # ABSLTEST_OK=Internal sync test
         Graphviz string: (try pasting in http://graphviz/ to see the graph)
         digraph {
           // Vertices:
-          0 [shape="box", label=" float32[] (materialized)"];
-          1 [label="fill_.Scalar"];
-          2 [shape="box", label=" float32[2, 3]"];
-          3 [label="fill_.Scalar"];
-          4 [shape="box", label=" float32[2, 3]"];
-          5 [label="add.out"];
-          6 [shape="box", label=" float32[2, 3]"];
+          0 [label="scalar_tensor"];
+          1 [shape="box", label=" float32[]"];
+          2 [label="fill_.Scalar"];
+          3 [shape="box", label=" float32[2, 3]"];
+          4 [label="scalar_tensor"];
+          5 [shape="box", label=" float32[]"];
+          6 [label="fill_.Scalar"];
+          7 [shape="box", label=" float32[2, 3]"];
+          8 [label="add.out"];
+          9 [shape="box", label=" float32[2, 3]"];
 
           // Edges:
           0 -> 1
           1 -> 2
-          0 -> 3
-          3 -> 4
+          2 -> 3
           4 -> 5
-          2 -> 5
           5 -> 6
+          6 -> 7
+          7 -> 8
+          3 -> 8
+          8 -> 9
         }
         """)
     with self.undeclared_outputs_dir() as output_dir:

@@ -153,7 +153,7 @@ torch_tpu_cc_library(
         "//csrc/common:context_states",
         "//csrc/common:error_utils",
         "//csrc/common:to_string",
-        "//csrc/eager:repeated_ops_heuristic",
+        "//csrc/eager:events_queue",
         "//shims/torch",
         "//shims/torch:aten",
         "//shims/torch:torch_headers",

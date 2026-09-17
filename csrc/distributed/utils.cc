@@ -27,7 +27,7 @@
 #include "csrc/common/error_utils.h"
 #include "csrc/common/to_string.h"
 #include "csrc/distributed/types.h"
-#include "csrc/eager/repeated_ops_heuristic.h"
+#include "csrc/eager/events_queue.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/BuiltinAttributes.h"

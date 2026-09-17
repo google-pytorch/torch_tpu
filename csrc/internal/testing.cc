@@ -23,7 +23,6 @@
 #include "csrc/eager/device_gen_impl.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/op_dispatcher.h"
-#include "csrc/eager/repeated_ops_heuristic.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
 #include "pybind11/pybind11.h"

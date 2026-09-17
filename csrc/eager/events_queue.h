@@ -49,6 +49,17 @@ void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref);
 // Records on the events queue that a new deferred op has been created.
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list);
 
+// Records on the events queue that a new deferred op has been created, and
+// applies the repeated ops heuristic.
+// Returns a vector of DeviceBufferLists that should be materialized, in the
+// order they should be materialized (earliest first).
+std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
+    const SharedDeviceBufferList& device_buffer_list);
+
+// Resets the state of the repeated ops heuristic for all streams, but leaves
+// all events in the queue.
+void ResetRepeatedOpsHeuristicState();
+
 // Clears all references to DeviceBufferLists from the events queue, forgets all
 // prior stream futures, and resets to only a single default stream per device.
 void ClearAllStreams();

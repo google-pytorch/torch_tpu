@@ -21,12 +21,12 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
-#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/status/status.h"
@@ -37,8 +37,8 @@
 #include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
-#include "csrc/common/fingerprint_utils.h"
 #include "csrc/common/layout_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
@@ -47,7 +47,6 @@
 #include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialize.h"
-#include "csrc/eager/repeated_ops_heuristic.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -162,14 +161,45 @@ absl::Status DeferNeverDispatch(absl::Span<const DeviceBufferRef> results,
   return absl::OkStatus();
 }
 
+constexpr std::string_view kRepeatedOpSafeMode = "safe";
+constexpr std::string_view kRepeatedOpAggressiveMode = "aggressive";
+
+bool MustApplyRepeatedOpsHeuristic() {
+  const std::string& detect_repeated_ops =
+      GetEnvOnce<kTorchTpuInternalDetectRepeatedOpsEnvVar>().value_or(
+          std::string(kRepeatedOpSafeMode));
+  return (detect_repeated_ops == kRepeatedOpSafeMode ||
+          detect_repeated_ops == kRepeatedOpAggressiveMode);
+}
+
+MaterializationMode GetRepeatedOpsMaterializationMode() {
+  const std::string& detect_repeated_ops =
+      GetEnvOnce<kTorchTpuInternalDetectRepeatedOpsEnvVar>().value_or(
+          std::string(kRepeatedOpSafeMode));
+  return (detect_repeated_ops == kRepeatedOpAggressiveMode)
+             ? MaterializationMode::kFullGraph
+             : MaterializationMode::kSplitGraph;
+}
+
 // Handles post-op creation events for the kDeferAndFuse eager mode.
-absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results,
-                                  const OpName op_name) {
+absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
   const auto& device_buffer_list = results[0].device_buffer_list();
 
-  // Don't consider metadata-only ops for the repeated ops heuristic.
-  if (MustApplyRepeatedOpsHeuristic() && !IsMetadataOnly(op_name)) {
-    return ApplyRepeatedOpsHeuristic(device_buffer_list);
+  if (MustApplyRepeatedOpsHeuristic()) {
+    // Record the deferred op and detect any repetitions.
+    auto materialization_nodes =
+        RecordDeferredOpAndDetectRepetition(device_buffer_list);
+    // If the repeated ops heuristic detected a loop, we need to materialize
+    // the endpoints of each of the loops (and any prefix before the first one.)
+    // Materialize these one at a time to ensure that we don't fuse across the
+    // loop boundaries.
+    for (const auto& node : materialization_nodes) {
+      TT_RETURN_IF_ERROR(
+          Materialize(node, MaterializationReason::kRepeatedOpDetection,
+                      GetRepeatedOpsMaterializationMode()));
+    }
+  } else {
+    RecordDeferredOpCreated(device_buffer_list);
   }
   return absl::OkStatus();
 }
@@ -202,8 +232,7 @@ absl::StatusOr<std::vector<DeviceBufferRef>> CreateDeferredDeviceBufferList(
                                             /*block=*/true));
       break;
     case EagerMode::kDeferAndFuse:
-      RecordDeferredOpCreated(results[0].device_buffer_list());
-      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results, params.op_name));
+      TT_RETURN_IF_ERROR(DeferAndFuseDispatch(results));
       break;
     case EagerMode::kInternalDeferAll:
       // Record the deferred op, but leave it deferred.

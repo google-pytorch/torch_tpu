@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <iterator>
@@ -61,6 +62,9 @@ namespace torch_tpu {
 
 namespace {
 
+constexpr int kMinRepeatedSubsequenceLength = 2;
+constexpr int kMaxRepeatedSubsequenceLength = 128;
+constexpr int kMinRepetitionCount = 2;
 constexpr int kMaxTorchDevices = 8;
 
 // Creates a new deferred DeviceBufferList which represents a data dependency
@@ -144,11 +148,20 @@ class EventsQueue {
     }
   }
 
-  // Clears all tracked DeviceBufferLists from the events queue.
+  // Clears all tracked DeviceBufferLists from the events queue, and resets the
+  // repeated ops heuristic state.
   void Clear() {
     {
       absl::MutexLock lock(data_ptr_mu_);
       live_nodes_.clear();
+    }
+    {
+      absl::MutexLock lock(deferred_ops_mu_);
+      repetition_hashes_.clear();
+      repetition_i_ = 0;
+      for (auto& event : deferred_ops_) {
+        event.deferred_op_hash = 0;
+      }
     }
     // Explicitly do NOT clear the deferred ops queue.
     // Deferred ops may have side effects; clearing them could result in
@@ -161,9 +174,13 @@ class EventsQueue {
   // go out of scope, it is dead code and can be removed. But if it does have
   // side effects, it must be kept alive until it is executed, even if it is
   // dead code.
+  //
+  // When using the repeated ops heuristic, we also need to hash the deferred op
+  // to efficiently detect repetitions.
   struct DeferredOpEvent {
     static std::optional<DeferredOpEvent> FromDeferredOp(
-        const SharedDeviceBufferList& device_buffer_list) {
+        const SharedDeviceBufferList& device_buffer_list,
+        bool compute_hash = false) {
       if (device_buffer_list->is_constant()) {
         // Compiled mode constants and empty tensors are handled specially;
         // normally, memoizing a computation by materializing it is used to
@@ -190,6 +207,9 @@ class EventsQueue {
             << ToString(deferred_op->op_name()) << ")";
         event.no_side_effects = device_buffer_list;
       }
+      if (compute_hash) {
+        event.deferred_op_hash = deferred_op->Hash();
+      }
       return event;
     }
 
@@ -201,6 +221,11 @@ class EventsQueue {
     // If neither is valid, that indicates the DeviceBufferList has been freed.
     std::weak_ptr<DeviceBufferList> no_side_effects;
     absl_nullable std::shared_ptr<DeviceBufferList> side_effects;
+
+    // If compute_hash is true, this will contain a minimal hash of the
+    // deferred op. This is used for heuristically detecting repeated ops, and
+    // is not sufficient to serve as a cache key.
+    size_t deferred_op_hash = 0;
   };
 
   void RecordDeferredOpCreated(
@@ -210,6 +235,53 @@ class EventsQueue {
       absl::MutexLock lock(deferred_ops_mu_);
       deferred_ops_.push_back(std::move(*event));
     }
+  }
+
+  std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
+      const SharedDeviceBufferList& device_buffer_list) {
+    auto maybe_event = DeferredOpEvent::FromDeferredOp(device_buffer_list,
+                                                       /*compute_hash=*/true);
+    if (!maybe_event.has_value()) {
+      return {};
+    }
+    auto& event = *maybe_event;
+    const size_t new_hash = event.deferred_op_hash;
+
+    absl::MutexLock lock(deferred_ops_mu_);
+    deferred_ops_.push_back(std::move(event));
+
+    // Fast path: assume that the last sequence is still repeating.
+    // For example, if the last six ops were [A, B, C, A, B, C], check if we're
+    // part of another [A, B, C] loop.
+    switch (CheckLastRepeatedSequence(new_hash)) {
+      case EventsQueue::CheckLastRepeatedSequenceResult::kContinueWaiting:
+        // We've seen [A, B] and are expecting [A, B, C]; don't materialize yet.
+        return {};
+      case EventsQueue::CheckLastRepeatedSequenceResult::kRepetitionComplete:
+        // We expected to see [A, B, C] and just completed [A, B, C];
+        // materialize C to take advantage of the already compiled loop region.
+        return {device_buffer_list};
+      case EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak:
+        // We expected to see [A, B, C] but just saw op D.
+        // Reset and scan for a new repeated pattern.
+        break;
+    }
+
+    // Scan for a new repeated sequence.
+    const int64_t repetition_length = FindRepeatedSequence(new_hash);
+    if (repetition_length == 0) {
+      // The deferred op queue does not end with a repeated sequence within
+      // the min/max sequence length range. No early materializations here.
+      return {};
+    }
+
+    // The last `repetition_length` ops have been repeated at least twice.
+    // Record this to avoid repeated scans.
+    RecordRepeatedHashPattern(repetition_length);
+
+    // Get the last node of each loop of the repeated sequence, and the last
+    // node in the non-looping prefix (if any).
+    return GetRepeatedSequenceNodes();
   }
 
   // Returns all the DeferredOpEvents in the queue and clears the queue.
@@ -293,7 +365,53 @@ class EventsQueue {
     core_pinning_mode_ = core_pinning_mode;
   }
 
+  void ResetRepeatedOpsHeuristicState() {
+    absl::MutexLock lock(deferred_ops_mu_);
+    repetition_hashes_.clear();
+    repetition_i_ = 0;
+    for (auto& event : deferred_ops_) {
+      event.deferred_op_hash = 0;
+    }
+  }
+
  private:
+  // Result of CheckLastRepeatedSequence, representing the relationship of the
+  // newest op to the prior loop sequence.
+  enum class CheckLastRepeatedSequenceResult {
+    // We've seen a partial prefix of the last repeated sequence, but not the
+    // full sequence. Collect more ops to see if the sequence completes.
+    kContinueWaiting,
+    // We've seen another full loop of the last repeated sequence. Materialize
+    // the single loop we just completed and reset to check the next repetition.
+    kRepetitionComplete,
+    // We definitely are not following the last repeated sequence. Reset and
+    // scan for a new pattern.
+    kPatternBreak,
+  };
+
+  // Helper function for RecordDeferredOpAndDetectRepetition.
+  // Checks if the new hash is consistent with the last repeated sequence.
+  [[nodiscard]] CheckLastRepeatedSequenceResult CheckLastRepeatedSequence(
+      size_t new_hash) ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+
+  // Helper function for RecordDeferredOpAndDetectRepetition.
+  // Performs a full scan to try to find a repeated sequence.
+  // Returns the length of the sequence if found, or 0 if no sequence is found
+  // within the min/max sequence length range.
+  [[nodiscard]] int64_t FindRepeatedSequence(size_t new_hash)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+
+  // Helper function for RecordDeferredOpAndDetectRepetition.
+  // Records the repeated hash pattern to repetition_hashes_.
+  void RecordRepeatedHashPattern(int64_t repetition_length)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+
+  // Helper function for RecordDeferredOpAndDetectRepetition.
+  // Returns the individual materialization nodes, in order, to compile the
+  // repeated sequence.
+  [[nodiscard]] std::vector<SharedDeviceBufferList> GetRepeatedSequenceNodes()
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+
   absl::Mutex data_ptr_mu_;
   // Hold a strong pointer to the DeviceBufferList as the key; as long as there
   // is a live DataPtr, the DeviceBufferList can't be dropped.
@@ -303,8 +421,158 @@ class EventsQueue {
   absl::Mutex deferred_ops_mu_;
   std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(deferred_ops_mu_);
 
+  // If a sequence repeats twice, we anticipate that it may repeat three or
+  // more times.
+  // We store the hashes of the repeated segment to efficiently identify these
+  // 3rd and future repetitions without repeatedly rescanning.
+  std::vector<size_t> repetition_hashes_ ABSL_GUARDED_BY(deferred_ops_mu_);
+  // The index of the next hash in repetition_hashes_ to check.
+  int64_t repetition_i_ = 0;
+
   std::atomic<CorePinningMode> core_pinning_mode_ = CorePinningMode::kUnpinned;
 };
+
+EventsQueue::CheckLastRepeatedSequenceResult
+EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+  if (repetition_i_ >= repetition_hashes_.size()) {
+    // This should only happen when repetition_hashes_ is empty and
+    // repetition_i_ is 0, meaning that there is no known repeated sequence to
+    // check.
+    return EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak;
+  }
+
+  // There was a previously-identified repetition, check if we're consistent
+  // with another loop of the same sequence.
+  const auto expected_hash = repetition_hashes_[repetition_i_];
+  if (new_hash != expected_hash) {
+    // Pattern break; we were looking for a sequence like [A, B, C] but just
+    // saw a pattern like [A, D], meaning that we need to recheck for a new
+    // repeated pattern.
+    repetition_i_ = 0;
+    repetition_hashes_.clear();
+    return EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak;
+  }
+
+  // Consistent with the repetition so far, see if we've completed it.
+  repetition_i_++;
+  if (repetition_i_ == repetition_hashes_.size()) {
+    // We've just fully completed another repetition. For example we just
+    // pushed hash [C] when the last seen repetition was [A, B, C].
+    // Reset the loop counter, we only need to materialize the list
+    // we just pushed.
+    repetition_i_ = 0;
+    return EventsQueue::CheckLastRepeatedSequenceResult::kRepetitionComplete;
+  }
+  // Keep waiting for more ops to see if we're still repeating the last-seen
+  // loop.
+  return EventsQueue::CheckLastRepeatedSequenceResult::kContinueWaiting;
+}
+
+int64_t EventsQueue::FindRepeatedSequence(size_t new_hash)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+  // Check for repetitions within the minimum and maximum range.
+  if (deferred_ops_.size() <
+      kMinRepetitionCount * kMinRepeatedSubsequenceLength) {
+    // Not enough ops to have the minimum number of repetitions yet.
+    return 0;
+  }
+
+  // Initialize our iterator to be kMinRepeatedSubsequenceLength ops from the
+  // end of the queue.
+  auto prior_repetition_end_it = deferred_ops_.rbegin();
+  int64_t repetition_length = 0;
+  while (repetition_length < kMinRepeatedSubsequenceLength) {
+    ++repetition_length;
+    ++prior_repetition_end_it;
+  }
+
+  // To have a repeated sequence of length N repeat kMinRepetitionCount times,
+  // we need at least kMinRepetitionCount * N ops in the queue.
+  // Thus, the maximum sequence length we can check is
+  // floor(size / kMinRepetitionCount), which we also cap at
+  // kMaxRepeatedSubsequenceLength.
+  const int64_t max_repetition_length =
+      std::min<int64_t>(kMaxRepeatedSubsequenceLength,
+                        (int64_t)deferred_ops_.size() / kMinRepetitionCount);
+
+  // Incrementally increase the sequence length until we find 2 loops at the
+  // end of the deferred ops queue, or we exceed the maximum sequence length.
+  while (prior_repetition_end_it != deferred_ops_.rend() &&
+         repetition_length <= max_repetition_length) {
+    // Look for points where we pushed the same hash value as new_hash.
+    if (prior_repetition_end_it->deferred_op_hash != new_hash) {
+      ++repetition_length;
+      ++prior_repetition_end_it;
+      continue;
+    }
+    // Initialize curr_it at the end of the queue, and prev_it
+    // `repetition_length` from the end.
+    auto prev_it = prior_repetition_end_it;  // intentional copy
+    auto curr_it = deferred_ops_.rbegin();
+
+    bool valid_repetition = true;
+    for (int i = 1; i < kMinRepetitionCount; ++i) {
+      for (int j = 0; j < repetition_length; ++j) {
+        // Note: prev_it is guaranteed valid because we capped
+        // max_repetition_length at 1 / kMinRepetitionCount.
+        if (prev_it->deferred_op_hash != curr_it->deferred_op_hash) {
+          valid_repetition = false;
+          break;
+        }
+        ++prev_it;
+        ++curr_it;
+      }
+      if (!valid_repetition) {
+        break;
+      }
+    }
+    if (valid_repetition) {
+      return repetition_length;
+    }
+    ++repetition_length;
+    ++prior_repetition_end_it;
+  }
+  return 0;
+}
+
+void EventsQueue::RecordRepeatedHashPattern(int64_t repetition_length)
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+  repetition_hashes_.resize(repetition_length);
+  auto reverse_it = deferred_ops_.rbegin();
+  for (int i = repetition_length - 1; i >= 0; --i) {
+    repetition_hashes_[i] = reverse_it->deferred_op_hash;
+    ++reverse_it;
+  }
+}
+
+std::vector<SharedDeviceBufferList> EventsQueue::GetRepeatedSequenceNodes()
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+  std::vector<SharedDeviceBufferList> nodes_to_materialize;
+
+  // TODO(bawilson): correctly split out materialization loops
+  // If the ops queue is like [A, B, C, D, E, C, D, E], optimal compilation
+  // efficiency would be to compile and execute as [A, B] and [C, D, E] x2.
+  // However, we are currently relying on the tensor liveness state at
+  // materialization time. By the time the second iteration happens, we've lost
+  // information about the first iteration.
+  // Suppose there's a cross-loop dependency from D -> C but D0 is stale after
+  // the second loop. Materializing E0 according to the liveness at E1 could
+  // fail to materialize D0, which would break the later materialization of E1
+  // due to an unmaterialized dependency (D0 -> C1 -> E1).
+  // This needs to be addressed by ensuring that we materialize according to
+  // the retroactive state of tensor liveness at *dispatch time*, not at
+  // materialization time. That is, materialize D0 with E0 because D0 was live
+  // when E0 was dispatched. This requires storing a liveness history, not just
+  // a present liveness state.
+  // For now, materializing only the last node will correctly pick up all
+  // live tensors, preventing materialization failures, but may cause additional
+  // inefficient compilations.
+  if (auto last_node = deferred_ops_.back().lock()) {
+    nodes_to_materialize.push_back(std::move(last_node));
+  }
+  return nodes_to_materialize;
+}
 
 // The usage of a node within an execution region.
 enum class OpUsage {
@@ -635,6 +903,14 @@ struct DeviceState {
     // Drop all other stream states.
     absl::MutexLock lock(mutex);
     stream_states.clear();
+  }
+
+  void ResetRepeatedOpsHeuristicState() {
+    default_stream_state.events_queue.ResetRepeatedOpsHeuristicState();
+    absl::MutexLock lock(mutex);
+    for (auto& stream_state : stream_states) {
+      stream_state->events_queue.ResetRepeatedOpsHeuristicState();
+    }
   }
 
   StreamState default_stream_state;
@@ -985,6 +1261,23 @@ void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
                         CorePinningMode pinned) {
   GetOrCreateStreamState(device_index, stream_id)
       ->events_queue.SetCorePinningMode(pinned);
+}
+
+std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
+    const SharedDeviceBufferList& device_buffer_list) {
+  if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
+    // In FX trace mode, nothing happens on device, so we don't add anything to
+    // any stream.
+    return std::vector<SharedDeviceBufferList>();
+  }
+  return GetStreamFor(device_buffer_list)
+      ->events_queue.RecordDeferredOpAndDetectRepetition(device_buffer_list);
+}
+
+void ResetRepeatedOpsHeuristicState() {
+  for (auto& device_state : GetStreamStates().device_states) {
+    device_state.ResetRepeatedOpsHeuristicState();
+  }
 }
 
 }  // namespace torch_tpu

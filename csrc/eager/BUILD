@@ -311,27 +311,6 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_library(
-    name = "repeated_ops_heuristic",
-    srcs = ["repeated_ops_heuristic.cc"],
-    hdrs = ["repeated_ops_heuristic.h"],
-    deps = [
-        ":device_buffer",
-        ":materialize",
-        "//csrc/common:env_vars",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_absl//absl/synchronization",
-    ],
-)
-
-torch_tpu_cc_library(
     name = "materialize_common",
     srcs = ["materialize_common.cc"],
     hdrs = ["materialize_common.h"],
@@ -1027,14 +1006,13 @@ torch_tpu_cc_library(
         ":eager_mode",
         ":events_queue",
         ":materialize",
-        ":repeated_ops_heuristic",
         ":structured_log_buffer",
         "//csrc/common:cache_key",
         "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
+        "//csrc/common:env_vars",
         "//csrc/common:error_utils",
-        "//csrc/common:fingerprint_utils",
         "//csrc/common:layout_utils",
         "//csrc/common:shape",
         "//csrc/common:to_string",
@@ -1049,7 +1027,6 @@ torch_tpu_cc_library(
         "//csrc/ops/view_decomposition:strided_layout",
         "//csrc/ops/view_decomposition:view_sequence",
         "//shims/torch/c10/util:base_headers",
-        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/status",
