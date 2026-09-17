@@ -1116,7 +1116,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_r2c(): expected all dimensions of the input tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
+        tpu="""fft_r2c(): materialization failed with: FFT transform dimensions must be static, but dimension 0 is dynamic in shape [-9223372036854775808]""",
         message_reviewed_by="wan",
     ):
       torch.fft.rfftn(inp)

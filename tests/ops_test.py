@@ -461,6 +461,13 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.int8: {"rtol": 3.7e-6, "atol": 2.4e-3},
         torch.uint8: {"rtol": 3.7e-6, "atol": 2.4e-3},
     },
+    "fft.rfft": {
+        torch.int16: {"rtol": 1e-4, "atol": 1e-4},
+        torch.int32: {"rtol": 1e-4, "atol": 1e-4},
+        torch.int64: {"rtol": 1e-4, "atol": 1e-4},
+        torch.int8: {"rtol": 1e-4, "atol": 1e-4},
+        torch.uint8: {"rtol": 1e-4, "atol": 1e-4},
+    },
     "ldexp": {
         torch.complex64: {"rtol": 4.8e-6, "atol": 1.7e-2},
         torch.float16: {"rtol": 1.3e-3, "atol": 1.6e-2},
@@ -2583,15 +2590,18 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "fft.rfft",
         exclude_dtypes={
-            "cpu": (torch.float64,),
+            "cpu": (torch.float64,) + COMPLEX_DTYPES,
             # TODO: b/518595804 - PyTorch currently does not support half
             # precision FFTs for PrivateUse1 backends. See promote_type_fft
             # in SpectralOps.cpp.
             "gpu": (
-                torch.float64,
-                torch.float16,
-                torch.bfloat16,
-                torch.int4,
+                (
+                    torch.float64,
+                    torch.float16,
+                    torch.bfloat16,
+                    torch.int4,
+                )
+                + COMPLEX_DTYPES
             ),
         },
     )

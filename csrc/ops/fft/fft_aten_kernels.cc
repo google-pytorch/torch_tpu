@@ -43,6 +43,7 @@
 #include "csrc/ops/resize/resize_aten_kernels.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -70,6 +71,11 @@ enum class FftNormalization {
 absl::StatusOr<Dimensions> GetNormalizedDims(const at::Tensor& self,
                                              at::IntArrayRef dim) {
   const int64_t num_dims = self.dim();
+  if (num_dims == 0) {
+    return TT_ERROR(error::kInvalidArgument)
+           << "FFT operations require a tensor with at least 1 dimension, but "
+              "got rank 0 tensor.";
+  }
   Dimensions dims_vec = CopyIntVector(dim);
 
   // If no dimensions are specified, perform FFT on all dimensions
@@ -211,6 +217,21 @@ absl::StatusOr<mlir::MlirOp> BuildFftR2cShlo(
     mlir::MlirOp input, Dimensions dims, const FftNormalization normalization,
     bool onesided) {
   auto input_type = GetTensorTypeOrDie(input);
+  auto input_shape = input_type.getShape();
+
+  const int64_t rank = input_type.getRank();
+  for (int64_t dim : dims) {
+    if (dim < 0 || dim >= rank) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Dimension " << dim << " is out of bounds for tensor of rank "
+             << rank;
+    }
+    if (mlir::ShapedType::isDynamic(input_shape[dim])) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "FFT transform dimensions must be static, but dimension " << dim
+             << " is dynamic in shape " << ToString(input_shape);
+    }
+  }
 
   const auto float_type = input_type.getElementType();
 
@@ -411,13 +432,6 @@ at::Tensor AtenFftR2c(const at::Tensor& self, at::IntArrayRef dim,
   TT_KERNEL(OpName::kFftR2c, param_keys, (self, dim, normalization, onesided), {
     FftNormalization norm_enum = static_cast<FftNormalization>(normalization);
 
-    // Explicitly check for static shape.
-    // Shape introspection is unsafe with dynamism.
-    // NOTE: This implementation is not dynamism safe. It currently
-    // uses static shape indices, more work is needed to determine how
-    // this op supports bounded dynamic values.
-    TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
-
     TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
     auto out_sizes = CopyIntVector(self.sizes());
     if (onesided) {
@@ -455,13 +469,6 @@ at::Tensor& AtenFftR2cOut(const at::Tensor& self, at::IntArrayRef dim,
       {
         FftNormalization norm_enum =
             static_cast<FftNormalization>(normalization);
-
-        // Explicitly check for static shape.
-        // Shape introspection is unsafe with dynamism.
-        // NOTE: This implementation is not dynamism safe. It currently uses
-        // static shape indices, more work is needed to determine how this op
-        // supports bounded dynamic values.
-        TT_THROW_IF_ERROR(FFTValidateStaticShape(self, "input"));
 
         TT_ASSIGN_OR_THROW(auto normalized_dims, GetNormalizedDims(self, dim));
         auto out_sizes = CopyIntVector(self.sizes());
