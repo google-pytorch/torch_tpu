@@ -67,12 +67,6 @@ jobs:
       fail-fast: false
       matrix:
         job_info:
-          - name: "CPU"
-            runner: "linux-x86-n4-16"
-            machine_type: "CPU"
-            config: "ci_cpu_presubmit"
-            suite: "cpu_only"
-            extra_flags: ""
           - name: "TPU v5e Tests (Full RBE)"
             runner: "linux-x86-n4-16"
             machine_type: "TPU v5e (RBE)"
@@ -99,7 +93,11 @@ jobs:
       - name: Establish RBE Tunnel
         if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
         run: |
-          # shellcheck disable=SC2034
+          if ! command -v ssh >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
+            echo "Installing openssh-client..."
+            apt-get update -qq && apt-get install -y -qq openssh-client
+          fi
+
           echo "Starting background tunnel to Buildbarn frontend..."
           gcloud compute tpus tpu-vm ssh spot-tpu-v5e-1789240098-2504 \
             --zone=europe-west4-b \
@@ -107,13 +105,21 @@ jobs:
             -- -N -L 8980:10.202.0.3:30980 &
           TUNNEL_PID=$!
           echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
+
+          CONNECTED=0
           for _ in {1..30}; do
             if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
               echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980."
+              CONNECTED=1
               break
             fi
             sleep 1
           done
+
+          if [ "$CONNECTED" -ne 1 ]; then
+            echo "ERROR: Failed to establish tunnel to Buildbarn frontend on 127.0.0.1:8980"
+            exit 1
+          fi
 
       - name: Run Test Suite
         if: >-
