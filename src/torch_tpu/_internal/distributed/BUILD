@@ -19,7 +19,8 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -29,9 +30,10 @@ package(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "gpu_env",
     srcs = ["gpu_env.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
@@ -39,9 +41,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "handshake",
     srcs = ["handshake.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":process_group_utils",
         "//shims/absl_py/logging",
@@ -52,11 +55,12 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "spmd_util",
     srcs = [
         "spmd_util.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         ":tpu_distributed",
         "//shims/torch:pytorch",
@@ -64,17 +68,19 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "device_utils",
     srcs = ["device_utils.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "@pypi//numpy",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "device_mesh",
     srcs = ["device_mesh.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":device_utils",
         ":tpu_distributed",
@@ -84,27 +90,30 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "from_local",
     srcs = ["from_local.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "process_group_utils",
     srcs = ["process_group_utils.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":collective_ops",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "torchcomm_tpu",
     srcs = ["torchcomm_tpu.py"],
+    py_library = torch_tpu_py_library,
     deps = if_oss(
         [],
         ["@pypi//torchcomms"],
@@ -117,23 +126,25 @@ torch_tpu_py_library(
 )
 
 oss_target(
-    torch_tpu_py_library,
+    py_relocated_library,
     name = "multiprocessing",
     srcs = ["multiprocessing.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py:app",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "collective_ops",
     srcs = ["collective_ops.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "tpu_distributed",
     srcs = ["//csrc/internal/distributed:tpu_distributed.cc"],
     common_lib_packages = [

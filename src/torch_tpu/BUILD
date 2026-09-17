@@ -1,4 +1,3 @@
-load("@rules_license//rules:license.bzl", "license")
 load("@torch_tpu_version//:version.bzl", "WHEEL_VERSION")  # copybara:comment(oss-only)
 load(
     "//build_files:build_defs.bzl",
@@ -9,6 +8,7 @@ load(
 load("//build_files:entry_points.bzl", "ENTRY_POINTS")
 load("//build_files:py_dist_info.bzl", "py_dist_info")
 load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 # Copyright 2025 Google LLC
 #
@@ -30,16 +30,9 @@ load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 licenses(["notice"])
 
 package(
-    default_applicable_licenses = [":license"],
+    default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
-
-license(
-    name = "license",
-    package_name = "torch_tpu",
-)
-
-exports_files(["LICENSE"])
 
 py_dist_info(
     name = "torch_tpu_dist_info",
@@ -48,12 +41,13 @@ py_dist_info(
     version = WHEEL_VERSION,
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_loader",
     srcs = ["_loader.py"],
     data = [
         ":torch_tpu_dist_info",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
@@ -77,29 +71,33 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_versioned_so_loader",
     srcs = ["_versioned_so_loader.py"],
+    py_library = torch_tpu_py_library,
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "exceptions",
     srcs = ["exceptions.py"],
+    py_library = torch_tpu_py_library,
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_tcmalloc_check",
     srcs = ["_tcmalloc_check.py"],
+    py_library = torch_tpu_py_library,
     deps = [":exceptions"],
 )
 
-py_library_providing_imports_info(
+py_relocated_library(
     name = "torch_tpu",
     srcs = [
         "__init__.py",
     ],
     lib_rule = torch_tpu_py_library,
     module_specs = ["torch_tpu.modspec.json"],
+    py_library = py_library_providing_imports_info,
     # Users of this library may rely on autoloading of the TPU backend, in which
     # case they'd import `torch` but not `torch_tpu` directly. However, we need
     # to ensure `torch_tpu` is linked in even if no symbols are explicitly

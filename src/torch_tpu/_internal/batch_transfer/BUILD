@@ -17,7 +17,8 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 licenses(["notice"])
 
@@ -26,15 +27,16 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "batch_transfer",
     srcs = [
         "__init__.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [":batch_transfer_impl"],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "batch_transfer_impl",
     srcs = ["//csrc/internal/batch_transfer:batch_transfer_impl.cc"],
     common_lib_packages = [

@@ -19,15 +19,17 @@ load(
     "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "environment",
     srcs = ["environment.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "//src/torch_tpu/_internal:env",
@@ -37,9 +39,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "singlehost_wrapper",
     srcs = ["singlehost_wrapper.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "//src/torch_tpu/_internal:env_utils",
@@ -49,9 +52,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "multihost_wrapper",
     srcs = ["multihost_wrapper.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "//src/torch_tpu/_internal:env",

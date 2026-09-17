@@ -17,9 +17,10 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -35,7 +36,7 @@ package(
 # re-export the submodules provided by :pallas_lib. This prevents PyStrictDeps
 # violations at downstream use sites that import `from torch_tpu._internal.pallas import pallas`
 # without requiring them to directly depend on :pallas_lib.
-py_library_providing_imports_info(
+py_relocated_library(
     name = "pallas",
     srcs = [
         "__init__.py",
@@ -44,6 +45,7 @@ py_library_providing_imports_info(
     module_specs = [
         "pallas.modspec.json",
     ],
+    py_library = py_library_providing_imports_info,
     deps = [
         ":pallas_lib",
         # The "pallas" library doesn't work without this dependency, but it's not obvious
@@ -54,23 +56,26 @@ py_library_providing_imports_info(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "pallas_compat",
     srcs = ["_compat.py"],
+    py_library = torch_tpu_py_library,
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "mock_device",
     srcs = ["_mock_device.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":mock_device",
         ":pallas_compat",
@@ -87,9 +92,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "api",
     srcs = ["api.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":pallas_lib",
         "//shims/jax:pallas_tpu",  # build_cleaner: keep
@@ -99,14 +105,15 @@ torch_tpu_py_library(
 # NOTE: We use pytype_strict_library here instead of torch_tpu_py_library to break a circular
 # dependency cycle where torch_tpu_py_library automatically injects a dependency on
 # //src/torch_tpu/_internal:testing.
-pytype_strict_library(
+py_relocated_library(
     # PY_LIBRARY_OK=Break circular dependency cycle with _internal:testing.
     name = "pallas_kernel_generate_utils",
     srcs = ["pallas_kernel_generate_utils.py"],
+    py_library = pytype_strict_library,
     deps = [],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "tpu_torch_pallas",
     srcs = ["//csrc/internal/pallas:pallas_py.cc"],
     common_lib_packages = [

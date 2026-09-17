@@ -92,7 +92,9 @@ class TestFixturesTest(seed_test_utils.RepeatableTest):
   def test_unusual_sequence_pop_empty(self):
     """Tests popping from an empty UnusualSequence raises IndexError."""
     seq = test_fixtures.UnusualSequence()
-    with self.assertRaisesWithLiteralMatch(IndexError, "pop from empty list"):
+    with self.assertRaisesWithLiteralMatch(  # ASSERT_RAISES_OK=internal
+        IndexError, "pop from empty list"
+    ):
       seq.pop()
 
   def test_identity_module(self):
@@ -113,7 +115,9 @@ class TestFixturesTest(seed_test_utils.RepeatableTest):
     msg = crash_module.crash_message
 
     # Assert
-    with self.assertRaisesWithLiteralMatch(ValueError, msg):
+    with self.assertRaisesWithLiteralMatch(  # ASSERT_RAISES_OK=internal
+        ValueError, msg
+    ):
       # Act
       crash_module.crash = True
       crash_module(test_tensor)
@@ -127,7 +131,9 @@ class TestFixturesTest(seed_test_utils.RepeatableTest):
     msg = test_fixtures.CrashBackwardFunction.crash_message
 
     # Assert
-    with self.assertRaisesWithLiteralMatch(ValueError, msg):
+    with self.assertRaisesWithLiteralMatch(  # ASSERT_RAISES_OK=internal
+        ValueError, msg
+    ):
       # Act
       crash_module.crash = True
       # TODO(b/505036496): Investigate autograd slowness after autoload.

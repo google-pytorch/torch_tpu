@@ -18,7 +18,8 @@ load(
     "torch_tpu_py_library",
     "torch_tpu_py_test",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -27,9 +28,10 @@ package(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "annotations",
     srcs = ["annotations.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":annotations_py",
     ],
@@ -51,7 +53,7 @@ torch_tpu_py_test(
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "annotations_py",
     srcs = ["//csrc/internal/device_utils:annotations_py.cc"],
     common_lib_packages = [

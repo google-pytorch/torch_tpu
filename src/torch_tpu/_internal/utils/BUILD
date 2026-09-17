@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -23,9 +24,10 @@ package(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "utils",
     srcs = ["utils.py"],
+    py_library = torch_tpu_py_library,
     tags = [
         # Prevent build_cleaner from adding @pypi//jax/_src/*, which is a lazy import
         # that is invisible to this package. See go/build-cleaner/customize-behavior#ignore-for-dep
@@ -42,12 +44,13 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     # TODO(wan): mark this target as testonly. We cannot do it today as it's
     # included in the wheel, which is not testonly. We need to figure out a
     # way to move this target out of the wheel.
     name = "test_utils",
     srcs = ["test_utils.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":utils",
         "//shims/torch:pytorch",
@@ -55,9 +58,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "hardware",
     srcs = ["hardware.py"],
+    py_library = torch_tpu_py_library,
     deps = ["@pypi//immutabledict"],
 )
 
@@ -93,19 +97,21 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "tracer_utils",
     srcs = ["tracer_utils.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":utils",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "test_fixtures",
     testonly = True,
     srcs = ["test_fixtures.py"],
+    py_library = torch_tpu_py_library,
     deps = ["//shims/torch:pytorch"],
 )
 
@@ -157,17 +163,19 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "log_utils",
     srcs = ["log_utils.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "annotations",
     srcs = ["annotations.py"],
+    py_library = torch_tpu_py_library,
 )
 
 torch_tpu_py_test(

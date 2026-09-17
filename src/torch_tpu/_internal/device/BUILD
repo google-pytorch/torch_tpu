@@ -17,16 +17,18 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_device_module",
     srcs = ["_device_module.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":_device_ops_backend",
         "//csrc/eager:amp_policies",
@@ -41,16 +43,17 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_tpu_backend_config",
     srcs = ["_tpu_backend_config.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "_device_ops_backend",
     srcs = ["//csrc/internal/device:device_rt.cc"],
     common_lib_packages = [

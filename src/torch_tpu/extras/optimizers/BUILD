@@ -17,50 +17,56 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "optim",
     srcs = ["optim.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "adamw",
     srcs = ["adamw.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":optim",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "sgd",
     srcs = ["sgd.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":optim",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "muon",
     srcs = ["muon.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":optim",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "single_trace_trainer",
     srcs = ["single_trace_trainer.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":adamw",
         ":muon",

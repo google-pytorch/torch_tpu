@@ -17,7 +17,8 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -27,15 +28,16 @@ package(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "execution_mode",
     srcs = [
         "__init__.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [":execution_mode_impl"],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "execution_mode_impl",
     srcs = ["//csrc/internal/execution_mode:execution_mode_impl.cc"],
     common_lib_packages = [

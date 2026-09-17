@@ -156,13 +156,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_experimental_invalid_reason_raises(self):
     """Verifies that empty or whitespace reason raises ValueError for @experimental."""
-    with self.assertRaises(ValueError):
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=internal
 
       @experimental("")
       def dummy_one():
         pass
 
-    with self.assertRaises(ValueError):
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=internal
 
       @experimental("   ")
       def dummy_two():
@@ -170,13 +170,13 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
 
   def test_deprecated_invalid_args_raises(self):
     """Verifies that empty version or reason raises ValueError for @deprecated."""
-    with self.assertRaises(ValueError):
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=internal
 
       @deprecated(version="", reason="Valid reason")
       def dummy_one():
         pass
 
-    with self.assertRaises(ValueError):
+    with self.assertRaises(ValueError):  # ASSERT_RAISES_OK=internal
 
       @deprecated(version="2.13", reason="")
       def dummy_two():
@@ -506,7 +506,7 @@ class AnnotationsTest(seed_test_utils.RepeatableTest):
       self.assertLen(w, 1)
 
     # 3. Unregistered attribute raises AttributeError
-    with self.assertRaises(AttributeError):
+    with self.assertRaises(AttributeError):  # ASSERT_RAISES_OK=internal
       mock_module_getattr("UNKNOWN_CONST")
 
   def test_attach_stage_metadata_with_func_target(self):

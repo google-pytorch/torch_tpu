@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
 
 package(
@@ -24,7 +25,7 @@ package(
 # re-export the submodules provided by :export_lib. This prevents PyStrictDeps
 # violations at downstream use sites that import `from torch_tpu._internal.export import export`
 # without requiring them to directly depend on :export_lib.
-py_library_providing_imports_info(
+py_relocated_library(
     name = "export",
     srcs = [
         "__init__.py",
@@ -33,16 +34,18 @@ py_library_providing_imports_info(
     module_specs = [
         "export.modspec.json",
     ],
+    py_library = py_library_providing_imports_info,
     deps = [
         ":export_lib",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "export_lib",
     srcs = [
         "export.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "//shims/torch:pytorch",
