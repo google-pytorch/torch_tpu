@@ -72,6 +72,7 @@ torch_tpu_cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Support",
         "@llvm-project//mlir:VectorDialect",
         "@xla//xla/mosaic:tpu_dialect",
     ],
