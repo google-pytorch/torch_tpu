@@ -21,10 +21,20 @@ import sys
 import threading
 from typing import Final
 
+from torch_tpu._internal import env_utils
+
+_AUTOLOAD_ENV_VAR: Final[str] = "TORCH_DEVICE_BACKEND_AUTOLOAD"
+
 # Disable autoload while the module loads to prevent circular imports, see:
 # https://docs.pytorch.org/tutorials/unstable/python_extension_autoload.html
-_OLD_AUTOLOAD_ENV: Final[str] = os.getenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "1")
-os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+#
+# These two lines run before `import torch` below, so they cannot go through
+# `torch_tpu._internal.env`: that pybind11 extension links libtorch, and
+# importing it here would trigger the very cycle they exist to break.
+_OLD_AUTOLOAD_ENV: Final[str] = os.getenv(  # PY_ENVIRON_OK=pre-torch.
+    _AUTOLOAD_ENV_VAR, "1"
+)
+os.environ[_AUTOLOAD_ENV_VAR] = "0"  # PY_ENVIRON_OK=pre-torch.
 
 # pylint: disable=g-import-not-at-top
 import torch
@@ -350,7 +360,7 @@ def load(allow_xla_backend: bool | None = None) -> None:
       variable, and if neither is specified this defaults to `False`.
   """
   # On autoload restore the original autoload value
-  os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = _OLD_AUTOLOAD_ENV
+  env_utils.set_str_env(_AUTOLOAD_ENV_VAR, _OLD_AUTOLOAD_ENV)
 
   from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
 

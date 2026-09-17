@@ -15,10 +15,18 @@
 """Python-side helpers for environment variables.
 
 The `torch_tpu._internal.env` module exposes the C++ `GetEnvOnce()` family for
-*reading* environment variables. This module complements it with helpers that
-also *write* them, which cannot live on the C++ side: `SetEnv()` calls
-`setenv()`, which updates the C-level environment but leaves Python's
-`os.environ` mapping stale.
+*reading* environment variables, and is what TorchTPU's Python code should use.
+
+This module covers the one case those readers cannot: *writing* a variable. The
+C++ `SetEnv()` calls `setenv()`, which updates the C-level environment but
+leaves Python's `os.environ` mapping stale.
+
+Reads have no such excuse, so this module deliberately offers no plain getter.
+Code that genuinely cannot use `torch_tpu._internal.env` -- bootstrap code that
+runs before `torch` is importable, for instance -- should call `os.environ`
+directly and justify it with a `# PY_ENVIRON_OK=<reason>` comment, which the
+`CheckPythonEnvAccess` presubmit looks for. Routing such a read through a helper
+here would hide it from that check.
 """
 
 import os
@@ -27,6 +35,21 @@ from typing import Callable
 # Maps an environment variable name to the value resolved for it by
 # get_and_set_str_env_once().
 _resolved_values: dict[str, str] = {}
+
+
+def set_str_env(name: str, value: str) -> None:
+  """Sets an environment variable, overwriting any existing value.
+
+  Writes go through `os.environ` rather than the C++ `SetEnv()`, which would
+  leave Python's `os.environ` mapping stale. Assigning to `os.environ` also
+  updates the C-level environment, so C++ readers and child processes see the
+  new value -- unless a C++ reader has already memoized it via `GetEnvOnce()`.
+
+  Args:
+    name: The name of the environment variable.
+    value: The value to set it to. The empty string counts as set.
+  """
+  os.environ[name] = value  # PY_ENVIRON_OK=the sanctioned writer.
 
 
 def get_and_set_str_env_once(
@@ -57,7 +80,7 @@ def get_and_set_str_env_once(
   Returns:
     The value of the environment variable.
   """
-  value = os.environ.get(name)
+  value = os.environ.get(name)  # PY_ENVIRON_OK=must observe writes.
   if value is not None:
     return value
 
@@ -68,5 +91,5 @@ def get_and_set_str_env_once(
   if value is None:
     value = value_factory()
     _resolved_values[name] = value
-  os.environ[name] = value
+  set_str_env(name, value)
   return value

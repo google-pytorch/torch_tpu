@@ -64,6 +64,7 @@ torch_tpu_py_library(
     srcs = ["_mock_device.py"],
     deps = [
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:env",
     ],
 )
 
