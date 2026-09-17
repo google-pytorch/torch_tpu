@@ -32,7 +32,7 @@ from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+_EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def setUpModule():
@@ -1116,7 +1116,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_r2c(): expected all dimensions of the input tensor to be static, got 1 dynamic dimension within shape [10 (up to 20)]""",
+        tpu="""fft_r2c(): materialization failed with: expected FFT dimension 0 to be static, got dynamic dimension""",
         message_reviewed_by="wan",
     ):
       torch.fft.rfftn(inp)

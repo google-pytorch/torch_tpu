@@ -37,7 +37,6 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -48,11 +47,9 @@ namespace {
 
 // Applies constant padding (and/or negative-padding cropping) along a single
 // dimension `dim` of `input`, updating `cur_shape[dim]` in place.
-mlir::MlirOp PadSingleDimensionShlo(mlir::MlirOp input, mlir::MlirOp val_scalar,
-                                    const mlir::RankedTensorType input_type,
-                                    const int64_t dim, const int64_t left_pad,
-                                    const int64_t right_pad,
-                                    Dimensions& cur_shape) {
+absl::StatusOr<mlir::MlirOp> PadSingleDimensionShlo(
+    mlir::MlirOp input, mlir::MlirOp val_scalar, const int64_t dim,
+    const int64_t left_pad, const int64_t right_pad, Dimensions& cur_shape) {
   const int64_t rank = cur_shape.size();
   const int64_t orig_dim_size = cur_shape[dim];
   mlir::MlirBuilder& builder = input.getBuilder();
@@ -86,22 +83,21 @@ mlir::MlirOp PadSingleDimensionShlo(mlir::MlirOp input, mlir::MlirOp val_scalar,
   std::vector<mlir::MlirOp> parts;
   parts.reserve(3);
   if (effective_left_pad > 0) {
-    Dimensions left_shape = cur_shape;
-    left_shape[dim] = effective_left_pad;
-    const auto left_type =
-        mlir::RankedTensorType::get(left_shape, input_type.getElementType());
-    parts.push_back(mlir::stablehlo::BroadcastInDim(left_type, val_scalar, {}));
+    mlir::stablehlo::Dimensions target_dims = GetDimensions(input);
+    target_dims[dim] = {effective_left_pad};
+    TT_ASSIGN_OR_RETURN(auto left_block,
+                        BroadcastIfNeeded(val_scalar, target_dims));
+    parts.push_back(left_block);
   }
   if (cur_shape[dim] > 0 || parts.empty()) {
     parts.push_back(core);
   }
   if (effective_right_pad > 0) {
-    Dimensions right_shape = cur_shape;
-    right_shape[dim] = effective_right_pad;
-    const auto right_type =
-        mlir::RankedTensorType::get(right_shape, input_type.getElementType());
-    parts.push_back(
-        mlir::stablehlo::BroadcastInDim(right_type, val_scalar, {}));
+    mlir::stablehlo::Dimensions target_dims = GetDimensions(input);
+    target_dims[dim] = {effective_right_pad};
+    TT_ASSIGN_OR_RETURN(auto right_block,
+                        BroadcastIfNeeded(val_scalar, target_dims));
+    parts.push_back(right_block);
   }
 
   cur_shape[dim] += effective_left_pad + effective_right_pad;
@@ -129,9 +125,12 @@ mlir::MlirOp PadSingleDimensionShlo(mlir::MlirOp input, mlir::MlirOp val_scalar,
 absl::StatusOr<mlir::MlirOp> BuildConstantPadNdShlo(mlir::MlirOp input,
                                                     mlir::MlirOp val_scalar,
                                                     const Dimensions& pad_vec) {
-  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  Dimensions cur_shape(input_type.getShape().begin(),
-                       input_type.getShape().end());
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  Dimensions cur_shape;
+  cur_shape.reserve(input_dims.size());
+  for (const auto& d : input_dims) {
+    cur_shape.push_back(d.size);
+  }
   const int64_t rank = cur_shape.size();
   const int64_t num_pad_dims = pad_vec.size() / 2;
 
@@ -143,8 +142,9 @@ absl::StatusOr<mlir::MlirOp> BuildConstantPadNdShlo(mlir::MlirOp input,
     if (left_pad == 0 && right_pad == 0) {
       continue;
     }
-    result = PadSingleDimensionShlo(result, val_scalar, input_type, dim,
-                                    left_pad, right_pad, cur_shape);
+    TT_ASSIGN_OR_RETURN(
+        result, PadSingleDimensionShlo(result, val_scalar, dim, left_pad,
+                                       right_pad, cur_shape));
   }
   return result;
 }

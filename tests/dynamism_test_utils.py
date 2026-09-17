@@ -21,7 +21,7 @@ Handles the following details for per-op unit testing:
   - Mark dependent args as dynamic.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import enum
 import random
 from typing import Any
@@ -84,9 +84,56 @@ foreach_ternary_ops = frozenset(
 
 def _get_dynamic_dimension_candidates(
     input_value: torch.Tensor,
+    op_info: core.OpInfo | None = None,
+    args: Sequence[Any] = (),
+    kwargs: Mapping[str, Any] | None = None,
 ) -> Sequence[int]:
   """Returns a list of dynamic dimension candidates for the given tensor."""
   if isinstance(input_value, torch.Tensor):
+    num_dims = input_value.ndim
+    if num_dims == 0:
+      return []
+    if op_info is not None and (
+        op_info.name.startswith("fft.")
+        or op_info.name in ["_fft_c2c", "_fft_c2r", "_fft_r2c"]
+    ):
+      transform_dims = set()
+      dim_arg = None
+      if kwargs and "dim" in kwargs:
+        dim_arg = kwargs["dim"]
+      elif op_info.name in ["_fft_c2c", "_fft_c2r", "_fft_r2c"]:
+        if len(args) >= 1:
+          dim_arg = args[0]
+      elif len(args) >= 2:
+        dim_arg = args[1]
+
+      if dim_arg is not None:
+        if isinstance(dim_arg, int):
+          transform_dims.add(dim_arg % num_dims)
+        elif isinstance(dim_arg, (tuple, list)):
+          for d in dim_arg:
+            transform_dims.add(d % num_dims)
+      else:
+        name = op_info.name
+        if any(
+            name.endswith(sfx)
+            for sfx in ["fft2", "ifft2", "rfft2", "irfft2", "hfft2", "ihfft2"]
+        ):
+          transform_dims.add((num_dims - 2) % num_dims)
+          transform_dims.add((num_dims - 1) % num_dims)
+        elif any(
+            name.endswith(sfx)
+            for sfx in ["fftn", "ifftn", "rfftn", "irfftn", "hfftn", "ihfftn"]
+        ):
+          transform_dims.update(range(num_dims))
+        else:
+          transform_dims.add((num_dims - 1) % num_dims)
+
+      return [
+          i
+          for i, sz in enumerate(input_value.shape)
+          if sz > 1 and i not in transform_dims
+      ]
     return [i for i, sz in enumerate(input_value.shape) if sz > 1]
   return []
 
@@ -94,6 +141,8 @@ def _get_dynamic_dimension_candidates(
 def _get_canonical_input_value(
     op_info: core.OpInfo,
     input_value: torch.Tensor | Sequence[torch.Tensor],
+    args: Sequence[Any] = (),
+    kwargs: Mapping[str, Any] | None = None,
 ) -> torch.Tensor:
   """Returns the canonical input value for the given input.
 
@@ -104,6 +153,8 @@ def _get_canonical_input_value(
   Args:
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
+    args: The arguments to the op.
+    kwargs: The keyword arguments to the op.
 
   Returns:
     The canonical input value for the given input.
@@ -112,7 +163,9 @@ def _get_canonical_input_value(
   if isinstance(input_value, (list, tuple)):
     # Scan for valid input values
     valid_inputs = [
-        v for v in input_value if not _should_skip_input_marking(op_info, v)
+        v
+        for v in input_value
+        if not _should_skip_input_marking(op_info, v, args, kwargs=kwargs)
     ]
     if valid_inputs:
       return valid_inputs[0]
@@ -122,13 +175,18 @@ def _get_canonical_input_value(
 
 
 def _should_skip_input_marking(
-    op_info: core.OpInfo, input_value: torch.Tensor | Any
+    op_info: core.OpInfo,
+    input_value: torch.Tensor | Any,
+    args: Sequence[Any] = (),
+    kwargs: Mapping[str, Any] | None = None,
 ) -> None | str:
   """Verifies that the input_value is a valid input for dynamism.
 
   Args:
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
+    args: The arguments to the op.
+    kwargs: The keyword arguments to the op.
 
   Returns:
     None if the op is safe to run, or a string containing the reason why
@@ -140,11 +198,16 @@ def _should_skip_input_marking(
     # empty, empty_strided, full, tril, ones, zeros, stack, tril_indices.
     return f"Input value is not a tensor, got {type(input_value)}."
   dtype = input_value.dtype
-  candidates = _get_dynamic_dimension_candidates(input_value)
+  candidates = _get_dynamic_dimension_candidates(
+      input_value, op_info, args, kwargs=kwargs
+  )
   if not candidates:
     return "No valid input dimensions to mark dynamic."
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
-  if dtype in [torch.complex64, torch.complex128]:
+  if dtype in [torch.complex64, torch.complex128] and not (
+      op_info.name.startswith("fft.")
+      or op_info.name in ["_fft_c2c", "_fft_c2r", "_fft_r2c"]
+  ):
     return f"{op_info.name} op is not supported with dtype {dtype}."
   # _foreach_exp_ does not support integral dtypes on TPU.
   if op_info.name == "_foreach_exp_" and not dtype.is_floating_point:
@@ -177,7 +240,6 @@ untriaged_ops_deny_list: dict[
     "fft.rfft": ALL_MODES,  # expected all dimensions to be static
     "fft.irfft": ALL_MODES,  # expected all dimensions to be static
     "fft.ifft": ALL_MODES,  # expected all dimensions to be static
-    "fft.fft": ALL_MODES,  # expected all dimensions to be static
     "flip": ALL_MODES,  # dynamic triage (invalid result)
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
@@ -267,6 +329,7 @@ def verify_op_supports_dynamism(
     op_info: core.OpInfo,
     input_value: torch.Tensor,
     args: Sequence[Any],
+    kwargs: Mapping[str, Any] | None = None,
     mode: DynamismMode = DynamismMode.EAGER,
 ) -> None | str:
   """Checks if an op+input is supported with dynamism.
@@ -278,6 +341,7 @@ def verify_op_supports_dynamism(
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
+    kwargs: The keyword args to the op test.
     mode: The active dynamism mode (EAGER or COMPILE).
 
   Returns:
@@ -299,10 +363,18 @@ def verify_op_supports_dynamism(
   # _pytree.tree_flatten to recursively inspect the input_value and args,
   # ensuring that tensors inside lists, tuples, or other nested structures
   # (common in foreach ops) are properly vetted.
-  for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+  for value in _pytree.tree_flatten((input_value, args, kwargs))[0]:
+    if (
+        isinstance(value, torch.Tensor)
+        or value is input_value
+        or not (
+            op.name.startswith("fft.")
+            or op.name in ["_fft_c2c", "_fft_c2r", "_fft_r2c"]
+        )
+    ):
+      skip_input = _should_skip_input_marking(op, value, args, kwargs=kwargs)
+      if skip_input:
+        return skip_input
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -334,6 +406,23 @@ def verify_op_supports_dynamism(
   reduction_deny_list = ["all", "any"]
   if op.name in reduction_deny_list:
     return f"reduction op {op.name} is not supported with dynamism."
+
+  if mode == DynamismMode.EAGER and op.name.startswith("fft."):
+    has_resizing = (
+        kwargs is not None
+        and (kwargs.get("n") is not None or kwargs.get("s") is not None)
+    ) or (len(args) >= 1 and args[0] is not None)
+    is_real_fft = op.name in ["fft.rfft", "fft.rfft2", "fft.rfftn"]
+    is_real_decomposition = (
+        isinstance(input_value, torch.Tensor)
+        and not input_value.dtype.is_complex
+        and not is_real_fft
+    )
+    if has_resizing or is_real_decomposition:
+      return (
+          f"{op.name} with resizing or real-to-complex decomposition creates"
+          " intermediate tensors not supported in eager dynamism."
+      )
 
   # Valid testcase!
   return None
@@ -410,6 +499,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        FftDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -421,21 +511,29 @@ class DynamicOpInfo:
       seed: int,
       input_value: torch.Tensor,
       args: Sequence[Any],
+      kwargs: Mapping[str, Any] | None = None,
       mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the op as dynamic."""
 
     logging.debug(
-        "[DynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
+        "[DynamicOpInfo] mark_dynamic(%s, %s, %s, %s, mode=%s)",
         self.op_info.name,
         utils.InputMetadata(input_value),
         utils.InputMetadata(args),
+        kwargs,
         mode,
     )
 
     # Allow picking a list value from input_value for ops like cat, etc.
-    input_value = _get_canonical_input_value(self.op_info, input_value)
-    candidates = _get_dynamic_dimension_candidates(input_value)
+    input_value = _get_canonical_input_value(
+        self.op_info, input_value, args, kwargs=kwargs
+    )
+    candidates = _get_dynamic_dimension_candidates(
+        input_value, self.op_info, args, kwargs=kwargs
+    )
+    if not candidates:
+      return
     random.seed(seed)
     idx = random.choice(candidates)
     input_value_str = utils.get_tensor_summary(input_value, data=False)
@@ -549,6 +647,7 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
       seed: int,
       input_value: torch.Tensor | Sequence[torch.Tensor],
       args: Sequence[Any],
+      kwargs: Mapping[str, Any] | None = None,
       mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the op as dynamic, handling for list types."""
@@ -567,7 +666,7 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
     n_dynamic = 0
     for idx, value in enumerate(input_value):
       # If args not a list, no need to mark anything dependent dynamic
-      if _should_skip_input_marking(self.op_info, value):
+      if _should_skip_input_marking(self.op_info, value, kwargs=kwargs):
         continue
 
       # For test speed, limit number of dynamic args.
@@ -581,14 +680,14 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
           or not isinstance(args, (list, tuple))
           or not isinstance(args[0], (list, tuple))
       ):
-        super().mark_dynamic(seed, value, [], mode=mode)
+        super().mark_dynamic(seed, value, [], kwargs=kwargs, mode=mode)
         continue
 
       # Binary ops expect len(args) == 1
       if self.op_info.name in foreach_binops:
         rhs_vals = args[0]
         BinaryElementwiseDynamicOpInfo(self.op_info).mark_dynamic(
-            seed, value, (rhs_vals[idx],), mode=mode
+            seed, value, (rhs_vals[idx],), kwargs=kwargs, mode=mode
         )
         continue
 
@@ -604,12 +703,13 @@ class ForEachDynamicOpInfo(DynamicOpInfo):
             seed,
             value,
             (rhs_vals[idx], ehs_vals[idx]),  # pyrefly: ignore[unsupported-operation]
+            kwargs=kwargs,
             mode=mode,
         )
         continue
 
       # Not binary or ternary, no dependent args.
-      super().mark_dynamic(seed, value, [], mode=mode)
+      super().mark_dynamic(seed, value, [], kwargs=kwargs, mode=mode)
       logging.debug(
           "[ForEachDynamicOpInfo] no dependent args %s",
           utils.InputMetadata(args),
@@ -656,11 +756,25 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
     return
 
 
+class FftDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for FFT ops."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name.startswith("fft.") or op_info.name in [
+        "_fft_c2c",
+        "_fft_c2r",
+        "_fft_r2c",
+    ]
+
+
 def mark_input_dynamic(
     seed: int,
     op_info: core.OpInfo,
     input_value: torch.Tensor | Sequence[torch.Tensor],
     args: Sequence[Any],
+    kwargs: Mapping[str, Any] | None = None,
     mode: DynamismMode = DynamismMode.EAGER,
 ):
   """Mark an arg tensor as dynamic.
@@ -670,6 +784,7 @@ def mark_input_dynamic(
     op_info: The op to be tested.
     input_value: The primary input value to for the op test.
     args: The additional args to the op test.
+    kwargs: The keyword args to the op test.
     mode: The dynamism mode (EAGER or COMPILE).
   """
 
@@ -678,4 +793,6 @@ def mark_input_dynamic(
       ">>> Marking input dynamic using"
       f" {type(dynamic_op_info)} (mode={mode.value})"
   )
-  dynamic_op_info.mark_dynamic(seed, input_value, args, mode=mode)
+  dynamic_op_info.mark_dynamic(
+      seed, input_value, args, kwargs=kwargs, mode=mode
+  )

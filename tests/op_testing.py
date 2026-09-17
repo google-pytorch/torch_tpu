@@ -4427,7 +4427,11 @@ class OpInfoTestBase(
 
       # Verify op is supported with dynamism.
       skip = self.dynamism_filter_fn(
-          op, op_input.input_value, op_input.args, mode=dynamism_mode
+          op,
+          op_input.input_value,
+          op_input.args,
+          kwargs=op_input.kwargs,
+          mode=dynamism_mode,
       )
       if skip is not None:
         self.skipTest(skip)
@@ -4441,6 +4445,7 @@ class OpInfoTestBase(
           op,
           device_op_input.input_value,
           device_op_input.args,
+          kwargs=device_op_input.kwargs,
           mode=dynamism_mode,
       )
 
@@ -4453,6 +4458,7 @@ class OpInfoTestBase(
       backend = "tpu" if str(device) == "tpu" else "inductor"
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       if is_dynamic_test:
+        torch._dynamo.reset()
         op_func = torch.compile(
             op_func, backend=backend, options={"bounded_dynamism": True}
         )
