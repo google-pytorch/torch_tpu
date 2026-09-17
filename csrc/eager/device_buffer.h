@@ -664,6 +664,12 @@ class DeviceBufferList {
     return data_.materialization_future();
   }
 
+  // Returns true if Synchronize() has already completed successfully on this
+  // DeviceBufferList.
+  [[nodiscard]] bool is_synchronized() const {
+    return is_synchronized_.load(std::memory_order_acquire);
+  }
+
   // Awaits for the device buffer to be ready to read. If the buffer is the
   // output of computation, then also waits for the computation to be done.
   absl::Status Synchronize() const;
@@ -887,6 +893,13 @@ class DeviceBufferList {
   // This is incremented by MakeDataPtr and decremented by
   // DeleteDeviceBufferRef, and nowhere else.
   std::atomic_int64_t live_data_ptrs_ = 0;
+
+  // Tracks whether all buffers in this DeviceBufferList have already been
+  // awaited to completion via Synchronize(). Once set to true (with release
+  // semantics), subsequent synchronization checks can short-circuit (with
+  // acquire semantics) without releasing the Python GIL or re-awaiting PJRT
+  // ready futures.
+  mutable std::atomic<bool> is_synchronized_{false};
 
   // A DeviceBufferList::Data is the data backing a DeviceBufferList. It is a
   // thread-safe class that allows for deferred ops (or placeholders) to later

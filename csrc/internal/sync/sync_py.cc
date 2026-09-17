@@ -182,13 +182,25 @@ bool TrySyncSingleTensorFast(PyObject* ptr, bool wait) {
   if (t.device().type() != GetPrivateUse1DeviceType()) {
     return true;
   }
-  if (wait) {
-    py::gil_scoped_release release;
-    TT_THROW_IF_ERROR(SynchronizeTensors(absl::MakeConstSpan(&t, 1)));
-    return true;
-  }
   TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref, GetBaseBuffer(t));
   const auto& node = buffer_ref.device_buffer_list();
+  if (wait) {
+    // If the underlying DeviceBufferList is already synchronized, return
+    // immediately while holding the GIL to avoid py::gil_scoped_release and
+    // future-await overhead. Note that `is_synchronized() == true` implies
+    // `is_materialized() == true` because `is_synchronized_` is only set after
+    // `Synchronize()` (which awaits materialization) succeeds.
+    if (node->is_synchronized()) {
+      return true;
+    }
+    py::gil_scoped_release release;
+    if (node->is_materialized()) {
+      TT_THROW_IF_ERROR(node->Synchronize());
+    } else {
+      TT_THROW_IF_ERROR(SynchronizeTensors(absl::MakeConstSpan(&t, 1)));
+    }
+    return true;
+  }
   if (node->is_deferred() || node->is_placeholder()) {
     py::gil_scoped_release release;
     TT_THROW_IF_ERROR(Materialize(absl::MakeConstSpan(&buffer_ref, 1),
@@ -230,6 +242,24 @@ bool TrySyncTensorArrayFast(PyObject* const* items, Py_ssize_t size,
     return true;
   }
   if (wait) {
+    // Check if all TPU tensors in the sequence are already synchronized before
+    // releasing the GIL (`is_synchronized()` implies `is_materialized()`).
+    // When synchronizing multiple outputs from a single compiled execution,
+    // they share a single DeviceBufferList, so after the first synchronization
+    // this check succeeds without GIL release or future waits.
+    bool all_synchronized = true;
+    for (const at::Tensor* tensor_ptr : tpu_tensor_ptrs) {
+      TT_ASSIGN_OR_THROW(DeviceBufferRef buffer_ref,
+                         GetBaseBuffer(*tensor_ptr));
+      const auto& node = buffer_ref.device_buffer_list();
+      if (!node->is_synchronized()) {
+        all_synchronized = false;
+        break;
+      }
+    }
+    if (all_synchronized) {
+      return true;
+    }
     py::gil_scoped_release release;
     TT_THROW_IF_ERROR(SynchronizeTensors(tpu_tensor_ptrs));
     return true;

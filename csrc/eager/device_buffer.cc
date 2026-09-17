@@ -313,6 +313,11 @@ int64_t DeviceBufferList::num_elements(int64_t index) const {
 }
 
 absl::Status DeviceBufferList::Synchronize() const {
+  // Fast path: if all buffers in this list have already completed execution,
+  // avoid looping over buffers and re-awaiting PJRT futures.
+  if (is_synchronized_.load(std::memory_order_acquire)) {
+    return absl::OkStatus();
+  }
   for (auto i = 0; i < size(); ++i) {
     TT_ASSIGN_OR_RETURN(auto* buffer, AwaitBuffer(i));
     if (buffer->IsDeleted()) {
@@ -323,6 +328,9 @@ absl::Status DeviceBufferList::Synchronize() const {
         AdaptXlaError(future.Await(),
                       /* context= */ "failed to synchronize device buffer"));
   }
+  // Mark the list synchronized so subsequent callers (or multi-tensor output
+  // synchronization loops sharing this DeviceBufferList) short-circuit.
+  is_synchronized_.store(true, std::memory_order_release);
   return absl::OkStatus();
 }
 
