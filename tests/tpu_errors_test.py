@@ -102,7 +102,12 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
 
     x = torch.randn(3, 5, device=et.device())
     executable = StaticCompiler()(make_fx(double)(x), [x], donated_inputs=[0])
-    executable(x)
+    # Because executable execution is asynchronous on TPU, querying the
+    # donated input buffer immediately after invocation without synchronizing
+    # the output resulted in a race condition where the input buffer had not
+    # yet been donated on device. Therefore we synchronize to host here.
+    out = executable(x)
+    out.cpu()
 
     with et.assert_raises_message(
         RuntimeError,

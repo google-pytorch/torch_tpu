@@ -427,7 +427,11 @@ class TestPallasKernels(seed_test_utils.RepeatableTest):
     def donated_add_vectors_sum(x, y):
       return donating_add_vectors(x, y).sum()
 
-    _ = donated_add_vectors_sum(x, y)
+    # Synchronize the output of the compiled operation to prevent a race
+    # condition where pre_x_sum is checked before asynchronous execution on TPU
+    # completes and donates the buffer.
+    out = donated_add_vectors_sum(x, y)
+    out.cpu()
 
     self.assertLen(debugs, 1)
     executables = debugs[0].compiled_executables
