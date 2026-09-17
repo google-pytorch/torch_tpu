@@ -1,0 +1,138 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runs the presubmit test suite on Cloud TPU v5e hardware via native
+# Remote Build Execution (Buildbarn REAPI v2).
+#
+# Opt in per PR with label:
+#   run-rbe   Runs the full-RBE path on standing Cloud TPU v5e workers.
+
+name: RBE Hardware TPU Tests (Opt-In)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to execute'
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - 'tpu_v5e_only'
+          - 'cpu_only'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
+    github.event.action == 'labeled'
+    && !contains(fromJSON('["run-rbe"]'), github.event.label.name)
+    && format('-ignored-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+env:
+  RBE_BAZEL_FLAGS: --bes_backend=
+  RBE_EXCLUDED_TARGETS: >-
+    -//tests:fp4_test
+    -//tests:ops_unit_test
+    -//tests:async_transfer_test
+    -//tests:ops_unit_test_tier3_cache
+    -//tests:ops_unit_test_tier3_cache_no_backup
+    -//tests/compile:activation_checkpointing_mem_test
+    -//tests/distributed:single_tpu_pg_test
+
+jobs:
+  run_tests:
+    name: "${{ matrix.job_info.name }}"
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        job_info:
+          - name: "CPU"
+            runner: "linux-x86-n4-16"
+            machine_type: "CPU"
+            config: "ci_cpu_presubmit"
+            suite: "cpu_only"
+            extra_flags: ""
+          - name: "TPU v5e Tests (Full RBE)"
+            runner: "linux-x86-n4-16"
+            machine_type: "TPU v5e (RBE)"
+            config: "ci_tpu_v5_full_rbe"
+            suite: "tpu_v5e_only"
+            extra_flags: "--test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild"
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
+      options: --ipc=host
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Establish RBE Tunnel
+        if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
+        run: |
+          # shellcheck disable=SC2034
+          echo "Starting background tunnel to Buildbarn frontend..."
+          gcloud compute tpus tpu-vm ssh spot-tpu-v5e-1789240098-2504 \
+            --zone=europe-west4-b \
+            --project=rbe-tpu-oss \
+            -- -N -L 8980:10.202.0.3:30980 &
+          TUNNEL_PID=$!
+          echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
+          for _ in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
+              echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980."
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run Test Suite
+        if: >-
+          inputs.test_suite == null
+          || inputs.test_suite == 'all'
+          || inputs.test_suite == matrix.job_info.suite
+        env:
+          BAZEL_CONFIG: ${{ matrix.job_info.config }}
+          EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
+        run: |
+          # shellcheck disable=SC2086
+          bazel test \
+            "--config=${BAZEL_CONFIG}" \
+            --nocache_test_results \
+            --test_output=errors \
+            ${RBE_BAZEL_FLAGS} \
+            ${EXTRA_FLAGS} \
+            -- //tests/... ${RBE_EXCLUDED_TARGETS}
+
+      - name: Teardown RBE Tunnel
+        if: always() && env.TUNNEL_PID != ''
+        run: kill "$TUNNEL_PID" 2>/dev/null || true
