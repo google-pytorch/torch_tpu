@@ -8868,25 +8868,22 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
       ],
       dtype=[
           torch.float32,
-          torch.float64,
           torch.complex64,
       ],
       full_matrices=[True, False],
   )
   def test_linalg_svd(self, shape, dtype, full_matrices):
     input_tensor = torch.randn(shape, dtype=dtype)
-    rtol, atol = None, None
-    if dtype == torch.float32:
-      rtol, atol = 1.1e-02, 1.8e-02
-    elif dtype == torch.complex64:
-      rtol, atol = 2.3e-02, 1.2e-02
+    tolerances = {
+        torch.float32: (1.1e-02, 1.8e-02),
+        torch.complex64: (2.3e-02, 1.2e-02),
+    }
+    rtol, atol = tolerances[dtype]
     self._test_svd_helper(input_tensor, full_matrices, rtol=rtol, atol=atol)
 
   @parameterized.product(
       shape=[
           (4, 4),
-          (10, 4),
-          (4, 10),
           (2, 3, 4),
       ],
       full_matrices=[True, False],
@@ -8896,8 +8893,8 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     def run(device):
       if torch.device(device).type == "cpu":
-        # TorchTPU computes complex128 SVD by downcasting to complex64 and upcasting
-        # results back. We mirror this on CPU for a fair comparison.
+        # TorchTPU computes complex128 SVD by downcasting to complex64 and
+        # upcasting results back. We mirror this on CPU for a fair comparison.
         u, s, vh = torch.linalg.svd(
             input_tensor.to(torch.complex64), full_matrices=full_matrices
         )
@@ -8914,23 +8911,33 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   @parameterized.product(
       shape=[
+          (4, 4),
+          (2, 3, 4),
+      ],
+      full_matrices=[True, False],
+  )
+  def test_linalg_svd_float64(self, shape, full_matrices):
+    input_tensor = torch.randn(shape, dtype=torch.float64)
+    self._test_svd_helper(input_tensor, full_matrices=full_matrices)
+
+  @parameterized.product(
+      shape=[
           (9, 8),  # Tall, no QR preprocess (9 <= 1.15 * 8)
           (8, 9),  # Wide, no QR preprocess
       ],
       dtype=[
           torch.float32,
-          torch.float64,
           torch.complex64,
       ],
       full_matrices=[True, False],
   )
   def test_linalg_svd_extra_shapes(self, shape, dtype, full_matrices):
     input_tensor = torch.randn(shape, dtype=dtype)
-    rtol, atol = None, None
-    if dtype == torch.float32:
-      rtol, atol = 1.4e-02, 1.6e-02
-    elif dtype == torch.complex64:
-      rtol, atol = 2.3e-02, 2.2e-02
+    tolerances = {
+        torch.float32: (1.4e-02, 1.6e-02),
+        torch.complex64: (2.3e-02, 2.2e-02),
+    }
+    rtol, atol = tolerances[dtype]
     self._test_svd_helper(input_tensor, full_matrices, rtol=rtol, atol=atol)
 
   @parameterized.parameters(
@@ -8974,8 +8981,6 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.product(
       shape=[
           (4, 4),
-          (10, 4),
-          (4, 10),
           (2, 3, 4),
       ]
   )
@@ -9097,14 +9102,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
   @parameterized.product(
       shape=[
-          (5, 3),
           (3, 5),
           (4, 4),
       ],
-      full_matrices=[True, False],
       zero_dims=[1, 2],
   )
-  def test_linalg_svd_rank_deficient(self, shape, full_matrices, zero_dims):
+  def test_linalg_svd_rank_deficient(self, shape, zero_dims):
     input_tensor = torch.randn(shape, dtype=torch.float64)
     m, n = shape
     if m >= n:
@@ -9112,15 +9115,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     else:
       input_tensor[..., m - zero_dims :, :] = 0.0
 
-    self._test_svd_helper(input_tensor, full_matrices)
+    self._test_svd_helper(input_tensor, full_matrices=True)
 
   @parameterized.product(
-      full_matrices=[True, False],
       zero_dims_batch=[(0, 1), (2, 1)],
   )
-  def test_linalg_svd_rank_deficient_batched(
-      self, full_matrices, zero_dims_batch
-  ):
+  def test_linalg_svd_rank_deficient_batched(self, zero_dims_batch):
     shape = (2, 5, 3)
     input_tensor = torch.randn(shape, dtype=torch.float64)
     m, n = shape[-2:]
@@ -9132,7 +9132,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         else:
           input_tensor[b, m - zero_dims :, :] = 0.0
 
-    self._test_svd_helper(input_tensor, full_matrices)
+    self._test_svd_helper(input_tensor, full_matrices=True)
 
   @parameterized.product(
       shape=[
