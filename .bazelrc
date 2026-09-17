@@ -373,7 +373,11 @@ common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/test_rbe_opt_in.yml
 common:ci_tpu_v5_full_rbe --config=rbe_native_tpu
-common:ci_tpu_v5_full_rbe --config=ci_tpu_base
+common:ci_tpu_v5_full_rbe --build_tests_only
+common:ci_tpu_v5_full_rbe --color=yes
+common:ci_tpu_v5_full_rbe --curses=no
+common:ci_tpu_v5_full_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
+test:ci_tpu_v5_full_rbe --test_output=errors
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
