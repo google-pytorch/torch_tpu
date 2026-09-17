@@ -100,6 +100,28 @@ class SymConstraintTest(seed_test_utils.RepeatableTest):
     )
     utils.assert_close(out1, expected)
 
+  def test_multi_symbol_sum_guard_succeeds(self):
+    class Model(torch.nn.Module):
+
+      def forward(self, x, y):
+        # Python assertion on SymInt sum creates an active shape guard:
+        # Eq(s0 + s1, 64) in shape_env.guards without creating scalar FX nodes.
+        assert x.shape[0] + y.shape[0] == 64
+        return x * 2, y * 3
+
+    compiled = torch.compile(
+        Model(), backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x1 = torch.arange(20, dtype=torch.float32, device="tpu")
+    y1 = torch.arange(44, dtype=torch.float32, device="tpu")
+    torch._dynamo.mark_dynamic(x1, 0)
+    torch._dynamo.mark_dynamic(y1, 0)
+
+    out_x, out_y = compiled(x1, y1)
+    utils.assert_close(out_x, x1 * 2)
+    utils.assert_close(out_y, y1 * 3)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -118,6 +118,7 @@ torch_tpu_py_test(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/compile/dynamic:symbol_bounds",
         "//tests:seed_test_utils",
+        "@pypi//sympy",
     ],
 )
 

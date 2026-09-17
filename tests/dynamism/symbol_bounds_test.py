@@ -17,8 +17,10 @@
 from __future__ import annotations
 from absl.testing import absltest
 from absl.testing import parameterized
+import sympy
 import torch
 from torch._dynamo.backends.common import aot_autograd
+from torch.utils._sympy.functions import Mod as TorchMod, PythonMod
 from torch_tpu._internal.compile.dynamic import symbol_bounds
 from tests import seed_test_utils
 
@@ -123,6 +125,63 @@ class SymbolBoundsTest(seed_test_utils.RepeatableTest):
     # Hint 100 without divisibility constraints rounds up to multiple of 128 (256)
     self.assertEqual(captured_bounds, (100, 256))
     self.assertFalse(captured_is_user_defined)
+
+  def test_find_violated_guard_multi_symbol_sum_equality_skipped(self):
+    class FakeGuard:
+
+      def __init__(self, expr):
+        self.expr = expr
+
+    class FakeShapeEnv:
+
+      def __init__(self, guards):
+        self.guards = guards
+        self.replacements = {}
+
+    s0, s1, s2 = sympy.symbols("s0 s1 s2")
+    # Eq(s0 + s1 + s2, 64) is a sum conservation guard (e.g. MoE routing / split)
+    guard = FakeGuard(sympy.Eq(s0 + s1 + s2, 64))
+    shape_env = FakeShapeEnv([guard])
+    upper_bounds = {"s0": 32, "s1": 32, "s2": 32}
+
+    # Sum of upper bounds (96) != 64, but multi-symbol non-modular equalities
+    # are skipped when checking individual capacity bounds.
+    violated = symbol_bounds.find_violated_guard(shape_env, upper_bounds)
+    self.assertIsNone(violated)
+
+  @parameterized.named_parameters(
+      ("sympy_mod", sympy.Mod),
+      ("torch_mod", TorchMod),
+      ("python_mod", PythonMod),
+  )
+  def test_find_violated_guard_multi_symbol_mod_equality_checked(self, mod_fn):
+    class FakeGuard:
+
+      def __init__(self, expr):
+        self.expr = expr
+
+    class FakeShapeEnv:
+
+      def __init__(self, guards):
+        self.guards = guards
+        self.replacements = {}
+
+    s0, s1 = sympy.symbols("s0 s1")
+    # Eq(mod_fn(s0 * s1, 3), 0) is a reshape divisibility guard
+    guard = FakeGuard(sympy.Eq(mod_fn(s0 * s1, 3), 0))
+    shape_env = FakeShapeEnv([guard])
+
+    # 128 * 128 % 3 = 1 != 0 -> violated
+    violated = symbol_bounds.find_violated_guard(
+        shape_env, {"s0": 128, "s1": 128}
+    )
+    self.assertIsNotNone(violated)
+
+    # 12 * 12 % 3 = 0 -> satisfied
+    satisfied = symbol_bounds.find_violated_guard(
+        shape_env, {"s0": 12, "s1": 12}
+    )
+    self.assertIsNone(satisfied)
 
 
 if __name__ == "__main__":

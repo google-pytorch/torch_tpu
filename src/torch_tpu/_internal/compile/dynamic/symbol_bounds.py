@@ -20,6 +20,7 @@ from typing import Any
 from absl import logging
 import sympy
 import torch
+from torch.utils._sympy.functions import Mod as TorchMod, PythonMod
 from torch.utils._sympy.numbers import int_oo
 from torch_tpu._internal.compile.dynamic import sym_utils
 
@@ -117,6 +118,17 @@ def find_violated_guard(
     # Only evaluate guards where all free symbols are bounded by upper_bounds.
     guard_sym_names = {str(s) for s in guard_expr.free_symbols}
     if not guard_sym_names or not guard_sym_names.issubset(upper_bounds.keys()):
+      continue
+
+    # Multi-symbol non-modular constraints (such as sum conservation
+    # Eq(s0 + s1 + ... , C)) describe joint runtime relationships between
+    # dynamic dimensions. They do not hold at the joint upper-bound corner where
+    # all symbols simultaneously equal their individual maximum capacities.
+    # We only validate modular arithmetic guards (e.g. Mod(expr, c) == 0 for
+    # reshape divisibility) or single-symbol guards.
+    if len(guard_expr.free_symbols) > 1 and not guard_expr.has(
+        sympy.Mod, TorchMod, PythonMod
+    ):
       continue
 
     substitutions = {

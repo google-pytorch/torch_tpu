@@ -98,6 +98,32 @@ class SymShapeManagerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(captured_sm.input_tensors_metadata[0].static_shape, [2, 3])
     self.assertEqual(captured_sm.get_bounded_shape(0), [2, 3])
 
+  def test_validate_bounds_with_multi_symbol_sum_guard(self):
+    captured_sm = None
+
+    def fw_compiler(graph_module, example_inputs):
+      nonlocal captured_sm
+      captured_sm = sym_shape_manager.SymShapeManager(
+          graph_module, example_inputs
+      )
+      return graph_module
+
+    @torch.compile(backend=aot_autograd(fw_compiler=fw_compiler), dynamic=True)
+    def f(x, y):
+      assert x.shape[0] + y.shape[0] == 64
+      return x * 2, y * 3
+
+    t1 = torch.ones(20)
+    t2 = torch.ones(44)
+    torch._dynamo.mark_dynamic(t1, 0)
+    torch._dynamo.mark_dynamic(t2, 0)
+
+    f(t1, t2)
+
+    self.assertIsNotNone(captured_sm)
+    # validate_bounds() should not raise ConstraintViolationError on multi-symbol sum guard
+    captured_sm.validate_bounds()
+
 
 if __name__ == "__main__":
   absltest.main()
