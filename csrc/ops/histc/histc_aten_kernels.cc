@@ -215,7 +215,7 @@ absl::Status HistcHelperOut(const at::Tensor& self, const int64_t bins,
           "on "
           "TorchTPU (unlike CUDA/CPU) to prevent an expensive CPU "
           "transfer. "
-          "Set the TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS environment "
+          "Set the TORCH_TPU_ENABLE_DEBUG_CHECKS environment "
           "variable to \"1\" to enable this check, which incurs a "
           "performance penalty.");
     }

@@ -133,7 +133,7 @@ at::Tensor AtenTake(const at::Tensor& self, const at::Tensor& index) {
       TORCH_WARN_ONCE(
           "Unlike PyTorch on CUDA or CPU, TorchTPU doesn't by default check "
           "that the indices for take() are in range. Set the "
-          "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS environment variable to "
+          "TORCH_TPU_ENABLE_DEBUG_CHECKS environment variable to "
           "\"1\" to enable this check, which incurs a performance penalty.");
     }
 

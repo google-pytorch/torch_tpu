@@ -1425,7 +1425,7 @@ torch_tpu_py_test(
     ],
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "0",
-        "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
     shard_count = 4,
@@ -1456,7 +1456,7 @@ torch_tpu_py_test(
     ],
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "0",
-        "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "tpu_errors_test.py",
     tags = [
@@ -1489,7 +1489,7 @@ torch_tpu_py_test(
     ],
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "1",
-        "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "errors_test.py",
     notest_oss = "Intended not to run this slow test in OSS. It's low value to test the error messages in both OSS and internal builds.",
@@ -1523,7 +1523,7 @@ torch_tpu_py_test(
     ],
     env = {
         "TORCH_SHOW_CPP_STACKTRACES": "1",
-        "TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1",
+        "TORCH_TPU_ENABLE_DEBUG_CHECKS": "1",
     },
     main = "tpu_errors_test.py",
     notest_oss = "Intended not to run this slow test in OSS.",

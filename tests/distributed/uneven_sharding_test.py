@@ -78,7 +78,7 @@ def _replicate_tensor(
 
   with mock.patch.dict(
       os.environ,
-      {"TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS": "1"} if debug_eager else {},
+      {"TORCH_TPU_ENABLE_DEBUG_CHECKS": "1"} if debug_eager else {},
   ):
     output = func(local_tensor)
 
