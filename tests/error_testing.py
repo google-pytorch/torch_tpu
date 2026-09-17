@@ -22,6 +22,7 @@ from multiprocessing import connection as mp_connection
 import re
 import sys
 import traceback
+from typing import Any
 import unittest
 
 from absl import flags
@@ -411,28 +412,30 @@ def why_tpu_only(reason: str):
   return decorator
 
 
-def _get_why_tpu_only_reason(
+def _get_test_method_attribute(
     test_case: seed_test_utils.RepeatableTest,
-) -> str | None:
-  """Retrieves the @why_tpu_only reason for the active test method.
+    attr_name: str,
+) -> Any | None:
+  """Retrieves a custom attribute from the active test method.
 
   When test methods are wrapped by decorators or parameterized test runners
   (e.g. absl.testing.parameterized), the generated test methods (e.g.
   test_foo_0) do not directly inherit custom attributes from the underlying
   function. This function inspects the method and unwraps any standard Python
-  __wrapped__ chains to locate the @why_tpu_only reason.
+  __wrapped__ chains to locate the requested attribute.
 
   Args:
     test_case: The active test case instance.
+    attr_name: The attribute name to look up.
 
   Returns:
-    The explanation string if the active method is decorated with @why_tpu_only,
+    The attribute value if present on the test method or its wrapped chain,
     or None otherwise.
   """
   method = getattr(
       test_case, test_case._testMethodName  # pylint: disable=protected-access
   )
-  reason = getattr(method, _WHY_TPU_ONLY_ATTR, None)
+  reason = getattr(method, attr_name, None)
   if reason is None:
     # Traverse standard Python __wrapped__ chains (set by functools.wraps) to
     # find the underlying decorated function. This avoids relying on private
@@ -441,13 +444,61 @@ def _get_why_tpu_only_reason(
     curr = method
     while hasattr(curr, "__wrapped__"):
       curr = curr.__wrapped__
-      r = getattr(curr, _WHY_TPU_ONLY_ATTR, None)
+      r = getattr(curr, attr_name, None)
       if r is not None:
         reason = r
         # Set the attribute in the original method for fast future lookups.
-        setattr(method, _WHY_TPU_ONLY_ATTR, r)
+        setattr(method, attr_name, r)
         break
   return reason
+
+
+def _get_why_tpu_only_reason(
+    test_case: seed_test_utils.RepeatableTest,
+) -> str | None:
+  """Retrieves the @why_tpu_only reason for the active test method."""
+  return _get_test_method_attribute(test_case, _WHY_TPU_ONLY_ATTR)
+
+
+# Attribute name to store the @gpu_crashes reason in the test method.
+_GPU_CRASHES_REASON_ATTR = "_gpu_crashes_reason"
+
+
+def gpu_crashes(reason: str):
+  """Decorates a test method that is expected to crash the GPU subprocess.
+
+  When running in GPU mode (`--test_mode=gpu`), tests decorated with
+  `@gpu_crashes` expect the isolated child process to terminate abruptly
+  (non-zero exit code). If the process crashes, the test succeeds. If the
+  process completes normally without crashing, the test fails.
+
+  When running in TPU mode (`--test_mode=tpu` or `--test_mode=cov`), this
+  decorator has no effect and the test runs normally.
+
+  Args:
+    reason: Explanation of why the op causes the GPU subprocess to crash.
+
+  Returns:
+    The decorated function.
+  """
+  if not reason or not isinstance(reason, str) or not reason.strip():
+    raise ValueError(
+        "gpu_crashes requires a non-empty explanation of why this test case"
+        f" crashes on GPU, got: {reason!r}"
+    )
+
+  def decorator(func):
+    setattr(func, _GPU_CRASHES_REASON_ATTR, reason)
+    return func
+
+  return decorator
+
+
+def _get_gpu_crashes_reason(
+    test_case: seed_test_utils.RepeatableTest,
+) -> str | None:
+  """Retrieves the @gpu_crashes data for the active test method."""
+  return _get_test_method_attribute(test_case, _GPU_CRASHES_REASON_ATTR)
 
 
 _OUTCOME_SUCCESS = "success"
@@ -488,6 +539,102 @@ def _subprocess_test_worker(
     conn.send((_OUTCOME_ERROR, traceback.format_exc()))
   finally:
     conn.close()
+
+
+def _record_failure(
+    exception_type: type[BaseException],
+    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+    result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
+    error_message: str,
+) -> None:
+  """Records a test failure with the given error message."""
+  try:
+    raise exception_type(error_message)
+  except exception_type:
+    result.addFailure(test, sys.exc_info())
+
+
+def _record_unexpected_gpu_crash(
+    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+    result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
+    exitcode: int,
+) -> None:
+  """Records a test failure when the GPU subprocess crashed unexpectedly."""
+  _record_failure(
+      RuntimeError,
+      test,
+      result,
+      error_message=(
+          f"GPU subprocess unexpectedly crashed with code: {exitcode}"
+      ),
+  )
+
+
+def _record_unexpected_gpu_failure(
+    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+    result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
+    detail: str,
+) -> None:
+  """Records a test failure when the GPU subprocess failed unexpectedly."""
+  _record_failure(
+      AssertionError,
+      test,
+      result,
+      error_message=f"GPU subprocess unexpectedly failed: {detail}",
+  )
+
+
+def _record_unexpected_gpu_not_crashing(
+    test: absltest.TestCase,  # ABSLTEST_OK=TestCase type annotation.
+    result: unittest.TestResult,  # UNITTEST_OK=TestResult type annotation.
+    outcome: str,
+    reason: str,
+) -> None:
+  """Records a test failure when a test expected to crash completed normally."""
+  _record_failure(
+      AssertionError,
+      test,
+      result,
+      f"""GPU subprocess unexpectedly did not crash, even though it was supposed to because of: "{reason}". However, it completed with outcome: {outcome}""",
+  )
+
+
+def _run_in_subprocess(
+    cls: type[absltest.TestCase],  # ABSLTEST_OK=TestCase type annotation.
+    method_name: str,
+) -> tuple[int, tuple[str, Any] | None]:
+  """Runs the test method in an isolated subprocess, returning (exitcode, payload)."""
+
+  # Rationale for choosing `multiprocessing` over `subprocess` or
+  # standard `mp`:
+  # 1. Standard `fork` is banned in Google3 (go/python-tips/018) because
+  #    multithreaded C++ runtimes (Borg logging, gRPC, CUDA) deadlock or
+  #    SIGSEGV when forked.
+  # 2. Standard `spawn` (and `resource_tracker` threads launched by
+  #    `Queue`) fails in self-contained Bazel `.par` zip binaries where
+  #    `sys.executable` evaluates to None.
+  # 3. Standard `subprocess.run` lacks object pickling / IPC exception
+  #    transport needed to execute single parameterized `TestCase` class
+  #    methods mid-flight.
+  ctx = multiprocessing.get_context("forkserver")
+  parent_conn, child_conn = ctx.Pipe(duplex=False)
+
+  # Create a subprocess to run the test method.
+  p = ctx.Process(
+      target=_subprocess_test_worker,
+      args=(cls, method_name, child_conn),
+  )
+
+  p.start()
+  child_conn.close()
+  p.join()
+
+  payload = (
+      parent_conn.recv() if p.exitcode == 0 and parent_conn.poll() else None
+  )
+
+  parent_conn.close()
+  return p.exitcode, payload
 
 
 class ErrorTestBase(seed_test_utils.RepeatableTest):
@@ -538,7 +685,8 @@ class ErrorTestBase(seed_test_utils.RepeatableTest):
 
       If the child process terminates abruptly (e.g., CUDA device-side assert
       or SIGSEGV) without transmitting a payload, the parent detects the
-      non-zero exit code and records a test failure.
+      non-zero exit code and verifies whether it matches an expected
+      `@gpu_crashes` expectation, or records a test failure.
     """
     if TEST_MODE.value != "gpu":
       return super().run(result)
@@ -549,50 +697,58 @@ class ErrorTestBase(seed_test_utils.RepeatableTest):
       if start_test_run is not None:
         start_test_run()
 
-    # Rationale for choosing `multiprocessing` over `subprocess` or
-    # standard `mp`:
-    # 1. Standard `fork` is banned in Google3 (go/python-tips/018) because
-    #    multithreaded C++ runtimes (Borg logging, gRPC, CUDA) deadlock or
-    #    SIGSEGV when forked.
-    # 2. Standard `spawn` (and `resource_tracker` threads launched by
-    #    `Queue`) fails in self-contained Bazel `.par` zip binaries where
-    #    `sys.executable` evaluates to None.
-    # 3. Standard `subprocess.run` lacks object pickling / IPC exception
-    #    transport needed to execute single parameterized `TestCase` class
-    #    methods mid-flight.
-    ctx = multiprocessing.get_context("forkserver")
-    parent_conn, child_conn = ctx.Pipe(duplex=False)
-    # Create a subprocess to run the test method.
-    p = ctx.Process(
-        target=_subprocess_test_worker,
-        args=(self.__class__, self._testMethodName, child_conn),
-    )
-    p.start()
-    child_conn.close()
-    p.join()
+    exitcode, payload = _run_in_subprocess(self.__class__, self._testMethodName)
+    test_crashed = exitcode != 0
 
-    if p.exitcode != 0 and not parent_conn.poll():
-      parent_conn.close()
-      try:
-        raise RuntimeError(
-            "CUDA device-side assert triggered or subprocess crashed with exit"
-            f" code {p.exitcode}"
-        )
-      except RuntimeError:
-        result.addFailure(self, sys.exc_info())
+    gpu_crashes_reason = _get_gpu_crashes_reason(self)
+    should_test_crash = gpu_crashes_reason is not None
+
+    # There are 4 different cases to check: the combinations of the expected and
+    # actual behavior of the test w.r.t. whether it crashed or not.
+
+    # Case 1/4: test crashed as expected.
+    if should_test_crash and test_crashed:
+      result.addSuccess(self)
       return
 
-    outcome, detail = parent_conn.recv()
-    parent_conn.close()
+    # Case 2/4: test crashed unexpectedly.
+    # Unexpected GPU failure
+    if test_crashed:
+      _record_unexpected_gpu_crash(self, result, exitcode)
+      return
+
+    # Assumption: if the test didn't crash, its payload should not be None.
+    if payload is None:
+      _record_unexpected_gpu_failure(
+          self,
+          result,
+          detail=(
+              "assumption failed: no payload was received, even though the"
+              " process has not crashed"
+          ),
+      )
+      return
+
+    outcome, detail = payload
+
+    # Case 3/4: Test didn't crash, but it should have crashed.
+    if should_test_crash:
+      # Assert here, so that type-checking passes.
+      assert gpu_crashes_reason is not None
+
+      _record_unexpected_gpu_not_crashing(
+          self, result, outcome, gpu_crashes_reason
+      )
+      return
+
+    # Case 4/4: Test didn't crash, and it shouldn't have crashed.
+    # Check the received outcome.
     if outcome == _OUTCOME_SUCCESS:
       result.addSuccess(self)
     elif outcome == _OUTCOME_SKIPPED:
       result.addSkip(self, detail)
     elif outcome == _OUTCOME_FAILURE:
-      try:
-        raise AssertionError(f"Subprocess test failed:\n{detail}")
-      except AssertionError:
-        result.addFailure(self, sys.exc_info())
+      _record_unexpected_gpu_failure(self, result, detail)
     elif outcome == _OUTCOME_ERROR:
       try:
         raise RuntimeError(f"Subprocess test errored:\n{detail}")
@@ -636,6 +792,12 @@ class TpuOnlyErrorTestBase(TpuOnlyErrorTestBaseNoCheckingWhy):
 
   def setUp(self):
     super().setUp()
+
+    if _get_gpu_crashes_reason(self) is not None:
+      self.fail(
+          "Tests decorated with @gpu_crashes should be placed in"
+          " errors_test.py."
+      )
 
     # Enforce that the test method has a @why_tpu_only decorator.
     if _get_why_tpu_only_reason(self) is None:

@@ -14,8 +14,8 @@
 
 """Tests for `error_testing.py` functions."""
 
-from absl import flags
 from absl.testing import absltest
+from absl.testing import flagsaver
 from absl.testing import parameterized
 from tests import error_testing as et
 from tests import seed_test_utils
@@ -63,16 +63,12 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
         pass
 
     test_instance = DummyTest("test_missing")
-    old_mode = flags.FLAGS.test_mode
-    flags.FLAGS.test_mode = "tpu"
-    try:
+    with flagsaver.flagsaver(test_mode="tpu"):
       with self.assertRaisesRegex(  # pylint: disable=g-error-prone-assert-raises
           AssertionError,
           "TpuOnlyErrorTestBase",
       ):
         test_instance.setUp()
-    finally:
-      flags.FLAGS.test_mode = old_mode
 
   def test_why_tpu_only_works_for_parameterized_tests(self):
     """Tests that @why_tpu_only decorator works for parameterized tests."""
@@ -89,13 +85,9 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
 
     test_instance1 = DummyParameterizedTest("test_param_param1")
     test_instance2 = DummyParameterizedTest("test_param_param2")
-    old_mode = flags.FLAGS.test_mode
-    flags.FLAGS.test_mode = "tpu"
-    try:
+    with flagsaver.flagsaver(test_mode="tpu"):
       test_instance1.setUp()
       test_instance2.setUp()
-    finally:
-      flags.FLAGS.test_mode = old_mode
 
   def test_standalone_method_in_parameterized_test_enforces_decorator(self):
     """Tests standalone method in parameterized test enforces decorator."""
@@ -106,16 +98,74 @@ class ErrorTestingTest(seed_test_utils.RepeatableTest):
         pass
 
     test_standalone = DummyParameterizedTest("test_standalone_missing")
-    old_mode = flags.FLAGS.test_mode
-    flags.FLAGS.test_mode = "tpu"
-    try:
+    with flagsaver.flagsaver(test_mode="tpu"):
       with self.assertRaisesRegex(  # pylint: disable=g-error-prone-assert-raises
           AssertionError,
           "TpuOnlyErrorTestBase",
       ):
         test_standalone.setUp()
-    finally:
-      flags.FLAGS.test_mode = old_mode
+
+  def test_gpu_crashes_validation(self):
+    """Tests that gpu_crashes decorator requires a non-empty reason string."""
+    with self.assertRaisesRegex(ValueError, "non-empty"):
+      et.gpu_crashes("")
+
+    with self.assertRaisesRegex(ValueError, "non-empty"):
+      et.gpu_crashes("   ")
+
+    with self.assertRaisesRegex(ValueError, "non-empty"):
+      et.gpu_crashes(None)
+
+  def test_gpu_crashes_sets_attribute(self):
+    """Tests that @gpu_crashes sets the _gpu_crashes_reason attribute on the function."""
+
+    @et.gpu_crashes("Valid reason")
+    def dummy_func():
+      pass
+
+    self.assertTrue(hasattr(dummy_func, "_gpu_crashes_reason"))
+    self.assertEqual(dummy_func._gpu_crashes_reason, "Valid reason")
+
+  def test_gpu_crashes_works_for_parameterized_tests(self):
+    """Tests that @gpu_crashes is resolved for parameterized tests."""
+
+    class DummyParameterizedCrashTest(et.ErrorTestBase):
+
+      @parameterized.named_parameters(
+          {"testcase_name": "param1", "val": 1},
+          {"testcase_name": "param2", "val": 2},
+      )
+      @et.gpu_crashes("Parameterized expected crash")
+      def test_param_crash(self, val):
+        pass
+
+    test1 = DummyParameterizedCrashTest("test_param_crash_param1")
+    test2 = DummyParameterizedCrashTest("test_param_crash_param2")
+    self.assertEqual(
+        et._get_gpu_crashes_reason(test1), "Parameterized expected crash"
+    )
+    self.assertEqual(
+        et._get_gpu_crashes_reason(test2), "Parameterized expected crash"
+    )
+
+  def test_tpu_only_error_test_base_rejects_gpu_crashes(self):
+    """Tests that TpuOnlyErrorTestBase disallows @gpu_crashes decorator."""
+
+    class DummyTpuOnlyWithGpuCrashes(et.TpuOnlyErrorTestBase):
+
+      @et.gpu_crashes("Should be in ErrorTestBase")
+      @et.why_tpu_only("Reason for TPU")
+      def test_invalid(self):
+        pass
+
+    test_instance = DummyTpuOnlyWithGpuCrashes("test_invalid")
+    with flagsaver.flagsaver(test_mode="tpu"):
+      with self.assertRaisesRegex(
+          AssertionError,
+          "Tests decorated with @gpu_crashes should be placed in"
+          " errors_test.py.",
+      ):
+        test_instance.setUp()
 
 
 if __name__ == "__main__":
