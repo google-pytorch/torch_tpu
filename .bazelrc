@@ -367,6 +367,8 @@ common:rbe_native_tpu --remote_cache=grpc://127.0.0.1:8980
 common:rbe_native_tpu --remote_timeout=600s
 common:rbe_native_tpu --noremote_upload_local_results
 common:rbe_native_tpu --spawn_strategy=local
+common:rbe_native_tpu --genrule_strategy=local
+common:rbe_native_tpu --strategy=Genrule=local
 common:rbe_native_tpu --strategy=TestRunner=remote
 common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux

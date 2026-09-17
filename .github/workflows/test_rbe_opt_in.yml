@@ -128,7 +128,7 @@ jobs:
             ) &
             KEEPALIVE_PID=$!
 
-            trap 'kill "$TUNNEL_PID" "$KEEPALIVE_PID" 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
+            trap 'kill "$TUNNEL_PID" "$KEEPALIVE_PID" 2>/dev/null || true; pkill -f start-iap-tunnel 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
 
             CONNECTED=0
             for _ in {1..30}; do
