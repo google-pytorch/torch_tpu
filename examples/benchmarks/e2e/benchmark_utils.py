@@ -18,7 +18,7 @@ import contextlib
 import dataclasses
 import enum
 import time
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, cast
 
 from absl import flags
 from absl import logging
@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from torch.utils import _pytree as pytree
 from torch_tpu._internal.utils import log_utils
+from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e.harness import metrics as metrics_lib
 from examples.benchmarks.quality_utils import quality_benchmark_model
@@ -235,6 +236,7 @@ def _run_step(
     optimizer: torch.optim.Optimizer | None,
     device_name: str,
     sync_params: bool,
+    params: Sequence[torch.nn.Parameter] | None = None,
 ) -> Any:
   """Runs a single benchmark step and synchronizes the device.
 
@@ -245,16 +247,54 @@ def _run_step(
     optimizer: The optimizer to use for the step, or None.
     device_name: The name of the device (e.g. 'tpu', 'cuda').
     sync_params: Whether to eagerly synchronize parameter gradients.
+    params: Optional pre-computed sequence of model parameters.
 
   Returns:
     The output of the benchmark function.
   """
   out = benchmark_function(model, step_input, optimizer)
-  device_utils.synchronize(device_name, out)
   if sync_params:
-    for p in model.parameters():
-      if p.grad is not None:
-        device_utils.synchronize(device_name, p.grad)
+    if getattr(benchmark_function, "is_pre_compiled", False):
+      # For pre-compiled single-trace training steps, outputs and parameter
+      # gradients are produced by the same compiled PJRT execution and share a
+      # single DeviceBufferList. Synchronizing the output plus the first/last
+      # gradient is sufficient to block until all buffers are ready, and avoids
+      # iterating over every parameter in Python on every step.
+      if params:
+        g_first = params[0].grad
+        g_last = params[-1].grad
+        if g_first is not None and g_last is not None:
+          if g_first is g_last:
+            device_utils.synchronize(device_name, (out, g_first))
+          else:
+            device_utils.synchronize(device_name, (out, g_first, g_last))
+          return out
+        elif g_first is not None:
+          device_utils.synchronize(device_name, (out, g_first))
+          return out
+        elif g_last is not None:
+          device_utils.synchronize(device_name, (out, g_last))
+          return out
+      device_utils.synchronize(device_name, out)
+      return out
+    if params is None:
+      params = tuple(model.parameters())
+    # Combine the step output and all parameter gradients into a single sequence
+    # so device_utils.synchronize can issue a single batched C++ wait call.
+    if isinstance(out, torch.Tensor):
+      tensors_to_sync = [out]
+      for p in params:
+        grad = p.grad
+        if grad is not None:
+          tensors_to_sync.append(grad)
+      device_utils.synchronize(device_name, tensors_to_sync)
+      return out
+    device_utils.synchronize(device_name, out)
+    grads = [p.grad for p in params if p.grad is not None]
+    if grads:
+      device_utils.synchronize(device_name, grads)
+    return out
+  device_utils.synchronize(device_name, out)
   return out
 
 
@@ -299,6 +339,7 @@ def _warmup_run(
   cache_misses = np.zeros(MAX_WARMUP_STEPS.value, dtype=np.int64)
   num_warmup_steps = None
   device_name = _get_device_name(device)
+  params = tuple(model.parameters()) if sync_params else None
 
   is_sequence = isinstance(example_inputs, list) and len(example_inputs) > 0
 
@@ -316,6 +357,7 @@ def _warmup_run(
             optimizer,
             device_name,
             sync_params,
+            params,
         )
         timings[step] = time.perf_counter() - start_time
       cache_misses[step] = device_utils.cache_miss_count(device_name)
@@ -377,11 +419,14 @@ def _post_warmup_run(
 
   non_xprof_timings = []
   xprof_timings = []
-  device_utils.reset_peak_memory_stats(_get_device_name(device))
-  num_cache_misses = None
   device_name = _get_device_name(device)
+  device_utils.reset_peak_memory_stats(device_name)
+  params = tuple(model.parameters()) if sync_params else None
 
   is_sequence = isinstance(example_inputs, list) and len(example_inputs) > 0
+  num_cache_misses = (
+      device_utils.cache_miss_count(device_name) if not is_sequence else None
+  )
 
   # TODO(bbahl): Calculate the number of post warmup steps based on timing
   # information.
@@ -391,14 +436,23 @@ def _post_warmup_run(
   xprof_context = None
 
   def run_single_step(step, is_profiling_run: bool):
-    nonlocal num_cache_misses, xprof_timings, non_xprof_timings
-    ctx = (
-        xprof_adapter.TraceMe("Eval", step_num=step)
-        if is_profiling_run
-        else contextlib.nullcontext()
-    )
-    with ctx:
-      step_input = example_inputs[step] if is_sequence else example_inputs
+    nonlocal xprof_timings, non_xprof_timings
+    step_input = example_inputs[step] if is_sequence else example_inputs
+    if is_profiling_run:
+      with xprof_adapter.TraceMe("Eval", step_num=step):
+        start_time = time.perf_counter()
+        _run_step(
+            benchmark_function,
+            model,
+            step_input,
+            optimizer,
+            device_name,
+            sync_params,
+            params,
+        )
+        elapsed = time.perf_counter() - start_time
+      xprof_timings.append(elapsed)
+    else:
       start_time = time.perf_counter()
       _run_step(
           benchmark_function,
@@ -407,35 +461,45 @@ def _post_warmup_run(
           optimizer,
           device_name,
           sync_params,
+          params,
       )
       elapsed = time.perf_counter() - start_time
-      if is_profiling_run:
-        xprof_timings.append(elapsed)
-      else:
-        non_xprof_timings.append(elapsed)
-
-    # Assert that the cache misses are consistent across steps.
-    if not is_sequence:
-      # TODO(unda): Re-introduce a version of this check for bounded dynamism.
-      step_cache_misses = device_utils.cache_miss_count(device_name)
-      if num_cache_misses is None:
-        num_cache_misses = step_cache_misses
-      if step_cache_misses != num_cache_misses:
-        raise RuntimeError(
-            "Cache misses are not consistent across steps; expected"
-            f" {num_cache_misses}, got {step_cache_misses}. This means that"
-            " the model is not fully warmed up after"
-            f" {MAX_WARMUP_STEPS.value} warmup steps. Consider increasing"
-            " the number of warmup steps."
-        )
+      non_xprof_timings.append(elapsed)
 
   if xprof_steps > 0:
     with XprofContext("post_warmup_run", True) as xprof_context:
       for step in range(xprof_steps):
         run_single_step(step, is_profiling_run=True)
 
+  # Re-prime the execution pipeline if Xprof profiling just tore down or peak
+  # memory stats were reset, avoiding host cache eviction / driver cooldown on
+  # the first timed non-profiling step.
+  if not is_sequence and xprof_steps < POST_WARMUP_STEPS.value:
+    _run_step(
+        benchmark_function,
+        model,
+        example_inputs,
+        optimizer,
+        device_name,
+        sync_params,
+        params,
+    )
+
   for step in range(xprof_steps, POST_WARMUP_STEPS.value):
     run_single_step(step, is_profiling_run=False)
+
+  # Assert that the cache misses are consistent across steps.
+  if not is_sequence:
+    # TODO(unda): Re-introduce a version of this check for bounded dynamism.
+    step_cache_misses = device_utils.cache_miss_count(device_name)
+    if step_cache_misses != num_cache_misses:
+      raise RuntimeError(
+          "Cache misses are not consistent across steps; expected"
+          f" {num_cache_misses}, got {step_cache_misses}. This means that"
+          " the model is not fully warmed up after"
+          f" {MAX_WARMUP_STEPS.value} warmup steps. Consider increasing"
+          " the number of warmup steps."
+      )
 
   post_warmup_run_session_xprof_url = None
   if xprof_context and xprof_context.session_id:
@@ -506,6 +570,7 @@ def _smoke_test_run(
   device_name = _get_device_name(device)
   is_sequence = isinstance(example_inputs, list) and len(example_inputs) > 0
   num_steps = len(example_inputs) if is_sequence else 1
+  params = tuple(model.parameters()) if sync_params else None
 
   for step in range(num_steps):
     step_input = example_inputs[step] if is_sequence else example_inputs
@@ -516,6 +581,7 @@ def _smoke_test_run(
         optimizer,
         device_name,
         sync_params,
+        params,
     )
 
 
@@ -574,63 +640,70 @@ def run_performance_benchmark(
   _synchronize_all_tensors(example_inputs, device)
   _synchronize_all_tensors(list(model.state_dict().values()), device)
 
-  if SMOKE_TEST.value:
-    _smoke_test_run(
-        benchmark_function,
-        model,
-        example_inputs,
-        device,
-        optimizer=optimizer,
-        sync_params=sync_params,
-    )
-    return metrics_lib.PerformanceMetrics()
-
-  warmup_steps = MAX_WARMUP_STEPS.value
-  if is_bounded_dynamic and (
-      not isinstance(example_inputs, list)
-      or len(example_inputs) != (warmup_steps + POST_WARMUP_STEPS.value)
-  ):
-    logging.warning(
-        "Example inputs are not a list of length warmup_steps +"
-        " POST_WARMUP_STEPS. This is unexpected for bounded dynamic"
-        " benchmarks. Skipping benchmark."
-    )
-    return metrics_lib.PerformanceMetrics()
-
-  warmup_inputs = (
-      example_inputs[:warmup_steps] if is_bounded_dynamic else example_inputs
+  fn_ctx = getattr(benchmark_function, "benchmark_context", None)
+  ctx = (
+      cast(contextlib.AbstractContextManager[Any], fn_ctx())
+      if callable(fn_ctx)
+      else contextlib.nullcontext()
   )
-  post_warmup_inputs = (
-      example_inputs[warmup_steps:] if is_bounded_dynamic else example_inputs
-  )
-
-  result_kwargs = {}
-  start_time = time.perf_counter()
-  result_kwargs |= dataclasses.asdict(
-      _warmup_run(
+  with common.sdpa_kernel_if_not_cuda(), ctx:
+    if SMOKE_TEST.value:
+      _smoke_test_run(
           benchmark_function,
           model,
-          warmup_inputs,
+          example_inputs,
           device,
           optimizer=optimizer,
-          enable_xprof=enable_xprof,
           sync_params=sync_params,
       )
-  )
+      return metrics_lib.PerformanceMetrics()
 
-  if _do_post_warmup():
+    warmup_steps = MAX_WARMUP_STEPS.value
+    if is_bounded_dynamic and (
+        not isinstance(example_inputs, list)
+        or len(example_inputs) != (warmup_steps + POST_WARMUP_STEPS.value)
+    ):
+      logging.warning(
+          "Example inputs are not a list of length warmup_steps +"
+          " POST_WARMUP_STEPS. This is unexpected for bounded dynamic"
+          " benchmarks. Skipping benchmark."
+      )
+      return metrics_lib.PerformanceMetrics()
+
+    warmup_inputs = (
+        example_inputs[:warmup_steps] if is_bounded_dynamic else example_inputs
+    )
+    post_warmup_inputs = (
+        example_inputs[warmup_steps:] if is_bounded_dynamic else example_inputs
+    )
+
+    result_kwargs = {}
+    start_time = time.perf_counter()
     result_kwargs |= dataclasses.asdict(
-        _post_warmup_run(
+        _warmup_run(
             benchmark_function,
             model,
-            post_warmup_inputs,
+            warmup_inputs,
             device,
             optimizer=optimizer,
             enable_xprof=enable_xprof,
-            xprof_client=xprof_client,
             sync_params=sync_params,
         )
     )
+
+    if _do_post_warmup():
+      result_kwargs |= dataclasses.asdict(
+          _post_warmup_run(
+              benchmark_function,
+              model,
+              post_warmup_inputs,
+              device,
+              optimizer=optimizer,
+              enable_xprof=enable_xprof,
+              xprof_client=xprof_client,
+              sync_params=sync_params,
+          )
+      )
 
   result_kwargs["peak_host_compilation_memory_mb"] = (
       device_utils.get_peak_host_compilation_memory_mb(_get_device_name(device))

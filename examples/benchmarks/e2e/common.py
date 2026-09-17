@@ -14,8 +14,11 @@
 
 """Common definitions for benchmarks."""
 
+import contextlib
 import enum
 import random
+from typing import Iterator
+
 from absl import flags
 import torch
 
@@ -124,6 +127,11 @@ class RunMode(enum.Enum):
   COMPILED = "compiled"  # Run the model with torch.compile.
 
 
+def get_current_platform() -> Platform:
+  """Returns the current platform from flags, falling back to default if unparsed."""
+  return PLATFORM.value if flags.FLAGS.is_parsed() else PLATFORM.default
+
+
 def get_torch_device(platform: Platform) -> torch.device:
   """Returns the torch device for the given platform."""
   return torch.device(PLATFORM_DEVICE_MAP[platform])
@@ -132,3 +140,70 @@ def get_torch_device(platform: Platform) -> torch.device:
 def is_torch_compile(run_mode: RunMode) -> bool:
   """Returns whether the given run mode uses torch.compile."""
   return run_mode == RunMode.COMPILED
+
+
+# `contextlib.nullcontext` is stateless and reentrant, so a single shared
+# instance can be handed out instead of allocating one per step.
+_NULL_CONTEXT = contextlib.nullcontext()
+
+_DEFAULT_SDPA_BACKENDS = [torch.nn.attention.SDPBackend.OVERRIDEABLE]
+_MATH_SDPA_BACKENDS = [
+    torch.nn.attention.SDPBackend.OVERRIDEABLE,
+    torch.nn.attention.SDPBackend.MATH,
+]
+
+# The SDPA backends currently established by `sdpa_kernel_if_not_cuda`. Lets
+# nested requests for the same backends skip re-entering `sdpa_kernel`.
+_active_sdpa_backends: list[torch.nn.attention.SDPBackend] | None = None
+
+
+def is_default_sdpa_active() -> bool:
+  """Returns True if the default non-CUDA SDPA backends are already active."""
+  return _active_sdpa_backends == _DEFAULT_SDPA_BACKENDS
+
+
+@contextlib.contextmanager
+def _sdpa_kernel_scope(
+    backends: list[torch.nn.attention.SDPBackend],
+) -> Iterator[None]:
+  """Establishes `backends` as the active SDPA backends for the scope."""
+  global _active_sdpa_backends
+  previous = _active_sdpa_backends
+  _active_sdpa_backends = backends
+  try:
+    with torch.nn.attention.sdpa_kernel(backends):
+      yield
+  finally:
+    _active_sdpa_backends = previous
+
+
+def sdpa_kernel_if_not_cuda(
+    use_math_attention_fallback: bool = False,
+) -> contextlib.AbstractContextManager[None]:
+  """Returns a context manager selecting the SDPA backend on non-CUDA devices.
+
+  Entering `torch.nn.attention.sdpa_kernel` mutates several global backend
+  flags and restores them on exit, costing ~25-32us. That is larger than the
+  device time of a small layer, so a benchmark should establish the backends
+  once around the whole run; per-step calls nested inside that scope then get a
+  no-op context manager and do not inflate the measured step time.
+
+  Args:
+    use_math_attention_fallback: Whether to additionally allow the MATH backend.
+
+  Returns:
+    A context manager, which is a no-op on CUDA or when the requested backends
+    are already established.
+  """
+  if get_torch_device(get_current_platform()).type == "cuda":
+    return _NULL_CONTEXT
+
+  backends = (
+      _MATH_SDPA_BACKENDS
+      if use_math_attention_fallback
+      else _DEFAULT_SDPA_BACKENDS
+  )
+
+  if _active_sdpa_backends == backends:
+    return _NULL_CONTEXT
+  return _sdpa_kernel_scope(backends)

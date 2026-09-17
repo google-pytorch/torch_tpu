@@ -224,7 +224,11 @@ class LayerPerformanceBenchmarks(test_utils.BenchmarkTest):
           config.run_mode, benchmark_function_db.simple_train_factory
       )
     else:
-      config.eval_factory = benchmark_function_db.simple_eval_factory
+      config.eval_factory = benchmark_function_db.get_eval_factory(
+          config.run_mode,
+          benchmark_function_db.simple_eval_factory,
+          is_bounded_dynamic=performance_utils.BOUNDED_DYNAMIC.value,
+      )
     if performance_utils.BOUNDED_DYNAMIC.value:
       model_name = config.model_and_input_args.model_name
       if model_name in _DYNAMIC_SKIPS or benchmark_name in _DYNAMIC_SKIPS:

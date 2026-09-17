@@ -20,7 +20,7 @@ import functools
 import gc
 import os
 import sys
-from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeAlias, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeAlias, Union, cast
 
 from absl import flags
 from absl import logging
@@ -350,88 +350,98 @@ def run_single_process_benchmark(
   )
 
   fullgraph = FORCE_FULLGRAPH.value or config.fullgraph
-  if use_torch_compile:
-    if config.is_training:
-      if not getattr(func, "is_pre_compiled", False):
-        func = device_utils.torch_compile(
+  fn_ctx = getattr(func, "benchmark_context", None)
+  outer_ctx = (
+      cast(contextlib.AbstractContextManager[Any], fn_ctx())
+      if callable(fn_ctx)
+      else contextlib.nullcontext()
+  )
+  with outer_ctx:
+    if use_torch_compile:
+      if config.is_training:
+        if not getattr(func, "is_pre_compiled", False):
+          func = device_utils.torch_compile(
+              func,
+              device.type,
+              dynamic=BOUNDED_DYNAMIC.value,
+              fullgraph=fullgraph,
+          )
+          if fn_ctx is not None:
+            setattr(func, "benchmark_context", fn_ctx)
+      else:
+        if not getattr(func, "is_pre_compiled", False):
+          model_and_input.model = device_utils.torch_compile(
+              model_and_input.model,
+              device.type,
+              dynamic=BOUNDED_DYNAMIC.value,
+              fullgraph=fullgraph,
+          )
+    # Only enable xprof for rank 0 process.
+    enable_xprof = ENABLE_XPROF.value and rank == 0
+
+    xprof_client = None
+    if enable_xprof:
+      xprof_client = get_xprof_client()
+
+    benchmark_succeeded = True
+    result = None
+    benchmark_exception = None
+    try:
+      with _run_mode_context(config.run_mode, device):
+        result = benchmark_utils.run_performance_benchmark(
             func,
-            device.type,
-            dynamic=BOUNDED_DYNAMIC.value,
-            fullgraph=fullgraph,
+            model_and_input.model,
+            model_and_input.example_inputs,
+            device,
+            enable_xprof=enable_xprof,
+            optimizer=optimizer,
+            xprof_client=xprof_client,
+            sync_params=config.sync_params,
+            is_bounded_dynamic=BOUNDED_DYNAMIC.value,
         )
-    else:
-      model_and_input.model = device_utils.torch_compile(
-          model_and_input.model,
-          device.type,
-          dynamic=BOUNDED_DYNAMIC.value,
-          fullgraph=fullgraph,
-      )
-  # Only enable xprof for rank 0 process.
-  enable_xprof = ENABLE_XPROF.value and rank == 0
-
-  xprof_client = None
-  if enable_xprof:
-    xprof_client = get_xprof_client()
-
-  benchmark_succeeded = True
-  result = None
-  benchmark_exception = None
-  try:
-    with _run_mode_context(config.run_mode, device):
-      result = benchmark_utils.run_performance_benchmark(
-          func,
-          model_and_input.model,
-          model_and_input.example_inputs,
-          device,
-          enable_xprof=enable_xprof,
-          optimizer=optimizer,
-          xprof_client=xprof_client,
-          sync_params=config.sync_params,
-          is_bounded_dynamic=BOUNDED_DYNAMIC.value,
-      )
-      logging.info(
-          "Performance Benchmark Results:\n"
-          "  Test: %s\n"
-          "  benchmark: %s\n"
-          "  microbenchmark: %s\n"
-          "  is_training: %s\n"
-          "  platform: %s\n"
-          "  weights_dtype: %s\n"
-          "  rank(0-indexed): %s\n"
-          "  world_size: %s\n"
-          "  num_warmup_steps: %s\n"
-          "  first_step_time (seconds): %s\n"
-          "  warmup_overhead (seconds): %s\n"
-          "  average_step_time (seconds): %s\n"
-          "  average_post_warmup_device_time (seconds): %s\n"
-          "  peak_device_memory (MB): %s\n"
-          "  e2e_wall_time (seconds): %s\n"
-          "  warmup_session_xprof_url: %s\n"
-          "  post_warmup_run_session_xprof_url: %s\n"
-          "  peak_host_compilation_memory (MB): %s\n",
-          test_method_name,
-          benchmark_name,
-          microbenchmark_name,
-          config.is_training,
-          common.PLATFORM.value,
-          WEIGHTS_DTYPE.value,
-          rank,
-          world_size,
-          result.num_warmup_steps,
-          result.first_step_time_seconds,
-          result.warmup_overhead_seconds,
-          result.post_warmup_step_time_seconds,
-          result.average_post_warmup_device_time_seconds,
-          result.peak_device_memory_mb,
-          result.e2e_wall_time_seconds,
-          result.warmup_session_xprof_url,
-          result.post_warmup_run_session_xprof_url,
-          result.peak_host_compilation_memory_mb,
-      )
-  except Exception as e:
-    logging.exception("Benchmark failed: %s", e)
-    benchmark_succeeded = False
-    benchmark_exception = e
+        logging.info(
+            "Performance Benchmark Results:\n"
+            "  Test: %s\n"
+            "  benchmark: %s\n"
+            "  microbenchmark: %s\n"
+            "  is_training: %s\n"
+            "  platform: %s\n"
+            "  weights_dtype: %s\n"
+            "  rank(0-indexed): %s\n"
+            "  world_size: %s\n"
+            "  num_warmup_steps: %s\n"
+            "  first_step_time (seconds): %s\n"
+            "  warmup_overhead (seconds): %s\n"
+            "  average_step_time (seconds): %s\n"
+            "  average_post_warmup_device_time (seconds): %s\n"
+            "  peak_device_memory (MB): %s\n"
+            "  e2e_wall_time (seconds): %s\n"
+            "  warmup_session_xprof_url: %s\n"
+            "  post_warmup_run_session_xprof_url: %s\n"
+            "  peak_host_compilation_memory (MB): %s\n",
+            test_method_name,
+            benchmark_name,
+            microbenchmark_name,
+            config.is_training,
+            common.PLATFORM.value,
+            WEIGHTS_DTYPE.value,
+            rank,
+            world_size,
+            result.num_warmup_steps,
+            result.first_step_time_seconds,
+            result.warmup_overhead_seconds,
+            result.post_warmup_step_time_seconds,
+            result.average_post_warmup_device_time_seconds,
+            result.peak_device_memory_mb,
+            result.e2e_wall_time_seconds,
+            result.warmup_session_xprof_url,
+            result.post_warmup_run_session_xprof_url,
+            result.peak_host_compilation_memory_mb,
+        )
+    except Exception as e:
+      logging.exception("Benchmark failed: %s", e)
+      benchmark_succeeded = False
+      benchmark_exception = e
 
   # Only export results from the rank 0 process to avoid duplicate entries in
   # MLCompass.

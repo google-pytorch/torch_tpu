@@ -83,3 +83,30 @@ class SingleTraceTrainerAdapter(single_trace_trainer.SingleTraceTrainer):
         example_targets=example_targets,
         compile_fn=compile_fn,
     )
+
+  def make_compiled_eval_step(
+      self,
+      example_inputs: Any,
+      compile_fn: Callable[..., Any] | None = None,
+  ) -> Callable[..., Any]:
+    """Compiles an evaluation step using StaticCompiler by default.
+
+    Passes `is_fwd=True` to `backend_compiler` so the single-trace forward FX
+    graph is compiled directly to a TPU executable without AOTAutograd backward
+    partitioning.
+    """
+    if compile_fn is None:
+
+      def default_compile_fn(graph_module, flat_inputs):
+        return self.backend_compiler(
+            graph_module,
+            flat_inputs,
+            is_fwd=True,
+        )
+
+      compile_fn = default_compile_fn
+
+    return super().make_compiled_eval_step(
+        example_inputs=example_inputs,
+        compile_fn=compile_fn,
+    )

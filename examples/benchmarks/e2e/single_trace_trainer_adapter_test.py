@@ -410,6 +410,25 @@ class SingleTraceTrainerAdapterFwdBwdOnlyTest(seed_test_utils.RepeatableTest):
     self.assertIsNotNone(loss)
     self.assertFalse(torch.isnan(loss))
 
+  def test_make_compiled_eval_step_vs_eager(self):
+    model = ToyLinearModule().to(device=self.device)
+    model.eval()
+    model_eager = copy.deepcopy(model)
+    model_eager.eval()
+    trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
+        model, optimizer=None
+    )
+
+    x = torch.randn((32, 128), device=self.device)
+    eval_step = trainer.make_compiled_eval_step(x)
+
+    out_comp = eval_step(x)
+    with torch.no_grad():
+      out_eager = model_eager(x)
+
+    torch.accelerator.synchronize()
+    test_utils.assert_close(out_comp, out_eager, rtol=1e-4, atol=1e-4)
+
 
 if __name__ == "__main__":
   absltest.main()

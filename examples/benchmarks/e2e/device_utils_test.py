@@ -18,6 +18,8 @@ from unittest import mock
 
 from absl.testing import absltest
 import torch
+from examples.benchmarks.e2e import benchmark_function_db
+from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import device_utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 from tests import seed_test_utils
@@ -298,6 +300,53 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
     with mock.patch('jax.local_devices', return_value=[mock_dev]):
       device_utils.reset_peak_memory_stats('jax')
       mock_dev.reset_memory_stats.assert_called_once()
+
+  def test_synchronize_single_sequence_and_pytree(self):
+    t1 = torch.randn((4, 4), device='tpu') + 1.0
+    t2 = torch.randn((4, 4), device='tpu') * 2.0
+    device_utils.synchronize('tpu', t1)
+    device_utils.synchronize('tpu', [t1, t2])
+    device_utils.synchronize('tpu', (t1, t2))
+    device_utils.synchronize('tpu', {'a': t1, 'b': (t2,)})
+    self.assertEqual(t1.shape, (4, 4))
+
+  def test_sdpa_kernel_context_nesting(self):
+    self.assertFalse(common.is_default_sdpa_active())
+    with common.sdpa_kernel_if_not_cuda():
+      self.assertTrue(common.is_default_sdpa_active())
+      # Re-entering with matching backends should return _NULL_CONTEXT singleton
+      nested_ctx = common.sdpa_kernel_if_not_cuda()
+      self.assertIs(nested_ctx, common._NULL_CONTEXT)
+      with nested_ctx:
+        self.assertTrue(common.is_default_sdpa_active())
+      # Entering with math fallback should deactivate default SDPA state
+      with common.sdpa_kernel_if_not_cuda(use_math_attention_fallback=True):
+        self.assertFalse(common.is_default_sdpa_active())
+      self.assertTrue(common.is_default_sdpa_active())
+    self.assertFalse(common.is_default_sdpa_active())
+
+  def test_functional_eval_factory_and_fallback(self):
+    model = torch.nn.Linear(16, 8).to('tpu').eval()
+    x = torch.randn((4, 16), device='tpu')
+    eval_fn = benchmark_function_db.functional_eval_factory()
+    out = eval_fn(model, x)
+    with torch.no_grad():
+      expected = model(x)
+    torch.tpu.synchronize()
+    torch.testing.assert_close(out.cpu(), expected.cpu(), rtol=1e-4, atol=1e-4)
+
+    # Verify fallback to device_utils.torch_compile when SingleTraceTrainerAdapter fails
+    eval_fn_fallback = benchmark_function_db.functional_eval_factory()
+    with mock.patch.object(
+        benchmark_function_db.single_trace_trainer_adapter,
+        'SingleTraceTrainerAdapter',
+        side_effect=RuntimeError('Simulated export failure'),
+    ):
+      out_fb = eval_fn_fallback(model, x)
+    torch.tpu.synchronize()
+    torch.testing.assert_close(
+        out_fb.cpu(), expected.cpu(), rtol=1e-4, atol=1e-4
+    )
 
 
 if __name__ == '__main__':

@@ -21,25 +21,37 @@ from typing import Any, Callable
 
 import torch
 from examples.benchmarks.e2e import common
+from examples.benchmarks.e2e import device_utils
 from examples.benchmarks.e2e import single_trace_trainer_adapter
 from examples.tracing import optimizers
 
 
-@contextlib.contextmanager
-def _sdpa_kernel_if_not_cuda(use_math_attention_fallback: bool = False):
-  device = common.get_torch_device(common.PLATFORM.value)
-  is_cuda = device.type == "cuda"
+# Per-step callers get a no-op context manager when the benchmark runner has
+# already established these backends for the whole run. See
+# `common.sdpa_kernel_if_not_cuda`.
+_sdpa_kernel_if_not_cuda = common.sdpa_kernel_if_not_cuda
 
-  if is_cuda:
-    yield
-  else:
-    attention_kernels = [
-        torch.nn.attention.SDPBackend.OVERRIDEABLE,
-    ]
-    if use_math_attention_fallback:
-      attention_kernels.append(torch.nn.attention.SDPBackend.MATH)
-    with torch.nn.attention.sdpa_kernel(attention_kernels):
+
+@contextlib.contextmanager
+def _eval_benchmark_context():
+  if torch.is_inference_mode_enabled():
+    with _sdpa_kernel_if_not_cuda():
       yield
+  else:
+    with torch.inference_mode(), _sdpa_kernel_if_not_cuda():
+      yield
+
+
+@contextlib.contextmanager
+def _no_grad_benchmark_context():
+  with torch.no_grad(), _sdpa_kernel_if_not_cuda():
+    yield
+
+
+@contextlib.contextmanager
+def _train_benchmark_context():
+  with _sdpa_kernel_if_not_cuda():
+    yield
 
 
 def assert_grad_accumulation_steps(grad_accumulation_steps: int) -> None:
@@ -78,6 +90,7 @@ def huggingface_eval_factory() -> Callable[..., Any]:
         result = result.logits
       return result
 
+  setattr(step_fn, "benchmark_context", _no_grad_benchmark_context)
   return step_fn
 
 
@@ -201,6 +214,8 @@ def timm_eval_factory() -> Callable[..., Any]:
     A callable step function that executes inference on the TIMM model under
     `torch.inference_mode` and returns the output predictions.
   """
+  cached_model = None
+  cached_call = None
 
   def step_fn(
       model: torch.nn.Module,
@@ -208,11 +223,26 @@ def timm_eval_factory() -> Callable[..., Any]:
       optimizer: torch.optim.Optimizer | None = None,
   ) -> torch.Tensor:
     del optimizer  # Unused
+    nonlocal cached_model, cached_call
+    if model is not cached_model:
+      cached_model = model
+      if not (
+          getattr(model, "_forward_hooks", None)
+          or getattr(model, "_forward_pre_hooks", None)
+      ):
+        cached_call = model.forward
+      else:
+        cached_call = model
+
+    if torch.is_inference_mode_enabled() and common.is_default_sdpa_active():
+      return cached_call(inputs)
+
     with torch.inference_mode():
       with _sdpa_kernel_if_not_cuda():
-        out = model(inputs)
+        out = cached_call(inputs)
     return out
 
+  setattr(step_fn, "benchmark_context", _eval_benchmark_context)
   return step_fn
 
 
@@ -228,6 +258,8 @@ def simple_eval_factory() -> Callable[..., Any]:
     A callable step function that executes inference on the model under
     `torch.inference_mode` supporting unpacked tuple inputs.
   """
+  cached_model = None
+  cached_call = None
 
   def step_fn(
       model: torch.nn.Module,
@@ -235,12 +267,29 @@ def simple_eval_factory() -> Callable[..., Any]:
       optimizer: torch.optim.Optimizer | None = None,
   ) -> torch.Tensor:
     del optimizer  # Unused
+    nonlocal cached_model, cached_call
+    if model is not cached_model:
+      cached_model = model
+      if not (
+          getattr(model, "_forward_hooks", None)
+          or getattr(model, "_forward_pre_hooks", None)
+      ):
+        cached_call = model.forward
+      else:
+        cached_call = model
+
+    if torch.is_inference_mode_enabled() and common.is_default_sdpa_active():
+      if isinstance(inputs, tuple):
+        return cached_call(*inputs)
+      return cached_call(inputs)
+
     with torch.inference_mode():
       with _sdpa_kernel_if_not_cuda():
         if isinstance(inputs, tuple):
-          return model(*inputs)
-        return model(inputs)
+          return cached_call(*inputs)
+        return cached_call(inputs)
 
+  setattr(step_fn, "benchmark_context", _eval_benchmark_context)
   return step_fn
 
 
@@ -272,6 +321,7 @@ def simple_train_factory() -> (
     loss.backward()
     return loss.detach()
 
+  setattr(train_step, "benchmark_context", _train_benchmark_context)
   return train_step
 
 
@@ -346,7 +396,7 @@ def functional_train_factory(
     graph using SingleTraceTrainer.
   """
 
-  state: dict[str, Any] = {"step_fn": None}
+  step_fn: Callable[..., Any] | None = None
   del grad_accumulation_steps  # Ignored; SingleTraceTrainer doesn't support accumulation yet.
 
   def train_step(
@@ -354,20 +404,24 @@ def functional_train_factory(
       inputs: Any,
       opt_arg: torch.optim.Optimizer | None = None,
   ) -> torch.Tensor:
+    del opt_arg  # Ignored; use SingleTraceTrainer's internal optimizer.
+    nonlocal step_fn
+    if step_fn is not None and common.is_default_sdpa_active():
+      return step_fn(inputs)
     with _sdpa_kernel_if_not_cuda():
-      del opt_arg  # Ignored; use SingleTraceTrainer's internal optimizer.
-      if state["step_fn"] is None:
+      if step_fn is None:
         trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
             model=model,
             optimizer=optimizer,
         )
-        state["step_fn"] = trainer.make_compiled_train_step(
+        step_fn = trainer.make_compiled_train_step(
             example_inputs=inputs,
         )
 
-      return state["step_fn"](inputs)
+      return step_fn(inputs)
 
   setattr(train_step, "is_pre_compiled", True)
+  setattr(train_step, "benchmark_context", _train_benchmark_context)
   return train_step
 
 
@@ -397,3 +451,94 @@ def get_train_factory(
       grad_accumulation_steps=1,
       **eager_kwargs,
   )
+
+
+def functional_eval_factory() -> Callable[..., Any]:
+  """Returns a functional evaluation step runner using SingleTraceTrainer."""
+  step_fn: Callable[..., Any] | None = None
+
+  def eval_step(
+      model: torch.nn.Module,
+      inputs: Any,
+      optimizer: torch.optim.Optimizer | None = None,
+  ) -> Any:
+    del optimizer
+    nonlocal step_fn
+    # Fast path: when called from within benchmark_utils._execution_run or
+    # _warmup_run, _eval_benchmark_context has already activated inference_mode
+    # and default SDPA kernel selection outside the timing loop.
+    if (
+        step_fn is not None
+        and torch.is_inference_mode_enabled()
+        and common.is_default_sdpa_active()
+    ):
+      return step_fn(inputs)
+    with torch.inference_mode():
+      with _sdpa_kernel_if_not_cuda():
+        if step_fn is None:
+          try:
+            # Prefer SingleTraceTrainerAdapter.make_compiled_eval_step to trace
+            # and compile the model once via torch.export, bypassing Dynamo's
+            # per-step guard evaluation overhead during steady-state execution.
+            trainer = single_trace_trainer_adapter.SingleTraceTrainerAdapter(
+                model=model,
+                optimizer=None,
+            )
+            step_fn = trainer.make_compiled_eval_step(
+                example_inputs=inputs,
+            )
+          except Exception:  # pylint: disable=broad-except
+            # Fallback to standard torch.compile if torch.export fails on
+            # dynamic control flow or unsupported Python constructs.
+            param_or_buf = next(model.parameters(), next(model.buffers(), None))
+            if param_or_buf is not None:
+              device_type = param_or_buf.device.type
+            elif isinstance(inputs, torch.Tensor):
+              device_type = inputs.device.type
+            elif (
+                isinstance(inputs, (tuple, list))
+                and inputs
+                and isinstance(inputs[0], torch.Tensor)
+            ):
+              device_type = inputs[0].device.type
+            else:
+              device_type = "tpu"
+            compiled_model = device_utils.torch_compile(
+                model, device_type, dynamic=False
+            )
+            if isinstance(inputs, tuple):
+              step_fn = lambda inp: compiled_model(*inp)
+            elif isinstance(inputs, dict):
+              step_fn = lambda inp: compiled_model(**inp)
+            else:
+              step_fn = compiled_model
+
+        return step_fn(inputs)
+
+  setattr(eval_step, "is_pre_compiled", True)
+  setattr(eval_step, "benchmark_context", _eval_benchmark_context)
+  return eval_step
+
+
+def get_eval_factory(
+    run_mode: common.RunMode,
+    eager_fact: Callable[..., Any],
+    *,
+    is_bounded_dynamic: bool = False,
+) -> Callable[..., Any]:
+  """Returns an evaluation step runner factory for the given run mode."""
+  # Use functional_eval_factory for static compiled layer benchmarks on TPU/CPU
+  # to eliminate per-step Dynamo guard and context manager overhead.
+  if (
+      run_mode == common.RunMode.COMPILED
+      and not is_bounded_dynamic
+      and eager_fact == simple_eval_factory
+      and common.get_current_platform()
+      not in (
+          common.Platform.B200_8,
+          common.Platform.B200_4,
+          common.Platform.B200_1,
+      )
+  ):
+    return functional_eval_factory
+  return eager_fact

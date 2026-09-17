@@ -572,6 +572,10 @@ class _DummyCompiledExecutable(CompiledArtifact):
     return (_unpickle_dummy_compiled_executable, (self.gm,))
 
   def __call__(self, *args, **kwargs):
+    # Unbox AOTAutograd boxed argument sequence (`_boxed_call = True` on
+    # CompiledArtifact).
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+      args = args[0]
     return self.gm(*args, **kwargs)
 
 

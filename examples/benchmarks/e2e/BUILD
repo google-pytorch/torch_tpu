@@ -41,6 +41,7 @@ torch_tpu_py_library(
     name = "benchmark_utils",
     srcs = ["benchmark_utils.py"],
     deps = [
+        ":common",
         ":device_utils",
         "//examples/benchmarks/e2e/harness:metrics",
         "//examples/benchmarks/quality_utils:quality_benchmark_model",
@@ -569,6 +570,7 @@ torch_tpu_py_library(
     srcs = ["benchmark_function_db.py"],
     deps = [
         ":common",
+        ":device_utils",
         ":single_trace_trainer_adapter",
         "//examples/tracing:optimizers",
         "//shims/torch:pytorch",
@@ -625,6 +627,8 @@ torch_tpu_py_test(
         "requires-tpu-v5lite",
     ],
     deps = [
+        ":benchmark_function_db",
+        ":common",
         ":device_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",

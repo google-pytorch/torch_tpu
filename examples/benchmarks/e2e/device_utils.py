@@ -307,6 +307,19 @@ def synchronize(
   elif device in ('tpu', 'xla_cuda', 'xla_cpu'):
     if tensor_to_sync is None:
       torch.accelerator.synchronize()
+    elif (
+        isinstance(tensor_to_sync, torch.Tensor)
+        and not tensor_to_sync.is_sparse
+    ):
+      # Fast path for a single dense tensor: dispatch directly to C++
+      # TrySyncSingleTensorFast without Python pytree collection.
+      tpu_sync.synchronize(tensor_to_sync, wait=True)
+    elif isinstance(tensor_to_sync, (list, tuple)) and all(
+        isinstance(t, torch.Tensor) and not t.is_sparse for t in tensor_to_sync
+    ):
+      # Fast path for a flat sequence of dense tensors: dispatch directly to C++
+      # TrySyncTensorArrayFast without Python pytree collection.
+      tpu_sync.synchronize(tensor_to_sync, wait=True)
     else:
       # TODO(b/507181043): Investigate why sync(None, wait=True) doesn't work.
       tensors = _collect_tensors(tensor_to_sync)
