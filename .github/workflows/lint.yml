@@ -125,3 +125,11 @@ jobs:
 
       - name: "Test CI tools"
         run: uvx nox -s test_ci_tools
+
+      # MODULE.bazel, run_benchmarks.yml's choice options, copy.bara.sky and
+      # .bazelrc all keep a hand-written copy of the supported Python
+      # versions because they structurally cannot read
+      # bazel/supported_python_versions.bzl. This is what keeps them honest.
+      - name: "Check Python version definitions are in sync"
+        if: success() || failure()
+        run: uvx nox -s check_python_version_sync

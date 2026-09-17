@@ -25,12 +25,26 @@ Details on configuration can be found at: https://nox.thea.codes/
 from collections.abc import Mapping, Sequence
 import os
 import pathlib
+import sys
 from typing import Final
 
 import nox
 
+# ci/tools/python_versions.py is the one reader of
+# bazel/supported_python_versions.bzl outside Starlark; import it rather than
+# restating any version here.
+if str(pathlib.Path(__file__).parent) not in sys.path:
+  sys.path.insert(0, str(pathlib.Path(__file__).parent))
+
+from ci.tools import python_versions
+
 nox.options.default_venv_backend = "uv"
 nox.options.sessions = ["lint"]
+
+_PYTHON_VERSIONS: Final[Mapping[str, str | list[str]]] = (
+    python_versions.load_constants()
+)
+_LATEST_PYTHON_VERSION: Final[str] = _PYTHON_VERSIONS["LATEST_PYTHON_VERSION"]
 
 # The index that must satisfy the `torch` dependency for each variant. `None`
 # means the default index (PyPI), whose Linux wheels bundle CUDA support. The
@@ -125,7 +139,18 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/resolve_base_sha_test.py",
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
+      "ci/tools/python_versions_test.py",
+      "ci/tools/check_python_version_sync_test.py",
   )
+
+
+# Reads a handful of text files and needs PyYAML, so it runs in a managed
+# virtual env for the same reason test_ci_tools does.
+@nox.session
+def check_python_version_sync(session: nox.Session) -> None:
+  """Verify hand-maintained Python version copies match the source of truth."""
+  session.install("pyyaml")
+  session.run("python", "ci/tools/check_python_version_sync.py")
 
 
 # Use venv_backend="none" to allow running the script directly in the host.
@@ -303,12 +328,10 @@ def intermediate_patch_abi(session: nox.Session, torch_version: str) -> None:
 @nox.session
 def dep_upper_bounds(session: nox.Session) -> None:
   """Run smoke tests against dependency upper bounds from requirements_<ver>_latest.txt."""
-  # The default fallback version should match the latest version in
-  # bazel/supported_python_versions.bzl.
   python_version = (
       session.python
       if isinstance(session.python, str)
-      else os.environ.get("PYTHON_VERSION", "3.14")
+      else os.environ.get("PYTHON_VERSION", _LATEST_PYTHON_VERSION)
   )
   version_und = python_version.replace(".", "_")
   req_file = (

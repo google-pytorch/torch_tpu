@@ -38,5 +38,8 @@ py_binary(
 
 exports_files([
     "link_libraries.sh",
+    # Exported as a plain file (not just via :supported_python_versions_bzl)
+    # so ci/tools/python_versions.py can read it at runtime as data.
+    "supported_python_versions.bzl",
     "torch_local_defs.bzl",
 ])

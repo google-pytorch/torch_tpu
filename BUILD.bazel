@@ -31,6 +31,11 @@ package(
 exports_files([
     ".bazelrc",
     "README.md",
+    # Read by //ci/tools:check_python_version_sync, which asserts these files
+    # agree with //bazel:supported_python_versions.bzl. MODULE.bazel keeps a
+    # hand-written copy of the version list because it cannot load() Starlark.
+    "MODULE.bazel",
+    "WORKSPACE",
 ])
 
 alias(

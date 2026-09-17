@@ -43,3 +43,59 @@ py_test(
         ":list_ci_tests",
     ],
 )
+
+py_binary(
+    name = "python_versions",
+    srcs = ["python_versions.py"],
+    data = [
+        "//bazel:supported_python_versions.bzl",
+    ],
+    visibility = ["//:__subpackages__"],
+)
+
+py_test(
+    name = "python_versions_test",
+    srcs = ["python_versions_test.py"],
+    data = [
+        "//bazel:supported_python_versions.bzl",
+        "//requirements:all_requirements_files",
+    ],
+    deps = [
+        ":python_versions",
+    ],
+)
+
+# Note: the copy.bara.sky assertion is skipped when that file is absent,
+# which is the case in the GitHub export and under the Bazel sandbox. It
+# runs for real via the nox session in a full checkout.
+py_binary(
+    name = "check_python_version_sync",
+    srcs = ["check_python_version_sync.py"],
+    data = [
+        "//:.bazelrc",
+        "//:MODULE.bazel",
+        "//:WORKSPACE",
+        "//:github_workflows",
+        "//bazel:supported_python_versions.bzl",
+    ],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":python_versions",
+        "@pypi//pyyaml",
+    ],
+)
+
+py_test(
+    name = "check_python_version_sync_test",
+    srcs = ["check_python_version_sync_test.py"],
+    data = [
+        "//:.bazelrc",
+        "//:MODULE.bazel",
+        "//:WORKSPACE",
+        "//:github_workflows",
+        "//bazel:supported_python_versions.bzl",
+    ],
+    deps = [
+        ":check_python_version_sync",
+    ],
+)

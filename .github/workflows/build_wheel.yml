@@ -59,12 +59,13 @@ jobs:
     name: "Set up Matrix"
     runs-on: ubuntu-latest
     outputs:
-      # Keep cpu_versions and latest_python_version in sync with
-      # bazel/supported_python_versions.bzl.
+      # Every value below is derived from bazel/supported_python_versions.bzl
+      # by ci/tools/python_versions.py. Do not hardcode Python versions here.
       cpu_versions: ${{ steps.set.outputs.cpu_versions }}
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
-      default_python_version: "3.14"
-      latest_python_version: "3.14"
+      default_python_version: ${{ steps.set.outputs.default_python_version }}
+      latest_python_version: ${{ steps.set.outputs.latest_python_version }}
+      oldest_python_version: ${{ steps.set.outputs.oldest_python_version }}
       should_build: ${{ steps.check_diff.outputs.should_build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -82,24 +83,22 @@ jobs:
         run: ci/check_wheel_diff.sh
       - id: set
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          HAS_TPU_NIGHTLY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'tpu-nightly') }}
-          HAS_RUN_ALL_VERSIONS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:run_all_versions') }}
-          HAS_POSTSUBMIT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:postsubmit') }}
+          # Postsubmit-equivalent runs sweep every supported Python version;
+          # pull requests build the smaller presubmit subset. Which versions
+          # each of those means is defined in
+          # bazel/supported_python_versions.bzl, not here.
+          RUN_ALL_VERSIONS: >-
+            ${{ github.event_name == 'schedule' ||
+            github.event_name == 'push' ||
+            contains(github.event.pull_request.labels.*.name, 'tpu-nightly') ||
+            contains(github.event.pull_request.labels.*.name, 'ci:run_all_versions') ||
+            contains(github.event.pull_request.labels.*.name, 'ci:postsubmit') }}
         run: |
-          DEFAULT_VER="3.14"
-          CPU_VERS='["3.11", "3.14"]'
-          TPU_VERS="[\"${DEFAULT_VER}\"]"
-          if [[ "${EVENT_NAME}" == "schedule" ]] || \
-             [[ "${EVENT_NAME}" == "push" ]] || \
-             [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
-             [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
-             [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
-            CPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
-            TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
+          if [[ "${RUN_ALL_VERSIONS}" == "true" ]]; then
+            python3 ci/tools/python_versions.py --github-output --run-all-versions
+          else
+            python3 ci/tools/python_versions.py --github-output
           fi
-          echo "cpu_versions=${CPU_VERS}" >> "$GITHUB_OUTPUT"
-          echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
 
   # TODO(pganssle): Migrate to cibuildwheel
   build_wheels:
@@ -136,7 +135,7 @@ jobs:
           # PyTorch-nightly glue), so both flavors are exercised in
           # presubmit; the nightly smoke tests only run against the default
           # Python's wheel, which keeps the nightly glue.
-          extra_bazel_args: ${{ matrix.python_version == '3.11' && '--config=wheel_release' || '' }}
+          extra_bazel_args: ${{ matrix.python_version == needs.setup.outputs.oldest_python_version && '--config=wheel_release' || '' }}
 
   test_wheels_cpu:
     name: "Test wheel on ${{ matrix.custom_name || 'CPU' }} (Python ${{ matrix.python_version }})"

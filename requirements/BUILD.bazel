@@ -15,3 +15,11 @@
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 
 package(default_visibility = PACKAGE_DEFAULT_VISIBILITY)
+
+# All resolved lock files, so tests can assert that every version in
+# //bazel:supported_python_versions.bzl has a corresponding lock.
+filegroup(
+    name = "all_requirements_files",
+    srcs = glob(["*.txt"]),
+    visibility = ["//:__subpackages__"],
+)
