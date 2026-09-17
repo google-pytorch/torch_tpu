@@ -34,15 +34,17 @@
 namespace torch_tpu {
 namespace internal {
 
-// Detects if a type is pybind11::class_.
+// Detects if a type is pybind11 class_.
 //
-// Used to distinguish between a pybind11::module_ and a pybind11::class_ when
+// Used to distinguish between a pybind11 module_ and a pybind11 class_ when
 // wrapping.
 template <typename T>
 struct IsPyBindClass : std::false_type {};
 
 template <typename... Args>
-struct IsPyBindClass<pybind11::class_<Args...>> : std::true_type {};
+struct IsPyBindClass<           //
+    pybind11::class_<Args...>>  // RAW_PYBIND_OK=Wrapper implementation.
+    : std::true_type {};
 
 // Helper struct to wrap functions bound to Python APIs with TorchTPU error
 // handling.
@@ -129,10 +131,12 @@ class  //
         "TODO(b/556294340): use the newer abstractions PyBindModule and "
         "PyBindClass.")]]  //
     PyBindErrorHandlingWrapper {
-  static_assert(std::is_same_v<PyBindType, pybind11::module_> ||
-                    internal::IsPyBindClass<PyBindType>::value,
-                "PyBindErrorHandlingWrapper can only wrap pybind11::module_ "
-                "or pybind11::class_ types.");
+  static_assert(
+      std::is_same_v<PyBindType, pybind11::module_>  // RAW_PYBIND_OK=Wrapper
+                                                     // implementation.
+          || internal::IsPyBindClass<PyBindType>::value,
+      "PyBindErrorHandlingWrapper can only wrap a pybind11 module_ or a "
+      "pybind11 class_ type.");
 
  public:
   // If `PyBindType` is a class, it sets the `prefix_` to "<class-name>."
@@ -206,11 +210,13 @@ internal::PyBindErrorHandlingWrapper<T> PyBindWrapWithErrorHandling(
   return internal::PyBindErrorHandlingWrapper<T>(wrapped);
 }
 
-// Wrapper around pybind11::module_ to automatically wrap `def()` calls with
+// Wrapper around pybind11 module_ to automatically wrap `def()` calls with
 // error handling.
 class PyBindModule {
  public:
-  explicit PyBindModule(pybind11::module_ wrapped) : wrapped_(wrapped) {}
+  explicit PyBindModule(
+      pybind11::module_ wrapped)  // RAW_PYBIND_OK=Wrapper implementation.
+      : wrapped_(wrapped) {}
 
   // Registers the Python API `name` to the function `f` wrapped with TorchTPU
   // guidelines conforming error handling.
@@ -228,7 +234,9 @@ class PyBindModule {
 
   // Imports an existing Python module and wraps it in a `PyBindModule`.
   static PyBindModule Import(const char* name) {
-    return PyBindModule(pybind11::module_::import(name));
+    return PyBindModule(
+        pybind11::module_::import(  // RAW_PYBIND_OK=Wrapper implementation.
+            name));
   }
 
   auto doc() { return wrapped_.doc(); }
@@ -237,7 +245,7 @@ class PyBindModule {
   friend pybind11::handle GetPyBindHandle(const PyBindModule& m);
 
  private:
-  pybind11::module_ wrapped_;
+  pybind11::module_ wrapped_;  // RAW_PYBIND_OK=Wrapper implementation.
 };
 
 // Returns the underlying pybind11 handle from a `PyBindModule` instance.
@@ -248,12 +256,13 @@ inline pybind11::handle GetPyBindHandle(const PyBindModule& m) {
   return m.wrapped_;
 }
 
-// Wrapper around pybind11::class_<T, Options...> to automatically wrap `def()`
+// Wrapper around pybind11 class_ constructor to automatically wrap `def()`
 // calls with error handling.
 template <typename T, typename... Options>
 class PyBindClass {
  public:
-  using RawClass = pybind11::class_<T, Options...>;
+  using RawClass =
+      pybind11::class_<T, Options...>;  // RAW_PYBIND_OK=Wrapper implementation.
 
   template <typename... Extra>
   PyBindClass(PyBindModule& m, const char* name, const Extra&... extra)
@@ -282,8 +291,8 @@ class PyBindClass {
     return *this;
   }
 
-  // Forwards `def_readonly()` to the wrapped `pybind11::class_` without
-  // wrapping it with error handling.
+  // Forwards `def_readonly()` to the wrapped class_ without wrapping it with
+  // error handling.
   //
   // If TorchTPU guidelines conforming error handling is needed, consider
   // changing this into a read-only property.
@@ -293,7 +302,7 @@ class PyBindClass {
     return *this;
   }
 
-  // Forwards `def_readwrite()` to the wrapped `pybind11::class_` without
+  // Forwards `def_readwrite()` to the wrapped pybind11 class_ without
   // wrapping it with error handling.
   //
   // If TorchTPU guidelines conforming error handling is needed, consider
@@ -350,7 +359,8 @@ class PyBindClass {
 //   static void TorchTpuPyBindInitModule_my_module(
 //       ::torch_tpu::PyBindModule& m);
 //
-//   PYBIND11_MODULE(my_module, raw_my_module) {
+//   PYBIND11_MODULE(  /* RAW_PYBIND_OK=Wrapper implementation. */
+//     my_module, raw_my_module) {
 //     ::torch_tpu::PyBindModule m_my_module(raw_my_module);
 //     TorchTpuPyBindInitModule_my_module(m_my_module);
 //   }
@@ -359,15 +369,16 @@ class PyBindClass {
 //       ::torch_tpu::PyBindModule& m) {
 //     m.def("my_func", &MyFunc);
 //   }
-#define TT_PYBIND11_MODULE(name, variable)          \
-  static void TorchTpuPyBindInitModule_##name(      \
-      ::torch_tpu::PyBindModule& variable);         \
-                                                    \
-  PYBIND11_MODULE(name, raw_##name) {               \
-    ::torch_tpu::PyBindModule m_##name(raw_##name); \
-    TorchTpuPyBindInitModule_##name(m_##name);      \
-  }                                                 \
-                                                    \
+#define TT_PYBIND11_MODULE(name, variable)                    \
+  static void TorchTpuPyBindInitModule_##name(                \
+      ::torch_tpu::PyBindModule& variable);                   \
+                                                              \
+  PYBIND11_MODULE(/* RAW_PYBIND_OK=Wrapper implementation. */ \
+                  name, raw_##name) {                         \
+    ::torch_tpu::PyBindModule m_##name(raw_##name);           \
+    TorchTpuPyBindInitModule_##name(m_##name);                \
+  }                                                           \
+                                                              \
   void TorchTpuPyBindInitModule_##name(::torch_tpu::PyBindModule& variable)
 
 }  // namespace torch_tpu
