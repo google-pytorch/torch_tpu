@@ -369,9 +369,11 @@ at::Generator& DeviceGenerators::GetDefaultGenerator(at::DeviceIndex idx) {
 
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     const auto it = GetExportModeDefaultGenerators().find(idx);
-    if (it != GetExportModeDefaultGenerators().end()) {
-      return it->second;
-    }
+    TT_CHECK_THROW(it != GetExportModeDefaultGenerators().end(),
+                   error::kFailedPrecondition)
+        << "expected export mode default generator to be set for device "
+        << static_cast<int32_t>(idx) << ", got none";
+    return it->second;
   }
 
   return GetEagerDefaultGenerator(idx);

@@ -301,7 +301,7 @@ class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
 // Returns the default generator for the given device index. If idx is -1,
 // returns the default generator for the current device.
 // If EagerMode::kInternalCompileFxGraph is active, returns the export-mode
-// default generator if set, otherwise falls back to the eager default
+// default generator or throws if not set, otherwise returns the eager default
 // generator.
 at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx = -1);
 
@@ -321,7 +321,8 @@ void SetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
 
 // Clears all export-mode default generator overrides. Under
 // EagerMode::kInternalCompileFxGraph, subsequent calls to
-// GetDefaultDeviceGenerator() will fall back to the eager default generator.
+// GetDefaultDeviceGenerator() will throw FailedPrecondition if no override is
+// set.
 void ClearExportModeDefaultDeviceGenerators();
 
 // Creates a new generator for the given device index. If idx is -1, creates a

@@ -4568,6 +4568,16 @@ module {
     ):
       tpu_torch_compile.set_export_mode_default_device_generator(None, 100)
 
+  @et.why_tpu_only("TorchTPU specific export mode generator missing error.")
+  def test_export_mode_missing_default_generator(self):
+    tpu_torch_compile.clear_export_mode_default_device_generators()
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""uniform_(): expected export mode default generator to be set for device 0, got none""",
+    ):
+      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+        torch.rand(1, device="tpu")
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
