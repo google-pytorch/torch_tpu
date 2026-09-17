@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 
 exports_files(
@@ -41,5 +42,26 @@ py_test(
     ],
     deps = [
         ":list_ci_tests",
+    ],
+)
+
+py_library(
+    name = "partition_targets_lib",
+    srcs = ["partition_targets.py"],
+)
+
+py_binary(
+    name = "partition_targets",
+    srcs = ["partition_targets.py"],
+    deps = [
+        ":partition_targets_lib",
+    ],
+)
+
+py_test(
+    name = "partition_targets_test",
+    srcs = ["partition_targets_test.py"],
+    deps = [
+        ":partition_targets_lib",
     ],
 )

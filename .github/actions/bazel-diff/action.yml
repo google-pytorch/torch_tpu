@@ -36,10 +36,18 @@ inputs:
     description: 'Set to true to completely bypass bazel-diff'
     required: false
     default: 'false'
+  shard_index:
+    description: '0-based shard index for partitioning test targets'
+    required: false
+    default: '0'
+  shard_count:
+    description: 'Total number of shards for partitioning test targets'
+    required: false
+    default: '1'
 
 runs:
   using: 'composite'
   steps:
     - name: Execute bazel-diff script
-      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}"
+      run: bash "$GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh" "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}" "${{ inputs.shard_index }}" "${{ inputs.shard_count }}"
       shell: bash

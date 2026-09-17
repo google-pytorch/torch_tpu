@@ -25,6 +25,8 @@ CURRENT_SHA="${3:-HEAD}"
 BAZEL_CONFIG="${4}"
 EXTRA_FLAGS="${5}"
 DISABLE_BAZEL_DIFF="${6:-false}"
+SHARD_INDEX="${7:-0}"
+SHARD_COUNT="${8:-1}"
 
 if [ -n "$WORKSPACE_DIR" ] && [ -d "$WORKSPACE_DIR" ]; then
   WORKSPACE_DIR="$(cd "$WORKSPACE_DIR" && pwd)"
@@ -87,14 +89,33 @@ if [ -n "$BASE_SHA" ] && [ "$DISABLE_BAZEL_DIFF" != "true" ]; then
   fi
 fi
 
+partition_file() {
+  python3 "$WORKSPACE_DIR/ci/tools/partition_targets.py" \
+    --shard-index="$SHARD_INDEX" --shard-count="$SHARD_COUNT" \
+    --bazel-config="$BAZEL_CONFIG" \
+    --input-file="$1" --output-file="$1"
+  if [ ! -s "$1" ]; then
+    echo "No targets assigned to shard $((SHARD_INDEX + 1))/$SHARD_COUNT. Skipping Bazel entirely!"
+    exit 0
+  fi
+}
+
 # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main) or
 # label "ci:disable-bazel-diff" is applied, diff-based testing is invalid. Fall
 # back to running all tests.
 if [ -z "$BASE_SHA" ] || [ "$DISABLE_BAZEL_DIFF" == "true" ]; then
   echo "No BASE_SHA provided (not a PR), bazel-diff disabled via PR label or global configuration files modified. Skipping bazel-diff and running all tests."
 
+  TARGET_PATTERN="//..."
+  if [ "$SHARD_COUNT" -gt 1 ]; then
+    bazel query 'tests(//...)' > "$WORKSPACE_DIR/all_tests.txt"
+    partition_file "$WORKSPACE_DIR/all_tests.txt"
+    EXTRA_FLAGS="$EXTRA_FLAGS --skip_incompatible_explicit_targets --target_pattern_file=$WORKSPACE_DIR/all_tests.txt"
+    TARGET_PATTERN=""
+  fi
+
   set +e
-  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS //...
+  eval bazel test --config="$BAZEL_CONFIG" $EXTRA_FLAGS $TARGET_PATTERN
   BAZEL_EXIT_CODE=$?
   set -e
 
@@ -139,6 +160,9 @@ java -jar /tmp/bazel-diff.jar get-impacted-targets \
 
 echo "--- Running Impacted Bazel Tests ---"
 if [ -s "$WORKSPACE_DIR/impacted_targets.txt" ]; then
+  if [ "$SHARD_COUNT" -gt 1 ]; then
+    partition_file "$WORKSPACE_DIR/impacted_targets.txt"
+  fi
   TARGET_COUNT=$(wc -l < "$WORKSPACE_DIR/impacted_targets.txt")
   echo "Found $TARGET_COUNT impacted target(s)."
   echo "--- Impacted Targets List ---"

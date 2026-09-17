@@ -330,7 +330,7 @@ common:ci_cpu_nightly --test_tag_filters=-nobuild,-notest,-requires-gpu,-require
 # Settings specific to TPU CI runs.
 common:ci_tpu_base --config=ci
 common:ci_tpu_base --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4,
-common:ci_tpu_base --spawn_strategy=standalone,local
+common:ci_tpu_base --strategy=TestRunner=standalone,local
 
 # Settings for nightly runs on TPU.
 common:ci_tpu_nightly --config=ci_tpu_base
