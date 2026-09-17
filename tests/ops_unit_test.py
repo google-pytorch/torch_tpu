@@ -5297,6 +5297,36 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ),
     )
 
+  @parameterized.parameters(torch.float32, torch.float16)
+  def test_nonzero_subnormal(self, dtype):
+    # TPU float comparators flush subnormals to zero, unlike CPU and CUDA.
+    # TODO: b/562066667 - cover bfloat16. TPU flushes its subnormals as the
+    # operand enters the computation, so the lowering never sees them.
+    subnormal = torch.finfo(dtype).smallest_normal / 2
+
+    def compute(device):
+      return torch.nonzero(
+          torch.tensor([0.0, subnormal, -0.0, -subnormal, 1.0], dtype=dtype).to(
+              device=device
+          ),
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  @parameterized.parameters(torch.float32, torch.float16)
+  def test_count_nonzero_subnormal(self, dtype):
+    # Same flush-to-zero gap as test_nonzero_subnormal above.
+    subnormal = torch.finfo(dtype).smallest_normal / 2
+
+    def compute(device):
+      return torch.count_nonzero(
+          torch.tensor([0.0, subnormal, -0.0, -subnormal, 1.0], dtype=dtype).to(
+              device=device
+          ),
+      )
+
+    self.assert_close_tpu_vs_cpu(compute)
+
   def test_normal_float_float_out(self):
     golden_result = torch.normal(
         mean=2.0,

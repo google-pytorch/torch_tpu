@@ -48,9 +48,9 @@ torch_tpu_cc_library(
     srcs = ["nonzero.cc"],
     hdrs = ["nonzero.h"],
     deps = [
-        "//csrc/common:aten_utils",
         "//csrc/common:dimension_types",
         "//csrc/common:error_utils",
+        "//csrc/common:utils",
         "//csrc/ops:op_builder_utils",
         "//csrc/ops/reductions",
         "//csrc/ops/sort",
