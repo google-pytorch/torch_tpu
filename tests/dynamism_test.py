@@ -619,6 +619,127 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
 
+  def test_flip_dynamic_dim(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      return torch.flip(x, dims=(0,))
+
+    # First run with shape (5, 3)
+    args1 = (torch.arange(15, dtype=torch.float32).reshape(5, 3),)
+    act1 = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args1)
+    act1_dynamism_info = dynamism.get_dynamism_info(act1)
+    self.assertLen(act1_dynamism_info, 1)
+    self.assertEqual(act1_dynamism_info[0].dimension, 0)
+    self.assertEqual(act1_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act1_dynamism_info[0].upper_bound, 10)
+
+    # Second run with different dynamic shape (7, 3) to test cache reuse
+    args2 = (torch.arange(21, dtype=torch.float32).reshape(7, 3),)
+    act2 = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args2)
+    act2_dynamism_info = dynamism.get_dynamism_info(act2)
+    self.assertLen(act2_dynamism_info, 1)
+    self.assertEqual(act2_dynamism_info[0].dimension, 0)
+    self.assertEqual(act2_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act2_dynamism_info[0].upper_bound, 10)
+
+  def test_flip_negative_dims(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      return torch.flip(x, dims=(-2, -1))
+
+    args = (torch.arange(15, dtype=torch.float32).reshape(5, 3),)
+    act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_flip_empty_dims(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      return torch.flip(x, dims=())
+
+    args = (torch.arange(15, dtype=torch.float32).reshape(5, 3),)
+    act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_flip_dynamic_view(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      # Transpose swaps dynamic dim 0 to dim 1
+      return torch.flip(x.transpose(0, 1), dims=(1,))
+
+    args = (torch.arange(15, dtype=torch.float32).reshape(5, 3),)
+    act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_flip_dtypes(self):
+    for dtype in [torch.int32, torch.bool, torch.bfloat16]:
+      with self.subTest(dtype=dtype):
+
+        def mark_dynamic(x):
+          dynamism.mark_dynamic(x, 0, 2, 10)
+
+        def flip_fn(x):
+          return torch.flip(x, dims=(0,))
+
+        if dtype == torch.bool:
+          raw = (torch.arange(15) % 2 == 0).reshape(5, 3)
+        else:
+          raw = torch.arange(15).reshape(5, 3).to(dtype)
+        args = (raw,)
+        act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+        act_dynamism_info = dynamism.get_dynamism_info(act)
+        self.assertLen(act_dynamism_info, 1)
+        self.assertEqual(act_dynamism_info[0].dimension, 0)
+
+  def test_flip_static_dim_with_other_dynamic(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      return torch.flip(x, dims=(1,))
+
+    args = (torch.arange(15, dtype=torch.float32).reshape(5, 3),)
+    act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_flip_multiple_dims_with_one_dynamic(self):
+    def mark_dynamic(x):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def flip_fn(x):
+      return torch.flip(x, dims=(0, 1, 2))
+
+    args = (torch.arange(60, dtype=torch.float32).reshape(5, 3, 4),)
+    act = self._run_bounded_dynamism_test(flip_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
 
 if __name__ == "__main__":
   absltest.main()

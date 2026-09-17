@@ -505,6 +505,21 @@ class CompileTest(seed_test_utils.RepeatableTest):
     expected = torch.full((2, 3), 4.0, device="cpu")
     utils.assert_close(out.cpu(), expected)
 
+  def test_flip_dynamic_dim(self):
+    def fn(x):
+      return torch.flip(x, dims=(0, -1))
+
+    test_inputs = [
+        (torch.arange(15, dtype=torch.float32).reshape(5, 3),),
+        (torch.arange(21, dtype=torch.float32).reshape(7, 3),),
+    ]
+    mark_info = [
+        ((True, [(0, 2, 10)]),),
+        ((True, [(0, 2, 10)]),),
+    ]
+    metrics = self.call_and_compare(fn, test_inputs, mark_info)
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
 
 class SymIntArithmeticTest(seed_test_utils.RepeatableTest):
 

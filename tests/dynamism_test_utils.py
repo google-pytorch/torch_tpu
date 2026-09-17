@@ -155,6 +155,9 @@ def _should_skip_input_marking(
       and dtype == torch.int64
   ):
     return f"{op_info.name} does not support int64 under dynamism."
+  # flip does not support 64-bit dtypes under dynamism on TPU.
+  if op_info.name == "flip" and dtype in (torch.int64, torch.float64):
+    return f"{op_info.name} does not support 64-bit dtypes under dynamism."
   # TODO: b/449736443 - Empty tensor handling needs reworking.
   if input_value.numel() == 0:
     return "Empty tensors are currently not supported."
@@ -178,7 +181,6 @@ untriaged_ops_deny_list: dict[
     "fft.irfft": ALL_MODES,  # expected all dimensions to be static
     "fft.ifft": ALL_MODES,  # expected all dimensions to be static
     "fft.fft": ALL_MODES,  # expected all dimensions to be static
-    "flip": ALL_MODES,  # dynamic triage (invalid result)
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
