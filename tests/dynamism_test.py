@@ -619,6 +619,64 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
 
+  def test_index_add_dynamic_self_and_source(self):
+    def mark_dynamic(x, idx, src):
+      del idx
+      dynamism.mark_dynamic(x, 1, 2, 8)
+      dynamism.mark_dynamic(src, 1, 2, 8)
+
+    def index_add_fn(x, idx, src):
+      return torch.index_add(x, 0, idx, src)
+
+    args = (
+        torch.zeros(5, 4, dtype=torch.float32),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.ones(3, 4, dtype=torch.float32),
+    )
+    act = self._run_bounded_dynamism_test(index_add_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 8)
+
+  def test_index_add_dynamic_indices_and_source(self):
+    def mark_dynamic(x, idx, src):
+      del x
+      dynamism.mark_dynamic(idx, 0, 2, 6)
+      dynamism.mark_dynamic(src, 0, 2, 6)
+
+    def index_add_fn(x, idx, src):
+      return torch.index_add(x, 0, idx, src)
+
+    args = (
+        torch.zeros(5, 4, dtype=torch.float32),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.ones(3, 4, dtype=torch.float32),
+    )
+    self._run_bounded_dynamism_test(index_add_fn, mark_dynamic, *args)
+
+  def test_index_add_negative_dim(self):
+    def mark_dynamic(x, idx, src):
+      del idx
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(src, 0, 2, 10)
+
+    def index_add_fn(x, idx, src):
+      return torch.index_add(x, -1, idx, src)
+
+    args = (
+        torch.zeros(4, 5, dtype=torch.float32),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.ones(4, 3, dtype=torch.float32),
+    )
+    act = self._run_bounded_dynamism_test(index_add_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
 
 if __name__ == "__main__":
   absltest.main()

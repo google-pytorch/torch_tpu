@@ -4409,7 +4409,7 @@ class OpInfoTestBase(
     input_value = device_op_input.input_value
 
     is_dynamic_test = bool(
-        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+        _CHECK_DYNAMISM_USING_SEED.value and torch.device(device).type == "tpu"
     )
 
     if is_dynamic_test:
@@ -5572,6 +5572,10 @@ def float_random_perm(num_elem: int, dtype: torch.dtype) -> torch.Tensor | None:
 
 def set_up_test_module() -> None:
   """Sets up the entire test module."""
+
+  from torch_tpu import _loader  # pylint: disable=g-import-not-at-top
+
+  _loader._init_device("tpu")
 
   if _gen_gpu_golden_mode() and not torch.cuda.is_available():
     print(

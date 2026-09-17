@@ -57,6 +57,8 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
     return stablehlo::Add(self, alpha_mul_source);
   }
 
+  TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self_type.getRank()));
+
   // Convert arguments to the computation type if necessary.
   mlir::Type computation_type =
       mlir::getElementType(self.getContext(), computation_xla_type);
@@ -79,12 +81,22 @@ absl::StatusOr<mlir::MlirOp> BuildIndexAddShlo(
     }
   }
 
-  index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
+  TT_ASSIGN_OR_RETURN(index, Unsqueeze(index, 1));
 
   TT_ASSIGN_OR_RETURN((auto [broadcasted_source, broadcasted_alpha]),
                       ApplyBroadcastIfNeeded(source, alpha));
   mlir::MlirOp source_scaled =
       stablehlo::Mul(broadcasted_source, broadcasted_alpha);
+
+  mlir::stablehlo::Dimensions self_dims = GetDimensions(self);
+  for (int64_t i = 0; i < static_cast<int64_t>(self_dims.size()); ++i) {
+    if (i != dim && self_dims[i].boundOp.has_value()) {
+      mlir::MlirOp runtime_dim_size =
+          mlir::stablehlo::GetDimensionSize(self, i);
+      source_scaled =
+          mlir::stablehlo::SetDimensionSize(source_scaled, runtime_dim_size, i);
+    }
+  }
 
   stablehlo::ScatterDimensionNumbersAttr scatter_dimension_numbers =
       stablehlo::ScatterDimensionNumbersAttr::get(

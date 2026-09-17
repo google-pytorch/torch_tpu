@@ -303,6 +303,7 @@ torch_tpu_py_library(
         "//shims/safetensors",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/compile",
         "//src/torch_tpu/_internal/compiler_options",
         "//src/torch_tpu/_internal/device:_device_ops_backend",

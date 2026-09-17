@@ -181,7 +181,6 @@ untriaged_ops_deny_list: dict[
     "flip": ALL_MODES,  # dynamic triage (invalid result)
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
-    "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_put": ALL_MODES,  # garbage data
     "index_select": ALL_MODES,  # invalid gather
@@ -300,9 +299,10 @@ def verify_op_supports_dynamism(
   # ensuring that tensors inside lists, tuples, or other nested structures
   # (common in foreach ops) are properly vetted.
   for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+    if isinstance(value, torch.Tensor):
+      skip_input = _should_skip_input_marking(op, value)
+      if skip_input:
+        return skip_input
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -410,6 +410,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        IndexAddDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -654,6 +655,42 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class IndexAddDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for index_add."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "index_add"
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark the dependent args of index_add as dynamic."""
+    # args: (dim, index, source)
+    if len(args) < 3:
+      return
+    dim = args[0]
+    if isinstance(dim, int) and like.ndim > 0:
+      dim = dim % like.ndim
+      if idx != dim:
+        source = args[2]
+        if isinstance(source, torch.Tensor) and source.ndim == like.ndim:
+          if source.shape[idx] == like.shape[idx] and source.shape[idx] > 1:
+            source_value_str = utils.get_tensor_summary(source, data=False)
+            print(
+                f">>>> Marking dim {idx} dynamic [<={ub}] in"
+                f" {source_value_str} (mode={mode.value})",
+                flush=True,
+            )
+            _mark_tensor_dynamic(source, idx, 2, ub, mode=mode)
 
 
 def mark_input_dynamic(
