@@ -1014,17 +1014,31 @@ mlir::ModuleOp GetModuleOp(mlir::MlirBuilder& builder) {
 absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim) {
   // Get input dimensions
   auto type = GetTensorTypeOrDie(input);
-  mlir::stablehlo::Dimensions output_dims = GetDimensions(input);
-
-  // Insert a new dimension at the given position.
   int64_t rank = type.getRank();
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, rank + 1));
-  output_dims.insert(output_dims.begin() + dim, {1});
+
+  mlir::RankedTensorType result_type;
+  if (auto ext = mlir::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+          type.getEncoding())) {
+    Dimensions new_shape(type.getShape().begin(), type.getShape().end());
+    new_shape.insert(new_shape.begin() + dim, 1);
+
+    Dimensions new_bounds(ext.getBounds().begin(), ext.getBounds().end());
+    new_bounds.insert(new_bounds.begin() + dim, mlir::ShapedType::kDynamic);
+
+    auto new_encoding = mlir::stablehlo::TypeExtensionsAttr::get(
+        &input.getBuilder().getContext(), new_bounds);
+    result_type = mlir::RankedTensorType::get(new_shape, type.getElementType(),
+                                              new_encoding);
+  } else {
+    mlir::stablehlo::Dimensions output_dims = GetDimensions(input);
+    output_dims.insert(output_dims.begin() + dim, {1});
+    result_type = mlir::stablehlo::getRankedTensorType(output_dims,
+                                                       type.getElementType());
+  }
 
   // Build reshape op
   // Dim expanding reshapes support dynamic shapes.
-  auto result_type =
-      mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(result_type, input);
 }
 
@@ -1059,8 +1073,23 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
     }
   }
 
-  auto result_type =
-      mlir::RankedTensorType::get(output_dims, type.getElementType());
+  mlir::RankedTensorType result_type;
+  if (auto ext = mlir::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+          type.getEncoding())) {
+    Dimensions new_bounds;
+    for (int64_t i = 0; i < rank; ++i) {
+      if (!dim_squeezed[i]) {
+        new_bounds.push_back(ext.getBounds()[i]);
+      }
+    }
+    auto new_encoding = mlir::stablehlo::TypeExtensionsAttr::get(
+        &input.getBuilder().getContext(), new_bounds);
+    result_type = mlir::RankedTensorType::get(
+        output_dims, type.getElementType(), new_encoding);
+  } else {
+    result_type =
+        mlir::RankedTensorType::get(output_dims, type.getElementType());
+  }
   return mlir::stablehlo::Reshape(result_type, input);
 }
 

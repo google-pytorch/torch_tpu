@@ -58,40 +58,30 @@ absl::StatusOr<mlir::MlirOp> BuildBinCount(
     mlir::ElementType computation_dtype,
     std::optional<mlir::MlirOp> weights = std::nullopt) {
   auto& builder = input.getBuilder();
-  auto& ctx = builder.getContext();
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   auto input_shape = input_type.getShape();
   TT_RET_CHECK(input_shape.size() == 1, error::kInvalidArgument)
       << "Unexpected dimension of input tensor: " << ToString(input_shape);
-  int64_t num_inputs = input_shape[0];
-
-  mlir::Type input_dtype = input_type.getElementType();
 
   // We first clamp the input in [0, num_of_bins - 1].
   auto min = MakeConstantLike(input, 0);
   auto max = MakeConstantLike(input, num_of_bins - 1);
   auto clamped_inputs = mlir::stablehlo::Clamp(min, input, max);
 
-  // Then we use the clamped input as indices for scattering an summable value
+  // Then we use the clamped input as indices for scattering a summable value
   // (1 or weights[i], if weights is defined) to an initially 0 output tensor.
   Dimensions output_dims = {num_of_bins};
   auto empty_output = MakeConstant(builder, 0, computation_dtype, output_dims);
-  auto scatter_indices = mlir::stablehlo::BroadcastInDim(
-      mlir::RankedTensorType::get({num_inputs, 1}, input_dtype), clamped_inputs,
-      {0});
   mlir::MlirOp scatter_update =
       weights ? mlir::stablehlo::ConvertElementType(*weights, computation_dtype)
               : MakeConstantLike(input, 1, computation_dtype);
 
   // Create a region builder callback for the scatter operation below.
-  auto block_type =
-      input_type.clone({}, mlir::getElementType(ctx, computation_dtype));
-  auto scatter_builder = [block_type](mlir::RegionBuilder& builder) {
-    auto arg0 = mlir::Argument(builder, block_type);
-    auto arg1 = mlir::Argument(builder, block_type);
-    mlir::MlirOp result = mlir::stablehlo::Add(arg0, arg1);
-    mlir::stablehlo::Return(builder, {result});
+  auto scatter_builder = [&](mlir::RegionBuilder& builder) {
+    mlir::stablehlo::buildReduceBody<mlir::stablehlo::AddOp>(
+        mlir::getElementType(builder.getContext(), computation_dtype),
+        builder.getRegion(), builder.getOpBuilder());
   };
 
   auto scatter_dimension_numbers =
@@ -104,10 +94,10 @@ absl::StatusOr<mlir::MlirOp> BuildBinCount(
           /*scatter_dims_to_operand_dims=*/{0},
           /*index_vector_dim=*/1);
 
-  return mlir::stablehlo::Scatter(empty_output, scatter_indices, scatter_update,
+  return mlir::stablehlo::Scatter(empty_output, clamped_inputs, scatter_update,
                                   scatter_builder,
                                   scatter_dimension_numbers)[0];
-};
+}
 
 }  // namespace
 
