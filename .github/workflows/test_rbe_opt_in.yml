@@ -93,23 +93,20 @@ jobs:
       - name: Establish RBE Tunnel
         if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
         run: |
-          if ! command -v ssh >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
-            echo "Installing openssh-client..."
-            apt-get update -qq && apt-get install -y -qq openssh-client
-          fi
-
-          echo "Starting background tunnel to Buildbarn frontend..."
-          gcloud compute tpus tpu-vm ssh spot-tpu-v5e-1789240098-2504 \
-            --zone=europe-west4-b \
+          echo "Starting background IAP tunnel to Buildbarn frontend..."
+          nohup gcloud compute start-iap-tunnel \
+            gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
+            --local-host-port=localhost:8980 \
+            --zone=us-east5-a \
             --project=rbe-tpu-oss \
-            -- -N -L 8980:10.202.0.3:30980 &
+            --iap-tunnel-disable-connection-check > /tmp/iap_tunnel.log 2>&1 < /dev/null &
           TUNNEL_PID=$!
           echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
 
           CONNECTED=0
           for _ in {1..30}; do
             if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
-              echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980."
+              echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
               CONNECTED=1
               break
             fi
@@ -117,7 +114,8 @@ jobs:
           done
 
           if [ "$CONNECTED" -ne 1 ]; then
-            echo "ERROR: Failed to establish tunnel to Buildbarn frontend on 127.0.0.1:8980"
+            echo "ERROR: Failed to establish IAP tunnel to Buildbarn frontend on 127.0.0.1:8980"
+            cat /tmp/iap_tunnel.log || true
             exit 1
           fi
 
