@@ -96,7 +96,7 @@ class AllTest(seed_test_utils.RepeatableTest):
     )
 
     t_cpu[0, 1] += 0.1
-    with self.assertRaises(AssertionError) as cm:
+    with self.assertRaises(AssertionError) as cm:  # ASSERT_RAISES_OK=internal
       test_utils.assert_close(
           t_tpu,
           t_cpu,
@@ -114,7 +114,7 @@ class AllTest(seed_test_utils.RepeatableTest):
     test_utils.assert_close(t_tpu, t_cpu)
 
     t_cpu[0, 1] += 0.1
-    with self.assertRaises(AssertionError) as cm:
+    with self.assertRaises(AssertionError) as cm:  # ASSERT_RAISES_OK=internal
       test_utils.assert_close(
           t_tpu,
           t_cpu,
@@ -128,7 +128,9 @@ class AllTest(seed_test_utils.RepeatableTest):
   def test_check_value_loose_mode_raises_value_error(self):
     t_tpu = torch.arange(8).reshape((4, 2)).to(torch.float32)
     t_cpu = torch.arange(8).reshape((4, 2)).to(torch.float32)
-    with self.assertRaises(ValueError) as cm:  # pylint: disable=g-error-prone-assert-raises
+    with self.assertRaises(  # ASSERT_RAISES_OK=internal
+        ValueError
+    ) as cm:  # pylint: disable=g-error-prone-assert-raises
       test_utils.assert_close(
           t_tpu, t_cpu, check_value=test_utils.CheckValueMode.LOOSE
       )
@@ -244,7 +246,7 @@ class AllTest(seed_test_utils.RepeatableTest):
   def test_compute_optimal_tolerances_sequence_mismatch(self):
     actual = [torch.tensor([1.0]), torch.tensor([2.0])]
     expected = [torch.tensor([1.0])]
-    with self.assertRaises(AssertionError):
+    with self.assertRaises(AssertionError):  # ASSERT_RAISES_OK=internal
       test_utils.compute_optimal_tolerances(actual, expected)
 
   def test_model_shlo_dyn(self):
@@ -274,7 +276,7 @@ class AllTest(seed_test_utils.RepeatableTest):
   def test_assert_close_with_callable_atol_failure(self):
     t1 = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     t2 = torch.tensor([[1.1, 2.0, 3.0], [4.2, 5.0, 6.0]], device=self.device)
-    with self.assertRaises(AssertionError):
+    with self.assertRaises(AssertionError):  # ASSERT_RAISES_OK=internal
       test_utils.assert_close(
           actual=t1, expected=t2, atol=lambda x: 0.05 if x > 3 else 0.2
       )
@@ -471,8 +473,8 @@ class AllTest(seed_test_utils.RepeatableTest):
       expected: The expected logs.
 
     Raises:
-      absl.testing.absltest.TestCase.failureException: If the logs differ.
-      # ABSLTEST_OK=Reference to absltest.TestCase
+      AssertionError: If the logs differ.  #
+      ABSLTEST_OK=internal utility test
     """
     self.assertEqual(len(actual), len(expected))
     for actual_event, expected_event in zip(actual, expected):
@@ -491,8 +493,8 @@ class AllTest(seed_test_utils.RepeatableTest):
       expected: The expected event to check against.
 
     Raises:
-      absl.testing.absltest.TestCase.failureException: If the events differ.
-      # ABSLTEST_OK=Reference to absltest.TestCase
+      AssertionError: If the events differ.  #
+      ABSLTEST_OK=internal utility test
     """
     # Ignore "time" and handle "kwargs" specially.
     self.assertEqual(

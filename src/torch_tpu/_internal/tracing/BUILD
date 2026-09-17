@@ -17,16 +17,18 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "tracing",
     srcs = ["__init__.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":_tpu_torch_tracing",
         "//shims/absl_py/logging",
@@ -35,7 +37,7 @@ torch_tpu_py_library(
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "_tpu_torch_tracing",
     srcs = ["//csrc/internal/tracing:tracing_py.cc"],
     common_lib_packages = [

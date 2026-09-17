@@ -13,8 +13,9 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -25,7 +26,7 @@ package(
 # re-export the submodules provided by :precision_lib. This prevents PyStrictDeps
 # violations at downstream use sites that import `from torch_tpu._internal.precision import precision`
 # without requiring them to directly depend on :precision_lib.
-py_library_providing_imports_info(
+py_relocated_library(
     name = "precision",
     srcs = [
         "__init__.py",
@@ -34,24 +35,26 @@ py_library_providing_imports_info(
     module_specs = [
         "precision.modspec.json",
     ],
+    py_library = py_library_providing_imports_info,
     deps = [
         ":precision_lib",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "precision_lib",
     srcs = [
         "precision.py",
     ],
     allow_multiple_srcs = True,
+    py_library = torch_tpu_py_library,
     deps = [
         ":precision_impl",
         "//src/torch_tpu/_internal/utils:annotations",
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "precision_impl",
     srcs = ["//csrc/internal/precision:precision_impl.cc"],
     common_lib_packages = [

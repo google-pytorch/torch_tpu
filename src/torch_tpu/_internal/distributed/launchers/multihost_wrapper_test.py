@@ -186,7 +186,9 @@ class MultiHostTestLauncherTest(seed_test_utils.RepeatableTest):
 
   def test_prepare_tpu_environment_missing_worker_hostnames(self):
     with _mock_env({"JOB_COMPLETION_INDEX": "0"}):
-      with self.assertRaisesRegex(ValueError, "No TPU_WORKER_HOSTNAMES found."):
+      with self.assertRaisesRegex(  # ASSERT_RAISES_OK=internal
+          ValueError, "No TPU_WORKER_HOSTNAMES found."
+      ):
         multihost_wrapper.prepare_tpu_environment()
 
   def test_parse_topology(self):

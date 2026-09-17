@@ -13,15 +13,17 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "streams",
     srcs = ["streams.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",

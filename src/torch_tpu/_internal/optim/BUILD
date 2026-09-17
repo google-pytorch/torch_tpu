@@ -17,38 +17,42 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "adamw",
     srcs = [
         "adamw.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         ":patch",
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "patch",
     srcs = [
         "patch.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "optim",
     srcs = [
         "__init__.py",
     ],
+    py_library = torch_tpu_py_library,
     deps = [
         ":adamw",
         ":patch",

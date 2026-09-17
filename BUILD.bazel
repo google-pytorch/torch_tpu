@@ -15,6 +15,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_license//rules:license.bzl", "license")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 load(
@@ -34,9 +35,9 @@ exports_files([
     "README.md",
 ])
 
-alias(
+license(
     name = "license",
-    actual = "//src/torch_tpu:license",
+    package_name = "torch_tpu",
 )
 
 filegroup(

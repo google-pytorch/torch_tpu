@@ -1449,6 +1449,7 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:absltest",
         "//shims/absl_py/testing:flagsaver",
         "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
     ],
 )

@@ -18,8 +18,9 @@ load(
     "torch_tpu_py_library",
 )
 load("//shims/build_files:build_defs.bzl", "TT_FRIENDS")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 load("//shims/py_rules:strict.bzl", "py_library_providing_imports_info")
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -29,17 +30,19 @@ package(
     ] + TT_FRIENDS,
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "api",
     srcs = ["api.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":profiler_config",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "profiler_config",
     srcs = ["profiler_config.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/utils:annotations",
@@ -50,7 +53,7 @@ torch_tpu_py_library(
 # re-export the submodules provided by :_api. This prevents PyStrictDeps
 # violations at downstream use sites that import `from torch_tpu._internal.profiler import profiler`
 # without requiring them to directly depend on :_api.
-py_library_providing_imports_info(
+py_relocated_library(
     name = "profiler",
     srcs = [
         "__init__.py",
@@ -59,6 +62,7 @@ py_library_providing_imports_info(
     module_specs = [
         "profiler.modspec.json",
     ],
+    py_library = py_library_providing_imports_info,
     deps = [
         ":_api",
         ":_impl",
@@ -66,25 +70,27 @@ py_library_providing_imports_info(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_api",
     srcs = ["_api.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":_impl",
         ":_profiler_backend",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "_impl",
     srcs = ["_impl.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":_profiler_backend",
         "//shims/absl_py/logging",
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "_profiler_backend",
     srcs = ["//csrc/internal/profiler:profiler_api.cc"],
     common_lib_packages = [

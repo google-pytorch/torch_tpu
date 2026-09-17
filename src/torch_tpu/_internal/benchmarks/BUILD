@@ -21,6 +21,7 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -28,15 +29,17 @@ package(
 )
 
 oss_target(
-    torch_tpu_py_library,
+    py_relocated_library,
     name = "benchmark_adapter",
     srcs = ["benchmark_adapter.py"],
+    py_library = torch_tpu_py_library,
 )
 
 oss_target(
-    torch_tpu_py_library,
+    py_relocated_library,
     name = "export_adapter",
     srcs = ["export_adapter.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/absl_py/logging",
         "@pypi//tensorboardx",
@@ -44,9 +47,10 @@ oss_target(
 )
 
 oss_target(
-    torch_tpu_py_library,
+    py_relocated_library,
     name = "xprof_adapter",
     srcs = ["xprof_adapter.py"],
+    py_library = torch_tpu_py_library,
 )
 
 torch_tpu_package_end()

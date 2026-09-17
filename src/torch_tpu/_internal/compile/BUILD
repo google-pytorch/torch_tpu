@@ -17,16 +17,18 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "compiler",
     srcs = ["compiler.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":debug",
         ":torch_tpu_compiled_executable",
@@ -43,9 +45,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "split_compiler",
     srcs = ["split_compiler.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":compiler",
         ":torch_tpu_compiled_executable",
@@ -67,9 +70,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "torch_tpu_compiled_executable",
     srcs = ["torch_tpu_compiled_executable.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":tpu_torch_compile",
         "//shims/absl_py/logging",
@@ -77,11 +81,12 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "compile",
     srcs = [
         "__init__.py",
     ],
+    py_library = torch_tpu_py_library,
     visibility = [
         "//:__subpackages__",
         "//learning/agents/tern/torch_agent:__subpackages__",
@@ -94,11 +99,12 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "tpu_backend",
     srcs = [
         "_backend.py",
     ],
+    py_library = torch_tpu_py_library,
     tags = [
         # Avoid a circular dependency. Imports torch_tpu for package version.
         "ignore_for_dep=third_party.py.torch_tpu",
@@ -118,9 +124,10 @@ torch_tpu_py_library(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "scan",
     srcs = ["scan.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         ":compiler",
         ":tpu_backend",
@@ -130,7 +137,7 @@ torch_tpu_py_library(
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "tpu_torch_compile",
     srcs = ["//csrc/internal/compile:tpu_torch_compile.cc"],
     common_lib_packages = [
@@ -210,9 +217,10 @@ pybind_extension(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "debug",
     srcs = ["debug.py"],
+    py_library = torch_tpu_py_library,
 )
 
 torch_tpu_package_end()

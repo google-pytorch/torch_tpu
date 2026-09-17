@@ -17,7 +17,8 @@ load(
     "torch_tpu_package_end",
     "torch_tpu_py_library",
 )
-load("//shims/pybind11:pybind.bzl", "pybind_extension")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
+load("//shims/build_files:py_relocated_pybind_extension.bzl", "py_relocated_pybind_extension")
 
 licenses(["notice"])
 
@@ -26,7 +27,7 @@ package(
     default_visibility = ["//:__subpackages__"],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     name = "env",
     srcs = ["//csrc/internal:env.cc"],
     common_lib_packages = [
@@ -47,7 +48,7 @@ pybind_extension(
     ],
 )
 
-pybind_extension(
+py_relocated_pybind_extension(
     # Internal testing utilities.
     name = "testing",
     srcs = ["//csrc/internal:testing.cc"],
@@ -75,9 +76,10 @@ pybind_extension(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "env_utils",
     srcs = ["env_utils.py"],
+    py_library = torch_tpu_py_library,
 )
 
 torch_tpu_package_end()

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build_files:build_defs.bzl", "torch_tpu_package_end", "torch_tpu_py_library", "torch_tpu_py_test")
+load("//shims/build_files:py_relocated_library.bzl", "py_relocated_library")
 load("//shims/py_rules:pytype.bzl", "pytype_strict_binary", "pytype_strict_library")
 
 package(
@@ -22,10 +23,11 @@ package(
 
 # Shared build-time generator. Dispatches to a per-recipe generator registered
 # in `_RECIPE_GENERATORS`, so every block-scaling recipe must be listed in deps.
-pytype_strict_library(
+py_relocated_library(
     # PY_LIBRARY_OK=Build-time kernel generator library.
     name = "scaled_mm_generate",
     srcs = ["scaled_mm_generate.py"],
+    py_library = pytype_strict_library,
     deps = [
         ":blockwise128_scaled_mm_kernel",
         ":blockwise_scaled_mm_kernel",
@@ -41,13 +43,20 @@ pytype_strict_binary(
     srcs = ["scaled_mm_generate.py"],
     main = "scaled_mm_generate.py",
     deps = [
+        ":blockwise128_scaled_mm_kernel",
+        ":blockwise_scaled_mm_kernel",
         ":scaled_mm_generate",
+        "//shims/absl_py:app",
+        "//shims/absl_py/flags",
+        "//src/torch_tpu/_internal/pallas:pallas_kernel_generate_utils",
+        "@pypi//jax",
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "blockwise_scaled_mm_kernel",
     srcs = ["blockwise_scaled_mm_kernel.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
@@ -95,9 +104,10 @@ torch_tpu_py_test(
     ],
 )
 
-torch_tpu_py_library(
+py_relocated_library(
     name = "blockwise128_scaled_mm_kernel",
     srcs = ["blockwise128_scaled_mm_kernel.py"],
+    py_library = torch_tpu_py_library,
     deps = [
         "//shims/jax:pallas",
         "//shims/jax:pallas_tpu",
