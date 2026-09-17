@@ -32,6 +32,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "c10/core/Device.h"
+#include "c10/core/DeviceGuard.h"
 #include "c10/core/DispatchKey.h"
 #include "c10/core/DispatchKeySet.h"
 #include "c10/core/GeneratorImpl.h"
@@ -130,6 +131,9 @@ absl::StatusOr<DeviceBufferRef> UpdateDeviceRngOffset(at::Tensor rng_state,
 absl::StatusOr<at::Tensor> CreateDeviceRngStateTensor(c10::Device device,
                                                       uint64_t seed,
                                                       uint64_t offset) {
+  // Ensure H2D allocation and memory copy target the intended TPU device
+  // rather than the calling thread's currently active device.
+  c10::DeviceGuard guard(device);
   const uint64_t host_data[2] = {seed, offset};
   TT_ASSIGN_OR_RETURN(
       auto rng_state_buffer,
@@ -586,7 +590,9 @@ void EagerModeDeviceGeneratorImpl::graphsafe_set_state(
 }
 
 DeviceGeneratorImplBase* EagerModeDeviceGeneratorImpl::clone_impl() const {
-  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  // Ensure state tensor cloning occurs in the generator's device context.
+  c10::DeviceGuard guard(device());
+  c10::impl::ExcludeDispatchKeyGuard no_python_guard(c10::DispatchKey::Python);
   return new EagerModeDeviceGeneratorImpl(device().index(), state_->clone());
 }
 
@@ -614,9 +620,13 @@ DeviceGeneratorImplBase& ValidateAndGetEagerBase(
 
 ExportModeDeviceGeneratorImpl::ExportModeDeviceGeneratorImpl(
     DeviceGeneratorImplBase& eager_base)
-    : DeviceGeneratorImplBase(eager_base.device().index()),
-      export_state_(c10::make_intrusive<ExportModeDeviceGeneratorState>(
-          eager_base.DeviceStateTensor().clone())) {}
+    : DeviceGeneratorImplBase(eager_base.device().index()) {
+  // Ensure the eager state tensor clone is allocated on the generator's
+  // device.
+  c10::DeviceGuard guard(eager_base.device());
+  export_state_ = c10::make_intrusive<ExportModeDeviceGeneratorState>(
+      eager_base.DeviceStateTensor().clone());
+}
 
 ExportModeDeviceGeneratorImpl::ExportModeDeviceGeneratorImpl(
     const at::Generator& default_generator)
@@ -705,7 +715,9 @@ void ExportModeDeviceGeneratorImpl::graphsafe_set_state(
 }
 
 DeviceGeneratorImplBase* ExportModeDeviceGeneratorImpl::clone_impl() const {
-  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Python);
+  // Ensure state tensor cloning occurs in the generator's device context.
+  c10::DeviceGuard guard(device());
+  c10::impl::ExcludeDispatchKeyGuard no_python_guard(c10::DispatchKey::Python);
   return new ExportModeDeviceGeneratorImpl(device().index(),
                                            export_state_->clone());
 }
@@ -715,7 +727,11 @@ at::Generator MakeDeviceGenerator(c10::DeviceIndex idx) {
 }
 
 void SetManualSeed(uint64_t seed, c10::DeviceIndex idx) {
-  auto gen = DeviceGenerators::GetDefaultInstance().GetDefaultGenerator(idx);
+  auto& gen =
+      DeviceGenerators::GetDefaultInstance().GetEagerDefaultGenerator(idx);
+  // Ensure state write targets the specified device even if called from
+  // a thread with a different active device context.
+  c10::DeviceGuard guard(gen.device());
   gen.set_current_seed(seed);
 }
 

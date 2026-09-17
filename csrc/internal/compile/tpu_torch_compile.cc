@@ -40,6 +40,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
+#include "c10/core/DeviceGuard.h"
 #include "c10/util/Optional.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
@@ -610,6 +611,10 @@ void PySetDeviceStateTensor(const at::Generator& gen, at::Tensor rng_state) {
 // Creates a new export-mode generator by cloning the state of an eager
 // generator and wrapping its state tensor in a symbolic MLIR placeholder.
 at::Generator PyMakeExportModeDeviceGenerator(const at::Generator& orig_gen) {
+  // Ensure generator cloning, tensor state inspection, and placeholder
+  // creation occur in the context of the generator's device when invoked
+  // across threads or multi-device workflows.
+  c10::DeviceGuard guard(orig_gen.device());
   auto gen = at::make_generator<ExportModeDeviceGeneratorImpl>(orig_gen);
 
   // Set placeholder tensor for export mode generator.
