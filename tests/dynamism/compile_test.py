@@ -278,6 +278,154 @@ class CompileTest(seed_test_utils.RepeatableTest):
     )
     self.assertEqual(metrics["bounded_compile_events"], 1)
 
+  def test_bmm(self):
+    def simple_bmm(x, y):
+      return torch.bmm(x, y)
+
+    test_inputs = [
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(6).reshape(2, 3, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(96).reshape(4, 8, 3).to(torch.float32),
+            torch.arange(12).reshape(4, 3, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(144).reshape(6, 8, 3).to(torch.float32),
+            torch.arange(18).reshape(6, 3, 1).to(torch.float32),
+        ),
+    ]
+    mark_dynamic_tests_info = [
+        (
+            (True, [(0, 2, 8)]),
+            (True, [(0, 2, 8)]),
+        ),  # bounded compile, [2 (2<=b<=8), 8, 3] x [2 (2<=b<=8), 3, 1] -> [2, 8, 1]
+        (
+            (True, [(0, 2, 8)]),
+            (True, [(0, 2, 8)]),
+        ),  # no compile, [4, 8, 3] x [4, 3, 1] -> [4, 8, 1]
+        (
+            (True, [(0, 2, 8)]),
+            (True, [(0, 2, 8)]),
+        ),  # no compile, [6, 8, 3] x [6, 3, 1] -> [6, 8, 1]
+    ]
+    metrics = self.call_and_compare(
+        simple_bmm, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
+  def test_bmm_dynamic_m(self):
+    def simple_bmm(x, y):
+      return torch.bmm(x, y)
+
+    test_inputs = [
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(6).reshape(2, 3, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(96).reshape(2, 16, 3).to(torch.float32),
+            torch.arange(6).reshape(2, 3, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(144).reshape(2, 24, 3).to(torch.float32),
+            torch.arange(6).reshape(2, 3, 1).to(torch.float32),
+        ),
+    ]
+    mark_dynamic_tests_info = [
+        (
+            (True, [(1, 2, 32)]),
+            (False, []),
+        ),  # bounded compile, [2, 8 (2<=m<=32), 3] x [2, 3, 1] -> [2, 8, 1]
+        (
+            (True, [(1, 2, 32)]),
+            (False, []),
+        ),  # no compile, [2, 16, 3] x [2, 3, 1] -> [2, 16, 1]
+        (
+            (True, [(1, 2, 32)]),
+            (False, []),
+        ),  # no compile, [2, 24, 3] x [2, 3, 1] -> [2, 24, 1]
+    ]
+    metrics = self.call_and_compare(
+        simple_bmm, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
+  def test_bmm_dynamic_k(self):
+    def simple_bmm(x, y):
+      return torch.bmm(x, y)
+
+    test_inputs = [
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(6).reshape(2, 3, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(64).reshape(2, 8, 4).to(torch.float32),
+            torch.arange(8).reshape(2, 4, 1).to(torch.float32),
+        ),
+        (
+            torch.arange(96).reshape(2, 8, 6).to(torch.float32),
+            torch.arange(12).reshape(2, 6, 1).to(torch.float32),
+        ),
+    ]
+    mark_dynamic_tests_info = [
+        (
+            (True, [(2, 2, 8)]),
+            (True, [(1, 2, 8)]),
+        ),  # bounded compile, [2, 8, 3 (2<=k<=8)] x [2, 3 (2<=k<=8), 1] -> [2, 8, 1]
+        (
+            (True, [(2, 2, 8)]),
+            (True, [(1, 2, 8)]),
+        ),  # no compile, [2, 8, 4] x [2, 4, 1] -> [2, 8, 1]
+        (
+            (True, [(2, 2, 8)]),
+            (True, [(1, 2, 8)]),
+        ),  # no compile, [2, 8, 6] x [2, 6, 1] -> [2, 8, 1]
+    ]
+    metrics = self.call_and_compare(
+        simple_bmm, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
+  def test_bmm_dynamic_n(self):
+    def simple_bmm(x, y):
+      return torch.bmm(x, y)
+
+    test_inputs = [
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(12).reshape(2, 3, 2).to(torch.float32),
+        ),
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(24).reshape(2, 3, 4).to(torch.float32),
+        ),
+        (
+            torch.arange(48).reshape(2, 8, 3).to(torch.float32),
+            torch.arange(48).reshape(2, 3, 8).to(torch.float32),
+        ),
+    ]
+    mark_dynamic_tests_info = [
+        (
+            (False, []),
+            (True, [(2, 2, 16)]),
+        ),  # bounded compile, [2, 8, 3] x [2, 3, 2 (2<=n<=16)] -> [2, 8, 2]
+        (
+            (False, []),
+            (True, [(2, 2, 16)]),
+        ),  # no compile, [2, 8, 3] x [2, 3, 4] -> [2, 8, 4]
+        (
+            (False, []),
+            (True, [(2, 2, 16)]),
+        ),  # no compile, [2, 8, 3] x [2, 3, 8] -> [2, 8, 8]
+    ]
+    metrics = self.call_and_compare(
+        simple_bmm, test_inputs, mark_dynamic_tests_info
+    )
+    self.assertEqual(metrics["bounded_compile_events"], 1)
+
   def test_arange_with_expression(self):
     def arange_expr(x):
       a = torch.arange(0, x.shape[0] + 1, device=x.device)
