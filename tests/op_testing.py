@@ -4017,6 +4017,18 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
       self.assertEqual(golden_result, torch_tpu_result)
       return
 
+    # In GPU golden mode with torch.compile, gradients for ops like
+    # embedding(..., sparse=True) are densified to strided layout, whereas
+    # TorchTPU eager backward produces sparse_coo. Convert to dense for value
+    # comparison when layouts differ.
+    if isinstance(golden_result, torch.Tensor) and isinstance(
+        torch_tpu_result, torch.Tensor
+    ):
+      if torch_tpu_result.is_sparse and not golden_result.is_sparse:
+        torch_tpu_result = torch_tpu_result.to_dense()
+      elif golden_result.is_sparse and not torch_tpu_result.is_sparse:
+        golden_result = golden_result.to_dense()
+
     test_utils.assert_close(
         actual=torch_tpu_result,
         expected=golden_result,
@@ -5167,6 +5179,10 @@ class OpInfoTestBase(
         def _should_test_out_casting(
             cast_pair: tuple[torch.dtype, torch.dtype] | None,
         ) -> TypeGuard[tuple[torch.dtype, torch.dtype]]:
+          # Out-variant casting tests exception parity and type promotion in
+          # forward evaluations and is not applicable when computing gradients.
+          if compute_grad:
+            return False
           # In golden generation mode, always capture golden data regardless of
           # whether the op is known to fail on TPU.
           return (

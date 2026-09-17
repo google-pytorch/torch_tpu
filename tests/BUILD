@@ -36,7 +36,7 @@ exports_files([
 # compute capability 8.9 or >= 9.0.
 # Both golden generation and GPU error tests must stay in sync with the same GPU
 # architecture tag.
-_REQUIRES_GPU_SM90 = "requires-gpu-sm90"
+_REQUIRES_GPU_FOR_OPS_TEST = "requires-gpu-sm90"
 
 # TODO: change this back to 16 after the OSS v5 worker pool is back to normal.
 _OSS_SAMPLE_LIMIT = "--max_samples_per_op_dtype=5"
@@ -339,7 +339,8 @@ torch_tpu_py_library(
 # We have multiple targets for ops_test.py:
 # * ops_test: TPU vs GPU (by default, we test against GPU).
 # * ops_test_gen_gpu_golden: generates the golden file for the GPU backend.
-# * ops_test_grad_vs_cpu: gradient on TPU vs CPU.
+# * ops_test_grad_tpu_vs_gpu: gradient on TPU vs GPU.
+# * ops_test_gen_gpu_golden_grad: generates the golden file for gradients.
 # * ops_test_perf: TPU only, for measuring compilation/execution time.
 # * ops_test_dynamic_vs_cpu: TPU vs GPU, bounds a dimension.
 # * ops_test_dynamic_compiled_vs_cpu: TPU vs GPU, bounds a dimension under torch.compile.
@@ -380,47 +381,6 @@ _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS = if_oss(
 _OPS_TEST_ON_V7_TAGS = if_oss(
     ["requires-tpu-v5lite"],
     [],
-)
-
-torch_tpu_py_test(
-    # TODO: switch this to TPU-vs-GPU.
-    name = "ops_test_grad_vs_cpu",
-    timeout = "long",  # Needed for asan.
-    srcs = ["ops_test.py"],
-    args = [
-        "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_cpu",
-        "--test_categories=-foreach,-nonzero,-searchsorted",
-    ] + if_oss(
-        # Reduce samples to avoid timeouts in OSS.
-        [_OSS_SAMPLE_LIMIT],
-        # Forge has more resources, allowing a larger sample size.
-        ["--max_samples_per_op_dtype=20"],
-    ),
-    main = "ops_test.py",
-    # Skip this in OSS presubmit when it's overloaded.
-    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
-    run_on_accelerators = [
-        "requires-tpu-v6e",
-        "requires-tpu-v5lite",
-    ],
-    shard_count = 35,
-    tags = [
-        "noasan",  # TODO: fix the test timing out in asan mode.
-        "nomsan",  # TODO: fix the test in msan mode.
-        "notsan",  # TODO: fix the test in tsan mode.
-    ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
 )
 
 torch_tpu_py_test(
@@ -602,6 +562,50 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_grad_tpu_vs_gpu",
+    timeout = "long",
+    srcs = ["ops_test.py"],
+    args = [
+        "--compute_grad=True",
+        "--test_mode=torch_tpu_vs_gpu",
+        "--test_categories=-foreach,-nonzero,-searchsorted",
+    ] + if_oss(
+        # Reduce samples to avoid timeouts in OSS.
+        [_OSS_SAMPLE_LIMIT],
+        # Forge has more resources, allowing a larger sample size.
+        ["--max_samples_per_op_dtype=20"],
+    ),
+    data = [
+        "ops_test_gpu_golden_grad0.gz",
+        "ops_test_gpu_golden_grad1.gz",
+        "ops_test_gpu_golden_grad2.gz",
+    ],
+    main = "ops_test.py",
+    # Skip this in OSS presubmit when it's overloaded.
+    nopresubmit_oss = _WHEN_OSS_PRESUBMIT_OVERLOADED,
+    run_on_accelerators = [
+        "requires-tpu-v6e",
+        "requires-tpu-v5lite",
+    ],
+    shard_count = 35,
+    tags = [
+        "nosan",  # Rely on ops_test_grad for *san coverage.
+        "ok-to-wait-for-v6e-in-presubmit",
     ],
     deps = [
         ":dynamism_test_utils",
@@ -879,7 +883,7 @@ torch_tpu_py_test(
     # ops_test_vs_gpu target.
     shard_count = 3,
     tags = [
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
     ],
     deps = [
         ":dynamism_test_utils",
@@ -909,7 +913,7 @@ torch_tpu_py_test(
     nolocal = "slow test",
     shard_count = 3,
     tags = [
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
     ],
     deps = [
         ":dynamism_test_utils",
@@ -955,6 +959,33 @@ torch_tpu_py_test(
         "//shims/absl_py/testing:parameterized",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "ops_test_gen_gpu_golden_grad",
+    srcs = ["ops_test.py"],
+    args = [
+        "--test_mode=gen_gpu_golden",
+        "--compute_grad=True",
+    ],
+    main = "ops_test.py",
+    nolocal = "slow test",
+    notap = "slow test - only need to run on demand for updating goldens",
+    shard_count = 3,
+    tags = [
+        _REQUIRES_GPU_FOR_OPS_TEST,
+    ],
+    deps = [
+        ":dynamism_test_utils",
+        ":op_testing",
+        ":oss_utils",
+        "//csrc/eager:tpu_aten_kernels",
+        "//shims/absl_py/flags",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu/_internal/utils:test_utils",
     ],
@@ -1538,7 +1569,7 @@ torch_tpu_py_test(
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
         "wheel_test_excluded",
     ],
     deps = [
@@ -2033,7 +2064,7 @@ torch_tpu_py_test(
     },
     main = "autoload_gpu_test.py",
     tags = [
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -2081,7 +2112,7 @@ torch_tpu_py_test(
     main = "autoload_disabled_backend_test.py",
     tags = [
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
     ],
     deps = [
         ":seed_test_utils",
@@ -2199,7 +2230,7 @@ torch_tpu_py_test(
     },
     main = "tracing_test.py",
     tags = [
-        _REQUIRES_GPU_SM90,
+        _REQUIRES_GPU_FOR_OPS_TEST,
     ],
     deps = [
         ":seed_test_utils",

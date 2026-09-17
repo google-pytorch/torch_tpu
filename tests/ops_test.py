@@ -1467,6 +1467,176 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
     copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
     {
         # go/keep-sorted start
+        "_native_batch_norm_legit": {
+            torch.bfloat16: {"atol": 1.1e-2},
+            torch.float16: {"atol": 1.4e-3},
+        },
+        "_thnn_fused_gru_cell": {
+            torch.bfloat16: {"atol": 3.6e-3},
+            torch.float16: {"atol": 1.1e-3},
+            torch.float32: {"atol": 4.7e-5},
+        },
+        "_thnn_fused_lstm_cell": {
+            torch.bfloat16: {"atol": 4.7e-3},
+            torch.float16: {"atol": 5.2e-4},
+            torch.float32: {"rtol": 6.5e-6, "atol": 5e-5},
+        },
+        "atanh": {
+            torch.float16: {"rtol": 2.3e-3},
+            torch.float32: {"rtol": 1.2e-3, "atol": 1.1},
+        },
+        "cdist": {
+            torch.bfloat16: {"rtol": 1.3e-1, "atol": 3.8e-1},
+            torch.float16: {"rtol": 5e-1, "atol": 2.3e-1},
+            torch.float32: {"rtol": 2.4, "atol": 6.9e-1},
+        },
+        "clamp": {
+            torch.bfloat16: {"atol": 0.6},
+            torch.float16: {"atol": 0.6},
+        },
+        "clamp_max": {
+            torch.bfloat16: {"atol": 0.6},
+        },
+        "clamp_min": {
+            torch.bfloat16: {"atol": 0.6},
+        },
+        "cumprod": {
+            torch.bfloat16: {"rtol": 1.7e-1, "atol": 1.2e-2},
+            torch.float16: {"rtol": 1.8e-2, "atol": 2e-3},
+        },
+        "erf": {
+            torch.bfloat16: {"rtol": 3.5e-2, "atol": 4.3e-4},
+        },
+        "erfinv": {
+            torch.float16: {"rtol": 1.8e-3, "atol": 5.9e-3},
+            torch.float32: {"rtol": 5e-5, "atol": 3.1e-3},
+        },
+        "fmax": {
+            torch.bfloat16: {"atol": 0.6},
+        },
+        "fmin": {
+            torch.bfloat16: {"atol": 0.6},
+        },
+        "kron": {
+            torch.float16: {"rtol": 2.8e-3, "atol": 6.3e-2},
+        },
+        "ldexp": {
+            torch.float32: {"rtol": 3.3e-6, "atol": 1.2e-3},
+        },
+        "lerp": {
+            torch.bfloat16: {"rtol": 1.3e-1, "atol": 1.9e-1},
+            torch.float16: {"rtol": 6.6e-3, "atol": 5.9e-3},
+        },
+        "linalg.inv": {
+            torch.float32: {"rtol": 7.8e-2, "atol": 1.3e-2},
+            torch.float64: {"rtol": 9e-6, "atol": 2.5e-7},
+        },
+        "linalg.lu": {
+            torch.float32: {"rtol": 7.4e-1, "atol": 3.6e-2},
+            torch.float64: {"rtol": 2.3e-5, "atol": 7.6e-6},
+        },
+        "linalg.lu_factor_ex": {
+            torch.float32: {"rtol": 8.4, "atol": 4.8e-1},
+            torch.float64: {"rtol": 2.1e-5, "atol": 2e-6},
+        },
+        "linalg.lu_solve": {
+            torch.float32: {"rtol": 4.7e-2, "atol": 1.4e-1},
+        },
+        "linalg.qr": {
+            torch.float32: {"rtol": 9e-3, "atol": 1.5e-2},
+        },
+        "linalg.solve_ex": {
+            torch.float32: {"rtol": 1.2e-1, "atol": 6e-2},
+            torch.float64: {"rtol": 2.6e-6, "atol": 5.2e-6},
+        },
+        "linalg.solve_triangular": {
+            torch.float32: {"rtol": 2e-2, "atol": 4.8},
+        },
+        "linalg.vector_norm": {
+            torch.complex64: {"rtol": 1.3e-5, "atol": 1.3e-5},
+            torch.float16: {"rtol": 2.1e-3, "atol": 1.5e-3},
+            torch.float32: {"rtol": 1.6e-5, "atol": 1.6e-5},
+        },
+        "log2": {
+            torch.float16: {"rtol": 1.2e-3, "atol": 2.5e-4},
+        },
+        "log_softmax": {
+            torch.bfloat16: {"rtol": 3.5e-1, "atol": 9.8e-3},
+            torch.float16: {"rtol": 1.8e-2, "atol": 5.9e-3},
+            torch.float32: {"rtol": 8e-4, "atol": 2.6e-4},
+        },
+        "logcumsumexp": {
+            torch.bfloat16: {"rtol": 7.3e-2, "atol": 3.3e-2},
+            torch.float16: {"rtol": 9.4e-3, "atol": 4.7e-3},
+            torch.float32: {"rtol": 1.4e-4, "atol": 6.5e-5},
+        },
+        "native_batch_norm": {
+            torch.bfloat16: {"atol": 1.1e-2},
+            torch.float16: {"atol": 1.4e-3},
+        },
+        "nn.functional.batch_norm": {
+            torch.bfloat16: {"rtol": 1, "atol": 1.5e-3},
+            torch.float16: {"rtol": 1.1, "atol": 2.6e-4},
+        },
+        "nn.functional.ctc_loss": {
+            torch.float32: {"rtol": 3.6e-3, "atol": 2.2e-4},
+        },
+        "nn.functional.gelu": {
+            torch.float16: {"rtol": 6.2e-3, "atol": 1.1e-4},
+            torch.float32: {"rtol": 6.1e-3, "atol": 1.3e-4},
+        },
+        "nn.functional.glu": {
+            torch.bfloat16: {"rtol": 1.8e-2, "atol": 1.5e-3},
+            torch.float16: {"rtol": 2.3e-3, "atol": 4.9e-4},
+            torch.float32: {"rtol": 5.8e-5, "atol": 1.2e-5},
+        },
+        "nn.functional.grid_sample": {
+            torch.bfloat16: {"rtol": 2.6, "atol": 1},
+            torch.float16: {"rtol": 5.5e-1, "atol": 1},
+        },
+        "nn.functional.hardswish": {
+            torch.bfloat16: {"rtol": 5.2e-2, "atol": 3e-3},
+            torch.float16: {"rtol": 1.3e-2, "atol": 3.7e-4},
+        },
+        "nn.functional.interpolate": {
+            torch.bfloat16: {"rtol": 2.7e-2, "atol": 7.9e-2},
+            torch.float16: {"rtol": 1.8e-3, "atol": 4e-3},
+        },
+        "nn.functional.max_pool2d": {
+            torch.float32: {"atol": 11},
+        },
+        "nn.functional.pdist": {
+            torch.float32: {"rtol": 1.5e-5, "atol": 2.6e-5},
+        },
+        "nn.functional.softplus": {
+            torch.float16: {"rtol": 1.5e-3, "atol": 1.3e-4},
+        },
+        "norm": {
+            torch.complex64: {"rtol": 8.2e-6},
+            torch.float16: {"atol": 1.2e-3},
+            torch.float32: {"rtol": 8.8e-6},
+        },
+        "polygamma": {
+            torch.bfloat16: {"rtol": 3.6e-2},
+            torch.float32: {"rtol": 1.1e-5},
+        },
+        "prod": {
+            torch.float16: {"rtol": 1.6e-3, "atol": 9.8e-4},
+        },
+        "softmax": {
+            torch.bfloat16: {"rtol": 320, "atol": 7.4e-3},
+            torch.float16: {"rtol": 170, "atol": 9.2e-4},
+        },
+        "std": {
+            torch.float16: {"atol": 6e-4},
+        },
+        "tan": {
+            torch.float32: {"rtol": 3.8e-6, "atol": 8.4e-3},
+        },
+        "tanh": {
+            torch.float16: {"atol": 9.8e-4},
+            torch.float32: {"rtol": 1, "atol": 6.1e-5},
+        },
         # go/keep-sorted end
     },
 )
@@ -1971,6 +2141,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_aminmax(self):
     self.do_test_op(
         "aminmax",
+        # TODO(b/562505887): PyTorch autograd backward fails with:
+        # RuntimeError: derivative for aten::aminmax is not implemented.
+        check_grad=False,
         # TODO: make this work with complex dtypes.
         exclude_dtypes=COMPLEX_DTYPES,
     )
@@ -2107,6 +2280,14 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": COMPLEX_DTYPES + FLOAT_DTYPES + (torch.bool,),
             "gpu": COMPLEX_DTYPES + FLOAT_DTYPES + (torch.bool,),
         },
+        # TODO(b/544855480): Fix bincount consistency failure on GPU vs TPU for float dtypes.
+        # GPU reference fails: "bincount_cuda" not implemented for 'Float'.
+        # However, it succeeds on TorchTPU, causing a consistency check failure.
+        skip_if=lambda device, variant, op_input: (
+            op_testing._torch_tpu_vs_gpu_mode()
+            and op_testing._COMPUTE_GRAD.value
+            and op_input.input_value.dtype in FLOAT_DTYPES
+        ),
     )
 
   def test_bitwise_and(self):
@@ -2981,6 +3162,23 @@ class TestOps(op_testing.OpInfoTestBase):
             "cpu": (torch.bfloat16, torch.float16),
             "gpu": _if_tpu_vs_gpu_compiled((torch.complex64,), ()),
         },
+        # TODO(b/544855640): TPU implementation hangs on float64:
+        # test_grid_sample (subtest_name='grid_sample_float64_subtest2') hangs
+        # indefinitely with float64 on TPU, causing test timeout.
+        skip_if=lambda device, variant, op_input: (
+            op_testing._torch_tpu_vs_gpu_mode()
+            and op_testing._COMPUTE_GRAD.value
+            and op_input.input_value.dtype == torch.float64
+        ),
+        # Cap samples to avoid shard timeouts in grad_tpu_vs_gpu mode, as
+        # grid_sample gradient computation is slow on TPU and generates many
+        # samples across dtypes.
+        max_samples_per_op_dtype=(
+            8
+            if op_testing._torch_tpu_vs_gpu_mode()
+            and op_testing._COMPUTE_GRAD.value
+            else None
+        ),
     )
 
   def test_histc(self):
@@ -3231,6 +3429,15 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "gpu": (torch.int4,),
         },
+        # TODO(b/544854527): Fix complex64 ord=inf/-inf gradient accuracy mismatch:
+        # Greatest absolute difference: nan at index (2, 0).
+        # Expected (GPU): (nan+nanj), Actual (TPU): 0j.
+        skip_if=lambda device, variant, op_input: (
+            op_testing._torch_tpu_vs_gpu_mode()
+            and op_testing._COMPUTE_GRAD.value
+            and op_input.input_value.dtype == torch.complex64
+            and op_input.kwargs.get("ord") in (float("inf"), float("-inf"))
+        ),
     )
 
   def test_linspace(self):
@@ -3401,6 +3608,15 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_max_pool2d(self):
     self.do_test_op(
         "nn.functional.max_pool2d",
+        # TODO(b/544855426): Fix gradient accuracy mismatch on float16/bfloat16:
+        # TPU gradient kernel outputs NaN where GPU reference outputs 0.0.
+        # Greatest absolute difference: 8.472208023071289 at index (0, 1, 2, 1)
+        # (up to 8.1 allowed). Expected (GPU): 0.0, Actual (TPU): -8.472208023071289.
+        skip_if=lambda device, variant, op_input: (
+            op_testing._torch_tpu_vs_gpu_mode()
+            and op_testing._COMPUTE_GRAD.value
+            and op_input.input_value.dtype in (torch.float16, torch.bfloat16)
+        ),
         # TODO: complex64, float64, and int64 dtypes are not supported on TPU.
         exclude_dtypes={
             "cpu": (
@@ -4341,6 +4557,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_unique_consecutive(self):
     self.do_test_op(
         "unique_consecutive",
+        # TODO(b/561796146): PyTorch autograd backward fails with:
+        # RuntimeError: the derivative for 'unique_consecutive' is not implemented.
+        check_grad=False,
         exclude_dtypes=COMPLEX_DTYPES,
         check_dynamism=False,
     )
@@ -4518,6 +4737,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_geqrf(self):
     self.do_test_op(
         "geqrf",
+        # TODO(b/561796361): PyTorch autograd backward fails with:
+        # RuntimeError: the derivative for 'geqrf' is not implemented.
+        check_grad=False,
         # TODO(b/553658275): support data sampling of integral and
         # half-precision float dtypes for SVD-based linear algebra ops.
         exclude_dtypes={
