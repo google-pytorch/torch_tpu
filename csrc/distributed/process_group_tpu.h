@@ -336,6 +336,15 @@ class ProcessGroupTpu : public c10d::Backend {
   // ordered by the corresponding PyTorch rank value.
   DeviceGroup rank_to_device_id_;
 
+  // The same members as logical device ids (their world ranks). Every
+  // collective carries this group so a program whose collectives all run
+  // over one proper subgroup is compiled for that subgroup's devices only.
+  DeviceGroup group_logical_device_ids_;
+
+  // Maps TPU device ids to logical device ids, i.e. to their ranks in the
+  // world process group, which must have been created already.
+  DeviceGroup GetLogicalDeviceIds(const DeviceGroup& physical_device_ids) const;
+
   // All the TPU device ids, split into subgroups (including the trivial world
   // group). This includes subgroups this process isn't a member of, but which
   // are required to be known by XLA. This effectively becomes our

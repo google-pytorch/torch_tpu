@@ -756,17 +756,19 @@ ProcessGroupTpu::ProcessGroupTpu(c10::intrusive_ptr<c10d::Store> store,
   if (group_size == device_ids_.size()) {
     is_world_group_ = true;
     PjrtBackend::GetInstance().SetWorldRankToDeviceId(rank_to_device_id_);
-    std::vector<int64_t> rank_to_logical_device_id(group_size);  // INT_VEC_OK
-    std::iota(rank_to_logical_device_id.begin(),
-              rank_to_logical_device_id.end(), 0);
-    subgroup_device_ids_ =
-        DeviceGroupList({std::move(rank_to_logical_device_id)});
+    // This new group includes all the devices, so its members are the world
+    // ranks in order and the subgroup list is trivial:
+    group_logical_device_ids_.resize(group_size);
+    std::iota(group_logical_device_ids_.begin(),
+              group_logical_device_ids_.end(), 0);
+    subgroup_device_ids_ = DeviceGroupList({group_logical_device_ids_});
   } else {
     // This new group is a proper subgroup. The `c10d::Store` allows us to
     // exchange membership information *within* this subgroup, which is
     // sufficient for PyTorch.
     // However, in case of XLA, we need every process to know about *all* the
     // subgroups, including ones it isn't a member of.
+    group_logical_device_ids_ = GetLogicalDeviceIds(rank_to_device_id_);
     subgroup_device_ids_ = GatherAllSubgroups();
   }
 
@@ -827,7 +829,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allreduce(
                       {.out_dtype = output_dtype,
                        .out_dims = tensor.sizes(),
                        .op_param_cache_keys = std::move(param_keys),
-                       .split_mode = GetCollectiveSplitMode()}));
+                       .split_mode = GetCollectiveSplitMode(),
+                       .collective_devices = group_logical_device_ids_}));
     // TODO: respect async.
 
     // All-reduce is inplace, assign output buffer ref to input tensors.
@@ -1041,7 +1044,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::allgather(
                 {.out_dtypes = output_dtypes,
                  .out_dims_list = output_dims,
                  .op_param_cache_keys = std::move(param_keys),
-                 .split_mode = GetCollectiveSplitMode()})));
+                 .split_mode = GetCollectiveSplitMode(),
+                 .collective_devices = group_logical_device_ids_})));
 
         // TODO: respect async.
 
@@ -1150,7 +1154,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_allgather_base(
                           {.out_dtype = output_dtype,
                            .out_dims = output_tensor.sizes(),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .collective_devices = group_logical_device_ids_}));
 
         // TODO: b/443120101 - defer if opts.asyncOp is true.
 
@@ -1436,7 +1441,8 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::_reduce_scatter_base(
                           {.out_dtype = out_dtype,
                            .out_dims = std::move(out_dims),
                            .op_param_cache_keys = std::move(param_keys),
-                           .split_mode = GetCollectiveSplitMode()}));
+                           .split_mode = GetCollectiveSplitMode(),
+                           .collective_devices = group_logical_device_ids_}));
 
         TT_THROW_IF_ERROR(
             AssignBufferToAtTensor(std::move(result_buffer), output));
@@ -1551,7 +1557,8 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseEqualSplits(
                        {.out_dtype = output_dtype,
                         .out_dims = output.sizes(),
                         .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode()});
+                        .split_mode = GetCollectiveSplitMode(),
+                        .collective_devices = group_logical_device_ids_});
 }
 
 absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
@@ -1638,13 +1645,21 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(output.scalar_type()));
 
+  // The custom call keeps its device groups in its backend config, which the
+  // subgroup rewrite does not reach. Tagging it with every device of the slice
+  // keeps any program that holds it slice-wide.
+  DeviceGroup slice_logical_device_ids(device_ids_.size());
+  std::iota(slice_logical_device_ids.begin(), slice_logical_device_ids.end(),
+            int64_t{0});
+
   // 6. Dispatch the custom call with input and output buffers.
-  return DispatchOp<2>(std::move(op_builder),
-                       {maybe_materialized_input_tensor, output},
-                       {.out_dtype = output_dtype,
-                        .out_dims = output.sizes(),
-                        .op_param_cache_keys = std::move(param_keys),
-                        .split_mode = GetCollectiveSplitMode()});
+  return DispatchOp<2>(
+      std::move(op_builder), {maybe_materialized_input_tensor, output},
+      {.out_dtype = output_dtype,
+       .out_dims = output.sizes(),
+       .op_param_cache_keys = std::move(param_keys),
+       .split_mode = GetCollectiveSplitMode(),
+       .collective_devices = std::move(slice_logical_device_ids)});
 }
 
 // Dispatches the torch.distributed.all_to_all collective, supporting both
@@ -1702,13 +1717,15 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
                 return BuildDistributedAllToAllShlo(inputs, device_groups);
               };
 
-          TT_ASSIGN_OR_THROW(result_buffers,
-                             (DispatchOp<kDynamicSize, kDynamicSize>(
-                                 std::move(op_builder), input_tensors,
-                                 {.out_dtypes = result_dtypes,
-                                  .out_dims_list = result_dims_list,
-                                  .op_param_cache_keys = std::move(param_keys),
-                                  .split_mode = GetCollectiveSplitMode()})));
+          TT_ASSIGN_OR_THROW(
+              result_buffers,
+              (DispatchOp<kDynamicSize, kDynamicSize>(
+                  std::move(op_builder), input_tensors,
+                  {.out_dtypes = result_dtypes,
+                   .out_dims_list = result_dims_list,
+                   .op_param_cache_keys = std::move(param_keys),
+                   .split_mode = GetCollectiveSplitMode(),
+                   .collective_devices = group_logical_device_ids_})));
         } else {
           // Non-uniform / uneven tensor list shapes across ranks (e.g. for MoE
           // dynamic token routing).
@@ -1893,33 +1910,12 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
     // c10d::Store.
     ABSL_CHECK_EQ(group_size, rank_to_device_id_.size())  // CRASH_OK
         << "Inconsistent device subgroup. This is a bug.";
-    auto world_rank_to_dev =
-        PjrtBackend::GetInstance().GetWorldRankToDeviceId();
-    TT_CHECK_THROW(world_rank_to_dev.has_value(), error::kFailedPrecondition)
-        << "world group must be initialized before subgroups";
-    ABSL_CHECK_EQ(world_rank_to_dev->size(), world_size)  // CRASH_OK
-        << "Mismatch between TPU slice size (" << world_size
-        << ") and world group size (" << world_rank_to_dev->size() << ")";
-
-    absl::flat_hash_map<int64_t, int64_t> dev_to_world_rank;
-    dev_to_world_rank.reserve(world_rank_to_dev->size());
-    for (int64_t r = 0; r < world_rank_to_dev->size(); ++r) {
-      dev_to_world_rank[(*world_rank_to_dev)[r]] = r;
-    }
-
-    auto self_it = dev_to_world_rank.find(addressable_device_id_);
-    ABSL_CHECK(self_it != dev_to_world_rank.end())  // CRASH_OK
-        << "Could not find current device ID " << addressable_device_id_
-        << " in world rank mapping";
-    int64_t global_rank = self_it->second;
+    // The logical id of this process's own device is its world rank.
+    const int64_t global_rank = group_logical_device_ids_[getRank()];
 
     auto subgroups_accessor = subgroups.accessor<int64_t, 2>();
     for (int i = 0; i < group_size; ++i) {
-      auto peer_it = dev_to_world_rank.find(rank_to_device_id_[i]);
-      ABSL_CHECK(peer_it != dev_to_world_rank.end())  // CRASH_OK
-          << "Could not find peer device ID " << rank_to_device_id_[i]
-          << " in world rank mapping";
-      subgroups_accessor[global_rank][i] = peer_it->second;
+      subgroups_accessor[global_rank][i] = group_logical_device_ids_[i];
     }
     subgroups = subgroups.to(at::device(GetPrivateUse1DeviceType()));
 
@@ -1964,6 +1960,32 @@ DeviceGroupList ProcessGroupTpu::GatherAllSubgroups() {
 
     return DeviceGroupList(std::move(result));
   });
+}
+
+DeviceGroup ProcessGroupTpu::GetLogicalDeviceIds(
+    const DeviceGroup& physical_device_ids) const {
+  auto world_rank_to_dev = PjrtBackend::GetInstance().GetWorldRankToDeviceId();
+  TT_CHECK_THROW(world_rank_to_dev.has_value(), error::kFailedPrecondition)
+      << "world group must be initialized before subgroups";
+  ABSL_CHECK_EQ(world_rank_to_dev->size(), device_ids_.size())  // CRASH_OK
+      << "Mismatch between TPU slice size (" << device_ids_.size()
+      << ") and world group size (" << world_rank_to_dev->size() << ")";
+
+  absl::flat_hash_map<int64_t, int64_t> dev_to_world_rank;
+  dev_to_world_rank.reserve(world_rank_to_dev->size());
+  for (int64_t r = 0; r < world_rank_to_dev->size(); ++r) {
+    dev_to_world_rank[(*world_rank_to_dev)[r]] = r;
+  }
+
+  DeviceGroup logical_device_ids(physical_device_ids.size());
+  for (int i = 0; i < physical_device_ids.size(); ++i) {
+    auto it = dev_to_world_rank.find(physical_device_ids[i]);
+    ABSL_CHECK(it != dev_to_world_rank.end())  // CRASH_OK
+        << "Could not find device ID " << physical_device_ids[i]
+        << " in world rank mapping";
+    logical_device_ids[i] = it->second;
+  }
+  return logical_device_ids;
 }
 
 #if TT_TORCH_VERSION_GE(2, 14)

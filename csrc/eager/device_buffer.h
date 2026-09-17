@@ -387,7 +387,8 @@ class DeferredOp {
              OpParamCacheKeys op_param_cache_keys,
              std::vector<Shape> output_shapes,
              OpSplitMode split_mode = OpSplitMode::kNone,
-             Indices donated_indices = {})
+             Indices donated_indices = {},
+             std::vector<int64_t> collective_devices = {})  // INT_VEC_OK
       : op_name_(op_name),
         op_builder_(std::move(op_builder)),
         inputs_(std::move(inputs)),
@@ -395,7 +396,8 @@ class DeferredOp {
         output_shapes_(std::move(output_shapes)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
-        split_mode_(split_mode) {}
+        split_mode_(split_mode),
+        collective_devices_(std::move(collective_devices)) {}
 
   // DeferredOps are copyable and movable. Per "rule of five"
   // (https://en.cppreference.com/w/cpp/language/rule_of_three.html), we should
@@ -438,6 +440,12 @@ class DeferredOp {
     return donated_indices_;
   }
 
+  // For a collective: the logical ids of the devices that launch it together,
+  // including this process's device, in group order. Empty for any other op.
+  [[nodiscard]] absl::Span<const int64_t> collective_devices() const {
+    return collective_devices_;
+  }
+
  private:
   // The name of the deferred op.
   OpName op_name_;
@@ -471,6 +479,9 @@ class DeferredOp {
   // The split mode of the DeferredOp, which determines how the op is split into
   // subgraphs for compilation.
   const OpSplitMode split_mode_ = OpSplitMode::kNone;
+
+  // The device group of a collective op (see collective_devices()).
+  std::vector<int64_t> collective_devices_;  // INT_VEC_OK
 
   friend std::ostream& operator<<(std::ostream& os,
                                   const DeferredOp& deferred_op);
@@ -534,8 +545,8 @@ class DeviceBufferList {
       OpName op_name, MlirOpBuilder op_builder,
       std::vector<DeviceBufferRef> inputs, OpParamCacheKeys op_param_cache_keys,
       std::vector<Shape> output_shapes,
-      OpSplitMode split_mode = OpSplitMode::kNone,
-      Indices donated_indices = {});
+      OpSplitMode split_mode = OpSplitMode::kNone, Indices donated_indices = {},
+      std::vector<int64_t> collective_devices = {});  // INT_VEC_OK
 
   // Creates a DeviceBufferList that represents a compiled-mode placeholder.
   // This is a buffer that is not backed by any data, but is used to represent

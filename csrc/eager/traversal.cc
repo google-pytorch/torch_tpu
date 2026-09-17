@@ -43,6 +43,7 @@
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/collective_subgroup.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_cache.h"
 #include "csrc/common/compilation_spec.h"
@@ -818,13 +819,29 @@ bool Traversal::HasSparseCoreOp() const {
   return false;
 }
 
+std::vector<int64_t> Traversal::CollectiveDeviceGroup() const {  // INT_VEC_OK
+  std::vector<std::vector<int64_t>> groups;                      // INT_VEC_OK
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    if (!node->is_deferred()) {
+      continue;
+    }
+    const std::shared_ptr<DeferredOp> op = node->deferred_op();
+    if (op != nullptr && !op->collective_devices().empty()) {
+      groups.emplace_back(op->collective_devices().begin(),
+                          op->collective_devices().end());
+    }
+  }
+  return CommonCollectiveDeviceGroup(groups);
+}
+
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     CompilationSpec spec, std::string* absl_nullable out_mlir_text,
     bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
   tsl::profiler::TraceMe trace_await("Traversal::Compile");
-  if (HasSparseCoreOp()) {
+  const bool has_sparse_core_op = HasSparseCoreOp();
+  if (has_sparse_core_op) {
     absl::StatusOr<int> status =
         PjrtBackend::GetInstance().GetGlobalDeviceCount();
     if (status.ok() && *status > 1) {
@@ -845,6 +862,42 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
     }
   }
 
+  // A program whose collectives all run over one proper subgroup of the slice
+  // is compiled for that subgroup's devices only, so the other devices need
+  // not launch it (see collective_subgroup.h).
+  std::vector<int64_t> device_group = CollectiveDeviceGroup();  // INT_VEC_OK
+  if (!device_group.empty()) {
+    absl::StatusOr<int> status =
+        PjrtBackend::GetInstance().GetGlobalDeviceCount();
+    if (status.ok() && device_group.size() < *status) {
+      xla::ExecutableBuildOptions& exec_options =
+          spec.xla_compile_options->executable_build_options;
+      // Logical device i is the device at flattened index i of the slice-wide
+      // device assignment, the index the collectives' replica groups name.
+      TT_RET_CHECK(exec_options.has_device_assignment(),
+                   error::kFailedPrecondition)
+          << "compile options must carry the slice-wide device assignment";
+      const xla::DeviceAssignment& assignment =
+          exec_options.device_assignment();
+      std::vector<int64_t> global_device_ids;  // INT_VEC_OK
+      global_device_ids.reserve(assignment.replica_count() *
+                                assignment.computation_count());
+      for (int replica = 0; replica < assignment.replica_count(); ++replica) {
+        for (int partition = 0; partition < assignment.computation_count();
+             ++partition) {
+          global_device_ids.push_back(assignment(replica, partition));
+        }
+      }
+      TT_RETURN_IF_ERROR(RestrictBuildOptionsToDeviceGroup(
+          exec_options, device_group, global_device_ids,
+          /*replicated=*/has_sparse_core_op));
+      spec.compile_options_key =
+          MakeCompileOptionsKey(*spec.xla_compile_options);
+    } else {
+      device_group.clear();
+    }
+  }
+
   if (!argument_layouts.empty()) {
     TT_RET_CHECK(arguments_.size() == argument_layouts.size(),
                  error::kInvalidArgument)
@@ -857,12 +910,17 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
   // builder before the function returns and in the same thread it is invoked.
   MlirComputationBuilder final_op_builder =
       [this, use_stablehlo_bounds, donated_inputs, argument_layouts,
-       module_name, out_mlir_text](mlir::MLIRContext& mlir_context)
+       module_name, out_mlir_text,
+       device_group](mlir::MLIRContext& mlir_context)
       -> absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> {
     TT_ASSIGN_OR_RETURN(auto module,
                         BuildMlirModule(mlir_context, use_stablehlo_bounds,
                                         donated_inputs, module_name));
     AnnotateArgumentLayouts(*module, arguments_, argument_layouts);
+    if (!device_group.empty()) {
+      TT_RETURN_IF_ERROR(
+          RewriteCollectivesForDeviceGroup(*module, device_group));
+    }
     if (out_mlir_text != nullptr) {
       *out_mlir_text = MlirModuleToString(*module);
     }

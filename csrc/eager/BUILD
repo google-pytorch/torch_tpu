@@ -903,6 +903,7 @@ torch_tpu_cc_library(
         ":device_buffer",
         ":structured_log_buffer",
         "//csrc/common:cache_key",
+        "//csrc/common:collective_subgroup",
         "//csrc/common:compilation",
         "//csrc/common:compilation_cache",
         "//csrc/common:compilation_spec",

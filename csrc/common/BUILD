@@ -309,6 +309,42 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_library(
+    name = "collective_subgroup",
+    srcs = ["collective_subgroup.cc"],
+    hdrs = ["collective_subgroup.h"],
+    deps = [
+        ":error_utils",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@xla//xla/client:executable_build_options",
+        "@xla//xla/service:computation_placer_hdr",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "collective_subgroup_test",
+    srcs = ["collective_subgroup_test.cc"],
+    deps = [
+        ":collective_subgroup",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+        "@xla//xla/client:executable_build_options",
+        "@xla//xla/service:computation_placer_hdr",
+    ],
+)
+
+torch_tpu_cc_library(
     name = "compilation_spec",
     hdrs = ["compilation_spec.h"],
     deps = [

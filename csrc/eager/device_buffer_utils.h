@@ -58,6 +58,10 @@ struct DeferredOpParams {
   // The indices of the donated inputs. This is primarily used by custom ops
   // (such as Pallas ops).
   Indices donated_indices = {};
+  // For a collective: the logical ids of the devices it runs over, including
+  // this process's device, in group order. A program whose collectives all
+  // share one proper subgroup of the slice is compiled for that subgroup.
+  std::vector<int64_t> collective_devices = {};  // INT_VEC_OK
 };
 
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,

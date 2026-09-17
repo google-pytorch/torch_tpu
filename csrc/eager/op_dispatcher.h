@@ -122,6 +122,9 @@ struct DispatchOpOptions {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
+  // Set by collectives: the logical ids of the devices the op runs over,
+  // including this process's device, in group order.
+  std::vector<int64_t> collective_devices = {};  // INT_VEC_OK
 };
 
 // Specialization for the case where the number of outputs is unknown at compile
@@ -137,6 +140,9 @@ struct DispatchOpOptions<kDynamicSize> {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
+  // Set by collectives: the logical ids of the devices the op runs over,
+  // including this process's device, in group order.
+  std::vector<int64_t> collective_devices = {};  // INT_VEC_OK
 };
 
 // Specialization for the case where the number of outputs is 1.
@@ -151,6 +157,9 @@ struct DispatchOpOptions<1> {
   OpParamCacheKeys op_param_cache_keys;
   OpSplitMode split_mode = OpSplitMode::kNone;
   Indices donated_indices = {};
+  // Set by collectives: the logical ids of the devices the op runs over,
+  // including this process's device, in group order.
+  std::vector<int64_t> collective_devices = {};  // INT_VEC_OK
 };
 
 namespace internal {
@@ -359,6 +368,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
+        .collective_devices = std::move(options.collective_devices),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -387,6 +397,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
+        .collective_devices = std::move(options.collective_devices),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));
@@ -415,6 +426,7 @@ absl::StatusOr<DeviceBufferRefArray<kNumOutputs>> DispatchOp(
         .computation_dtype = options.computation_dtype,
         .split_mode = options.split_mode,
         .donated_indices = std::move(options.donated_indices),
+        .collective_devices = std::move(options.collective_devices),
     };
     TT_ASSIGN_OR_RETURN(
         results, internal::CreateDeferredDeviceBufferList(std::move(params)));

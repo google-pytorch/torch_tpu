@@ -293,6 +293,11 @@ class Traversal {
   // Returns true if the traversal contains any SparseCore custom operations.
   [[nodiscard]] bool HasSparseCoreOp() const;
 
+  // The device group (logical ids) shared by every collective in the graph,
+  // or empty when the graph has no collective or collectives over different
+  // groups.
+  std::vector<int64_t> CollectiveDeviceGroup() const;  // INT_VEC_OK
+
   // Helper function for BuildMlirFunction.
   // Returns the MLIR op corresponding to the provided buffer ref,
   // the one corresponding to the dynamically redirected buffer ref, or an
