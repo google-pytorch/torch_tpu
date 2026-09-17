@@ -41,6 +41,12 @@ class PyBindErrorUtilsTest(seed_test_utils.RepeatableTest):
     ):
       obj.read_only_field = 99
 
+  def test_throw_tterror_with_call_guard(self):
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing this doesn't crash.
+        RuntimeError, "throwing invalid argument"
+    ):
+      testing.throw_tterror_with_call_guard()
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -26,6 +26,7 @@
 #include "absl/strings/str_cat.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/python_context.h"
+#include "pybind11/gil.h"
 #include "pybind11/pybind11.h"
 #include "torch/csrc/Exceptions.h"
 #include "torch/headeronly/util/Metaprogramming.h"
@@ -79,13 +80,31 @@ struct ErrorHandlingHelper<Ret(Args...)> {
   template <typename F>
   static auto wrap(const std::string_view api_name, const F& f) {
     return [api_name = std::string(api_name), f](Args... args) -> Ret {
-      // Use of the pair HANDLE_TH_ERRORS and END_HANDLE_TH_ERRORS_PYBIND are
-      // needed for correctly translating `c10::Error` into Python errors. They
-      // are macros that add the required surrounding try-catch statements. In
-      // summary, they will handle any error thrown in-between them.
-      HANDLE_TH_ERRORS
-      return impl(api_name, f, std::forward<Args>(args)...);
-      END_HANDLE_TH_ERRORS_PYBIND
+      try {
+        return impl(api_name, f, std::forward<Args>(args)...);
+      } catch (...) {
+        // If the caller of this function explicitly releases the GIL before
+        // calling this lambda, e.g. passes `call_guard<gil_scoped_release>()`
+        // as argument to the registration function, e.g. `def()`, we need to
+        // re-acquire it before PyTorch error handling. The reason being that
+        // PyTorch error handling calls the Python C API for setting the
+        // exception information.
+        //
+        // Otherwise, i.e. if the caller doesn't explicitly releases the GIL, we
+        // should still be holding the GIL at this point. In this case, the RAII
+        // below just increments a counter without trying to re-acquire the
+        // lock.
+        pybind11::gil_scoped_acquire gil;
+
+        // Use of the pair HANDLE_TH_ERRORS and END_HANDLE_TH_ERRORS_PYBIND are
+        // needed for correctly translating `c10::Error` into Python errors.
+        // They are macros that add the required surrounding try-catch
+        // statements. In summary, they will handle any error thrown in-between
+        // them.
+        HANDLE_TH_ERRORS
+        throw;  // Re-throwing the exception within PyTorch error handling.
+        END_HANDLE_TH_ERRORS_PYBIND
+      }
     };
   }
 };

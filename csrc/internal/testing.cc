@@ -121,6 +121,12 @@ TT_PYBIND11_MODULE(testing, m) {
   m.def("throw_tterror_in_free_function", &ThrowTtErrorInFreeFunction);
   m.def("throw_tterror_index_error", &ThrowTtErrorIndexError);
 
+  // Passes `call_guard<gil_scoped_release>()` as argumento to `def()`.
+  // This is undefined behavior if we don't acquire the GIL before going through
+  // PyTorch error handling, which calls into the Python C API.
+  m.def("throw_tterror_with_call_guard", &ThrowTtErrorInFreeFunction,
+        py::call_guard<py::gil_scoped_release>());
+
   PyBindClass<TestErrorClass>(m, "TestErrorClass")
       .def(py::init<>())
       .def("throw_tterror_in_member_function",
