@@ -32,12 +32,14 @@ could not tell whether the test passes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import io
 import os
 import pathlib
 import sys
 import tarfile
+from typing import Final
 
 from rbe_tpu.common import config
 from rbe_tpu.common import protocol

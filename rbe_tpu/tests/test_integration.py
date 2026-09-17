@@ -25,8 +25,6 @@ decides exactly when each side gets to act.
 
 from __future__ import annotations
 
-import pathlib
-import sys
 import unittest
 
 import fake_gcs

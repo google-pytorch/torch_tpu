@@ -127,6 +127,7 @@ jobs:
       - name: Establish RBE Tunnel
         if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
         run: |
+          # shellcheck disable=SC2034
           echo "Starting background tunnel to Buildbarn frontend..."
           gcloud compute tpus tpu-vm ssh spot-tpu-v5e-1789240098-2504 \
             --zone=europe-west4-b \
@@ -134,7 +135,7 @@ jobs:
             -- -N -L 8980:10.202.0.3:30980 &
           TUNNEL_PID=$!
           echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
-          for i in {1..30}; do
+          for _ in {1..30}; do
             if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
               echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980."
               break
@@ -151,6 +152,7 @@ jobs:
           BAZEL_CONFIG: ${{ matrix.job_info.config }}
           EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
         run: |
+          # shellcheck disable=SC2086
           bazel test \
             "--config=${BAZEL_CONFIG}" \
             --nocache_test_results \
