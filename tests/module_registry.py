@@ -314,7 +314,6 @@ _CAUSAL_LM_MODEL_TYPES = (
     "gemma4_unified",
     "gemma4_unified_assistant",
     "gemma4_unified_text",
-    "git",
     "glm",
     "glm4",
     "glm4_moe",
@@ -436,6 +435,7 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "fast_vlm",
     "flava",
     "florence2",
+    "git",
     "got_ocr2",
     "grounding-dino",
     "grounding_dino",
@@ -1533,6 +1533,7 @@ def _generate_transformers_inputs(
             not is_dual_encoder
             and "pix2struct" not in model_type
             and "instructblip" not in model_type
+            and "git" not in model_type
         ):
           num_image_tokens = _safe_int(
               _get_config_attr(config, "image_seq_length"),
