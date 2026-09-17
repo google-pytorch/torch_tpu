@@ -4556,6 +4556,18 @@ module {
     ):
       env.set_libtpu_version("0.2.0")
 
+  @et.why_tpu_only("TorchTPU specific export mode generator error.")
+  def test_set_export_mode_default_device_generator_invalid_device(self):
+    expected_msg = re.compile(
+        r"set_export_mode_default_device_generator\(\): expected device_index"
+        r" between 0 and \d+, got 100"
+    )
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu=expected_msg,
+    ):
+      tpu_torch_compile.set_export_mode_default_device_generator(None, 100)
+
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
 
