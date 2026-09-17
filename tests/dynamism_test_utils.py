@@ -168,7 +168,6 @@ untriaged_ops_deny_list: dict[
 ] = {
     "bincount": ALL_MODES,  # MLIR assertion failure (bounds length vs rank)
     "bmm": {COMPILE},  # numerical mismatch under dynamic compile
-    "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
     "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
     "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
     "eq": ALL_MODES,  # dynamic triage (invalid result)

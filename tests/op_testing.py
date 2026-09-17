@@ -3847,6 +3847,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     # Make sure we call `do_test_op()` method only once.
     self._do_test_op_called = False
     tt_testing.reset_eager_state()
+    torch._dynamo.reset()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
 
@@ -4419,6 +4420,8 @@ class OpInfoTestBase(
       dynamism_mode = (
           DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
       )
+      if dynamism_mode == DynamismMode.COMPILE:
+        torch._dynamo.reset()
       print(
           f">>> Marking dynamism for {op_name} with dtype {dtype}"
           f" (mode={dynamism_mode.value}) ...",
