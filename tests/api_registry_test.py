@@ -21,6 +21,7 @@ from absl.testing import absltest
 import torch
 import torch_tpu
 from torch_tpu._internal.pallas.pallas import (
+    custom_jax_kernel as internal_custom_jax_kernel,
     jax_op as internal_jax_op,
 )
 from torch_tpu._internal.profiler.profiler_config import (
@@ -117,6 +118,23 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(torch.tpu.pallas, "non_existent_attribute")
+
+    # 4. Verify torch_tpu does not expose pallas
+    self.assertFalse(hasattr(torch_tpu, "pallas"))
+    self.assertNotIn("torch_tpu.pallas", sys.modules)
+
+    # 5. Verify torch_tpu._internal.pallas re-exports custom_jax_kernel and jax_op
+    import torch_tpu._internal.pallas as internal_pallas  # pylint: disable=g-import-not-at-top
+
+    internal_pallas_dir = dir(internal_pallas)
+    self.assertIn("custom_jax_kernel", internal_pallas_dir)
+    self.assertIn("jax_op", internal_pallas_dir)
+    self.assertIs(internal_pallas.jax_op, internal_jax_op)
+    self.assertIs(internal_pallas.custom_jax_kernel, internal_custom_jax_kernel)
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies non-exported attributes raise AttributeError
+        AttributeError
+    ):
+      _ = getattr(internal_pallas, "non_existent_attribute")
 
 
 if __name__ == "__main__":

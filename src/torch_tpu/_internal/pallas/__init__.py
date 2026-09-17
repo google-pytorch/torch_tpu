@@ -13,13 +13,16 @@
 # limitations under the License.
 """Pallas API for Torch-TPU."""
 
-from torch_tpu._internal.pallas import pallas
+from typing import Any, TYPE_CHECKING
 
-PallasMesh = pallas.PallasMesh
-custom_jax_kernel = pallas.custom_jax_kernel
-get_default_pallas_mesh = pallas.get_default_pallas_mesh
-get_pallas_mesh = pallas.get_pallas_mesh
-jax_op = pallas.jax_op
+if TYPE_CHECKING:
+  from torch_tpu._internal.pallas.pallas import (
+      PallasMesh as PallasMesh,  # noqa: F401
+      custom_jax_kernel as custom_jax_kernel,  # noqa: F401
+      get_default_pallas_mesh as get_default_pallas_mesh,  # noqa: F401
+      get_pallas_mesh as get_pallas_mesh,  # noqa: F401
+      jax_op as jax_op,  # noqa: F401
+  )
 
 
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
@@ -32,3 +35,34 @@ __all__ = [
     "jax_op",
     # go/keep-sorted end
 ]
+
+
+def __getattr__(name: str) -> Any:
+  """Lazily loads pallas symbols and submodules upon attribute access (PEP 562).
+
+  Lazy loading avoids importing JAX/Pallas dependencies when importing
+  submodules (such as `torch_tpu._internal.pallas.api` during backend
+  initialization) until Pallas symbols are actually referenced.
+  """
+  if name in (
+      "PallasMesh",
+      "custom_jax_kernel",
+      "get_default_pallas_mesh",
+      "get_pallas_mesh",
+      "jax_op",
+  ):
+    from torch_tpu._internal.pallas import pallas  # pylint: disable=g-import-not-at-top
+
+    return getattr(pallas, name)
+  try:
+    import importlib  # pylint: disable=g-import-not-at-top
+
+    return importlib.import_module(f".{name}", __name__)
+  except (ImportError, AttributeError):
+    raise AttributeError(
+        f"module '{__name__}' has no attribute '{name}'"
+    ) from None
+
+
+def __dir__() -> list[str]:
+  return __all__

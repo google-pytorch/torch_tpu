@@ -49,15 +49,6 @@ py_dist_info(
 )
 
 torch_tpu_py_library(
-    name = "pallas",
-    srcs = ["pallas.py"],
-    deps = [
-        "//shims/jax:pallas_tpu",  # build_cleaner: keep
-        "//src/torch_tpu/_internal/pallas:pallas_lib",
-    ],
-)
-
-torch_tpu_py_library(
     name = "profiler",
     srcs = ["profiler.py"],
     deps = [
@@ -72,7 +63,6 @@ torch_tpu_py_library(
         ":torch_tpu_dist_info",
     ],
     deps = [
-        ":pallas",
         ":profiler",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
@@ -84,6 +74,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/distributed:from_local",
         "//src/torch_tpu/_internal/distributed:torchcomm_tpu",
         "//src/torch_tpu/_internal/distributed:tpu_distributed",
+        "//src/torch_tpu/_internal/pallas:api",
         "//src/torch_tpu/_internal/pooling:patch",
         "//src/torch_tpu/_internal/precision:precision_impl",
         "//src/torch_tpu/_internal/profiler",
