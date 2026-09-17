@@ -805,6 +805,21 @@ class TpuBackend:
               graph_module, example_inputs
           )  # pytype: disable=wrong-arg-types
 
+      if captured_entry is not None and captured_entry[0] is not None:
+        entry = captured_entry[0]
+        result.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
+
+      if debug is not None:
+        debug.compiled_executables = list(compiled_artifacts)
+
+      # When asynchronous compilation is disabled, return the compiled callable
+      # directly to eliminate per-step Python closure and trampoline dispatch
+      # overhead on every execution.
+      if not async_compile:
+        if debug is not None and debug_callback is not None:
+          debug_callback(debug)
+        return result
+
       # The following section allows us to avoid blocking within Dynamo on
       # first execution following compilation when `async_compile=True`. This
       # effectively makes the first execution turn into a compile warmup.
@@ -812,42 +827,33 @@ class TpuBackend:
 
       def skip_execution_on_warmup_if_async(*args: Any, **kwargs: Any) -> Any:
         nonlocal is_warmup_execution
-        if async_compile and is_warmup_execution:
+        if is_warmup_execution:
           is_warmup_execution = False
           artifact = compiled_artifacts[-1] if compiled_artifacts else None
           raise AsyncCompilationSubmitted(artifact)
         return result(*args, **kwargs)
 
       if captured_entry is not None and captured_entry[0] is not None:
-        entry = captured_entry[0]
-        result.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
         skip_execution_on_warmup_if_async.serialize = lambda: entry  # pyrefly: ignore[missing-attribute]
 
-      if debug is not None:
-        debug.compiled_executables = list(compiled_artifacts)
-
-      # Call the debug callback, or if async, submit a job that waits on the compile futures.
       if debug is not None and debug_callback is not None:
-        if async_compile:
-          futures = [
-              cast(AsyncCompiledArtifact, e)._future
-              for e in compiled_artifacts
-              if isinstance(e, AsyncCompiledArtifact)
-          ]
+        futures = [
+            cast(AsyncCompiledArtifact, e)._future
+            for e in compiled_artifacts
+            if isinstance(e, AsyncCompiledArtifact)
+        ]
 
-          # Ensure callbacks that fail are visible
-          def wait_and_call():
-            try:
-              for f in futures:
-                f.result()
-              debug_callback(debug)
-            except Exception:
-              logging.exception("debug_callback crashed.")
-              raise
+        # Ensure callbacks that fail are visible
+        def wait_and_call():
+          try:
+            for f in futures:
+              f.result()
+            debug_callback(debug)
+          except Exception:
+            logging.exception("debug_callback crashed.")
+            raise
 
-          compiler.StaticCompiler._async_compile_executor.submit(wait_and_call)
-        else:
-          debug_callback(debug)
+        compiler.StaticCompiler._async_compile_executor.submit(wait_and_call)
 
       return skip_execution_on_warmup_if_async
 

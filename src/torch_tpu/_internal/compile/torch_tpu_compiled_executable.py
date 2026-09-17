@@ -73,6 +73,11 @@ class CompiledArtifact(abc.ABC, OutputCode):
   mechanisms at the Dynamo/AOT Autograd layers.
   """
 
+  # Instructs AOTAutograd to pass arguments as a single boxed sequence (`args`)
+  # rather than wrapping this artifact in `make_boxed_func`, eliminating per-step
+  # argument unpacking and repacking overhead.
+  _boxed_call: bool = True
+
   @abc.abstractmethod
   def __call__(self, inputs: Sequence[InputType]) -> Any:
     """Executes the compiled artifact.
