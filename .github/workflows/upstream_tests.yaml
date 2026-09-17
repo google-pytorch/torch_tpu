@@ -51,7 +51,7 @@ jobs:
     name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     if: >-
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:upstream-tests')
+      contains(github.event.pull_request.labels.*.name, 'ci:torch-tests')
     strategy:
       fail-fast: false
       matrix:
