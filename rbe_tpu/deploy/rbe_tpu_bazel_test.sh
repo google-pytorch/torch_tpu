@@ -181,23 +181,12 @@ FLEET_CHECK_ELAPSED=$((FLEET_CHECK_END - FLEET_CHECK_START))
 QUERY_START=$(date +%s)
 RESOLVED_TARGETS=()
 
-if [[ ${#CLI_TARGETS[@]} -gt 0 ]]; then
-  for tgt in "${CLI_TARGETS[@]}"; do
-    if [[ "$tgt" == *:* && "$tgt" != *...* && "$tgt" != *:all* ]]; then
-      RESOLVED_TARGETS+=("$tgt")
-    else
-      log "Expanding pattern: ${tgt}"
-      while IFS= read -r line; do
-        [[ -n "$line" && "$line" == //* ]] && RESOLVED_TARGETS+=("$line")
-      done < <(bazel query "tests(${tgt})" --output=label 2>/dev/null || true)
-    fi
-  done
-else
-  target_scope="${CLI_SCOPE:-$DEFAULT_SCOPE}"
-  log "Querying test targets in ${target_scope}..."
+build_query_expr() {
+  local scope="$1"
+  local expr="tests(${scope}) except attr(tags, \"manual|notest\", ${scope}) except attr(name, \".*_build_test$\", ${scope})"
   if [[ -n "$CLI_FILTER" ]]; then
-    pos_tags=()
-    neg_tags=()
+    local pos_tags=()
+    local neg_tags=()
     IFS=',' read -r -a filter_items <<< "$CLI_FILTER"
     for item in "${filter_items[@]}"; do
       item=$(echo "$item" | xargs)
@@ -208,20 +197,36 @@ else
         pos_tags+=("$item")
       fi
     done
-
-    query_expr="tests(${target_scope})"
     if [[ ${#pos_tags[@]} -gt 0 ]]; then
+      local pos_pattern
       pos_pattern=$(IFS='|'; echo "${pos_tags[*]}")
-      query_expr="${query_expr} intersect attr(tags, \"${pos_pattern}\", ${target_scope})"
+      expr="${expr} intersect attr(tags, \"${pos_pattern}\", ${scope})"
     fi
     if [[ ${#neg_tags[@]} -gt 0 ]]; then
+      local neg_pattern
       neg_pattern=$(IFS='|'; echo "${neg_tags[*]}")
-      query_expr="${query_expr} except attr(tags, \"${neg_pattern}\", ${target_scope})"
+      expr="${expr} except attr(tags, \"${neg_pattern}\", ${scope})"
     fi
-  else
-    query_expr="tests(${target_scope})"
   fi
+  echo "$expr"
+}
 
+if [[ ${#CLI_TARGETS[@]} -gt 0 ]]; then
+  for tgt in "${CLI_TARGETS[@]}"; do
+    if [[ "$tgt" == *:* && "$tgt" != *...* && "$tgt" != *:all* ]]; then
+      RESOLVED_TARGETS+=("$tgt")
+    else
+      log "Expanding pattern: ${tgt}"
+      query_expr=$(build_query_expr "$tgt")
+      while IFS= read -r line; do
+        [[ -n "$line" && "$line" == //* ]] && RESOLVED_TARGETS+=("$line")
+      done < <(bazel query "$query_expr" --output=label 2>/dev/null || true)
+    fi
+  done
+else
+  target_scope="${CLI_SCOPE:-$DEFAULT_SCOPE}"
+  log "Querying test targets in ${target_scope}..."
+  query_expr=$(build_query_expr "$target_scope")
   while IFS= read -r line; do
     [[ -n "$line" && "$line" == //* ]] && RESOLVED_TARGETS+=("$line")
   done < <(bazel query "$query_expr" --output=label 2>/dev/null || true)
