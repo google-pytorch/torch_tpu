@@ -17,7 +17,37 @@
 #ifndef TORCH_TPU_CSRC_EAGER_DEVICE_GEN_IMPL_H_
 #define TORCH_TPU_CSRC_EAGER_DEVICE_GEN_IMPL_H_
 
+// RNG Generator Isolation Design:
+//
+// TorchTPU provides strict RNG generator state isolation between eager
+// execution mode and graph export mode (e.g., during torch.compile or
+// torch.export tracing). This isolation prevents graph tracing passes (which
+// inspect and advance RNG states) from mutating or polluting the global default
+// eager RNG state.
+//
+// Structure:
+// - DeviceGeneratorImplBase: Abstract base class defining the unified
+//   interface for device RNG generators, exposing virtual state tensor
+//   accessors.
+// - EagerModeDeviceGeneratorImpl: Concrete subclass used during standard eager
+//   execution. Manages the active device RNG state tensor via
+//   DeviceGeneratorState.
+// - ExportModeDeviceGeneratorImpl: Concrete subclass used exclusively during
+//   graph export tracing. Wraps placeholder tensors and rejects unreachable
+//   eager accessors.
+//
+// Isolation Mechanism:
+// - EagerMode::kInternalCompileFxGraph dictates which generator instance
+//   is returned by GetDefaultDeviceGenerator().
+// - During compilation or graph export (under
+//   EagerMode::kInternalCompileFxGraph), overrides registered via
+//   SetExportModeDefaultDeviceGenerator (which are
+//   ExportModeDeviceGeneratorImpl instances) are returned.
+// - Outside compilation mode, standard eager EagerModeDeviceGeneratorImpl
+//   instances are returned.
+
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -85,7 +115,7 @@ class DeviceGeneratorState : public c10::intrusive_ptr_target {
       bool force_materialization = false);
 
   // 1D uint64 tensor of 2 elements: {seed, offset}
-  at::Tensor device_state_tensor_;  // UNINITIALIZED_TENSOR_OK
+  at::Tensor device_state_tensor_ = at::Tensor();
 
   // Counter to throttle materialization of RNG state updates.
   int materialize_state_counter_ = 0;
@@ -118,10 +148,11 @@ class ExportModeDeviceGeneratorState : public c10::intrusive_ptr_target {
 at::Tensor PyGetDeviceStateTensor(at::Generator gen);
 void PySetDeviceStateTensor(at::Generator gen, at::Tensor rng_state);
 
-// Unified base class for TPU RNG generators.
+// Abstract base class defining the common interface and pure virtual state
+// tensor accessors for TPU RNG generators across eager and export execution
+// modes.
 class DeviceGeneratorImplBase : public c10::GeneratorImpl {
  public:
-  // This class is neither copyable nor movable.
   DeviceGeneratorImplBase(const DeviceGeneratorImplBase&) = delete;
   DeviceGeneratorImplBase& operator=(const DeviceGeneratorImplBase&) = delete;
   DeviceGeneratorImplBase(DeviceGeneratorImplBase&&) = delete;
@@ -267,7 +298,29 @@ class ExportModeDeviceGeneratorImpl : public DeviceGeneratorImplBase {
 
 // Returns the default generator for the given device index. If idx is -1,
 // returns the default generator for the current device.
+// If EagerMode::kInternalCompileFxGraph is active, returns the export-mode
+// default generator if set, otherwise falls back to the eager default
+// generator.
 at::Generator& GetDefaultDeviceGenerator(c10::DeviceIndex idx = -1);
+
+// Returns the eager default generator for the given device index. If idx is -1,
+// returns the eager default generator for the current device. Unlike
+// GetDefaultDeviceGenerator(), this function always returns the standard eager
+// generator even when EagerMode::kInternalCompileFxGraph is active.
+at::Generator& GetEagerDefaultDeviceGenerator(c10::DeviceIndex idx = -1);
+
+// Sets the export-mode default generator for override. If idx is -1, sets the
+// export-mode default generator for the current device.
+// When EagerMode::kInternalCompileFxGraph is active,
+// GetDefaultDeviceGenerator() will return this overridden generator instead of
+// the standard eager generator.
+void SetExportModeDefaultDeviceGenerator(c10::optional<at::Generator> gen,
+                                         c10::DeviceIndex idx = -1);
+
+// Clears all export-mode default generator overrides. Under
+// EagerMode::kInternalCompileFxGraph, subsequent calls to
+// GetDefaultDeviceGenerator() will fall back to the eager default generator.
+void ClearExportModeDefaultDeviceGenerators();
 
 // Creates a new generator for the given device index. If idx is -1, creates a
 // new generator for the current device.
