@@ -39,7 +39,7 @@ from rbe_tpu.agent import agent
 from rbe_tpu.common import gcs
 from rbe_tpu.common import protocol
 
-DEFAULT_ROOT: typing.Final[str] = "/tmp/torch_tpu_relay"
+DEFAULT_ROOT: typing.Final[pathlib.Path] = pathlib.Path("/tmp/torch_tpu_relay")
 
 # Captured output kept in the result. Enough to see what happened
 # without turning every failure into a large upload.
@@ -62,7 +62,9 @@ def _safe_tar_filter(member, dest_path):
 class LocalRunner:
   """Runs work items in a scratch directory on this VM."""
 
-  def __init__(self, client: gcs.Client, root: str = DEFAULT_ROOT):
+  def __init__(
+      self, client: gcs.Client, root: pathlib.Path | str = DEFAULT_ROOT
+  ):
     self._client = client
     self._root = pathlib.Path(root)
     self._cache = self._root / "layers"
@@ -227,7 +229,7 @@ class LocalRunner:
       else:
         py_bin = sys.executable or "python3"
 
-      if os.path.isdir("/dev/vfio"):
+      if pathlib.Path("/dev/vfio").is_dir():
         subprocess.run(
             "fuser -k /dev/vfio/* 2>/dev/null || true", shell=True, check=False
         )
@@ -235,7 +237,11 @@ class LocalRunner:
       py_bin = sys.executable or "python3"
 
     argv = list(item.argv)
-    if argv and not shutil.which(argv[0]) and not os.path.isabs(argv[0]):
+    if (
+        argv
+        and not shutil.which(argv[0])
+        and not pathlib.Path(argv[0]).is_absolute()
+    ):
       cand = workspace / argv[0]
       if cand.is_file():
         try:

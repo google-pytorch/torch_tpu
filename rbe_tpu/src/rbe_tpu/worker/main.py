@@ -43,7 +43,7 @@ from rbe_tpu.common import config
 from rbe_tpu.common import protocol
 from rbe_tpu.worker import worker as worker_lib
 
-_FORWARDED_ENV_PREFIXES: Final[tuple[str, ...]] = (
+_FORWARDED_ENV_PREFIXES: Final[frozenset[str]] = frozenset({
     "TORCH_",
     "TPU_",
     "XLA_",
@@ -52,10 +52,10 @@ _FORWARDED_ENV_PREFIXES: Final[tuple[str, ...]] = (
     "LIBTPU_",
     "CUDA_",
     "IS_OSS",
-)
+})
 
 
-def forwarded_env(env) -> dict[str, str]:
+def forwarded_env(env: Mapping[str, str]) -> dict[str, str]:
   """Extracts test environment variables that should be passed to the TPU."""
   fwd = {}
   for k, v in env.items():
@@ -67,16 +67,18 @@ def forwarded_env(env) -> dict[str, str]:
   return fwd
 
 
-DEFAULT_TIMEOUT_SECONDS = 900.0
+DEFAULT_TIMEOUT_SECONDS: Final[float] = 900.0
 
 
-def layer_dirs(env) -> list[str]:
+def layer_dirs(env: Mapping[str, str]) -> list[str]:
   """Returns the input layers to pack, in extraction order."""
   raw = env.get(config.LAYER_DIRS_ENV, "").strip()
   return [part for part in raw.split(":") if part]
 
 
-def find_runfiles_dir(argv, env) -> pathlib.Path | None:
+def find_runfiles_dir(
+    argv: Sequence[str], env: Mapping[str, str]
+) -> pathlib.Path | None:
   """Locates the Bazel runfiles directory for the target under test."""
   test_srcdir = env.get("TEST_SRCDIR")
   if test_srcdir and pathlib.Path(test_srcdir).is_dir():
@@ -171,7 +173,7 @@ def relative_argv(argv: Sequence[str], env: Mapping[str, str]) -> list[str]:
   return [first] + list(argv[1:])
 
 
-def timeout_seconds(env) -> float:
+def timeout_seconds(env: Mapping[str, str]) -> float:
   """Returns the per-item timeout, falling back to the default."""
   raw = env.get(config.TIMEOUT_ENV, "").strip()
   if not raw:
