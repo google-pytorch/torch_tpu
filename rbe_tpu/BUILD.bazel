@@ -58,6 +58,22 @@ py_binary(
     deps = [":rbe_tpu"],
 )
 
+py_binary(
+    name = "presubmit_pr_main",
+    srcs = ["src/rbe_tpu/cli/presubmit_pr.py"],
+    imports = ["src"],
+    main = "src/rbe_tpu/cli/presubmit_pr.py",
+    deps = [":rbe_tpu"],
+)
+
+py_binary(
+    name = "update_solib_main",
+    srcs = ["src/rbe_tpu/cli/update_solib.py"],
+    imports = ["src"],
+    main = "src/rbe_tpu/cli/update_solib.py",
+    deps = [":rbe_tpu"],
+)
+
 py_test(
     name = "gcs_test",
     srcs = ["tests/test_gcs.py"],

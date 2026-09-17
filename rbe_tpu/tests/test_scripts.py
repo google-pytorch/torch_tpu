@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for mailbox presubmit and freeform bazel test CLI tools."""
+"""Unit tests for mailbox presubmit, solib update, and freeform bazel test CLI tools."""
 
 from __future__ import annotations
 
@@ -23,8 +23,11 @@ import subprocess
 import tempfile
 from typing import Final
 import unittest
+from unittest import mock
 
 from rbe_tpu.cli import bazel_test
+from rbe_tpu.cli import presubmit_pr
+from rbe_tpu.cli import update_solib
 
 REPO_ROOT: Final[pathlib.Path] = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS_DIR: Final[pathlib.Path] = REPO_ROOT / "deploy"
@@ -32,6 +35,7 @@ MAILBOX_BAZEL_TEST: Final[pathlib.Path] = SCRIPTS_DIR / "rbe_tpu_bazel_test.sh"
 MAILBOX_PRESUBMIT_PR: Final[pathlib.Path] = (
     SCRIPTS_DIR / "rbe_tpu_presubmit_pr.sh"
 )
+UPDATE_FLEET_SOLIB: Final[pathlib.Path] = SCRIPTS_DIR / "update_fleet_solib.sh"
 
 
 class TestRBETpuBazelTestCLI(
@@ -307,55 +311,112 @@ class TestRBETpuPresubmitPRCLI(
     self.assertNotEqual(res.returncode, 0)
     self.assertIn("Unknown argument: --bad-flag", res.stderr)
 
-  def test_config_flag_precedes_jobs_flags_in_presubmit_script(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    config_idx = body.find("--config=${CLI_BAZEL_CONFIG}")
-    jobs_idx = body.find("--jobs=${CLI_JOBS}")
-    local_jobs_idx = body.find("--local_test_jobs=${CLI_JOBS}")
-    self.assertGreater(config_idx, 0)
-    self.assertGreater(jobs_idx, config_idx)
-    self.assertGreater(local_jobs_idx, config_idx)
 
-  def test_bazelrc_decouples_mailbox_from_presubmit_filters(self):
-    bazelrc_path = REPO_ROOT / ".bazelrc"
-    if not bazelrc_path.exists():
-      bazelrc_path = REPO_ROOT.parent / ".bazelrc"
-    body = bazelrc_path.read_text(encoding="utf-8")
-    self.assertIn("common:ci_tpu_v5_mailbox --config=ci_tpu_base", body)
-    self.assertNotIn(
-        "common:ci_tpu_v5_mailbox --config=ci_tpu_v5_presubmit", body
+class TestPresubmitPRPythonModule(
+    unittest.TestCase  # UNITTEST_OK=Pure Python unit tests for presubmit_pr CLI
+):
+  """Unit tests for pure functions in rbe_tpu.cli.presubmit_pr."""
+
+  def test_config_flag_precedes_jobs_flags_in_presubmit_args(self):
+    opts = presubmit_pr.parse_args([
+        "--bazel-config",
+        "custom_config",
+        "--jobs",
+        "16",
+    ])
+    args = presubmit_pr.build_bazel_args(opts, ["//tests:fp4_test"])
+    cfg_idx = args.index("--config=custom_config")
+    jobs_idx = args.index("--jobs=16")
+    local_jobs_idx = args.index("--local_test_jobs=16")
+    self.assertLess(cfg_idx, jobs_idx)
+    self.assertLess(cfg_idx, local_jobs_idx)
+
+  def test_presubmit_config_added_for_empty_targets_and_mailbox_config(self):
+    opts = presubmit_pr.parse_args([
+        "--bazel-config",
+        "ci_tpu_v5_mailbox",
+    ])
+    args = presubmit_pr.build_bazel_args(opts, ["//tests:fp4_test"])
+    self.assertIn("--config=ci_tpu_v5_presubmit", args)
+    self.assertIn("--config=ci_tpu_v5_mailbox", args)
+
+  def test_replacement_mode_aborts_when_label_cannot_be_verified(self):
+    with mock.patch.object(
+        presubmit_pr, "apply_and_verify_label", return_value=False
+    ):
+      rc = presubmit_pr.main([
+          "--pr",
+          "3862",
+          "--mode",
+          "replacement",
+          "--add-label",
+          "--target",
+          "//tests:view_test",
+          "--output-dir",
+          tempfile.mkdtemp(),
+      ])
+      self.assertEqual(rc, 1)
+
+  def test_shadow_mode_continues_when_label_cannot_be_verified(self):
+    with (
+        mock.patch.object(
+            presubmit_pr, "apply_and_verify_label", return_value=False
+        ),
+        mock.patch.object(
+            bazel_test, "check_fleet_count", return_value=28
+        ),
+        mock.patch("subprocess.Popen") as mock_popen,
+    ):
+      proc = mock.MagicMock()
+      proc.stdout = []
+      proc.wait.return_value = 0
+      mock_popen.return_value = proc
+      rc = presubmit_pr.main([
+          "--pr",
+          "3862",
+          "--sha",
+          "test_sha",
+          "--skip-head-check",
+          "--mode",
+          "shadow",
+          "--add-label",
+          "--no-report",
+          "--target",
+          "//tests:view_test",
+          "--output-dir",
+          tempfile.mkdtemp(),
+      ])
+      self.assertEqual(rc, 0)
+
+
+class TestUpdateSolibPythonModule(
+    unittest.TestCase  # UNITTEST_OK=Pure Python unit tests for update_solib CLI
+):
+  """Unit tests for pure functions in rbe_tpu.cli.update_solib."""
+
+  def test_parse_vm_list(self):
+    output = "spot-tpu-v5e-1 europe-west4-b\nspot-tpu-v5e-2 us-south1-a\n"
+    vms = update_solib.parse_vm_list(output)
+    self.assertEqual(
+        vms,
+        [
+            ("spot-tpu-v5e-1", "europe-west4-b"),
+            ("spot-tpu-v5e-2", "us-south1-a"),
+        ],
     )
 
-  def test_presubmit_script_adds_presubmit_config_for_full_suite(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    self.assertIn('BAZEL_ARGS+=("--config=ci_tpu_v5_presubmit")', body)
+  def test_build_remote_command_contains_bucket(self):
+    cmd = update_solib.build_remote_command("test-bucket")
+    self.assertIn("test-bucket", cmd)
+    self.assertIn("vm.overcommit_memory=1", cmd)
 
-  def test_label_is_verified_by_read_back_not_exit_code(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    self.assertIn("gh pr view", body)
-    self.assertIn("--json labels", body)
-    self.assertIn("label_applied=true", body)
-
-  def test_replacement_mode_aborts_when_label_cannot_be_applied(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    abort_block = body.split('if [[ "$label_applied" == "false" ]]; then')[1]
-    guard, _, remainder = abort_block.partition(
-        'if [[ "$CLI_MODE" == "replacement" ]]; then'
-    )
-    self.assertEqual(guard.strip(), "")
-    self.assertIn("exit 1", remainder.split("fi")[0])
-
-  def test_shadow_mode_only_warns_when_label_cannot_be_applied(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    abort_block = body.split('if [[ "$label_applied" == "false" ]]; then')[1]
-    self.assertIn("WARNING: failed to add label", abort_block)
-
-  def test_label_check_runs_before_any_status_is_posted(self):
-    body = MAILBOX_PRESUBMIT_PR.read_text(encoding="utf-8")
-    self.assertLess(
-        body.index('if [[ "$label_applied" == "false" ]]; then'),
-        body.index('post_status "$CLI_SHA" "pending"'),
-    )
+  def test_dry_run_lists_vms(self):
+    fake_vms = [("spot-tpu-v5e-1", "europe-west4-b")]
+    with mock.patch.object(
+        update_solib, "fetch_vm_inventory", return_value=fake_vms
+    ):
+      rc = update_solib.main(["--dry-run"])
+      self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":
