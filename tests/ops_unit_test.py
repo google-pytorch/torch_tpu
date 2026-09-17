@@ -9644,12 +9644,14 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     device = torch.device("tpu")
 
-    # Enqueue two failing assertions in sequence with different error messages.
-    # Because GetAssertionThreadPool() uses a single background thread (/*num_threads=*/1),
-    # tasks run in deterministic FIFO order and the first error is latched first.
-    torch._assert_async(torch.tensor(False, device=device), "first error")
-    torch._assert_async(torch.tensor(False, device=device), "second error")
+    # Allocate both condition tensors before enqueuing assertions to avoid
+    # race conditions where the first async assertion sets sticky error before
+    # the second tensor is created.
+    cond1 = torch.tensor(False, device=device)
+    cond2 = torch.tensor(False, device=device)
     try:
+      torch._assert_async(cond1, "first error")
+      torch._assert_async(cond2, "second error")
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "first error"
       ):
