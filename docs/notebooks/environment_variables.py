@@ -28,7 +28,7 @@ def _():
 
   # Pre-set environment variables globally for HTML export so that all examples have output
   os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
-  os.environ["TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS"] = "1"
+  os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "1"
   os.environ["TORCH_TPU_INTERNAL_XLA_OPTIONS"] = "xla_optimization_level=O3"
 
   dump_dir = "/tmp/hlo_dump"
@@ -80,7 +80,7 @@ def _(mo):
     | Variable | Purpose |
     | :--- | :--- |
     | `TORCH_SHOW_CPP_STACKTRACES` | Enriches Python `RuntimeError` with massive C++ backtraces from ATen and the TorchTPU backend. |
-    | `TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS` | Enables expensive internal debug checks and invariant validation (e.g., catching out-of-bounds indices). |
+    | `TORCH_TPU_ENABLE_DEBUG_CHECKS` | Enables expensive internal debug checks and invariant validation (e.g., catching out-of-bounds indices). |
 
     ### **Snippet: C++ Stacktraces**
     Setting this variable makes it much easier to diagnose errors that occur deep within the C++ backend or XLA. Instead of a simple Python `RuntimeError`, you'll receive a detailed `C++ CapturedTraceback` showing exact execution frames.
@@ -129,7 +129,7 @@ def _(os):
     # RESTART KERNEL BEFORE RUNNING
     import torch
 
-    os.environ["TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS"] = "1"
+    os.environ["TORCH_TPU_ENABLE_DEBUG_CHECKS"] = "1"
     device_safe = torch.device("tpu")
 
     # DEMONSTRATE: Index Validation
@@ -378,10 +378,9 @@ def _(mo):
     | `LOCAL_RANK` | Launcher | `import torch` | `0`, `1`, `2`, `3` ... (integer) |
     | `MASTER_ADDR` | Launcher | `import torch` | `localhost`, `127.0.0.1`, `10.0.0.1` |
     | `MASTER_PORT` | Launcher | `import torch` | `12355`, `8471`, `<port_number>` |
-    | `NPROC` | Build | `import torch` | `1`, `4`, `8`, ... (integer) |
     | `RANK` | Launcher | `import torch` | `0`, `1`, `2`, ... (integer) |
     | `TORCH_SHOW_CPP_STACKTRACES` | Debug | `import torch` | `0` (False), `1` (True) |
-    | `TORCH_TPU_INTERNAL_ENABLE_DEBUG_CHECKS` | Safety | `import torch` | `0` (False), `1` (True) |
+    | `TORCH_TPU_ENABLE_DEBUG_CHECKS` | Safety | `import torch` | `0` (False), `1` (True) |
     | `TORCH_TPU_TIER2_COMPILATION_CACHE` | Cache | `torch.device("tpu")` | `/dev/shm/xla_cache_dir/`, `<local_path>` |
     | `TORCH_TPU_INTERNAL_TIER3_COMPILATION_CACHE_LOCAL_BACKUP_TASK` | Cache | `torch.device("tpu")` | `0` (False), `1` (True) |
     | `TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT` | Cache | `torch.device("tpu")` | `gs://<bucket_name>/<path_to_cache>` |
