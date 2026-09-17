@@ -172,7 +172,6 @@ untriaged_ops_deny_list: dict[
     "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
     "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
     "eq": ALL_MODES,  # dynamic triage (invalid result)
-    "expand": ALL_MODES,  # view op - expand not yet supported
     "expm1": ALL_MODES,  # dynamic triage (result differ)
     "fft.rfft": ALL_MODES,  # expected all dimensions to be static
     "fft.irfft": ALL_MODES,  # expected all dimensions to be static
@@ -292,17 +291,29 @@ def verify_op_supports_dynamism(
   if op.name == "addcdiv" and not utils.libtpu_at_least((0, 0, 47)):
     return "addcdiv requires libtpu >= 0.0.47 for dynamism support."
 
-  ### [TEST INFRA TASKS] ###
-  # The following indicate changes needed in this file to increase coverage.
+  # Verify primary input tensor is supported with dynamism.
+  canonical_input = _get_canonical_input_value(op, input_value)
+  skip_input = _should_skip_input_marking(op, canonical_input)
+  if skip_input:
+    return skip_input
 
-  # Verify all input tensors are supported with dynamism. Here we use
-  # _pytree.tree_flatten to recursively inspect the input_value and args,
-  # ensuring that tensors inside lists, tuples, or other nested structures
-  # (common in foreach ops) are properly vetted.
+  # Verify dynamic dimension candidates exist for this op and mode.
+  dynamic_op_info = DynamicOpInfo.get(op)
+  candidates = dynamic_op_info.get_dynamic_dimension_candidates(
+      canonical_input, args, mode=mode
+  )
+  if not candidates:
+    return "No valid input dimensions to mark dynamic."
+
+  # Verify any other tensor arguments inside lists, tuples, or nested structures
+  # (common in foreach ops or ops with secondary tensor arguments).
   for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+    if not isinstance(value, torch.Tensor):
+      continue
+    if value.dtype in [torch.complex64, torch.complex128]:
+      return f"{op.name} op is not supported with dtype {value.dtype}."
+    if value.numel() == 0:
+      return "Empty tensors are currently not supported."
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -406,6 +417,7 @@ class DynamicOpInfo:
   def get(op_info: core.OpInfo):
     """Returns a DynamicOpInfo for the given op."""
     adapters = [
+        ExpandDynamicOpInfo,
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
@@ -415,6 +427,16 @@ class DynamicOpInfo:
       if adapter.adapter_supports_op(op_info):
         return adapter(op_info)
     return DynamicOpInfo(op_info)
+
+  def get_dynamic_dimension_candidates(
+      self,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ) -> Sequence[int]:
+    """Returns dynamic dimension candidates for the given input."""
+    del args, mode
+    return _get_dynamic_dimension_candidates(input_value)
 
   def mark_dynamic(
       self,
@@ -435,7 +457,11 @@ class DynamicOpInfo:
 
     # Allow picking a list value from input_value for ops like cat, etc.
     input_value = _get_canonical_input_value(self.op_info, input_value)
-    candidates = _get_dynamic_dimension_candidates(input_value)
+    candidates = self.get_dynamic_dimension_candidates(
+        input_value, args, mode=mode
+    )
+    if not candidates:
+      return
     random.seed(seed)
     idx = random.choice(candidates)
     input_value_str = utils.get_tensor_summary(input_value, data=False)
@@ -469,6 +495,48 @@ class DynamicOpInfo:
         utils.InputMetadata(args),
     )
     return
+
+
+class ExpandDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo for expand that supports bounded dynamism."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in ("expand", "expand_copy")
+
+  def get_dynamic_dimension_candidates(
+      self,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ) -> Sequence[int]:
+    """Returns dynamic dimension candidates for expand."""
+    if not isinstance(input_value, torch.Tensor):
+      return []
+
+    target_shape = (
+        args[0]
+        if (len(args) == 1 and isinstance(args[0], (list, tuple)))
+        else args
+    )
+    input_rank = input_value.ndim
+    target_rank = len(target_shape)
+    if target_rank < input_rank:
+      return []
+
+    candidates = []
+    for i, sz in enumerate(input_value.shape):
+      if sz <= 1:
+        continue
+      target_idx = i + (target_rank - input_rank)
+      target_sz = target_shape[target_idx]
+      # In COMPILE mode, Dynamo will specialize the dynamic dimension if the
+      # target shape specifies a static integer constant instead of -1.
+      if mode == DynamismMode.COMPILE and target_sz != -1:
+        continue
+      candidates.append(i)
+    return candidates
 
 
 class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
