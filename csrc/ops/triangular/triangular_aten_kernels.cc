@@ -35,7 +35,8 @@ at::Tensor& AtenTriuOut(const at::Tensor& self, int64_t diagonal,
     TT_THROW_IF_ERROR(UnaryOpOut(
         self, out,
         absl::bind_front(BuildTriangularShlo, diagonal, TriangleType::kUpper),
-        {.op_param_cache_keys = std::move(param_keys)}));
+        {.op_param_cache_keys = std::move(param_keys),
+         .allow_out_dtype_cast = false}));
     return out;
   });
 }
@@ -46,7 +47,8 @@ at::Tensor& AtenTrilOut(const at::Tensor& self, int64_t diagonal,
     TT_THROW_IF_ERROR(UnaryOpOut(
         self, out,
         absl::bind_front(BuildTriangularShlo, diagonal, TriangleType::kLower),
-        {.op_param_cache_keys = std::move(param_keys)}));
+        {.op_param_cache_keys = std::move(param_keys),
+         .allow_out_dtype_cast = false}));
     return out;
   });
 }

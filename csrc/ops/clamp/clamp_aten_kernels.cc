@@ -21,6 +21,7 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/ops/promote_types.h"
+#include "ATen/ops/result_type.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -47,73 +48,41 @@
 namespace torch_tpu {
 namespace {
 
-// Returns a comma-separated, string representation of the dtypes of the input
-// arguments.
-//
-// For `self`, only its dtype is printed. For the optional parameters, their
-// dtype is prefixed with their parameter name.
-//
-// In this context, `T` should be either of:
-//
-//   - at::Scalar
-//   - at::Tensor
-template <typename T>
-std::string GetInputsTypeStr(const at::Tensor& self,
-                             const c10::optional<T>& min,
-                             const c10::optional<T>& max) {
-  return absl::StrCat(
-      ToString(self.scalar_type()),
-      min ? absl::StrCat(", min: ", ToString(GetScalarType(*min))) : "",
-      max ? absl::StrCat(", max: ", ToString(GetScalarType(*max))) : "");
-}
-
-// Checks whether it's possible to cast `computation_scalar_type` into
-// `output_scalar_type`.
-//
-// If the check turns out `false`, the first 3 parameters are used for adding
-// useful information into the error message.
-//
-// For more information on `at::canCast()`, see:
-// https://docs.pytorch.org/docs/stable/tensor_attributes.html
-//
-// In this context, `T` should be either of:
-//
-//   - at::Scalar
-//   - at::Tensor
-template <typename T>
-absl::Status ValidateCanCastComputationToOutput(
-    const at::Tensor& self, const c10::optional<T>& min,
-    const c10::optional<T>& max, at::ScalarType computation_scalar_type,
-    at::ScalarType output_scalar_type) {
-  TT_RET_CHECK(at::canCast(computation_scalar_type, output_scalar_type),
-               error::kInvalidArgument)
-      << "unable to cast " << ToString(computation_scalar_type)
-      << ", the promotion of the dtypes of the inputs ("
-      << GetInputsTypeStr(self, min, max) << "), to the output dtype "
-      << ToString(output_scalar_type);
-  return absl::OkStatus();
-}
-
-// Returns the computation `at::ScalarType`, given the inputs.
-//
-// The computation `at::ScalarType` consists on the promotion of the
-// `at::ScalarType` of all the inputs.
-template <typename T>
+// Returns the computation `at::ScalarType` for scalar bounds, following PyTorch
+// ATen rules: if `self` is floating-point, scalars do not promote it. If `self`
+// is non-floating (integral), scalars promote it via `at::result_type`.
 at::ScalarType GetComputationType(const at::Tensor& self,
-                                  const c10::optional<T>& min,
-                                  const c10::optional<T>& max) {
+                                  const c10::optional<at::Scalar>& min,
+                                  const c10::optional<at::Scalar>& max) {
   at::ScalarType computation_scalar_type = self.scalar_type();
-
-  if (min) {
-    computation_scalar_type =
-        at::promote_types(computation_scalar_type, GetScalarType(*min));
+  if (!c10::isFloatingType(computation_scalar_type)) {
+    if (min) {
+      computation_scalar_type = at::result_type(self, *min);
+    }
+    if (max) {
+      computation_scalar_type =
+          min ? at::promote_types(computation_scalar_type,
+                                  at::result_type(self, *max))
+              : at::result_type(self, *max);
+    }
   }
+  return computation_scalar_type;
+}
 
+// Returns the computation `at::ScalarType` for tensor bounds.
+at::ScalarType GetComputationType(const at::Tensor& self,
+                                  const c10::optional<at::Tensor>& min,
+                                  const c10::optional<at::Tensor>& max) {
+  at::ScalarType computation_scalar_type = self.scalar_type();
+  if (min) {
+    computation_scalar_type = at::result_type(self, *min);
+  }
   if (max) {
     computation_scalar_type =
-        at::promote_types(computation_scalar_type, GetScalarType(*max));
+        min ? at::promote_types(computation_scalar_type,
+                                at::result_type(self, *max))
+            : at::result_type(self, *max);
   }
-
   return computation_scalar_type;
 }
 
@@ -133,22 +102,22 @@ absl::StatusOr<Dimensions> ComputeOutputShape(
 absl::Status AtenClampTensorHelper(const at::Tensor& self,
                                    const c10::optional<at::Tensor>& min_,
                                    const c10::optional<at::Tensor>& max_,
-                                   at::ScalarType output_scalar_type,
-                                   at::Tensor& out,
+                                   at::ScalarType computation_scalar_type,
+                                   bool allow_out_dtype_cast, at::Tensor& out,
                                    OpParamCacheKeys param_keys) {
   auto min = SanitizeOptionalTensor(min_);
   auto max = SanitizeOptionalTensor(max_);
 
+  TT_RETURN_IF_ERROR(
+      ValidateOutDtype(out, computation_scalar_type, allow_out_dtype_cast));
+
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
-                      ConvertTo<mlir::ElementType>(output_scalar_type));
+                      ConvertTo<mlir::ElementType>(out.scalar_type()));
   TT_ASSIGN_OR_RETURN(Dimensions output_dims,
                       ComputeOutputShape(self, min, max));
 
-  at::ScalarType computation_scalar_type = GetComputationType(self, min, max);
   TT_ASSIGN_OR_RETURN(const auto computation_dtype,
                       ConvertTo<mlir::ElementType>(computation_scalar_type));
-  TT_RETURN_IF_ERROR(ValidateCanCastComputationToOutput(
-      self, min, max, computation_scalar_type, output_scalar_type));
 
   if (min && max) {
     auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
@@ -213,19 +182,21 @@ absl::Status AtenClampTensorHelper(const at::Tensor& self,
 absl::Status ClampScalarHelper(const at::Tensor& self,
                                std::optional<PromotedScalar> min,
                                std::optional<PromotedScalar> max,
-                               at::ScalarType output_scalar_type,
-                               at::Tensor& out, OpParamCacheKeys param_keys) {
+                               at::ScalarType computation_scalar_type,
+                               bool allow_out_dtype_cast, at::Tensor& out,
+                               OpParamCacheKeys param_keys) {
   std::optional<at::Tensor> min_tensor;
   if (min.has_value()) {
-    TT_ASSIGN_OR_RETURN(auto t, min->GetTensor());
+    TT_ASSIGN_OR_RETURN(auto t, min->GetTensor(computation_scalar_type));
     min_tensor = std::move(t);
   }
   std::optional<at::Tensor> max_tensor;
   if (max.has_value()) {
-    TT_ASSIGN_OR_RETURN(auto t, max->GetTensor());
+    TT_ASSIGN_OR_RETURN(auto t, max->GetTensor(computation_scalar_type));
     max_tensor = std::move(t);
   }
-  return AtenClampTensorHelper(self, min_tensor, max_tensor, output_scalar_type,
+  return AtenClampTensorHelper(self, min_tensor, max_tensor,
+                               computation_scalar_type, allow_out_dtype_cast,
                                out, std::move(param_keys));
 }
 
@@ -247,9 +218,12 @@ at::Tensor& AtenClampOut(const at::Tensor& self,
   TT_KERNEL(OpName::kClampOut, param_keys,
             (self, promoted_min, promoted_max, out), {
               TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
+              const at::ScalarType computation_scalar_type =
+                  GetComputationType(self, min, max);
               TT_THROW_IF_ERROR(ClampScalarHelper(
                   self, std::move(promoted_min), std::move(promoted_max),
-                  out.scalar_type(), out, std::move(param_keys)));
+                  computation_scalar_type, /*allow_out_dtype_cast=*/false, out,
+                  std::move(param_keys)));
               return out;
             });
 }
@@ -259,9 +233,11 @@ at::Tensor& AtenClampMinOut(const at::Tensor& self, const at::Scalar& min,
   auto promoted_min = PromoteScalar(min);
   TT_KERNEL(OpName::kClampMinOut, param_keys, (self, promoted_min, out), {
     TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
-    TT_THROW_IF_ERROR(ClampScalarHelper(self, std::move(promoted_min),
-                                        std::nullopt, out.scalar_type(), out,
-                                        std::move(param_keys)));
+    const at::ScalarType computation_scalar_type =
+        GetComputationType(self, min, std::nullopt);
+    TT_THROW_IF_ERROR(ClampScalarHelper(
+        self, std::move(promoted_min), std::nullopt, computation_scalar_type,
+        /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));
     return out;
   });
 }
@@ -271,9 +247,11 @@ at::Tensor& AtenClampMaxOut(const at::Tensor& self, const at::Scalar& max,
   auto promoted_max = PromoteScalar(max);
   TT_KERNEL(OpName::kClampMaxOut, param_keys, (self, promoted_max, out), {
     TT_THROW_IF_ERROR(ValidateNotBool(self, /*arg_name=*/"self"));
-    TT_THROW_IF_ERROR(
-        ClampScalarHelper(self, std::nullopt, std::move(promoted_max),
-                          out.scalar_type(), out, std::move(param_keys)));
+    const at::ScalarType computation_scalar_type =
+        GetComputationType(self, std::nullopt, max);
+    TT_THROW_IF_ERROR(ClampScalarHelper(
+        self, std::nullopt, std::move(promoted_max), computation_scalar_type,
+        /*allow_out_dtype_cast=*/false, out, std::move(param_keys)));
     return out;
   });
 }
@@ -283,8 +261,11 @@ at::Tensor& AtenClampTensorOut(const at::Tensor& self,
                                const c10::optional<at::Tensor>& max,
                                at::Tensor& out) {
   TT_KERNEL(OpName::kClampTensorOut, param_keys, (self, min, max, out), {
-    TT_THROW_IF_ERROR(AtenClampTensorHelper(self, min, max, out.scalar_type(),
-                                            out, std::move(param_keys)));
+    const at::ScalarType computation_scalar_type =
+        GetComputationType(self, min, max);
+    TT_THROW_IF_ERROR(AtenClampTensorHelper(
+        self, min, max, computation_scalar_type,
+        /*allow_out_dtype_cast=*/true, out, std::move(param_keys)));
     return out;
   });
 }
@@ -292,9 +273,11 @@ at::Tensor& AtenClampTensorOut(const at::Tensor& self,
 at::Tensor& AtenClampMinTensorOut(const at::Tensor& self, const at::Tensor& min,
                                   at::Tensor& out) {
   TT_KERNEL(OpName::kClampMinTensorOut, param_keys, (self, min, out), {
-    TT_THROW_IF_ERROR(AtenClampTensorHelper(self, min, std::nullopt,
-                                            out.scalar_type(), out,
-                                            std::move(param_keys)));
+    const at::ScalarType computation_scalar_type =
+        GetComputationType(self, min, std::nullopt);
+    TT_THROW_IF_ERROR(AtenClampTensorHelper(
+        self, min, std::nullopt, computation_scalar_type,
+        /*allow_out_dtype_cast=*/true, out, std::move(param_keys)));
     return out;
   });
 }
@@ -302,9 +285,11 @@ at::Tensor& AtenClampMinTensorOut(const at::Tensor& self, const at::Tensor& min,
 at::Tensor& AtenClampMaxTensorOut(const at::Tensor& self, const at::Tensor& max,
                                   at::Tensor& out) {
   TT_KERNEL(OpName::kClampMaxTensorOut, param_keys, (self, max, out), {
-    TT_THROW_IF_ERROR(AtenClampTensorHelper(self, std::nullopt, max,
-                                            out.scalar_type(), out,
-                                            std::move(param_keys)));
+    const at::ScalarType computation_scalar_type =
+        GetComputationType(self, std::nullopt, max);
+    TT_THROW_IF_ERROR(AtenClampTensorHelper(
+        self, std::nullopt, max, computation_scalar_type,
+        /*allow_out_dtype_cast=*/true, out, std::move(param_keys)));
     return out;
   });
 }

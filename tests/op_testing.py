@@ -363,8 +363,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "bernoulli",
     "bitwise_not",
     "bucketize",
-    "clamp_max",
-    "clamp_min",
     "cumprod",
     "cumsum",
     "fft.fft",
@@ -414,8 +412,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "std",
     "take",
     "topk",
-    "tril",
-    "triu",
     "var",
     # go/keep-sorted end
 }

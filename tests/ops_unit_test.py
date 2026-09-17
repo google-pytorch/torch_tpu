@@ -4156,6 +4156,99 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         )
     )
 
+  def test_clamp_out(self):
+    """Tests the out-variant clamp.out with scalar and tensor bounds."""
+
+    # Scalar bounds (same dtype)
+    def test_scalar_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      out = torch.empty_like(x)
+      torch.clamp(x, 1.5, 2.5, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_scalar_out)
+
+    # Tensor bounds with promotional upcast (float32 -> float64)
+    def test_tensor_upcast_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      min_t = torch.tensor([1.5, 1.5, 1.5], dtype=torch.float32, device=device)
+      max_t = torch.tensor([2.5, 2.5, 2.5], dtype=torch.float32, device=device)
+      out = torch.empty(3, dtype=torch.float64, device=device)
+      torch.clamp(x, min_t, max_t, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_tensor_upcast_out)
+
+  def test_clamp_min_out(self):
+    """Tests the out-variant clamp_min.out with scalar and tensor bounds."""
+
+    # Scalar bound (same dtype)
+    def test_scalar_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      out = torch.empty_like(x)
+      torch.clamp_min(x, 2.0, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_scalar_out)
+
+    # Tensor bound with promotional upcast (float32 -> float64)
+    def test_tensor_upcast_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      min_t = torch.tensor([2.0, 1.5, 0.5], dtype=torch.float32, device=device)
+      out = torch.empty(3, dtype=torch.float64, device=device)
+      torch.clamp_min(x, min_t, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_tensor_upcast_out)
+
+  def test_clamp_max_out(self):
+    """Tests the out-variant clamp_max.out with scalar and tensor bounds."""
+
+    # Scalar bound (same dtype)
+    def test_scalar_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      out = torch.empty_like(x)
+      torch.clamp_max(x, 2.0, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_scalar_out)
+
+    # Tensor bound with promotional upcast (float32 -> float64)
+    def test_tensor_upcast_out(device):
+      x = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
+      max_t = torch.tensor([2.0, 1.5, 0.5], dtype=torch.float32, device=device)
+      out = torch.empty(3, dtype=torch.float64, device=device)
+      torch.clamp_max(x, max_t, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_tensor_upcast_out)
+
+  def test_tril_out(self):
+    """Tests the out-variant tril.out with matching dtype."""
+
+    def test_out(device):
+      x = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device
+      )
+      out = torch.empty_like(x)
+      torch.tril(x, diagonal=0, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_out)
+
+  def test_triu_out(self):
+    """Tests the out-variant triu.out with matching dtype."""
+
+    def test_out(device):
+      x = torch.tensor(
+          [[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, device=device
+      )
+      out = torch.empty_like(x)
+      torch.triu(x, diagonal=0, out=out)
+      return out
+
+    self.assert_close_tpu_vs_cpu(test_out)
+
   def test_concurrent_ops(self):
     """Tests that ops can run concurrently without correctness issues."""
 

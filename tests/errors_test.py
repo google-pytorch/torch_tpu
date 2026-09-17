@@ -5287,24 +5287,25 @@ Supported combinations for non-constant padding:
     inp = torch.tensor([-1.0, 2.0], device=et.device(), dtype=torch.complex64)
     out = torch.empty(2, device=et.device(), dtype=torch.float64)
 
-    # Scalar and Tensor inputs go through different execution path, so test that
-    # both of them raise the same error.
-    min_max_values = [
-        (1.0, 2.0),
-        (
-            torch.zeros(2, device=et.device(), dtype=torch.float64),
-            torch.ones(2, device=et.device(), dtype=torch.float64),
-        ),
-    ]
+    # Scalar bound: strict endomorphism.
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected the output dtype to be complex64, got float64""",
+        gpu="""clamp is not supported for complex types""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp(inp, min=1.0, max=2.0, out=out)
 
-    for minv, maxv in min_max_values:
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu="""clamp(): unable to cast complex128, the promotion of the dtypes of the inputs (complex64, min: float64, max: float64), to the output dtype float64""",
-          gpu="""clamp is not supported for complex types""",
-          message_reviewed_by="wan",
-      ):
-        torch.clamp(inp, min=minv, max=maxv, out=out)
+    # Tensor bound: safe casting.
+    min_t = torch.zeros(2, device=et.device(), dtype=torch.float64)
+    max_t = torch.ones(2, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): result type complex128 can't be cast to the desired output type float64""",
+        gpu="""clamp is not supported for complex types""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp(inp, min=min_t, max=max_t, out=out)
 
   def test_clamp_unsupported_bool(self):
     t = torch.tensor([True, False], device=et.device(), dtype=torch.bool)
@@ -8088,6 +8089,98 @@ Device-side assertion tracking was not enabled by user.""",
         message_reviewed_by="wan",
     ):
       torch.angle(t_real, out=out_int)
+
+  def test_tril_out_dtype_mismatch(self):
+    t = torch.ones((3, 3), device=et.device(), dtype=torch.float32)
+    out = torch.empty((3, 3), device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""tril(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.tril(t, out=out)
+
+  def test_triu_out_dtype_mismatch(self):
+    t = torch.ones((3, 3), device=et.device(), dtype=torch.float32)
+    out = torch.empty((3, 3), device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""triu(): expected the output dtype to be float32, got float64""",
+        gpu="""Expected out tensor to have dtype float, but got double instead""",
+        message_reviewed_by="wan",
+    ):
+      torch.triu(t, out=out)
+
+  def test_clamp_min_out_dtype_mismatch(self):
+    # Scalar bound: strict endomorphism (upcast disallowed).
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp_min(t, 0.0, out=out_f64)
+
+    # Tensor bound: illegal downcast (float32 -> int32).
+    min_t = torch.zeros(5, device=et.device(), dtype=torch.float32)
+    out_i32 = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_min(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp_min(t, min_t, out=out_i32)
+
+  def test_clamp_max_out_dtype_mismatch(self):
+    # Scalar bound: strict endomorphism (upcast disallowed).
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp_max(t, 1.0, out=out_f64)
+
+    # Tensor bound: illegal downcast (float32 -> int32).
+    max_t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_i32 = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp_max(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp_max(t, max_t, out=out_i32)
+
+  def test_clamp_out_dtype_mismatch(self):
+    # Scalar bound: strict endomorphism (upcast disallowed).
+    t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_f64 = torch.empty(5, device=et.device(), dtype=torch.float64)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): expected the output dtype to be float32, got float64""",
+        gpu="""Found dtype Double but expected Float""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp(t, 0.0, 1.0, out=out_f64)
+
+    # Tensor bound: illegal downcast (float32 -> int32).
+    min_t = torch.zeros(5, device=et.device(), dtype=torch.float32)
+    max_t = torch.ones(5, device=et.device(), dtype=torch.float32)
+    out_i32 = torch.empty(5, device=et.device(), dtype=torch.int32)
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""clamp(): result type float32 can't be cast to the desired output type int32""",
+        gpu="""result type Float can't be cast to the desired output type Int""",
+        message_reviewed_by="wan",
+    ):
+      torch.clamp(t, min_t, max_t, out=out_i32)
 
   def test_sign_unsupported_dtype_complex(self):
     t = torch.tensor([1 + 1j], device=et.device())
