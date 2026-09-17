@@ -171,7 +171,6 @@ untriaged_ops_deny_list: dict[
     "clamp_min": ALL_MODES,  # dynamic triage (invalid result)
     "conj_physical": ALL_MODES,  # identity operation for i64 and f64 fails
     "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
-    "eq": ALL_MODES,  # dynamic triage (invalid result)
     "expand": ALL_MODES,  # view op - expand not yet supported
     "expm1": ALL_MODES,  # dynamic triage (result differ)
     "fft.rfft": ALL_MODES,  # expected all dimensions to be static
