@@ -52,6 +52,11 @@ class DecodeStepper(common.BaseStepper):
   def __init__(self, output_tokens: int = 16, dynamism: bool = False):
     super().__init__()
     self.output_tokens = output_tokens
+    # Total decode budget, used to bound the dynamic KV cache. Kept separate
+    # because callers reassign `output_tokens` to 1 after `pre_warmup_init()`
+    # to drive a single token per step; reading it here would bound the cache
+    # at `prompt_len + 1` and fail with e.g. "23 not in range [21, 22]".
+    self.max_decode_tokens = output_tokens
     self.dynamism = dynamism
     self.input_ids = None
     self.batch_size = None
@@ -216,6 +221,57 @@ class DecodeStepper(common.BaseStepper):
     ), f"Could not extract logits from model output of type {type(output)}"
     return logits
 
+  def _mark_dynamic_kv_cache(self, max_buffer_size: int | None = None) -> None:
+    """Marks DynamicCache key/value tensors as dynamic with bounded sizes for TPU/Dynamo."""
+    if not self.dynamism or self.cache is None:
+      return
+
+    min_val = self.prompt_len or 1
+    if max_buffer_size is None:
+      # Bound by the actual decode budget: an arbitrarily padded upper bound can
+      # exceed the model's tiling constraints and trip a ConstraintViolationError
+      # during TPU view decomposition.
+      max_val = min_val + self.max_decode_tokens
+    else:
+      max_val = max_buffer_size
+
+    for layer in getattr(self.cache, "layers", []):
+      if (
+          hasattr(layer, "keys")
+          and layer.keys is not None
+          and layer.keys.numel() > 0
+      ):
+        torch._dynamo.mark_dynamic(layer.keys, 2, min=min_val, max=max_val)
+      if (
+          hasattr(layer, "values")
+          and layer.values is not None
+          and layer.values.numel() > 0
+      ):
+        torch._dynamo.mark_dynamic(layer.values, 2, min=min_val, max=max_val)
+
+  def _compact_kv_cache(self) -> None:
+    """Re-materializes DynamicCache key/value tensors as contiguous tensors.
+
+    `DynamicCache.crop()` slices the sequence dimension, which yields views
+    whose
+    strides still describe the larger pre-crop buffer. The compiled decode graph
+    guards on the contiguous layout (`stride[0] == num_heads * head_dim *
+    seq_len`), so feeding it a cropped view fails the guard and forces Dynamo to
+    retrace. Compacting restores the layout of a freshly grown cache and lets
+    the
+    warmed-up graph be reused.
+    """
+    if self.cache is None:
+      return
+
+    for layer in getattr(self.cache, "layers", []):
+      keys = getattr(layer, "keys", None)
+      if keys is not None and not keys.is_contiguous():
+        layer.keys = keys.contiguous()
+      values = getattr(layer, "values", None)
+      if values is not None and not values.is_contiguous():
+        layer.values = values.contiguous()
+
   # Always eager prefill and save state for future decode.
   def pre_warmup_init(self):
     assert self._model is not None
@@ -241,15 +297,28 @@ class DecodeStepper(common.BaseStepper):
     self.next_token = self.prefill_next_token.clone()
 
     if self.dynamism:
-      self.cache.crop(self.prompt_len)
+      # Crop excess tokens generated during warmup back to the prompt length.
+      seq_len = self.cache.get_seq_length()
+      if seq_len > self.prompt_len:
+        self.cache.crop(-(seq_len - self.prompt_len))
+      # Must run before _mark_dynamic_kv_cache(). crop() leaves views whose
+      # strides still describe the larger pre-crop buffer, and marking a
+      # dynamic dim on those derives bounds from the stale stride. Depending on
+      # the decode budget that surfaces either as a full Dynamo retrace inside
+      # the measured window (stride guard failure) or, once the budget exceeds
+      # the stale stride's implied ceiling, a ConstraintViolationError.
+      self._compact_kv_cache()
+      self._mark_dynamic_kv_cache()
     else:
 
+      # Only the logical length needs rewinding. Zeroing the key/value tail
+      # beyond `prompt_len` is unnecessary -- attention is masked to
+      # `cache_position`, so those slots are never read before being
+      # overwritten -- and actively harmful to measurement: writing all
+      # 2 * num_layers cache buffers here forces a cache-wide `as_strided`
+      # write-back that is paid by the first decode step after the reset.
       def _reset_internal(cache, prompt_len):
         for layer in cache.layers:
-          if hasattr(layer, "keys"):
-            layer.keys[:, :, prompt_len:, :].zero_()
-          if hasattr(layer, "values"):
-            layer.values[:, :, prompt_len:, :].zero_()
           if hasattr(layer, "cumulative_length"):
             if isinstance(layer.cumulative_length, int):
               layer.cumulative_length = prompt_len
@@ -269,6 +338,15 @@ class DecodeStepper(common.BaseStepper):
       with torch.no_grad():
         decode_output = None
         for _ in range(self.output_tokens):
+          # `DynamicLayer.update()` replaces keys/values with fresh `torch.cat`
+          # results, which do not inherit the dynamic-dim marking. Re-marking
+          # every iteration keeps the marking present from the very first
+          # warmup step; otherwise warmup traces unmarked (static-shape)
+          # graphs and the bounded-dynamic graph is only compiled once
+          # `post_warmup_hook` marks the cache -- i.e. inside the measured
+          # window, as a `_has_dynamo_dim_marking ... absent at compile time`
+          # guard failure.
+          self._mark_dynamic_kv_cache()
           cache_position = torch.tensor([self.current_pos], device=self.device)
           decode_output = self._inner_stepper(
               self._decode_model,
