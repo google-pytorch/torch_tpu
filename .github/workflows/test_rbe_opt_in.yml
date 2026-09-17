@@ -90,35 +90,6 @@ jobs:
       - name: Fix Git Workspace Ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Establish RBE Tunnel
-        if: matrix.job_info.config == 'ci_tpu_v5_full_rbe'
-        run: |
-          echo "Starting background IAP tunnel to Buildbarn frontend..."
-          nohup gcloud compute start-iap-tunnel \
-            gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
-            --local-host-port=localhost:8980 \
-            --zone=us-east5-a \
-            --project=rbe-tpu-oss \
-            --iap-tunnel-disable-connection-check > /tmp/iap_tunnel.log 2>&1 < /dev/null &
-          TUNNEL_PID=$!
-          echo "TUNNEL_PID=$TUNNEL_PID" >> "$GITHUB_ENV"
-
-          CONNECTED=0
-          for _ in {1..30}; do
-            if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
-              echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
-              CONNECTED=1
-              break
-            fi
-            sleep 1
-          done
-
-          if [ "$CONNECTED" -ne 1 ]; then
-            echo "ERROR: Failed to establish IAP tunnel to Buildbarn frontend on 127.0.0.1:8980"
-            cat /tmp/iap_tunnel.log || true
-            exit 1
-          fi
-
       - name: Run Test Suite
         if: >-
           inputs.test_suite == null
@@ -128,6 +99,34 @@ jobs:
           BAZEL_CONFIG: ${{ matrix.job_info.config }}
           EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
         run: |
+          if [ "${BAZEL_CONFIG}" = "ci_tpu_v5_full_rbe" ]; then
+            echo "Starting background IAP tunnel to Buildbarn frontend..."
+            gcloud compute start-iap-tunnel \
+              gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
+              --local-host-port=localhost:8980 \
+              --zone=us-east5-a \
+              --project=rbe-tpu-oss \
+              --iap-tunnel-disable-connection-check > /tmp/iap_tunnel.log 2>&1 < /dev/null &
+            TUNNEL_PID=$!
+            trap 'kill "$TUNNEL_PID" 2>/dev/null || true' EXIT
+
+            CONNECTED=0
+            for _ in {1..30}; do
+              if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
+                echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
+                CONNECTED=1
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$CONNECTED" -ne 1 ]; then
+              echo "ERROR: Failed to establish IAP tunnel to Buildbarn frontend on 127.0.0.1:8980"
+              cat /tmp/iap_tunnel.log || true
+              exit 1
+            fi
+          fi
+
           # shellcheck disable=SC2086
           bazel test \
             "--config=${BAZEL_CONFIG}" \
@@ -136,7 +135,3 @@ jobs:
             ${RBE_BAZEL_FLAGS} \
             ${EXTRA_FLAGS} \
             -- //tests/... ${RBE_EXCLUDED_TARGETS}
-
-      - name: Teardown RBE Tunnel
-        if: always() && env.TUNNEL_PID != ''
-        run: kill "$TUNNEL_PID" 2>/dev/null || true
