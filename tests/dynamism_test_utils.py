@@ -173,7 +173,6 @@ untriaged_ops_deny_list: dict[
     "diagonal": ALL_MODES,  # materialization failure (negative dimension size)
     "eq": ALL_MODES,  # dynamic triage (invalid result)
     "expand": ALL_MODES,  # view op - expand not yet supported
-    "expm1": ALL_MODES,  # dynamic triage (result differ)
     "fft.rfft": ALL_MODES,  # expected all dimensions to be static
     "fft.irfft": ALL_MODES,  # expected all dimensions to be static
     "fft.ifft": ALL_MODES,  # expected all dimensions to be static
