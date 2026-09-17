@@ -105,6 +105,10 @@ jobs:
           EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
         run: |
           if [ "${BAZEL_CONFIG}" = "ci_tpu_v5_full_rbe" ]; then
+            echo "Runner VM Service Account: $(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)"
+            echo "Active gcloud account: $(gcloud config get-value account 2>/dev/null || true)"
+            gcloud auth list || true
+
             echo "Starting background IAP tunnel to Buildbarn frontend..."
             run_tunnel() {
               while true; do
