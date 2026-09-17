@@ -55,6 +55,7 @@ torch_tpu_cc_test(
     ],
 )
 
+# Presubmit scenario: TPU v5 (executed by ci_tpu_v5_presubmit on linux-x86-ct5lp-224-8tpu).
 torch_tpu_cc_test(
     name = "traversal_test",
     srcs = ["traversal_test.cc"],

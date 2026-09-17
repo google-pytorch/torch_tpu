@@ -143,6 +143,7 @@ torch_tpu_cc_library(
     ],
 )
 
+# Presubmit scenario: CPU (executed by ci_cpu_presubmit on linux-x86-n4-16).
 torch_tpu_cc_test(
     name = "layout_utils_test",
     srcs = ["layout_utils_test.cc"],

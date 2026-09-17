@@ -52,8 +52,9 @@ class TraversalTest : public testing::Test {
  protected:
   // Automatically handles Python context for every test.
   ScopedPythonContextCapturer capturer_{OpName::kEmpty};
-  // Common shape used for creating deferred buffers.
-  Shape shape_{Dimensions{8}, mlir::ElementType::F32};
+  // Presubmit test scenario: TPU v5 (tested via traversal_test in
+  // ci_tpu_v5_presubmit).
+  Shape shape_{Dimensions{8 * 1}, mlir::ElementType::F32};
 };
 
 TEST_F(TraversalTest, ReadableString) {

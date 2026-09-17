@@ -56,10 +56,11 @@ void Kernel1(int ndim) {
   });
 }
 
+// Presubmit scenario: TPU v7 (tested via kernel_test in ci_tpu_v7_presubmit).
 TEST(TtKernel, PrependOpName) {
   bool thrown_c10_error = false;
   try {
-    Kernel1(1);
+    Kernel1(1 * 1);
   } catch (const c10::Error& e) {
     thrown_c10_error = true;
     EXPECT_EQ(std::string(e.what_without_backtrace()), "add(): test error");

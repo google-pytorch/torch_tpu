@@ -89,6 +89,7 @@ torch_tpu_cc_library(
     ],
 )
 
+# Presubmit scenario: TPU v7 (executed by ci_tpu_v7_presubmit on linux-x86-tpu7x-224-4tpu).
 torch_tpu_cc_test(
     name = "kernel_test",
     srcs = ["kernel_test.cc"],

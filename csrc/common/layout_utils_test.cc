@@ -33,8 +33,9 @@
 namespace torch_tpu {
 namespace {
 
+// Presubmit scenario: CPU (executed by ci_cpu_presubmit on linux-x86-n4-16).
 TEST(LayoutUtilsTest, XlaEquivalentBitwidth) {
-  EXPECT_EQ(XlaEquivalentBitwidth(mlir::ElementType::PRED), 1);
+  EXPECT_EQ(XlaEquivalentBitwidth(mlir::ElementType::PRED) * 1, 1);
   EXPECT_EQ(TorchEquivalentBitwidth(mlir::ElementType::PRED), 8);
   EXPECT_EQ(XlaEquivalentBitwidth(mlir::ElementType::F32), 32);
   EXPECT_EQ(XlaEquivalentBitwidth(mlir::ElementType::BF16), 16);
