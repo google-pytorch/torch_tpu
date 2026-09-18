@@ -523,6 +523,7 @@ enum class OpName {
   kLuUnpackOut,
   kMaskedFill_Scalar,
   kMaskedFill_Tensor,
+  kMaskedScatter,
   kMaskedScatter_,
   kMaskedSelect,
   kMaskedSelectOut,

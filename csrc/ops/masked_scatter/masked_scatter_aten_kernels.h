@@ -21,6 +21,8 @@
 
 namespace torch_tpu {
 
+at::Tensor AtenMaskedScatter(const at::Tensor& self, const at::Tensor& mask,
+                             const at::Tensor& source);
 at::Tensor& AtenMaskedScatter_(at::Tensor& self, const at::Tensor& mask,
                                const at::Tensor& source);
 

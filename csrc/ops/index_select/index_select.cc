@@ -54,7 +54,14 @@ mlir::MlirOp BuildIndexSelectShlo(mlir::MlirOp self, int64_t dim,
     }
   }
 
-  index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
+  if (index_type.getRank() == 1) {
+    auto unsqueezed = Unsqueeze(index, 1);
+    if (unsqueezed.ok()) {
+      index = *unsqueezed;
+    }
+  } else {
+    index = mlir::stablehlo::Reshape(index, {index_type.getDimSize(0), 1});
+  }
 
   ABSL_VLOG(2) << "BuildIndexSelectShlo: gather_slice_sizes = "
                << absl::StrJoin(gather_slice_sizes, ",");

@@ -1019,6 +1019,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "masked_fill_.Scalar";
     case OpName::kMaskedFill_Tensor:
       return "masked_fill_.Tensor";
+    case OpName::kMaskedScatter:
+      return "masked_scatter";
     case OpName::kMaskedScatter_:
       return "masked_scatter_";
     case OpName::kMaskedSelect:

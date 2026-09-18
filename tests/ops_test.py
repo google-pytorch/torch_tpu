@@ -3514,9 +3514,9 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_logical_not(self):
     self.do_test_op("logical_not")
 
-  # TODO(b/529376045): Scan HLO lowering failing on GitHub
-  # def test_masked_scatter(self):
-  #   self.do_test_op("masked_scatter")
+  @op_testing.skip_if_torch_tpu_vs_gpu_mode
+  def test_masked_scatter(self):
+    self.do_test_op("masked_scatter")
 
   def test_masked_select(self):
     self.do_test_op("masked_select")

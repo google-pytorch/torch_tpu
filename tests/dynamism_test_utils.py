@@ -193,7 +193,6 @@ untriaged_ops_deny_list: dict[
         ALL_MODES
     ),  # materialization failure (negative dim size)
     "logical_and": ALL_MODES,  # dynamic triage (invalid result)
-    "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
     "mm": {COMPILE},  # numerical mismatch under dynamic compile
     "maximum": ALL_MODES,  # dynamic triage (invalid result)
@@ -410,6 +409,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        MaskedScatterDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -526,6 +526,29 @@ class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):
       mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the args of a ternary elementwise op as dynamic."""
+    if len(args) >= 1 and isinstance(args[0], torch.Tensor):
+      _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
+    if len(args) >= 2 and isinstance(args[1], torch.Tensor):
+      _mark_numpy_broadcastable_arg_dynamic(args[1], like, idx, ub, mode=mode)
+
+
+class MaskedScatterDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo for masked_scatter that supports bounded dynamism."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in {"masked_scatter", "masked_scatter_"}
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark the mask and source arguments of masked_scatter as dynamic."""
     if len(args) >= 1 and isinstance(args[0], torch.Tensor):
       _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
     if len(args) >= 2 and isinstance(args[1], torch.Tensor):
