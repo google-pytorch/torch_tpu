@@ -25,18 +25,25 @@ Instead of building custom task queues over object storage, we run an open-sourc
 flowchart TD
     subgraph Client ["Client (Cloudtop / GitHub Actions Runner)"]
         Bazel["Bazel Client<br/>bazel test --config=rbe_native_tpu<br/>--strategy=TestRunner=remote"]
-        Tunnel["SSH Tunnel / VPC Endpoint<br/>localhost:8980 -> GKE 10.202.0.3:30980"]
+        Tunnel["Cloud IAP TCP Tunnel<br/>localhost:8980 -> rbe-tunnel-gateway:8980"]
         Bazel --> Tunnel
     end
 
-    subgraph ControlPlane ["GKE Control Plane (rbe-tpu-oss-east5-cluster)"]
+    subgraph Gateway ["VPC Gateway (us-east5-a)"]
+        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>Debian 12 GCE VM with socat proxy"]
+        Tunnel --> GW
+    end
+
+    subgraph ControlPlane ["GKE Control Plane & CPU Workers (rbe-tpu-oss-east5-cluster)"]
         FE["bb-frontend (NodePort 30980)<br/>REAPI v2 Client Surface & CAS/AC Router"]
         SCHED["bb-scheduler (NodePort 30983)<br/>Matches platform tags & maintains build queue"]
         STOR["bb-storage (ClusterIP 8981)<br/>CAS (32 GB disk) & Action Cache (1 GB disk)"]
+        CPUWorkers["224-CPU Worker Pool (7 Nodes x 32 CPUs)<br/>Executes remote C++/Python compilations"]
 
-        Tunnel --> FE
+        GW --> FE
         FE --> SCHED
         FE --> STOR
+        SCHED --> CPUWorkers
     end
 
     subgraph Fleet ["Standing Cloud TPU v5e Fleet (28 Nodes Across 4 Zones)"]
