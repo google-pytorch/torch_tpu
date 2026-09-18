@@ -141,16 +141,7 @@ jobs:
 
             CONNECTED=0
             for _ in {1..30}; do
-              if python3 -c "
-import socket
-s = socket.socket()
-s.settimeout(2.0)
-s.connect(('127.0.0.1', 8980))
-s.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n')
-data = s.recv(9)
-s.close()
-assert len(data) == 9
-" 2>/dev/null; then
+              if python3 -c "import socket; s = socket.socket(); s.settimeout(2.0); s.connect(('127.0.0.1', 8980)); s.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'); data = s.recv(9); s.close(); exit(0 if len(data) == 9 else 1)" 2>/dev/null; then
                 echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
                 CONNECTED=1
                 break
