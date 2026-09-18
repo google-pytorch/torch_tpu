@@ -32,12 +32,15 @@
 #include "mlir/Parser/Parser.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/service/computation_placer.h"
 
 namespace torch_tpu {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
@@ -105,6 +108,24 @@ module {
 }
 )mlir";
 
+// An inlined kernel keeps the shardings of its partitioning over the slice:
+// here a (stage, pair) mesh of eight devices in rows (0,1), (2,3), (4,5),
+// (6,7), with the argument sharded over the pair axis and the add replicated.
+constexpr std::string_view kShardedKernel = R"mlir(
+module attributes {mhlo.spmd_output_sharding = "{devices=[2,1,4]<=[4,2]T(1,0) last_tile_dim_replicate}"} {
+  func.func @main(%arg0: tensor<8x4xf32> {mhlo.sharding = "{devices=[2,1,4]<=[4,2]T(1,0) last_tile_dim_replicate}"}) -> (tensor<8x4xf32> {mhlo.sharding = "{replicated}"}) {
+    %0 = stablehlo.add %arg0, %arg0 {mhlo.sharding = "{devices=[1,8]<=[8] last_tile_dim_replicate}"} : tensor<8x4xf32>
+    return %0 : tensor<8x4xf32>
+  }
+}
+)mlir";
+
+xla::HloSharding Sharding(std::string_view text) {
+  auto sharding = xla::ParseSharding(text);
+  EXPECT_THAT(sharding, IsOk()) << text;
+  return *sharding;
+}
+
 class CollectiveSubgroupTest : public testing::Test {
  protected:
   CollectiveSubgroupTest() {
@@ -139,6 +160,30 @@ class CollectiveSubgroupTest : public testing::Test {
       }
     });
     return rows;
+  }
+
+  // The named sharding attribute of the first op carrying it.
+  std::string OpSharding(mlir::ModuleOp module) {
+    std::string result;
+    module.walk([&](mlir::Operation* op) {
+      auto attr = op->getAttrOfType<mlir::StringAttr>("mhlo.sharding");
+      if (attr != nullptr && result.empty()) {
+        result = attr.getValue().str();
+      }
+    });
+    return result;
+  }
+
+  std::string ArgSharding(mlir::ModuleOp module, unsigned index) {
+    std::string result;
+    module.walk([&](mlir::func::FuncOp func) {
+      auto attr =
+          func.getArgAttrOfType<mlir::StringAttr>(index, "mhlo.sharding");
+      if (attr != nullptr) {
+        result = attr.getValue().str();
+      }
+    });
+    return result;
   }
 
   mlir::MLIRContext context_;
@@ -230,6 +275,58 @@ TEST_F(CollectiveSubgroupTest, RejectsAPermuteThatCrossesTheGroup) {
   EXPECT_THAT(
       RewriteCollectivesForDeviceGroup(*module, {0, 1}),
       StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("crosses")));
+}
+
+TEST_F(CollectiveSubgroupTest, ProjectsATiledShardingOntoTheGroup) {
+  // Tile 0 lives on devices {0, 2, 4, 6} and tile 1 on {1, 3, 5, 7}: every
+  // pair holds one device of each tile.
+  const xla::HloSharding sharding =
+      Sharding("{devices=[2,1,4]<=[4,2]T(1,0) last_tile_dim_replicate}");
+  for (const std::vector<int64_t>& group :  // INT_VEC_OK
+       {std::vector<int64_t>{0, 1}, std::vector<int64_t>{6, 7}}) {
+    EXPECT_THAT(ProjectShardingToDeviceGroup(sharding, group),
+                IsOkAndHolds(Sharding("{devices=[2,1]<=[2]}")));
+  }
+}
+
+TEST_F(CollectiveSubgroupTest, ProjectsAReplicatedTileToReplication) {
+  auto projected = ProjectShardingToDeviceGroup(
+      Sharding("{devices=[1,8]<=[8] last_tile_dim_replicate}"), {6, 7});
+  ASSERT_THAT(projected, IsOk());
+  EXPECT_TRUE(projected->IsReplicated());
+}
+
+TEST_F(CollectiveSubgroupTest, KeepsDevicelessShardingsAndRenumbersMaximal) {
+  EXPECT_THAT(ProjectShardingToDeviceGroup(Sharding("{replicated}"), {6, 7}),
+              IsOkAndHolds(Sharding("{replicated}")));
+  EXPECT_THAT(ProjectShardingToDeviceGroup(Sharding("{manual}"), {6, 7}),
+              IsOkAndHolds(Sharding("{manual}")));
+  EXPECT_THAT(
+      ProjectShardingToDeviceGroup(Sharding("{maximal device=7}"), {6, 7}),
+      IsOkAndHolds(Sharding("{maximal device=1}")));
+}
+
+TEST_F(CollectiveSubgroupTest, RejectsAShardingTheGroupCannotHold) {
+  EXPECT_THAT(
+      ProjectShardingToDeviceGroup(Sharding("{devices=[2,4]<=[8]}"), {0, 1}),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("unevenly")));
+  EXPECT_THAT(
+      ProjectShardingToDeviceGroup(Sharding("{devices=[2,1]<=[2]}"), {6, 7}),
+      StatusIs(absl::StatusCode::kInvalidArgument, HasSubstr("holds none")));
+}
+
+TEST_F(CollectiveSubgroupTest, RewritesTheShardingsOfAnInlinedKernel) {
+  auto module = Parse(kShardedKernel);
+  ASSERT_THAT(RewriteCollectivesForDeviceGroup(*module, {6, 7}), IsOk());
+  EXPECT_EQ(Sharding(ArgSharding(*module, 0)),
+            Sharding("{devices=[2,1]<=[2]}"));
+  EXPECT_EQ(Sharding(OpSharding(*module)), Sharding("{replicated}"));
+  EXPECT_EQ(Sharding((*module)
+                         ->getAttrOfType<mlir::StringAttr>(
+                             "mhlo.spmd_output_sharding")
+                         .getValue()
+                         .str()),
+            Sharding("{devices=[2,1]<=[2]}"));
 }
 
 TEST_F(CollectiveSubgroupTest, RejectsARaggedAllToAll) {

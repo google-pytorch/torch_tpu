@@ -19,9 +19,11 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/hlo/ir/hlo_sharding.h"
 
 namespace torch_tpu {
 
@@ -58,9 +60,20 @@ absl::Status RestrictBuildOptionsToDeviceGroup(
 // entries inside the group are mapped to member indices and entries between
 // other devices are dropped. A row that overlaps the group only partly, a
 // permute pair that crosses the group boundary, or a collective that does not
-// involve the group at all are errors.
+// involve the group at all are errors. `mhlo.sharding` attributes (on
+// operations, function arguments and results, and the module's SPMD
+// attributes), which an inlined multi-device kernel keeps from its
+// partitioning over the slice, are projected onto the group.
 absl::Status RewriteCollectivesForDeviceGroup(mlir::ModuleOp module,
                                               absl::Span<const int64_t> group);
+
+// Projects `sharding`, over the slice's logical device ids, onto `group`:
+// every tile keeps the group's devices, renumbered to member indices, so the
+// result addresses an executable over the group. Replicated, manual and
+// unknown shardings are returned unchanged. Every tile must hold the same
+// number of the group's devices, at least one.
+absl::StatusOr<xla::HloSharding> ProjectShardingToDeviceGroup(
+    const xla::HloSharding& sharding, absl::Span<const int64_t> group);
 
 }  // namespace torch_tpu
 

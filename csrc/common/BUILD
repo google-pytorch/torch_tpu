@@ -319,9 +319,14 @@ torch_tpu_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
+        "@xla//xla:array",
+        "@xla//xla:xla_data_proto_cc",
         "@xla//xla/client:executable_build_options",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/parser:hlo_parser",
         "@xla//xla/service:computation_placer_hdr",
     ],
 )
@@ -340,6 +345,8 @@ torch_tpu_cc_test(
         "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
         "@xla//xla/client:executable_build_options",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/parser:hlo_parser",
         "@xla//xla/service:computation_placer_hdr",
     ],
 )
