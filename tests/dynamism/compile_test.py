@@ -1483,5 +1483,101 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+class MmDynamicTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_mm_dynamic_m(self):
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(8, 6, device=self.device)
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=16)
+
+    out = compiled(x, y)
+    expected = fn(x, y)
+    utils.assert_close(out, expected)
+
+    # Verify execution with a different dynamic size within bounds.
+    x2 = torch.randn(7, 8, device=self.device)
+    out2 = compiled(x2, y)
+    expected2 = fn(x2, y)
+    utils.assert_close(out2, expected2)
+
+  def test_mm_dynamic_contracting_dim(self):
+    # Tests dynamic contracting dimension on both LHS and RHS.
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(8, 6, device=self.device)
+    torch._dynamo.mark_dynamic(x, 1, min=2, max=16)
+    torch._dynamo.mark_dynamic(y, 0, min=2, max=16)
+
+    out = compiled(x, y)
+    expected = fn(x, y)
+    utils.assert_close(out, expected)
+
+    # Different contracting dimension size within bounds.
+    x2 = torch.randn(4, 12, device=self.device)
+    y2 = torch.randn(12, 6, device=self.device)
+    out2 = compiled(x2, y2)
+    expected2 = fn(x2, y2)
+    utils.assert_close(out2, expected2)
+
+  def test_mm_dynamic_rhs_n(self):
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x = torch.randn(4, 8, device=self.device)
+    y = torch.randn(8, 6, device=self.device)
+    torch._dynamo.mark_dynamic(y, 1, min=2, max=16)
+
+    out = compiled(x, y)
+    expected = fn(x, y)
+    utils.assert_close(out, expected)
+
+    # Different dynamic size on RHS within bounds.
+    y2 = torch.randn(8, 10, device=self.device)
+    out2 = compiled(x, y2)
+    expected2 = fn(x, y2)
+    utils.assert_close(out2, expected2)
+
+  def test_mm_dynamic_m_and_n(self):
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    x = torch.randn(5, 8, device=self.device)
+    y = torch.randn(8, 9, device=self.device)
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(y, 1, min=2, max=16)
+
+    out = compiled(x, y)
+    expected = fn(x, y)
+    utils.assert_close(out, expected)
+
+
 if __name__ == "__main__":
   absltest.main()

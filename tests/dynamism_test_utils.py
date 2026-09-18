@@ -195,7 +195,6 @@ untriaged_ops_deny_list: dict[
     "logical_and": ALL_MODES,  # dynamic triage (invalid result)
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
-    "mm": {COMPILE},  # numerical mismatch under dynamic compile
     "maximum": ALL_MODES,  # dynamic triage (invalid result)
     "ne": ALL_MODES,  # dynamic triage (invalid result)
     "neg": ALL_MODES,  # dynamic triage (invalid result)

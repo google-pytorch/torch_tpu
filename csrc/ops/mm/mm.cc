@@ -21,6 +21,7 @@
 #include "absl/status/statusor.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/DebugStringHelper.h"
@@ -61,12 +62,15 @@ absl::StatusOr<mlir::MlirOp> BuildMmShlo(mlir::MlirOp lhs, mlir::MlirOp rhs,
       << "BuildMmShlo: lhs and rhs must have the same element type, got "
       << mlir::debugString(lhs_tensor_type.getElementType()) << " and "
       << mlir::debugString(rhs_tensor_type.getElementType());
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimension constraint is checked before
-                 // Mlir lowering.
-      lhs_shape[1] == rhs_shape[0], error::kInvalidArgument)
-      << "BuildMmShlo: lhs and rhs must have the same contracting dimension, "
-         "got "
-      << lhs_shape[1] << " and " << rhs_shape[0];
+  if (lhs_shape[1] != mlir::ShapedType::kDynamic &&
+      rhs_shape[0] != mlir::ShapedType::kDynamic) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dimension constraint is checked
+                   // before Mlir lowering.
+        lhs_shape[1] == rhs_shape[0], error::kInvalidArgument)
+        << "BuildMmShlo: lhs and rhs must have the same contracting dimension, "
+           "got "
+        << lhs_shape[1] << " and " << rhs_shape[0];
+  }
 
   // XLA doesn't support matmul with i64, so we convert them to f64.
   const bool is_any_i64 = lhs_tensor_type.getElementType().isInteger(64) ||

@@ -164,7 +164,9 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     execution_mode.eager_mode = self.old_eager_mode
     super().tearDown()
 
-  def _run_bounded_dynamism_test(self, fn, mark_dynamic_fn, *args):
+  def _run_bounded_dynamism_test(
+      self, fn, mark_dynamic_fn, *args, rtol=1e-5, atol=1e-5
+  ):
     expected = fn(*args)
 
     # Move args to TPU and mark dynamic
@@ -174,12 +176,12 @@ class DynamismTest(seed_test_utils.RepeatableTest):
 
     # Compare outputs
     if isinstance(act, torch.Tensor):
-      utils.assert_close(act.to("cpu"), expected, rtol=1e-5, atol=1e-5)
+      utils.assert_close(act.to("cpu"), expected, rtol=rtol, atol=atol)
       return act
 
     # Allow multiple outputs
     for act, expected in zip(act, expected):
-      utils.assert_close(act.to("cpu"), expected, rtol=1e-5, atol=1e-5)
+      utils.assert_close(act.to("cpu"), expected, rtol=rtol, atol=atol)
     return act
 
   @parameterized.product(dtype=op_testing.all_xla_supported_dtypes())
@@ -618,6 +620,64 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].dimension, 0)
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_mm_dynamic_lhs_m(self):
+    def mark_dynamic(x, y):
+      del y
+      dynamism.mark_dynamic(x, 0, 2, 10)
+
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    args = (
+        torch.randn(4, 8, dtype=torch.float32),
+        torch.randn(8, 6, dtype=torch.float32),
+    )
+    act = self._run_bounded_dynamism_test(
+        fn, mark_dynamic, *args, rtol=1e-2, atol=1e-2
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_mm_dynamic_contracting_dim(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 1, 2, 16)
+      dynamism.mark_dynamic(y, 0, 2, 16)
+
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    args = (
+        torch.randn(4, 8, dtype=torch.float32),
+        torch.randn(8, 6, dtype=torch.float32),
+    )
+    self._run_bounded_dynamism_test(
+        fn, mark_dynamic, *args, rtol=1e-2, atol=1e-2
+    )
+
+  def test_mm_dynamic_rhs_n(self):
+    def mark_dynamic(x, y):
+      del x
+      dynamism.mark_dynamic(y, 1, 2, 12)
+
+    def fn(x, y):
+      return torch.mm(x, y)
+
+    args = (
+        torch.randn(4, 8, dtype=torch.float32),
+        torch.randn(8, 6, dtype=torch.float32),
+    )
+    act = self._run_bounded_dynamism_test(
+        fn, mark_dynamic, *args, rtol=1e-2, atol=1e-2
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 12)
 
 
 if __name__ == "__main__":
