@@ -8,41 +8,37 @@ TPU hardware.
 
 ## 1. Problem & Context
 
-Hardware tests for `torch_tpu` require physical TPU chips (`/dev/vfio/0`). Until
-now, CI relied on two constrained models:
+Hardware tests for `torch_tpu` require physical Cloud TPU chips (`/dev/vfio/0`).
+Testing against real accelerators presents two scaling constraints:
 
-1.  **A Single Shared Runner (`linux-x86-ct5lp-224-8tpu`):** A single physical
-    machine runs presubmit jobs sequentially. When multiple developers push PRs,
-    tests queue up behind one another, stalling pull requests.
-2.  **GCP Managed RBE (Foundry):** Google Cloud RBE only provisions standard CPU
-    worker pools. It does not provide Cloud TPU instances as RBE execution
-    backends.
-3.  **The GCS Mailbox Workaround:** To parallelize across the project's 28
-    standing Cloud TPU v5e VMs, we previously built a custom GCS mailbox
-    protocol. Bazel wrapped tests in a Python harness that bundled inputs,
-    zipped runfiles, and uploaded task descriptors to a Cloud Storage bucket.
-    TPU daemons continuously polled GCS, acquired locks, ran tests, and wrote
-    results back. While functional, this required ~3,800 lines of custom wire
-    protocol, heartbeat management, and polling logic.
+1.  **A Single Shared Runner (`linux-x86-ct5lp-224-8tpu`):** Standard presubmit
+    runs all tests sequentially on one dedicated machine. When multiple
+    developers push changes, tests queue behind one another, delaying pull
+    request verification.
+2.  **Managed RBE Lacks TPU Workers:** Managed Remote Build Execution offerings
+    (such as Google Cloud Foundry) provision standard CPU worker pools. They do
+    not provide Cloud TPU instances as execution backends.
+
+To run hardware tests in parallel across a pool of standing Cloud TPU v5e
+virtual machines, `torch_tpu` runs a native Remote Build Execution cluster.
 
 --------------------------------------------------------------------------------
 
-## 2. Solution: Native REAPI v2 via Buildbarn
+## 2. REAPI v2 Architecture with Buildbarn
 
-Instead of building custom task queues over object storage, we run an
-open-source Remote Execution API (REAPI v2) service using Buildbarn. Bazel
-speaks REAPI v2 natively.
+The cluster implements the open-source Remote Execution API (REAPI v2) using
+Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 
 ```mermaid
 flowchart TD
     subgraph Client ["Client (Cloudtop / GitHub Actions Runner)"]
         Bazel["Bazel Client<br/>bazel test --config=rbe_native_tpu<br/>--strategy=TestRunner=remote"]
-        Tunnel["Cloud IAP TCP Tunnel<br/>localhost:8980 -> rbe-tunnel-gateway:8980"]
+        Tunnel["TCP Tunnel (localhost:8980)<br/>SSH tunnel (Cloudtop)<br/>IAP tunnel (Cloudtop / CI runner)"]
         Bazel --> Tunnel
     end
 
     subgraph Gateway ["VPC Gateway (us-east5-a)"]
-        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>Debian 12 GCE VM with socat proxy"]
+        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>High-concurrency HAProxy<br/>Forwards to GKE NodePort 30980"]
         Tunnel --> GW
     end
 
@@ -124,7 +120,7 @@ Bazel evaluates `.bazelrc`:
     `/tmp/torch_tpu_rbe/build/`.
 3.  `bb_worker` delegates execution to `bb_runner` via a local UNIX socket.
 4.  `bb_runner` runs the test command directly on the host OS as root or runner
-    user. The process opens `/dev/vfio/0` directly with hardware performance.
+    user. The process opens `/dev/vfio/0` directly on the physical chip.
 5.  `bb_worker` uploads test outputs (such as `test.xml`, `test.log`) to CAS and
     reports exit code `0` to the scheduler.
 
@@ -140,8 +136,70 @@ and test target do not change, subsequent invocations hit the cache:
 
 ## 4. Network Layout & Multi-Zone Topology
 
-The control plane lives in `us-east5`. The 28 standing Cloud TPU v5e nodes sit
-across four regions in the same GCP VPC network (`default`):
+### Tunnel Gateway (`rbe-tunnel-gateway`)
+
+The `rbe-tunnel-gateway` instance (`10.202.0.13`) is a dedicated Debian 12 GCE
+virtual machine in zone `us-east5-a`. It runs high-concurrency HAProxy on port
+`8980` and forwards incoming TCP connections to the GKE NodePort `30980`
+(`10.202.0.3:30980`) serving the Buildbarn frontend (`bb-frontend`).
+
+HAProxy handles connection pooling and high concurrency across parallel Bazel
+connections, preventing connection dropouts and port exhaustion.
+
+### Developer Connectivity (Cloudtop / Local Workstation)
+
+Developers connect to the Buildbarn frontend through `rbe-tunnel-gateway` on
+port `8980` using either an SSH tunnel or a Cloud IAP TCP tunnel.
+
+#### Option A: SSH Tunnel
+
+Open a background SSH tunnel to forward local port `8980`:
+
+```bash
+gcloud compute ssh rbe-tunnel-gateway \
+  --zone=us-east5-a \
+  --project=rbe-tpu-oss \
+  -- -N -L 8980:localhost:8980
+```
+
+#### Option B: Cloud IAP TCP Tunnel
+
+Open an IAP TCP forwarding tunnel:
+
+```bash
+gcloud compute start-iap-tunnel \
+  rbe-tunnel-gateway 8980 \
+  --local-host-port=localhost:8980 \
+  --zone=us-east5-a \
+  --project=rbe-tpu-oss
+```
+
+Once established, Bazel points to `grpc://127.0.0.1:8980` as configured in
+`.bazelrc`.
+
+### GitHub Actions CI Runner Connectivity
+
+CI runners in GitHub Actions access the private GKE cluster via Cloud IAP.
+Before executing Bazel tests, the CI workflow
+(`.github/workflows/test_rbe_opt_in.yml`) opens a background IAP tunnel to
+`rbe-tunnel-gateway`:
+
+```bash
+gcloud compute start-iap-tunnel \
+  rbe-tunnel-gateway 8980 \
+  --local-host-port=localhost:8980 \
+  --zone=us-east5-a \
+  --project=rbe-tpu-oss \
+  --iap-tunnel-disable-connection-check
+```
+
+The workflow tests the TCP port until reachable on `127.0.0.1:8980`, runs Bazel,
+and terminates the tunnel process on job exit.
+
+### Fleet Distribution & Latency
+
+The GKE control plane lives in `us-east5`. The 28 standing Cloud TPU v5e nodes
+sit across four regions in the GCP VPC network (`default`):
 
 | Region / Zone    | TPU Nodes         | Round-Trip Latency to Scheduler |
 | :--------------- | :---------------- | :------------------------------ |
@@ -165,7 +223,7 @@ GB. To avoid downloading 2.6 GB over cross-region links on every test:
 
 --------------------------------------------------------------------------------
 
-## 5. Repository Configuration
+## 5. Repository Configuration & Bazel Usage
 
 ### `.bazelrc`
 
@@ -189,23 +247,32 @@ common:ci_tpu_v5_full_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requi
 test:ci_tpu_v5_full_rbe --test_output=errors
 ```
 
-### GitHub Actions Presubmit (`.github/workflows/test_rbe_opt_in.yml`)
+### Running Tests Locally via Bazel
 
-CI jobs start a background SSH tunnel to forward port `8980` to the GKE node
-(`10.202.0.3:30980`) before launching Bazel, and terminate the tunnel on job
-completion.
-
-### CLI Presubmit Helper (`rbe_tpu_presubmit_pr.sh`)
-
-Developers can test any PR branch over native RBE with:
+With the tunnel running on `localhost:8980`, execute tests directly with Bazel:
 
 ```bash
-rbe_tpu/deploy/rbe_tpu_presubmit_pr.sh --rbe --pr <PR_NUMBER> --mode replacement
+# Run an individual test target on a remote Cloud TPU:
+bazel test --config=rbe_native_tpu //tests/pallas:pallas_test
+
+# Run an entire test suite matching CI filters:
+bazel test --config=ci_tpu_v5_full_rbe //tests:ops_test_tpu-v5lite
 ```
 
-This runs the test suite across the 28-node pool, generates a markdown summary,
-and posts the gating commit check `Presubmit on linux-x86-ct5lp-224-8tpu` back
-to GitHub.
+To run multiple tests in parallel across the standing TPU fleet, increase test
+jobs:
+
+```bash
+bazel test --config=rbe_native_tpu --jobs=28 //tests/...
+```
+
+### GitHub Actions Presubmit (`.github/workflows/test_rbe_opt_in.yml`)
+
+Pull requests trigger native RBE presubmit jobs when labeled with
+`ci:replace-tpu-v5` or `ci:relay-tpu-v5` (or when dispatched manually). The
+workflow starts the IAP tunnel to `rbe-tunnel-gateway:8980`, runs
+`bazel test --config=ci_tpu_v5_full_rbe`, and posts test results back to the pull
+request checks.
 
 --------------------------------------------------------------------------------
 
