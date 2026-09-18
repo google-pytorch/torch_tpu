@@ -15,72 +15,17 @@
 """Properties and context managers for setting various execution modes."""
 
 import contextlib
-import enum
 import sys
 import types
 from typing import TYPE_CHECKING, TypeAlias
 
 from torch_tpu._internal.execution_mode import execution_mode_impl
-from torch_tpu._internal.utils import annotations
 
-_EagerMode: TypeAlias = execution_mode_impl.EagerMode
-
-
-@annotations.experimental("TPU eager execution mode configuration.")
-class EagerMode(enum.Enum):
-  """Eager execution mode for TPU operations."""
-
-  DEFER_AND_FUSE = _EagerMode.DEFER_AND_FUSE
-  DEFER_NEVER = _EagerMode.DEFER_NEVER
-  DEFER_NEVER_AND_LAUNCH_BLOCKING = _EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING
-
-  def __eq__(self, other: object) -> bool:
-    if isinstance(other, EagerMode):
-      return self.value == other.value
-    if isinstance(other, _EagerMode):
-      return self.value == other
-    return False
-
-  def __hash__(self) -> int:
-    return hash(self.value)
-
-
-def _unwrap_eager_mode(
-    mode: EagerMode | _EagerMode,
-) -> _EagerMode:
-  """Unwraps an EagerMode wrapper to extract the underlying C++ pybind _EagerMode.
-
-  When users pass a `torch.tpu.EagerMode` instance, we unwrap its `.value` so
-  the C++ backend functions receive the expected `execution_mode_impl.EagerMode`
-  pybind object. If an un-wrapped pybind enum is passed directly (e.g. from
-  internal modules), it is returned as-is.
-  """
-  if isinstance(mode, EagerMode):
-    return mode.value
-  return mode
-
-
-def _wrap_eager_mode(
-    mode: _EagerMode | EagerMode,
-) -> EagerMode | _EagerMode:
-  """Wraps a raw C++ pybind _EagerMode into the public EagerMode enum.
-
-  If the raw mode corresponds to one of the 3 public modes, returns the matching
-  `EagerMode` enum member. If it is an internal mode (e.g.,
-  `INTERNAL_COMPILE_FX_GRAPH`), `EagerMode(mode)` will raise `ValueError` and
-  we safely return the raw mode fallback.
-  """
-  if isinstance(mode, EagerMode):
-    return mode
-  try:
-    return EagerMode(mode)
-  except ValueError:
-    return mode
-
+EagerMode: TypeAlias = execution_mode_impl.EagerMode
 
 if TYPE_CHECKING:
   disable_inplace_buffer_donation: bool
-  eager_mode: _EagerMode
+  eager_mode: EagerMode
   enable_cpu_fallback: bool
 
 
@@ -88,14 +33,14 @@ class _ExecutionModeModule(types.ModuleType):
   """Custom module for managing TorchTPU execution settings."""
 
   @property
-  def eager_mode(self) -> EagerMode | _EagerMode:
+  def eager_mode(self) -> EagerMode:
     # pylint: disable-next=protected-access
-    return _wrap_eager_mode(execution_mode_impl._get_eager_mode())
+    return execution_mode_impl._get_eager_mode()
 
   @eager_mode.setter
-  def eager_mode(self, value: EagerMode | _EagerMode):
+  def eager_mode(self, value: EagerMode):
     # pylint: disable-next=protected-access
-    execution_mode_impl._set_eager_mode(_unwrap_eager_mode(value))
+    execution_mode_impl._set_eager_mode(value)
 
   @property
   def enable_cpu_fallback(self) -> bool:
@@ -121,12 +66,11 @@ class _ExecutionModeModule(types.ModuleType):
 sys.modules[__name__].__class__ = _ExecutionModeModule
 
 
-@annotations.experimental("Context manager for setting the eager mode.")
 @contextlib.contextmanager
-def set_eager_mode(mode: EagerMode | _EagerMode):
+def set_eager_mode(mode: EagerMode):
   """Context manager for setting the eager mode."""
   # Push the new state.
-  execution_mode_impl._push_eager_mode(_unwrap_eager_mode(mode))  # pylint: disable=protected-access
+  execution_mode_impl._push_eager_mode(mode)  # pylint: disable=protected-access
   try:
     yield
   finally:
@@ -138,7 +82,6 @@ def set_eager_mode(mode: EagerMode | _EagerMode):
 __all__ = [
     # go/keep-sorted start
     "EagerMode",
-    "_EagerMode",
     "disable_inplace_buffer_donation",
     "set_eager_mode",
     # go/keep-sorted end

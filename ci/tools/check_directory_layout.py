@@ -40,7 +40,6 @@ EXPECTED_ROOT_DIRS: Final[frozenset[str]] = frozenset([
     "shims",
     "src",
     "tests",
-    "tools",
 ])
 
 
