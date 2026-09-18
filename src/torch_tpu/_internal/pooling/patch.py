@@ -347,22 +347,21 @@ def patched_max_pool1d(
   p = list(_single(padding))
   d = list(_single(dilation))
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
-    return _ORIG_F_MAX_POOL1D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
+  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
+  # to original PyTorch lowering if non-trivial dilation is specified.
   if input.requires_grad and torch.is_grad_enabled():
+    if any(dim != 1 for dim in d):
+      return _ORIG_F_MAX_POOL1D(
+          input,
+          kernel_size,
+          stride=stride,
+          padding=padding,
+          dilation=dilation,
+          ceil_mode=ceil_mode,
+          return_indices=return_indices,
+      )
     return _TpuMaxPool1dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
@@ -384,8 +383,9 @@ def patched_max_pool2d(
   Routes TPU tensors to native TPU lowerings:
   - If `return_indices=True` or the tensor is not on a TPU device, falls back
     to original `F.max_pool2d`.
-  - If dilation is non-trivial (dilation != 1), falls back to original
-    `F.max_pool2d` as SelectAndScatter does not support dilated windows.
+  - If dilation is non-trivial (dilation != 1) in training mode, falls back to
+    original `F.max_pool2d` as SelectAndScatter does not support dilated
+    windows.
   - If `requires_grad=True` and grad is enabled, routes through
     `_TpuMaxPool2dFunction` for index-free autograd.
   - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool2d` directly.
@@ -409,22 +409,21 @@ def patched_max_pool2d(
   p = list(_pair(padding))
   d = list(_pair(dilation))
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
-    return _ORIG_F_MAX_POOL2D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
+  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
+  # to original PyTorch lowering if non-trivial dilation is specified.
   if input.requires_grad and torch.is_grad_enabled():
+    if any(dim != 1 for dim in d):
+      return _ORIG_F_MAX_POOL2D(
+          input,
+          kernel_size,
+          stride=stride,
+          padding=padding,
+          dilation=dilation,
+          ceil_mode=ceil_mode,
+          return_indices=return_indices,
+      )
     return _TpuMaxPool2dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.
@@ -446,8 +445,9 @@ def patched_max_pool3d(
   Routes TPU tensors to native TPU lowerings:
   - If `return_indices=True` or the tensor is not on a TPU device, falls back
     to original `F.max_pool3d`.
-  - If dilation is non-trivial (dilation != 1), falls back to original
-    `F.max_pool3d` as SelectAndScatter does not support dilated windows.
+  - If dilation is non-trivial (dilation != 1) in training mode, falls back to
+    original `F.max_pool3d` as SelectAndScatter does not support dilated
+    windows.
   - If `requires_grad=True` and grad is enabled, routes through
     `_TpuMaxPool3dFunction` for index-free autograd.
   - Otherwise (eval / inference), calls `torch.ops.tpu.max_pool3d` directly.
@@ -471,22 +471,21 @@ def patched_max_pool3d(
   p = list(_triple(padding))
   d = list(_triple(dilation))
 
-  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
-  # to original PyTorch lowering if non-trivial dilation is specified.
-  if any(dim != 1 for dim in d):
-    return _ORIG_F_MAX_POOL3D(
-        input,
-        kernel_size,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        ceil_mode=ceil_mode,
-        return_indices=return_indices,
-    )
-
   # In training mode with gradients enabled, route through the custom autograd
   # function so the backward graph can use SelectAndScatter without indices.
+  # StableHLO SelectAndScatterOp supports trivial dilation (all 1s). Fall back
+  # to original PyTorch lowering if non-trivial dilation is specified.
   if input.requires_grad and torch.is_grad_enabled():
+    if any(dim != 1 for dim in d):
+      return _ORIG_F_MAX_POOL3D(
+          input,
+          kernel_size,
+          stride=stride,
+          padding=padding,
+          dilation=dilation,
+          ceil_mode=ceil_mode,
+          return_indices=return_indices,
+      )
     return _TpuMaxPool3dFunction.apply(input, k, s, p, d, bool(ceil_mode))
 
   # In eval or no-grad mode, call the TPU native operator directly.

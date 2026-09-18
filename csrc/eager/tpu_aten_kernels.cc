@@ -1405,52 +1405,40 @@ TORCH_LIBRARY_IMPL(tpu, Meta, m) {
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
-        TT_ASSIGN_OR_THROW(
-            auto output_size,
-            GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
-                                 dilation, ceil_mode, 1));
-        return at::empty(output_size, self.options());
+        return std::get<0>(at::max_pool1d_with_indices(
+            self, kernel_size, stride, padding, dilation, ceil_mode));
       });
   ImplStable<OpName::kMaxPool1dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+            at::IntArrayRef padding, at::IntArrayRef dilation,
+            bool ceil_mode) { return at::empty_like(self); });
   ImplStable<OpName::kMaxPool2d>(
       m,
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
-        TT_ASSIGN_OR_THROW(
-            auto output_size,
-            GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
-                                 dilation, ceil_mode, 2));
-        return at::empty(output_size, self.options());
+        return std::get<0>(at::max_pool2d_with_indices(
+            self, kernel_size, stride, padding, dilation, ceil_mode));
       });
   ImplStable<OpName::kMaxPool2dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+            at::IntArrayRef padding, at::IntArrayRef dilation,
+            bool ceil_mode) { return at::empty_like(self); });
   ImplStable<OpName::kMaxPool3d>(
       m,
       [](const at::Tensor& self, at::IntArrayRef kernel_size,
          at::IntArrayRef stride, at::IntArrayRef padding,
          at::IntArrayRef dilation, bool ceil_mode) -> at::Tensor {
-        TT_ASSIGN_OR_THROW(
-            auto output_size,
-            GetPoolingOutputSize(self.sizes(), kernel_size, stride, padding,
-                                 dilation, ceil_mode, 3));
-        return at::empty(output_size, self.options());
+        return std::get<0>(at::max_pool3d_with_indices(
+            self, kernel_size, stride, padding, dilation, ceil_mode));
       });
   ImplStable<OpName::kMaxPool3dBackward>(
       m, [](const at::Tensor& grad_output, const at::Tensor& self,
             at::IntArrayRef kernel_size, at::IntArrayRef stride,
-            at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
-        return at::empty(self.sizes(), self.options());
-      });
+            at::IntArrayRef padding, at::IntArrayRef dilation,
+            bool ceil_mode) { return at::empty_like(self); });
   ImplExperimental<OpName::kSparseDenseMatmul>(
       m,
       +[](const at::Tensor& row_pointers, const at::Tensor& embedding_ids,

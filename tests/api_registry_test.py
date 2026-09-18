@@ -20,9 +20,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
-from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.pallas.pallas import (
-    custom_jax_kernel as internal_custom_jax_kernel,
     jax_op as internal_jax_op,
 )
 from torch_tpu._internal.profiler.profiler_config import (
@@ -41,25 +39,32 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     _loader._init_device("tpu")
 
   def test_tpu_profiler_config_accessibility(self):
-    """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler."""
+    """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler and
+
+    torch_tpu.profiler.
+    """
     self.assertTrue(hasattr(torch, "tpu"))
     self.assertTrue(hasattr(torch.tpu, "profiler"))
     self.assertTrue(hasattr(torch.tpu.profiler, "TpuProfilerConfig"))
-    self.assertFalse(hasattr(torch_tpu, "profiler"))
-    self.assertNotIn("torch_tpu.profiler", sys.modules)
+    self.assertTrue(hasattr(torch_tpu.profiler, "TpuProfilerConfig"))
+    self.assertIs(sys.modules.get("torch.tpu.profiler"), torch_tpu.profiler)
 
   def test_tpu_profiler_config_identity(self):
     """Verifies identity between public export and internal class definition."""
     self.assertIs(
         torch.tpu.profiler.TpuProfilerConfig, InternalTpuProfilerConfig
     )
+    self.assertIs(
+        torch_tpu.profiler.TpuProfilerConfig, InternalTpuProfilerConfig
+    )
 
   def test_invalid_attribute_raises(self):
-    """Verifies accessing non-existent attributes on proxy module raises AttributeError."""
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
-        AttributeError
-    ):
-      _ = getattr(torch.tpu.profiler, "non_existent_attribute")
+    """Verifies accessing non-existent attributes on proxy module raises
+
+    AttributeError.
+    """
+    with self.assertRaises(AttributeError):
+      _ = getattr(torch_tpu.profiler, "non_existent_attribute")
 
   def test_tpu_profiler_config_metadata(self):
     """Verifies lifecycle stage metadata attached to TpuProfilerConfig."""
@@ -92,6 +97,7 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
   def test_profiler_module_dir(self):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
     self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
+    self.assertEqual(dir(torch_tpu.profiler), ["TpuProfilerConfig"])
 
   def test_pallas_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for pallas."""
@@ -111,74 +117,6 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(torch.tpu.pallas, "non_existent_attribute")
-
-    # 4. Verify torch_tpu does not expose pallas
-    self.assertFalse(hasattr(torch_tpu, "pallas"))
-    self.assertNotIn("torch_tpu.pallas", sys.modules)
-
-    # 5. Verify torch_tpu._internal.pallas re-exports custom_jax_kernel and jax_op
-    import torch_tpu._internal.pallas as internal_pallas  # pylint: disable=g-import-not-at-top
-
-    internal_pallas_dir = dir(internal_pallas)
-    self.assertIn("custom_jax_kernel", internal_pallas_dir)
-    self.assertIn("jax_op", internal_pallas_dir)
-    self.assertIs(internal_pallas.jax_op, internal_jax_op)
-    self.assertIs(internal_pallas.custom_jax_kernel, internal_custom_jax_kernel)
-    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies non-exported attributes raise AttributeError
-        AttributeError
-    ):
-      _ = getattr(internal_pallas, "non_existent_attribute")
-
-  def test_execution_mode_registry(self):
-    """Verifies public exposure, identity, metadata, and functional behavior for execution mode."""
-    # 1. Verify excluded / non-public symbols are not exposed
-    self.assertFalse(hasattr(torch.tpu, "PublicEagerMode"))
-    self.assertFalse(hasattr(torch.tpu.EagerMode, "INTERNAL_DEFER_ALL"))
-    self.assertFalse(hasattr(torch.tpu.EagerMode, "INTERNAL_COMPILE_FX_GRAPH"))
-
-    # 2. Identity and enum members (accessed directly)
-    self.assertIs(torch.tpu.EagerMode, _internal_execution_mode.EagerMode)
-    self.assertLen(torch.tpu.EagerMode, 3)
-    for mode in torch.tpu.EagerMode:
-      raw_mode = getattr(_internal_execution_mode._EagerMode, mode.name)
-      self.assertIs(mode.value, raw_mode)
-      self.assertEqual(mode, raw_mode)
-      self.assertEqual(hash(mode), hash(raw_mode))
-
-    # 3. Lifecycle stage metadata
-    self.assertEqual(
-        getattr(torch.tpu.EagerMode, annotations.TT_API_STAGE, None),
-        annotations.Stage.EXPERIMENTAL.value,
-    )
-    self.assertEqual(
-        getattr(torch.tpu.set_eager_mode, annotations.TT_API_STAGE, None),
-        annotations.Stage.EXPERIMENTAL.value,
-    )
-
-    # 4. Functional behavior (getter/setter & context manager)
-    prev_mode = torch.tpu.eager_mode
-    try:
-      torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_NEVER
-      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER)
-      torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_AND_FUSE
-      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
-
-      with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_NEVER):
-        self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER)
-      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
-
-      # Verify exception safety of context manager
-      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies context manager restores state upon exception
-          RuntimeError
-      ):
-        with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_NEVER):
-          self.assertEqual(
-              torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER
-          )
-          raise RuntimeError("Simulated failure")
-      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
-    finally:
-      torch.tpu.eager_mode = prev_mode
 
 
 if __name__ == "__main__":

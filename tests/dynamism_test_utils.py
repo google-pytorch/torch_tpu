@@ -213,7 +213,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.max_pool2d": (
         ALL_MODES
     ),  # crash (negative dim size in compiled_mode.cc)
-    "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
     "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
     "nn.functional.nll_loss": (
         ALL_MODES
@@ -410,6 +409,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        PoolingDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -654,6 +654,56 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class PoolingDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for pooling ops."""
+
+  pooling_ops = {
+      "nn.functional.max_pool1d",
+      "nn.functional.max_pool2d",
+      "nn.functional.max_pool3d",
+      "nn.functional.avg_pool1d",
+      "nn.functional.avg_pool2d",
+      "nn.functional.avg_pool3d",
+  }
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in PoolingDynamicOpInfo.pooling_ops
+
+  def mark_dynamic(
+      self,
+      seed: int,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark the pooling op input as dynamic."""
+    input_value = _get_canonical_input_value(self.op_info, input_value)
+    candidates = _get_dynamic_dimension_candidates(input_value)
+    random.seed(seed)
+    idx = random.choice(candidates)
+    input_value_str = utils.get_tensor_summary(input_value, data=False)
+    ub = input_value.shape[idx] + 10
+    spatial_dim_count = 3
+    for d in (1, 2, 3):
+      if f"{d}d" in self.op_info.name:
+        spatial_dim_count = d
+        break
+    spatial_start = 2 if input_value.ndim == spatial_dim_count + 2 else 1
+    # For spatial dimensions (idx >= spatial_start), use input_value.shape[idx]
+    # as lower bound to ensure the dynamic range satisfies kernel size and
+    # output size guards.
+    lb = 2 if idx < spatial_start else input_value.shape[idx]
+    print(
+        f">>>> Marking dim {idx} dynamic [{lb}<={ub}] in {input_value_str}"
+        f" (mode={mode.value})",
+        flush=True,
+    )
+    _mark_tensor_dynamic(input_value, idx, lb, ub, mode=mode)
+    self._mark_dependent_arg_dynamic(args, input_value, idx, ub, mode=mode)
 
 
 def mark_input_dynamic(

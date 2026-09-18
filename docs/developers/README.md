@@ -10,7 +10,3 @@ TorchTPU, read the documentation in the [parent directory](../README.md).
 
 *   [API design guide](api_design_guide.md)
 *   [API policy](api_policy.md)
-
-## Tooling
-
-*   [Listing CI test targets](list_ci_tests_guide.md)

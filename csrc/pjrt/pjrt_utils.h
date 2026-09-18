@@ -62,14 +62,9 @@ using PjRtBufferPointers =
 // until the execution is fully enqueued (but not completed). Calls for D2H
 // on the returned buffers will block until the execution and transfer from
 // TPU to CPU are complete.
-// If `executable->dynamic_execution_metadata()` is present, routes logical
-// `argument_buffers`, pre-allocated donated dynamic output buffers, and
-// disjoint S32[rank] runtime shape metadata buffers to their physical PjRt
-// parameter positions.
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
-    std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes);
+    std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers);
 
 // Holds the completion future and RAII buffer hold for an asynchronous DMA
 // copy.

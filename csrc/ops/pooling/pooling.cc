@@ -57,7 +57,19 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
     Dimensions new_shape = {1};
     new_shape.insert(new_shape.end(), input_type.getShape().begin(),
                      input_type.getShape().end());
-    auto batch_input = mlir::stablehlo::Reshape(input, new_shape);
+    mlir::Attribute new_encoding = nullptr;
+    if (auto encoding =
+            llvm::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+                input_type.getEncoding())) {
+      llvm::SmallVector<int64_t> new_bounds = {1};
+      new_bounds.append(encoding.getBounds().begin(),
+                        encoding.getBounds().end());
+      new_encoding = mlir::stablehlo::TypeExtensionsAttr::get(
+          input_type.getContext(), new_bounds);
+    }
+    auto batch_type = mlir::RankedTensorType::get(
+        new_shape, input_type.getElementType(), new_encoding);
+    auto batch_input = mlir::stablehlo::Reshape(batch_type, input);
     return BatchInput{batch_input, num_dims};
   }
   return BatchInput{input, num_dims};
@@ -90,13 +102,28 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
   llvm::SmallVector<int64_t> squeezed_shape;
   squeezed_shape.append(current_type.getShape().begin() + 1,
                         current_type.getShape().end());
-  return mlir::stablehlo::Reshape(batch_op, squeezed_shape);
+  mlir::Attribute squeezed_encoding = nullptr;
+  if (auto encoding =
+          llvm::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+              current_type.getEncoding())) {
+    llvm::SmallVector<int64_t> squeezed_bounds;
+    if (encoding.getBounds().size() > 1) {
+      squeezed_bounds.append(encoding.getBounds().begin() + 1,
+                             encoding.getBounds().end());
+    }
+    squeezed_encoding = mlir::stablehlo::TypeExtensionsAttr::get(
+        current_type.getContext(), squeezed_bounds);
+  }
+  auto squeezed_type = mlir::RankedTensorType::get(
+      squeezed_shape, current_type.getElementType(), squeezed_encoding);
+  return mlir::stablehlo::Reshape(squeezed_type, batch_op);
 }
 
 // Calculates the adjusted (left_padding, right_padding) pairs given the padding
 // (which is symmetric) and ceil mode.
 // Additional high padding could be required when ceil mode is set.
 // This ensures that the last pooling is fully inside the image.
+// Note: For dynamic spatial shapes, padding is computed from the upper bound.
 std::vector<PaddingParams> CeilModePadding(
     const mlir::RankedTensorType& input_shape,  // (N, C, H, W)/(N, C, D, H, W)
     mlir::ArrayRef<int64_t> kernel_size,        // [K_h, K_w]
@@ -113,11 +140,27 @@ std::vector<PaddingParams> CeilModePadding(
     const int64_t D = dilation[i];
 
     // Spatial dimensions start from index 2
-    const int64_t input_size = input_shape.getDimSize(2 + i);
+    int64_t input_size = input_shape.getDimSize(2 + i);
     const int64_t left_padding = P;
     int64_t right_padding = P;
 
     if (!ceil_mode) {
+      ceil_mode_padding.push_back({left_padding, right_padding});
+      continue;
+    }
+
+    if (input_size == mlir::ShapedType::kDynamic) {
+      if (auto encoding =
+              llvm::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+                  input_shape.getEncoding())) {
+        if (2 + i < encoding.getBounds().size() &&
+            encoding.getBounds()[2 + i] != mlir::ShapedType::kDynamic) {
+          input_size = encoding.getBounds()[2 + i];
+        }
+      }
+    }
+
+    if (input_size == mlir::ShapedType::kDynamic) {
       ceil_mode_padding.push_back({left_padding, right_padding});
       continue;
     }
