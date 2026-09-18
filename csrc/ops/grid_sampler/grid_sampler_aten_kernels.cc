@@ -17,6 +17,7 @@
 #include "csrc/ops/grid_sampler/grid_sampler_aten_kernels.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <tuple>
@@ -66,16 +67,6 @@ enum class InterpolationMode {
   kNearest = 1,
   kBicubic = 2,
 };
-
-mlir::MlirOp ReshapeIndexTo2D(mlir::MlirOp index) {
-  auto ty = GetTensorTypeOrDie(index);
-  auto shape = ty.getShape();
-  Dimensions new_shape(shape.begin(), shape.end());
-  new_shape.push_back(1);
-  auto reshaped_ty =
-      mlir::RankedTensorType::get(new_shape, ty.getElementType());
-  return mlir::stablehlo::Reshape(reshaped_ty, index);
-}
 
 struct GridSamplerGatherConfig {
   mlir::stablehlo::GatherDimensionNumbersAttr gather_dimension_numbers;
@@ -135,40 +126,6 @@ absl::StatusOr<mlir::MlirOp> DimensionInfoToOp(
   }
   return MakeConstant(builder, in_size.size,
                       builder.getOpBuilder().getI32Type(), {1});
-}
-
-absl::StatusOr<mlir::MlirOp> GatherOrDynamicGather(
-    mlir::MlirBuilder& builder, mlir::MlirOp input, mlir::MlirOp index_tensor,
-    const GridSamplerGatherConfig& gather_config, bool indices_are_sorted) {
-  bool is_dynamic = false;
-  for (auto& slice_size : gather_config.slice_sizes) {
-    if (slice_size.boundOp.has_value()) {
-      is_dynamic = true;
-      break;
-    }
-  }
-
-  if (is_dynamic) {
-    llvm::SmallVector<mlir::MlirOp> slice_sizes_ops;
-    for (auto& slice_size : gather_config.slice_sizes) {
-      TT_ASSIGN_OR_RETURN(auto slice_size_op,
-                          DimensionInfoToOp(builder, slice_size));
-      slice_sizes_ops.push_back(slice_size_op);
-    }
-    mlir::MlirOp slice_sizes_tensor =
-        mlir::stablehlo::Concatenate(builder, slice_sizes_ops, 0);
-    return mlir::stablehlo::DynamicGather(
-        input, index_tensor, slice_sizes_tensor,
-        gather_config.gather_dimension_numbers, indices_are_sorted);
-  } else {
-    Dimensions static_slice_sizes(gather_config.slice_sizes.size());
-    for (int i = 0; i < gather_config.slice_sizes.size(); ++i) {
-      static_slice_sizes[i] = gather_config.slice_sizes[i].size;
-    }
-    return mlir::stablehlo::Gather(input, index_tensor,
-                                   gather_config.gather_dimension_numbers,
-                                   static_slice_sizes, indices_are_sorted);
-  }
 }
 
 struct DimInfo {
@@ -296,18 +253,38 @@ absl::StatusOr<mlir::MlirOp> GatherInterpolatedValue(
     mlir::MlirBuilder& builder, mlir::MlirOp input_calc,
     const std::vector<mlir::MlirOp>& current_indices,
     const GridSamplerGatherConfig& gather_config) {
+  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Internal helper function called only
+                 // with non-empty spatial indices.
+      !current_indices.empty(), error::kInvalidArgument)
+      << "current_indices cannot be empty";
   std::vector<mlir::MlirOp> reshaped_indices;
   reshaped_indices.reserve(current_indices.size());
   for (auto index : current_indices) {
-    reshaped_indices.push_back(ReshapeIndexTo2D(index));
+    TT_ASSIGN_OR_RETURN(auto reshaped,
+                        Unsqueeze(index, GetTensorTypeOrDie(index).getRank()));
+    reshaped_indices.push_back(reshaped);
   }
 
   auto index_tensor = mlir::stablehlo::Concatenate(
       builder, reshaped_indices,
       GetTensorTypeOrDie(reshaped_indices[0]).getRank() - 1);
 
-  return GatherOrDynamicGather(builder, input_calc, index_tensor, gather_config,
-                               /*indices_are_sorted=*/false);
+  Dimensions static_slice_sizes(gather_config.slice_sizes.size());
+  for (size_t i = 0; i < gather_config.slice_sizes.size(); ++i) {
+    static_slice_sizes[i] = gather_config.slice_sizes[i].size;
+  }
+  auto gathered = mlir::stablehlo::Gather(
+      input_calc, index_tensor, gather_config.gather_dimension_numbers,
+      static_slice_sizes, /*indices_are_sorted=*/false);
+  if (gather_config.slice_sizes.size() > 1 &&
+      gather_config.slice_sizes[1].boundOp.has_value()) {
+    const auto& bound_info = gather_config.slice_sizes[1];
+    mlir::MlirOp bound_op_mlir(builder, *bound_info.boundOp);
+    mlir::MlirOp dim_size =
+        mlir::stablehlo::GetDimensionSize(bound_op_mlir, bound_info.boundOpDim);
+    gathered = mlir::stablehlo::SetDimensionSize(gathered, dim_size, /*dim=*/1);
+  }
+  return gathered;
 }
 
 absl::StatusOr<mlir::MlirOp> ApplyZeroPadding(
@@ -353,11 +330,8 @@ absl::StatusOr<mlir::MlirOp> ApplyZeroPadding(
     pixel_ok = mlir::stablehlo::And(x_ok, yz_ok);
   }
 
-  auto gathered_ty = GetTensorTypeOrDie(gathered);
-  auto pixel_ok_bcast_ty = mlir::RankedTensorType::get(
-      gathered_ty.getShape(), builder.getOpBuilder().getI1Type());
-  auto pixel_ok_bcast =
-      mlir::stablehlo::BroadcastInDim(pixel_ok_bcast_ty, pixel_ok, bcast_dims);
+  TT_ASSIGN_OR_RETURN(auto pixel_ok_bcast,
+                      BroadcastIfNeeded(pixel_ok, gathered, bcast_dims));
   auto zero_pixel = MakeConstantLike(gathered, 0.0, calc_type);
   return mlir::stablehlo::Select(pixel_ok_bcast, gathered, zero_pixel);
 }
@@ -418,8 +392,9 @@ absl::StatusOr<mlir::MlirOp> AccumulateBilinearInterpolation2D(
                              spatial_dim_size, calc_type, bcast_dims));
       }
 
-      auto weight_bcast = mlir::stablehlo::BroadcastInDim(
-          gathered.getType(), current_weight, bcast_dims);
+      TT_ASSIGN_OR_RETURN(
+          auto weight_bcast,
+          BroadcastIfNeeded(current_weight, gathered, bcast_dims));
 
       TT_ASSIGN_OR_RETURN(auto weighted_value,
                           BuildMulShlo(gathered, weight_bcast));
@@ -472,8 +447,9 @@ absl::StatusOr<mlir::MlirOp> AccumulateBilinearInterpolation3D(
                                          calc_type, bcast_dims));
         }
 
-        auto weight_bcast = mlir::stablehlo::BroadcastInDim(
-            gathered.getType(), current_weight, bcast_dims);
+        TT_ASSIGN_OR_RETURN(
+            auto weight_bcast,
+            BroadcastIfNeeded(current_weight, gathered, bcast_dims));
 
         TT_ASSIGN_OR_RETURN(auto weighted_value,
                             BuildMulShlo(gathered, weight_bcast));
@@ -674,6 +650,7 @@ absl::StatusOr<mlir::MlirOp> AccumulateBicubicInterpolation(
   mlir::MlirOp accumulated_result = MakeConstant(builder, 0, calc_type, {1});
   auto input_calc = mlir::stablehlo::ConvertElementType(input, calc_type);
   const auto bcast_dims = Dimensions{0, 2, 3};
+  const mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
 
   for (int y_bit = 0; y_bit < 4; ++y_bit) {
     for (int x_bit = 0; x_bit < 4; ++x_bit) {
@@ -689,60 +666,22 @@ absl::StatusOr<mlir::MlirOp> AccumulateBicubicInterpolation(
 
       std::vector<mlir::MlirOp> current_indices = {x_idx, y_idx};
 
-      std::vector<mlir::MlirOp> reshaped_indices{ReshapeIndexTo2D(x_idx),
-                                                 ReshapeIndexTo2D(y_idx)};
-
-      auto index_tensor = mlir::stablehlo::Concatenate(
-          builder, reshaped_indices,
-          GetTensorTypeOrDie(reshaped_indices[0]).getRank() - 1);
-
-      TT_ASSIGN_OR_RETURN(auto gathered,
-                          GatherOrDynamicGather(builder, input_calc,
-                                                index_tensor, gather_config,
-                                                /*indices_are_sorted=*/false));
+      TT_ASSIGN_OR_RETURN(auto gathered, GatherInterpolatedValue(
+                                             builder, input_calc,
+                                             current_indices, gather_config));
 
       if (padding_mode == PaddingMode::kZeros) {
-        auto is_in_bounds = [&](mlir::MlirOp idx,
-                                mlir::stablehlo::DimensionInfo in_size)
-            -> absl::StatusOr<mlir::MlirOp> {
-          TT_ASSIGN_OR_RETURN(auto in_size_op,
-                              DimensionInfoToOp(builder, in_size));
-          auto zero =
-              MakeConstantLike(idx, 0, builder.getOpBuilder().getI32Type());
-          // Construct limit values based on dynamic input size.
-          mlir::MlirOp limit_element = mlir::stablehlo::ConvertElementType(
-              in_size_op, builder.getOpBuilder().getI32Type());
-          TT_ASSIGN_OR_RETURN(auto limit,
-                              BroadcastIfNeeded(limit_element, idx));
-          auto lt_zero = mlir::stablehlo::Compare(
-              idx, zero, mlir::stablehlo::ComparisonDirection::LT);
-          auto ge_limit = mlir::stablehlo::Compare(
-              idx, limit, mlir::stablehlo::ComparisonDirection::GE);
-          auto out_of_bounds = mlir::stablehlo::Or(lt_zero, ge_limit);
-          return mlir::stablehlo::Not(out_of_bounds);
-        };
-
-        const mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-        int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
-        auto in_w = input_shape[offset_dim_size + 1];
-        auto in_h = input_shape[offset_dim_size];
-
-        TT_ASSIGN_OR_RETURN(auto x_ok, is_in_bounds(x_idx_unclamped, in_w));
-        TT_ASSIGN_OR_RETURN(auto y_ok, is_in_bounds(y_idx_unclamped, in_h));
-        auto pixel_ok = mlir::stablehlo::And(x_ok, y_ok);
-
-        const auto gathered_ty = GetTensorTypeOrDie(gathered);
-        auto pixel_ok_bcast_ty = mlir::RankedTensorType::get(
-            gathered_ty.getShape(), builder.getOpBuilder().getI1Type());
-        auto pixel_ok_bcast = mlir::stablehlo::BroadcastInDim(
-            pixel_ok_bcast_ty, pixel_ok, bcast_dims);
-        auto zero_pixel = MakeConstantLike(gathered, 0.0, calc_type);
-        gathered =
-            mlir::stablehlo::Select(pixel_ok_bcast, gathered, zero_pixel);
+        std::vector<mlir::MlirOp> indices_unclamped = {x_idx_unclamped,
+                                                       y_idx_unclamped};
+        TT_ASSIGN_OR_RETURN(
+            gathered,
+            ApplyZeroPadding(builder, gathered, indices_unclamped, input_shape,
+                             spatial_dim_size, calc_type, bcast_dims));
       }
 
-      const auto weight_bcast = mlir::stablehlo::BroadcastInDim(
-          gathered.getType(), current_weight, bcast_dims);
+      TT_ASSIGN_OR_RETURN(
+          auto weight_bcast,
+          BroadcastIfNeeded(current_weight, gathered, bcast_dims));
 
       TT_ASSIGN_OR_RETURN(auto weighted_value,
                           BuildMulShlo(gathered, weight_bcast));
@@ -760,9 +699,8 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerBicubicShlo(
   mlir::MlirBuilder& builder = input.getBuilder();
   const auto input_ty = GetTensorTypeOrDie(input);
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -786,18 +724,19 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerBicubicShlo(
   grid_coords.reserve(spatial_dim_size);
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
     grid_coords.push_back(grid_coord_raw);
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
     TT_ASSIGN_OR_RETURN(auto in_size_op, DimensionInfoToOp(builder, in_size));
@@ -826,9 +765,8 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerBilinearShlo(
   mlir::MlirBuilder& builder = input.getBuilder();
   const auto input_ty = GetTensorTypeOrDie(input);
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  const auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -846,18 +784,19 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerBilinearShlo(
   grid_coords.reserve(spatial_dim_size);
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
     grid_coords.push_back(grid_coord_raw);
 
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
@@ -884,9 +823,8 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerNearestShlo(
     PaddingMode padding_mode) {
   mlir::MlirBuilder& builder = input.getBuilder();
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -905,18 +843,19 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerNearestShlo(
   indices_ok.reserve(spatial_dim_size);
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
     grid_coords.push_back(grid_coord_raw);
 
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
@@ -967,20 +906,9 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerNearestShlo(
     }
   }
 
-  std::vector<mlir::MlirOp> reshaped_indices;
-  reshaped_indices.reserve(indices.size());
-  for (auto index : indices) {
-    reshaped_indices.push_back(ReshapeIndexTo2D(index));
-  }
-
-  auto index_tensor = mlir::stablehlo::Concatenate(
-      builder, reshaped_indices,
-      GetTensorTypeOrDie(reshaped_indices[0]).getRank() - 1);
-
   TT_ASSIGN_OR_RETURN(
       auto gathered,
-      GatherOrDynamicGather(builder, input, index_tensor, gather_config,
-                            /*indices_are_sorted=*/false));
+      GatherInterpolatedValue(builder, input, indices, gather_config));
 
   if (padding_mode == PaddingMode::kZeros) {
     mlir::MlirOp all_indices_ok;
@@ -993,14 +921,9 @@ absl::StatusOr<mlir::MlirOp> BuildGridSamplerNearestShlo(
     }
     auto bcast_dims =
         spatial_dim_size == 2 ? Dimensions{0, 2, 3} : Dimensions{0, 2, 3, 4};
-    Dimensions all_indices_ok_bcast_shape =
-        CopyIntVector(GetTensorTypeOrDie(gathered).getShape());
-    auto all_indices_ok_bcast_ty = mlir::RankedTensorType::get(
-        all_indices_ok_bcast_shape,
-        GetTensorTypeOrDie(all_indices_ok).getElementType());
-
-    auto all_indices_ok_bcast = mlir::stablehlo::BroadcastInDim(
-        all_indices_ok_bcast_ty, all_indices_ok, bcast_dims);
+    TT_ASSIGN_OR_RETURN(
+        auto all_indices_ok_bcast,
+        BroadcastIfNeeded(all_indices_ok, gathered, bcast_dims));
     auto zero_result = MakeConstantLike(
         gathered, 0.0, GetTensorTypeOrDie(gathered).getElementType());
     gathered =
@@ -1059,9 +982,8 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGridSamplerNearestBackwardShlo(
     bool align_corners, PaddingMode padding_mode, bool compute_grad_input) {
   mlir::MlirBuilder& builder = input.getBuilder();
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  const int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  const int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -1075,18 +997,19 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGridSamplerNearestBackwardShlo(
   indices_ok.reserve(spatial_dim_size);
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
 
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
     TT_ASSIGN_OR_RETURN(auto in_size_op, DimensionInfoToOp(builder, in_size));
@@ -1477,9 +1400,8 @@ BuildGridSamplerBilinearBackwardShlo(mlir::MlirOp grad_output,
   mlir::MlirBuilder& builder = input.getBuilder();
   const auto input_ty = GetTensorTypeOrDie(input);
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  const auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -1499,18 +1421,19 @@ BuildGridSamplerBilinearBackwardShlo(mlir::MlirOp grad_output,
   grid_coords.reserve(spatial_dim_size);
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
     grid_coords.push_back(grid_coord_raw);
 
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
@@ -1601,10 +1524,10 @@ struct BicubicWeightsAndIndices {
 
 absl::StatusOr<BicubicWeightsAndIndices>
 CalculateBicubicBackwardWeightsAndIndices(
-    mlir::MlirBuilder& builder, int64_t spatial_dim_size, Dimensions grid_shape,
-    mlir::MlirOp grid, mlir::Type calc_type,
-    mlir::stablehlo::Dimensions input_shape, int64_t offset_dim_size,
-    bool align_corners, PaddingMode padding_mode) {
+    mlir::MlirBuilder& builder, int64_t spatial_dim_size,
+    const mlir::stablehlo::Dimensions& grid_dims, mlir::MlirOp grid,
+    mlir::Type calc_type, mlir::stablehlo::Dimensions input_shape,
+    int64_t offset_dim_size, bool align_corners, PaddingMode padding_mode) {
   BicubicWeightsAndIndices res(spatial_dim_size);
   auto& [all_weights, all_d_weights, all_indices, all_indices_unclamped,
          grid_coords] = res;
@@ -1613,18 +1536,19 @@ CalculateBicubicBackwardWeightsAndIndices(
   const auto A_val = -0.75;
 
   for (int i = 0; i < spatial_dim_size; ++i) {
-    Dimensions offsets(grid_shape.size(), 0);
+    Dimensions offsets(grid_dims.size(), 0);
     offsets.back() = i;
-    Dimensions limits = grid_shape;
+    Dimensions limits(grid_dims.size(), 0);
+    for (size_t d = 0; d < grid_dims.size() - 1; ++d) {
+      limits[d] = grid_dims[d].size;
+    }
     limits.back() = i + 1;
-    Dimensions strides(grid_shape.size(), 1);
+    Dimensions strides(grid_dims.size(), 1);
     auto grid_coord_sliced =
         mlir::stablehlo::Slice(grid_calc, offsets, limits, strides);
-    Dimensions coord_shape = grid_shape;
-    coord_shape.pop_back();
-    auto grid_coord_ty = mlir::RankedTensorType::get(coord_shape, calc_type);
-    auto grid_coord_raw =
-        mlir::stablehlo::Reshape(grid_coord_ty, grid_coord_sliced);
+    TT_ASSIGN_OR_RETURN(auto grid_coord_raw,
+                        Squeeze(grid_coord_sliced,
+                                {static_cast<int64_t>(grid_dims.size() - 1)}));
     grid_coords.push_back(grid_coord_raw);
     auto in_size = input_shape[offset_dim_size + spatial_dim_size - 1 - i];
     TT_ASSIGN_OR_RETURN(auto in_size_op, DimensionInfoToOp(builder, in_size));
@@ -1768,25 +1692,19 @@ absl::StatusOr<BicubicBackwardCornerOperands> CalculateBicubicBackwardCorners(
     auto y_w = all_weights[1][y_bit];
 
     std::vector<mlir::MlirOp> current_indices = {x_idx, y_idx};
-    std::vector<mlir::MlirOp> reshaped_indices{ReshapeIndexTo2D(x_idx),
-                                               ReshapeIndexTo2D(y_idx)};
-
-    auto index_tensor = mlir::stablehlo::Concatenate(
-        builder, reshaped_indices,
-        GetTensorTypeOrDie(reshaped_indices[0]).getRank() - 1);
 
     TT_ASSIGN_OR_RETURN(
-        auto gathered,
-        GatherOrDynamicGather(builder, input_calc, index_tensor, gather_config,
-                              /*indices_are_sorted=*/false));
+        auto gathered, GatherInterpolatedValue(builder, input_calc,
+                                               current_indices, gather_config));
 
     if (compute_grad_input) {
       auto x_idx_unclamped = all_indices_unclamped[0][x_bit];
       auto y_idx_unclamped = all_indices_unclamped[1][y_bit];
 
       TT_ASSIGN_OR_RETURN(auto current_weight, BuildMulShlo(x_w, y_w));
-      auto weight_bcast = mlir::stablehlo::BroadcastInDim(
-          gathered.getType(), current_weight, bcast_dims);
+      TT_ASSIGN_OR_RETURN(
+          auto weight_bcast,
+          BroadcastIfNeeded(current_weight, gathered, bcast_dims));
       TT_ASSIGN_OR_RETURN(auto updates,
                           BuildMulShlo(grad_output_calc, weight_bcast));
 
@@ -1801,11 +1719,8 @@ absl::StatusOr<BicubicBackwardCornerOperands> CalculateBicubicBackwardCorners(
         TT_ASSIGN_OR_RETURN(auto y_ok, is_in_bounds(y_idx_unclamped, in_h));
         auto pixel_ok = mlir::stablehlo::And(x_ok, y_ok);
 
-        const auto gathered_ty = GetTensorTypeOrDie(gathered);
-        auto pixel_ok_bcast_ty = mlir::RankedTensorType::get(
-            gathered_ty.getShape(), builder.getOpBuilder().getI1Type());
-        auto pixel_ok_bcast = mlir::stablehlo::BroadcastInDim(
-            pixel_ok_bcast_ty, pixel_ok, bcast_dims);
+        TT_ASSIGN_OR_RETURN(auto pixel_ok_bcast,
+                            BroadcastIfNeeded(pixel_ok, gathered, bcast_dims));
         auto zero_tensor = MakeConstantLike(grad_output_calc, 0.0, calc_type);
         gathered =
             mlir::stablehlo::Select(pixel_ok_bcast, gathered, zero_tensor);
@@ -1912,9 +1827,8 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGridSamplerBicubicBackwardShlo(
   mlir::MlirBuilder& builder = input.getBuilder();
   const auto input_ty = GetTensorTypeOrDie(input);
   mlir::stablehlo::Dimensions input_shape = GetDimensions(input);
-  const auto grid_ty = GetTensorTypeOrDie(grid);
-  Dimensions grid_shape = CopyIntVector(grid_ty.getShape());
-  int64_t spatial_dim_size = grid_shape.back();
+  mlir::stablehlo::Dimensions grid_dims = GetDimensions(grid);
+  int64_t spatial_dim_size = grid_dims.back().size;
   int64_t rank = input_shape.size();
   int64_t offset_dim_size = rank - spatial_dim_size;
 
@@ -1932,7 +1846,7 @@ absl::StatusOr<std::array<mlir::MlirOp, 2>> BuildGridSamplerBicubicBackwardShlo(
   TT_ASSIGN_OR_RETURN(
       auto weights_and_indices,
       CalculateBicubicBackwardWeightsAndIndices(
-          builder, spatial_dim_size, grid_shape, grid, calc_type, input_shape,
+          builder, spatial_dim_size, grid_dims, grid, calc_type, input_shape,
           offset_dim_size, align_corners, padding_mode));
 
   TT_ASSIGN_OR_RETURN(

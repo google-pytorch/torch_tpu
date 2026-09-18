@@ -203,7 +203,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
     "nn.functional.embedding": ALL_MODES,  # crash in shard 27
     "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
-    "nn.functional.grid_sample": ALL_MODES,  #
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
     "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
@@ -408,6 +407,7 @@ class DynamicOpInfo:
     adapters = [
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
+        GridSampleDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
     ]
@@ -654,6 +654,42 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class GridSampleDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo for grid_sample that supports bounded dynamism."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in [
+        "nn.functional.grid_sample",
+        "grid_sampler",
+        "torch.grid_sampler",
+        "grid_sampler_2d",
+        "grid_sampler_3d",
+    ]
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark the args of a grid_sample op as dynamic."""
+    # Only the batch dimension (dim 0) is shared between input and grid.
+    if idx == 0 and args and isinstance(args[0], torch.Tensor):
+      grid = args[0]
+      if grid.ndim >= 1 and grid.shape[0] > 1:
+        grid_value_str = utils.get_tensor_summary(grid, data=False)
+        print(
+            f">>>> Marking dependent arg dim 0 dynamic [<={ub}] in"
+            f" {grid_value_str} (mode={mode.value})",
+            flush=True,
+        )
+        _mark_tensor_dynamic(grid, 0, 2, ub, mode=mode)
 
 
 def mark_input_dynamic(

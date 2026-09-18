@@ -84,7 +84,6 @@
 #include "tsl/platform/path.h"
 #include "xla/mlir/utils/error_util.h"
 #include "xla/pjrt/mlir_to_hlo.h"
-#include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
 
@@ -1031,7 +1030,7 @@ absl::StatusOr<mlir::MlirOp> Unsqueeze(mlir::MlirOp input, int64_t dim) {
 absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
                                      absl::Span<const int64_t> dims) {
   auto type = GetTensorTypeOrDie(input);
-  auto input_shape = type.getShape();
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
   int64_t rank = type.getRank();
   std::vector<bool> dim_squeezed(rank, false);
   bool will_squeeze = false;
@@ -1042,7 +1041,7 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
         d >= 0 && d < rank, error::kInvalidArgument)
         << "invalid dimension, expected to be within [-" << rank << ", " << rank
         << "), got " << dim << " for tensor with " << rank << " dimensions";
-    if (input_shape[d] == 1) {
+    if (input_dims[d].size == 1 && !input_dims[d].boundOp.has_value()) {
       dim_squeezed[d] = true;
       will_squeeze = true;
     }
@@ -1052,15 +1051,15 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
     return input;
   }
 
-  Dimensions output_dims;
+  mlir::stablehlo::Dimensions output_dims;
   for (int64_t i = 0; i < rank; ++i) {
     if (!dim_squeezed[i]) {
-      output_dims.push_back(input_shape[i]);
+      output_dims.push_back(input_dims[i]);
     }
   }
 
   auto result_type =
-      mlir::RankedTensorType::get(output_dims, type.getElementType());
+      mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(result_type, input);
 }
 
