@@ -461,6 +461,8 @@ enum class OpName {
   kIsInScalarTensorOut,
   kIsInTensorScalarOut,
   kIsInTensorTensorOut,
+  kIsInf,
+  kIsInfOut,
   kIsNan,
   kIsNegInfOut,
   kIsPosInfOut,

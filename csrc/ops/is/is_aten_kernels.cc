@@ -27,6 +27,28 @@
 
 namespace torch_tpu {
 
+at::Tensor AtenIsInf(const at::Tensor& self) {
+  TT_KERNEL(OpName::kIsInf, _, (self), {
+    TT_ASSIGN_OR_THROW(
+        auto result,
+        ::torch_tpu::UnaryOp(self, BuildIsInfShlo,
+                             {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+                              .out_dtype = mlir::ElementType::PRED}));
+    return result;
+  });
+}
+
+at::Tensor& AtenIsInfOut(const at::Tensor& self, at::Tensor& out) {
+  TT_KERNEL(OpName::kIsInfOut, _, (self, out), {
+    TT_THROW_IF_ERROR(::torch_tpu::UnaryOpOut(
+        self, out, BuildIsInfShlo,
+        {.op_param_cache_keys = OpParamCacheKeys::Empty(),
+         .out_dtype = mlir::ElementType::PRED,
+         .allow_out_dtype_cast = false}));
+    return out;
+  });
+}
+
 at::Tensor AtenIsNan(const at::Tensor& self) {
   TT_KERNEL(OpName::kIsNan, _, (self), {
     TT_ASSIGN_OR_THROW(

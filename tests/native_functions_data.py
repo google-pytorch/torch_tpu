@@ -461,6 +461,11 @@ REGISTRATION_OVERRIDES = frozenset([
     # gru.input is registered to provide an optimized fused StableHLO kernel
     # on TPU, overriding the default PyTorch decomposition.
     'gru.input',
+    # isinf and isinf.out are registered to provide direct StableHLO lowerings
+    # on TPU, overriding the default PyTorch decomposition and supporting
+    # bounded dynamic shapes.
+    'isinf',
+    'isinf.out',
     # TODO(b/525550199): Remove ldexp overrides once we upgrade to PyTorch
     # v2.13.
     'ldexp.Tensor',

@@ -61,6 +61,7 @@ mlir::MlirOp IsNanImpl(mlir::MlirOp input_op) {
   TT_REQUIRE_SEMICOLON_
 
 // go/keep-sorted start
+TT_FLOAT_IS_OP_BUILDER_(BuildIsInfShlo, mlir::chlo::IsInf, false);
 TT_FLOAT_IS_OP_BUILDER_(BuildIsNanShlo, IsNanImpl, false);
 TT_FLOAT_IS_OP_BUILDER_(BuildIsNegInfShlo, mlir::chlo::IsNegInf, false);
 TT_FLOAT_IS_OP_BUILDER_(BuildIsPosInfShlo, mlir::chlo::IsPosInf, false);

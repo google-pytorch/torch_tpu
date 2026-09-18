@@ -21,6 +21,8 @@
 
 namespace torch_tpu {
 
+at::Tensor AtenIsInf(const at::Tensor& self);
+at::Tensor& AtenIsInfOut(const at::Tensor& self, at::Tensor& out);
 at::Tensor AtenIsNan(const at::Tensor& self);
 at::Tensor& AtenIsNegInfOut(const at::Tensor& self, at::Tensor& out);
 at::Tensor& AtenIsPosInfOut(const at::Tensor& self, at::Tensor& out);

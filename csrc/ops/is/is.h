@@ -23,6 +23,7 @@
 namespace torch_tpu {
 
 // go/keep-sorted start
+absl::StatusOr<mlir::MlirOp> BuildIsInfShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildIsNanShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildIsNegInfShlo(mlir::MlirOp input_op);
 absl::StatusOr<mlir::MlirOp> BuildIsPosInfShlo(mlir::MlirOp input_op);

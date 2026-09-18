@@ -738,6 +738,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kIsInScalarTensorOut>(m, AtenIsInScalarTensorOut);
   ImplStable<OpName::kIsInTensorScalarOut>(m, AtenIsInTensorScalarOut);
   ImplStable<OpName::kIsInTensorTensorOut>(m, AtenIsInTensorTensorOut);
+  ImplStable<OpName::kIsInf>(m, AtenIsInf);
+  ImplStable<OpName::kIsInfOut>(m, AtenIsInfOut);
   ImplStable<OpName::kIsNan>(m, AtenIsNan);
   ImplStable<OpName::kIsNegInfOut>(m, AtenIsNegInfOut);
   ImplStable<OpName::kIsPosInfOut>(m, AtenIsPosInfOut);

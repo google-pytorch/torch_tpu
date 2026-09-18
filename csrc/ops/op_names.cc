@@ -895,6 +895,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "isin.Tensor_Scalar_out";
     case OpName::kIsInTensorTensorOut:
       return "isin.Tensor_Tensor_out";
+    case OpName::kIsInf:
+      return "isinf";
+    case OpName::kIsInfOut:
+      return "isinf.out";
     case OpName::kIsNan:
       return "isnan";
     case OpName::kIsNegInfOut:
