@@ -1678,6 +1678,32 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     ):
       tpu_torch_compile.execute(compile_result.executable, [ph])
 
+  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  def test_synchronize_surfaces_async_assertion(self):
+    false_cond = torch.tensor(False, device=et.device())
+    torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+      ):
+        torch.tpu.synchronize()
+    finally:
+      tt_testing.clear_sticky_error()
+
+  @et.why_tpu_only("Asynchronous device assertions are TPU-only.")
+  def test_accelerator_synchronize_surfaces_async_assertion(self):
+    false_cond = torch.tensor(False, device=et.device())
+    torch.ops.aten._assert_async.msg(false_cond, "async assertion failure")
+    try:
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=re.compile(r".*async assertion failure.*", re.DOTALL),
+      ):
+        torch.accelerator.synchronize()
+    finally:
+      tt_testing.clear_sticky_error()
+
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
     with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
