@@ -55,6 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # TODO(b/562273922): update nightly CI jobs to use run_torch_test.py
         job_info: [
           {
             name: "CPU",
