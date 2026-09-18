@@ -196,7 +196,6 @@ untriaged_ops_deny_list: dict[
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
     "mm": {COMPILE},  # numerical mismatch under dynamic compile
-    "maximum": ALL_MODES,  # dynamic triage (invalid result)
     "ne": ALL_MODES,  # dynamic triage (invalid result)
     "neg": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer

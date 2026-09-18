@@ -4356,7 +4356,7 @@ class OpInfoTestBase(
       # First, execute the base variant to dynamically determine the output
       # PyTree structure (e.g., single tensor vs. tuple of tensors) and natural
       # dtypes (e.g., bool for comparison ops or int64 for auxiliary index
-      # outputs).
+      # outputs) without triggering dynamic marking.
       base_result = self._run_op(
           op=op,
           variant=OpVariant.BASE,
@@ -4367,7 +4367,7 @@ class OpInfoTestBase(
           device=device,
           subtest_name=subtest_name,
           check_device=check_device,
-          check_dynamism=check_dynamism,
+          check_dynamism=False,
           # This _run_op() call is for preparing test data, not part of the test
           # itself, so disable performance measurement to avoid skewing metrics.
           measure_perf=False,
@@ -4409,13 +4409,12 @@ class OpInfoTestBase(
     input_value = device_op_input.input_value
 
     is_dynamic_test = bool(
-        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+        _CHECK_DYNAMISM_USING_SEED.value
+        and device == torch.device("tpu")
+        and check_dynamism
     )
 
     if is_dynamic_test:
-      if not check_dynamism:
-        self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
-
       dynamism_mode = (
           DynamismMode.COMPILE if use_compiled else DynamismMode.EAGER
       )
@@ -4453,6 +4452,7 @@ class OpInfoTestBase(
       backend = "tpu" if str(device) == "tpu" else "inductor"
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       if is_dynamic_test:
+        torch._dynamo.reset()
         op_func = torch.compile(
             op_func, backend=backend, options={"bounded_dynamism": True}
         )
@@ -4790,6 +4790,9 @@ class OpInfoTestBase(
       if op.name != "normal":
         print_reproducer(subtest_name, op, golden_input, variant)
       print_op_input(torch_tpu_printable_input, data=_PRINT_OP_INPUTS.value > 1)
+
+    if _CHECK_DYNAMISM_USING_SEED.value and not check_dynamism:
+      self.skipTest(f"Dynamism check is explicitly disabled for {op_name}.")
 
     opt_level = _OPT_LEVEL.value
     if opt_level:
