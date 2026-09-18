@@ -44,7 +44,7 @@ jobs:
           gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body-file - <<EOF
           Thanks for contributing to TorchTPU, @${PR_AUTHOR}! :fire:
 
-          To ensure smooth code reviews, we kindly ask authors and reviewers
+          To ensure smooth code reviews, we kindly ask authors and reviewers \
           to follow the process documented in https://github.com/${REPOSITORY}/blob/main/CONTRIBUTING.md#code-reviews.
 
           Happy hacking!
