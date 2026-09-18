@@ -40,32 +40,25 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
     _loader._init_device("tpu")
 
   def test_tpu_profiler_config_accessibility(self):
-    """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler and
-
-    torch_tpu.profiler.
-    """
+    """Verifies TpuProfilerConfig is accessible via torch.tpu.profiler."""
     self.assertTrue(hasattr(torch, "tpu"))
     self.assertTrue(hasattr(torch.tpu, "profiler"))
     self.assertTrue(hasattr(torch.tpu.profiler, "TpuProfilerConfig"))
-    self.assertTrue(hasattr(torch_tpu.profiler, "TpuProfilerConfig"))
-    self.assertIs(sys.modules.get("torch.tpu.profiler"), torch_tpu.profiler)
+    self.assertFalse(hasattr(torch_tpu, "profiler"))
+    self.assertNotIn("torch_tpu.profiler", sys.modules)
 
   def test_tpu_profiler_config_identity(self):
     """Verifies identity between public export and internal class definition."""
     self.assertIs(
         torch.tpu.profiler.TpuProfilerConfig, InternalTpuProfilerConfig
     )
-    self.assertIs(
-        torch_tpu.profiler.TpuProfilerConfig, InternalTpuProfilerConfig
-    )
 
   def test_invalid_attribute_raises(self):
-    """Verifies accessing non-existent attributes on proxy module raises
-
-    AttributeError.
-    """
-    with self.assertRaises(AttributeError):
-      _ = getattr(torch_tpu.profiler, "non_existent_attribute")
+    """Verifies accessing non-existent attributes on proxy module raises AttributeError."""
+    with self.assertRaises(  # ASSERT_RAISES_OK=Verifies proxy module raises AttributeError for non-existent attributes
+        AttributeError
+    ):
+      _ = getattr(torch.tpu.profiler, "non_existent_attribute")
 
   def test_tpu_profiler_config_metadata(self):
     """Verifies lifecycle stage metadata attached to TpuProfilerConfig."""
@@ -98,7 +91,6 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
   def test_profiler_module_dir(self):
     """Verifies dir(torch.tpu.profiler) returns public symbol list."""
     self.assertEqual(dir(torch.tpu.profiler), ["TpuProfilerConfig"])
-    self.assertEqual(dir(torch_tpu.profiler), ["TpuProfilerConfig"])
 
   def test_pallas_api_registry(self):
     """Verifies public exposure, identity, metadata, and proxy behavior for pallas."""

@@ -49,21 +49,12 @@ py_dist_info(
 )
 
 torch_tpu_py_library(
-    name = "profiler",
-    srcs = ["profiler.py"],
-    deps = [
-        "//src/torch_tpu/_internal/profiler:profiler_config",
-    ],
-)
-
-torch_tpu_py_library(
     name = "_loader",
     srcs = ["_loader.py"],
     data = [
         ":torch_tpu_dist_info",
     ],
     deps = [
-        ":profiler",
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal:env",
         "//src/torch_tpu/_internal:env_utils",
@@ -79,6 +70,7 @@ torch_tpu_py_library(
         "//src/torch_tpu/_internal/pooling:patch",
         "//src/torch_tpu/_internal/precision:precision_impl",
         "//src/torch_tpu/_internal/profiler",
+        "//src/torch_tpu/_internal/profiler:api",
         "//src/torch_tpu/_internal/sync",
         "//src/torch_tpu/_internal/tracing",
         "//src/torch_tpu/_internal/utils:hardware",

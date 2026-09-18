@@ -260,19 +260,16 @@ def _init_device_impl(device: str) -> torch.device:
     torchcomm_tpu.register_torchcomms_tpu()
 
   # Register the Kineto backend using the internal C++ lifecycle module.
-  # Renamed to '_internal_profiler' to avoid collision with the public
-  # 'torch_tpu.profiler' module below, which only exports user symbols (e.g.
-  # 'TpuProfilerConfig') via PEP-562 lazy loading and not backend hooks.
-  from torch_tpu._internal import profiler as _internal_profiler  # pylint: disable=g-import-not-at-top
+  from torch_tpu._internal import profiler  # pylint: disable=g-import-not-at-top
 
-  _internal_profiler.register_kineto_backend()
+  profiler.register_kineto_backend()
 
   # Expose the public profiler module under 'torch.tpu.profiler' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu import profiler  # pylint: disable=g-import-not-at-top
+  from torch_tpu._internal.profiler import api as profiler_api  # pylint: disable=g-import-not-at-top
 
-  sys.modules["torch.tpu.profiler"] = profiler
-  setattr(device_module, "profiler", profiler)
+  sys.modules["torch.tpu.profiler"] = profiler_api
+  setattr(device_module, "profiler", profiler_api)
 
   # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.
