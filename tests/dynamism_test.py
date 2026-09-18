@@ -619,6 +619,110 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
 
+  def test_index_copy_dynamic_operand_indexed_dim(self):
+    def mark_dynamic(x, idx, src):
+      del idx, src
+      dynamism.mark_dynamic(x, 1, 2, 15)
+
+    def index_copy_fn(x, idx, src):
+      return torch.index_copy(x, 1, idx, src)
+
+    args = (
+        torch.arange(50, dtype=torch.float32).reshape(10, 5),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.arange(30, dtype=torch.float32).reshape(10, 3) + 100,
+    )
+    act = self._run_bounded_dynamism_test(index_copy_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 15)
+
+  def test_index_copy_inplace_dynamic_indexed_dim(self):
+    def mark_dynamic(x, idx, src):
+      del idx, src
+      dynamism.mark_dynamic(x, 1, 2, 15)
+
+    def index_copy_inplace_fn(x, idx, src):
+      x_clone = x.clone()
+      x_clone.index_copy_(1, idx, src)
+      return x_clone
+
+    args = (
+        torch.arange(50, dtype=torch.float32).reshape(10, 5),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.arange(30, dtype=torch.float32).reshape(10, 3) + 100,
+    )
+    act = self._run_bounded_dynamism_test(
+        index_copy_inplace_fn, mark_dynamic, *args
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 15)
+
+  def test_index_copy_dynamic_dim0(self):
+    def mark_dynamic(x, idx, src):
+      del idx, src
+      dynamism.mark_dynamic(x, 0, 2, 20)
+
+    def index_copy_fn(x, idx, src):
+      return torch.index_copy(x, 0, idx, src)
+
+    args = (
+        torch.arange(50, dtype=torch.float32).reshape(10, 5),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.arange(15, dtype=torch.float32).reshape(3, 5) + 100,
+    )
+    act = self._run_bounded_dynamism_test(index_copy_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 20)
+
+  def test_index_copy_dynamic_negative_dim(self):
+    def mark_dynamic(x, idx, src):
+      del idx, src
+      dynamism.mark_dynamic(x, 1, 2, 15)
+
+    def index_copy_fn(x, idx, src):
+      return torch.index_copy(x, -1, idx, src)
+
+    args = (
+        torch.arange(50, dtype=torch.float32).reshape(10, 5),
+        torch.tensor([0, 2, 4], dtype=torch.int64),
+        torch.arange(30, dtype=torch.float32).reshape(10, 3) + 100,
+    )
+    act = self._run_bounded_dynamism_test(index_copy_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 15)
+
+  def test_index_copy_3d_dynamic_indexed_dim(self):
+    def mark_dynamic(x, idx, src):
+      del idx, src
+      dynamism.mark_dynamic(x, 1, 2, 20)
+
+    def index_copy_fn(x, idx, src):
+      return torch.index_copy(x, 1, idx, src)
+
+    args = (
+        torch.arange(120, dtype=torch.float32).reshape(2, 10, 6),
+        torch.tensor([1, 4, 7], dtype=torch.int64),
+        torch.arange(36, dtype=torch.float32).reshape(2, 3, 6) + 100,
+    )
+    act = self._run_bounded_dynamism_test(index_copy_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 1)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 20)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -85,7 +85,7 @@ mlir::MlirOp BuildIndexCopyShlo(mlir::MlirOp self, int64_t dim,
                << mlir::debugString(scatter_dimension_numbers);
 
   // Create a region builder callback.
-  auto block_type = self_type.clone({}, computation_type);
+  auto block_type = mlir::RankedTensorType::get({}, computation_type);
   auto region_builder = [block_type](mlir::RegionBuilder& builder) {
     mlir::MlirOp _ = mlir::Argument(builder, block_type);
     mlir::MlirOp arg1 = mlir::Argument(builder, block_type);

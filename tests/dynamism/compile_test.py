@@ -1483,5 +1483,97 @@ class IndexPutDynamicBooleanMaskTest(seed_test_utils.RepeatableTest):
     utils.assert_close(out, expected)
 
 
+class IndexCopyDynamicTest(seed_test_utils.RepeatableTest):
+
+  def setUp(self):
+    super().setUp()
+    if not torch.accelerator.is_available():
+      self.skipTest("TPU accelerator not available in this test environment.")
+    tt_testing.reset_eager_state()
+    self.device = torch.accelerator.current_accelerator()
+
+  def test_index_copy_dynamic_batch_dim(self):
+    def fn(x, idx, src):
+      return torch.index_copy(x, 1, idx, src)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    batch_size = 4
+    x = torch.arange(40, dtype=torch.float32, device=self.device).reshape(
+        batch_size, 10
+    )
+    idx = torch.tensor([1, 3, 5], dtype=torch.int64, device=self.device)
+    src = (
+        torch.arange(12, dtype=torch.float32, device=self.device).reshape(
+            batch_size, 3
+        )
+        + 100
+    )
+
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(src, 0, min=2, max=16)
+
+    out = compiled(x, idx, src)
+    expected = fn(x, idx, src)
+    utils.assert_close(out, expected)
+
+  def test_index_copy_dynamic_indexed_dim(self):
+    def fn(x, idx, src):
+      return torch.index_copy(x, 1, idx, src)
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    batch_size = 4
+    x = torch.arange(40, dtype=torch.float32, device=self.device).reshape(
+        batch_size, 10
+    )
+    idx = torch.tensor([1, 3, 5], dtype=torch.int64, device=self.device)
+    src = (
+        torch.arange(12, dtype=torch.float32, device=self.device).reshape(
+            batch_size, 3
+        )
+        + 100
+    )
+
+    torch._dynamo.mark_dynamic(x, 1, min=6, max=20)
+
+    out = compiled(x, idx, src)
+    expected = fn(x, idx, src)
+    utils.assert_close(out, expected)
+
+  def test_index_copy_inplace_dynamic_batch_dim(self):
+    def fn(x, idx, src):
+      x_clone = x.clone()
+      x_clone.index_copy_(1, idx, src)
+      return x_clone
+
+    compiled = torch.compile(
+        fn, backend="tpu", options={"bounded_dynamism": True}
+    )
+
+    batch_size = 4
+    x = torch.arange(40, dtype=torch.float32, device=self.device).reshape(
+        batch_size, 10
+    )
+    idx = torch.tensor([1, 3, 5], dtype=torch.int64, device=self.device)
+    src = (
+        torch.arange(12, dtype=torch.float32, device=self.device).reshape(
+            batch_size, 3
+        )
+        + 100
+    )
+
+    torch._dynamo.mark_dynamic(x, 0, min=2, max=16)
+    torch._dynamo.mark_dynamic(src, 0, min=2, max=16)
+
+    out = compiled(x, idx, src)
+    expected = fn(x, idx, src)
+    utils.assert_close(out, expected)
+
+
 if __name__ == "__main__":
   absltest.main()

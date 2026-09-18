@@ -182,7 +182,6 @@ untriaged_ops_deny_list: dict[
     "floor_divide": ALL_MODES,  # currently failing dynamism tests
     "full_like": {COMPILE},  # buffer dimension mismatch
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
-    "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_put": ALL_MODES,  # garbage data
     "index_select": ALL_MODES,  # invalid gather
     "isinf": {COMPILE},  # buffer dimension mismatch
@@ -295,14 +294,25 @@ def verify_op_supports_dynamism(
   ### [TEST INFRA TASKS] ###
   # The following indicate changes needed in this file to increase coverage.
 
-  # Verify all input tensors are supported with dynamism. Here we use
-  # _pytree.tree_flatten to recursively inspect the input_value and args,
-  # ensuring that tensors inside lists, tuples, or other nested structures
-  # (common in foreach ops) are properly vetted.
-  for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+  # Ops with dedicated adapters (e.g. index_copy) can handle non-tensor args.
+  # For other ops, verify all inputs in (input_value, args) are valid tensors.
+  if op.name == "index_copy":
+    tensor_inputs = [
+        v
+        for v in _pytree.tree_flatten((input_value, args))[0]
+        if isinstance(v, torch.Tensor)
+    ]
+    if not tensor_inputs:
+      return "No tensor inputs found to mark dynamic."
+    for tensor in tensor_inputs:
+      skip_input = _should_skip_input_marking(op, tensor)
+      if skip_input:
+        return skip_input
+  else:
+    for value in _pytree.tree_flatten((input_value, args))[0]:
+      skip_input = _should_skip_input_marking(op, value)
+      if skip_input:
+        return skip_input
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -410,6 +420,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        IndexCopyDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -654,6 +665,92 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class IndexCopyDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for index_copy."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name == "index_copy"
+
+  def mark_dynamic(
+      self,
+      seed: int,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark index_copy as dynamic."""
+    if len(args) < 3:
+      super().mark_dynamic(seed, input_value, args, mode=mode)
+      return
+
+    dim = args[0]
+    if (
+        not isinstance(dim, int)
+        or input_value.ndim == 0
+        or not (-input_value.ndim <= dim < input_value.ndim)
+    ):
+      super().mark_dynamic(seed, input_value, args, mode=mode)
+      return
+
+    dim = dim if dim >= 0 else dim + input_value.ndim
+
+    if mode == DynamismMode.EAGER:
+      # In eager mode, XLA requires dynamic dimension sizes in update_window_dims
+      # to share the same SSA value, which separate eager inputs cannot provide.
+      # Therefore, only the indexed dimension (an inserted window dim) can be
+      # dynamic in eager mode.
+      if input_value.shape[dim] <= 1:
+        return
+      idx = dim
+      input_value_str = utils.get_tensor_summary(input_value, data=False)
+      ub = input_value.shape[idx] + 10
+      print(
+          f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}"
+          f" (mode={mode.value})",
+          flush=True,
+      )
+      _mark_tensor_dynamic(input_value, idx, 2, ub, mode=mode)
+      return
+
+    # In compile mode, any candidate can be dynamic and dependent args are marked.
+    super().mark_dynamic(seed, input_value, args, mode=mode)
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark dependent dims of index_copy as dynamic."""
+    if len(args) < 3:
+      return
+    dim = args[0]
+    source = args[2]
+    if (
+        not isinstance(dim, int)
+        or not isinstance(source, torch.Tensor)
+        or like.ndim == 0
+        or not (-like.ndim <= dim < like.ndim)
+    ):
+      return
+    dim = dim if dim >= 0 else dim + like.ndim
+    if (
+        idx != dim
+        and idx < source.ndim
+        and source.shape[idx] == like.shape[idx]
+    ):
+      print(
+          f">>>> Marking dependent source dim {idx} dynamic [<={ub}] in"
+          f" {utils.InputMetadata(source)} (mode={mode.value})",
+          flush=True,
+      )
+      _mark_tensor_dynamic(source, idx, 2, ub, mode=mode)
 
 
 def mark_input_dynamic(
