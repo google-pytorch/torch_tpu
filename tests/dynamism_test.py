@@ -617,6 +617,51 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     self.assertLen(act_dynamism_info, 1)
     self.assertEqual(act_dynamism_info[0].dimension, 0)
     self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+
+  def test_isin_dynamic_elements(self):
+    def mark_dynamic(elements, test_elements):
+      del test_elements
+      dynamism.mark_dynamic(elements, 0, 2, 10)
+
+    args = (
+        torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.int32),
+        torch.tensor([2, 5, 6], dtype=torch.int32),
+    )
+    act = self._run_bounded_dynamism_test(torch.isin, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_isin_dynamic_test_elements(self):
+    def mark_dynamic(elements, test_elements):
+      del elements
+      dynamism.mark_dynamic(test_elements, 0, 2, 10)
+
+    args = (
+        torch.tensor([[1, 2], [3, 4]], dtype=torch.int32),
+        torch.tensor([2, 5, 6], dtype=torch.int32),
+    )
+    self._run_bounded_dynamism_test(torch.isin, mark_dynamic, *args)
+
+  def test_isin_dynamic_both_and_inverted(self):
+    def mark_dynamic(elements, test_elements):
+      dynamism.mark_dynamic(elements, 0, 2, 10)
+      dynamism.mark_dynamic(test_elements, 0, 2, 10)
+
+    def isin_fn(elements, test_elements):
+      return torch.isin(elements, test_elements, invert=True)
+
+    args = (
+        torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.int32),
+        torch.tensor([2, 5, 6], dtype=torch.int32),
+    )
+    act = self._run_bounded_dynamism_test(isin_fn, mark_dynamic, *args)
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
     self.assertEqual(act_dynamism_info[0].upper_bound, 10)
 
 

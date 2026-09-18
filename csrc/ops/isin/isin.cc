@@ -55,30 +55,19 @@ absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
   // print(jax.jit(foo).lower()._lowering.stablehlo())
 
   const mlir::RankedTensorType elements_type = GetTensorTypeOrDie(elements);
-  const mlir::RankedTensorType test_elements_type =
-      GetTensorTypeOrDie(test_elements);
+  const int64_t elements_rank = elements_type.getRank();
 
-  TT_ASSIGN_OR_RETURN(const int64_t num_elements,
-                      NumElements(elements_type.getShape()));
-  TT_ASSIGN_OR_RETURN(const int64_t num_test_elements,
-                      NumElements(test_elements_type.getShape()));
+  // Unsqueeze elements to add a trailing dimension of size 1.
+  TT_ASSIGN_OR_RETURN(const mlir::MlirOp elements_unsqueeze,
+                      Unsqueeze(elements, elements_rank));
 
-  auto elements_flat = mlir::stablehlo::Reshape(elements, {num_elements});
-  auto test_elements_flat =
-      mlir::stablehlo::Reshape(test_elements, {num_test_elements});
+  // Flatten test_elements into a 1D tensor.
+  const mlir::MlirOp test_elements_flat = Flatten(test_elements);
 
-  TT_ASSIGN_OR_RETURN(auto elements_bcast,
-                      Broadcast(elements_flat, {num_elements, 1}, {0}));
+  // Broadcast elements_unsqueeze and test_elements_flat together.
   TT_ASSIGN_OR_RETURN(
-      auto test_elements_bcast,
-      Broadcast(test_elements_flat, {1, num_test_elements}, {1}));
-
-  TT_ASSIGN_OR_RETURN(
-      elements_bcast,
-      Broadcast(elements_bcast, {num_elements, num_test_elements}, {0, 1}));
-  TT_ASSIGN_OR_RETURN(test_elements_bcast,
-                      Broadcast(test_elements_bcast,
-                                {num_elements, num_test_elements}, {0, 1}));
+      (auto [elements_bcast, test_elements_bcast]),
+      ApplyBroadcastIfNeeded(elements_unsqueeze, test_elements_flat));
 
   auto cmp = mlir::stablehlo::Compare(elements_bcast, test_elements_bcast,
                                       mlir::stablehlo::ComparisonDirection::EQ);
@@ -92,14 +81,14 @@ absl::StatusOr<mlir::MlirOp> BuildIsInShlo(mlir::MlirOp elements,
             dtype, rb.getRegion(), rb.getOpBuilder());
       };
 
-  auto res =
-      mlir::stablehlo::Reduce(builder, cmp, init, reduce_builder, {1})[0];
+  auto res = mlir::stablehlo::Reduce(builder, {cmp}, {init}, reduce_builder,
+                                     /*dimensions=*/{elements_rank})[0];
 
   if (inversion == IsInverted::kYes) {
     res = mlir::stablehlo::Not(res);
   }
 
-  return mlir::stablehlo::Reshape(res, elements_type.getShape());
+  return res;
 }
 
 }  // namespace torch_tpu

@@ -186,7 +186,6 @@ untriaged_ops_deny_list: dict[
     "index_put": ALL_MODES,  # garbage data
     "index_select": ALL_MODES,  # invalid gather
     "isinf": {COMPILE},  # buffer dimension mismatch
-    "isin": ALL_MODES,  # materialization failure (negative dimension size)
     "kron": ALL_MODES,  # dynamic triage (invalid result)
     "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
     "linalg.lu_factor_ex": (

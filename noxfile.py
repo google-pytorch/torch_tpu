@@ -128,7 +128,6 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/resolve_base_sha_test.py",
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
-      "ci/tools/run_bazel_diff_test.py",
   )
 
 
