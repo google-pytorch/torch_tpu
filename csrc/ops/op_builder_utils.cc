@@ -1052,15 +1052,16 @@ absl::StatusOr<mlir::MlirOp> Squeeze(mlir::MlirOp input,
     return input;
   }
 
-  Dimensions output_dims;
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  mlir::stablehlo::Dimensions output_dims;
   for (int64_t i = 0; i < rank; ++i) {
     if (!dim_squeezed[i]) {
-      output_dims.push_back(input_shape[i]);
+      output_dims.push_back(input_dims[i]);
     }
   }
 
   auto result_type =
-      mlir::RankedTensorType::get(output_dims, type.getElementType());
+      mlir::stablehlo::getRankedTensorType(output_dims, type.getElementType());
   return mlir::stablehlo::Reshape(result_type, input);
 }
 
@@ -1145,11 +1146,15 @@ Dimensions GetBatchDimensions(int64_t rank, int64_t dim) {
 mlir::MlirOp SliceBatchDimensions(mlir::MlirOp self, int64_t dim,
                                   const mlir::RankedTensorType& index_type) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
+  if (self_type.getNumDynamicDims() > 0 || index_type.getNumDynamicDims() > 0) {
+    return self;
+  }
   const int64_t rank = self_type.getRank();
   bool needs_slice = false;
   Indices slice_limits = CopyIntVector(self_type.getShape());
   for (int64_t d = 0; d < rank; ++d) {
-    if (d != dim && self_type.getDimSize(d) > index_type.getDimSize(d)) {
+    if (d != dim && !self_type.isDynamicDim(d) && !index_type.isDynamicDim(d) &&
+        self_type.getDimSize(d) > index_type.getDimSize(d)) {
       slice_limits[d] = index_type.getDimSize(d);
       needs_slice = true;
     }

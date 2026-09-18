@@ -59,12 +59,17 @@ absl::Status ValidateGatherInputs(absl::Span<const int64_t> self_dims,
     // PyTorch allows 0D input with 1D index (if index size is 1)
     // and vice versa.
     if (self_rank == 0 && index_rank > 0) {
-      TT_RET_CHECK(index_rank == 1 && index_dims[0] <= 1,
-                   error::kInvalidArgument)
+      TT_RET_CHECK(
+          index_rank == 1 && (mlir::ShapedType::isDynamic(index_dims[0]) ||
+                              index_dims[0] <= 1),
+          error::kInvalidArgument)
           << "expected the input and the index tensor to have the same number "
           << "of dimensions, got 0D vs " << index_rank << "D";
     } else if (index_rank == 0 && self_rank > 0) {
-      TT_RET_CHECK(self_rank == 1 && self_dims[0] <= 1, error::kInvalidArgument)
+      TT_RET_CHECK(
+          self_rank == 1 &&
+              (mlir::ShapedType::isDynamic(self_dims[0]) || self_dims[0] <= 1),
+          error::kInvalidArgument)
           << "expected the input to be a 1D tensor with size at most 1 when "
              "index is 0D, got "
           << self_rank << "D with shape {" << self_dims[0] << "}";
@@ -83,10 +88,13 @@ absl::Status ValidateGatherInputs(absl::Span<const int64_t> self_dims,
 
     for (auto d = 0; d < self_rank; ++d) {
       if (d != dim) {
-        TT_RET_CHECK(index_dims[d] <= self_dims[d], error::kInvalidArgument)
-            << "expected the index tensor to have size less than or equal to "
-               "the input tensor at dimension "
-            << d << ", got " << index_dims[d] << " vs " << self_dims[d];
+        if (!mlir::ShapedType::isDynamic(index_dims[d]) &&
+            !mlir::ShapedType::isDynamic(self_dims[d])) {
+          TT_RET_CHECK(index_dims[d] <= self_dims[d], error::kInvalidArgument)
+              << "expected the index tensor to have size less than or equal to "
+                 "the input tensor at dimension "
+              << d << ", got " << index_dims[d] << " vs " << self_dims[d];
+        }
       }
     }
   }

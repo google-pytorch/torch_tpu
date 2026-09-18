@@ -161,7 +161,6 @@ absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
   TT_ASSIGN_OR_RETURN(mlir::ElementType orig_self_dtype, GetElementType(self));
   TT_ASSIGN_OR_RETURN(mlir::ElementType compute_dtype,
                       InferComputationDtype(orig_self_dtype));
-  mlir::RankedTensorType target_type = GetTensorTypeOrDie(target);
 
   TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
   TT_ASSIGN_OR_RETURN(total_weight, CastIfNeeded(total_weight, compute_dtype));
@@ -191,8 +190,7 @@ absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
     }
 
     // Broadcast grad_val to [batch].
-    TT_ASSIGN_OR_RETURN(grad_val,
-                        BroadcastIfNeeded(grad_val, target_type.getShape()));
+    TT_ASSIGN_OR_RETURN(grad_val, BroadcastIfNeeded(grad_val, target));
   }
 
   // Now grad_val is of shape [batch].
@@ -219,13 +217,7 @@ absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
 
   // Squeeze the batch dimension if it was added earlier.
   if (unsqueezed) {
-    auto grad_input_type = GetTensorTypeOrDie(grad_input);
-    auto shape = grad_input_type.getShape();
-    auto squeezed_shape = shape.drop_front();
-    grad_input = mlir::stablehlo::Reshape(
-        mlir::RankedTensorType::get(squeezed_shape,
-                                    grad_input_type.getElementType()),
-        grad_input);
+    TT_ASSIGN_OR_RETURN(grad_input, Squeeze(grad_input, {0}));
   }
 
   return CastIfNeeded(grad_input, orig_self_dtype);

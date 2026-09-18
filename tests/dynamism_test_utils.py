@@ -215,9 +215,6 @@ untriaged_ops_deny_list: dict[
     ),  # crash (negative dim size in compiled_mode.cc)
     "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
     "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
-    "nn.functional.nll_loss": (
-        ALL_MODES
-    ),  # numerical mismatch or failure in some shards
     "nn.functional.pdist": (
         ALL_MODES
     ),  # inlined vector size fail (likely using bound)
@@ -410,6 +407,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        NllLossDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -654,6 +652,67 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class NllLossDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for nll_loss."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in ["nn.functional.nll_loss", "nll_loss"]
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark dependent args of nll_loss as dynamic."""
+    if not args:
+      return
+
+    target = args[0]
+    if isinstance(target, torch.Tensor) and target.ndim > 0:
+      if idx == 0 and like.ndim >= 2:
+        # Batch dimension: target dim 0 corresponds to input dim 0
+        if target.shape[0] == like.shape[0]:
+          target_str = utils.get_tensor_summary(target, data=False)
+          print(
+              f">>>> Marking dependent target dim 0 dynamic [<={ub}] in"
+              f" {target_str} (mode={mode.value})",
+              flush=True,
+          )
+          _mark_tensor_dynamic(target, 0, 2, ub, mode=mode)
+      elif idx >= 2:
+        # Spatial dimensions: input dim idx corresponds to target dim idx - 1
+        target_idx = idx - 1
+        if (
+            target_idx < target.ndim
+            and target.shape[target_idx] == like.shape[idx]
+        ):
+          target_str = utils.get_tensor_summary(target, data=False)
+          print(
+              f">>>> Marking dependent target dim {target_idx} dynamic [<={ub}]"
+              f" in {target_str} (mode={mode.value})",
+              flush=True,
+          )
+          _mark_tensor_dynamic(target, target_idx, 2, ub, mode=mode)
+
+    # If class dimension is dynamic, mark weight if present in args
+    class_dim = 1 if like.ndim >= 2 else 0
+    if idx == class_dim and len(args) > 1 and isinstance(args[1], torch.Tensor):
+      weight = args[1]
+      if weight.ndim == 1 and weight.shape[0] == like.shape[class_dim]:
+        weight_str = utils.get_tensor_summary(weight, data=False)
+        print(
+            f">>>> Marking dependent weight dim 0 dynamic [<={ub}] in"
+            f" {weight_str} (mode={mode.value})",
+            flush=True,
+        )
+        _mark_tensor_dynamic(weight, 0, 2, ub, mode=mode)
 
 
 def mark_input_dynamic(
