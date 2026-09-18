@@ -31,6 +31,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
@@ -54,10 +55,7 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
 
   // If the input doesn't have a batch dimension, add a size 1 batch dimension
   if (num_dims == spatial_dim_count + 1) {
-    Dimensions new_shape = {1};
-    new_shape.insert(new_shape.end(), input_type.getShape().begin(),
-                     input_type.getShape().end());
-    auto batch_input = mlir::stablehlo::Reshape(input, new_shape);
+    TT_ASSIGN_OR_RETURN(auto batch_input, Unsqueeze(input, 0));
     return BatchInput{batch_input, num_dims};
   }
   return BatchInput{input, num_dims};
@@ -86,11 +84,9 @@ mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
     return batch_op;
   }
 
-  const mlir::RankedTensorType current_type = GetTensorTypeOrDie(batch_op);
-  llvm::SmallVector<int64_t> squeezed_shape;
-  squeezed_shape.append(current_type.getShape().begin() + 1,
-                        current_type.getShape().end());
-  return mlir::stablehlo::Reshape(batch_op, squeezed_shape);
+  auto result = Squeeze(batch_op, {0});
+  ABSL_CHECK_OK(result.status());  // CRASH_OK
+  return *result;
 }
 
 // Calculates the adjusted (left_padding, right_padding) pairs given the padding
@@ -113,7 +109,19 @@ std::vector<PaddingParams> CeilModePadding(
     const int64_t D = dilation[i];
 
     // Spatial dimensions start from index 2
-    const int64_t input_size = input_shape.getDimSize(2 + i);
+    int64_t input_size = input_shape.getDimSize(2 + i);
+    if (input_shape.isDynamicDim(2 + i)) {
+      auto extensions =
+          llvm::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+              input_shape.getEncoding());
+      ABSL_CHECK(extensions != nullptr)  // CRASH_OK
+          << "Dynamic spatial dimension " << (2 + i)
+          << " must have TypeExtensionsAttr bounds encoding";
+      input_size = extensions.getBounds()[2 + i];
+      ABSL_CHECK_NE(input_size, mlir::ShapedType::kDynamic)  // CRASH_OK
+          << "Dynamic spatial dimension " << (2 + i)
+          << " must not have unbounded dynamic size";
+    }
     const int64_t left_padding = P;
     int64_t right_padding = P;
 

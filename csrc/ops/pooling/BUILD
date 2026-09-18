@@ -75,6 +75,7 @@ torch_tpu_cc_library(
         "@stablehlo//:attr_type_builder_util",
         "@stablehlo//:mlir_builder",
         "@stablehlo//:stablehlo_builder",
+        "@stablehlo//:stablehlo_ops",
     ],
 )
 

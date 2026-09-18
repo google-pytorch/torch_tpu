@@ -77,40 +77,58 @@ namespace {
 
 // Creates an index tensor containing the local flattened index for each
 // spatial element.
-mlir::MlirOp CreatePoolIndicesIota(const mlir::RankedTensorType& input_shape,
+mlir::MlirOp CreatePoolIndicesIota(mlir::MlirOp batch_input,
+                                   const mlir::RankedTensorType& input_shape,
                                    mlir::MlirBuilder& builder,
-                                   mlir::Type element_type) {
-  // Compute the total number of spatial elements
-  int64_t spatial_input_elements = std::accumulate(
-      input_shape.getShape().begin() + 2, input_shape.getShape().end(),
-      int64_t{1}, std::multiplies<int64_t>());
+                                   mlir::Type element_type,
+                                   int64_t spatial_dim_count) {
+  // Obtain the static bounded dimensions for the tensor.
+  mlir::stablehlo::Dimensions dims = GetDimensions(batch_input);
+  llvm::SmallVector<int64_t> static_shape;
+  static_shape.reserve(dims.size());
+  for (const auto& dim_info : dims) {
+    static_shape.push_back(dim_info.size);
+  }
+  const auto static_type =
+      mlir::RankedTensorType::get(static_shape, element_type);
 
-  // Create an flattened iota tensor of shape {spatial_input_elements}
-  auto iota_type =
-      mlir::RankedTensorType::get({spatial_input_elements}, element_type);
-  mlir::MlirOp iota = mlir::stablehlo::Iota(builder, iota_type, 0);
+  // Initialize with spatial dimension 0 (tensor dimension index 2)
+  mlir::MlirOp current_index =
+      mlir::stablehlo::Iota(builder, static_type, /*iota_dimension=*/2);
 
-  // Reshape the iota tensor to spatial dimensions
-  llvm::SmallVector<int64_t> spatial_dims;
-  for (int64_t i = 2; i < input_shape.getRank(); ++i) {
-    spatial_dims.push_back(input_shape.getDimSize(i));
+  // Accumulate subsequent spatial dimensions
+  for (int64_t i = 1; i < spatial_dim_count; ++i) {
+    const int64_t dim_idx = 2 + i;
+    mlir::MlirOp dim_size_scalar;
+    if (input_shape.isDynamicDim(dim_idx)) {
+      dim_size_scalar = mlir::stablehlo::GetDimensionSize(batch_input, dim_idx);
+      if (dim_size_scalar.getType() != element_type) {
+        dim_size_scalar =
+            mlir::stablehlo::ConvertElementType(dim_size_scalar, element_type);
+      }
+    } else {
+      dim_size_scalar =
+          MakeScalarConstant(builder, static_shape[dim_idx], element_type);
+    }
+    mlir::MlirOp dim_size_bcast =
+        mlir::stablehlo::BroadcastInDim(static_type, dim_size_scalar, {});
+    mlir::MlirOp dim_iota =
+        mlir::stablehlo::Iota(builder, static_type, dim_idx);
+
+    current_index = mlir::stablehlo::Mul(current_index, dim_size_bcast);
+    current_index = mlir::stablehlo::Add(current_index, dim_iota);
   }
 
-  mlir::MlirOp reshaped_iota = mlir::stablehlo::Reshape(iota, spatial_dims);
-
-  // Broadcast spatial dimensions to the same rank as the input tensor
-  llvm::SmallVector<int64_t> broadcast_dims;
-  for (size_t i = 0; i < spatial_dims.size(); ++i) {
-    broadcast_dims.push_back(2 + i);
+  // If the input has dynamic dimensions, track them using SetDimensionSize.
+  for (int64_t d = 0; d < input_shape.getRank(); ++d) {
+    if (input_shape.isDynamicDim(d)) {
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(batch_input, d);
+      current_index =
+          mlir::stablehlo::SetDimensionSize(current_index, dim_size, d);
+    }
   }
-  llvm::SmallVector<int64_t> target_shape(input_shape.getShape().begin(),
-                                          input_shape.getShape().end());
-  mlir::RankedTensorType target_tensor_type =
-      mlir::RankedTensorType::get(target_shape, element_type);
-  mlir::MlirOp iota_broadcast = mlir::stablehlo::BroadcastInDim(
-      target_tensor_type, reshaped_iota, broadcast_dims);
 
-  return iota_broadcast;
+  return current_index;
 }
 
 absl::StatusOr<std::vector<mlir::MlirOp>> ComputeMaxPoolWithIndices(
@@ -131,21 +149,23 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ComputeMaxPoolWithIndices(
   //
   // Drop the first 2 dimensions (Batch and Channel) because max_pool indices
   // are relative to the spatial dimensions only.
-  auto shape = input_shape.getShape();
-  TT_ASSIGN_OR_RETURN(int64_t spatial_input_elements,
-                      NumElements(shape.drop_front(2)));
-
-  TT_RET_CHECK(spatial_input_elements <= std::numeric_limits<int32_t>::max(),
+  mlir::stablehlo::Dimensions dims = GetDimensions(batch_input);
+  int64_t bounded_spatial_elements = 1;
+  for (size_t i = 2; i < dims.size(); ++i) {
+    bounded_spatial_elements *= dims[i].size;
+  }
+  TT_RET_CHECK(bounded_spatial_elements <= std::numeric_limits<int32_t>::max(),
                error::kPythonNotImplementedError)
-      << "expected max_pool2d_with_indices input to have at most "
+      << "expected max_pool with indices input to have at most "
       << std::numeric_limits<int32_t>::max()
-      << " spatial elements due to int32 indices limitation (for now), got "
-      << spatial_input_elements;
+      << " bounded spatial elements due to int32 indices limitation, got "
+      << bounded_spatial_elements;
 
   const mlir::Type index_type = builder.getOpBuilder().getI32Type();
 
   // Create global flattened indices
-  auto iota = CreatePoolIndicesIota(input_shape, builder, index_type);
+  auto iota = CreatePoolIndicesIota(batch_input, input_shape, builder,
+                                    index_type, spatial_dim_count);
 
   // Create initial values for values and indices
   mlir::Attribute val_attr =

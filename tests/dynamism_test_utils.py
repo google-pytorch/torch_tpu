@@ -210,9 +210,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.max_pool1d": (
         ALL_MODES
     ),  # MLIR assertion failure (bounds length vs rank)
-    "nn.functional.max_pool2d": (
-        ALL_MODES
-    ),  # crash (negative dim size in compiled_mode.cc)
     "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
     "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
     "nn.functional.nll_loss": (
