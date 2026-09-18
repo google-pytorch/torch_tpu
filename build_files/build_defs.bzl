@@ -1347,7 +1347,6 @@ def torch_tpu_oss_torch_test(
     env.update(kwargs.pop("env", {}))
 
     tags = [
-        # TODO(b/562651857): offload to v7 chips to load balance in OSS CI.
         "requires-tpu-v5lite",
         # Exclude wheel tests due to lack of a PyTorch checkout.
         "wheel_test_excluded",

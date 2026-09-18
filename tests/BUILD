@@ -16,7 +16,6 @@ load(
     "//build_files:build_defs.bzl",
     "DEFAULT_TORCH_EXAMPLE_DEPS",
     "if_oss",
-    "oss_target",
     "torch_tpu_oss_torch_example",
     "torch_tpu_package_end",
     "torch_tpu_py_library",
@@ -2315,58 +2314,6 @@ torch_tpu_py_test(
     ],
 )
 
-# TODO: b/523312531 - Evaluate enabling these upstream tests in Google3 for internal developer
-# parity. Currently, this is restricted to OSS CI via `oss_target` because the test runner relies on
-# the raw PyTorch source tree checked out manually by the GitHub Actions workflow.
-oss_target(
-    torch_tpu_py_test,
-    name = "run_upstream_test_tpu",
-    srcs = ["run_upstream_test.py"],
-    env = {"TORCH_TPU_INTERNAL_TEST_DEVICE": "tpu"},
-    main = "run_upstream_test.py",
-    nolocal = "This test requires downloading the raw PyTorch source tree. Exclude from wildcard runs.",
-    nonightly_oss = "This test requires downloading the raw PyTorch source tree. Restricted strictly to the upstream_tests.yaml workflow.",
-    nopresubmit_oss = "This test requires downloading the raw PyTorch source tree. Relegate to nightly to avoid adding flakiness/latency to every PR.",
-    tags = [
-        "requires-tpu-v5lite",
-        # This test requires downloading the raw PyTorch source tree. Relegate to nightly to avoid
-        # adding flakiness/latency to wheel tests.
-        "wheel_test_excluded",
-    ],
-    deps = [
-        "//shims/torch:testing_internal",  # build_cleaner: keep
-        "//src/torch_tpu",
-        "@pypi//pytest",
-    ],
-)
-
-# See TODO above regarding Google3 parity and out-of-band PyTorch source tree dependencies.
-oss_target(
-    torch_tpu_py_test,
-    name = "run_upstream_test_cpu",
-    srcs = ["run_upstream_test.py"],
-    env = {"TORCH_TPU_INTERNAL_TEST_DEVICE": "cpu"},
-    main = "run_upstream_test.py",
-    nolocal = "This test requires downloading the raw PyTorch source tree. Exclude from wildcard runs.",
-    nonightly_oss = "This test requires downloading the raw PyTorch source tree. Restricted strictly to the upstream_tests.yaml workflow.",
-    nopresubmit_oss = "This test requires downloading the raw PyTorch source tree. Relegate to nightly to avoid adding flakiness/latency to every PR.",
-    tags = [
-        # TODO: b/523384731 - Remove the "local" tag once upstream PyTorch is migrated natively into
-        # Bazel's dependency graph via Bzlmod.
-        # Ignores remote executors and forces local execution to avoid FileNotFound error as Bazel
-        # refuses to upload the downloaded PyTorch source code to the RBE Cloud workers.
-        "local",
-        # This test requires downloading the raw PyTorch source tree. Relegate to nightly to avoid
-        # adding flakiness/latency to wheel tests.
-        "wheel_test_excluded",
-    ],
-    deps = [
-        "//shims/torch:testing_internal",  # build_cleaner: keep
-        "//src/torch_tpu",
-        "@pypi//pytest",
-    ],
-)
-
 # Test for ensure pytorch example works with torch_tpu. It functions as an integration test and as a
 # documentation regression test. Tests downloading the raw PyTorch examples tree from GitHub.
 # Therefore, this test is OSS only.
@@ -2577,16 +2524,6 @@ torch_tpu_py_test(
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
-    ],
-)
-
-torch_tpu_py_test(
-    name = "run_upstream_test",
-    srcs = ["run_upstream_test.py"],
-    notap = "Requires external PyTorch test directory",
-    deps = [
-        "//src/torch_tpu",
-        "@pypi//pytest",
     ],
 )
 

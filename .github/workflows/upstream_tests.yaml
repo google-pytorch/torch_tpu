@@ -26,6 +26,18 @@ on:
         options:
           - 'yes'
           - 'no'
+      pytorch-git-ref:
+        description: 'Git ref to checkout pytorch/pytorch'
+        type: string
+        default: 'v2.13.0'
+      torch-pip-spec:
+        description: 'The pip requirement of the torch wheel'
+        type: string
+        default: 'torch==2.13.0+cpu'
+      torch-pip-index:
+        description: 'The pip index URL to download the torch wheel from'
+        type: string
+        default: 'https://download.pytorch.org/whl/cpu'
   pull_request:
     branches:
       - main
@@ -55,21 +67,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TODO(b/562273922): update nightly CI jobs to use run_torch_test.py
         job_info: [
           {
-            name: "CPU",
-            runner: "linux-x86-n4-16",
-            config: "ci_cpu",
-            extra_flags: "--test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test",
-            target: "//tests:run_upstream_test_cpu",
-          },
-          {
-            name: "TPU v7",
-            runner: "linux-x86-tpu7x-224-4tpu",
-            config: "ci_tpu_v7",
-            extra_flags: '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR=$GITHUB_WORKSPACE/pytorch/test --test_env=PYTHONPATH=$GITHUB_WORKSPACE/pytorch/test',
-            target: "//tests:run_upstream_test_tpu",
+            name: "TPU v5",
+            runner: "linux-x86-ct5lp-224-8tpu",
+            config: "ci_tpu_v5",
           },
         ]
     # Use self-hosted runners. For a Linux runner, a corresponding container image used for the
@@ -95,7 +97,39 @@ jobs:
         with:
           repository: pytorch/pytorch
           path: pytorch
-          ref: v2.10.0
+          ref: ${{ inputs.pytorch-git-ref || 'v2.13.0' }}
+
+      - name: Extract Default Python Version
+        run: |
+          PYTHON_VERSION=$(grep '^DEFAULT_PYTHON_VERSION =' bazel/supported_python_versions.bzl | cut -d '"' -f2)
+          echo "PYTHON_VERSION=${PYTHON_VERSION}" >> "$GITHUB_ENV"
+          echo "[INFO] Extracted default Python version: ${PYTHON_VERSION}"
+
+      - name: Download PyTorch Wheel
+        env:
+          TORCH_PIP_SPEC: ${{ inputs.torch-pip-spec || 'torch==2.13.0+cpu' }}
+          TORCH_PIP_INDEX: ${{ inputs.torch-pip-index || 'https://download.pytorch.org/whl/cpu' }}
+        run: |
+          mkdir -p dist/local
+          pip download --no-deps --pre "${TORCH_PIP_SPEC}" \
+            --index-url "${TORCH_PIP_INDEX}" -d dist/local \
+            --python-version "${PYTHON_VERSION}" --only-binary=:all:
+          set -- "$PWD/dist/local/torch-"*.whl
+          echo "TORCH_SOURCE=$1" >> "$GITHUB_ENV"
+          echo "[INFO] Downloaded PyTorch wheel to: $1"
 
       - name: Run Bazel Test
-        run: bazel test --config=${{ matrix.job_info.config }} ${{ matrix.job_info.extra_flags }} ${{ matrix.job_info.target }}
+        run: |
+          TORCH_TEST_TARGETS=$(bazel query 'kind("py_test", //tests/torch:all)' | tr '\n' ' ')
+          echo "[INFO] Running test targets: ${TORCH_TEST_TARGETS}"
+
+          # Leave ${TORCH_TEST_TARGETS} unquoted so space-separated targets expand.
+          # shellcheck disable=SC2086
+          bazel test \
+            --config=${{ matrix.job_info.config }} \
+            --config=local_torch \
+            --repo_env=TORCH_SOURCE="$TORCH_SOURCE" \
+            --run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh" \
+            --test_env=TORCH_TPU_INTERNAL_PYTORCH_TEST_DIR="$GITHUB_WORKSPACE/pytorch/test" \
+            --keep_going \
+            ${TORCH_TEST_TARGETS}
