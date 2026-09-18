@@ -182,7 +182,7 @@ definitions, *etc.*
 1.  Generate the initial `compile_commands.json`:
 
     ```sh
-    ./setup_clangd.py
+    tools/setup_clangd.py
     ```
 
 It may take a while (> 30 minutes) for the first run to make a full build, but
@@ -190,7 +190,7 @@ reruns will be incremental and cheap. If you have run `bazel build` recently,
 generated files already exist so you can pass `--no-build` to skip waiting for
 heavy builds (note that on a fresh workspace, skipping the build may prevent
 `clangd` from resolving generated files). See more options in the
-[script](./setup_clangd.py) file-level comments.
+[script](tools/setup_clangd.py) file-level comments.
 
 Alternatively, you can invoke the script via `nox` (arguments after `--` are
 forwarded):
