@@ -4063,7 +4063,7 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_nn_functional_hardswish(self):
     self.do_test_op(
         "nn.functional.hardswish",
-        exclude_dtypes=(_if_tpu_vs_gpu_compiled(INTEGRAL_DTYPES, ())),
+        exclude_dtypes=INTEGRAL_DTYPES,
     )
 
   def test_nn_functional_hardtanh(self):

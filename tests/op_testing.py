@@ -4409,7 +4409,7 @@ class OpInfoTestBase(
     input_value = device_op_input.input_value
 
     is_dynamic_test = bool(
-        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+        _CHECK_DYNAMISM_USING_SEED.value and device.type == "tpu"
     )
 
     if is_dynamic_test:
@@ -4444,13 +4444,13 @@ class OpInfoTestBase(
           mode=dynamism_mode,
       )
 
-    if use_compiled and device != torch.device("cpu"):
+    if use_compiled and device.type != "cpu":
       if not _compiled_supports_op(op, device_op_input, variant):
         self.skipTest(f"TpuBackend does not support {op_name} currently.")
       logging.getLogger(tt_compile.TpuBackend.__module__).setLevel(
           logging.DEBUG
       )
-      backend = "tpu" if str(device) == "tpu" else "inductor"
+      backend = "tpu" if device.type == "tpu" else "inductor"
       print(f"Compiling {op_name} for device {device} ...", flush=True)
       if is_dynamic_test:
         op_func = torch.compile(
@@ -5585,6 +5585,14 @@ def set_up_test_module() -> None:
     # will run in all three modes without --config=cuda, and we don't want the
     # test to always fail in this case.
     sys.exit(0)
+
+  if not _gen_gpu_golden_mode():
+    try:
+      from torch_tpu import _loader  # pylint: disable=g-import-not-at-top
+
+      _loader._init_device("tpu")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      logging.warning("Failed to initialize TPU device: %s", e)
 
   # Note that global APIs must be configured before seeding PyTorch RNGs on TPU
   # as it triggers compilation of the seed modules.

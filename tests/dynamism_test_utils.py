@@ -204,7 +204,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.embedding": ALL_MODES,  # crash in shard 27
     "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
     "nn.functional.grid_sample": ALL_MODES,  #
-    "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
     "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.max_pool1d": (
