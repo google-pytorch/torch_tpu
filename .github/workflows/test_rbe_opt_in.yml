@@ -141,7 +141,7 @@ jobs:
 
             CONNECTED=0
             for _ in {1..30}; do
-              if grep -q "Listening on port \[8980\]" /tmp/iap_tunnel.log 2>/dev/null; then
+              if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
                 echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
                 CONNECTED=1
                 break
