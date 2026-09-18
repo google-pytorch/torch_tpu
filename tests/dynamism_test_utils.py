@@ -194,7 +194,6 @@ untriaged_ops_deny_list: dict[
     ),  # materialization failure (negative dim size)
     "logical_and": ALL_MODES,  # dynamic triage (invalid result)
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
-    "matmul": ALL_MODES,  # reshapes in the structured delegate
     "mm": {COMPILE},  # numerical mismatch under dynamic compile
     "maximum": ALL_MODES,  # dynamic triage (invalid result)
     "ne": ALL_MODES,  # dynamic triage (invalid result)
@@ -623,7 +622,7 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
-    matmul_ops = ["bmm", "mm"]
+    matmul_ops = ["bmm", "matmul", "mm"]
     return op_info.name in matmul_ops
 
   def _mark_dependent_arg_dynamic(
@@ -634,25 +633,26 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       ub: int,
       mode: DynamismMode = DynamismMode.EAGER,
   ):
-    """Mark the args of a binary elementwise op as dynamic."""
+    """Mark dependent contracting and batch dimensions of matmul RHS as dynamic."""
+    if not args or not isinstance(args[0], torch.Tensor):
+      return
     rhs = args[0]
-    if isinstance(rhs, torch.Tensor):
-      lhs_ndim = like.ndim
-      rhs_ndim = rhs.ndim
-      # If input contracting dim is dynamic, mark other's contracting dim too.
-      if idx == lhs_ndim - 1:
-        rhs_cdim = 0 if rhs_ndim == 1 else rhs_ndim - 2
-        if rhs.shape[rhs_cdim] > 1:
-          rhs_value_str = utils.get_tensor_summary(rhs, data=False)
-          print(
-              f">>>> Marking dim {rhs_cdim} dynamic [<={ub}] in"
-              f" {rhs_value_str} (mode={mode.value})",
-              flush=True,
-          )
-          _mark_tensor_dynamic(rhs, rhs_cdim, 2, ub, mode=mode)
-      # If a batch dim is dynamic, mark rhs's batch dim too.
-      elif idx < lhs_ndim - 2:
-        _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
+    lhs_ndim = like.ndim
+    rhs_ndim = rhs.ndim
+    # If input contracting dim is dynamic, mark other's contracting dim too.
+    if idx == lhs_ndim - 1:
+      rhs_cdim = 0 if rhs_ndim == 1 else rhs_ndim - 2
+      if rhs.shape[rhs_cdim] > 1:
+        rhs_value_str = utils.get_tensor_summary(rhs, data=False)
+        print(
+            f">>>> Marking dim {rhs_cdim} dynamic [<={ub}] in"
+            f" {rhs_value_str} (mode={mode.value})",
+            flush=True,
+        )
+        _mark_tensor_dynamic(rhs, rhs_cdim, 2, ub, mode=mode)
+    # If a batch dim is dynamic, mark rhs's batch dim too.
+    elif idx < lhs_ndim - 2:
+      _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
 
 
