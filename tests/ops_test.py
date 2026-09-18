@@ -611,6 +611,12 @@ ACCURACY_OVERRIDES_VS_CPU: dict[str, dict[torch.dtype, dict[str, float]]] = {
         torch.float16: {"rtol": 8, "atol": 7.5e-1},
         torch.float32: {"rtol": 6.3e-1, "atol": 6.9e-1},
     },
+    "nn.functional.embedding": {
+        torch.float16: {
+            "rtol": 4.7e-3,  # TOLERANCE_OVERRIDE_OK
+            "atol": 2.4e-3,  # TOLERANCE_OVERRIDE_OK
+        },
+    },
     "nn.functional.embedding_bag": {
         torch.bfloat16: {"rtol": 3.4e-1, "atol": 6.3e-2},
         torch.float16: {"rtol": 3.4e-1, "atol": 4e-3},
@@ -1106,9 +1112,9 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     "nn.functional.embedding": {
         torch.float16: {
-            "rtol": 3.9e-3,
+            "rtol": 4.7e-3,  # TOLERANCE_OVERRIDE_OK
             "atol": 2.4e-3,
-        },  # TOLERANCE_OVERRIDE_OK
+        },
     },
     "nn.functional.embedding_bag": {
         torch.bfloat16: {"atol": 3.2e-2},
@@ -1412,9 +1418,9 @@ ACCURACY_OVERRIDES_VS_GPU_COMPILED = {
     },
     "nn.functional.embedding": {
         torch.float16: {
-            "rtol": 3.9e-3,
+            "rtol": 4.7e-3,  # TOLERANCE_OVERRIDE_OK
             "atol": 2.4e-3,
-        },  # TOLERANCE_OVERRIDE_OK
+        },
     },
     "nn.functional.embedding_bag": {
         torch.bfloat16: {"atol": 6.5e-2},

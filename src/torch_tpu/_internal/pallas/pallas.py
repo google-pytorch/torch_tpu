@@ -20,22 +20,17 @@ of these APIs requires that your environment also has JAX/Pallas installed.
 
 import hashlib
 import inspect
-import math
 import pathlib
 import types
 import typing
 from typing import Any, Callable, Sequence, Union, overload
 from absl import logging
 import frozendict
-import numpy as np
 import torch
 from torch._library.custom_ops import CustomOpDef
-import torch.distributed as dist
 import torch.library
-from torch_tpu._internal.device import _device_ops_backend
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.pallas import tpu_torch_pallas
-from torch_tpu._internal.pallas._mock_device import _PallasDevice
 from torch_tpu._internal.utils import annotations
 
 try:
@@ -104,37 +99,6 @@ TORCH_TO_JAX_DTYPE_MAP = frozendict.frozendict({
 # JAX_TO_TORCH_DTYPE_MAP will only preserve the last one. Handle duplicates
 # explicitly if unpacked float4 types are added.
 JAX_TO_TORCH_DTYPE_MAP = {v: k for k, v in TORCH_TO_JAX_DTYPE_MAP.items()}
-
-
-class PallasMesh(jax.sharding.Mesh):
-  """A JAX Mesh whose devices are ordered strictly by PyTorch rank."""
-
-  @staticmethod
-  def _create(flat_devices_tuple, device_shape, axis_names, axis_types, size):
-    devices = np.array(flat_devices_tuple).reshape(device_shape)
-    devices.flags.writeable = False
-    obj = object.__new__(PallasMesh)
-    object.__setattr__(obj, "devices", devices)
-    object.__setattr__(obj, "axis_names", axis_names)
-    object.__setattr__(obj, "axis_types", axis_types)
-    object.__setattr__(obj, "size", size)
-    return obj
-
-  @property
-  def ranks(self) -> tuple[int, ...]:
-    return tuple(range(self.size))
-
-
-# PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
-__all__ = [
-    # go/keep-sorted start
-    "PallasMesh",
-    "custom_jax_kernel",
-    "get_default_pallas_mesh",
-    "get_pallas_mesh",
-    "jax_op",
-    # go/keep-sorted end
-]
 
 
 def _convert_shape(shape, mesh, partition_spec, op):
@@ -218,7 +182,6 @@ def jax_placeholders(
 def torch_placeholder(
     array: jax.core.ShapedArray | None,
     mesh: jax.sharding.Mesh | None = None,
-    partition_spec: tuple[str | None, ...] | None = None,
 ) -> torch.Tensor | None:
   """Converts a jax output to a torch tensor for return type.
 
@@ -228,7 +191,6 @@ def torch_placeholder(
   Args:
     array: The JAX array to convert.
     mesh: Optional physical mesh.
-    partition_spec: Optional partition spec for this output.
 
   Returns:
     The converted PyTorch tensor, or None.
@@ -243,14 +205,7 @@ def torch_placeholder(
     raise NotImplementedError(
         f"Unsupported dtype for pallas kernels: {array.dtype}"
     )
-  spec = partition_spec
-  if (
-      spec is None
-      and hasattr(array, "sharding")
-      and hasattr(array.sharding, "spec")
-  ):
-    spec = array.sharding.spec
-  torch_shape = get_local_shape(array.shape, mesh, spec)
+  torch_shape = get_local_shape(array.shape, mesh, array.sharding.spec)
   if torch_dtype == torch.float4_e2m1fn_x2 and len(torch_shape) > 0:
     if torch_shape[-1] % 2 != 0:
       raise ValueError(
@@ -265,22 +220,6 @@ def torch_placeholder(
       dtype=torch_dtype,
       device="tpu",
   )
-
-
-def _normalize_output_partition_specs(
-    output_specs: Any,
-    num_outputs: int,
-) -> Sequence[Any] | None:
-  """Normalizes output partition specs across output leaves."""
-  if output_specs is None:
-    return None
-  if (
-      isinstance(output_specs, tuple)
-      and len(output_specs) > 0
-      and (isinstance(output_specs[0], str) or output_specs[0] is None)
-  ):
-    return [output_specs] * num_outputs
-  return output_specs
 
 
 def _get_kernel_invocation_key(
@@ -509,7 +448,6 @@ class JaxCallable:
   jit_fn: Any
   mesh: Any
   input_partition_specs: Any
-  output_partition_specs: Any
   static_argnums: tuple[int, ...]
   donate_argnums: list[int]
   input_output_aliases: dict[int, int]
@@ -524,7 +462,6 @@ class JaxCallable:
       trace_key: str,
       mesh: jax.sharding.Mesh | None = None,
       input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-      output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
@@ -549,8 +486,6 @@ class JaxCallable:
       mesh: If using a distributed kernel, provide the device mesh.
       input_partition_specs: If using a distributed kernel, provide the input
         partition specs for each input tensor.
-      output_partition_specs: If using a distributed kernel, provide the output
-        partition specs for each output tensor.
       static_argnums: Tuple of argument positions that are compile-time
         constants.
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
@@ -573,7 +508,6 @@ class JaxCallable:
     self.kernel_key_to_mlir_fingerprint = {}
     self.mesh = mesh
     self.input_partition_specs = input_partition_specs
-    self.output_partition_specs = output_partition_specs
     self.static_argnums = static_argnums
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
@@ -736,12 +670,8 @@ class JaxCallable:
       )
       # Use out_tree to format the outputs shapes - i.e. pack in tuple, nested
       # tuple, etc.
-      specs = _normalize_output_partition_specs(
-          self.output_partition_specs, len(lowered.out_avals)
-      ) or [None] * len(lowered.out_avals)
       output_shapes = [
-          torch_placeholder(aval, mesh=self.mesh, partition_spec=spec)
-          for aval, spec in zip(lowered.out_avals, specs)
+          torch_placeholder(aval, mesh=self.mesh) for aval in lowered.out_avals
       ]
       out_tree = lowered.out_tree
       self.output_shapes[kernel_key] = (output_shapes, out_tree)
@@ -775,11 +705,10 @@ def custom_jax_kernel(
     input_output_aliases: dict[int, int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
 ) -> Callable[[Callable[..., Any]], JaxCallable]:
-  ...  # Overload stub
+  ...
 
 
 @overload
@@ -791,11 +720,10 @@ def custom_jax_kernel(
     input_output_aliases: dict[int, int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
     *,
     warn_deprecated: bool = True,
 ) -> JaxCallable:
-  ...  # Overload stub
+  ...
 
 
 def custom_jax_kernel(
@@ -804,9 +732,8 @@ def custom_jax_kernel(
     static_argnums=(),
     donate_argnums=None,
     input_output_aliases=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh=None,
     input_partition_specs=None,
-    output_partition_specs=None,
     *,
     warn_deprecated: bool = True,
 ):
@@ -850,8 +777,6 @@ def custom_jax_kernel(
     mesh: If using a distributed kernel, provide the device mesh.
     input_partition_specs: If using a distributed kernel, provide the input
       partition specs for each input tensor.
-    output_partition_specs: If using a distributed kernel, provide the output
-      partition specs for each output tensor.
     warn_deprecated: If True, issue a deprecation warning.
 
   Returns:
@@ -889,7 +814,6 @@ def custom_jax_kernel(
         trace_key=trace_key,
         mesh=mesh,
         input_partition_specs=input_partition_specs,
-        output_partition_specs=output_partition_specs,
         static_argnums=static_argnums,
         donate_argnums=donate_argnums,
         input_output_aliases=input_output_aliases,
@@ -909,9 +833,8 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> Callable[[Callable[..., Any]], CustomOpDef]:
-  ...  # Overload stub
+  ...
 
 
 @overload
@@ -923,9 +846,8 @@ def jax_op(
     donate_argnums: Sequence[int] | None = None,
     mesh: jax.sharding.Mesh | None = None,
     input_partition_specs: tuple[tuple[str, ...], ...] | None = None,
-    output_partition_specs: tuple[tuple[str, ...], ...] | None = None,
 ) -> CustomOpDef:
-  ...  # Overload stub
+  ...
 
 
 @annotations.experimental(
@@ -937,9 +859,8 @@ def jax_op(
     /,
     *,
     donate_argnums=None,
-    mesh: jax.sharding.Mesh | None = None,
+    mesh=None,
     input_partition_specs=None,
-    output_partition_specs=None,
 ):
   """Registers a JAX function as a custom PyTorch operation.
 
@@ -956,11 +877,8 @@ def jax_op(
     name: The name of the custom operator.
     fn: The JAX function to wrap. If None, `pallas_op` acts as a decorator.
     donate_argnums: A sequence of argument indices to donate.
-    mesh: If using a distributed kernel, provide the device mesh.
-    input_partition_specs: If using a distributed kernel, provide the input
-      partition specs for each input tensor.
-    output_partition_specs: If using a distributed kernel, provide the output
-      partition specs for each output tensor.
+    mesh: jax.sharding.Mesh | None = None,
+    input_partition_specs: tuple[tuple[str, ...], ...] | None = None
 
   Returns:
     A `CustomOpDef` instance if `fn` is provided, or a decorator that returns
@@ -987,7 +905,6 @@ def jax_op(
         donate_argnums=donate_argnums,
         mesh=mesh,
         input_partition_specs=input_partition_specs,
-        output_partition_specs=output_partition_specs,
         static_argnums=static_argnums,
         warn_deprecated=False,
     )
@@ -1021,12 +938,8 @@ def jax_op(
       with jax._src.config.export_ignore_forward_compatibility(True):
         lowered = wrapped_fn.exported(*jax_args, **kwargs)
       # pylint: enable=protected-access
-      specs = _normalize_output_partition_specs(
-          output_partition_specs, len(lowered.out_avals)
-      ) or [None] * len(lowered.out_avals)
       return lowered.out_tree.unflatten(
-          torch_placeholder(aval, mesh=mesh, partition_spec=spec)
-          for aval, spec in zip(lowered.out_avals, specs)
+          torch_placeholder(aval, mesh=mesh) for aval in lowered.out_avals
       )
 
     result = torch.library.custom_op(
@@ -1043,52 +956,3 @@ def jax_op(
     return dec
   else:
     return dec(fn)
-
-
-def get_pallas_mesh(
-    axis_names: Sequence[str] | str,
-    mesh_shape: Sequence[int] | None = None,
-) -> PallasMesh:
-  """Constructs a rank-aligned JAX Mesh using TPU runtime device metadata."""
-  if not dist.is_initialized():
-    raise RuntimeError(
-        "torch.distributed is not initialized. dist.init_process_group()"
-    )
-
-  world_size = dist.get_world_size()
-
-  if mesh_shape is not None:
-    if math.prod(mesh_shape) != world_size:
-      raise ValueError(f"must equal world_size {world_size}")
-  if (
-      mesh_shape is not None
-      and not isinstance(axis_names, str)
-      and len(axis_names) != len(mesh_shape)
-  ):
-    raise ValueError("does not match length")
-  if (
-      mesh_shape is None
-      and not isinstance(axis_names, str)
-      and len(axis_names) > 1
-  ):
-    raise ValueError("must be explicitly specified")
-
-  attrs = _device_ops_backend._get_local_device_attributes()
-  dev_name = attrs.get("device_kind")
-
-  devices = [
-      _PallasDevice(id=i, process_index=i, device_kind=dev_name)
-      for i in range(world_size)
-  ]
-
-  if mesh_shape is not None:
-    mesh_devices = np.array(devices).reshape(mesh_shape)
-  else:
-    mesh_devices = np.array(devices)
-
-  return PallasMesh(mesh_devices, axis_names=axis_names)
-
-
-def get_default_pallas_mesh() -> PallasMesh:
-  """Constructs default 1D world rank-aligned JAX Mesh with axis ('rank',)."""
-  return get_pallas_mesh(axis_names=("rank",), mesh_shape=None)

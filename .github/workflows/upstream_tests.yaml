@@ -51,11 +51,10 @@ jobs:
     name: "PyTorch tests on ${{ matrix.job_info.name || matrix.job_info.runner }}"
     if: >-
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:torch-tests')
+      contains(github.event.pull_request.labels.*.name, 'ci:upstream-tests')
     strategy:
       fail-fast: false
       matrix:
-        # TODO(b/562273922): update nightly CI jobs to use run_torch_test.py
         job_info: [
           {
             name: "CPU",

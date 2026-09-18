@@ -201,7 +201,6 @@ untriaged_ops_deny_list: dict[
     "neg": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
     "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
-    "nn.functional.embedding": ALL_MODES,  # crash in shard 27
     "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
     "nn.functional.grid_sample": ALL_MODES,  #
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
@@ -408,6 +407,7 @@ class DynamicOpInfo:
     adapters = [
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
+        EmbeddingDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
     ]
@@ -654,6 +654,64 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class EmbeddingDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for embedding."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in ["nn.functional.embedding"]
+
+  def mark_dynamic(
+      self,
+      seed: int,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark the op as dynamic.
+
+    In nn.functional.embedding(idx, weight), OpInfo sets input_value=weight
+    and args[0]=idx (indices).
+    In StableHLO gather, the gathered slice size (weight dim 1, embedding_dim)
+    must be a static constant. Dynamic dimensions are valid on weight dim 0
+    (num_embeddings) and on any dimension of indices (args[0]).
+    """
+    logging.debug(
+        "[EmbeddingDynamicOpInfo] mark_dynamic(%s, %s, %s, mode=%s)",
+        self.op_info.name,
+        utils.InputMetadata(input_value),
+        utils.InputMetadata(args),
+        mode,
+    )
+
+    targets = []
+    if (
+        isinstance(input_value, torch.Tensor)
+        and input_value.ndim >= 2
+        and input_value.shape[0] > 1
+    ):
+      targets.append((input_value, 0))
+    if args and isinstance(args[0], torch.Tensor):
+      idx_candidates = _get_dynamic_dimension_candidates(args[0])
+      for d in idx_candidates:
+        targets.append((args[0], d))
+
+    if not targets:
+      return
+
+    random.seed(seed)
+    target_tensor, dim = random.choice(targets)
+    target_tensor_str = utils.get_tensor_summary(target_tensor, data=False)
+    ub = target_tensor.shape[dim] + 10
+    print(
+        f">>>> Marking dim {dim} dynamic [<={ub}] in {target_tensor_str}"
+        f" (mode={mode.value})",
+        flush=True,
+    )
+    _mark_tensor_dynamic(target_tensor, dim, 2, ub, mode=mode)
 
 
 def mark_input_dynamic(

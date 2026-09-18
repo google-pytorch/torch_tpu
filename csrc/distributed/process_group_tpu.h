@@ -84,8 +84,7 @@ class ProcessGroupTpu : public c10d::Backend {
   ProcessGroupTpu(ProcessGroupTpu&&) = delete;
   ProcessGroupTpu& operator=(ProcessGroupTpu&&) = delete;
 
-  void shutdown() override;
-  ~ProcessGroupTpu() override;
+  ~ProcessGroupTpu() override = default;
 
   const std::string getBackendName() const override { return "tpu_dist"; }
 
@@ -342,11 +341,13 @@ class ProcessGroupTpu : public c10d::Backend {
   // replica_groups attribute in StableHLO collectives.
   DeviceGroupList subgroup_device_ids_;
 
+  // Converts a physical TPU device ID to its 0-based logical index in
+  // device_ids_.
+  int64_t GetLogicalDeviceId(int64_t physical_device_id) const;
+
   // Monotonic sequence counter for uneven all_to_all and all_to_all_single
   // offset coordination.
   std::atomic<uint64_t> alltoall_seq_{0};
-
-  bool is_world_group_ = false;
 };
 
 }  // namespace torch_tpu

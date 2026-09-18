@@ -77,13 +77,20 @@ absl::Status ValidateEmbeddingArgs(const at::Tensor& weight,
                                    const at::Tensor& indices) {
   TT_RET_CHECK(weight.dim() == 2, error::kInvalidArgument)
       << "expected weight to be 2-D, got " << ToString(weight.sizes());
+  TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=covered elsewhere
+      DeviceBufferRef weight_buffer_ref, GetBaseBuffer(weight));
+  for (const auto& dynamic_dim : weight_buffer_ref.dynamic_dimensions()) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Dynamism is tested in
+                   // ops_test_dynamic.
+        dynamic_dim.dimension != 1, error::kInvalidArgument)
+        << "expected weight embedding dimension (dim 1) to be static, got "
+        << "dynamic dimension " << dynamic_dim.dimension;
+  }
   TT_RET_CHECK(
       indices.scalar_type() == at::kLong || indices.scalar_type() == at::kInt,
       error::kInvalidArgument)
       << "expected indices to be int64 or int32, got "
       << ToString(indices.scalar_type());
-  TT_RETURN_IF_ERROR(ValidateStaticShape(weight, "weight"));
-  TT_RETURN_IF_ERROR(ValidateStaticShape(indices, "indices"));
   return absl::OkStatus();
 }
 

@@ -57,6 +57,12 @@ absl::StatusOr<mlir::MlirOp> BuildEmbeddingGather(mlir::MlirBuilder& builder,
                                                   mlir::MlirOp weight,
                                                   mlir::MlirOp indices) {
   const mlir::RankedTensorType weight_type = GetTensorTypeOrDie(weight);
+  for (int64_t i = 1; i < weight_type.getRank(); ++i) {
+    TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=Internal OpenXLA error.
+        !weight_type.isDynamicDim(i), error::kInvalidArgument)
+        << "Embedding weight dimension " << i
+        << " must be static, but got dynamic dimension.";
+  }
   const int64_t indices_rank = GetTensorTypeOrDie(indices).getRank();
   llvm::SmallVector<int64_t, 1> offset_dims;
   for (int64_t i = 1; i < weight_type.getRank(); ++i) {
