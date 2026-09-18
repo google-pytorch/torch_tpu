@@ -37,6 +37,7 @@ import dataclasses
 import functools
 import hashlib
 import operator
+import os
 import re
 import threading
 from typing import Any, TypeAlias, cast
@@ -63,14 +64,32 @@ from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompi
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 
-_TPU_DECOMPOSITIONS = get_decompositions([
+_DECOMPOSITION_OPS = [
     # We decompose masked_fill to align behavior with GPU (Inductor), where
     # masked_fill_ calls are decomposed into convert_element_type + where and
     # succeed even on overflow conversion via modular truncation, rather than
     # failing due to placeholder tensor materialization during compilation.
     torch.ops.aten.masked_fill.Tensor,
     torch.ops.aten.masked_fill_.Tensor,
-])
+]
+
+# Decompose forward batch norm into elemental reductions (mean, var) and
+# elementwise arithmetic ((x - mean) * rstd * weight + bias), enabling XLA
+# to fuse operations directly with adjacent convolution epilogues, ReLUs,
+# and residual additions, matching TorchAX execution.
+# Disabled by default (knob) due to tradeoff between hf_resnet_50 (-3.5% dev time)
+# and timm_resnet_50 (+10% dev time, -17% peak memory).
+_BN_ENV = os.getenv("TORCH_TPU_DECOMPOSE_BATCH_NORM", "0")  # PY_ENVIRON_OK=knob
+if _BN_ENV.lower() in ("1", "true", "yes"):
+  _DECOMPOSITION_OPS.extend([
+      torch.ops.aten._native_batch_norm_legit.default,
+      torch.ops.aten._native_batch_norm_legit.no_stats,
+      torch.ops.aten._native_batch_norm_legit_no_training.default,
+      torch.ops.aten.native_batch_norm.default,
+      torch.ops.aten._native_batch_norm_legit_functional.default,
+  ])
+
+_TPU_DECOMPOSITIONS = get_decompositions(_DECOMPOSITION_OPS)
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
 
