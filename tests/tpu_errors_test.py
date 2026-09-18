@@ -1203,6 +1203,44 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       out = inp[1:]
       out.cpu()
 
+  @et.why_tpu_only("Bounded dynamism is a TPU-specific feature.")
+  def test_kv_cache_buffer_without_reserved_slot_violates_reshape_guard(self):
+    def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+      batch, num_kv_heads, slen, head_dim = hidden_states.shape
+      expanded = hidden_states[:, :, None, :, :].expand(
+          batch, num_kv_heads, n_rep, slen, head_dim
+      )
+      return expanded.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
+
+    class PreallocatedKVCacheModel(torch.nn.Module):
+
+      def __init__(self, usable_capacity: int):
+        super().__init__()
+        self.usable_capacity = usable_capacity
+
+      def forward(
+          self, buffer: torch.Tensor, valid: torch.Tensor
+      ) -> torch.Tensor:
+        usable = buffer[:, :, : self.usable_capacity, :]
+        view = usable[:, :, : valid.shape[-2], :]
+        return repeat_kv(view, 3)
+
+    capacity = 6
+    compiled = torch.compile(
+        PreallocatedKVCacheModel(capacity),
+        backend="tpu",
+        options={"bounded_dynamism": True},
+    )
+    buffer = torch.arange(
+        1 * 2 * capacity * 8, dtype=torch.float32, device="tpu"
+    ).reshape(1, 2, capacity, 8)
+    valid = torch.zeros(1, 2, capacity - 2, 8, device="tpu")
+    torch._dynamo.mark_dynamic(valid, 2)
+
+    with self.assertRaises(torch._dynamo.exc.BackendCompilerFailed) as ctx:
+      compiled(buffer, valid)
+    self.assertIn("ConstraintViolationError", str(ctx.exception))
+
   # PyTorch `native_group_norm_backward` implementation doesn't check the
   # dimensions of `grad` and `inp`.
   @et.why_tpu_only("TODO: make the behavior consistent between TPU and CPU.")

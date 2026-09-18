@@ -42,6 +42,22 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "kv_cache_guard_test",
+    srcs = ["kv_cache_guard_test.py"],
+    notest_oss = "OSS needs to be updated with the latest libtpu release for bounded dynamism.",
+    tags = [
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "sym_constraint_test",
     srcs = ["sym_constraint_test.py"],
     notest_oss = "OSS needs to be updated with the latest libtpu release that contains cl/904008746.",

@@ -80,4 +80,13 @@ torch_tpu_py_library(
     srcs = ["env_utils.py"],
 )
 
+torch_tpu_py_library(
+    name = "cache",
+    srcs = ["cache.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "@pypi//transformers",
+    ],
+)
+
 torch_tpu_package_end()

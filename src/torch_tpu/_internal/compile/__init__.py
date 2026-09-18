@@ -14,6 +14,8 @@
 
 """Public API for torch_tpu._internal.compile."""
 
+from typing import Any
+
 import torch
 from torch._dynamo.backends import registry
 from torch._functorch._aot_autograd import utils as aot_utils
@@ -25,6 +27,43 @@ from torch_tpu._internal.compile.debug import TpuCompileDebug
 
 # Register "tpu" backend
 registry.register_backend(compiler_fn=TpuBackend(), name="tpu")  # pyrefly: ignore[bad-argument-type]
+
+
+def _prepare_module_for_tpu(module: torch.nn.Module) -> None:
+  """Applies the TPU model rewrites that have to happen before tracing."""
+  try:
+    # Not a declared dep: `cache` needs `transformers`, which most TPU programs
+    # do not depend on, so this stays an optional, best-effort import.
+    # pylint: disable-next=g-import-not-at-top
+    from torch_tpu._internal import cache as cache_lib  # pyrefly: ignore[missing-module-attribute]
+  except ImportError:
+    return
+  cache_lib.register_tpu_cache_hook(module)
+
+
+def tpu_compile(model: Any, *, backend: Any = "tpu", **kwargs: Any) -> Any:
+  """Compiles `model` for TPU.
+
+  Equivalent to `torch.compile(model, backend="tpu")`, except that it also
+  applies the TPU-specific rewrites that `TpuBackend` cannot apply itself: the
+  backend is only handed a `GraphModule`, so anything that has to change what
+  gets traced (currently, upgrading a Hugging Face `DynamicCache` to its
+  preallocated in-place equivalent so decode does not retrace every step) has
+  to happen here. Prefer this over calling `torch.compile` directly.
+
+  Args:
+    model: The object to compile. Rewrites are applied only if it is an
+      `nn.Module`; plain callables are passed straight through.
+    backend: The Dynamo backend, overridable to pass a configured `TpuBackend`
+      instance instead of the registered default.
+    **kwargs: Forwarded verbatim to `torch.compile`.
+
+  Returns:
+    The compiled object.
+  """
+  if isinstance(model, torch.nn.Module):
+    _prepare_module_for_tpu(model)
+  return torch.compile(model, backend=backend, **kwargs)
 
 
 def _initialize_graphsafe_rng():
@@ -270,5 +309,6 @@ __all__ = [
     "TpuCompileDebug",
     "async_compile",
     "resolve_compilations",
+    "tpu_compile",
     # go/keep-sorted end
 ]

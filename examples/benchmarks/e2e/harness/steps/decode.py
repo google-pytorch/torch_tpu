@@ -14,6 +14,7 @@
 
 from typing import Any
 import torch
+from torch_tpu._internal import cache as cache_lib
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import step_lib
 from examples.benchmarks.e2e.harness import target as target_lib
@@ -49,9 +50,20 @@ def _apply_projection(
 
 class DecodeStepper(common.BaseStepper):
 
-  def __init__(self, output_tokens: int = 16, dynamism: bool = False):
+  def __init__(
+      self,
+      output_tokens: int = 16,
+      dynamism: bool = False,
+      max_decode_tokens: int | None = None,
+  ):
     super().__init__()
     self.output_tokens = output_tokens
+    # Total decode budget, used to size the dynamic KV cache. Kept separate
+    # because callers reassign `output_tokens` to 1 after `pre_warmup_init()`
+    # to drive a single token per step.
+    self.max_decode_tokens = (
+        output_tokens if max_decode_tokens is None else max_decode_tokens
+    )
     self.dynamism = dynamism
     self.input_ids = None
     self.batch_size = None
@@ -117,7 +129,10 @@ class DecodeStepper(common.BaseStepper):
           device=self.device,
       )
     else:
-      self.cache = cache_utils.DynamicCache(config=model_config)
+      self.cache = cache_lib.InPlaceDynamicCache(
+          config=model_config,
+          max_cache_len=self.prompt_len + self.max_decode_tokens,
+      )
       if hasattr(self.cache, "activate_past_recording"):
         self.cache.activate_past_recording()
 
@@ -262,22 +277,22 @@ class DecodeStepper(common.BaseStepper):
     self.next_token = self.prefill_next_token.clone()
 
     if self.dynamism:
-      tokens_to_crop = (
-          (self.current_pos - self.prompt_len)
-          if self.current_pos is not None
-          else 0
-      )
-      if hasattr(self.cache, "crop"):
-        if tokens_to_crop >= 0:
-          self.cache.crop(-tokens_to_crop)
+      # Crop excess tokens generated during warmup back to the prompt length.
+      seq_len = self.cache.get_seq_length()
+      if seq_len > self.prompt_len:
+        tokens_to_remove = seq_len - self.prompt_len
+        # Calling crop(-tokens_to_remove) removes tokens_to_remove tokens from the end.
+        self.cache.crop(-tokens_to_remove)
     else:
 
+      # Only the logical length needs rewinding. Zeroing the key/value tail
+      # beyond `prompt_len` is unnecessary -- attention is masked to
+      # `cache_position`, so those slots are never read before being
+      # overwritten -- and actively harmful to measurement: writing all
+      # 2 * num_layers cache buffers here forces a cache-wide `as_strided`
+      # write-back that is paid by the first decode step after the reset.
       def _reset_internal(cache, prompt_len):
         for layer in cache.layers:
-          if hasattr(layer, "keys"):
-            layer.keys[:, :, prompt_len:, :].zero_()
-          if hasattr(layer, "values"):
-            layer.values[:, :, prompt_len:, :].zero_()
           if hasattr(layer, "cumulative_length"):
             if isinstance(layer.cumulative_length, int):
               layer.cumulative_length = prompt_len
@@ -317,6 +332,11 @@ class DecodeStepper(common.BaseStepper):
 def decode(
     output_tokens: int = 16,
     dynamism: bool = False,
+    max_decode_tokens: int | None = None,
 ) -> step_lib.Stepper:
   """Stateful decode step: prefill, reset, and decode iterations."""
-  return DecodeStepper(output_tokens=output_tokens, dynamism=dynamism)
+  return DecodeStepper(
+      output_tokens=output_tokens,
+      dynamism=dynamism,
+      max_decode_tokens=max_decode_tokens,
+  )

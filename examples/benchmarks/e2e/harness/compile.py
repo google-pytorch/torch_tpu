@@ -62,15 +62,21 @@ class CompileConfig:
     Returns:
       The compiled object.
     """
-    backend = "inductor"
     if target.device_kind is target_lib.DeviceKind.TPU:
       from torch_tpu._internal import compile as torch_tpu_compile  # pylint: disable=g-import-not-at-top
 
-      backend = torch_tpu_compile.TpuBackend(dynamism=self.dynamic is not False)
+      return torch_tpu_compile.tpu_compile(
+          obj,
+          backend=torch_tpu_compile.TpuBackend(
+              dynamism=self.dynamic is not False
+          ),
+          dynamic=self.dynamic,
+          fullgraph=self.fullgraph,
+      )
 
     return torch.compile(
         obj,
-        backend=backend,
+        backend="inductor",
         dynamic=self.dynamic,
         fullgraph=self.fullgraph,
     )

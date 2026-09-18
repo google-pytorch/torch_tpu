@@ -44,6 +44,14 @@ def _mlp(in_dim=4, hidden=8, out_dim=3, seed=0):
   )
 
 
+class _DummyDecodeModel(nn.Module):
+  """Minimal stand-in for a decoder: echoes back whatever cache it was given."""
+
+  def forward(self, input_ids=None, past_key_values=None, **kwargs):
+    del input_ids, kwargs
+    return past_key_values
+
+
 discovery_lib.import_submodules(steps)
 
 
@@ -658,6 +666,21 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     self.assertEqual(stepper_empty.num_heads, 1)
     self.assertEqual(stepper_empty.head_dim, 1)
 
+  def test_decode_stepper_max_decode_tokens(self):
+    stepper = decode.DecodeStepper(output_tokens=8)
+    self.assertEqual(stepper.output_tokens, 8)
+    self.assertEqual(stepper.max_decode_tokens, 8)
+
+    stepper_override = decode.DecodeStepper(
+        output_tokens=4, max_decode_tokens=32
+    )
+    self.assertEqual(stepper_override.output_tokens, 4)
+    self.assertEqual(stepper_override.max_decode_tokens, 32)
+
+    factory_stepper = decode.decode(output_tokens=6, max_decode_tokens=18)
+    self.assertEqual(factory_stepper.output_tokens, 6)
+    self.assertEqual(factory_stepper.max_decode_tokens, 18)
+
   def test_decode_stepper_base_model_output_with_past_eager(self):
     ops = self._ops()
 
@@ -930,6 +953,258 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     custom_output_sized = CustomIndexableOutput(already_sized_tensor)
     logits = stepper._unpack_output_and_update_cache(custom_output_sized)
     self.assertTrue(torch.equal(logits, already_sized_tensor))
+
+  def test_inplace_dynamic_cache_preserves_tensor_buffers_and_in_place_update(
+      self,
+  ):
+    from torch_tpu._internal import cache as cache_lib
+
+    ops = self._ops()
+    cache = cache_lib.InPlaceDynamicCache(max_cache_len=16)
+    k1 = torch.randn(1, 2, 4, 8, device=ops.device)
+    v1 = torch.randn(1, 2, 4, 8, device=ops.device)
+
+    # First prefill
+    k_out, v_out = cache.update(k1, v1, layer_idx=0)
+    self.assertEqual(cache.get_seq_length(), 4)
+    self.assertEqual(k_out.shape, (1, 2, 4, 8))
+    self.assertEqual(v_out.shape, (1, 2, 4, 8))
+    layer = cache.layers[0]
+    self.assertIsInstance(layer, cache_lib.InPlaceDynamicLayer)
+    buf_k_ptr = layer._keys_buf.data_ptr()
+    buf_v_ptr = layer._values_buf.data_ptr()
+
+    # Step 1 token decode
+    k2 = torch.randn(1, 2, 1, 8, device=ops.device)
+    v2 = torch.randn(1, 2, 1, 8, device=ops.device)
+    k_out2, v_out2 = cache.update(k2, v2, layer_idx=0)
+    self.assertEqual(cache.get_seq_length(), 5)
+    self.assertEqual(k_out2.shape, (1, 2, 5, 8))
+    # Underlying buffer must remain unchanged in memory (no reallocations)
+    self.assertEqual(layer._keys_buf.data_ptr(), buf_k_ptr)
+    self.assertEqual(layer._values_buf.data_ptr(), buf_v_ptr)
+
+    # Test crop resets length and retains backing buffer
+    cache.crop(4)
+    self.assertEqual(cache.get_seq_length(), 4)
+    self.assertEqual(layer.keys.shape, (1, 2, 4, 8))
+    self.assertEqual(layer._keys_buf.data_ptr(), buf_k_ptr)
+
+  def test_patch_transformers_dynamic_cache(self):
+    from torch_tpu._internal import cache as cache_lib
+
+    orig_dynamic_cache = transformers.cache_utils.DynamicCache
+    orig_dynamic_layer = transformers.cache_utils.DynamicLayer
+    try:
+      cache_lib.patch_transformers_dynamic_cache()
+      self.assertIs(
+          transformers.cache_utils.DynamicCache, cache_lib.InPlaceDynamicCache
+      )
+      self.assertIs(
+          transformers.cache_utils.DynamicLayer, cache_lib.InPlaceDynamicLayer
+      )
+      # Instantiating standard DynamicCache now creates InPlaceDynamicCache
+      c = transformers.cache_utils.DynamicCache(max_cache_len=32)
+      self.assertIsInstance(c, cache_lib.InPlaceDynamicCache)
+    finally:
+      transformers.cache_utils.DynamicCache = orig_dynamic_cache
+      transformers.cache_utils.DynamicLayer = orig_dynamic_layer
+
+  def test_from_dynamic_cache_and_tpu_forward_hook(self):
+    from torch_tpu._internal import cache as cache_lib
+
+    ops = self._ops()
+    std_cache = transformers.cache_utils.DynamicCache()
+    k1 = torch.randn(1, 2, 4, 8, device=ops.device)
+    v1 = torch.randn(1, 2, 4, 8, device=ops.device)
+    std_cache.update(k1, v1, layer_idx=0)
+
+    # Test conversion
+    inplace_cache = cache_lib.InPlaceDynamicCache.from_dynamic_cache(
+        std_cache, max_cache_len=16
+    )
+    self.assertIsInstance(inplace_cache, cache_lib.InPlaceDynamicCache)
+    self.assertEqual(inplace_cache.get_seq_length(), 4)
+    self.assertEqual(inplace_cache.layers[0].keys.shape, (1, 2, 4, 8))
+    self.assertTrue(
+        torch.equal(inplace_cache.layers[0].keys, std_cache.layers[0].keys)
+    )
+
+    # Test tpu_forward_hook
+    args = (torch.tensor([1]),)
+    kwargs = {"past_key_values": std_cache}
+    new_args, new_kwargs = cache_lib.tpu_forward_hook(None, args, kwargs)
+    self.assertIs(new_args, args)
+    self.assertIsInstance(
+        new_kwargs["past_key_values"], cache_lib.InPlaceDynamicCache
+    )
+    self.assertEqual(new_kwargs["past_key_values"].get_seq_length(), 4)
+
+    # Test duck-typed DynamicCache (e.g. from v4 or external module)
+    class ExternalDynamicLayer:
+
+      def __init__(self, k, v):
+        self.keys = k
+        self.values = v
+        self.is_initialized = True
+
+    class ExternalDynamicCache:
+
+      def __init__(self, layer):
+        self.layers = [layer]
+
+    ext_layer = ExternalDynamicLayer(k1, v1)
+    # Set class name explicitly to DynamicLayer/DynamicCache
+    ext_layer.__class__.__name__ = "DynamicLayer"
+    ext_cache = ExternalDynamicCache(ext_layer)
+    ext_cache.__class__.__name__ = "DynamicCache"
+
+    _, ext_kwargs = cache_lib.tpu_forward_hook(
+        None, (), {"past_key_values": ext_cache}
+    )
+    self.assertIsInstance(
+        ext_kwargs["past_key_values"], cache_lib.InPlaceDynamicCache
+    )
+    self.assertEqual(ext_kwargs["past_key_values"].get_seq_length(), 4)
+
+    # Test register_tpu_cache_hook on an nn.Module
+    class DummyModule(nn.Module):
+
+      def forward(self, x, past_key_values=None):
+        return past_key_values
+
+    mod = DummyModule()
+    cache_lib.register_tpu_cache_hook(mod)
+    out_cache = mod(torch.tensor([1]), past_key_values=std_cache)
+    self.assertIsInstance(out_cache, cache_lib.InPlaceDynamicCache)
+
+  def test_tpu_compile_installs_cache_hook(self):
+    from torch_tpu._internal import cache as cache_lib
+
+    std_cache = transformers.cache_utils.DynamicCache()
+
+    model = _DummyDecodeModel()
+    torch_tpu_compile.tpu_compile(model)
+
+    # The upgrade is a forward pre-hook, so it is observable on the original
+    # module; no need to pay for an actual TPU compilation here.
+    out_cache = model(
+        input_ids=torch.tensor([1]),
+        past_key_values=transformers.cache_utils.DynamicCache(),
+    )
+    self.assertIsInstance(out_cache, cache_lib.InPlaceDynamicCache)
+
+  def test_tpu_compile_cache_hook_is_registered_once(self):
+    from torch_tpu._internal import compile as torch_tpu_compile
+
+    model = _DummyDecodeModel()
+    torch_tpu_compile.tpu_compile(model)
+    torch_tpu_compile.tpu_compile(model)
+
+    self.assertLen(model._forward_pre_hooks, 1)  # pylint: disable=protected-access
+
+  def test_tpu_compile_passes_through_non_module(self):
+    from torch_tpu._internal import compile as torch_tpu_compile
+
+    def step(x):
+      return x + 1
+
+    self.assertIsNotNone(torch_tpu_compile.tpu_compile(step))
+
+  def test_inplace_cache_reserves_real_trailing_slot(self):
+    """The exposed view must never span its whole backing buffer.
+
+    `repeat_kv()`'s `reshape()` guards on `Ne(head_dim * end, head_dim *
+    buffer_len)`. Reserving a real trailing slot keeps `end` strictly below
+    `buffer_len` so that guard can never be hit.
+    """
+    from torch_tpu._internal import cache as cache_lib
+
+    ops = self._ops()
+    max_cache_len = 6
+    cache = cache_lib.InPlaceDynamicCache(max_cache_len=max_cache_len)
+    keys = torch.randn(1, 2, 4, 8, device=ops.device)
+    values = torch.randn(1, 2, 4, 8, device=ops.device)
+    cache.update(keys, values, layer_idx=0)
+    layer = cache.layers[0]
+
+    # The headroom is a real tensor dimension, not merely padded storage: a
+    # view of a padded allocation does not survive functionalization.
+    self.assertEqual(layer._keys_buf.shape[-2], max_cache_len + 1)
+    self.assertEqual(layer._values_buf.shape[-2], max_cache_len + 1)
+    self.assertTrue(layer._keys_buf.is_contiguous())
+
+    # Fill the cache right up to its usable capacity.
+    for _ in range(max_cache_len - 4):
+      cache.update(
+          torch.randn(1, 2, 1, 8, device=ops.device),
+          torch.randn(1, 2, 1, 8, device=ops.device),
+          layer_idx=0,
+      )
+    self.assertEqual(cache.get_seq_length(), max_cache_len)
+    self.assertLess(layer.keys.shape[-2], layer._keys_buf.shape[-2])
+    self.assertFalse(layer.keys.is_contiguous())
+    self.assertFalse(layer.values.is_contiguous())
+
+  def test_exposed_view_keeps_full_buffer_stride(self):
+    """The exposed view must carry the stride of the longer backing buffer.
+
+    That is what decouples the traced upper bound of the sequence length (at
+    most `capacity`) from the head-dimension stride (`capacity + 1` slots), so
+    `repeat_kv()`'s reshape guard `Ne(head_dim * length, stride)` is
+    unsatisfiable without any caller-side `mark_dynamic`.
+    """
+    from torch_tpu._internal import cache as cache_lib
+
+    ops = self._ops()
+    max_cache_len = 6
+    head_dim = 8
+    cache = cache_lib.InPlaceDynamicCache(max_cache_len=max_cache_len)
+    cache.update(
+        torch.randn(1, 2, 4, head_dim, device=ops.device),
+        torch.randn(1, 2, 4, head_dim, device=ops.device),
+        layer_idx=0,
+    )
+    layer = cache.layers[0]
+    expected_stride = (max_cache_len + 1) * head_dim
+
+    for _ in range(max_cache_len - 4 + 1):
+      for tensor in (layer.keys, layer.values):
+        self.assertEqual(tensor.stride(1), expected_stride)
+        self.assertNotEqual(tensor.shape[-2] * head_dim, expected_stride)
+        self.assertFalse(tensor.is_contiguous())
+      if cache.get_seq_length() >= max_cache_len:
+        break
+      cache.update(
+          torch.randn(1, 2, 1, head_dim, device=ops.device),
+          torch.randn(1, 2, 1, head_dim, device=ops.device),
+          layer_idx=0,
+      )
+    self.assertEqual(cache.get_seq_length(), max_cache_len)
+
+  def test_inplace_cache_growth_preserves_headroom(self):
+    from torch_tpu._internal import cache as cache_lib
+
+    ops = self._ops()
+    cache = cache_lib.InPlaceDynamicCache(max_cache_len=2)
+    keys = torch.randn(1, 2, 2, 8, device=ops.device)
+    values = torch.randn(1, 2, 2, 8, device=ops.device)
+    cache.update(keys, values, layer_idx=0)
+    layer = cache.layers[0]
+    self.assertEqual(layer._keys_buf.shape[-2], 3)
+
+    # Exceeding the usable capacity reallocates, and the replacement buffer
+    # must keep the reserved trailing slot.
+    for _ in range(3):
+      cache.update(
+          torch.randn(1, 2, 1, 8, device=ops.device),
+          torch.randn(1, 2, 1, 8, device=ops.device),
+          layer_idx=0,
+      )
+    self.assertEqual(cache.get_seq_length(), 5)
+    self.assertGreater(layer._keys_buf.shape[-2], layer.keys.shape[-2])
+    self.assertFalse(layer.keys.is_contiguous())
+    self.assertTrue(torch.equal(layer.keys[:, :, :2, :], keys))
 
 
 if __name__ == "__main__":

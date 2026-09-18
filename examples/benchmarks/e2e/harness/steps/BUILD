@@ -39,6 +39,7 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness:step_lib",
         "//examples/benchmarks/e2e/harness:target",
         "//shims/torch:pytorch",
+        "//src/torch_tpu/_internal:cache",
         "@pypi//transformers",
     ],
 )
