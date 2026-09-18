@@ -1414,7 +1414,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         ((3, 4, 4), (0, 3)),
         ((3, 4, 4), (3, 0)),
     ]:
-      for dtype in (torch.float32, torch.bfloat16, torch.float16):
+      for dtype in (
+          torch.float32,
+          torch.bfloat16,
+          torch.float16,
+          torch.float64,
+      ):
         x_cpu = torch.randn(shape, dtype=dtype)
         out_size_pair = (
             (out_size, out_size) if isinstance(out_size, int) else out_size
@@ -1441,16 +1446,28 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             compute_out, rtol=1e-3, atol=1e-3, check_dtype=True
         )
 
-    # Tie-breaking test with duplicate maxima
-    tie_x_cpu = torch.tensor(
-        [[[[1.0, 5.0, 5.0], [5.0, 2.0, 3.0], [4.0, 5.0, 1.0]]]],
-        dtype=torch.float32,
-    )
-    self.assert_close_tpu_vs_cpu(
-        lambda device: torch.nn.functional.adaptive_max_pool2d(
-            tie_x_cpu.to(device), (2, 2), return_indices=True
+    # Tie-breaking test with duplicate maxima (both divisible and non-divisible shapes)
+    for dt in (torch.float32, torch.float64):
+      for tie_data, out_sz in [
+          # Non-divisible (3, 3) -> (2, 2)
+          ([[[[1.0, 5.0, 5.0], [5.0, 2.0, 3.0], [4.0, 5.0, 1.0]]]], (2, 2)),
+          # Divisible (4, 4) -> (2, 2)
+          (
+              [[[
+                  [5.0, 5.0, 1.0, 2.0],
+                  [5.0, 5.0, 3.0, 4.0],
+                  [1.0, 2.0, 6.0, 6.0],
+                  [3.0, 4.0, 6.0, 6.0],
+              ]]],
+              (2, 2),
+          ),
+      ]:
+        tie_x_cpu = torch.tensor(tie_data, dtype=dt)
+        self.assert_close_tpu_vs_cpu(
+            lambda device, x=tie_x_cpu, os=out_sz: torch.nn.functional.adaptive_max_pool2d(
+                x.to(device), os, return_indices=True
+            )
         )
-    )
 
   def test_rsqrt_complex_grad(self):
     device = torch.device("tpu")
