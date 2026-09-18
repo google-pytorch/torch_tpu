@@ -508,6 +508,7 @@ class JaxCallable:
       static_argnums: tuple[int, ...] = (),
       donate_argnums: list[int] | None = None,
       input_output_aliases: dict[int, int] | None = None,
+      collective_devices: Sequence[int] | None = None,
   ):
     """Initializes a JaxCallable, a cached callable for custom kernels.
 
@@ -536,6 +537,10 @@ class JaxCallable:
       donate_argnums: Indices of arguments to donate. See `jax.jit`.
       input_output_aliases: Indices of arguments to alias. This is deprecated
         and will be removed soon.
+      collective_devices: World ranks of the devices a multi-device kernel
+        runs over, in mesh order. A program whose collectives and kernels all
+        run over the same proper subgroup of the slice is compiled for that
+        subgroup's devices only, so only they launch it.
     """
 
     self.name = name
@@ -555,6 +560,9 @@ class JaxCallable:
     self.input_partition_specs = input_partition_specs
     self.output_partition_specs = output_partition_specs
     self.static_argnums = static_argnums
+    self.collective_devices = (
+        None if collective_devices is None else [int(d) for d in collective_devices]
+    )
     # Ignore forward compatibility as we are directly using the exported
     # StableHLO. Without this flag we can be missing the latest optimizations.
     with jax._src.config.export_ignore_forward_compatibility(True):
@@ -732,12 +740,16 @@ class JaxCallable:
         if arg is not None and i not in self.static_argnums
     ]
 
+    call_kwargs = {}
+    if self.collective_devices:
+      call_kwargs["collective_devices"] = self.collective_devices
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
         mlir_fingerprint,
         inputs=tensor_args,
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
+        **call_kwargs,
     )
 
     for in_idx, out_idx in self.input_output_aliases.items():

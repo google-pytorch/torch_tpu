@@ -131,11 +131,16 @@ std::vector<at::Tensor> PyCallCustomKernel(
     const std::vector<at::Tensor>& inputs,
     const std::vector<at::Tensor>& output_shapes,
     // Use std::vector as pybind has built-in support for it.
-    const std::vector<int64_t>& donate_argnums  // INT_VEC_OK
+    const std::vector<int64_t>& donate_argnums,  // INT_VEC_OK
+    // World ranks of the devices a multi-device kernel runs over, in mesh
+    // order; empty for a single-device kernel (see collective_subgroup.h).
+    const std::vector<int64_t>& collective_devices  // INT_VEC_OK
 ) {
   TT_KERNEL(
       OpName::kCustomKernel, op_param_cache_keys,
-      (name, kernel_key, inputs, output_shapes, donate_argnums), {
+      (name, kernel_key, inputs, output_shapes, donate_argnums,
+       collective_devices),
+      {
         if (output_shapes.empty()) {
           return {};
         }
@@ -173,6 +178,7 @@ std::vector<at::Tensor> PyCallCustomKernel(
         // jax.buffer_donor if they are leaf inputs to the MLIR module.
         options.donated_indices.assign(donate_argnums.begin(),
                                        donate_argnums.end());
+        options.collective_devices = collective_devices;
 
         absl::StatusOr<std::vector<DeviceBufferRef>> results_status =
             DispatchOp<kDynamicSize, kDynamicSize>(std::move(custom_op_builder),
@@ -204,7 +210,8 @@ TT_PYBIND11_MODULE(tpu_torch_pallas, m) {
         py::arg("name"), py::arg("kernel_key"),
         py::kw_only(),  // Everything after this is keyword-only
         py::arg("inputs"), py::arg("output_shapes"),
-        py::arg("donate_argnums") = std::vector<int64_t>{});  // INT_VEC_OK
+        py::arg("donate_argnums") = std::vector<int64_t>{},       // INT_VEC_OK
+        py::arg("collective_devices") = std::vector<int64_t>{});  // INT_VEC_OK
 }
 
 }  // namespace torch_tpu

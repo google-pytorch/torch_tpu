@@ -29,7 +29,8 @@ namespace torch_tpu {
 // devices are compiled for that subgroup alone: only its devices launch and
 // synchronize on the program, so the other devices may run unrelated programs
 // concurrently. A collective in such a program is emitted with the slice-wide
-// `replica_groups` (every subgroup, in logical device ids); these helpers
+// `replica_groups` (every subgroup, in logical device ids: a device's world
+// rank, its index in the slice-wide device assignment); these helpers
 // restrict the executable to the subgroup's devices and renumber the groups to
 // the executable's own device indices.
 

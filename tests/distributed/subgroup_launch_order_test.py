@@ -19,7 +19,8 @@ compiled for that subgroup's devices, so the members of one subgroup may issue
 any number of such programs without the other subgroups launching anything.
 Pipeline stages with tensor parallelism inside each stage rely on this: every
 stage runs its own sequence of stage-local collectives while all stages join
-only the hand-off collective.
+only the hand-off collective. A multi-device kernel tagged with the subgroup's
+devices (JaxCallable's collective_devices) is restricted the same way.
 """
 
 import os
@@ -119,6 +120,95 @@ def run_interleaved_pair_and_world_collectives() -> None:
     utils.assert_close(w.cpu(), torch.tensor([float(it * _WORLD)]))
 
 
+def _stage_kernel(tag):
+  """A shard_map kernel over a (stage, pair) mesh of the whole slice, tagged
+  with one pair's world ranks: the pair sum of the input, position
+  0's input handed to position 1, and a Pallas body's own pair position
+  (axis_index inside a kernel body lowers to Mosaic's device id, the way a
+  ring kernel finds its remote-DMA peer; at the top level it would be an
+  HLO partition-id, which the SPMD partitioner rejects)."""
+  import inspect
+
+  import jax
+  from jax.experimental import pallas as pl
+  import jax.numpy as jnp
+  import numpy as np
+  from jax.experimental.shard_map import shard_map
+  from jax.sharding import Mesh, PartitionSpec
+  from torch_tpu._internal.pallas import pallas as pallas_impl
+
+  mesh = Mesh(np.asarray(jax.devices()[:_WORLD]).reshape(_WORLD // 2, 2),
+              ("stage", "pair"))
+
+  def position_body(x_ref, o_ref):
+    column = jax.lax.axis_index("pair").astype(jnp.float32)
+    o_ref[...] = jnp.zeros_like(x_ref[...]) + column
+
+  def kernel(x: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
+
+    def inner(xb):
+      total = jax.lax.psum(xb, "pair")
+      forwarded = jax.lax.ppermute(xb, "pair", [(0, 1)])
+      column = pl.pallas_call(
+          position_body,
+          out_shape=jax.ShapeDtypeStruct(xb.shape, jnp.float32))(xb)
+      return total, forwarded, column
+
+    spec = PartitionSpec()
+    return shard_map(inner, mesh=mesh, in_specs=(spec,),
+                     out_specs=(spec, spec, spec), check_rep=False)(x)
+
+  static_argnums = pallas_impl._infer_static_argnums(inspect.signature(kernel))
+  callable_ = pallas_impl.JaxCallable(
+      name="test::stage_kernel",
+      jit_fn=jax.jit(kernel, static_argnums=static_argnums),
+      trace_key=f"stage_kernel_{tag}",
+      static_argnums=static_argnums,
+      collective_devices=list(tag),
+  )
+  op = torch.library.custom_op("test::stage_kernel", callable_, mutates_args=())
+  op.register_fake(lambda x: (torch.empty_like(x), torch.empty_like(x),
+                              torch.empty_like(x)))
+  return op
+
+
+def run_uneven_tagged_kernels() -> None:
+  """Pair k launches a kernel tagged with its devices k + 1 times."""
+  dist.init_process_group(backend="tpu_dist")
+  rank = int(os.environ["RANK"])
+  assert int(os.environ["WORLD_SIZE"]) == _WORLD
+  signal.alarm(900)
+  my_pair, my_pair_ranks, _ = _make_groups(rank)
+  pair_index = _PAIRS.index(my_pair_ranks)
+  a, b = my_pair_ranks
+
+  # A device's logical id is its world rank.
+  tag = list(my_pair_ranks)
+  op = _stage_kernel(tag)
+
+  position = my_pair_ranks.index(rank)
+  for i in range(pair_index + 1):
+    x = torch.full((128, 128), float(rank + 1 + 10 * i), device="tpu")
+    total, forwarded, column = op(x)
+    utils.assert_close(total.cpu(),
+                       torch.full((128, 128), float(a + b + 2 + 20 * i)))
+    # Position 1 holds position 0's block; position 0 holds zeros.
+    utils.assert_close(
+        forwarded.cpu(),
+        torch.full((128, 128), float(a + 1 + 10 * i) if position else 0.0))
+    utils.assert_close(column.cpu(), torch.full((128, 128), float(position)))
+
+  # A c10d pair collective and the tagged kernel share one program.
+  y = torch.full((128, 128), float(rank + 1), device="tpu")
+  dist.all_reduce(y, group=my_pair)
+  total, _, _ = op(y)
+  utils.assert_close(total.cpu(), torch.full((128, 128), float(2 * (a + b + 2))))
+
+  w = torch.tensor([float(rank)], device="tpu")
+  dist.all_reduce(w)
+  utils.assert_close(w.cpu(), torch.tensor([float(sum(range(_WORLD)))]))
+
+
 class SubgroupLaunchOrderTest(seed_test_utils.MultiProcessRepeatableTest):
 
   def test_uneven_pair_collectives(self):
@@ -132,6 +222,12 @@ class SubgroupLaunchOrderTest(seed_test_utils.MultiProcessRepeatableTest):
         nproc_per_node=_WORLD,
         fn=singlehost_wrapper.tpu_env_wrapper(
             run_interleaved_pair_and_world_collectives),
+    )
+
+  def test_uneven_tagged_kernels(self):
+    distributed_utils.dist_run(
+        nproc_per_node=_WORLD,
+        fn=singlehost_wrapper.tpu_env_wrapper(run_uneven_tagged_kernels),
     )
 
 
