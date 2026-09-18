@@ -349,6 +349,7 @@ class ResolveBaseShaTest(  #
           ["bash", os.path.join(td, "ci", "check_wheel_diff.sh")],
           cwd=td,
           env=env,
+          capture_output=True,
           check=True,
       )
       with open(gh_output) as f:
@@ -362,6 +363,7 @@ class ResolveBaseShaTest(  #
           ["bash", os.path.join(td, "ci", "check_wheel_diff.sh")],
           cwd=td,
           env=env,
+          capture_output=True,
           check=True,
       )
       with open(gh_output) as f:
@@ -376,6 +378,7 @@ class ResolveBaseShaTest(  #
           ["bash", os.path.join(td, "ci", "check_wheel_diff.sh")],
           cwd=td,
           env=env,
+          capture_output=True,
           check=True,
       )
       with open(gh_output) as f:

@@ -14,6 +14,7 @@
 
 """Unit tests for ci/tools/run_bazel_diff.py."""
 
+import io
 import pathlib
 import tempfile
 import unittest
@@ -161,6 +162,7 @@ class RunBazelDiffTest(unittest.TestCase):
     with (
         mock.patch("subprocess.run") as mock_run,
         mock.patch("subprocess.check_output") as mock_check_output,
+        mock.patch("sys.stdout", new_callable=io.StringIO),
     ):
       mock_run.return_value.returncode = 0
       mock_check_output.return_value = " README.md \n\n  csrc/ops/add.cc\n  \n"
