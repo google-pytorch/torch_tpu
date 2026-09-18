@@ -79,9 +79,9 @@ absl::StatusOr<mlir::MlirOp> BuildMaskedScatterShlo(mlir::MlirOp input,
       mlir::stablehlo::Subtract(prefix_sum, broadcasted_1);
 
   // 5. Perform dynamic gather from source using BuildIndexSelectShlo helper
-  // along dim 0 (returns raw MlirOp!)
-  mlir::MlirOp gathered_source =
-      BuildIndexSelectShlo(flat_source, 0, gather_indices);
+  // along dim 0
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp gathered_source,
+                      BuildIndexSelectShlo(flat_source, 0, gather_indices));
 
   // 6. Elementwise selection: if mask is True, take gathered_source, else keep
   // flat_input

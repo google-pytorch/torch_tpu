@@ -350,7 +350,8 @@ absl::StatusOr<BuildUniqueConsecutiveShloOutputs> BuildUniqueConsecutiveDimShlo(
 
   mlir::MlirOp unique_indices =
       ExtractSortedUniqueIndices(builder, mask, s, output_size);
-  outputs.unique_values = BuildIndexSelectShlo(input, dim, unique_indices);
+  TT_ASSIGN_OR_RETURN(outputs.unique_values,
+                      BuildIndexSelectShlo(input, dim, unique_indices));
 
   if (return_inverse) {
     TT_ASSIGN_OR_RETURN(outputs.inverse_indices,

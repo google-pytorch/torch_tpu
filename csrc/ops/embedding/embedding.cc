@@ -1062,12 +1062,12 @@ absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildEmbeddingSparseBackwardPadShlo(
   const auto sorted = mlir::stablehlo::Sort(
       builder, {mask, iota}, BuildSparseMaskDescIotaAscComparator,
       /*dimension=*/0, /*is_stable=*/false);
-  mlir::MlirOp compacted_indices_1d =
-      BuildIndexSelectShlo(flat_indices, /*dim=*/0, sorted[1]);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp compacted_indices_1d,
+                      BuildIndexSelectShlo(flat_indices, /*dim=*/0, sorted[1]));
   mlir::MlirOp compacted_indices_2d =
       mlir::stablehlo::Reshape(compacted_indices_1d, {1, total_indices});
-  mlir::MlirOp compacted_values =
-      BuildIndexSelectShlo(flat_grad, /*dim=*/0, sorted[1]);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp compacted_values,
+                      BuildIndexSelectShlo(flat_grad, /*dim=*/0, sorted[1]));
   return std::array<mlir::MlirOp, 3>{compacted_indices_2d, compacted_values,
                                      count_op};
 }

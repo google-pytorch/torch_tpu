@@ -137,9 +137,9 @@ struct SortedSparseCoo {
   mlir::MlirOp values;
 };
 
-SortedSparseCoo SortSparseCoordinatesAndValues(mlir::MlirBuilder& builder,
-                                               mlir::MlirOp indices_op,
-                                               mlir::MlirOp values_op) {
+absl::StatusOr<SortedSparseCoo> SortSparseCoordinatesAndValues(
+    mlir::MlirBuilder& builder, mlir::MlirOp indices_op,
+    mlir::MlirOp values_op) {
   const mlir::RankedTensorType indices_type = GetTensorTypeOrDie(indices_op);
   const int64_t k = indices_type.getDimSize(0);
   const int64_t nnz = indices_type.getDimSize(1);
@@ -172,9 +172,9 @@ SortedSparseCoo SortSparseCoordinatesAndValues(mlir::MlirBuilder& builder,
       (k == 1) ? sorted_rows[0]
                : mlir::stablehlo::Concatenate(builder, sorted_rows,
                                               /*dimension=*/0);
-  mlir::MlirOp sorted_values =
-      BuildIndexSelectShlo(values_op, /*dim=*/0, sorted[k]);
-  return {sorted_indices, sorted_values};
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp sorted_values,
+                      BuildIndexSelectShlo(values_op, /*dim=*/0, sorted[k]));
+  return SortedSparseCoo{sorted_indices, sorted_values};
 }
 
 mlir::MlirOp ComputeUniqueCoordinateMask(mlir::MlirBuilder& builder,
@@ -205,9 +205,9 @@ mlir::MlirOp ComputeUniqueCoordinateMask(mlir::MlirBuilder& builder,
                                       /*dimension=*/0);
 }
 
-mlir::MlirOp CompactUniqueIndices(mlir::MlirBuilder& builder,
-                                  mlir::MlirOp sorted_indices,
-                                  mlir::MlirOp is_unique_mask) {
+absl::StatusOr<mlir::MlirOp> CompactUniqueIndices(mlir::MlirBuilder& builder,
+                                                  mlir::MlirOp sorted_indices,
+                                                  mlir::MlirOp is_unique_mask) {
   const int64_t nnz = GetTensorTypeOrDie(sorted_indices).getDimSize(1);
   const auto i64_type = builder.getOpBuilder().getI64Type();
   const auto iota_type =
@@ -306,8 +306,9 @@ absl::StatusOr<mlir::MlirOp> BuildNegSparseShlo(mlir::MlirOp values_op,
 absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildCoalesceAndCountShlo(
     mlir::MlirOp indices_op, mlir::MlirOp values_op) {
   auto& builder = indices_op.getBuilder();
-  const auto [sorted_indices, sorted_values] =
-      SortSparseCoordinatesAndValues(builder, indices_op, values_op);
+  TT_ASSIGN_OR_RETURN(const auto sorted, SortSparseCoordinatesAndValues(
+                                             builder, indices_op, values_op));
+  const auto [sorted_indices, sorted_values] = sorted;
   mlir::MlirOp is_unique_mask =
       ComputeUniqueCoordinateMask(builder, sorted_indices);
 
@@ -339,8 +340,9 @@ absl::StatusOr<std::array<mlir::MlirOp, 3>> BuildCoalesceAndCountShlo(
                    val_type.getShape()));
   mlir::MlirOp compacted_values =
       ScatterAddSparseToDense(builder, zero_values, dest_idx_2d, sorted_values);
-  mlir::MlirOp compacted_indices =
-      CompactUniqueIndices(builder, sorted_indices, is_unique_mask);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp compacted_indices,
+      CompactUniqueIndices(builder, sorted_indices, is_unique_mask));
   return std::array<mlir::MlirOp, 3>{compacted_indices, compacted_values,
                                      count_tensor};
 }

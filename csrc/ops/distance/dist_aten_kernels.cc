@@ -216,8 +216,10 @@ absl::StatusOr<mlir::MlirOp> BuildPdistForwardHlo(mlir::MlirOp input_op,
       builder, mlir::cast<mlir::DenseElementsAttr>(mlir::makeConstant(
                    llvm::ArrayRef<int64_t>(idx_right), indices_type)));
 
-  mlir::MlirOp lhs = BuildIndexSelectShlo(input_op, /*dim=*/0, idx_left_op);
-  mlir::MlirOp rhs = BuildIndexSelectShlo(input_op, /*dim=*/0, idx_right_op);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp lhs,
+                      BuildIndexSelectShlo(input_op, /*dim=*/0, idx_left_op));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rhs,
+                      BuildIndexSelectShlo(input_op, /*dim=*/0, idx_right_op));
 
   mlir::MlirOp diff_op = mlir::stablehlo::Subtract(lhs, rhs);
 
@@ -267,8 +269,10 @@ absl::StatusOr<mlir::MlirOp> BuildPdistBackwardShlo(mlir::MlirOp grad_op,
       builder, mlir::cast<mlir::DenseElementsAttr>(mlir::makeConstant(
                    llvm::ArrayRef<int64_t>(idx_right), indices_type)));
 
-  mlir::MlirOp lhs = BuildIndexSelectShlo(self_op, /*dim=*/0, idx_left_op);
-  mlir::MlirOp rhs = BuildIndexSelectShlo(self_op, /*dim=*/0, idx_right_op);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp lhs,
+                      BuildIndexSelectShlo(self_op, /*dim=*/0, idx_left_op));
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp rhs,
+                      BuildIndexSelectShlo(self_op, /*dim=*/0, idx_right_op));
 
   mlir::MlirOp diff = mlir::stablehlo::Subtract(lhs, rhs);
 

@@ -84,8 +84,8 @@ absl::StatusOr<MlirOpResults<2>> BuildNllLossForwardOutShlo(
   // Mask the weights and apply to loss.
   mlir::MlirOp weight_to_apply = mask_float;
   if (weight.has_value()) {
-    mlir::MlirOp sample_weight =
-        BuildIndexSelectShlo(weight.value(), 0, target);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sample_weight,
+                        BuildIndexSelectShlo(weight.value(), 0, target));
     weight_to_apply = mlir::stablehlo::Mul(weight_to_apply, sample_weight);
   }
   loss_no_reduction = mlir::stablehlo::Mul(loss_no_reduction, weight_to_apply);
@@ -201,8 +201,8 @@ absl::StatusOr<mlir::MlirOp> BuildNllLossBackwardGradInputShlo(
 
   // Apply sample weight to grad_val.
   if (weight.has_value()) {
-    mlir::MlirOp sample_weight =
-        BuildIndexSelectShlo(weight.value(), 0, target);
+    TT_ASSIGN_OR_RETURN(mlir::MlirOp sample_weight,
+                        BuildIndexSelectShlo(weight.value(), 0, target));
     grad_val = mlir::stablehlo::Mul(grad_val, sample_weight);
   }
 

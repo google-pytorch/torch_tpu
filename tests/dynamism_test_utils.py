@@ -184,7 +184,6 @@ untriaged_ops_deny_list: dict[
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_put": ALL_MODES,  # garbage data
-    "index_select": ALL_MODES,  # invalid gather
     "isinf": {COMPILE},  # buffer dimension mismatch
     "isin": ALL_MODES,  # materialization failure (negative dimension size)
     "kron": ALL_MODES,  # dynamic triage (invalid result)
@@ -295,14 +294,18 @@ def verify_op_supports_dynamism(
   ### [TEST INFRA TASKS] ###
   # The following indicate changes needed in this file to increase coverage.
 
-  # Verify all input tensors are supported with dynamism. Here we use
-  # _pytree.tree_flatten to recursively inspect the input_value and args,
-  # ensuring that tensors inside lists, tuples, or other nested structures
-  # (common in foreach ops) are properly vetted.
+  canonical_input = _get_canonical_input_value(op, input_value)
+  skip_input = _should_skip_input_marking(op, canonical_input)
+  if skip_input:
+    return skip_input
+
   for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+    if not isinstance(value, torch.Tensor):
+      continue
+    if value.dtype in [torch.complex64, torch.complex128]:
+      return f"{op.name} op is not supported with dtype {value.dtype}."
+    if value.numel() == 0:
+      return "Empty tensors are currently not supported."
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking

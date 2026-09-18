@@ -61,7 +61,7 @@ jobs:
     outputs:
       # Keep cpu_versions and latest_python_version in sync with
       # bazel/supported_python_versions.bzl.
-      cpu_versions: ${{ steps.set.outputs.cpu_versions }}
+      cpu_versions: '["3.11", "3.12", "3.13", "3.14"]'
       tpu_versions: ${{ steps.set.outputs.tpu_versions }}
       default_python_version: "3.14"
       latest_python_version: "3.14"
@@ -88,17 +88,14 @@ jobs:
           HAS_POSTSUBMIT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:postsubmit') }}
         run: |
           DEFAULT_VER="3.14"
-          CPU_VERS='["3.11", "3.14"]'
           TPU_VERS="[\"${DEFAULT_VER}\"]"
           if [[ "${EVENT_NAME}" == "schedule" ]] || \
              [[ "${EVENT_NAME}" == "push" ]] || \
              [[ "${HAS_TPU_NIGHTLY_LABEL}" == "true" ]] || \
              [[ "${HAS_RUN_ALL_VERSIONS_LABEL}" == "true" ]] || \
              [[ "${HAS_POSTSUBMIT_LABEL}" == "true" ]]; then
-            CPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
             TPU_VERS='["3.11", "3.12", "3.13", "3.14"]'
           fi
-          echo "cpu_versions=${CPU_VERS}" >> "$GITHUB_OUTPUT"
           echo "tpu_versions=${TPU_VERS}" >> "$GITHUB_OUTPUT"
 
   # TODO(pganssle): Migrate to cibuildwheel
