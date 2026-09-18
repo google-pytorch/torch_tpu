@@ -37,6 +37,7 @@ on:
   pull_request:
     branches:
       - main
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   contents: read
@@ -54,6 +55,10 @@ concurrency:
 jobs:
   run_tests:
     name: "Presubmit on ${{ matrix.job_info.name || matrix.job_info.runner }}"
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.action != 'labeled'
+      || contains(fromJSON('["ci:replace-tpu-v5", "ci:relay-tpu-v5", "run-rbe"]'), github.event.label.name)
     # Available self-hosted runners.
     strategy:
       fail-fast: false
@@ -128,3 +133,37 @@ jobs:
           bazel_config: ${{ matrix.job_info.config }}
           extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  rbe_presubmit:
+    name: "Presubmit on RBE"
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Fix Git Workspace Ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Wait For Connection
+        uses: google-ml-infra/actions/ci_connection@08e5394bb8179c66a50ac783fb8b2501a034c06f
+        with:
+          halt-dispatch-input: ${{ inputs.halt-for-connection }}
+
+      - name: Run Impacted Tests via bazel-diff
+        uses: ./.github/actions/bazel-diff
+        with:
+          base_sha: ${{ inputs.override_base_sha }}
+          current_sha: ${{ inputs.override_current_sha || github.sha }}
+          bazel_config: "ci_tpu_v5_rbe"
+          extra_bazel_flags: "--test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild"
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+

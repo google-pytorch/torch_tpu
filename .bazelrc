@@ -376,17 +376,21 @@ common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
-# CI config matching .github/workflows/test_rbe_opt_in.yml
+# CI config matching .github/workflows/presubmit.yml
 # Connects to Buildbarn across projects via Private Service Connect (PSC)
-common:ci_tpu_v5_full_rbe --config=rbe_native_tpu
-common:ci_tpu_v5_full_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_full_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_full_rbe --build_tests_only
-common:ci_tpu_v5_full_rbe --color=yes
-common:ci_tpu_v5_full_rbe --curses=no
-common:ci_tpu_v5_full_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
-common:ci_tpu_v5_full_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
-test:ci_tpu_v5_full_rbe --test_output=errors
+common:ci_tpu_v5_rbe --config=rbe_native_tpu
+common:ci_tpu_v5_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_rbe --build_tests_only
+common:ci_tpu_v5_rbe --color=yes
+common:ci_tpu_v5_rbe --curses=no
+common:ci_tpu_v5_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
+common:ci_tpu_v5_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
+test:ci_tpu_v5_rbe --test_output=errors
+
+# Backward-compatibility alias
+common:ci_tpu_v5_full_rbe --config=ci_tpu_v5_rbe
+test:ci_tpu_v5_full_rbe --config=ci_tpu_v5_rbe
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base

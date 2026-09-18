@@ -32,7 +32,7 @@ Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 ```mermaid
 flowchart TD
     subgraph CIRunner ["CI Runner (ml-velocity-actions-production)"]
-        BazelCI["Bazel Client<br/>bazel test --config=ci_tpu_v5_full_rbe"]
+        BazelCI["Bazel Client<br/>bazel test --config=ci_tpu_v5_rbe"]
         PSCEndpoint["PSC Endpoint (dualstack-network)<br/>rbe.torchtpu.internal:8980"]
         BazelCI --> PSCEndpoint
     end
@@ -267,15 +267,16 @@ common:rbe_native_tpu --strategy=TestRunner=remote
 common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
-# CI config matching .github/workflows/test_rbe_opt_in.yml
-common:ci_tpu_v5_full_rbe --config=rbe_native_tpu
-common:ci_tpu_v5_full_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_full_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_full_rbe --build_tests_only
-common:ci_tpu_v5_full_rbe --color=yes
-common:ci_tpu_v5_full_rbe --curses=no
-common:ci_tpu_v5_full_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
-test:ci_tpu_v5_full_rbe --test_output=errors
+# CI config matching .github/workflows/presubmit.yml
+common:ci_tpu_v5_rbe --config=rbe_native_tpu
+common:ci_tpu_v5_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_rbe --build_tests_only
+common:ci_tpu_v5_rbe --color=yes
+common:ci_tpu_v5_rbe --curses=no
+common:ci_tpu_v5_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
+common:ci_tpu_v5_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
+test:ci_tpu_v5_rbe --test_output=errors
 ```
 
 ### Running Tests Locally via Bazel
@@ -287,7 +288,7 @@ With the tunnel running on `localhost:8980`, execute tests directly with Bazel:
 bazel test --config=rbe_native_tpu //tests/pallas:pallas_test
 
 # Run an entire test suite matching CI filters:
-bazel test --config=ci_tpu_v5_full_rbe //tests:ops_test_tpu-v5lite
+bazel test --config=ci_tpu_v5_rbe //tests:ops_test_tpu-v5lite
 ```
 
 To run multiple tests in parallel across the standing TPU fleet, increase test
@@ -297,16 +298,16 @@ jobs:
 bazel test --config=rbe_native_tpu --jobs=28 //tests/...
 ```
 
-### GitHub Actions Presubmit (`.github/workflows/test_rbe_opt_in.yml`)
+### GitHub Actions Presubmit (`.github/workflows/presubmit.yml`)
 
 Pull requests trigger native RBE presubmit jobs when labeled with
 `ci:replace-tpu-v5` or `ci:relay-tpu-v5` (or when dispatched manually).
 
-The workflow runs `bazel test --config=ci_tpu_v5_full_rbe` directly against
-`rbe.torchtpu.internal:8980` over Private Service Connect. Because PSC provides
-a direct internal IP path across VPCs, the runner needs no background tunnels,
-gcloud commands, or custom proxy daemons. Test results post directly back to
-the pull request checks.
+The `Presubmit on RBE` job runs `bazel test --config=ci_tpu_v5_rbe` directly
+against `rbe.torchtpu.internal:8980` over Private Service Connect using
+`bazel-diff`. Because PSC provides a direct internal IP path across VPCs, the
+runner needs no background tunnels, gcloud commands, or custom proxy daemons.
+Test results post directly back to the pull request checks.
 
 --------------------------------------------------------------------------------
 
