@@ -836,7 +836,8 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
     const CompilationCacheKey key, const std::vector<Shape>& input_shapes,
     const std::vector<Shape>& output_shapes,
     MlirComputationBuilder computation_builder,
-    UniqueCompileOptions compile_options, bool use_dynamic_adapters) {
+    UniqueCompileOptions compile_options, bool use_dynamic_adapters,
+    bool use_persistent_cache) {
   // Critical section for cache lookups and insertion.
   TT_ASSIGN_OR_RETURN(
       auto cache_lookup, [&]() -> absl::StatusOr<CacheLookupInternal> {
@@ -891,16 +892,17 @@ absl::StatusOr<CompiledKernel> CompilationCache::GetOrCompile(
                       DebugStringOptions::kEnableDebugInfo)));
     }
     EnqueueCompilation(storage_key, *std::move(contexted_module_or),
-                       std::move(compile_options));
+                       std::move(compile_options), use_persistent_cache);
     ABSL_VLOG(1) << "[TtPerf] Scheduled compilation for key: " << storage_key;
   }
 
   return compiled_kernel;
 }
 
-void CompilationCache::EnqueueCompilation(
-    CompilationCacheKey key, ContextedModule contexted_module,
-    UniqueCompileOptions compile_options) {
+void CompilationCache::EnqueueCompilation(CompilationCacheKey key,
+                                          ContextedModule contexted_module,
+                                          UniqueCompileOptions compile_options,
+                                          bool use_persistent_cache) {
   EnsureInitialized();
   auto executable_builder = [contexted_module = std::move(contexted_module)](
                                 xla::PjRtClient& client,
@@ -912,17 +914,19 @@ void CompilationCache::EnqueueCompilation(
         /* context= */ "failed to compile MLIR module");
   };
 
-  compilation_pool_->Schedule(
-      [this, key, builder = std::move(executable_builder),
-       compile_options = std::move(compile_options)]() mutable {
-        // Prevent compilation threads from accessing thread-local context
-        // states to enforce they always rely on resolved compiler options
-        // passed down from the dispatch thread.
-        DisallowThisThreadToAccessContextState();
-        torch_tpu::ScopedMemMeasuringContainer container;
-        this->GetFromTier2OrCompile(std::move(key), std::move(builder),
-                                    std::move(compile_options));
-      });
+  compilation_pool_->Schedule([this, key,
+                               builder = std::move(executable_builder),
+                               compile_options = std::move(compile_options),
+                               use_persistent_cache]() mutable {
+    // Prevent compilation threads from accessing thread-local context
+    // states to enforce they always rely on resolved compiler options
+    // passed down from the dispatch thread.
+    DisallowThisThreadToAccessContextState();
+    torch_tpu::ScopedMemMeasuringContainer container;
+    this->GetFromTier2OrCompile(std::move(key), std::move(builder),
+                                std::move(compile_options),
+                                use_persistent_cache);
+  });
 }
 
 void CompilationCache::SetExecutable(
@@ -980,8 +984,8 @@ bool CompilationCache::ShouldUseTier2Cache() const {
 
 void CompilationCache::GetFromTier2OrCompile(
     CompilationCacheKey key, LoadedExecutableBuilder executable_builder,
-    UniqueCompileOptions compile_options) {
-  const bool uses_tier2 = ShouldUseTier2Cache();
+    UniqueCompileOptions compile_options, bool use_persistent_cache) {
+  const bool uses_tier2 = use_persistent_cache && ShouldUseTier2Cache();
   ABSL_VLOG(1) << "Compiling executable for key: " << key
                << (uses_tier2 ? absl::StrCat(" with tier-2 cache at ",
                                              GetTier2CompilationCachePath())

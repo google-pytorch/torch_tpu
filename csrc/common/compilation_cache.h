@@ -268,12 +268,18 @@ class CompilationCache {
 
   // Fetches a CompiledKernel with the right executable futures from the cache,
   // and enqueues compilations if necessary.
+  //
+  // With `use_persistent_cache` false the executable is neither read from nor
+  // written to the tier-2 and tier-3 caches: a program compiled for a proper
+  // subgroup of the slice's devices (see collective_subgroup.h) cannot be
+  // loaded from a serialized form by another process, so every process
+  // compiles its own copy and keeps it in the in-memory cache only.
   absl::StatusOr<CompiledKernel> GetOrCompile(
       CompilationCacheKey key, const std::vector<Shape>& input_shapes,
       const std::vector<Shape>& output_shapes,
       MlirComputationBuilder computation_builder,
-      UniqueCompileOptions compile_options, bool use_dynamic_adapters = true)
-      ABSL_LOCKS_EXCLUDED(cache_mutex_);
+      UniqueCompileOptions compile_options, bool use_dynamic_adapters = true,
+      bool use_persistent_cache = true) ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Schedules compilation of the given module associated to the key.
   //
@@ -282,9 +288,12 @@ class CompilationCache {
   //    cache lookups.
   //  - contexted_module: The MLIR computation to compile.
   //  - compile_options: The compile options to use for the compilation.
+  //  - use_persistent_cache: Whether the tier-2 and tier-3 caches may serve
+  //    or store the executable (see GetOrCompile).
   void EnqueueCompilation(CompilationCacheKey key,
                           ContextedModule contexted_module,
-                          UniqueCompileOptions compile_options)
+                          UniqueCompileOptions compile_options,
+                          bool use_persistent_cache = true)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Sets the cache to dump the input StableHLO module for any cache misses.
@@ -479,7 +488,8 @@ class CompilationCache {
   // be updated with the compiled executable.
   void GetFromTier2OrCompile(CompilationCacheKey key,
                              LoadedExecutableBuilder executable_builder,
-                             UniqueCompileOptions compile_options)
+                             UniqueCompileOptions compile_options,
+                             bool use_persistent_cache)
       ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
   // Tries to get the compilation result from the tier-3 cache; if not found,

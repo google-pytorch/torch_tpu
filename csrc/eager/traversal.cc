@@ -935,10 +935,13 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
       GetCacheKey(spec.compile_options_key, argument_layouts, donated_inputs);
   ABSL_VLOG(1) << "[Compile] compilation cache key: " << compilation_cache_key;
 
+  // A program compiled for a device group is kept out of the serialized
+  // caches: another process cannot load it (see collective_subgroup.h).
   return CompilationCache::GetInstance().GetOrCompile(
       std::move(compilation_cache_key), argument_shapes, output_shapes,
       std::move(final_op_builder), std::move(spec.xla_compile_options),
-      /*use_dynamic_adapters=*/!use_stablehlo_bounds);
+      /*use_dynamic_adapters=*/!use_stablehlo_bounds,
+      /*use_persistent_cache=*/device_group.empty());
 }
 
 bool IsSimpleNodeTraversal(const Traversal& traversal) {
