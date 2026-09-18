@@ -43,7 +43,7 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
     mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
     const int64_t index_start_dim, const int64_t index_end_dim,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
-    const Dimensions& values_broadcast_shape, const bool accumulate) {
+    const bool accumulate) {
   const mlir::RankedTensorType self_type = GetTensorTypeOrDie(self);
   ABSL_VLOG(1) << "[BuildIndexPutShlo] self: " << debugString(self_type);
 
@@ -59,6 +59,12 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
     }
   }
 
+  mlir::stablehlo::Dimensions target_index_dims;
+  target_index_dims.reserve(index_broadcast_shape.size());
+  for (int64_t s : index_broadcast_shape) {
+    target_index_dims.push_back({s});
+  }
+
   for (int i = 0; i < indices.size(); ++i) {
     mlir::MlirOp index = indices[i];
     mlir::RankedTensorType index_type = GetTensorTypeOrDie(index);
@@ -66,7 +72,7 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
                  << " before broadcast: " << debugString(index_type);
     TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op catches this error
                           // first before dispatching.
-        index, BroadcastIfNeeded(index, index_broadcast_shape));
+        index, BroadcastIfNeeded(index, target_index_dims));
     index_type = GetTensorTypeOrDie(index);
     ABSL_VLOG(1) << "[BuildIndexPutShlo] index " << index_start_dim + i
                  << " after broadcast: " << debugString(index_type);
@@ -158,9 +164,23 @@ absl::StatusOr<mlir::MlirOp> ApplyScatter(
   mlir::RankedTensorType values_type = GetTensorTypeOrDie(values);
   ABSL_VLOG(1) << "[BuildIndexPutShlo] values: " << debugString(values_type);
 
+  mlir::stablehlo::Dimensions self_dims = GetDimensions(self);
+  mlir::stablehlo::Dimensions values_target_dims;
+  values_target_dims.reserve(index_start_dim + index_broadcast_shape.size() +
+                             (self_dims.size() - (index_end_dim + 1)));
+  for (int64_t dim = 0; dim < index_start_dim; ++dim) {
+    values_target_dims.push_back(self_dims[dim]);
+  }
+  for (int64_t s : index_broadcast_shape) {
+    values_target_dims.push_back({s});
+  }
+  for (int64_t dim = index_end_dim + 1; dim < self_dims.size(); ++dim) {
+    values_target_dims.push_back(self_dims[dim]);
+  }
+
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=the op catches this error
                         // first before dispatching.
-      values, BroadcastIfNeeded(values, values_broadcast_shape));
+      values, BroadcastIfNeeded(values, values_target_dims));
 
   values_type = GetTensorTypeOrDie(values);
   ABSL_VLOG(1) << "[BuildIndexPutShlo] values after broadcast: "
@@ -263,10 +283,9 @@ absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
     mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
     const int64_t index_start_dim, const int64_t index_end_dim,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
-    const Dimensions& values_broadcast_shape, const bool accumulate) {
+    const bool accumulate) {
   return ApplyScatter(self, indices, index_start_dim, index_end_dim,
-                      index_broadcast_shape, values, values_broadcast_shape,
-                      accumulate);
+                      index_broadcast_shape, values, accumulate);
 }
 
 absl::StatusOr<mlir::MlirOp> BuildIndexPutSelectShlo(

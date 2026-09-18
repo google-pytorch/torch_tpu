@@ -3737,7 +3737,6 @@ def _compiled_supports_op(
       ####
       # TODO: Materialize was called on a placeholder tensor.
       #  Dynamo handing our compile backend a graph with data dependent ops.
-      "index_put",
       "masked_scatter",
       "masked_select",
       "nonzero",

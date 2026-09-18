@@ -39,12 +39,6 @@ namespace torch_tpu {
 //   index_broadcast_shape: A Dimensions vector representing the common shape
 //                          that all index tensors are broadcastable to.
 //   values: The 'values' tensor providing the updates.
-//   values_broadcast_shape: A Dimensions vector representing the shape to
-//                           which the input 'values' tensor is broadcastable
-//                           to. This shape is formed by concatenating
-//                           `index_broadcast_shape` with the sizes of any
-//                           unindexed dimensions of 'self', in their original
-//                           relative order.
 //   accumulate: A boolean flag. If true, the elements from the 'values' tensor
 //               are added to the existing elements in the 'self' tensor at the
 //               indexed locations. If false, the elements are overwritten.
@@ -53,7 +47,7 @@ absl::StatusOr<mlir::MlirOp> BuildIndexPutShlo(
     mlir::MlirOp self, mlir::ArrayRef<mlir::MlirOp> indices,
     int64_t index_start_dim, int64_t index_end_dim,
     const Dimensions& index_broadcast_shape, mlir::MlirOp values,
-    const Dimensions& values_broadcast_shape, bool accumulate);
+    bool accumulate);
 
 // Builds StableHLO operations to implement the semantics of index_put operation
 // when the index is a mask tensor.

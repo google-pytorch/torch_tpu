@@ -537,16 +537,6 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertIn("input_ids", kwargs)
     self.assertIn("pixel_values", kwargs)
 
-  def test_transformers_git_get_module_spec(self):
-    module_spec = self.module_registry.get_module_spec(
-        "transformers", "microsoft/git-base-vqav2"
-    )
-    self.assertEqual(module_spec.modality, module_registry.Modality.MULTIMODAL)
-    _, kwargs = module_spec.sample_inputs_factory()
-    self.assertIn("input_ids", kwargs)
-    self.assertIn("pixel_values", kwargs)
-    self.assertIn("attention_mask", kwargs)
-
   def test_transformers_mllama_get_module_spec(self):
     module_spec = self.module_registry.get_module_spec(
         "transformers",

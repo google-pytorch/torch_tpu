@@ -457,8 +457,7 @@ absl::Status IndexPut(
 
   auto index_op_builder =
       [index_start_dim = index_start_dim, index_end_dim = index_end_dim,
-       index_broadcast_shape = std::move(index_broadcast_shape),
-       values_broadcast_shape = std::move(values_broadcast_shape), accumulate](
+       index_broadcast_shape = std::move(index_broadcast_shape), accumulate](
           absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
         ABSL_CHECK(inputs.size() >= 3)  // CRASH_OK
             << "[IndexPut] expects at least 3 inputs, got " << inputs.size();
@@ -469,7 +468,7 @@ absl::Status IndexPut(
         auto indices_op = inputs.subspan(1, inputs.size() - 2);
         return BuildIndexPutShlo(self_op, indices_op, index_start_dim,
                                  index_end_dim, index_broadcast_shape,
-                                 values_op, values_broadcast_shape, accumulate);
+                                 values_op, accumulate);
       };
 
   TT_ASSIGN_OR_RETURN(const auto elem_type,

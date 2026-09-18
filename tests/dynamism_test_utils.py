@@ -183,7 +183,6 @@ untriaged_ops_deny_list: dict[
     "full_like": {COMPILE},  # buffer dimension mismatch
     "index_add": ALL_MODES,  # invalid bound length (likely bad tensor copy)
     "index_copy": ALL_MODES,  # invalid bound length (likely bad tensor copy)
-    "index_put": ALL_MODES,  # garbage data
     "index_select": ALL_MODES,  # invalid gather
     "isinf": {COMPILE},  # buffer dimension mismatch
     "isin": ALL_MODES,  # materialization failure (negative dimension size)
@@ -295,14 +294,19 @@ def verify_op_supports_dynamism(
   ### [TEST INFRA TASKS] ###
   # The following indicate changes needed in this file to increase coverage.
 
-  # Verify all input tensors are supported with dynamism. Here we use
-  # _pytree.tree_flatten to recursively inspect the input_value and args,
-  # ensuring that tensors inside lists, tuples, or other nested structures
-  # (common in foreach ops) are properly vetted.
+  # Verify canonical input tensor is supported with dynamism.
+  canonical_input = _get_canonical_input_value(op, input_value)
+  skip_input = _should_skip_input_marking(op, canonical_input)
+  if skip_input:
+    return skip_input
+
+  # Verify all input tensors have supported dtypes for dynamism.
   for value in _pytree.tree_flatten((input_value, args))[0]:
-    skip_input = _should_skip_input_marking(op, value)
-    if skip_input:
-      return skip_input
+    if isinstance(value, torch.Tensor):
+      if value.dtype in [torch.complex64, torch.complex128]:
+        return f"{op.name} op is not supported with dtype {value.dtype}."
+      if op.name == "_foreach_exp_" and not value.dtype.is_floating_point:
+        return f"{op.name} op is not supported with integral dtypes on TPU."
 
   require_mark_dynamic_support = [
       # Needs matmul-style marking
@@ -410,6 +414,7 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        IndexPutDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
@@ -653,6 +658,56 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       # If a batch dim is dynamic, mark rhs's batch dim too.
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
+    return
+
+
+class IndexPutDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo for index_put that supports bounded dynamism."""
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in ["index_put", "index_put_"]
+
+  def _mark_dependent_arg_dynamic(
+      self,
+      args: Sequence[Any],
+      like: torch.Tensor,
+      idx: int,
+      ub: int,
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    """Mark dependent args of index_put dynamic."""
+    if not args:
+      return
+    indices = args[0]
+    values = args[1] if len(args) > 1 else None
+
+    # Handle boolean mask in indices
+    if isinstance(indices, (list, tuple)):
+      for i, index_tensor in enumerate(indices):
+        if (
+            isinstance(index_tensor, torch.Tensor)
+            and index_tensor.dtype == torch.bool
+        ):
+          if i <= idx < i + index_tensor.ndim:
+            mask_dim = idx - i
+            if index_tensor.shape[mask_dim] > 1:
+              _mark_tensor_dynamic(index_tensor, mask_dim, 2, ub, mode=mode)
+    elif isinstance(indices, torch.Tensor) and indices.dtype == torch.bool:
+      if idx < indices.ndim and indices.shape[idx] > 1:
+        _mark_tensor_dynamic(indices, idx, 2, ub, mode=mode)
+
+    # Handle values tensor for unindexed dimensions
+    if isinstance(values, torch.Tensor) and values.ndim > 0:
+      negative_idx = idx - len(like.shape)
+      arg_idx = negative_idx + len(values.shape)
+      if (
+          0 <= arg_idx < len(values.shape)
+          and values.shape[arg_idx] == like.shape[idx]
+          and values.shape[arg_idx] > 1
+      ):
+        _mark_numpy_broadcastable_arg_dynamic(values, like, idx, ub, mode=mode)
     return
 
 
