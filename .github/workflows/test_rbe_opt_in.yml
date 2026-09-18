@@ -128,11 +128,20 @@ jobs:
             run_tunnel &
             TUNNEL_PID=$!
 
-            trap 'kill "$TUNNEL_PID" 2>/dev/null || true; pkill -f start-iap-tunnel 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
+            keepalive() {
+              while true; do
+                sleep 10
+                curl -s -m 2 http://127.0.0.1:8980/ >/dev/null 2>&1 || true
+              done
+            }
+            keepalive &
+            KEEPALIVE_PID=$!
+
+            trap 'kill "$TUNNEL_PID" "$KEEPALIVE_PID" 2>/dev/null || true; pkill -f start-iap-tunnel 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
 
             CONNECTED=0
             for _ in {1..30}; do
-              if (echo > /dev/tcp/127.0.0.1/8980) >/dev/null 2>&1; then
+              if grep -q "Listening on port \[8980\]" /tmp/iap_tunnel.log 2>/dev/null; then
                 echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
                 CONNECTED=1
                 break

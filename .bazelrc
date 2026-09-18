@@ -370,6 +370,9 @@ common:rbe_native_tpu --spawn_strategy=local
 common:rbe_native_tpu --genrule_strategy=local
 common:rbe_native_tpu --strategy=Genrule=local
 common:rbe_native_tpu --strategy=TestRunner=remote
+common:rbe_native_tpu --grpc_keepalive_time=15s
+common:rbe_native_tpu --grpc_keepalive_timeout=15s
+common:rbe_native_tpu --experimental_remote_execution_keepalive=true
 common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
