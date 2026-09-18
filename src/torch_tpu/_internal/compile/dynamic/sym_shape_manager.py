@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Manage symbolic integers and their bounds for dynamic shape support."""
+"""Manage symbolic integers and FX graph transformations for dynamic shape support."""
 
 from __future__ import annotations
 from collections.abc import Mapping, Sequence
@@ -21,10 +21,8 @@ from typing import Any
 from absl import logging
 import sympy
 import torch
-from torch.fx.experimental.symbolic_shapes import ConstraintViolationError
 from torch.utils import _pytree
 from torch_tpu._internal.compile.dynamic import sym_utils
-from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic.symbol_bounds import get_symint_bounds
 
 
@@ -185,7 +183,6 @@ class InputTensorMetadata:
   """Metadata for an input tensor."""
 
   static_shape: list[int]
-  dynamic_bounds: list[tuple[int, int]]
   dynamic_dims: list[int]
 
 
@@ -194,24 +191,11 @@ class SymShapeManager:
 
   This class acts as a central repository for tracking and resolving symbolic
   integers (SymInts) across input and output tensors during FX graph tracing and
-  compilation. It provides access to static shapes, dynamic bounds, and runtime
-  shape computation logic.
-
-  What it manages:
-    - Input Tensors Metadata: Tracks static shapes, dynamic dimensions, and
-    their bounds.
-    - Symbolic Bounds: Maintains lower and upper bounds for all SymInts present
-    in the inputs.
-    - Output Shapes: Stores formulas to compute runtime output shapes from input
-    dimensions.
-    - Generative Op Placeholders: Maps SymInts to FX placeholder nodes created
-    for them
-      to support generative operations (like `torch.arange`).
+  compilation. It provides access to static shapes, dynamic dimensions, and
+  runtime shape computation logic.
 
   Attributes:
     input_tensors_metadata: Maps input tensor indices to their metadata.
-    symints_to_bounds: Collection of all SymInts found in inputs and their
-      corresponding (lower, upper) bounds.
     outputs_sym_shape: Output sym shape needed to compute the runtime shape of
       the output tensor based on input shapes.
     symint_to_placeholder: Maps the string representation of a SymInt to the FX
@@ -223,18 +207,12 @@ class SymShapeManager:
       tensor node.
     _symint_output_indices: List of output indices that were originally SymInt
       nodes and promoted to 0D tensors.
-    _user_defined_bound_for_symbols: Set of symbol name strings whose bounds
-      were explicitly provided by the user.
   """
 
   # Tensor idx is its position in the example inputs.
 
   # Mapping of tensor idx in example inputs to its metadata.
   input_tensors_metadata: dict[int, InputTensorMetadata]
-
-  # Collection of SymInts and their (lower, upper) bounds.
-  # [(symint1, (lb1, ub1)), (symint2, (lb2, ub2)), ...]
-  symints_to_bounds: list[tuple[torch.SymInt, tuple[int, int]]]
 
   # List of output shape infos.
   outputs_sym_shape: list[_OutputSymShape]
@@ -253,9 +231,6 @@ class SymShapeManager:
   # promoted to 0D tensors.
   _symint_output_indices: list[int]
 
-  # Set of symbol names whose bounds were explicitly provided by the user.
-  _user_defined_bound_for_symbols: set[str]
-
   def __init__(
       self,
       graph_module: torch.fx.GraphModule,
@@ -267,7 +242,6 @@ class SymShapeManager:
     self.symint_node_to_tensor_node = {}
     self._sym_str_to_tensor_node = {}
     self._symint_output_indices = []
-    self._user_defined_bound_for_symbols = set()
     self._create_outputs_sym_shape()
     self._populate_input_tensors_metadata()
 
@@ -287,37 +261,25 @@ class SymShapeManager:
   def _populate_input_tensors_metadata(self) -> None:
     """Populates metadata for input tensors."""
     self.input_tensors_metadata = {}
-    self.symints_to_bounds = []
     for idx, arg in enumerate(self._example_inputs):
       if isinstance(arg, torch.Tensor):
         static_shape = []
-        dynamic_bounds = []
         dynamic_dims = []
         for shape_idx, s in enumerate(arg.shape):
           if isinstance(s, torch.SymInt):
             lower, upper = get_symint_bounds(s)
-            if symbol_bounds.is_user_defined_bound(s):
-              self._user_defined_bound_for_symbols.add(str(s))
-            self.symints_to_bounds.append((s, (lower, upper)))
             if lower == upper:
               static_shape.append(lower)
             else:
               static_shape.append(-1)
               dynamic_dims.append(shape_idx)
-              dynamic_bounds.append((lower, upper))
           else:
             static_shape.append(int(s))
 
         self.input_tensors_metadata[idx] = InputTensorMetadata(
             static_shape=static_shape,
-            dynamic_bounds=dynamic_bounds,
             dynamic_dims=dynamic_dims,
         )
-      elif isinstance(arg, torch.SymInt):
-        lower, upper = get_symint_bounds(arg)
-        if symbol_bounds.is_user_defined_bound(arg):
-          self._user_defined_bound_for_symbols.add(str(arg))
-        self.symints_to_bounds.append((arg, (lower, upper)))
 
   def _get_output_node_meta_val(self) -> list[Any]:
     """Reads output node.meta['val'] from a graph.
@@ -429,83 +391,6 @@ class SymShapeManager:
     )
     self.outputs_sym_shape = outputs_sym_shape
 
-  def get_symint_upper_bound(self, symint: torch.SymInt) -> int:
-    """Returns the upper bound of a given SymInt symbol.
-
-    Args:
-      symint: The symbolic integer whose upper bound is requested.
-
-    Returns:
-      The concrete upper bound integer value.
-
-    Raises:
-      ValueError: If no bounds are found for the given SymInt.
-    """
-    sym_str = str(symint)
-    for s, (_, upper) in self.symints_to_bounds:
-      if str(s) == sym_str:
-        return upper
-    raise ValueError(f"No bounds found for SymInt {sym_str}")
-
-  def _update_symint_upper_bounds(
-      self, upper_bounds: Mapping[str, int]
-  ) -> None:
-    """Updates the upper bounds for symbols across internal metadata."""
-    self.symints_to_bounds = [
-        (s, (lower, upper_bounds.get(str(s), upper)))
-        for s, (lower, upper) in self.symints_to_bounds
-    ]
-
-    for idx, arg in enumerate(self._example_inputs):
-      if isinstance(arg, torch.Tensor):
-        metadata = self.input_tensors_metadata.get(idx)
-        if metadata is None:
-          continue
-        metadata.dynamic_bounds = [
-            (lower, upper_bounds.get(str(arg.shape[dim_idx]), upper))
-            for dim_idx, (lower, upper) in zip(
-                metadata.dynamic_dims, metadata.dynamic_bounds
-            )
-        ]
-
-  def get_bounded_shape(self, tensor_pos: int) -> list[int]:
-    """Returns the shape of the tensor with dynamic dimensions replaced by their bounds.
-
-    Args:
-      tensor_pos: The position of the tensor in the example inputs.
-
-    Returns:
-      The shape of the tensor with dynamic dimensions replaced by their bounds.
-
-    Raises:
-      ValueError: If the tensor position is not found in the input tensors
-      metadata.
-    """
-    metadata = self.input_tensors_metadata.get(tensor_pos)
-    if metadata is None:
-      raise ValueError(
-          f"Tensor position {tensor_pos} not in input tensors metadata."
-      )
-
-    if not metadata.dynamic_dims:
-      return list(metadata.static_shape)
-
-    bounded_shape = list(metadata.static_shape)
-    for (_, upper_bound), dim in zip(
-        metadata.dynamic_bounds, metadata.dynamic_dims
-    ):
-      if 0 <= dim < len(bounded_shape):
-        bounded_shape[dim] = upper_bound
-      else:
-        logging.warning(
-            "Dynamic dimension index %d is out of bounds for static"
-            " shape %s of input index %d. Ignoring it.",
-            dim,
-            metadata.static_shape,
-            tensor_pos,
-        )
-    return bounded_shape
-
   def get_num_dynamic_dims(self, tensor_pos: int) -> int:
     """Returns the number of dynamic dimensions for the tensor at tensor_pos.
 
@@ -520,85 +405,12 @@ class SymShapeManager:
       return 0
     return len(metadata.dynamic_dims)
 
-  def add_bound_checks(self) -> None:
-    """Adds bound checks for all SymInts in the graph.
-
-    This function adds bound checks for all SymInts in the graph to prevent
-    unnecessary recompilation when dynamic shapes are within the bounds.
-    """
-
-    unique_symints = {str(s): (s, b) for s, b in self.symints_to_bounds}
-    for _, (symint, (lower, upper)) in unique_symints.items():
-      torch._check(symint >= lower, "Dynamic shape lower bound check failed")  # pylint: disable=protected-access
-      torch._check(symint <= upper, "Dynamic shape upper bound check failed")  # pylint: disable=protected-access
-
-  def validate_bounds(self) -> None:
-    """Validates that all SymInt upper bounds satisfy active shape guards.
-
-    If any upper bounds selected by the compiler violate shape guards, they will
-    fall back to 2 * lower_bound for the symbols involved in the failure. If
-    user-provided bounds violate shape guards or fallback bounds still violate
-    guards, a ConstraintViolationError is raised.
-
-    Raises:
-      ConstraintViolationError: If an upper bound violates an active shape
-      guard.
-    """
-    unique_symints = {str(s): (s, b) for s, b in self.symints_to_bounds}
-    if not unique_symints:
-      return
-
-    shape_env = None
-    upper_bounds = {}
-    lower_bounds = {}
-    for sym_name, (symint, (lower, upper)) in unique_symints.items():
-      upper_bounds[sym_name] = upper
-      lower_bounds[sym_name] = lower
-      if shape_env is None and hasattr(symint, "node"):
-        shape_env = getattr(symint.node, "shape_env", None)
-
-    if shape_env is None:
-      return
-
-    violated_guard = symbol_bounds.find_violated_guard(shape_env, upper_bounds)
-    if violated_guard is None:
-      return
-
-    # In case of failure, fall back compiler-selected bounds.
-    has_fallen_back = False
-    for sym_name, lower in lower_bounds.items():
-      fallback_upper = symbol_bounds.get_fallback_upper_bound(lower)
-      if (
-          sym_name not in self._user_defined_bound_for_symbols
-          and upper_bounds[sym_name] != fallback_upper
-      ):
-        logging.debug(
-            "Bound %s violated guard %s; falling back SymInt %s to %s",
-            upper_bounds[sym_name],
-            violated_guard,
-            sym_name,
-            fallback_upper,
-        )
-        upper_bounds[sym_name] = fallback_upper
-        has_fallen_back = True
-
-    if not has_fallen_back:
-      raise ConstraintViolationError(
-          f"Upper bounds {upper_bounds} violate active shape guard: "
-          f"{violated_guard}."
-      )
-
-    self._update_symint_upper_bounds(upper_bounds)
-
-    if (
-        still_violated := symbol_bounds.find_violated_guard(
-            shape_env, upper_bounds
-        )
-    ) is not None:
-      raise ConstraintViolationError(
-          f"Upper bounds {upper_bounds} violate active shape guard: "
-          f"{still_violated}."
-      )
+  def get_dynamic_outputs(self) -> list[bool]:
+    """Returns a list of booleans indicating which graph outputs have dynamic dimensions."""
+    return [
+        any(isinstance(dim, dict) for dim in out_shape.output_sym_shape)
+        for out_shape in self.outputs_sym_shape
+    ]
 
   def _get_or_create_tensor_node(
       self,

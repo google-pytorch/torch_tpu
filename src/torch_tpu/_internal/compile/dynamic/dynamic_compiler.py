@@ -29,69 +29,8 @@ from torch_tpu._internal.compile.dynamic import view_ops_passes
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import apply_pre_dynamism_transformations
 from torch_tpu._internal.compile.dynamic.graph_transformations import can_use_pad_real_to_static
+from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
-
-
-class ShapeBoundInfo(NamedTuple):
-  """Shape bound information for dynamic dimensions of a tensor."""
-
-  dynamic_dims: list[int]
-  upper_bounds: list[int]
-
-
-def _get_example_inputs(
-    example_inputs: Sequence[Any], sym_shape_manager: SymShapeManager
-) -> tuple[list[torch.Tensor | int], list[Any]]:
-  """Specializes dynamic inputs to their static upper bounds and constructs bounds.
-
-  Args:
-    example_inputs: The example inputs to the FX graph.
-    sym_shape_manager: Symbolic shape manager to get the dynamic shape
-      information.
-
-  Returns:
-    A tuple containing:
-      - A list of updated example inputs with SymInts replaced by their upper
-        bounds, and new runtime size placeholders added.
-      - A list of TensorBounds (or None) aligned with the updated example
-        inputs.
-  """
-  updated_example_inputs = []
-  aligned_bounds = []
-  for index, arg in enumerate(example_inputs):
-    if isinstance(arg, torch.Tensor):
-      num_dynamic_dims = sym_shape_manager.get_num_dynamic_dims(index)
-      if num_dynamic_dims == 0:
-        updated_example_inputs.append(arg)
-        aligned_bounds.append(None)
-        continue
-      bounded_shape = sym_shape_manager.get_bounded_shape(index)
-      updated_example_inputs.append(
-          torch.zeros(
-              bounded_shape,
-              dtype=arg.dtype,
-              requires_grad=arg.requires_grad,
-          )
-      )
-      # Construct TensorBounds
-      tensor_metadata = sym_shape_manager.input_tensors_metadata[index]
-      dynamic_dims = list(tensor_metadata.dynamic_dims)
-      upper_bounds = [upper for _, upper in tensor_metadata.dynamic_bounds]
-      bounds_obj = tpu_torch_compile.TensorBounds((dynamic_dims, upper_bounds))
-      aligned_bounds.append(bounds_obj)
-
-    elif isinstance(arg, torch.SymInt):
-      upper = sym_shape_manager.get_symint_upper_bound(arg)
-      updated_example_inputs.append(upper)
-      aligned_bounds.append(None)
-      # Add an input for the runtime size placeholder for the symint.
-      updated_example_inputs.append(torch.tensor(upper, dtype=torch.int32))
-      aligned_bounds.append(None)
-    else:
-      updated_example_inputs.append(arg)
-      aligned_bounds.append(None)
-
-  return updated_example_inputs, aligned_bounds
 
 
 def _get_inputs_dynamic_flag(
@@ -209,6 +148,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
       static_compiler: compiler.StaticCompiler,
       graph_module: torch.fx.GraphModule,
       example_inputs: Sequence[Any],
+      sym_bounds_manager: SymBoundsManager,
       sym_shape_manager: SymShapeManager,
       is_fwd: bool,
       default_executable: Any,
@@ -219,6 +159,7 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     self.static_compiler = static_compiler
     self.graph_module = graph_module
     self.example_inputs = example_inputs
+    self.sym_bounds_manager = sym_bounds_manager
     self.sym_shape_manager = sym_shape_manager
     self.is_fwd = is_fwd
     self._view_arg_indices = view_arg_indices or set()
@@ -229,8 +170,8 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
     }
 
     # Precompute static inputs and bounds for the transformed graph.
-    self.model_example_inputs, self.aligned_bounds = _get_example_inputs(
-        example_inputs, sym_shape_manager
+    self.model_example_inputs, self.aligned_bounds = (
+        sym_bounds_manager.get_example_inputs()
     )
 
     self.dynamic_outputs = dynamic_outputs
@@ -240,7 +181,9 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
         else None
     )
 
-    self._precomputed_bounds_list = self._precompute_bounds_list()
+    self._precomputed_bounds_list = (
+        sym_bounds_manager.get_precomputed_bounds_list()
+    )
     self._use_pad_subgraph = not can_use_pad_real_to_static(sym_shape_manager)
     self._default_scalar_tensor_cache = {}
     self._prepare_input_packing_plan()
@@ -346,36 +289,6 @@ class _DynamicTpuCompiledExecutable(compiler.CompiledArtifact):
 
     assert all(x is not None for x in outputs), "Not all outputs were filled"
     return outputs
-
-  def _precompute_bounds_list(self) -> list[ShapeBoundInfo]:
-    """Precomputes a list of shape bound information for dynamic input tensors.
-
-    This method iterates through the example inputs provided to the
-    `SymShapeManager`. For each input tensor that contains one or more dynamic
-    dimensions, it extracts the indices of these dynamic dimensions and their
-    corresponding upper bounds. This information is
-    compiled into a list of `ShapeBoundInfo` objects.
-
-    Returns:
-      A list of `ShapeBoundInfo`, where each entry contains the dynamic
-      dimension indices and their upper bounds for each dynamic input tensor.
-    """
-    bounds_list = []
-    for idx, arg in enumerate(self.sym_shape_manager.example_inputs):
-      if (
-          isinstance(arg, torch.Tensor)
-          and self.sym_shape_manager.get_num_dynamic_dims(idx) > 0
-      ):
-        tensor_metadata = self.sym_shape_manager.input_tensors_metadata[idx]
-        bounds_list.append(
-            ShapeBoundInfo(
-                dynamic_dims=tensor_metadata.dynamic_dims,
-                upper_bounds=[
-                    upper for _, upper in tensor_metadata.dynamic_bounds
-                ],
-            )
-        )
-    return bounds_list
 
   def _prepare_input_packing_plan(self):
     self._static_tensor_map = []
@@ -649,19 +562,22 @@ class DynamicCompiler(compiler.Compiler):
         example_inputs,
     )
 
-    # Create a SymInt shape manager.
-    sym_shape_manager = SymShapeManager(graph_module, example_inputs)
+    # Create a SymInt bounds manager.
+    sym_bounds_manager = SymBoundsManager(example_inputs)
 
     # Validate bounds. If the bounds are not valid, this may lead to MLIR error
     # hence we raise an error here.
-    sym_shape_manager.validate_bounds()
+    sym_bounds_manager.validate_bounds()
 
     # Add bound checks on symints. This forces dynamo to trigger a recompilation
     # if the bound constraint isn't satisfied.
-    sym_shape_manager.add_bound_checks()
+    sym_bounds_manager.add_bound_checks()
 
-    # Transform the graph module to handle dynamic shapes.
-    apply_dynamism_transformations(graph_module, sym_shape_manager)
+    # Create a SymInt shape manager and transform the graph module.
+    sym_shape_manager = SymShapeManager(graph_module, example_inputs)
+    apply_dynamism_transformations(
+        graph_module, sym_shape_manager, sym_bounds_manager
+    )
 
     # TODO: Prevent truncation of log lines.
     logging.debug(
@@ -671,8 +587,8 @@ class DynamicCompiler(compiler.Compiler):
 
     # Create example inputs for the model executable and construct aligned
     # bounds.
-    model_example_inputs, aligned_bounds = _get_example_inputs(
-        example_inputs, sym_shape_manager
+    model_example_inputs, aligned_bounds = (
+        sym_bounds_manager.get_example_inputs()
     )
 
     logging.debug(
@@ -681,10 +597,7 @@ class DynamicCompiler(compiler.Compiler):
         aligned_bounds,
     )
 
-    dynamic_outputs = [
-        any(isinstance(dim, dict) for dim in out_shape.output_sym_shape)
-        for out_shape in sym_shape_manager.outputs_sym_shape
-    ]
+    dynamic_outputs = sym_shape_manager.get_dynamic_outputs()
 
     # Create a model executable using the provided example inputs and bounds.
     try:
@@ -724,6 +637,7 @@ class DynamicCompiler(compiler.Compiler):
         static_compiler=self.static_compiler,
         graph_module=graph_module,
         example_inputs=example_inputs,
+        sym_bounds_manager=sym_bounds_manager,
         sym_shape_manager=sym_shape_manager,
         is_fwd=is_fwd,
         default_executable=default_executable,
