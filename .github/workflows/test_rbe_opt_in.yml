@@ -107,6 +107,7 @@ jobs:
         env:
           BAZEL_CONFIG: ${{ matrix.job_info.config }}
           EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
+          INPUT_TEST_TARGETS: ${{ inputs.test_targets }}
         run: |
           if [ "${BAZEL_CONFIG}" = "ci_tpu_v5_full_rbe" ]; then
             echo "Runner VM Service Account: $(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)"
@@ -156,7 +157,7 @@ jobs:
             fi
           fi
 
-          TARGETS="${{ inputs.test_targets || '//tests/pallas:pallas_test //tests:ops_test_tpu-v5lite' }}"
+          TARGETS="${INPUT_TEST_TARGETS:-//tests/pallas:pallas_test //tests:ops_test_tpu-v5lite}"
 
           # shellcheck disable=SC2086
           bazel test \
