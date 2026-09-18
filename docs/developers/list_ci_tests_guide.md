@@ -185,44 +185,16 @@ only if it is tagged `presubmit-v5` and is tagged none of `notest`, `nobuild`,
 
 ## Appendix: all flags
 
-| Flag           | Format                | Default   | Meaning                 |
-| -------------- | --------------------- | --------- | ----------------------- |
-| `--jobs`       | Comma-separated job   | All jobs  | Restrict output to      |
-:                : names                 :           : these CI jobs. Unknown  :
-:                :                       :           : names produce a warning :
-:                :                       :           : on stderr and are       :
-:                :                       :           : ignored; the run        :
-:                :                       :           : continues.              :
-| `--test`       | Target name or        | —         | Invert the query:       |
-:                : `//pkg\:label`        :           : report the target's     :
-:                :                       :           : tags, defining `BUILD`  :
-:                :                       :           : file, and every CI job  :
-:                :                       :           : that runs it. Exits     :
-:                :                       :           : with `1` if the target  :
-:                :                       :           : does not exist.         :
-| `--tests`      | Comma-separated globs | All tests | Restrict output to      |
-:                :                       :           : matching targets. Each  :
-:                :                       :           : glob (`fnmatch` syntax, :
-:                :                       :           : so `*` and `?`) is      :
-:                :                       :           : tried against both the  :
-:                :                       :           : bare target name and    :
-:                :                       :           : the full label.         :
-:                :                       :           : Non-matching globs warn :
-:                :                       :           : on stderr.              :
-| `--format`     | `text` \| `count`     | `text`    | `text` lists every      |
-:                :                       :           : target under its job;   :
-:                :                       :           : `count` prints the      :
-:                :                       :           : one-line-per-job        :
-:                :                       :           : summary table. Ignored  :
-:                :                       :           : when `--test` is used.  :
-| `--list_jobs`  | Flag                  | off       | Print each job with its |
-:                :                       :           : machine type and tag    :
-:                :                       :           : filters, then exit.     :
-:                :                       :           : Skips `bazel query`, so :
-:                :                       :           : this is the one instant :
-:                :                       :           : invocation.             :
-| `--bazel_bin`  | Path                  | auto      | Use this Bazel          |
-:                :                       :           : executable. Exits with  :
-:                :                       :           : `1` if it is missing or :
-:                :                       :           : fails verification.     :
-| `-h`, `--help` | Flag                  | —         | Print usage and exit.   |
+<!-- mdformat off(reason: GitHub Flavored Markdown does not support multiline tables) -->
+
+| Flag | Format | Default | Meaning |
+| --- | --- | --- | --- |
+| `--jobs` | Comma-separated job names | All jobs | Restrict output to these CI jobs. Unknown names produce a warning on stderr and are ignored; the run continues. |
+| `--test` | Target name or `//pkg:label` | — | Invert the query: report the target's tags, defining `BUILD` file, and every CI job that runs it. Exits with `1` if the target does not exist. |
+| `--tests` | Comma-separated globs | All tests | Restrict output to matching targets. Each glob (`fnmatch` syntax, so `*` and `?`) is tried against both the bare target name and the full label. Non-matching globs warn on stderr. |
+| `--format` | `text` \| `count` | `text` | `text` lists every target under its job; `count` prints the one-line-per-job summary table. Ignored when `--test` is used. |
+| `--list_jobs` | Flag | off | Print each job with its machine type and tag filters, then exit. Skips `bazel query`, so this is the one instant invocation. |
+| `--bazel_bin` | Path | auto | Use this Bazel executable. Exits with `1` if it is missing or fails verification. |
+| `-h`, `--help` | Flag | — | Print usage and exit. |
+
+<!-- mdformat on -->
