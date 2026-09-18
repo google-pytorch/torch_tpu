@@ -15,6 +15,7 @@
 """Utility functions for dynamic shape compilation."""
 
 from collections.abc import Mapping
+import math
 import operator
 from typing import Any
 from absl import logging
@@ -81,11 +82,102 @@ def _sym_min(*args):
   return _sym_reduce(torch.ops.aten.minimum.default, *args)
 
 
+def _sym_trunc_to_int(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    return x.to(dtype=torch.int32)
+  return int(x)
+
+
+def _sym_trunc_to_float(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    return x.to(dtype=torch.float32)
+  return float(x)
+
+
+def _sym_to_float(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    return x.to(dtype=torch.float32)
+  return float(x)
+
+
+def _sym_floor_to_int(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    tracer = _get_tracer(x)
+    x_float = _ensure_tensor_proxy(x, tracer, dtype=torch.float32)
+    return tracer.create_proxy(
+        "call_function",
+        torch.ops.aten.floor.default,
+        (x_float,),
+        {},
+    ).to(dtype=torch.int32)
+  return math.floor(x)
+
+
+def _sym_ceil_to_int(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    tracer = _get_tracer(x)
+    x_float = _ensure_tensor_proxy(x, tracer, dtype=torch.float32)
+    return tracer.create_proxy(
+        "call_function",
+        torch.ops.aten.ceil.default,
+        (x_float,),
+        {},
+    ).to(dtype=torch.int32)
+  return math.ceil(x)
+
+
+def _sym_round_to_int(x: Any) -> Any:
+  if isinstance(x, torch.fx.Proxy):
+    tracer = _get_tracer(x)
+    x_float = _ensure_tensor_proxy(x, tracer, dtype=torch.float32)
+    return tracer.create_proxy(
+        "call_function",
+        torch.ops.aten.round.default,
+        (x_float,),
+        {},
+    ).to(dtype=torch.int32)
+  return round(x)
+
+
+def _sym_where(c: Any, a: Any, b: Any) -> Any:
+  if (
+      isinstance(c, torch.fx.Proxy)
+      or isinstance(a, torch.fx.Proxy)
+      or isinstance(b, torch.fx.Proxy)
+  ):
+    tracer = _get_tracer(c, a, b)
+    dtype = _get_target_dtype(a, b)
+    a_proxy = _ensure_tensor_proxy(a, tracer, dtype=dtype)
+    b_proxy = _ensure_tensor_proxy(b, tracer, dtype=dtype)
+    c_proxy = _ensure_tensor_proxy(c, tracer, dtype=torch.bool)
+    return tracer.create_proxy(
+        "call_function",
+        torch.ops.aten.where.default,
+        (c_proxy, a_proxy, b_proxy),
+        {},
+    )
+  return a if c else b
+
+
 CUSTOM_SYMPY_FUNCS = {
     "FloorDiv": operator.floordiv,
     "CeilDiv": lambda a, b: -(-a // b),
     "Max": _sym_max,
     "Min": _sym_min,
+    "TruncToInt": _sym_trunc_to_int,
+    "TruncToFloat": _sym_trunc_to_float,
+    "ToFloat": _sym_to_float,
+    "FloorToInt": _sym_floor_to_int,
+    "CeilToInt": _sym_ceil_to_int,
+    "RoundToInt": _sym_round_to_int,
+    "RoundDecimal": round,
+    "IntTrueDiv": operator.truediv,
+    "FloatTrueDiv": operator.truediv,
+    "Where": _sym_where,
+    "ModularIndexing": lambda a, b, c: (a // b) % c,
+    "PythonMod": operator.mod,
+    "Mod": operator.mod,
+    "CleanDiv": operator.floordiv,
 }
 
 

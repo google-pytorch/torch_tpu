@@ -3681,6 +3681,101 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
         golden_result=expected_out, torch_tpu_result=out_tensor.cpu()
     )
 
+  def test_upsample_interpolate_dynamic(self):
+    tpu_device = torch.device("tpu")
+
+    # 1. 1D Linear Interpolation with Dynamic Batch and scale_factor
+    x_1d = torch.randn(3, 4, 8, dtype=torch.float32)
+    x_1d_tpu = x_1d.to(tpu_device)
+    dynamism.mark_dynamic(x_1d_tpu, dimension=0, lower_bound=2, upper_bound=10)
+    out_tpu = torch.nn.functional.interpolate(
+        x_1d_tpu, scale_factor=2.0, mode="linear", align_corners=False
+    )
+    out_cpu = torch.nn.functional.interpolate(
+        x_1d, scale_factor=2.0, mode="linear", align_corners=False
+    )
+    utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+    # 2. 2D Nearest Interpolation with Dynamic Batch (varying runtime batches)
+    for batch_size in (2, 5):
+      x_2d = torch.randn(batch_size, 3, 4, 4, dtype=torch.float32)
+      x_2d_tpu = x_2d.to(tpu_device)
+      dynamism.mark_dynamic(x_2d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+      out_tpu = torch.nn.functional.interpolate(
+          x_2d_tpu, size=(8, 8), mode="nearest"
+      )
+      out_cpu = torch.nn.functional.interpolate(
+          x_2d, size=(8, 8), mode="nearest"
+      )
+      utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+    # 3. 2D Nearest-Exact Interpolation with Dynamic Batch
+    x_2d = torch.randn(3, 2, 4, 4, dtype=torch.float32)
+    x_2d_tpu = x_2d.to(tpu_device)
+    dynamism.mark_dynamic(x_2d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+    out_tpu = torch.nn.functional.interpolate(
+        x_2d_tpu, size=(8, 8), mode="nearest-exact"
+    )
+    out_cpu = torch.nn.functional.interpolate(
+        x_2d, size=(8, 8), mode="nearest-exact"
+    )
+    utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+    # 4. 2D Bilinear Interpolation with Dynamic Batch and align_corners=True/False
+    for align_corners in (False, True):
+      x_2d = torch.randn(3, 2, 4, 4, dtype=torch.float32)
+      x_2d_tpu = x_2d.to(tpu_device)
+      dynamism.mark_dynamic(x_2d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+      out_tpu = torch.nn.functional.interpolate(
+          x_2d_tpu, size=(8, 8), mode="bilinear", align_corners=align_corners
+      )
+      out_cpu = torch.nn.functional.interpolate(
+          x_2d, size=(8, 8), mode="bilinear", align_corners=align_corners
+      )
+      utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
+    # 5. 2D Bilinear Backward Pass with Dynamic Batch
+    x_2d = torch.randn(3, 2, 4, 4, dtype=torch.float32, requires_grad=True)
+    x_2d_tpu = x_2d.detach().clone().to(tpu_device).requires_grad_(True)
+    dynamism.mark_dynamic(x_2d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+    out_tpu = torch.nn.functional.interpolate(
+        x_2d_tpu, size=(8, 8), mode="bilinear", align_corners=False
+    )
+    out_cpu = torch.nn.functional.interpolate(
+        x_2d, size=(8, 8), mode="bilinear", align_corners=False
+    )
+    out_tpu.sum().backward()
+    out_cpu.sum().backward()
+    utils.assert_close(actual=x_2d_tpu.grad.cpu(), expected=x_2d.grad)
+
+    # 6. 2D Bicubic Interpolation Forward and Backward with Dynamic Batch
+    for align_corners in (False, True):
+      x_2d = torch.randn(3, 2, 4, 4, dtype=torch.float32, requires_grad=True)
+      x_2d_tpu = x_2d.detach().clone().to(tpu_device).requires_grad_(True)
+      dynamism.mark_dynamic(x_2d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+      out_tpu = torch.nn.functional.interpolate(
+          x_2d_tpu, size=(8, 8), mode="bicubic", align_corners=align_corners
+      )
+      out_cpu = torch.nn.functional.interpolate(
+          x_2d, size=(8, 8), mode="bicubic", align_corners=align_corners
+      )
+      utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+      out_tpu.sum().backward()
+      out_cpu.sum().backward()
+      utils.assert_close(actual=x_2d_tpu.grad.cpu(), expected=x_2d.grad)
+
+    # 7. 3D Nearest Interpolation with Dynamic Batch
+    x_3d = torch.randn(2, 3, 2, 4, 4, dtype=torch.float32)
+    x_3d_tpu = x_3d.to(tpu_device)
+    dynamism.mark_dynamic(x_3d_tpu, dimension=0, lower_bound=2, upper_bound=8)
+    out_tpu = torch.nn.functional.interpolate(
+        x_3d_tpu, size=(4, 8, 8), mode="nearest"
+    )
+    out_cpu = torch.nn.functional.interpolate(
+        x_3d, size=(4, 8, 8), mode="nearest"
+    )
+    utils.assert_close(actual=out_tpu.cpu(), expected=out_cpu)
+
   def test_bitwise_right_shift(self):
     tpu_device = torch.device("tpu")
     shift_by_int32 = torch.tensor([1, 2, 4, 5], dtype=torch.int32)

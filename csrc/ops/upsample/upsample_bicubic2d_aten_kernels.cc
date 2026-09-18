@@ -49,6 +49,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -124,15 +125,18 @@ BicubicScatterConfig GetBicubicScatterConfig(mlir::MlirOp grad_output) {
 }
 
 BicubicGatherConfig GetBicubicGatherConfig(mlir::MlirOp input) {
-  const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
   const int64_t spatial_dim_size = 2;
-  const int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
+  const int64_t offset_dim_size = input_dims.size() - spatial_dim_size;
 
   // Set spatial slice sizes to 1 while preserving batch/channel axes.
-  Dimensions slice_sizes = input_shape;
+  Dimensions slice_sizes;
+  slice_sizes.reserve(input_dims.size());
+  for (int i = 0; i < offset_dim_size; ++i) {
+    slice_sizes.push_back(input_dims[i].size);
+  }
   for (int i = 0; i < spatial_dim_size; ++i) {
-    slice_sizes[offset_dim_size + i] = 1;
+    slice_sizes.push_back(1);
   }
 
   // Map spatial axes to be collapsed in slices and indexed by start indices.
@@ -401,9 +405,9 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dShlo(
     mlir::MlirOp input, const Dimensions& output_shape, bool align_corners,
     const ScaleVector& scales_opt, mlir::Type calc_type) {
   auto& builder = input.getBuilder();
-  Dimensions input_shape = CopyIntVector(GetTensorTypeOrDie(input).getShape());
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
   const int64_t spatial_dim_size = 2;
-  const int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
+  const int64_t offset_dim_size = input_dims.size() - spatial_dim_size;
 
   BicubicGatherConfig gather_config = GetBicubicGatherConfig(input);
   auto element_type = GetTensorTypeOrDie(input).getElementType();
@@ -426,7 +430,7 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dShlo(
   // evaluation) for spatial dimensions.
   for (int i = 0; i < spatial_dim_size; ++i) {
     int64_t out_size = output_shape[offset_dim_size + i];
-    int64_t in_size = input_shape[offset_dim_size + i];
+    int64_t in_size = input_dims[offset_dim_size + i].size;
     auto scale_opt = scales_opt[i];
 
     TT_ASSIGN_OR_RETURN(auto src_idx, ComputeBicubicSourceIndex(
@@ -448,7 +452,17 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dShlo(
                                      broadcast_type, calc_type));
 
   // 3. Convert accumulated calculation precision back to input element type.
-  return mlir::stablehlo::ConvertElementType(accumulated_result, element_type);
+  auto result =
+      mlir::stablehlo::ConvertElementType(accumulated_result, element_type);
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (input_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *input_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, input_dims[i].boundOpDim);
+      result = mlir::stablehlo::SetDimensionSize(result, dim_size, i);
+    }
+  }
+  return result;
 }
 
 absl::StatusOr<mlir::MlirOp> ScatterBicubic2dBackwardForSingleCorner(
@@ -513,8 +527,13 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dBackwardShlo(
     mlir::MlirOp grad_output, const Dimensions& grad_input_shape,
     bool align_corners, const ScaleVector& scales_opt, mlir::Type calc_type) {
   mlir::MlirBuilder& builder = grad_output.getBuilder();
-  Dimensions grad_output_shape =
-      CopyIntVector(GetTensorTypeOrDie(grad_output).getShape());
+  const mlir::stablehlo::Dimensions grad_output_dims =
+      GetDimensions(grad_output);
+  Dimensions grad_output_shape;
+  grad_output_shape.reserve(grad_output_dims.size());
+  for (const auto& d : grad_output_dims) {
+    grad_output_shape.push_back(d.size);
+  }
   const int64_t spatial_dim_size = 2;
   const int64_t offset_dim_size = grad_output_shape.size() - spatial_dim_size;
 
@@ -572,6 +591,15 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBicubic2dBackwardShlo(
                         builder, grad_input, offset_dim_size, corner, dim_infos,
                         scatter_config, scatter_body, grad_output_shape,
                         grad_output_calc, calc_type, element_type));
+  }
+
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (grad_output_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *grad_output_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, grad_output_dims[i].boundOpDim);
+      grad_input = mlir::stablehlo::SetDimensionSize(grad_input, dim_size, i);
+    }
   }
 
   return grad_input;

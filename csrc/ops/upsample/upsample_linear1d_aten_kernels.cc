@@ -44,6 +44,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 #include "torch/headeronly/core/ScalarType.h"
 
 namespace torch_tpu {
@@ -89,10 +90,8 @@ mlir::MlirOp BroadcastInDim(mlir::Type result_type, mlir::MlirOp operand,
 }
 
 Linear1dGatherConfig GetLinear1dGatherConfig(mlir::MlirOp input) {
-  const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
-  Dimensions slice_sizes = input_shape;
-  slice_sizes[2] = 1;
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  Dimensions slice_sizes = {input_dims[0].size, input_dims[1].size, 1};
 
   const Dimensions offset_dims = {0, 1};
   const Dimensions collapsed_slice_dims = {2};
@@ -186,10 +185,9 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dShlo(
     AlignCorners align_corners, std::optional<double> scales,
     mlir::Type calc_type) {
   mlir::MlirBuilder& builder = input.getBuilder();
-  const Dimensions input_shape =
-      CopyIntVector(GetTensorTypeOrDie(input).getShape());
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
 
-  const int64_t in_width = input_shape[2];
+  const int64_t in_width = input_dims[2].size;
   const int64_t out_width = output_shape[2];
   const auto element_type = GetTensorTypeOrDie(input).getElementType();
 
@@ -219,8 +217,10 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dShlo(
   const auto right_gathered_calc =
       mlir::stablehlo::ConvertElementType(right_gathered, calc_type);
 
+  const Dimensions bcast_shape = {input_dims[0].size, input_dims[1].size,
+                                  out_width};
   const auto weight_broadcast_type =
-      mlir::RankedTensorType::get(AsArrayRef<int64_t>(output_shape), calc_type);
+      mlir::RankedTensorType::get(AsArrayRef<int64_t>(bcast_shape), calc_type);
   const auto left_weight_bcast =
       BroadcastInDim(weight_broadcast_type, dim_info.left_weight, {2});
   const auto right_weight_bcast =
@@ -234,7 +234,16 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleLinear1dShlo(
   TT_ASSIGN_OR_RETURN(const auto interpolated,
                       BuildAddShlo(left_term, right_term));
 
-  return mlir::stablehlo::ConvertElementType(interpolated, element_type);
+  auto result = mlir::stablehlo::ConvertElementType(interpolated, element_type);
+  for (int i = 0; i < 2; ++i) {
+    if (input_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *input_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, input_dims[i].boundOpDim);
+      result = mlir::stablehlo::SetDimensionSize(result, dim_size, i);
+    }
+  }
+  return result;
 }
 
 void CheckUpsampleLinear1dDtypes(const at::Tensor& tensor) {

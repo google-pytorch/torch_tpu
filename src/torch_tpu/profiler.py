@@ -14,10 +14,10 @@
 
 """Public profiler API for TorchTPU.
 
-Exposes `TpuProfilerConfig` under `torch.tpu.profiler` for configuring
-TPU-specific execution tracing options with PyTorch's native profiler
-(`torch.profiler.profile`), while delegating the underlying implementation to
-`_internal.profiler.profiler_config`.
+Exposes `TpuProfilerConfig` under `torch.tpu.profiler` and `torch_tpu.profiler`
+for configuring TPU-specific execution tracing options with PyTorch's native
+profiler (`torch.profiler.profile`), while delegating the underlying
+implementation to `_internal.profiler.profiler_config`.
 """
 
 from typing import Any, TYPE_CHECKING

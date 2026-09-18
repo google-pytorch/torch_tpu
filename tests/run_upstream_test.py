@@ -19,7 +19,9 @@ a single sample test as a Proof of Concept (PoC) to validate that the
 end-to-end CI pipeline infrastructure (GitHub Actions, Bazel targets, and
 hardware initialization) functions correctly.
 
-TODO(b/562273922): deprecate this runner script in favor of run_torch_test.py
+TODO: b/523293280 - Update this runner to a more appropriate, comprehensive
+solution utilizing `PrivateUse1TestBase` to properly execute the full upstream
+device test suites.
 """
 
 import os

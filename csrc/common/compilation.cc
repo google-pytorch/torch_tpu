@@ -107,9 +107,7 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
 absl::StatusOr<SharedLoadedExecutableWithMetadata>
 LoadedExecutableWithMetadata::MakeShared(
     absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
-    Indices argument_indices,
-    std::optional<UnboundedDynamicExecutionMetadata>
-        dynamic_execution_metadata) {
+    Indices argument_indices) {
   TT_RET_CHECK(executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
@@ -131,9 +129,8 @@ LoadedExecutableWithMetadata::MakeShared(
   }
 
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
-      new LoadedExecutableWithMetadata(
-          std::move(executable), std::move(output_shapes),
-          std::move(argument_indices), std::move(dynamic_execution_metadata)));
+      new LoadedExecutableWithMetadata(std::move(executable),
+                                       std::move(output_shapes)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(
@@ -242,12 +239,7 @@ static absl::Status SetDefaultDeviceAssignment(
   options.set_num_replicas(1);
   options.set_num_partitions(num_devices);
   xla::DeviceAssignment da(1, num_devices);
-  auto world_rank_to_dev = PjrtBackend::GetInstance().GetWorldRankToDeviceId();
-  if (world_rank_to_dev.has_value()) {
-    for (int rank = 0; rank < num_devices; ++rank) {
-      da(0, rank) = (*world_rank_to_dev)[rank];
-    }
-  } else if (num_devices == 1) {
+  if (num_devices == 1) {
     TT_ASSIGN_OR_RETURN(const int global_device_id,
                         PjrtBackend::GetInstance().GetGlobalDeviceId());
     da(0, 0) = global_device_id;
@@ -282,8 +274,7 @@ static absl::Status SetDefaultDeviceAssignment(
       // LINT.IfChange(xla_flags_overrides_fingerprint)
       options.debug_options().xla_allow_excess_precision(),
       // LINT.ThenChange()
-      // Device assignment related fields (including world-rank-to-device
-      // mapping for subgroups).
+      // Device assignment related fields.
       options.num_replicas(), options.num_partitions(),
       options.use_spmd_partitioning(), options.use_shardy_partitioner(),
       options.has_device_assignment()

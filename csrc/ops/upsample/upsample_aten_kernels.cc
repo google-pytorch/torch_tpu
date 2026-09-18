@@ -47,6 +47,7 @@
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
+#include "stablehlo/transforms/StablehloBroadcastLowering.h"
 
 // Upsample nearest interpolation for 1D, 2D and 3D tensors.
 // This implementation is based on creating a gather tensor from scaled iota
@@ -120,14 +121,18 @@ UpsampleScatterConfig GetUpsampleScatterConfig(mlir::MlirOp grad_output,
 
 UpsampleGatherConfig GetUpsampleGatherConfig(mlir::MlirOp input,
                                              int64_t spatial_dim_size) {
-  Dimensions input_shape = CopyIntVector(GetTensorTypeOrDie(input).getShape());
-  int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  int64_t offset_dim_size = input_dims.size() - spatial_dim_size;
 
   // We gather on the spatial dimensions.
-  // slice_sizes will be 1 for spatial dims, and unchanged for offset dims.
-  auto slice_sizes = input_shape;
+  // slice_sizes will be 1 for spatial dims, and bounded size for offset dims.
+  SmallInt64Vector slice_sizes;
+  slice_sizes.reserve(input_dims.size());
+  for (int i = 0; i < offset_dim_size; ++i) {
+    slice_sizes.push_back(input_dims[i].size);
+  }
   for (int i = 0; i < spatial_dim_size; ++i) {
-    slice_sizes[offset_dim_size + i] = 1;
+    slice_sizes.push_back(1);
   }
 
   SmallInt64Vector collapsed_slice_dims;
@@ -408,9 +413,9 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearShlo(
 
   // Input shape: (N, C, H_in, W_in)
   // Output shape: (N, C, H_out, W_out)
-  Dimensions input_shape = CopyIntVector(GetTensorTypeOrDie(input).getShape());
+  mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
   int64_t spatial_dim_size = num_dimensions;
-  int64_t offset_dim_size = input_shape.size() - spatial_dim_size;
+  int64_t offset_dim_size = input_dims.size() - spatial_dim_size;
 
   UpsampleGatherConfig gather_config =
       GetUpsampleGatherConfig(input, spatial_dim_size);
@@ -439,7 +444,7 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearShlo(
 
   for (int i = 0; i < spatial_dim_size; ++i) {
     int64_t out_size = output_shape[offset_dim_size + i];
-    int64_t in_size = input_shape[offset_dim_size + i];
+    int64_t in_size = input_dims[offset_dim_size + i].size;
     auto scale_opt = scales_opt[i];
 
     TT_ASSIGN_OR_RETURN(
@@ -459,7 +464,17 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearShlo(
           builder, input, output_shape, dim_infos, gather_config,
           offset_dim_size, spatial_dim_size, broadcast_type, calc_type));
 
-  return mlir::stablehlo::ConvertElementType(accumulated_result, element_type);
+  auto result =
+      mlir::stablehlo::ConvertElementType(accumulated_result, element_type);
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (input_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *input_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, input_dims[i].boundOpDim);
+      result = mlir::stablehlo::SetDimensionSize(result, dim_size, i);
+    }
+  }
+  return result;
 }
 
 absl::StatusOr<mlir::MlirOp> ScatterBilinearBackwardForSingleCorner(
@@ -535,11 +550,13 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearBackwardShlo(
     at::IntArrayRef grad_input_shape, bool align_corners,
     const ScaleVector& scales_opt) {
   mlir::MlirBuilder& builder = grad_output.getBuilder();
-  // GetTensorTypeOrDie returns a temporary by value, whose .getShape() span
-  // would dangle if bound to an IntArrayRef. Use CopyIntVector to own the
-  // shape.
-  const Dimensions grad_output_shape =
-      CopyIntVector(GetTensorTypeOrDie(grad_output).getShape());
+  const mlir::stablehlo::Dimensions grad_output_dims =
+      GetDimensions(grad_output);
+  Dimensions grad_output_shape;
+  grad_output_shape.reserve(grad_output_dims.size());
+  for (const auto& d : grad_output_dims) {
+    grad_output_shape.push_back(d.size);
+  }
   const int64_t spatial_dim_size = num_dimensions;
   const int64_t offset_dim_size = grad_output_shape.size() - spatial_dim_size;
 
@@ -597,6 +614,15 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleBilinearBackwardShlo(
                         corner, dim_infos, scatter_config, scatter_body,
                         grad_output, grad_output_shape, grad_output_calc,
                         broadcast_type, calc_type, element_type));
+  }
+
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (grad_output_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *grad_output_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, grad_output_dims[i].boundOpDim);
+      grad_input = mlir::stablehlo::SetDimensionSize(grad_input, dim_size, i);
+    }
   }
 
   return grad_input;
@@ -680,9 +706,20 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleNearestShlo(
   auto& slice_sizes = gather_config.slice_sizes;
   auto& gather_dimension_numbers = gather_config.gather_dimension_numbers;
 
-  return mlir::stablehlo::Gather(input, index_tensor, gather_dimension_numbers,
-                                 slice_sizes,
-                                 /*indices_are_sorted=*/false);
+  auto gathered = mlir::stablehlo::Gather(input, index_tensor,
+                                          gather_dimension_numbers, slice_sizes,
+                                          /*indices_are_sorted=*/false);
+  const mlir::stablehlo::Dimensions input_dims = GetDimensions(input);
+  int64_t offset_dim_size = input_dims.size() - num_dimensions;
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (input_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *input_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, input_dims[i].boundOpDim);
+      gathered = mlir::stablehlo::SetDimensionSize(gathered, dim_size, i);
+    }
+  }
+  return gathered;
 }
 
 absl::StatusOr<mlir::MlirOp> BuildUpsampleNearestBackwardIndexTensor(
@@ -690,8 +727,13 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleNearestBackwardIndexTensor(
     at::IntArrayRef grad_input_shape,
     const MlirOpVector& inverse_scale_factor_array,
     UpsampleMode upsample_mode) {
-  Dimensions grad_output_shape =
-      CopyIntVector(GetTensorTypeOrDie(grad_output).getShape());
+  const mlir::stablehlo::Dimensions grad_output_dims =
+      GetDimensions(grad_output);
+  Dimensions grad_output_shape;
+  grad_output_shape.reserve(grad_output_dims.size());
+  for (const auto& d : grad_output_dims) {
+    grad_output_shape.push_back(d.size);
+  }
   int64_t rank = grad_output_shape.size();
   auto broadcast_to_indices_type = mlir::RankedTensorType::get(
       grad_output_shape, builder.getOpBuilder().getI32Type());
@@ -746,10 +788,22 @@ absl::StatusOr<mlir::MlirOp> BuildUpsampleNearestBackwardShlo(
         element_type, rb.getRegion(), rb.getOpBuilder());
   };
 
-  return mlir::stablehlo::Scatter(grad_input_zeros, scatter_indices,
-                                  grad_output, scatter_body,
-                                  scatter_config.scatter_dimension_numbers,
-                                  /*indices_are_sorted=*/false)[0];
+  auto grad_input = mlir::stablehlo::Scatter(
+      grad_input_zeros, scatter_indices, grad_output, scatter_body,
+      scatter_config.scatter_dimension_numbers,
+      /*indices_are_sorted=*/false)[0];
+  const mlir::stablehlo::Dimensions grad_output_dims =
+      GetDimensions(grad_output);
+  int64_t offset_dim_size = grad_output_dims.size() - num_dimensions;
+  for (int i = 0; i < offset_dim_size; ++i) {
+    if (grad_output_dims[i].boundOp.has_value()) {
+      mlir::MlirOp bound_op_mlir(builder, *grad_output_dims[i].boundOp);
+      mlir::MlirOp dim_size = mlir::stablehlo::GetDimensionSize(
+          bound_op_mlir, grad_output_dims[i].boundOpDim);
+      grad_input = mlir::stablehlo::SetDimensionSize(grad_input, dim_size, i);
+    }
+  }
+  return grad_input;
 }
 
 absl::InlinedVector<double, 6> StandardizeScaleFactors(

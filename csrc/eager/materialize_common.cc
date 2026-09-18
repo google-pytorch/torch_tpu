@@ -357,16 +357,6 @@ absl::StatusOr<CompiledTraversal> VerifyAndCompileTraversal(
       .compiled_kernel = std::move(compiled_kernel)};
 }
 
-std::vector<Shape> GetShapesFromDeviceBuffers(
-    absl::Span<const DeviceBufferRef> buffers) {
-  std::vector<Shape> shapes;
-  shapes.reserve(buffers.size());
-  for (const auto& buffer : buffers) {
-    shapes.push_back(buffer.shape());
-  }
-  return shapes;
-}
-
 }  // namespace
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
@@ -505,14 +495,14 @@ void LogCompilationWait(const CompiledKernel& compiled_kernel,
 absl::StatusOr<PjRtBufferPointers> RunSequentialExecutables(
     absl::Span<const SharedLoadedExecutableWithMetadata> executables,
     std::vector<xla::PjRtBuffer*> argument_buffers,
-    absl::Span<const Shape> logical_output_shapes, std::string_view task_name) {
+    std::string_view task_name) {
   std::vector<PjRtBufferPointers> intermediate_results;
   for (auto& executable : executables) {
-    TT_ASSIGN_OR_RETURN(
-        PjRtBufferPointers results,
-        Execute(executable, std::move(argument_buffers), logical_output_shapes),
-        _.SetPrepend() << "failed to enqueue execution for task_name="
-                       << task_name << ": ");
+    TT_ASSIGN_OR_RETURN(PjRtBufferPointers results,
+                        Execute(executable, std::move(argument_buffers)),
+                        _.SetPrepend()
+                            << "failed to enqueue execution for task_name="
+                            << task_name << ": ");
     argument_buffers.clear();
     argument_buffers.reserve(results.size());
     for (const auto& result : results) {
@@ -663,15 +653,13 @@ absl::Status ExecutionTask::RunInternal() {
   ABSL_VLOG(1) << "[ExecutionTask::Run] Retrieved " << argument_buffers.size()
                << " argument buffers for task_name=" << task_name;
 
-  std::vector<Shape> output_shapes = GetShapesFromDeviceBuffers(outputs_);
-
   // Run all cached executables in sequence to get the PjRtBuffer pointers.
   ABSL_VLOG(1) << "[ExecutionTask::Run] Executing job for task_name="
                << task_name;
   TT_ASSIGN_OR_RETURN(
       PjRtBufferPointers final_results,
       RunSequentialExecutables(cached_executables, std::move(argument_buffers),
-                               output_shapes, task_name));
+                               task_name));
 
   // Assign the final results to the output nodes.
   TT_RETURN_IF_ERROR(SetOutputNodesAsMaterialized(std::move(final_results)));
