@@ -69,6 +69,14 @@ def _mark_tensor_dynamic(
         min=lower_bound,
         max=upper_bound,
     )
+    existing_dynamic = getattr(tensor, "_dynamo_dynamic_indices", set())
+    static_dims = [
+        d
+        for d in range(tensor.ndim)
+        if d != dimension and d not in existing_dynamic
+    ]
+    if static_dims:
+      torch._dynamo.mark_static(tensor, static_dims)
   else:
     raise ValueError(f"Unsupported dynamism mode: {mode}")
 
@@ -187,7 +195,6 @@ untriaged_ops_deny_list: dict[
     "index_select": ALL_MODES,  # invalid gather
     "isinf": {COMPILE},  # buffer dimension mismatch
     "isin": ALL_MODES,  # materialization failure (negative dimension size)
-    "kron": ALL_MODES,  # dynamic triage (invalid result)
     "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
     "linalg.lu_factor_ex": (
         ALL_MODES
@@ -679,3 +686,10 @@ def mark_input_dynamic(
       f" {type(dynamic_op_info)} (mode={mode.value})"
   )
   dynamic_op_info.mark_dynamic(seed, input_value, args, mode=mode)
+  if mode == DynamismMode.COMPILE:
+    all_inputs = _pytree.tree_flatten((input_value, args))[0]
+    for val in all_inputs:
+      if isinstance(val, torch.Tensor) and not getattr(
+          val, "_dynamo_dynamic_indices", None
+      ):
+        torch._dynamo.mark_static(val)

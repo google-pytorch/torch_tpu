@@ -121,4 +121,4 @@ jobs:
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.job_info.config }}
           extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
-          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}

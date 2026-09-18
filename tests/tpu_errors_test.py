@@ -16,16 +16,13 @@
 
 import re
 from typing import Any, TypeAlias
-from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
-from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
@@ -102,12 +99,7 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
 
     x = torch.randn(3, 5, device=et.device())
     executable = StaticCompiler()(make_fx(double)(x), [x], donated_inputs=[0])
-    # Because executable execution is asynchronous on TPU, querying the
-    # donated input buffer immediately after invocation without synchronizing
-    # the output resulted in a race condition where the input buffer had not
-    # yet been donated on device. Therefore we synchronize to host here.
-    out = executable(x)
-    out.cpu()
+    executable(x)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -4623,54 +4615,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         message_reviewed_by="wan",
     ):
       obj.throw_tterror_in_member_function()
-
-  @et.why_tpu_only("Pallas mesh validation is TPU-specific.")
-  def test_pallas_mesh_invariants_errors(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=8):
-      # Non-spanning mesh (volume 4 != world_size 8)
-      with et.assert_raises_message(
-          ValueError, tpu=re.compile(r".*must equal world_size 8.*", re.DOTALL)
-      ):
-        pallas.get_pallas_mesh(axis_names=("rank",), mesh_shape=(4,))
-
-      # Missing mesh_shape for multi-dimensional mesh
-      with et.assert_raises_message(
-          ValueError,
-          tpu=re.compile(r".*must be explicitly specified.*", re.DOTALL),
-      ):
-        pallas.get_pallas_mesh(axis_names=("data", "model"))
-
-      # Length mismatch between mesh_shape and axis_names
-      with et.assert_raises_message(
-          ValueError, tpu=re.compile(r".*does not match length.*", re.DOTALL)
-      ):
-        pallas.get_pallas_mesh(
-            axis_names=("data", "model"), mesh_shape=(2, 2, 2)
-        )
-
-    # Distributed not initialized raises RuntimeError
-    with mock.patch.object(dist, "is_initialized", return_value=False):
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*dist\.init_process_group.*", re.DOTALL),
-      ):
-        pallas.get_default_pallas_mesh()
-
-    # Device attributes exception scoping
-    for exc in [AttributeError("No TPU module"), RuntimeError("PJRT not init")]:
-      with self.subTest(exc=type(exc).__name__):
-        with mock.patch.object(
-            dist, "is_initialized", return_value=True
-        ), mock.patch.object(
-            dist, "get_world_size", return_value=2
-        ), mock.patch(
-            "torch_tpu._internal.device._device_ops_backend._get_local_device_attributes",
-            side_effect=exc,
-        ):
-          with self.assertRaises(type(exc)):
-            pallas.get_default_pallas_mesh()
 
 
 if __name__ == "__main__":

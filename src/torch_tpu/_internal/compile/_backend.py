@@ -44,6 +44,7 @@ from typing import Any, TypeAlias, cast
 from absl import logging
 import torch
 from torch._decomp import get_decompositions
+from torch._decomp import register_decomposition
 from torch._dynamo import guards as dynamo_guards
 from torch._dynamo import source as dynamo_source
 from torch._dynamo.backends.common import aot_autograd
@@ -63,6 +64,26 @@ from torch_tpu._internal.compile.torch_tpu_compiled_executable import AsyncCompi
 from torch_tpu._internal.utils import utils
 from torch_tpu._internal.benchmarks import xprof_adapter
 
+
+@register_decomposition(torch.ops.aten.kron.default)
+def _decomp_kron(self: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
+  maxdim = max(self.dim(), other.dim())
+  pad_self = maxdim - self.dim()
+  pad_other = maxdim - other.dim()
+  a_reshape = []
+  b_reshape = []
+  result_reshape = []
+  for i in range(maxdim):
+    a_dim = self.shape[i - pad_self] if i >= pad_self else 1
+    b_dim = other.shape[i - pad_other] if i >= pad_other else 1
+    a_reshape.extend([a_dim, 1])
+    b_reshape.extend([1, b_dim])
+    result_reshape.append(a_dim * b_dim)
+  self_view = self.reshape(a_reshape)
+  other_view = other.reshape(b_reshape)
+  return (self_view * other_view).reshape(result_reshape)
+
+
 _TPU_DECOMPOSITIONS = get_decompositions([
     # We decompose masked_fill to align behavior with GPU (Inductor), where
     # masked_fill_ calls are decomposed into convert_element_type + where and
@@ -70,6 +91,9 @@ _TPU_DECOMPOSITIONS = get_decompositions([
     # failing due to placeholder tensor materialization during compilation.
     torch.ops.aten.masked_fill.Tensor,
     torch.ops.aten.masked_fill_.Tensor,
+    # Decompose kron into reshape and mul to support bounded dynamism without
+    # guarding/specializing symbolic dimensions to constants.
+    torch.ops.aten.kron.default,
 ])
 
 _ExpectedTypes: TypeAlias = torch.Tensor | torch.nn.Module | torch.SymInt
