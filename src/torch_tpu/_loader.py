@@ -21,20 +21,10 @@ import sys
 import threading
 from typing import Final
 
-from torch_tpu._internal import env_utils
-
-_AUTOLOAD_ENV_VAR: Final[str] = "TORCH_DEVICE_BACKEND_AUTOLOAD"
-
 # Disable autoload while the module loads to prevent circular imports, see:
 # https://docs.pytorch.org/tutorials/unstable/python_extension_autoload.html
-#
-# These two lines run before `import torch` below, so they cannot go through
-# `torch_tpu._internal.env`: that pybind11 extension links libtorch, and
-# importing it here would trigger the very cycle they exist to break.
-_OLD_AUTOLOAD_ENV: Final[str] = os.getenv(  # PY_ENVIRON_OK=pre-torch.
-    _AUTOLOAD_ENV_VAR, "1"
-)
-os.environ[_AUTOLOAD_ENV_VAR] = "0"  # PY_ENVIRON_OK=pre-torch.
+_OLD_AUTOLOAD_ENV: Final[str] = os.getenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "1")
+os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 
 # pylint: disable=g-import-not-at-top
 import torch
@@ -260,23 +250,26 @@ def _init_device_impl(device: str) -> torch.device:
     torchcomm_tpu.register_torchcomms_tpu()
 
   # Register the Kineto backend using the internal C++ lifecycle module.
-  from torch_tpu._internal import profiler  # pylint: disable=g-import-not-at-top
+  # Renamed to '_internal_profiler' to avoid collision with the public
+  # 'torch_tpu.profiler' module below, which only exports user symbols (e.g.
+  # 'TpuProfilerConfig') via PEP-562 lazy loading and not backend hooks.
+  from torch_tpu._internal import profiler as _internal_profiler  # pylint: disable=g-import-not-at-top
 
-  profiler.register_kineto_backend()
+  _internal_profiler.register_kineto_backend()
 
   # Expose the public profiler module under 'torch.tpu.profiler' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.profiler import api as profiler_api  # pylint: disable=g-import-not-at-top
+  from torch_tpu import profiler  # pylint: disable=g-import-not-at-top
 
-  sys.modules["torch.tpu.profiler"] = profiler_api
-  setattr(device_module, "profiler", profiler_api)
+  sys.modules["torch.tpu.profiler"] = profiler
+  setattr(device_module, "profiler", profiler)
 
   # Expose the public pallas module under 'torch.tpu.pallas' in sys.modules
   # and attach it to the 'torch.tpu' device module for attribute access.
-  from torch_tpu._internal.pallas import api as pallas_api  # pylint: disable=g-import-not-at-top
+  from torch_tpu import pallas  # pylint: disable=g-import-not-at-top
 
-  sys.modules["torch.tpu.pallas"] = pallas_api
-  setattr(device_module, "pallas", pallas_api)
+  sys.modules["torch.tpu.pallas"] = pallas
+  setattr(device_module, "pallas", pallas)
 
   # Pass installed libtpu version to C++ runtime if available.
   _set_libtpu_version()
@@ -357,7 +350,7 @@ def load(allow_xla_backend: bool | None = None) -> None:
       variable, and if neither is specified this defaults to `False`.
   """
   # On autoload restore the original autoload value
-  env_utils.set_str_env(_AUTOLOAD_ENV_VAR, _OLD_AUTOLOAD_ENV)
+  os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = _OLD_AUTOLOAD_ENV
 
   from torch_tpu._internal import env  # pylint: disable=g-import-not-at-top
 

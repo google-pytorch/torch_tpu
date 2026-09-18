@@ -214,7 +214,6 @@ untriaged_ops_deny_list: dict[
         ALL_MODES
     ),  # crash (negative dim size in compiled_mode.cc)
     "nn.functional.max_pool3d": ALL_MODES,  # crash (Aborted)
-    "nn.functional.mse_loss": ALL_MODES,  # binop LHS / RHS mismatch
     "nn.functional.nll_loss": (
         ALL_MODES
     ),  # numerical mismatch or failure in some shards
@@ -474,14 +473,18 @@ class DynamicOpInfo:
 class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
   """A wrapper around OpInfo that supports bounded dynamism."""
 
+  additional_binary_ops = frozenset({
+      "equal",
+      "nn.functional.mse_loss",
+  })
+
   @staticmethod
   def adapter_supports_op(op_info: core.OpInfo):
     """Method to declare ops supported by this adapter."""
 
-    additional_binary_ops = ["equal"]
     return (
         isinstance(op_info, core.BinaryUfuncInfo)
-        or op_info.name in additional_binary_ops
+        or op_info.name in BinaryElementwiseDynamicOpInfo.additional_binary_ops
     )
 
   def _mark_dependent_arg_dynamic(
@@ -493,9 +496,8 @@ class BinaryElementwiseDynamicOpInfo(DynamicOpInfo):
       mode: DynamismMode = DynamismMode.EAGER,
   ):
     """Mark the args of a binary elementwise op as dynamic."""
-    rhs = args[0]
-    if isinstance(rhs, torch.Tensor):
-      _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
+    if args and isinstance(args[0], torch.Tensor):
+      _mark_numpy_broadcastable_arg_dynamic(args[0], like, idx, ub, mode=mode)
 
 
 class TernaryElementwiseDynamicOpInfo(DynamicOpInfo):

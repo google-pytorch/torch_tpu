@@ -39,6 +39,7 @@ Then, torchrun spawns worker processes, each of which runs `user_logic` with
 RANK, LOCAL_RANK, and WORLD_SIZE set in environment variables.
 """
 
+import os
 import time
 
 from absl import logging
@@ -92,7 +93,7 @@ def prepare_tpu_environment() -> None:
   if node_rank is None:
     raise ValueError("No JOB_COMPLETION_INDEX found in environment.")
 
-  env_utils.set_str_env("NODE_RANK", node_rank)
+  os.environ["NODE_RANK"] = node_rank
 
   # Master address defaults to the first worker in the list.
   env_utils.get_and_set_str_env_once("MASTER_ADDR", lambda: worker_hostnames[0])

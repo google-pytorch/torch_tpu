@@ -70,7 +70,6 @@
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
-#include "xla/shape.h"
 
 namespace torch_tpu {
 
@@ -547,9 +546,7 @@ absl::StatusOr<std::vector<Shape>> GetOutputShapes(
           << result_shape.dimensions().size() << " for output tensor " << i;
 
       for (size_t j = 0; j < dimensions.size(); ++j) {
-        int64_t result_dim = result_shape.dimensions()[j];
-        TT_RET_CHECK(dimensions[j] <= result_dim ||
-                         result_dim == xla::Shape::kUnboundedSize,
+        TT_RET_CHECK(dimensions[j] <= result_shape.dimensions()[j],
                      error::kInvalidArgument)
             << "expected output shape dimension not to exceed the statically "
                "inferred bound, got output shape "
