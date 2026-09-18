@@ -14315,6 +14315,67 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     self.assertFalse(torch.isnan(out_no_lse).any())
     utils.assert_close(out, out_no_lse, atol=1e-2, rtol=1e-2)
 
+  def test_scaled_dot_product_attention_transposed_inputs(self):
+    """Tests scaled_dot_product_attention with transposed (non-contiguous) inputs."""
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 32
+    torch.manual_seed(42)
+
+    # Inputs formatted as (B, S, H, D) and permuted to (B, H, S, D) as in Whisper
+    q = torch.randn(
+        batch_size, seq_len, num_heads, head_dim, dtype=torch.float32
+    ).transpose(1, 2)
+    k = torch.randn(
+        batch_size, seq_len, num_heads, head_dim, dtype=torch.float32
+    ).transpose(1, 2)
+    v = torch.randn(
+        batch_size, seq_len, num_heads, head_dim, dtype=torch.float32
+    ).transpose(1, 2)
+
+    def compute(device: str):
+      q_dev = q.clone().detach().to(device).requires_grad_(True)
+      k_dev = k.clone().detach().to(device).requires_grad_(True)
+      v_dev = v.clone().detach().to(device).requires_grad_(True)
+      out = torch.nn.functional.scaled_dot_product_attention(
+          q_dev, k_dev, v_dev
+      )
+      loss = out.sum()
+      loss.backward()
+      return out, q_dev.grad, k_dev.grad, v_dev.grad
+
+    cpu_out, cpu_q_grad, cpu_k_grad, cpu_v_grad = compute("cpu")
+    tpu_out, tpu_q_grad, tpu_k_grad, tpu_v_grad = compute("tpu")
+
+    self.assert_close(
+        golden_result=cpu_out,
+        torch_tpu_result=tpu_out.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=cpu_q_grad,
+        torch_tpu_result=tpu_q_grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=cpu_k_grad,
+        torch_tpu_result=tpu_k_grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+    self.assert_close(
+        golden_result=cpu_v_grad,
+        torch_tpu_result=tpu_v_grad.cpu(),
+        rtol=1e-2,
+        atol=1e-2,
+    )
+
+    # Verify downstream Whisper-like operations work seamlessly
+    merged = tpu_out.transpose(1, 2).reshape(
+        batch_size, seq_len, num_heads * head_dim
+    )
+    self.assertEqual(merged.shape, (batch_size, seq_len, num_heads * head_dim))
+
   def test_pointwise_op_dtype_promotion(self):
     """Ensure that pointwise ops promote as expected.
 

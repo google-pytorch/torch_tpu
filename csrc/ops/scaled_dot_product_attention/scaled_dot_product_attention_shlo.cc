@@ -782,17 +782,9 @@ ScaledDotProductFusedAttentionShloBackward(
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_query,
-      ContiguousToView(results[0], query.strides(), query.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_key,
-      ContiguousToView(results[1], key.strides(), key.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_value,
-      ContiguousToView(results[2], value.strides(), value.storage_offset()));
-  return std::make_tuple(strided_grad_query, strided_grad_key,
-                         strided_grad_value);
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])),
+                         MakeTensor(std::move(results[2])));
 }
 
 }  // namespace torch_tpu
