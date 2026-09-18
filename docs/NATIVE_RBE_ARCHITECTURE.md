@@ -31,22 +31,34 @@ Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 
 ```mermaid
 flowchart TD
-    subgraph Client ["Client (Cloudtop / GitHub Actions Runner)"]
-        Bazel["Bazel Client<br/>bazel test --config=rbe_native_tpu<br/>--strategy=TestRunner=remote"]
-        Tunnel["TCP Tunnel (localhost:8980)<br/>SSH tunnel (Cloudtop)<br/>IAP tunnel (Cloudtop / CI runner)"]
-        Bazel --> Tunnel
+    subgraph CIRunner ["CI Runner (ml-velocity-actions-production)"]
+        BazelCI["Bazel Client<br/>bazel test --config=ci_tpu_v5_full_rbe"]
+        PSCEndpoint["PSC Endpoint (dualstack-network)<br/>rbe.torchtpu.internal:8980"]
+        BazelCI --> PSCEndpoint
     end
 
-    subgraph Gateway ["VPC Gateway (us-east5-a)"]
-        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>High-concurrency HAProxy<br/>Forwards to GKE NodePort 30980"]
-        Tunnel --> GW
+    subgraph DevClient ["Developer Workstation (Cloudtop)"]
+        BazelDev["Bazel Client<br/>bazel test --config=rbe_native_tpu"]
+        SSHTunnel["SSH Port Forward<br/>localhost:8980 -> port 22"]
+        BazelDev --> SSHTunnel
+    end
+
+    subgraph ProducerVPC ["RBE Producer Network (rbe-tpu-oss / us-east5)"]
+        PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment"]
+        ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb:8980"]
+        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>HAProxy TCP Load Balancer"]
+        
+        PSCEndpoint -->|"Google Backbone"| PSCSA
+        PSCSA --> ILB
+        ILB --> GW
+        SSHTunnel -->|"Corp SSH (port 22)"| GW
     end
 
     subgraph ControlPlane ["GKE Control Plane & CPU Workers (rbe-tpu-oss-east5-cluster)"]
-        FE["bb-frontend (NodePort 30980)<br/>REAPI v2 Client Surface & CAS/AC Router"]
-        SCHED["bb-scheduler (NodePort 30983)<br/>Matches platform tags & maintains build queue"]
-        STOR["bb-storage (ClusterIP 8981)<br/>CAS (32 GB disk) & Action Cache (1 GB disk)"]
-        CPUWorkers["224-CPU Worker Pool (7 Nodes x 32 CPUs)<br/>Executes remote C++/Python compilations"]
+        FE["bb-frontend (NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]
+        SCHED["bb-scheduler (NodePort 30983)<br/>Queue & Platform Matcher"]
+        STOR["bb-storage (ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]
+        CPUWorkers["224-CPU Worker Pool (7 Nodes x 32 CPUs)<br/>Remote C++/Python Compilations"]
 
         GW --> FE
         FE --> SCHED
@@ -146,6 +158,24 @@ virtual machine in zone `us-east5-a`. It runs high-concurrency HAProxy on port
 HAProxy handles connection pooling and high concurrency across parallel Bazel
 connections, preventing connection dropouts and port exhaustion.
 
+### CI Runner Connectivity (Private Service Connect)
+
+GitHub Actions runners in `ml-velocity-actions-production` reach the Buildbarn
+frontend through Private Service Connect (PSC).
+
+1.  A consumer forwarding rule in `ml-velocity-actions-production` publishes an
+    internal IP mapped to `rbe.torchtpu.internal:8980` inside the runner's VPC
+    (`dualstack-network`).
+2.  Traffic routes across Google's private datacenter backbone into the producer
+    service attachment (`rbe-tpu-service-attachment`) in `us-east5`.
+3.  The service attachment hands off to an internal TCP load balancer
+    (`rbe-internal-ilb:8980`), which forwards packets to `rbe-tunnel-gateway`.
+4.  HAProxy on the gateway terminates the connection and proxies to the
+    Buildbarn frontend (`bb-frontend`) on GKE NodePort `30980`.
+
+Because packets stay on Google's private backbone, PSC traffic never touches the
+public internet and bypasses edge ingress firewall restrictions.
+
 ### Developer Connectivity (Cloudtop / Corporate Workstations)
 
 Developers connect to the Buildbarn frontend through `rbe-tunnel-gateway` on
@@ -180,16 +210,20 @@ bazel test --config=rbe_native_tpu \
 
 Project `rbe-tpu-oss` enforces an organization-level hierarchical firewall
 policy (`163641247602`):
-- **Rules 30 & 31**: Permit ingress exclusively from Google corporate network
-  CIDRs on ports 22, 443, and 3389.
-- **Rule 28**: Permits ingress from designated cluster egress IPs on port 22.
-- **Rule 32**: Denies all other external ingress traffic (`0.0.0.0/0`).
 
-Because hierarchical firewall rules evaluate before project-level VPC rules,
-traffic from unwhitelisted external ranges (including Cloud IAP proxy CIDR
-`35.235.240.0/20` and external GitHub runner NATs) is dropped at the edge.
-All external developer access must originate from corporate networks via SSH
-forwarding.
+-   **Rules 30 & 31**: Permit ingress exclusively from Google corporate network
+    CIDRs on ports 22, 443, and 3389.
+-   **Rule 28**: Permits ingress from designated cluster egress IPs on port 22.
+-   **Rule 32**: Denies all other external ingress traffic (`0.0.0.0/0`).
+
+Hierarchical firewall rules evaluate before project-level VPC rules. This drops
+traffic from unwhitelisted external ranges, including Cloud IAP proxy CIDR
+`35.235.240.0/20` and public GitHub runner IPs, at the edge.
+
+Private Service Connect bypasses these edge ingress rules entirely because
+consumer traffic enters the VPC through a dedicated service attachment on
+Google's private backbone. For developer workstations, traffic connects over
+authorized corporate CIDRs via SSH forwarding.
 
 ### Fleet Distribution & Latency
 
@@ -235,6 +269,8 @@ common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/test_rbe_opt_in.yml
 common:ci_tpu_v5_full_rbe --config=rbe_native_tpu
+common:ci_tpu_v5_full_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_full_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
 common:ci_tpu_v5_full_rbe --build_tests_only
 common:ci_tpu_v5_full_rbe --color=yes
 common:ci_tpu_v5_full_rbe --curses=no
@@ -264,10 +300,13 @@ bazel test --config=rbe_native_tpu --jobs=28 //tests/...
 ### GitHub Actions Presubmit (`.github/workflows/test_rbe_opt_in.yml`)
 
 Pull requests trigger native RBE presubmit jobs when labeled with
-`ci:replace-tpu-v5` or `ci:relay-tpu-v5` (or when dispatched manually). The
-workflow starts the IAP tunnel to `rbe-tunnel-gateway:8980`, runs
-`bazel test --config=ci_tpu_v5_full_rbe`, and posts test results back to the pull
-request checks.
+`ci:replace-tpu-v5` or `ci:relay-tpu-v5` (or when dispatched manually).
+
+The workflow runs `bazel test --config=ci_tpu_v5_full_rbe` directly against
+`rbe.torchtpu.internal:8980` over Private Service Connect. Because PSC provides
+a direct internal IP path across VPCs, the runner needs no background tunnels,
+gcloud commands, or custom proxy daemons. Test results post directly back to
+the pull request checks.
 
 --------------------------------------------------------------------------------
 

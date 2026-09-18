@@ -108,54 +108,6 @@ jobs:
           EXTRA_FLAGS: ${{ matrix.job_info.extra_flags }}
           INPUT_TEST_TARGETS: ${{ inputs.test_targets }}
         run: |
-          if [ "${BAZEL_CONFIG}" = "ci_tpu_v5_full_rbe" ]; then
-            echo "Runner VM Service Account: $(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)"
-            echo "Active gcloud account: $(gcloud config get-value account 2>/dev/null || true)"
-            gcloud auth list || true
-
-            echo "Starting background IAP tunnel to Buildbarn frontend..."
-            run_tunnel() {
-              while true; do
-                gcloud compute start-iap-tunnel \
-                  rbe-tunnel-gateway 8980 \
-                  --local-host-port=localhost:8980 \
-                  --zone=us-east5-a \
-                  --project=rbe-tpu-oss \
-                  --iap-tunnel-disable-connection-check >> /tmp/iap_tunnel.log 2>&1 < /dev/null || true
-                sleep 1
-              done
-            }
-            run_tunnel &
-            TUNNEL_PID=$!
-
-            keepalive() {
-              while true; do
-                sleep 10
-                curl -s -m 2 http://127.0.0.1:8980/ >/dev/null 2>&1 || true
-              done
-            }
-            keepalive &
-            KEEPALIVE_PID=$!
-
-            trap 'kill "$TUNNEL_PID" "$KEEPALIVE_PID" 2>/dev/null || true; pkill -f start-iap-tunnel 2>/dev/null || true; cat /tmp/iap_tunnel.log | tail -n 50 || true' EXIT
-
-            CONNECTED=0
-            for _ in {1..30}; do
-              if python3 -c "import socket; s = socket.socket(); s.settimeout(2.0); s.connect(('127.0.0.1', 8980)); s.sendall(b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'); data = s.recv(9); s.close(); exit(0 if len(data) == 9 else 1)" 2>/dev/null; then
-                echo "Buildbarn RBE frontend reachable on 127.0.0.1:8980 via IAP tunnel."
-                CONNECTED=1
-                break
-              fi
-              sleep 1
-            done
-
-            if [ "$CONNECTED" -ne 1 ]; then
-              echo "ERROR: Failed to establish IAP tunnel to Buildbarn frontend on 127.0.0.1:8980"
-              cat /tmp/iap_tunnel.log || true
-              exit 1
-            fi
-          fi
-
           TARGETS="${INPUT_TEST_TARGETS:-//tests/pallas:pallas_test //tests:ops_test_tpu-v5lite}"
 
           # shellcheck disable=SC2086

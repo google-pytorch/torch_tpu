@@ -377,7 +377,10 @@ common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/test_rbe_opt_in.yml
+# Connects to Buildbarn across projects via Private Service Connect (PSC)
 common:ci_tpu_v5_full_rbe --config=rbe_native_tpu
+common:ci_tpu_v5_full_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
+common:ci_tpu_v5_full_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
 common:ci_tpu_v5_full_rbe --build_tests_only
 common:ci_tpu_v5_full_rbe --color=yes
 common:ci_tpu_v5_full_rbe --curses=no
