@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Path-to-label rules for .github/workflows/labeler.yml.
+# Path-to-label rules for .github/workflows/pr-labeler.yml.
 # See https://github.com/actions/labeler#pull-request-labeler for options.
 
 ci:torch-tests:
