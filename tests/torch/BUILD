@@ -36,9 +36,82 @@ py_binary(
 # TODO(b/562086911): auto-generate all test targets defined in
 # https://github.com/pytorch/pytorch/tree/main/test.
 
+# go/keep-sorted start block=yes newline_separated=yes by_regex=torch_test_module\s*=\s*"([^"]+)"
+torch_tpu_oss_torch_test(
+    name = "dynamo_after_aot_test",
+    torch_test_module = "dynamo/test_after_aot",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_backends_test",
+    torch_test_module = "dynamo/test_backends",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_debug_utils_test",
+    extra_deps = [
+        "@pypi//jax",
+    ],
+    torch_test_module = "dynamo/test_debug_utils",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_export_test",
+    torch_test_module = "dynamo/test_export",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_minifier_test",
+    torch_test_module = "dynamo/test_minifier",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_modules_test",
+    torch_test_module = "dynamo/test_modules",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_unspec_test",
+    torch_test_module = "dynamo/test_unspec",
+)
+
+torch_tpu_oss_torch_test(
+    name = "dynamo_utils_test",
+    torch_test_module = "dynamo/test_utils",
+)
+
+torch_tpu_oss_torch_test(
+    name = "inductor_utils_test",
+    torch_test_module = "inductor/test_utils",
+)
+
+torch_tpu_oss_torch_test(
+    name = "content_store_test",
+    torch_test_module = "test_content_store",
+)
+
+torch_tpu_oss_torch_test(
+    name = "fx_experimental_test",
+    torch_test_module = "test_fx_experimental",
+)
+
+torch_tpu_oss_torch_test(
+    name = "python_dispatch_test",
+    torch_test_module = "test_python_dispatch",
+)
+
+torch_tpu_oss_torch_test(
+    name = "serialization_test",
+    extra_deps = [
+        "@pypi//dill",
+    ],
+    torch_test_module = "test_serialization",
+)
+
 torch_tpu_oss_torch_test(
     name = "tensor_iterator_test",
     torch_test_module = "test_tensor_iterator",
 )
+# go/keep-sorted end
 
 torch_tpu_package_end()
