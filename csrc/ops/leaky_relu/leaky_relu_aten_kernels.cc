@@ -70,8 +70,8 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluBackwardShlo(
   std::array<mlir::MlirOp, 2> broadcasted;
   TT_ASSIGN_OR_RETURN(broadcasted,
                       ApplyBroadcastIfNeeded(self_or_result_op, zero_op));
-  mlir::MlirOp compare_ge_zero = mlir::stablehlo::Compare(
-      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GE);
+  mlir::MlirOp compare_gt_zero = mlir::stablehlo::Compare(
+      broadcasted[0], broadcasted[1], mlir::stablehlo::ComparisonDirection::GT);
 
   TT_ASSIGN_OR_RETURN(
       broadcasted, ApplyBroadcastIfNeeded(grad_output_op, negative_slope_op));
@@ -80,7 +80,7 @@ absl::StatusOr<mlir::MlirOp> BuildLeakyReluBackwardShlo(
   std::array<mlir::MlirOp, 3> select_broadcasted;
   TT_ASSIGN_OR_RETURN(
       select_broadcasted,
-      ApplyBroadcastIfNeeded(compare_ge_zero, grad_output_op, mul_op));
+      ApplyBroadcastIfNeeded(compare_gt_zero, grad_output_op, mul_op));
   return mlir::stablehlo::Select(select_broadcasted[0], select_broadcasted[1],
                                  select_broadcasted[2]);
 }

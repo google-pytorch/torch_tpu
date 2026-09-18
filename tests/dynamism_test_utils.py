@@ -206,7 +206,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.grid_sample": ALL_MODES,  #
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
-    "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.max_pool1d": (
         ALL_MODES
     ),  # MLIR assertion failure (bounds length vs rank)

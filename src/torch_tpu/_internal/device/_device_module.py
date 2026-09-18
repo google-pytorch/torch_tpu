@@ -26,7 +26,6 @@ from typing import Any, Final, List
 import torch
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal.device import _device_ops_backend
-import torch_tpu._internal.execution_mode as _execution_mode_module
 import torch_tpu._internal.precision as _precision_module
 from torch_tpu._internal.stream import streams
 from torch_tpu._internal.utils import annotations
@@ -88,7 +87,7 @@ class _DefaultGeneratorsProperty:
     owner.current_device()
     if (
         execution_mode.eager_mode
-        == execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        == execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       generators = []
       for i in range(owner.device_count()):
@@ -123,11 +122,6 @@ __tt_api_stages__: dict[str, annotations.ApiStageInfo] = {
         stage=annotations.Stage.EXPERIMENTAL,
         reason="Default generators for TPU devices.",
         value=_DefaultGeneratorsProperty(),
-    ),
-    "EagerMode": annotations.ApiStageInfo(
-        stage=annotations.Stage.EXPERIMENTAL,
-        reason="TPU eager execution mode configuration.",
-        value=_execution_mode_module.EagerMode,
     ),
     "Precision": annotations.ApiStageInfo(
         stage=annotations.Stage.EXPERIMENTAL,
@@ -290,31 +284,6 @@ class _DeviceModuleMeta(abc.ABCMeta):
       raise RuntimeError("TorchTPU device ops backend is not initialized.")
     setter(value)
 
-  @property
-  @annotations.experimental(
-      "eager_mode is experimental and may change or be removed without notice."
-  )
-  def eager_mode(
-      cls,
-  ) -> _execution_mode_module.EagerMode | _execution_mode_module._EagerMode:
-    """Gets the current eager execution mode for TPU."""
-    return _execution_mode_module._wrap_eager_mode(
-        _execution_mode_module.eager_mode
-    )
-
-  @eager_mode.setter
-  @annotations.experimental(
-      "eager_mode is experimental and may change or be removed without notice."
-  )
-  def eager_mode(
-      cls,
-      value: (
-          _execution_mode_module.EagerMode | _execution_mode_module._EagerMode
-      ),
-  ) -> None:
-    """Sets the eager execution mode for TPU."""
-    _execution_mode_module.eager_mode = value
-
   def __getattr__(cls, name: str) -> Any:
     stages_map = getattr(cls, "__tt_api_stages__", {})
     # tt_api_globals is None because resolved attributes are cached directly on
@@ -357,7 +326,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   device = _DeviceContext  # pylint: disable=invalid-name
   device_of = _DeviceOfContext  # pylint: disable=invalid-name
   precision = _precision_module.precision
-  set_eager_mode = _execution_mode_module.set_eager_mode
 
   # This method is called when a subclass of this abstract base class is
   # created. As of Python 3.15, there is no obviously supported way of declaring

@@ -8146,7 +8146,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     ids = (torch.arange(t * k) % t).to("tpu")
     src = torch.ones(t * k, feat, device="tpu")
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       out = torch.zeros(t, feat, device="tpu")
       result = out.scatter_add(0, ids.unsqueeze(-1).expand_as(src), src)
@@ -9519,7 +9519,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     # In compile mode (FxGraph tracing), host async evaluation is skipped because
     # tensors are symbolic/placeholders and cannot be copied to CPU at trace time.
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       torch.ops.aten._assert_async(cond)
       dummy = cond.to(torch.float32) + 1.0
@@ -9644,14 +9644,12 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     device = torch.device("tpu")
 
-    # Allocate both condition tensors before enqueuing assertions to avoid
-    # race conditions where the first async assertion sets sticky error before
-    # the second tensor is created.
-    cond1 = torch.tensor(False, device=device)
-    cond2 = torch.tensor(False, device=device)
+    # Enqueue two failing assertions in sequence with different error messages.
+    # Because GetAssertionThreadPool() uses a single background thread (/*num_threads=*/1),
+    # tasks run in deterministic FIFO order and the first error is latched first.
+    torch._assert_async(torch.tensor(False, device=device), "first error")
+    torch._assert_async(torch.tensor(False, device=device), "second error")
     try:
-      torch._assert_async(cond1, "first error")
-      torch._assert_async(cond2, "second error")
       with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing assert_async failure behavior.
           RuntimeError, "first error"
       ):
@@ -11388,7 +11386,7 @@ module {{
     )
 
     with execution_mode.set_eager_mode(
-        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+        execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
     ):
       out_ph = torch.ops.tpu.pad_real_to_static(
           x_ph,

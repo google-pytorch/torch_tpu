@@ -14,9 +14,6 @@
 
 """Nox configuration for torch_tpu automation environments.
 
-NOTE: This file must remain in the OSS repository root so that `nox` discovers
-it in the working directory by default without requiring `-f`.
-
 Nox manages isolated execution environments (backed here by `uv`), so
 contributors do not need to manually install tools like `clang-format` and
 `ruff` via OS-specific package managers. Run `nox -l` to list the available
@@ -128,7 +125,6 @@ def test_ci_tools(session: nox.Session) -> None:
       "ci/tools/resolve_base_sha_test.py",
       "ci/tools/check_directory_layout_test.py",
       "ci/tools/list_ci_tests_test.py",
-      "ci/tools/run_bazel_diff_test.py",
   )
 
 
@@ -139,7 +135,7 @@ def test_ci_tools(session: nox.Session) -> None:
 def refresh_compile_commands(session: nox.Session) -> None:
   """Refresh compile_commands.json for clangd."""
   session.run(
-      "tools/setup_clangd.py",
+      "./setup_clangd.py",
       *session.posargs,
       external=True,
   )

@@ -73,13 +73,6 @@ inline constexpr char kSplashBlockQEnvVar[] = "SPLASH_BLOCK_Q";
 inline constexpr char kSplashUseVmapBwdEnvVar[] = "SPLASH_USE_VMAP_BWD";
 // Standard temporary directory.
 inline constexpr char kTmpdirEnvVar[] = "TMPDIR";
-// If set to "0", PyTorch skips autoloading out-of-tree device backends.
-// TorchTPU reads it and sets it to "0" while `torch_tpu._loader` imports
-// `torch`, to break the autoload import cycle, then restores the original
-// value. Owned by PyTorch:
-// https://docs.pytorch.org/tutorials/unstable/python_extension_autoload.html
-inline constexpr char kTorchDeviceBackendAutoloadEnvVar[] =
-    "TORCH_DEVICE_BACKEND_AUTOLOAD";
 // If set to "1", C++ stack traces are appended to error messages.
 // Shared with PyTorch:
 // https://docs.pytorch.org/docs/stable/debugging_environment_variables.html#pytorch-debug-environment-variables
@@ -289,7 +282,6 @@ inline constexpr auto kEnvVarToStage =
         {kSplashBlockQEnvVar, std::nullopt},
         {kSplashUseVmapBwdEnvVar, std::nullopt},
         {kTmpdirEnvVar, SymbolStage::Stable()},
-        {kTorchDeviceBackendAutoloadEnvVar, std::nullopt},
         {kTorchShowCppStacktracesEnvVar, SymbolStage::Experimental()},
         {kTorchTpuBasePortEnvVar, std::nullopt},
         {kTorchTpuDebugEnvVar, std::nullopt},
