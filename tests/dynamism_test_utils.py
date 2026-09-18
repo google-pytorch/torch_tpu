@@ -189,9 +189,6 @@ untriaged_ops_deny_list: dict[
     "isin": ALL_MODES,  # materialization failure (negative dimension size)
     "kron": ALL_MODES,  # dynamic triage (invalid result)
     "ldexp": ALL_MODES,  # dynamic shape value permutation mismatch
-    "linalg.lu_factor_ex": (
-        ALL_MODES
-    ),  # materialization failure (negative dim size)
     "logical_and": ALL_MODES,  # dynamic triage (invalid result)
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
@@ -319,6 +316,12 @@ def verify_op_supports_dynamism(
     return f"{op.name} op may work, but requires mark_dynamic test support."
 
   ### [XLA BUGS] ###
+  # TODO: b/449736443 - [XLA] LuRealDecompositionBlock custom call does not support dynamic dimensions.
+  if op.name in ["linalg.lu_factor_ex"]:
+    return (
+        f"{op.name} op is not supported: LuRealDecompositionBlock does not"
+        " support dynamic dimensions."
+    )
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
   if op.name in ["polar"]:
     return f"{op.name} op is not supported."

@@ -52,10 +52,14 @@
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/resize/resize_aten_kernels.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeRange.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
@@ -78,6 +82,89 @@ absl::Status ValidateLuSupportedDtype(const at::Tensor& tensor) {
   return absl::OkStatus();
 }
 
+struct LuPivotAndPermTypes {
+  mlir::RankedTensorType pivot_type;
+  mlir::RankedTensorType perm_type;
+};
+
+int64_t GetDimensionBound(llvm::ArrayRef<int64_t> shape,
+                          llvm::ArrayRef<int64_t> bounds, int dim) {
+  if (shape[dim] != mlir::ShapedType::kDynamic) {
+    return shape[dim];
+  }
+  if (!bounds.empty() && bounds[dim] != mlir::ShapedType::kDynamic) {
+    return bounds[dim];
+  }
+  return mlir::ShapedType::kDynamic;
+}
+
+mlir::RankedTensorType CreateRankedTensorTypeWithBounds(
+    mlir::MLIRContext* ctx, llvm::ArrayRef<int64_t> dims,
+    llvm::ArrayRef<int64_t> bounds, mlir::Type element_type) {
+  auto encoding = !bounds.empty()
+                      ? mlir::stablehlo::TypeExtensionsAttr::get(ctx, bounds)
+                      : nullptr;
+  return mlir::RankedTensorType::get(dims, element_type, encoding);
+}
+
+LuPivotAndPermTypes ComputeLuPivotAndPermTypes(mlir::MLIRContext* ctx,
+                                               mlir::RankedTensorType a_type,
+                                               mlir::Type i32_type) {
+  const auto a_shape = a_type.getShape();
+  const int rank = a_shape.size();
+  auto a_type_extensions =
+      mlir::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+          a_type.getEncoding());
+  llvm::ArrayRef<int64_t> a_bounds = a_type_extensions
+                                         ? a_type_extensions.getBounds()
+                                         : llvm::ArrayRef<int64_t>();
+
+  const int64_t rows_shape = a_shape[rank - 2];
+  const int64_t cols_shape = a_shape[rank - 1];
+  const bool is_rows_dynamic = (rows_shape == mlir::ShapedType::kDynamic);
+  const bool is_cols_dynamic = (cols_shape == mlir::ShapedType::kDynamic);
+  const bool is_k_dynamic = is_rows_dynamic || is_cols_dynamic;
+
+  const int64_t rows_bound = GetDimensionBound(a_shape, a_bounds, rank - 2);
+  const int64_t cols_bound = GetDimensionBound(a_shape, a_bounds, rank - 1);
+  const int64_t k_bound = (rows_bound != mlir::ShapedType::kDynamic &&
+                           cols_bound != mlir::ShapedType::kDynamic)
+                              ? std::min(rows_bound, cols_bound)
+                              : mlir::ShapedType::kDynamic;
+
+  const int64_t pivot_last_dim = is_k_dynamic
+                                     ? mlir::ShapedType::kDynamic
+                                     : std::min(rows_shape, cols_shape);
+  const int64_t perm_last_dim =
+      is_rows_dynamic ? mlir::ShapedType::kDynamic : rows_shape;
+
+  const int64_t pivot_last_bound =
+      is_k_dynamic ? k_bound : mlir::ShapedType::kDynamic;
+  const int64_t perm_last_bound =
+      is_rows_dynamic ? rows_bound : mlir::ShapedType::kDynamic;
+
+  const int num_batch_dims = rank - 2;
+  Dimensions pivot_dims(a_shape.begin(), a_shape.begin() + num_batch_dims);
+  pivot_dims.push_back(pivot_last_dim);
+  Dimensions perm_dims(a_shape.begin(), a_shape.begin() + num_batch_dims);
+  perm_dims.push_back(perm_last_dim);
+
+  Dimensions pivot_bounds;
+  Dimensions perm_bounds;
+  if (!a_bounds.empty()) {
+    pivot_bounds.assign(a_bounds.begin(), a_bounds.begin() + num_batch_dims);
+    pivot_bounds.push_back(pivot_last_bound);
+    perm_bounds.assign(a_bounds.begin(), a_bounds.begin() + num_batch_dims);
+    perm_bounds.push_back(perm_last_bound);
+  }
+
+  auto pivot_type =
+      CreateRankedTensorTypeWithBounds(ctx, pivot_dims, pivot_bounds, i32_type);
+  auto perm_type =
+      CreateRankedTensorTypeWithBounds(ctx, perm_dims, perm_bounds, i32_type);
+  return {pivot_type, perm_type};
+}
+
 absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
   auto& builder = input.getBuilder();
   auto& op_builder = builder.getOpBuilder();
@@ -91,19 +178,8 @@ absl::StatusOr<MlirOpResults<2>> LuDecompositionBuilder(mlir::MlirOp input) {
       rank >= 2, error::kInvalidArgument)
       << "input tensor expected to have at least 2 dimensions, got " << rank;
 
-  const int n = a_shape[rank - 2];
-  const int m = a_shape[rank - 1];
-  const int num_batch_dims = rank - 2;
-  Dimensions batch_dims(a_shape.begin(), a_shape.begin() + num_batch_dims);
-  Dimensions pivot_dims = batch_dims;
-  pivot_dims.push_back(std::min(n, m));
-  Dimensions perm_dims = batch_dims;
-  perm_dims.push_back(n);
-
-  auto pivot_type =
-      mlir::RankedTensorType::get(pivot_dims, op_builder.getI32Type());
-  auto perm_type =
-      mlir::RankedTensorType::get(perm_dims, op_builder.getI32Type());
+  auto [pivot_type, perm_type] =
+      ComputeLuPivotAndPermTypes(&ctx, a_type, op_builder.getI32Type());
 
   auto call_target_attr = op_builder.getNamedAttr(
       "call_target_name", op_builder.getStringAttr("LuDecomposition"));
