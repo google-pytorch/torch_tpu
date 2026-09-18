@@ -140,7 +140,7 @@ def _should_skip_input_marking(
     # empty, empty_strided, full, tril, ones, zeros, stack, tril_indices.
     return f"Input value is not a tensor, got {type(input_value)}."
   dtype = input_value.dtype
-  candidates = _get_dynamic_dimension_candidates(input_value)
+  candidates = DynamicOpInfo.get(op_info).get_dynamic_candidates(input_value)
   if not candidates:
     return "No valid input dimensions to mark dynamic."
   # TODO: b/449736443 - [XLA] Crash in complex rewriter.
@@ -200,7 +200,6 @@ untriaged_ops_deny_list: dict[
     "ne": ALL_MODES,  # dynamic triage (invalid result)
     "neg": ALL_MODES,  # dynamic triage (invalid result)
     "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
-    "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
     "nn.functional.embedding": ALL_MODES,  # crash in shard 27
     "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
     "nn.functional.grid_sample": ALL_MODES,  #
@@ -410,11 +409,16 @@ class DynamicOpInfo:
         MatmulDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
+        BatchNormDynamicOpInfo,
     ]
     for adapter in adapters:
       if adapter.adapter_supports_op(op_info):
         return adapter(op_info)
     return DynamicOpInfo(op_info)
+
+  def get_dynamic_candidates(self, input_value: torch.Tensor) -> Sequence[int]:
+    """Returns candidate dimensions that can be marked dynamic."""
+    return _get_dynamic_dimension_candidates(input_value)
 
   def mark_dynamic(
       self,
@@ -435,7 +439,9 @@ class DynamicOpInfo:
 
     # Allow picking a list value from input_value for ops like cat, etc.
     input_value = _get_canonical_input_value(self.op_info, input_value)
-    candidates = _get_dynamic_dimension_candidates(input_value)
+    candidates = self.get_dynamic_candidates(input_value)
+    if not candidates:
+      return
     random.seed(seed)
     idx = random.choice(candidates)
     input_value_str = utils.get_tensor_summary(input_value, data=False)
@@ -653,7 +659,29 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       # If a batch dim is dynamic, mark rhs's batch dim too.
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
-    return
+
+
+class BatchNormDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for batch norm ops."""
+
+  batch_norm_ops = frozenset({
+      "nn.functional.batch_norm",
+      "native_batch_norm",
+      "_native_batch_norm_legit",
+  })
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo) -> bool:
+    """Method to declare ops supported by this adapter."""
+    return op_info.name in BatchNormDynamicOpInfo.batch_norm_ops
+
+  def get_dynamic_candidates(self, input_value: torch.Tensor) -> Sequence[int]:
+    """Returns dynamic candidates excluding the feature dimension (dim 1)."""
+    if not isinstance(input_value, torch.Tensor) or input_value.ndim < 2:
+      return []
+    # The feature dimension (dim 1) is static because it corresponds to the
+    # fixed number of channels and must match 1D parameters/buffers.
+    return [i for i, sz in enumerate(input_value.shape) if i != 1 and sz > 1]
 
 
 def mark_input_dynamic(

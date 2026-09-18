@@ -32,10 +32,7 @@ torch_tpu_py_library(
     srcs = [
         "__init__.py",
     ],
-    deps = [
-        ":execution_mode_impl",
-        "//src/torch_tpu/_internal/utils:annotations",
-    ],
+    deps = [":execution_mode_impl"],
 )
 
 pybind_extension(

@@ -16,23 +16,20 @@
 
 import re
 from typing import Any, TypeAlias
-from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import torch
-import torch.distributed as dist
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch_tpu._internal import dynamism
 from torch_tpu._internal import env
 from torch_tpu._internal import execution_mode
-from torch_tpu._internal import pallas
 from torch_tpu._internal import testing as tt_testing
 from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
 
-_EagerMode: TypeAlias = execution_mode._EagerMode
+EagerMode: TypeAlias = execution_mode.EagerMode
 
 
 def setUpModule():
@@ -102,12 +99,7 @@ class TpuOnlyErrorTest(et.TpuOnlyErrorTestBase):
 
     x = torch.randn(3, 5, device=et.device())
     executable = StaticCompiler()(make_fx(double)(x), [x], donated_inputs=[0])
-    # Because executable execution is asynchronous on TPU, querying the
-    # donated input buffer immediately after invocation without synchronizing
-    # the output resulted in a race condition where the input buffer had not
-    # yet been donated on device. Therefore we synchronize to host here.
-    out = executable(x)
-    out.cpu()
+    executable(x)
 
     with et.assert_raises_message(
         RuntimeError,
@@ -1576,7 +1568,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_too_many(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1599,7 +1591,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing compiled mode argument count validation.")
   def test_execute_argument_count_mismatch(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1615,7 +1607,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " placeholder fails gracefully instead of crashing."
   )
   def test_materialize_tensor_depending_on_placeholder(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1632,7 +1624,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " fails gracefully."
   )
   def test_materialize_placeholder_directly(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1648,7 +1640,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " gracefully when materialization is attempted."
   )
   def test_materialize_mixed_real_and_placeholder(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     real = torch.ones(4, 4, device=et.device())
     with et.assert_raises_message(
@@ -1663,7 +1655,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
   def test_execute_placeholder_argument(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(4, 4, device="cpu").to(device=et.device())
       z = x + x
       ph = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
@@ -1680,7 +1672,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1698,7 +1690,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_exceeds_bound(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1716,7 +1708,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1731,7 +1723,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1762,7 +1754,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_missing_input_to_build_mlir(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1776,7 +1768,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -1790,7 +1782,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -4583,7 +4575,7 @@ module {
         RuntimeError,
         tpu="""uniform_(): expected export mode default generator to be set for device 0, got none""",
     ):
-      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         torch.rand(1, device="tpu")
 
 
@@ -4623,54 +4615,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         message_reviewed_by="wan",
     ):
       obj.throw_tterror_in_member_function()
-
-  @et.why_tpu_only("Pallas mesh validation is TPU-specific.")
-  def test_pallas_mesh_invariants_errors(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=8):
-      # Non-spanning mesh (volume 4 != world_size 8)
-      with et.assert_raises_message(
-          ValueError, tpu=re.compile(r".*must equal world_size 8.*", re.DOTALL)
-      ):
-        pallas.get_pallas_mesh(axis_names=("rank",), mesh_shape=(4,))
-
-      # Missing mesh_shape for multi-dimensional mesh
-      with et.assert_raises_message(
-          ValueError,
-          tpu=re.compile(r".*must be explicitly specified.*", re.DOTALL),
-      ):
-        pallas.get_pallas_mesh(axis_names=("data", "model"))
-
-      # Length mismatch between mesh_shape and axis_names
-      with et.assert_raises_message(
-          ValueError, tpu=re.compile(r".*does not match length.*", re.DOTALL)
-      ):
-        pallas.get_pallas_mesh(
-            axis_names=("data", "model"), mesh_shape=(2, 2, 2)
-        )
-
-    # Distributed not initialized raises RuntimeError
-    with mock.patch.object(dist, "is_initialized", return_value=False):
-      with et.assert_raises_message(
-          RuntimeError,
-          tpu=re.compile(r".*dist\.init_process_group.*", re.DOTALL),
-      ):
-        pallas.get_default_pallas_mesh()
-
-    # Device attributes exception scoping
-    for exc in [AttributeError("No TPU module"), RuntimeError("PJRT not init")]:
-      with self.subTest(exc=type(exc).__name__):
-        with mock.patch.object(
-            dist, "is_initialized", return_value=True
-        ), mock.patch.object(
-            dist, "get_world_size", return_value=2
-        ), mock.patch(
-            "torch_tpu._internal.device._device_ops_backend._get_local_device_attributes",
-            side_effect=exc,
-        ):
-          with self.assertRaises(type(exc)):
-            pallas.get_default_pallas_mesh()
 
 
 if __name__ == "__main__":

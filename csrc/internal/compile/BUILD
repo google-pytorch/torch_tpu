@@ -70,7 +70,6 @@ torch_tpu_cc_library(
         "@stablehlo//:stablehlo_serialization",
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
-        "@xla//xla:shape_util",
         "@xla//xla/pjrt:maybe_owning_mlir_module",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",

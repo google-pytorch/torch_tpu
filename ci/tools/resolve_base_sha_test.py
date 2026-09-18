@@ -15,10 +15,12 @@
 """Unit tests for CI base SHA resolution and diff isolation scripts.
 
 These tests verify that `ci/tools/resolve_base_sha.sh`,
-`ci/check_wheel_diff.sh`, and `ci/tools/run_bazel_diff.py` correctly isolate
-pull request changes across various Git topologies (multi-parent PR merge
-commits, shallow clones, single-parent commits, and explicit overrides) without
-leaking unrelated commits from `main`.
+`ci/check_wheel_diff.sh`,
+and `.github/actions/bazel-diff/run_bazel_diff.sh` correctly isolate pull
+request
+changes across various Git topologies (multi-parent PR merge commits, shallow
+clones, single-parent commits, and explicit overrides) without leaking
+unrelated commits from `main`.
 """
 
 import os
