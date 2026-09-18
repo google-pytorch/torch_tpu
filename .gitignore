@@ -26,3 +26,7 @@ dist/
 # Vim undo files.
 *.un~
 .*.un~
+
+# Local RBE credentials.
+bazel/certs/
+*.key
