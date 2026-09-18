@@ -106,4 +106,12 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "eliminate_sdpa_contiguous",
+    srcs = ["eliminate_sdpa_contiguous.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()

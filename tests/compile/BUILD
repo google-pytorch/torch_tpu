@@ -608,6 +608,18 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "eliminate_sdpa_contiguous_test",
+    srcs = ["eliminate_sdpa_contiguous_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:eliminate_sdpa_contiguous",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "debug_test",
     srcs = ["debug_test.py"],
     deps = [
