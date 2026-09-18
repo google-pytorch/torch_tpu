@@ -1,7 +1,4 @@
-<div align="center">
-  <img src="docs/assets/logo.png" alt="TorchTPU logo" height="140">
-  <h1>TorchTPU</h1>
-</div>
+<h1>TorchTPU&nbsp;<img src="docs/assets/logo.png" alt="TorchTPU Logo" height="65"></h1>
 
 ## Description
 
