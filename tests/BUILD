@@ -383,6 +383,19 @@ _OPS_TEST_ON_V7_TAGS = if_oss(
     [],
 )
 
+_OPS_TEST_COMMON_DEPS = [
+    ":dynamism_test_utils",
+    ":op_testing",
+    ":oss_utils",
+    "//shims/absl_py/flags",
+    "//shims/absl_py/testing:absltest",
+    "//shims/torch:pytorch",
+    "//src/torch_tpu",
+    "//src/torch_tpu:_loader",
+    "//src/torch_tpu/_internal/utils:test_utils",
+    "//csrc/eager:tpu_aten_kernels",
+]
+
 torch_tpu_py_test(
     # TODO: switch this to TPU-vs-GPU.
     name = "foreach_ops_test_grad_vs_cpu",
@@ -407,17 +420,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
     ] + _OPS_TEST_ON_V7_TAGS,
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -444,17 +447,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
     ] + _OPS_TEST_ON_V7_TAGS,
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -481,17 +474,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
     ] + _OPS_TEST_ON_V7_TAGS,
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -522,17 +505,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -563,17 +536,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -607,17 +570,7 @@ torch_tpu_py_test(
         "nosan",  # Rely on ops_test_grad for *san coverage.
         "ok-to-wait-for-v6e-in-presubmit",
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -648,17 +601,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
     ] + _OPS_TEST_ON_V7_TAGS,
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -687,17 +630,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -730,17 +663,7 @@ torch_tpu_py_test(
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 # This target measures the compilation time for each op.
@@ -778,17 +701,7 @@ torch_tpu_py_test(
         "requires-net:external",  # For writing remote files.
         "requires-tpu-v5lite",
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -812,17 +725,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -847,17 +750,7 @@ torch_tpu_py_test(
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 # See go/tt-devguide#updating-gpu-goldens for how to update the GPU goldens.
@@ -885,17 +778,7 @@ torch_tpu_py_test(
     tags = [
         _REQUIRES_GPU_FOR_OPS_TEST,
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 # Like ops_test_gen_gpu_golden, but only generates 1 sample per (op, dtype).
@@ -915,17 +798,7 @@ torch_tpu_py_test(
     tags = [
         _REQUIRES_GPU_FOR_OPS_TEST,
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -936,17 +809,7 @@ torch_tpu_py_test(
     # Keep this test unsharded. The exclusions are accumulated in a
     # per-process global, so a sharded run would dump partial results.
     shard_count = 1,
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(
@@ -978,17 +841,7 @@ torch_tpu_py_test(
     tags = [
         _REQUIRES_GPU_FOR_OPS_TEST,
     ],
-    deps = [
-        ":dynamism_test_utils",
-        ":op_testing",
-        ":oss_utils",
-        "//csrc/eager:tpu_aten_kernels",
-        "//shims/absl_py/flags",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "//src/torch_tpu/_internal/utils:test_utils",
-    ],
+    deps = _OPS_TEST_COMMON_DEPS,
 )
 
 torch_tpu_py_test(

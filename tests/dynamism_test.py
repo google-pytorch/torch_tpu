@@ -219,6 +219,63 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     self._run_bounded_dynamism_test(torch.pow, mark_dynamic, *args)
 
+  def test_ldexp(self):
+    def mark_dynamic(x, exp):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(exp, 0, 2, 10)
+
+    args = (
+        torch.randn(5, 4, dtype=torch.float32),
+        torch.randint(-5, 5, (5, 4), dtype=torch.int32),
+    )
+    self._run_bounded_dynamism_test(torch.ldexp, mark_dynamic, *args)
+
+  def test_ldexp_with_broadcast(self):
+    def mark_dynamic(x, exp):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(exp, 1, 2, 15)
+
+    args = (
+        torch.randn(5, 1, dtype=torch.float32),
+        torch.randint(-5, 5, (1, 4), dtype=torch.int32),
+    )
+    self._run_bounded_dynamism_test(torch.ldexp, mark_dynamic, *args)
+
+  def test_ldexp_complex(self):
+    def mark_dynamic(x, exp):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(exp, 0, 2, 10)
+
+    args = (
+        torch.randn(5, 4, dtype=torch.complex64),
+        torch.randint(-5, 5, (5, 4), dtype=torch.int32),
+    )
+    self._run_bounded_dynamism_test(torch.ldexp, mark_dynamic, *args)
+
+  def test_ldexp_large_exponent(self):
+    def mark_dynamic(x, exp):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(exp, 0, 2, 10)
+
+    # Exponents > 120 exercise multi-step scaling logic for float32 without intermediate overflow/underflow.
+    args = (
+        torch.tensor(
+            [
+                [1e-15, 1e15],
+                [1e-20, 1e20],
+                [1e-10, 1e10],
+                [1e-25, 1e25],
+                [1e-12, 1e12],
+            ],
+            dtype=torch.float32,
+        ),
+        torch.tensor(
+            [[130, -130], [150, -150], [140, -140], [160, -160], [135, -135]],
+            dtype=torch.int32,
+        ),
+    )
+    self._run_bounded_dynamism_test(torch.ldexp, mark_dynamic, *args)
+
   def test_elementwise_binary_op_with_broadcast(self):
     def mark_dynamic(x, y):
       dynamism.mark_dynamic(x, 0, 2, 10)

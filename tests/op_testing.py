@@ -4408,8 +4408,13 @@ class OpInfoTestBase(
 
     input_value = device_op_input.input_value
 
+    device_type = (
+        device.type
+        if isinstance(device, torch.device)
+        else str(device).split(":")[0]
+    )
     is_dynamic_test = bool(
-        _CHECK_DYNAMISM_USING_SEED.value and device == torch.device("tpu")
+        _CHECK_DYNAMISM_USING_SEED.value and device_type == "tpu"
     )
 
     if is_dynamic_test:

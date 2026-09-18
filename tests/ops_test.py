@@ -28,6 +28,7 @@ from absl import flags
 from absl.testing import absltest
 import torch
 from torch.nn import attention
+from torch_tpu import _loader
 from torch_tpu._internal.utils import test_utils
 from tests import dynamism_test_utils
 from tests import op_testing
@@ -4812,6 +4813,7 @@ class TestOps(op_testing.OpInfoTestBase):
 def setUpModule() -> None:
   """Called by absltest.main() after flags are parsed but before tests are run."""
 
+  _loader._init_device("tpu")
   op_testing.set_up_test_module()
 
   if (
