@@ -771,6 +771,7 @@ torch_tpu_py_test(
     ),
     main = "ops_test.py",
     nolocal = "slow test",
+    nopresubmit = "Benchmark.",
     nopresubmit_oss = "This slow test is enabled in nightly.",
     shard_count = 50,
     tags = [
