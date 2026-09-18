@@ -382,6 +382,7 @@ common:ci_tpu_v5_full_rbe --build_tests_only
 common:ci_tpu_v5_full_rbe --color=yes
 common:ci_tpu_v5_full_rbe --curses=no
 common:ci_tpu_v5_full_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
+common:ci_tpu_v5_full_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
 test:ci_tpu_v5_full_rbe --test_output=errors
 
 # Runs on linux-x86-ct6e-180-8tpu.
