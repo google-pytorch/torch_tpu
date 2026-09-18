@@ -56,11 +56,12 @@ namespace torch_tpu {
 
 namespace {
 
-NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
-                                         const ReductionMode reduction_mode,
-                                         const int64_t reduction_size) {
-  return [dim_vec = std::move(dim_vec), reduction_mode,
-          reduction_size](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+NAryMlirOpBuilder<2, 1> CreateStdBuilder(
+    Dimensions dim_vec, const ReductionMode reduction_mode,
+    const int64_t reduction_size,
+    std::optional<double> correction_val = std::nullopt) {
+  return [dim_vec = std::move(dim_vec), reduction_mode, reduction_size,
+          correction_val](FixedSizeSpan<mlir::MlirOp, 2> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, correction_op] = inputs;
     mlir::MlirBuilder& builder = self_op.getBuilder();
@@ -77,16 +78,27 @@ NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
         BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims));
 
     // mean = sum_tensor / reduction_size
-    const mlir::MlirOp reduction_size_const =
-        llvm::isa<mlir::ComplexType>(type)
-            ? MakeScalarConstant(builder,
-                                 std::complex<double>(
-                                     static_cast<double>(reduction_size), 0.0),
-                                 type)
-            : MakeScalarConstant(builder, static_cast<double>(reduction_size),
-                                 type);
-    TT_ASSIGN_OR_RETURN(const auto mean,
-                        BuildDivShlo(sum_op, reduction_size_const));
+    mlir::MlirOp mean;
+    if (reduction_size > 0) {
+      const double inv_red_size = 1.0 / static_cast<double>(reduction_size);
+      const mlir::MlirOp inv_reduction_size =
+          llvm::isa<mlir::ComplexType>(type)
+              ? MakeScalarConstant(
+                    builder, std::complex<double>(inv_red_size, 0.0), type)
+              : MakeScalarConstant(builder, inv_red_size, type);
+      TT_ASSIGN_OR_RETURN(mean, BuildMulShlo(sum_op, inv_reduction_size));
+    } else {
+      const mlir::MlirOp reduction_size_const =
+          llvm::isa<mlir::ComplexType>(type)
+              ? MakeScalarConstant(
+                    builder,
+                    std::complex<double>(static_cast<double>(reduction_size),
+                                         0.0),
+                    type)
+              : MakeScalarConstant(builder, static_cast<double>(reduction_size),
+                                   type);
+      TT_ASSIGN_OR_RETURN(mean, BuildDivShlo(sum_op, reduction_size_const));
+    }
 
     // diff = self - mean
     TT_ASSIGN_OR_RETURN(const auto diff, BuildSubShlo(self_op, mean));
@@ -103,15 +115,29 @@ NAryMlirOpBuilder<2, 1> CreateStdBuilder(Dimensions dim_vec,
         BuildSumShlo(squared_diff, dim_vec, reduction_mode, var_type));
 
     // denom = max(reduction_size - correction, 0)
-    const auto reduction_size_const_corr = MakeScalarConstant(
-        builder, static_cast<double>(reduction_size), var_type);
-    TT_ASSIGN_OR_RETURN(const auto denom_diff,
-                        BuildSubShlo(reduction_size_const_corr, correction_op));
-    const auto zero = MakeScalarConstant(builder, 0.0, var_type);
-    TT_ASSIGN_OR_RETURN(const auto denom, BuildMaximumShlo(denom_diff, zero));
+    mlir::MlirOp var;
+    const double denom_val =
+        correction_val.has_value()
+            ? std::max(static_cast<double>(reduction_size) - *correction_val,
+                       0.0)
+            : 0.0;
+    if (correction_val.has_value() && denom_val > 0.0) {
+      const double inv_denom_val = 1.0 / denom_val;
+      const auto inv_denom =
+          MakeScalarConstant(builder, inv_denom_val, var_type);
+      TT_ASSIGN_OR_RETURN(var, BuildMulShlo(sum_sq_op, inv_denom));
+    } else {
+      const auto reduction_size_const_corr = MakeScalarConstant(
+          builder, static_cast<double>(reduction_size), var_type);
+      TT_ASSIGN_OR_RETURN(
+          const auto denom_diff,
+          BuildSubShlo(reduction_size_const_corr, correction_op));
+      const auto zero = MakeScalarConstant(builder, 0.0, var_type);
+      TT_ASSIGN_OR_RETURN(const auto denom, BuildMaximumShlo(denom_diff, zero));
 
-    // var = sum_sq_tensor / denom
-    TT_ASSIGN_OR_RETURN(const auto var, BuildDivShlo(sum_sq_op, denom));
+      // var = sum_sq_tensor / denom
+      TT_ASSIGN_OR_RETURN(var, BuildDivShlo(sum_sq_op, denom));
+    }
 
     // std = sqrt(var)
     return BuildSqrtShlo(var, var_type);
@@ -172,8 +198,9 @@ at::Tensor AtenStd(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
           computation_dtype = mlir::ElementType::F32;
         }
 
-        auto std_builder = CreateStdBuilder(std::move(canonicalized_dims),
-                                            reduction_mode, reduction_size);
+        auto std_builder =
+            CreateStdBuilder(std::move(canonicalized_dims), reduction_mode,
+                             reduction_size, correction_val);
 
         TT_ASSIGN_OR_THROW(
             auto result_bufs,
@@ -242,8 +269,9 @@ at::Tensor& AtenStdOut(const at::Tensor& self,
           computation_dtype = mlir::ElementType::F32;
         }
 
-        auto std_builder = CreateStdBuilder(std::move(canonicalized_dims),
-                                            reduction_mode, reduction_size);
+        auto std_builder =
+            CreateStdBuilder(std::move(canonicalized_dims), reduction_mode,
+                             reduction_size, correction_val);
 
         TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
             std::move(std_builder), {self, correction_tensor}, out,

@@ -16,8 +16,10 @@
 
 #include "csrc/ops/reductions/mean_aten_kernels.h"
 
+#include <complex>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -62,10 +64,43 @@ absl::StatusOr<mlir::MlirOp> BuildMeanShlo(
   TT_ASSIGN_OR_RETURN(
       mlir::MlirOp sum_op,
       BuildSumShlo(input, canonical_dims, reduction_mode, mlir_type));
-  mlir::MlirOp num_elements =
-      GetNumElements(input, mlir::getElementType(input.getContext(), mlir_type),
-                     canonical_dims);
-  return BuildDivShlo(sum_op, num_elements);
+
+  mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  mlir::ArrayRef<int64_t> shape = input_type.getShape();
+  absl::Span<const int64_t> dims = canonical_dims;
+  mlir::SmallVector<int64_t> all_dims(input_type.getRank());
+  if (dims.empty()) {
+    std::iota(all_dims.begin(), all_dims.end(), 0);
+    dims = all_dims;
+  }
+
+  bool is_static = true;
+  int64_t num_elements = 1;
+  for (int64_t dim : dims) {
+    if (mlir::ShapedType::isDynamic(shape[dim])) {
+      is_static = false;
+      break;
+    }
+    num_elements *= shape[dim];
+  }
+
+  mlir::Type elem_type = mlir::getElementType(input.getContext(), mlir_type);
+  if (is_static && num_elements > 0) {
+    const double inv_num_elements = 1.0 / static_cast<double>(num_elements);
+    const bool is_complex = (mlir_type == mlir::ElementType::COMPLEXF32 ||
+                             mlir_type == mlir::ElementType::COMPLEXF64);
+    mlir::MlirOp inv_num_elements_op =
+        is_complex ? MakeScalarConstant(
+                         input.getBuilder(),
+                         std::complex<double>(inv_num_elements, 0.0), elem_type)
+                   : MakeScalarConstant(input.getBuilder(), inv_num_elements,
+                                        elem_type);
+    return BuildMulShlo(sum_op, inv_num_elements_op);
+  }
+
+  mlir::MlirOp num_elements_op =
+      GetNumElements(input, elem_type, canonical_dims);
+  return BuildDivShlo(sum_op, num_elements_op);
 }
 
 at::Tensor& AtenMeanOut(const at::Tensor& self,

@@ -61,12 +61,13 @@ namespace torch_tpu {
 
 namespace {
 
-NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
-                                         ReductionMode reduction_mode,
-                                         int64_t reduction_size,
-                                         mlir::ElementType scalar_dtype_mlir) {
+NAryMlirOpBuilder<2, 1> CreateVarBuilder(
+    Dimensions dim_vec, ReductionMode reduction_mode, int64_t reduction_size,
+    mlir::ElementType scalar_dtype_mlir,
+    std::optional<double> correction_val = std::nullopt) {
   return [dim_vec = std::move(dim_vec), reduction_mode, reduction_size,
-          scalar_dtype_mlir](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+          scalar_dtype_mlir,
+          correction_val](FixedSizeSpan<mlir::MlirOp, 2> inputs)
              -> absl::StatusOr<mlir::MlirOp> {
     auto& [self_op, correction_op] = inputs;
     mlir::MlirBuilder& builder = self_op.getBuilder();
@@ -77,16 +78,27 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
         auto sum_op, BuildSumShlo(self_op, dim_vec, ReductionMode::kKeepDims));
 
     // mean = sum_tensor / reduction_size
-    mlir::MlirOp reduction_size_const;
-    if (llvm::isa<mlir::ComplexType>(type)) {
-      reduction_size_const = MakeScalarConstant(
-          builder,
-          std::complex<double>(static_cast<double>(reduction_size), 0.0), type);
+    mlir::MlirOp mean;
+    if (reduction_size > 0) {
+      const double inv_red_size = 1.0 / static_cast<double>(reduction_size);
+      mlir::MlirOp inv_reduction_size =
+          llvm::isa<mlir::ComplexType>(type)
+              ? MakeScalarConstant(
+                    builder, std::complex<double>(inv_red_size, 0.0), type)
+              : MakeScalarConstant(builder, inv_red_size, type);
+      TT_ASSIGN_OR_RETURN(mean, BuildMulShlo(sum_op, inv_reduction_size));
     } else {
-      reduction_size_const = MakeScalarConstant(
-          builder, static_cast<double>(reduction_size), type);
+      mlir::MlirOp reduction_size_const =
+          llvm::isa<mlir::ComplexType>(type)
+              ? MakeScalarConstant(
+                    builder,
+                    std::complex<double>(static_cast<double>(reduction_size),
+                                         0.0),
+                    type)
+              : MakeScalarConstant(builder, static_cast<double>(reduction_size),
+                                   type);
+      TT_ASSIGN_OR_RETURN(mean, BuildDivShlo(sum_op, reduction_size_const));
     }
-    TT_ASSIGN_OR_RETURN(auto mean, BuildDivShlo(sum_op, reduction_size_const));
 
     // diff = self - mean
     TT_ASSIGN_OR_RETURN(auto diff, BuildSubShlo(self_op, mean));
@@ -104,6 +116,17 @@ NAryMlirOpBuilder<2, 1> CreateVarBuilder(Dimensions dim_vec,
 
     // denom = max(reduction_size - correction, 0)
     mlir::Type corr_type = GetTensorTypeOrDie(correction_op).getElementType();
+    const double denom_val =
+        correction_val.has_value()
+            ? std::max(static_cast<double>(reduction_size) - *correction_val,
+                       0.0)
+            : 0.0;
+    if (correction_val.has_value() && denom_val > 0.0) {
+      const double inv_denom_val = 1.0 / denom_val;
+      auto inv_denom = MakeScalarConstant(builder, inv_denom_val, corr_type);
+      return BuildMulShlo(sum_sq_op, inv_denom);
+    }
+
     auto reduction_size_const_corr = MakeScalarConstant(
         builder, static_cast<double>(reduction_size), corr_type);
     TT_ASSIGN_OR_RETURN(auto denom_diff,
@@ -163,7 +186,7 @@ at::Tensor AtenVar(const at::Tensor& self, c10::OptionalArrayRef<int64_t> dim,
 
         auto var_builder =
             CreateVarBuilder(std::move(canonicalized_dims), reduction_mode,
-                             reduction_size, scalar_dtype_mlir);
+                             reduction_size, scalar_dtype_mlir, correction_val);
 
         TT_ASSIGN_OR_THROW(
             auto result_bufs,
@@ -208,7 +231,7 @@ at::Tensor& AtenVarOut(const at::Tensor& self,
 
         auto var_builder =
             CreateVarBuilder(std::move(canonicalized_dims), reduction_mode,
-                             reduction_size, scalar_dtype_mlir);
+                             reduction_size, scalar_dtype_mlir, correction_val);
 
         TT_THROW_IF_ERROR((DispatchOpOut<2, 1>(
             std::move(var_builder), {self, correction_tensor}, out,
@@ -266,7 +289,8 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
 
         auto var_mean_builder =
             [canonical_dims = std::move(canonical_dims), reduction_mode,
-             reduction_size, keep_dim](FixedSizeSpan<mlir::MlirOp, 2> inputs)
+             reduction_size, keep_dim,
+             correction_val](FixedSizeSpan<mlir::MlirOp, 2> inputs)
             -> absl::StatusOr<std::array<mlir::MlirOp, 2>> {
           auto& [self_op, correction_op] = inputs;
           mlir::MlirBuilder& builder = self_op.getBuilder();
@@ -329,6 +353,16 @@ std::tuple<at::Tensor, at::Tensor> AtenVarMeanCorrection(
                                            reduction_mode, var_type));
 
           // denom = max(reduction_size - correction, 0)
+          const double denom_val = std::max(
+              static_cast<double>(reduction_size) - correction_val, 0.0);
+          if (denom_val > 0.0) {
+            const double inv_denom_val = 1.0 / denom_val;
+            auto inv_denom =
+                MakeScalarConstant(builder, inv_denom_val, var_type);
+            TT_ASSIGN_OR_RETURN(auto var, BuildMulShlo(sum_sq, inv_denom));
+            return std::array<mlir::MlirOp, 2>{var, mean_out};
+          }
+
           auto reduction_size_const = MakeScalarConstant(
               builder, static_cast<double>(reduction_size), var_type);
           TT_ASSIGN_OR_RETURN(
