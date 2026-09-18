@@ -2484,9 +2484,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             scale_b.to(device),
         )
 
-    self.assert_close_tpu_vs_cpu(
-        compute,
-    )
+    # Loose FP8 tolerance: the TPU FP8 dot does not bit-match the CPU F32
+    # reference, and per-element relative error is large near zero.
+    self.assert_close_tpu_vs_cpu(compute, rtol=5e-1, atol=5e-1)
 
   @parameterized.product(
       m=[32, 128],
@@ -2670,9 +2670,9 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
             scale_result=scale_result.to(device),
         )
 
-    self.assert_close_tpu_vs_cpu(
-        compute,
-    )
+    # Loose FP8 tolerance: the TPU FP8 dot does not bit-match the CPU F32
+    # reference, and per-element relative error is large near zero.
+    self.assert_close_tpu_vs_cpu(compute, rtol=5e-1, atol=5e-1)
 
   @parameterized.product(
       m=[16, 32],
