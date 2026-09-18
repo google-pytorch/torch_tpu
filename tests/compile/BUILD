@@ -507,6 +507,19 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "fuse_mean_reduction_test",
+    srcs = ["fuse_mean_reduction_test.py"],
+    deps = [
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/compile/fx_passes:fuse_mean_reduction",
+        "//src/torch_tpu/_internal/utils:test_utils",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
     name = "reassociate_norm_weights_test",
     srcs = ["reassociate_norm_weights_test.py"],
     deps = [

@@ -106,4 +106,12 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "fuse_mean_reduction",
+    srcs = ["fuse_mean_reduction.py"],
+    deps = [
+        "//shims/torch:pytorch",
+    ],
+)
+
 torch_tpu_package_end()
