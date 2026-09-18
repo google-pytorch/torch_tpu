@@ -112,6 +112,10 @@ jobs:
             echo "Runner VM Service Account: $(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)"
             echo "Active gcloud account: $(gcloud config get-value account 2>/dev/null || true)"
             gcloud auth list || true
+            RUNNER_IP=$(curl -s -m 5 https://api.ipify.org || true)
+            echo "Runner outbound public IP: ${RUNNER_IP}"
+            nc -z -w 3 34.162.91.39 22 && echo "Port 22 OPEN from runner" || echo "Port 22 BLOCKED from runner"
+            nc -z -w 3 34.162.91.39 443 && echo "Port 443 OPEN from runner" || echo "Port 443 BLOCKED from runner"
 
             echo "Starting background IAP tunnel to Buildbarn frontend..."
             run_tunnel() {
