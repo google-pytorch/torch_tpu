@@ -108,6 +108,9 @@ def _run_in_child(
   """
   try:
     flags.FLAGS(list(argv), known_only=True)
+    # Enable logging to stderr in the child process. This is the same as the
+    # default behavior in the parent process.
+    flags.FLAGS.set_default("alsologtostderr", True)
     logging.use_absl_handler()
 
     instance = cls(method_name)

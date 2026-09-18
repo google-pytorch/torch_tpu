@@ -175,6 +175,15 @@ torch_tpu_py_library(
     ],
 )
 
+torch_tpu_py_library(
+    name = "model_helpers",
+    srcs = ["model_helpers.py"],
+    deps = [
+        "//shims/torch:pytorch",
+        "//tests:module_registry",
+    ],
+)
+
 torch_tpu_py_test(
     name = "torch_benchmark_test",
     timeout = "long",
