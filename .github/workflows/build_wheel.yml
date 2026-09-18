@@ -222,7 +222,7 @@ jobs:
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
-          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
   # Confirm each intermediate PyTorch patch (one we ship no exact glue for) is
   # served by its same-minor glue: the nox session runs the CPU smoke tests
@@ -368,7 +368,7 @@ jobs:
           current_sha: ${{ inputs.override_current_sha || github.sha }}
           bazel_config: ${{ matrix.config }}
           extra_bazel_flags: ${{ matrix.extra_flags || '--run_under="$(pwd)/ci/tools/parallel_accelerator_execute.sh"' }} --repo_env=HERMETIC_PYTHON_VERSION=${{ matrix.python_version }} --define PYTHON_VERSION=${{ matrix.python_version }}
-          disable_bazel_diff: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+          test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 
   # Smoke-test the nightly glue on TPU: nox installs the built wheel plus a
   # PyTorch nightly in a single uv resolution and checks that the backend

@@ -32,8 +32,9 @@ inputs:
     description: 'Additional flags for the Bazel test command'
     required: false
     default: ''
-  disable_bazel_diff:
-    description: 'Set to true to completely bypass bazel-diff'
+  test_all:
+    description: >-
+      Set to true to bypass bazel-diff target selection and run all tests
     required: false
     default: 'false'
 
@@ -41,5 +42,12 @@ runs:
   using: 'composite'
   steps:
     - name: Execute bazel-diff script
-      run: bash $GITHUB_WORKSPACE/.github/actions/bazel-diff/run_bazel_diff.sh "$GITHUB_WORKSPACE" "${{ inputs.base_sha }}" "${{ inputs.current_sha }}" "${{ inputs.bazel_config }}" "${{ inputs.extra_bazel_flags }}" "${{ inputs.disable_bazel_diff }}"
+      run: >-
+        uv run "$GITHUB_WORKSPACE/ci/tools/run_bazel_diff.py"
+        --workspace-dir="$GITHUB_WORKSPACE"
+        --base-sha="${{ inputs.base_sha }}"
+        --current-sha="${{ inputs.current_sha }}"
+        --bazel-config="${{ inputs.bazel_config }}"
+        --extra-bazel-flags="${{ inputs.extra_bazel_flags }}"
+        --test-all="${{ inputs.test_all }}"
       shell: bash

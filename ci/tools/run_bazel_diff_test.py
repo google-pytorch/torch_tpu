@@ -1,0 +1,180 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for ci/tools/run_bazel_diff.py."""
+
+import pathlib
+import tempfile
+import unittest
+from unittest import mock
+
+from ci.tools import run_bazel_diff
+
+
+class RunBazelDiffTest(unittest.TestCase):
+  """Tests argument parsing and file classification in run_bazel_diff.py."""
+
+  def test_parse_args_named_flags(self):
+    opts = run_bazel_diff.parse_args([
+        "--workspace-dir=/workspace/repo",
+        "--base-sha=abc1234",
+        "--current-sha=def5678",
+        "--bazel-config=ci_cpu",
+        (
+            "--extra-bazel-flags=--repo_env=HERMETIC_PYTHON_VERSION=3.11"
+            " --define FOO=1"
+        ),
+        "--test-all=true",
+    ])
+    expected = {
+        "workspace_dir": pathlib.Path("/workspace/repo"),
+        "base_sha": "abc1234",
+        "current_sha": "def5678",
+        "bazel_config": "ci_cpu",
+        "extra_bazel_flags": (
+            "--repo_env=HERMETIC_PYTHON_VERSION=3.11 --define FOO=1"
+        ),
+        "test_all": True,
+    }
+    for field, expected_val in expected.items():
+      with self.subTest(field=field):
+        self.assertEqual(getattr(opts, field), expected_val)
+
+  def test_parse_args_defaults(self):
+    opts = run_bazel_diff.parse_args([])
+    expected = {
+        "base_sha": "",
+        "current_sha": "HEAD",
+        "bazel_config": "",
+        "extra_bazel_flags": "",
+        "test_all": False,
+    }
+    for field, expected_val in expected.items():
+      with self.subTest(field=field):
+        self.assertEqual(getattr(opts, field), expected_val)
+
+  def test_is_global_bazel_config_modified(self):
+    cases = [
+        (["csrc/ops/add.cc", "MODULE.bazel"], True),
+        ([".bazelrc"], True),
+        (["csrc/ops/BUILD", "src/torch_tpu/__init__.py"], False),
+    ]
+    for files, expected in cases:
+      with self.subTest(files=files):
+        self.assertEqual(
+            run_bazel_diff.is_global_bazel_config_modified(files), expected
+        )
+
+  def test_are_all_files_doc_or_metadata(self):
+    cases = [
+        (
+            [
+                "README.md",
+                "docs/guide.md",
+                "csrc/OWNERS",
+                "OWNERS",
+                "LICENSE",
+                ".clang-format",
+                ".gitignore",
+                ".vscode/settings.json",
+                "assets/logo.png",
+            ],
+            True,
+        ),
+        (["README.md", "csrc/ops/add.cc"], False),
+        # The patterns match whole paths, so these near-misses are code.
+        (["csrc/ops/markdown_writer.cc"], False),
+        (["tools/docs_generator.py"], False),
+        (["src/torch_tpu/LICENSE_checker.py"], False),
+    ]
+    for files, expected in cases:
+      with self.subTest(files=files):
+        self.assertEqual(
+            run_bazel_diff.are_all_files_doc_or_metadata(files), expected
+        )
+
+  def test_read_targets_file(self):
+    with tempfile.TemporaryDirectory() as td:
+      with self.subTest("valid_file"):
+        path = pathlib.Path(td) / "targets.txt"
+        path.write_text(
+            "//tests:foo_test\n\n  //tests:bar_test  \n", encoding="utf-8"
+        )
+        self.assertEqual(
+            list(run_bazel_diff.read_targets_file(path)),
+            ["//tests:foo_test", "//tests:bar_test"],
+        )
+      with self.subTest("missing_file"):
+        missing = pathlib.Path(td) / "does_not_exist.txt"
+        with self.assertRaisesRegex(FileNotFoundError, "does_not_exist.txt"):
+          run_bazel_diff.read_targets_file(missing)
+
+  def test_run_bazel_diff_invokes_java_jar(self):
+    with mock.patch("subprocess.run") as mock_run:
+      run_bazel_diff.run_bazel_diff(
+          "generate-hashes",
+          "-w",
+          pathlib.Path("/workspace"),
+          pathlib.Path("/workspace/hashes.json"),
+      )
+      mock_run.assert_called_once_with(
+          [
+              "java",
+              "-jar",
+              "/tmp/bazel-diff.jar",
+              "generate-hashes",
+              "-w",
+              "/workspace",
+              "/workspace/hashes.json",
+          ],
+          check=True,
+      )
+
+  def test_run_bazel_test_config_flag(self):
+    with mock.patch("subprocess.run") as mock_run:
+      mock_run.return_value.returncode = 0
+      with self.subTest("with_config"):
+        run_bazel_diff._run_bazel_test("ci_cpu", "--keep_going", ["//..."])
+        mock_run.assert_called_with(
+            ["bash", "-c", "bazel test --config=ci_cpu --keep_going //..."],
+            check=False,
+        )
+      with self.subTest("empty_config"):
+        run_bazel_diff._run_bazel_test("", "--keep_going", ["//..."])
+        mock_run.assert_called_with(
+            ["bash", "-c", "bazel test --keep_going //..."],
+            check=False,
+        )
+
+  def test_get_changed_files_normalizes_paths(self):
+    with (
+        mock.patch("subprocess.run") as mock_run,
+        mock.patch("subprocess.check_output") as mock_check_output,
+    ):
+      mock_run.return_value.returncode = 0
+      mock_check_output.return_value = " README.md \n\n  csrc/ops/add.cc\n  \n"
+      changed = run_bazel_diff.get_changed_files("base123", "head456")
+      self.assertEqual(changed, ["README.md", "csrc/ops/add.cc"])
+
+  def test_main_raises_if_workspace_dir_missing(self):
+    with tempfile.TemporaryDirectory() as td:
+      missing_dir = pathlib.Path(td) / "nonexistent"
+      with self.assertRaisesRegex(
+          ValueError, "Workspace directory does not exist"
+      ):
+        run_bazel_diff.main([f"--workspace-dir={missing_dir}"])
+
+
+if __name__ == "__main__":
+  unittest.main()

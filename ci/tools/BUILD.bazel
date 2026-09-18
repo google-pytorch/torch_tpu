@@ -43,3 +43,16 @@ py_test(
         ":list_ci_tests",
     ],
 )
+
+py_binary(
+    name = "run_bazel_diff",
+    srcs = ["run_bazel_diff.py"],
+)
+
+py_test(
+    name = "run_bazel_diff_test",
+    srcs = ["run_bazel_diff_test.py"],
+    deps = [
+        ":run_bazel_diff",
+    ],
+)
