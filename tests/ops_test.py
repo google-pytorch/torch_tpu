@@ -2509,16 +2509,32 @@ class TestOps(op_testing.OpInfoTestBase):
         },
     )
 
-  # TODO(b/529376045): Scan HLO lowering failing on GitHub
-  # def test_embedding_bag(self):
-  #   self.do_test_op(
-  #       "nn.functional.embedding_bag",
-  #       # TODO: add support for sparse embeddings.
-  #       skip_if=lambda device, variant, op_input: (
-  #           op_input.kwargs.get("sparse", False)
-  #           or op_input.kwargs.get("scale_grad_by_freq", False)
-  #       ),
-  #   )
+  def test_nn_functional_embedding_bag(self):
+    # TODO: Remove once GPU goldens are generated.
+    if flags.FLAGS.test_mode in (
+        op_testing.TestMode.TORCH_TPU_VS_GPU,
+        op_testing.TestMode.TORCH_TPU_VS_GPU.value,
+    ):
+      self.skipTest("No GPU golden samples for embedding_bag")
+    self.do_test_op(
+        "nn.functional.embedding_bag",
+        # TODO: add support for sparse embeddings.
+        skip_if=lambda device, variant, op_input: (
+            op_input.kwargs.get("sparse", False)
+            or op_input.kwargs.get("scale_grad_by_freq", False)
+        ),
+        exclude_dtypes={
+            "cpu": COMPLEX_DTYPES,
+            "gpu": (
+                *COMPLEX_DTYPES,
+                torch.float64,
+                # TODO(b/555391048): support float8 golden data sampling.
+                torch.float8_e4m3fn,
+                torch.float8_e5m2,
+                torch.float4_e2m1fn_x2,
+            ),
+        },
+    )
 
   def test_empty(self):
     self.do_test_op(

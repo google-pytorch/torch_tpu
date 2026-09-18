@@ -331,7 +331,7 @@ def scaled_mm_1x128_128x128(
     scale_a: jax.Array,  # [M, ceil(K / 128)]
     scale_b: jax.Array,  # [ceil(K / 128), ceil(N / 128)]
     *,
-    out_dtype: jnp.dtype = jnp.bfloat16,  # pyrefly: ignore[bad-function-definition]
+    out_dtype: jnp.dtype = jnp.bfloat16,
     tile_m: int = _DEFAULT_TILE_M,
     tile_n: int = _DEFAULT_TILE_N,
     tile_k: int = _DEFAULT_TILE_K,

@@ -793,7 +793,7 @@ class TpuBackend:
     with _serialization_context(example_inputs, serializable) as captured_entry:
       with save_context:
         with execution_mode.set_eager_mode(
-            execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+            execution_mode.EagerMode.INTERNAL_COMPILE_FX_GRAPH
         ):
           result = aot_autograd(
               fw_compiler=fw_compiler,

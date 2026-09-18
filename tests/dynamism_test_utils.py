@@ -202,7 +202,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.adaptive_avg_pool2d": ALL_MODES,  # sort op fails to infer
     "nn.functional.batch_norm": ALL_MODES,  # dynamic triage (xla error)
     "nn.functional.embedding": ALL_MODES,  # crash in shard 27
-    "nn.functional.embedding_bag": ALL_MODES,  # invalid gather
     "nn.functional.grid_sample": ALL_MODES,  #
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
@@ -334,6 +333,11 @@ def verify_op_supports_dynamism(
   reduction_deny_list = ["all", "any"]
   if op.name in reduction_deny_list:
     return f"reduction op {op.name} is not supported with dynamism."
+
+  ### [GATHER / SCATTER LOWERING LIMITATIONS] ###
+  # TODO: b/449736443 - embedding_bag requires static shapes for gather/scatter lowering.
+  if op.name in ["nn.functional.embedding_bag"]:
+    return f"{op.name} requires static shapes for gather and scatter lowering."
 
   # Valid testcase!
   return None

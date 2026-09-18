@@ -114,7 +114,6 @@ torch_tpu_py_library(
         ":convert_constant_symints_pass",
         ":dynamic_view_pass",
         ":generative_ops_pass",
-        ":sym_bounds_manager",
         ":sym_shape_manager",
         ":sym_utils",
         ":symbol_bounds",
@@ -149,23 +148,6 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "sym_bounds_manager",
-    srcs = [
-        "sym_bounds_manager.py",
-    ],
-    visibility = [
-        "//:__subpackages__",
-        "//learning/agents/tern/torch_agent:__subpackages__",
-    ],
-    deps = [
-        ":symbol_bounds",
-        "//shims/absl_py/logging",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/compile:tpu_torch_compile",
-    ],
-)
-
-torch_tpu_py_library(
     name = "dynamic_compiler",
     srcs = [
         "dynamic_compiler.py",
@@ -176,7 +158,6 @@ torch_tpu_py_library(
     ],
     deps = [
         ":graph_transformations",
-        ":sym_bounds_manager",
         ":sym_shape_manager",
         ":view_decomposition",
         ":view_ops_passes",
