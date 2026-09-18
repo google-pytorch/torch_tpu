@@ -158,6 +158,11 @@ def _should_skip_input_marking(
   # TODO: b/449736443 - Empty tensor handling needs reworking.
   if input_value.numel() == 0:
     return "Empty tensors are currently not supported."
+  if op_info.name in PoolingDynamicOpInfo.pooling_ops:
+    spatial_dim_count = PoolingDynamicOpInfo.pooling_ops[op_info.name]
+    non_spatial_dims = len(input_value.shape) - spatial_dim_count
+    if not any(input_value.shape[i] > 1 for i in range(non_spatial_dims)):
+      return "No valid non-spatial dimensions to mark dynamic for pooling op."
 
   return None
 
@@ -207,9 +212,6 @@ untriaged_ops_deny_list: dict[
     "nn.functional.hardswish": ALL_MODES,  # dynamic triage (adjust tolerance)
     "nn.functional.interpolate": ALL_MODES,  # gather with dynamic slice size
     "nn.functional.leaky_relu": ALL_MODES,  # dynamic triage (invalid result)
-    "nn.functional.max_pool1d": (
-        ALL_MODES
-    ),  # MLIR assertion failure (bounds length vs rank)
     "nn.functional.max_pool2d": (
         ALL_MODES
     ),  # crash (negative dim size in compiled_mode.cc)
@@ -408,6 +410,7 @@ class DynamicOpInfo:
     adapters = [
         ForEachDynamicOpInfo,
         MatmulDynamicOpInfo,
+        PoolingDynamicOpInfo,
         BinaryElementwiseDynamicOpInfo,
         TernaryElementwiseDynamicOpInfo,
     ]
@@ -654,6 +657,56 @@ class MatmulDynamicOpInfo(DynamicOpInfo):
       elif idx < lhs_ndim - 2:
         _mark_numpy_broadcastable_arg_dynamic(rhs, like, idx, ub, mode=mode)
     return
+
+
+class PoolingDynamicOpInfo(DynamicOpInfo):
+  """A wrapper around OpInfo that supports bounded dynamism for pooling ops."""
+
+  pooling_ops = {
+      "nn.functional.max_pool1d": 1,
+      "nn.functional.max_pool2d": 2,
+      "nn.functional.max_pool3d": 3,
+      "nn.functional.avg_pool1d": 1,
+      "nn.functional.avg_pool2d": 2,
+      "nn.functional.avg_pool3d": 3,
+      "nn.functional.adaptive_avg_pool1d": 1,
+      "nn.functional.adaptive_avg_pool2d": 2,
+      "nn.functional.adaptive_avg_pool3d": 3,
+      "nn.functional.adaptive_max_pool1d": 1,
+      "nn.functional.adaptive_max_pool2d": 2,
+      "nn.functional.adaptive_max_pool3d": 3,
+  }
+
+  @staticmethod
+  def adapter_supports_op(op_info: core.OpInfo):
+    return op_info.name in PoolingDynamicOpInfo.pooling_ops
+
+  def mark_dynamic(
+      self,
+      seed: int,
+      input_value: torch.Tensor,
+      args: Sequence[Any],
+      mode: DynamismMode = DynamismMode.EAGER,
+  ):
+    spatial_dim_count = self.pooling_ops[self.op_info.name]
+    input_value = _get_canonical_input_value(self.op_info, input_value)
+    non_spatial_dims = len(input_value.shape) - spatial_dim_count
+    candidates = [
+        i for i in range(non_spatial_dims) if input_value.shape[i] > 1
+    ]
+    if not candidates:
+      return
+    random.seed(seed)
+    idx = random.choice(candidates)
+    input_value_str = utils.get_tensor_summary(input_value, data=False)
+    ub = input_value.shape[idx] + 10
+    print(
+        f">>>> Marking dim {idx} dynamic [<={ub}] in {input_value_str}"
+        f" (mode={mode.value})",
+        flush=True,
+    )
+    _mark_tensor_dynamic(input_value, idx, 2, ub, mode=mode)
+    self._mark_dependent_arg_dynamic(args, input_value, idx, ub, mode=mode)
 
 
 def mark_input_dynamic(

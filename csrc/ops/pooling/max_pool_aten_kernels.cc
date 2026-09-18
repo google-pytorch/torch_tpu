@@ -103,10 +103,8 @@ mlir::MlirOp CreatePoolIndicesIota(const mlir::RankedTensorType& input_shape,
   for (size_t i = 0; i < spatial_dims.size(); ++i) {
     broadcast_dims.push_back(2 + i);
   }
-  llvm::SmallVector<int64_t> target_shape(input_shape.getShape().begin(),
-                                          input_shape.getShape().end());
   mlir::RankedTensorType target_tensor_type =
-      mlir::RankedTensorType::get(target_shape, element_type);
+      input_shape.clone(input_shape.getShape(), element_type);
   mlir::MlirOp iota_broadcast = mlir::stablehlo::BroadcastInDim(
       target_tensor_type, reshaped_iota, broadcast_dims);
 
@@ -186,10 +184,12 @@ absl::StatusOr<std::vector<mlir::MlirOp>> ComputeMaxPoolWithIndices(
   mlir::MlirOp batch_result = reduce_results[0];
   mlir::MlirOp batch_indices = reduce_results[1];
 
-  mlir::MlirOp final_output =
-      RemoveTrivialBatch(batch_result, original_dim_size, spatial_dim_count);
-  mlir::MlirOp final_indices =
-      RemoveTrivialBatch(batch_indices, original_dim_size, spatial_dim_count);
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp final_output,
+      RemoveTrivialBatch(batch_result, original_dim_size, spatial_dim_count));
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp final_indices,
+      RemoveTrivialBatch(batch_indices, original_dim_size, spatial_dim_count));
 
   return std::vector<mlir::MlirOp>{final_output, final_indices};
 }
@@ -228,10 +228,7 @@ absl::StatusOr<mlir::MlirOp> ComputeMaxPool(
 
   mlir::MlirOp batch_result = reduce_results[0];
 
-  mlir::MlirOp final_output =
-      RemoveTrivialBatch(batch_result, original_dim_size, spatial_dim_count);
-
-  return final_output;
+  return RemoveTrivialBatch(batch_result, original_dim_size, spatial_dim_count);
 }
 
 // Builds the max_pool operations with indices and out tensors using
@@ -495,10 +492,8 @@ absl::StatusOr<mlir::MlirOp> BuildMaxPoolBackwardShlo(
 
   mlir::MlirOp batch_result = select_results;
 
-  mlir::MlirOp final_output = RemoveTrivialBatch(
-      batch_result, batch_input_info.original_dim_size, spatial_dim_count);
-
-  return final_output;
+  return RemoveTrivialBatch(batch_result, batch_input_info.original_dim_size,
+                            spatial_dim_count);
 }
 
 // Builds the backward pass for max_pool (without indices) directly returning
@@ -776,15 +771,9 @@ absl::Status BuildMaxPoolWithIndicesBackwardGradInputNd(
 }
 
 void CheckMaxPoolDtypes(const at::Tensor& self) {
-  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Bool,
+  TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Double,
                  error::kInvalidArgument)
-      << "bool dtype is not supported";
-
-  TT_CHECK_THROW(
-      self.numel() == 0 || (self.scalar_type() != at::ScalarType::Int &&
-                            self.scalar_type() != at::ScalarType::Long),
-      error::kPythonNotImplementedError)
-      << "not implemented for " << ToString(self.scalar_type());
+      << "max_pool1d does not support double inputs";
 }
 
 }  // namespace

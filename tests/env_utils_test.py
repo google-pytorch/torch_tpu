@@ -113,33 +113,5 @@ class GetAndSetStrEnvOnceTest(seed_test_utils.RepeatableTest):
     self.assertEqual(call_count, 1)
 
 
-class SetStrEnvTest(seed_test_utils.RepeatableTest):
-  """Tests for `env_utils.set_str_env()`."""
-
-  def test_unset_env_var_is_set(self):
-    name = "TORCH_TPU_TEST_ENV_UTILS_SET_UNSET"
-    os.environ.pop(name, None)
-
-    env_utils.set_str_env(name, "value")
-
-    self.assertEqual(os.environ[name], "value")
-
-  def test_set_env_var_is_overwritten(self):
-    name = "TORCH_TPU_TEST_ENV_UTILS_SET_OVERWRITE"
-    os.environ[name] = "old"
-
-    env_utils.set_str_env(name, "new")
-
-    self.assertEqual(os.environ[name], "new")
-
-  def test_empty_value_is_set(self):
-    name = "TORCH_TPU_TEST_ENV_UTILS_SET_EMPTY"
-    os.environ[name] = "old"
-
-    env_utils.set_str_env(name, "")
-
-    self.assertEqual(os.environ[name], "")
-
-
 if __name__ == "__main__":
   absltest.main()

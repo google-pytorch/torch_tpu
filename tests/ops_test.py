@@ -3580,27 +3580,27 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_max_pool1d(self):
     self.do_test_op(
         "nn.functional.max_pool1d",
-        check_dynamism=False,
-        # TODO: complex64, float64, and int64 dtypes are not supported on TPU.
+        # TODO: bool, complex64, float64, and integer dtypes are not supported on TPU.
         exclude_dtypes={
             "cpu": (
+                torch.bool,
                 torch.complex64,
                 torch.float64,
+                torch.uint8,
+                torch.int8,
+                torch.int16,
                 torch.int32,
                 torch.int64,
             ),
             "gpu": (
-                (
-                    torch.complex64,
-                    torch.float64,
-                )
-                # TODO: b/476417319 reject integer dtypes in TPU implementation,
-                # so that it matches the GPU implementation.
-                + (
-                    torch.uint8,
-                    torch.int8,
-                    torch.int16,
-                )
+                torch.bool,
+                torch.complex64,
+                torch.float64,
+                torch.uint8,
+                torch.int8,
+                torch.int16,
+                torch.int32,
+                torch.int64,
             ),
         },
     )

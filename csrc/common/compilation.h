@@ -19,7 +19,6 @@
 
 // Utilities for compiling PyTorch to PjRt executables.
 
-#include <cstdint>
 #include <future>
 #include <memory>
 #include <optional>
@@ -38,7 +37,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "xla/layout.h"
 #include "xla/pjrt/maybe_owning_mlir_module.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -51,63 +49,19 @@ class LoadedExecutableWithMetadata;
 using SharedLoadedExecutableWithMetadata =
     absl_nonnull std::shared_ptr<const LoadedExecutableWithMetadata>;
 
-// Metadata describing how logical runtime inputs and outputs map to physical
-// PjRt executable parameters for precompiled unbounded-dynamic kernels
-// (using disjoint S32[rank] runtime shape metadata parameters).
-struct UnboundedDynamicExecutionMetadata {
-  // For dynamic outputs that do not alias an existing logical input,
-  // specifies which logical output needs a pre-allocated device buffer passed
-  // as a donated PjRt input parameter.
-  struct DonatedOutputParam {
-    int64_t logical_output_idx = 0;
-    int64_t pjrt_param_idx = 0;
-  };
-
-  // Binds a physical PjRt parameter index for a disjoint S32[rank] metadata
-  // buffer to the combined logical tensor index ([inputs..., outputs...]) whose
-  // runtime shape it describes (corresponding to operand_to_metadata).
-  // Specifically, for N logical inputs:
-  //   - 0 <= logical_idx < N refers to logical input `logical_idx`.
-  //   - logical_idx >= N refers to logical output `logical_idx - N`.
-  // Multiple payload operands sharing the same metadata parameter require only
-  // a single binding entry.
-  struct MetadataParamBinding {
-    int64_t logical_idx = 0;
-    int64_t pjrt_param_idx = 0;
-  };
-
-  Indices logical_input_to_pjrt_param;
-  std::vector<DonatedOutputParam> donated_output_params;
-  std::vector<MetadataParamBinding> metadata_params;
-  std::vector<xla::Shape> pjrt_param_shapes;
-};
-
 class LoadedExecutableWithMetadata {
  public:
   static absl::StatusOr<SharedLoadedExecutableWithMetadata> MakeShared(
       absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
-      Indices argument_indices = {},
-      std::optional<UnboundedDynamicExecutionMetadata>
-          unbounded_dynamic_execution_metadata = std::nullopt);
+      Indices argument_indices = {});
 
   static SharedLoadedExecutableWithMetadata WithArgumentIndices(
       const SharedLoadedExecutableWithMetadata& existing,
       Indices argument_indices) {
     return std::shared_ptr<const LoadedExecutableWithMetadata>(
-        new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            std::move(argument_indices),
-            existing->unbounded_dynamic_execution_metadata_));
-  }
-
-  static SharedLoadedExecutableWithMetadata WithDynamicExecutionMetadata(
-      const SharedLoadedExecutableWithMetadata& existing,
-      UnboundedDynamicExecutionMetadata unbounded_dynamic_execution_metadata) {
-    return std::shared_ptr<const LoadedExecutableWithMetadata>(
-        new LoadedExecutableWithMetadata(
-            existing->executable_, existing->output_shapes_,
-            existing->argument_indices_,
-            std::move(unbounded_dynamic_execution_metadata)));
+        new LoadedExecutableWithMetadata(existing->executable_,
+                                         existing->output_shapes_,
+                                         std::move(argument_indices)));
   }
 
   const xla::PjRtExecutable* GetExecutable() const {
@@ -120,29 +74,19 @@ class LoadedExecutableWithMetadata {
 
   const std::vector<Shape>& output_shapes() const { return output_shapes_; }
   const Indices& argument_indices() const { return argument_indices_; }
-  const std::optional<UnboundedDynamicExecutionMetadata>&
-  unbounded_dynamic_execution_metadata() const {
-    return unbounded_dynamic_execution_metadata_;
-  }
 
  private:
   LoadedExecutableWithMetadata(
       absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable,
-      std::vector<Shape> output_shapes, Indices argument_indices = {},
-      std::optional<UnboundedDynamicExecutionMetadata>
-          unbounded_dynamic_execution_metadata = std::nullopt)
+      std::vector<Shape> output_shapes, Indices argument_indices = {})
       : executable_(std::move(executable)),
         output_shapes_(std::move(output_shapes)),
-        argument_indices_(std::move(argument_indices)),
-        unbounded_dynamic_execution_metadata_(
-            std::move(unbounded_dynamic_execution_metadata)) {}
+        argument_indices_(std::move(argument_indices)) {}
 
   absl_nonnull std::shared_ptr<const xla::PjRtLoadedExecutable> executable_;
   // Cached output shapes for the executable.
   std::vector<Shape> output_shapes_;
   Indices argument_indices_;
-  std::optional<UnboundedDynamicExecutionMetadata>
-      unbounded_dynamic_execution_metadata_;
 };
 
 using LoadedExecutablePromise =

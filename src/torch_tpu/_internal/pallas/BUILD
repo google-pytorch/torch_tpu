@@ -60,38 +60,16 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
-    name = "mock_device",
-    srcs = ["_mock_device.py"],
-    deps = [
-        "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal:env",
-    ],
-)
-
-torch_tpu_py_library(
     name = "pallas_lib",
     srcs = ["pallas.py"],
     deps = [
-        ":mock_device",
         ":pallas_compat",
         ":tpu_torch_pallas",
         "//shims/absl_py/logging",
-        "//shims/jax:pallas_tpu",  # build_cleaner: keep
         "//shims/torch:pytorch",
-        "//src/torch_tpu/_internal/device:_device_ops_backend",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//frozendict",
         "@pypi//jax",
-        "@pypi//numpy",
-    ],
-)
-
-torch_tpu_py_library(
-    name = "api",
-    srcs = ["api.py"],
-    deps = [
-        ":pallas_lib",
-        "//shims/jax:pallas_tpu",  # build_cleaner: keep
     ],
 )
 

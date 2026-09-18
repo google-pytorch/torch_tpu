@@ -19,21 +19,24 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
+#include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
-#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
 
@@ -54,10 +57,23 @@ absl::StatusOr<BatchInput> CreateBatchInput(mlir::MlirOp input,
 
   // If the input doesn't have a batch dimension, add a size 1 batch dimension
   if (num_dims == spatial_dim_count + 1) {
-    Dimensions new_shape = {1};
-    new_shape.insert(new_shape.end(), input_type.getShape().begin(),
-                     input_type.getShape().end());
-    auto batch_input = mlir::stablehlo::Reshape(input, new_shape);
+    Dimensions static_shape_before;
+    if (input_type.hasStaticShape()) {
+      static_shape_before = Dimensions(input_type.getShape().begin(),
+                                       input_type.getShape().end());
+    } else {
+      auto dims = GetDimensions(input);
+      for (const auto& d : dims) {
+        static_shape_before.push_back(d.size);
+      }
+    }
+    Dimensions static_shape_after = {1};
+    static_shape_after.insert(static_shape_after.end(),
+                              static_shape_before.begin(),
+                              static_shape_before.end());
+    TT_ASSIGN_OR_RETURN(auto batch_input,
+                        ReshapeFromStaticDimensions(input, static_shape_before,
+                                                    static_shape_after));
     return BatchInput{batch_input, num_dims};
   }
   return BatchInput{input, num_dims};
@@ -79,18 +95,28 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
 }
 
 // Removes the batch dimension if it doesn't have it at the beginning.
-mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
-                                int64_t original_dim_size,
-                                int64_t spatial_dim_count) {
+absl::StatusOr<mlir::MlirOp> RemoveTrivialBatch(mlir::MlirOp batch_op,
+                                                int64_t original_dim_size,
+                                                int64_t spatial_dim_count) {
   if (original_dim_size == spatial_dim_count + 2) {
     return batch_op;
   }
 
   const mlir::RankedTensorType current_type = GetTensorTypeOrDie(batch_op);
-  llvm::SmallVector<int64_t> squeezed_shape;
-  squeezed_shape.append(current_type.getShape().begin() + 1,
-                        current_type.getShape().end());
-  return mlir::stablehlo::Reshape(batch_op, squeezed_shape);
+  Dimensions static_shape_before;
+  if (current_type.hasStaticShape()) {
+    static_shape_before = Dimensions(current_type.getShape().begin(),
+                                     current_type.getShape().end());
+  } else {
+    auto dims = GetDimensions(batch_op);
+    for (const auto& d : dims) {
+      static_shape_before.push_back(d.size);
+    }
+  }
+  Dimensions static_shape_after(static_shape_before.begin() + 1,
+                                static_shape_before.end());
+  return ReshapeFromStaticDimensions(batch_op, static_shape_before,
+                                     static_shape_after);
 }
 
 // Calculates the adjusted (left_padding, right_padding) pairs given the padding
@@ -113,7 +139,16 @@ std::vector<PaddingParams> CeilModePadding(
     const int64_t D = dilation[i];
 
     // Spatial dimensions start from index 2
-    const int64_t input_size = input_shape.getDimSize(2 + i);
+    int64_t input_size = input_shape.getDimSize(2 + i);
+    if (input_size == mlir::ShapedType::kDynamic) {
+      if (auto type_ext =
+              mlir::dyn_cast_or_null<mlir::stablehlo::TypeExtensionsAttr>(
+                  input_shape.getEncoding())) {
+        input_size = type_ext.getBounds()[2 + i];
+      }
+    }
+    ABSL_CHECK_GE(input_size, 0)  // CRASH_OK
+        << "Expected bounded dimension for spatial dim " << 2 + i;
     const int64_t left_padding = P;
     int64_t right_padding = P;
 
@@ -202,32 +237,31 @@ ReduceWindowAttributes GetReduceWindowAttributes(
 
 namespace {
 
-int64_t GetSingleDim(const int64_t in, const int64_t i,
-                     at::IntArrayRef kernel_size, at::IntArrayRef stride,
-                     at::IntArrayRef padding, at::IntArrayRef dilation,
-                     const bool ceil_mode) {
+template <typename T>
+T GetSingleDim(const T& in, const int64_t i, at::IntArrayRef kernel_size,
+               at::IntArrayRef stride, at::IntArrayRef padding,
+               at::IntArrayRef dilation, const bool ceil_mode) {
   const int64_t k = kernel_size.size() == 1 ? kernel_size[0] : kernel_size[i];
   const int64_t s =
       stride.empty() ? k : (stride.size() == 1 ? stride[0] : stride[i]);
   const int64_t p = padding.size() == 1 ? padding[0] : padding[i];
   const int64_t d = dilation.size() == 1 ? dilation[0] : dilation[i];
-  const int64_t numerator = in + 2 * p - d * (k - 1) - 1;
+  const T numerator = in + 2 * p - d * (k - 1) - 1;
 
   if (!ceil_mode) {
     return numerator / s + 1;
   }
 
-  const int64_t out = (numerator + s - 1) / s + 1;
+  T out = (numerator + s - 1) / s + 1;
   if ((out - 1) * s >= in + p) {
-    return out - 1;
+    out = out - 1;
   }
   return out;
 }
 
-}  // namespace
-
-absl::StatusOr<Dimensions> GetPoolingOutputSize(
-    at::IntArrayRef input_size, at::IntArrayRef kernel_size,
+template <typename T>
+absl::StatusOr<std::vector<T>> ComputePoolingOutputSize(
+    c10::ArrayRef<T> input_size, at::IntArrayRef kernel_size,
     at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
     const bool ceil_mode, const int64_t spatial_dim_count) {
   const int64_t dims_num = input_size.size();
@@ -242,18 +276,40 @@ absl::StatusOr<Dimensions> GetPoolingOutputSize(
   const int64_t spatial_start_index =
       (dims_num == spatial_dim_count + 2) ? 2 : 1;
 
-  Dimensions output_size(dims_num);
+  std::vector<T> output_size(dims_num);
   std::copy(input_size.begin(), input_size.begin() + spatial_start_index,
             output_size.begin());
 
   // Calculates Spatial Dims (D, H, W).
   for (int i = 0; i < spatial_dim_count; ++i) {
-    const int64_t in = input_size[spatial_start_index + i];
-    const int64_t out =
-        GetSingleDim(in, i, kernel_size, stride, padding, dilation, ceil_mode);
-    output_size[spatial_start_index + i] = std::max<int64_t>(out, 1);
+    const T& in = input_size[spatial_start_index + i];
+    const T out = GetSingleDim<T>(in, i, kernel_size, stride, padding, dilation,
+                                  ceil_mode);
+    output_size[spatial_start_index + i] = std::max<T>(out, T(1));
   }
   return output_size;
+}
+
+}  // namespace
+
+absl::StatusOr<Dimensions> GetPoolingOutputSize(
+    at::IntArrayRef input_size, at::IntArrayRef kernel_size,
+    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
+    const bool ceil_mode, const int64_t spatial_dim_count) {
+  TT_ASSIGN_OR_RETURN(auto output_size,
+                      ComputePoolingOutputSize<int64_t>(
+                          input_size, kernel_size, stride, padding, dilation,
+                          ceil_mode, spatial_dim_count));
+  return Dimensions(output_size.begin(), output_size.end());
+}
+
+absl::StatusOr<std::vector<c10::SymInt>> GetPoolingOutputSymInts(
+    c10::SymIntArrayRef input_size, at::IntArrayRef kernel_size,
+    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
+    const bool ceil_mode, const int64_t spatial_dim_count) {
+  return ComputePoolingOutputSize<c10::SymInt>(input_size, kernel_size, stride,
+                                               padding, dilation, ceil_mode,
+                                               spatial_dim_count);
 }
 
 }  // namespace torch_tpu

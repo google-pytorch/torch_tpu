@@ -22,11 +22,12 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
 #include "c10/util/ArrayRef.h"
 #include "csrc/common/dimension_types.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
@@ -53,9 +54,9 @@ absl::StatusOr<Dimensions> ExpandAttribute(const Dimensions& values,
                                            int64_t dim);
 
 // Removes the batch dimension if it doesn't have it at the beginning.
-mlir::MlirOp RemoveTrivialBatch(mlir::MlirOp batch_op,
-                                int64_t original_dim_size,
-                                int64_t spatial_dim_count);
+absl::StatusOr<mlir::MlirOp> RemoveTrivialBatch(mlir::MlirOp batch_op,
+                                                int64_t original_dim_size,
+                                                int64_t spatial_dim_count);
 
 // Defines the asymmetric padding (start and end) applied to a single spatial
 // dimension during a pooling operation, typically adjusting for ceil_mode.
@@ -87,6 +88,13 @@ std::vector<PaddingParams> CeilModePadding(
 // spatial_dim_count.
 absl::StatusOr<Dimensions> GetPoolingOutputSize(
     at::IntArrayRef input_size, at::IntArrayRef kernel_size,
+    at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
+    bool ceil_mode, int64_t spatial_dim_count);
+
+// Calculates the output dimensions with symbolic integers for N-dimensional
+// pooling operations.
+absl::StatusOr<std::vector<c10::SymInt>> GetPoolingOutputSymInts(
+    c10::SymIntArrayRef input_size, at::IntArrayRef kernel_size,
     at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation,
     bool ceil_mode, int64_t spatial_dim_count);
 

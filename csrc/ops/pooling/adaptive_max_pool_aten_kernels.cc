@@ -359,10 +359,14 @@ absl::StatusOr<MlirOpResults<2>> BuildAdaptiveMaxPool2dShlo(
     batch_idx_result = idx_h;
   }
 
-  const mlir::MlirOp final_output = RemoveTrivialBatch(
-      batch_val_result, batch_input_info.original_dim_size, spatial_dim_count);
-  const mlir::MlirOp final_indices = RemoveTrivialBatch(
-      batch_idx_result, batch_input_info.original_dim_size, spatial_dim_count);
+  TT_ASSIGN_OR_RETURN(
+      const mlir::MlirOp final_output,
+      RemoveTrivialBatch(batch_val_result, batch_input_info.original_dim_size,
+                         spatial_dim_count));
+  TT_ASSIGN_OR_RETURN(
+      const mlir::MlirOp final_indices,
+      RemoveTrivialBatch(batch_idx_result, batch_input_info.original_dim_size,
+                         spatial_dim_count));
 
   const mlir::MlirOp final_indices_i64 = mlir::stablehlo::ConvertElementType(
       final_indices, builder.getOpBuilder().getI64Type());

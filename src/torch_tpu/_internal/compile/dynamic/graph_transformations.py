@@ -30,7 +30,6 @@ from torch_tpu._internal.compile.dynamic import generative_ops_pass
 from torch_tpu._internal.compile.dynamic import sym_utils
 from torch_tpu._internal.compile.dynamic import symbol_bounds
 from torch_tpu._internal.compile.dynamic import view_ops_passes
-from torch_tpu._internal.compile.dynamic.sym_bounds_manager import SymBoundsManager
 from torch_tpu._internal.compile.dynamic.sym_shape_manager import SymShapeManager
 from torch_tpu._internal.utils import utils
 
@@ -53,11 +52,9 @@ class HandleDynamicInputTensorPass:
       self,
       sym_shape_manager: SymShapeManager,
       placeholders: list[torch.fx.Node],
-      sym_bounds_manager: SymBoundsManager,
   ):
     self._sym_shape_manager = sym_shape_manager
     self._placeholders = placeholders
-    self._sym_bounds_manager = sym_bounds_manager
 
   def __call__(self, graph_module: torch.fx.GraphModule) -> None:
     """Runs the op insertion pass."""
@@ -66,7 +63,7 @@ class HandleDynamicInputTensorPass:
       if tensor_metadata is None or not tensor_metadata.dynamic_dims:
         continue
 
-      bounded_shape = self._sym_bounds_manager.get_bounded_shape(idx)
+      bounded_shape = self._sym_shape_manager.get_bounded_shape(idx)
       self._process_node(
           graph_module,
           node,
@@ -413,9 +410,7 @@ def apply_pre_dynamism_transformations(
 
 
 def apply_dynamism_transformations(
-    graph_module: torch.fx.GraphModule,
-    sym_shape_manager: SymShapeManager,
-    sym_bounds_manager: SymBoundsManager,
+    graph_module: torch.fx.GraphModule, sym_shape_manager: SymShapeManager
 ) -> None:
   """Runs all FX graph transforms for dynamic shapes."""
 
@@ -434,9 +429,7 @@ def apply_dynamism_transformations(
   # Updates ops that have input tensors with dynamic dimensions.
   if can_use_pad_real_to_static(sym_shape_manager):
     GraphTransformObserver(graph_module, "handle_dynamic_inputs").apply_gm_pass(
-        HandleDynamicInputTensorPass(
-            sym_shape_manager, original_placeholders, sym_bounds_manager
-        )
+        HandleDynamicInputTensorPass(sym_shape_manager, original_placeholders)
     )
   else:
     GraphTransformObserver(

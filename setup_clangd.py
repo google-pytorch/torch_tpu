@@ -32,13 +32,13 @@ might report errors on files that depend on them.
 
 Example usage:
   # Full setup / refresh with build.
-  $ tools/setup_clangd.py
+  $ ./setup_clangd.py
 
   # Fast database-only refresh without build.
-  $ tools/setup_clangd.py --no-build
+  $ ./setup_clangd.py --no-build
 
   # Refresh for specific combined target patterns.
-  $ tools/setup_clangd.py //csrc/common/... //src/torch_tpu/ops/...
+  $ ./setup_clangd.py //csrc/common/... //src/torch_tpu/ops/...
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ _UNSUPPORTED_ARGS: Final[frozenset[str]] = frozenset([
 ])
 
 _DEFAULT_TARGET_PATTERN: Final[str] = "//..."
-_REPO_ROOT: Final[pathlib.Path] = pathlib.Path(__file__).resolve().parents[1]
+_REPO_ROOT: Final[pathlib.Path] = pathlib.Path(__file__).resolve().parent
 
 
 @dataclasses.dataclass(frozen=True)
