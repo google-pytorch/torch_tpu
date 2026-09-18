@@ -20,6 +20,7 @@ import warnings
 from absl.testing import absltest
 import torch
 import torch_tpu
+from torch_tpu._internal import execution_mode as _internal_execution_mode
 from torch_tpu._internal.pallas.pallas import (
     custom_jax_kernel as internal_custom_jax_kernel,
     jax_op as internal_jax_op,
@@ -127,6 +128,57 @@ class ApiRegistryTest(seed_test_utils.RepeatableTest):
         AttributeError
     ):
       _ = getattr(internal_pallas, "non_existent_attribute")
+
+  def test_execution_mode_registry(self):
+    """Verifies public exposure, identity, metadata, and functional behavior for execution mode."""
+    # 1. Verify excluded / non-public symbols are not exposed
+    self.assertFalse(hasattr(torch.tpu, "PublicEagerMode"))
+    self.assertFalse(hasattr(torch.tpu.EagerMode, "INTERNAL_DEFER_ALL"))
+    self.assertFalse(hasattr(torch.tpu.EagerMode, "INTERNAL_COMPILE_FX_GRAPH"))
+
+    # 2. Identity and enum members (accessed directly)
+    self.assertIs(torch.tpu.EagerMode, _internal_execution_mode.EagerMode)
+    self.assertLen(torch.tpu.EagerMode, 3)
+    for mode in torch.tpu.EagerMode:
+      raw_mode = getattr(_internal_execution_mode._EagerMode, mode.name)
+      self.assertIs(mode.value, raw_mode)
+      self.assertEqual(mode, raw_mode)
+      self.assertEqual(hash(mode), hash(raw_mode))
+
+    # 3. Lifecycle stage metadata
+    self.assertEqual(
+        getattr(torch.tpu.EagerMode, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+    self.assertEqual(
+        getattr(torch.tpu.set_eager_mode, annotations.TT_API_STAGE, None),
+        annotations.Stage.EXPERIMENTAL.value,
+    )
+
+    # 4. Functional behavior (getter/setter & context manager)
+    prev_mode = torch.tpu.eager_mode
+    try:
+      torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_NEVER
+      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER)
+      torch.tpu.eager_mode = torch.tpu.EagerMode.DEFER_AND_FUSE
+      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
+
+      with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_NEVER):
+        self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER)
+      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
+
+      # Verify exception safety of context manager
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifies context manager restores state upon exception
+          RuntimeError
+      ):
+        with torch.tpu.set_eager_mode(torch.tpu.EagerMode.DEFER_NEVER):
+          self.assertEqual(
+              torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_NEVER
+          )
+          raise RuntimeError("Simulated failure")
+      self.assertEqual(torch.tpu.eager_mode, torch.tpu.EagerMode.DEFER_AND_FUSE)
+    finally:
+      torch.tpu.eager_mode = prev_mode
 
 
 if __name__ == "__main__":

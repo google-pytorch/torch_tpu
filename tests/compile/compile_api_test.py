@@ -33,7 +33,7 @@ from torch_tpu._internal.utils import test_utils as utils
 from tests import oss_utils
 from tests import seed_test_utils
 
-EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 @torch.compile
@@ -49,7 +49,7 @@ def get_mock_lookup_backend():
 
 
 def eager_mode_compile_fx_graph():
-  """Enable EagerMode.INTERNAL_COMPILE_FX_GRAPH.
+  """Enable _EagerMode.INTERNAL_COMPILE_FX_GRAPH.
 
   This prevents tensor materialization during Python execution and enables
   `build_mlir` to trace the deferred ops and generate MLIR.
@@ -57,7 +57,7 @@ def eager_mode_compile_fx_graph():
   Returns:
     A context manager for setting the execution mode.
   """
-  return execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH)
+  return execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH)
 
 
 # TODO: add more test coverage for the direct compile API.

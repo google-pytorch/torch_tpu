@@ -32,7 +32,7 @@ from torch_tpu._internal.compile.compiler import StaticCompiler
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from tests import error_testing as et
 
-EagerMode: TypeAlias = execution_mode.EagerMode
+_EagerMode: TypeAlias = execution_mode._EagerMode
 
 
 def setUpModule():
@@ -1576,7 +1576,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_too_many(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1599,7 +1599,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing compiled mode argument count validation.")
   def test_execute_argument_count_mismatch(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1615,7 +1615,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " placeholder fails gracefully instead of crashing."
   )
   def test_materialize_tensor_depending_on_placeholder(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1632,7 +1632,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " fails gracefully."
   )
   def test_materialize_placeholder_directly(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     with et.assert_raises_message(
         RuntimeError,
@@ -1648,7 +1648,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
       " gracefully when materialization is attempted."
   )
   def test_materialize_mixed_real_and_placeholder(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
     real = torch.ones(4, 4, device=et.device())
     with et.assert_raises_message(
@@ -1663,7 +1663,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
   def test_execute_placeholder_argument(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(4, 4, device="cpu").to(device=et.device())
       z = x + x
       ph = tpu_torch_compile.placeholder([4, 4], torch.float32, False)
@@ -1680,7 +1680,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_rank_mismatch(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1698,7 +1698,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("TODO: investigate why this is TPU-only.")
   def test_execute_output_shapes_exceeds_bound(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1716,7 +1716,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1731,7 +1731,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_traverse_and_compile_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
 
@@ -1762,7 +1762,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_missing_input_to_build_mlir(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(10, device="cpu").to(device=et.device())
       y = torch.ones(10, device="cpu").to(device=et.device())
       z = x + y
@@ -1776,7 +1776,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_size(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -1790,7 +1790,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
 
   @et.why_tpu_only("For testing TPU compile API validation.")
   def test_compile_mlir_invalid_layout_values(self):
-    with execution_mode.set_eager_mode(EagerMode.INTERNAL_DEFER_ALL):
+    with execution_mode.set_eager_mode(_EagerMode.INTERNAL_DEFER_ALL):
       x = torch.ones(2, 3, device="cpu").to(device=et.device())
       z = x + x
     mlir = tpu_torch_compile.build_mlir([z], [x])
@@ -4583,7 +4583,7 @@ module {
         RuntimeError,
         tpu="""uniform_(): expected export mode default generator to be set for device 0, got none""",
     ):
-      with execution_mode.set_eager_mode(EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         torch.rand(1, device="tpu")
 
 
