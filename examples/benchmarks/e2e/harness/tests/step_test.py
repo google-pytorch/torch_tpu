@@ -358,6 +358,106 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     cache = stepper.get_cache()
     self.assertEqual(cache.get_seq_length(), prompt_len + stepper.output_tokens)
 
+  def test_dynamic_cache_crop_hybrid_layer_recording(self):
+    if not hasattr(
+        transformers.cache_utils.DynamicCache, "activate_past_recording"
+    ) or not hasattr(
+        transformers.cache_utils.DynamicSlidingWindowLayer,
+        "activate_past_recording",
+    ):
+      self.skipTest(
+          "DynamicCache does not support activate_past_recording in this"
+          " transformers version"
+      )
+
+    sliding_layer = transformers.cache_utils.DynamicSlidingWindowLayer(
+        sliding_window=4
+    )
+    cache = transformers.cache_utils.DynamicCache()
+    cache.layers = [sliding_layer]
+
+    # Without activate_past_recording, crop after exceeding sliding window raises RuntimeError.
+    sliding_layer.update(
+        torch.randn(1, 1, 6, 8),
+        torch.randn(1, 1, 6, 8),
+    )
+    with self.assertRaisesRegex(  # ASSERT_RAISES_OK=Testing rollback error when past recording is disabled.
+        RuntimeError, "does not track past states"
+    ):
+      cache.crop(-2)
+
+    # With activate_past_recording, crop succeeds and rolls back state.
+    sliding_layer_rec = transformers.cache_utils.DynamicSlidingWindowLayer(
+        sliding_window=4
+    )
+    cache_rec = transformers.cache_utils.DynamicCache()
+    cache_rec.layers = [sliding_layer_rec]
+    cache_rec.activate_past_recording()
+    sliding_layer_rec.update(
+        torch.randn(1, 1, 6, 8),
+        torch.randn(1, 1, 6, 8),
+    )
+    cache_rec.crop(-2)
+    self.assertEqual(cache_rec.get_seq_length(), 4)
+
+  def test_decode_stepper_dynamic_hybrid_model(self):
+    if not hasattr(
+        transformers.cache_utils.DynamicCache, "activate_past_recording"
+    ):
+      self.skipTest(
+          "DynamicCache does not support activate_past_recording in this"
+          " transformers version"
+      )
+
+    ops = self._ops()
+
+    config = transformers.JambaConfig(
+        vocab_size=16,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        num_experts=1,
+        num_experts_per_tok=1,
+        mamba_d_state=8,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        attn_layer_offset=1,
+        attn_layer_period=2,
+        use_mamba_kernels=False,
+    )
+    model = transformers.JambaForCausalLM(config).to(ops.device)
+    model.eval()
+
+    prompt_len = 4
+    x = torch.randint(0, 16, (1, prompt_len), device=ops.device)
+
+    stepper = decode.decode(output_tokens=4, dynamism=True)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+
+    cache = stepper.get_cache()
+    self.assertIsInstance(cache, transformers.cache_utils.DynamicCache)
+
+    stepper.pre_warmup_init()
+    torch.accelerator.synchronize()
+    self.assertIsNotNone(stepper.next_token)
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+
+    # post_warmup_hook on hybrid dynamic cache should succeed w/o crop error
+    stepper.post_warmup_hook()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len)
+    self.assertTrue(torch.equal(stepper.next_token, stepper.prefill_next_token))
+
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+
   def test_decode_stepper_compiled(self):
     with torch.no_grad():
       ops = self._ops()

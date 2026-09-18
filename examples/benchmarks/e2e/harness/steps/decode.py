@@ -118,6 +118,8 @@ class DecodeStepper(common.BaseStepper):
       )
     else:
       self.cache = cache_utils.DynamicCache(config=model_config)
+      if hasattr(self.cache, "activate_past_recording"):
+        self.cache.activate_past_recording()
 
     self.next_token = None
     self.prefill_next_token = None
@@ -225,6 +227,9 @@ class DecodeStepper(common.BaseStepper):
             except (IndexError, KeyError, TypeError):
               pass
 
+    if self.dynamism and hasattr(self.cache, "activate_past_recording"):
+      self.cache.activate_past_recording()
+
     assert (
         logits is not None
     ), f"Could not extract logits from model output of type {type(output)}"
@@ -233,6 +238,8 @@ class DecodeStepper(common.BaseStepper):
   # Always eager prefill and save state for future decode.
   def pre_warmup_init(self):
     assert self._model is not None
+    if self.dynamism and hasattr(self.cache, "activate_past_recording"):
+      self.cache.activate_past_recording()
     with torch.no_grad():
       prefill_output = self._model(
           input_ids=self.input_ids,
@@ -255,7 +262,14 @@ class DecodeStepper(common.BaseStepper):
     self.next_token = self.prefill_next_token.clone()
 
     if self.dynamism:
-      self.cache.crop(self.prompt_len)
+      tokens_to_crop = (
+          (self.current_pos - self.prompt_len)
+          if self.current_pos is not None
+          else 0
+      )
+      if hasattr(self.cache, "crop"):
+        if tokens_to_crop >= 0:
+          self.cache.crop(-tokens_to_crop)
     else:
 
       def _reset_internal(cache, prompt_len):
