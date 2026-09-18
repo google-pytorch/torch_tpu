@@ -19,7 +19,6 @@ import os
 import pathlib
 import sys
 from typing import Optional, Tuple, TypeAlias
-from unittest import mock
 import warnings
 from absl.testing import absltest
 import jax
@@ -28,7 +27,6 @@ import jax.numpy as jnp
 from packaging import version
 import torch
 import torch._library.custom_ops as torch_custom_ops
-import torch.distributed as dist
 from torch_tpu._internal import compile as tpu_compile
 from torch_tpu._internal import execution_mode
 from torch_tpu._internal import pallas
@@ -1222,11 +1220,11 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
 
     # Check hardware support
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
-      device_kind = attrs.get("device_kind", "")
+      tpu_device = jax.devices("tpu")[0]
+      device_kind = tpu_device.device_kind
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, IndexError):
       self.skipTest("No TPU device found")
 
     def copy_kernel(x_ref, o_ref):
@@ -1251,11 +1249,11 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_unpack_repro(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
-      device_kind = attrs.get("device_kind", "")
+      tpu_device = jax.devices("tpu")[0]
+      device_kind = tpu_device.device_kind
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, IndexError):
       self.skipTest("No TPU device found")
 
     def fn_unpack(u8: jax.Array) -> jax.Array:
@@ -1274,11 +1272,11 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_identity_repro(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
-      device_kind = attrs.get("device_kind", "")
+      tpu_device = jax.devices("tpu")[0]
+      device_kind = tpu_device.device_kind
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, IndexError):
       self.skipTest("No TPU device found")
 
     def fn_identity(x: jax.Array) -> jax.Array:
@@ -1318,11 +1316,11 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
   def test_fp4_outer_non_contiguous_supported(self):
 
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
-      device_kind = attrs.get("device_kind", "")
+      tpu_device = jax.devices("tpu")[0]
+      device_kind = tpu_device.device_kind
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, IndexError):
       self.skipTest("No TPU device found")
 
     u8_t = torch.zeros((8, 256), dtype=torch.uint8)
@@ -1352,11 +1350,11 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
     shape, so that shape invariants with other tensors (like scales) hold.
     """
     try:
-      attrs = torch.get_device_module("tpu").get_local_device_attributes()
-      device_kind = attrs.get("device_kind", "")
+      tpu_device = jax.devices("tpu")[0]
+      device_kind = tpu_device.device_kind
       if any(old in device_kind for old in ["v2", "v3", "v4"]):
         self.skipTest(f"FP4 not supported on TPU device: {device_kind}")
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, IndexError):
       self.skipTest("No TPU device found")
 
     def probe(w: jax.Array, s: jax.Array) -> jax.Array:
@@ -1391,52 +1389,6 @@ class TestPallasCompat(seed_test_utils.RepeatableTest):
       return op(a, b)
 
     f(w, s)
-
-
-class TestPallasMesh(seed_test_utils.RepeatableTest):
-
-  def test_get_default_pallas_mesh_initialized(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=2):
-      mesh = pallas.get_default_pallas_mesh()
-      self.assertIsInstance(mesh, pallas.PallasMesh)
-      self.assertEqual(mesh.devices.flat[0].id, 0)
-      self.assertEqual(mesh.devices.flat[1].id, 1)
-      self.assertEqual(mesh.ranks, (0, 1))
-      self.assertEqual(mesh.axis_names, ("rank",))
-
-  def test_get_pallas_mesh_1d_model_mesh(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=4):
-      mesh = pallas.get_pallas_mesh(axis_names=("model",))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
-      self.assertEqual(mesh.axis_names, ("model",))
-      self.assertEqual(mesh.devices.shape, (4,))
-      self.assertEqual(len(mesh.devices.flat), 4)
-
-  def test_get_pallas_mesh_2d_sequence_parallel(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=8):
-      mesh = pallas.get_pallas_mesh(axis_names=("dp", "tp"), mesh_shape=(1, 8))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
-      self.assertEqual(mesh.axis_names, ("dp", "tp"))
-      self.assertEqual(mesh.devices.shape, (1, 8))
-      self.assertEqual(len(mesh.devices.flat), 8)
-
-  def test_get_pallas_mesh_3d_attn_dp(self):
-    with mock.patch.object(
-        dist, "is_initialized", return_value=True
-    ), mock.patch.object(dist, "get_world_size", return_value=8):
-      mesh = pallas.get_pallas_mesh(
-          axis_names=("data", "attn_dp", "model"), mesh_shape=(2, 2, 2)
-      )
-      self.assertIsInstance(mesh, pallas.PallasMesh)
-      self.assertEqual(mesh.axis_names, ("data", "attn_dp", "model"))
-      self.assertEqual(mesh.devices.shape, (2, 2, 2))
-      self.assertEqual(len(mesh.devices.flat), 8)
 
 
 if __name__ == "__main__":

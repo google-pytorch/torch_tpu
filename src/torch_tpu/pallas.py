@@ -14,9 +14,9 @@
 
 """Public Pallas API for TorchTPU.
 
-Exposes `jax_op` under `torch.tpu.pallas` for registering and calling
-JAX/Pallas custom operations from PyTorch, while delegating the underlying
-implementation to `_internal.pallas.pallas`.
+Exposes `jax_op` under `torch.tpu.pallas` and `torch_tpu.pallas` for registering
+and calling JAX/Pallas custom operations from PyTorch, while delegating the
+underlying implementation to `_internal.pallas.pallas`.
 """
 
 from typing import Any, TYPE_CHECKING

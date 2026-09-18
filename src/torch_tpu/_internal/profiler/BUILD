@@ -30,14 +30,6 @@ package(
 )
 
 torch_tpu_py_library(
-    name = "api",
-    srcs = ["api.py"],
-    deps = [
-        ":profiler_config",
-    ],
-)
-
-torch_tpu_py_library(
     name = "profiler_config",
     srcs = ["profiler_config.py"],
     deps = [

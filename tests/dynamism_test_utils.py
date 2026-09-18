@@ -192,7 +192,6 @@ untriaged_ops_deny_list: dict[
     "linalg.lu_factor_ex": (
         ALL_MODES
     ),  # materialization failure (negative dim size)
-    "logical_and": ALL_MODES,  # dynamic triage (invalid result)
     "masked_scatter": ALL_MODES,  # unflatten ambiguous error
     "matmul": ALL_MODES,  # reshapes in the structured delegate
     "mm": {COMPILE},  # numerical mismatch under dynamic compile

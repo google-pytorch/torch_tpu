@@ -230,6 +230,63 @@ class DynamismTest(seed_test_utils.RepeatableTest):
     )
     self._run_bounded_dynamism_test(torch.add, mark_dynamic, *args)
 
+  def test_logical_and_same_shape(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 0, 2, 10)
+
+    args = (
+        torch.tensor([[True, False], [False, True], [True, True]]),
+        torch.tensor([[False, False], [True, True], [True, False]]),
+    )
+    act = self._run_bounded_dynamism_test(
+        torch.logical_and, mark_dynamic, *args
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
+  def test_logical_and_with_broadcast(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 1, 2, 15)
+
+    args = (
+        torch.tensor([[True], [False], [True]]),
+        torch.tensor([[True, False, True, False]]),
+    )
+    act = self._run_bounded_dynamism_test(
+        torch.logical_and, mark_dynamic, *args
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 2)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+    self.assertEqual(act_dynamism_info[1].dimension, 1)
+    self.assertEqual(act_dynamism_info[1].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[1].upper_bound, 15)
+
+  def test_logical_and_mixed_dtypes(self):
+    def mark_dynamic(x, y):
+      dynamism.mark_dynamic(x, 0, 2, 10)
+      dynamism.mark_dynamic(y, 0, 2, 10)
+
+    args = (
+        torch.tensor([[1.0, 0.0], [0.0, 2.5], [3.0, 0.0]], dtype=torch.float32),
+        torch.tensor([[0, 1], [1, 1], [0, 0]], dtype=torch.int32),
+    )
+    act = self._run_bounded_dynamism_test(
+        torch.logical_and, mark_dynamic, *args
+    )
+    act_dynamism_info = dynamism.get_dynamism_info(act)
+    self.assertLen(act_dynamism_info, 1)
+    self.assertEqual(act_dynamism_info[0].dimension, 0)
+    self.assertEqual(act_dynamism_info[0].lower_bound, 2)
+    self.assertEqual(act_dynamism_info[0].upper_bound, 10)
+
   def test_concat_with_dynamic_concat_dim(self):
     def mark_dynamic(x, y):
       dynamism.mark_dynamic(x, 0, 2, 10)
