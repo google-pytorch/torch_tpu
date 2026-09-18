@@ -115,6 +115,11 @@ jobs:
         with:
           halt-dispatch-input: ${{ inputs.halt-for-connection }}
       - name: Run Impacted Tests via bazel-diff
+        if: >-
+          !(matrix.job_info.config == 'ci_tpu_v5_presubmit' && (
+            contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+            || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
+          ))
         uses: ./.github/actions/bazel-diff
         with:
           base_sha: ${{ inputs.override_base_sha }}

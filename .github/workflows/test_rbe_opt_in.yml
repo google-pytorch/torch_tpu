@@ -16,7 +16,9 @@
 # Remote Build Execution (Buildbarn REAPI v2).
 #
 # Opt in per PR with label:
-#   run-rbe   Runs the full-RBE path on standing Cloud TPU v5e workers.
+#   ci:replace-tpu-v5   Runs the full-RBE path on standing Cloud TPU v5e workers.
+#   ci:relay-tpu-v5     Alternative label alias for the RBE path.
+#   run-rbe             Legacy label alias.
 
 name: RBE Hardware TPU Tests (Opt-In)
 
@@ -45,7 +47,7 @@ concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{
     github.event.action == 'labeled'
-    && !contains(fromJSON('["run-rbe"]'), github.event.label.name)
+    && !contains(fromJSON('["ci:replace-tpu-v5", "ci:relay-tpu-v5", "run-rbe"]'), github.event.label.name)
     && format('-ignored-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
@@ -66,6 +68,8 @@ jobs:
     name: "${{ matrix.job_info.name }}"
     if: >-
       github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+      || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
       || contains(github.event.pull_request.labels.*.name, 'run-rbe')
     continue-on-error: true
     strategy:
@@ -113,7 +117,7 @@ jobs:
             run_tunnel() {
               while true; do
                 gcloud compute start-iap-tunnel \
-                  gke-rbe-tpu-oss-east5-cl-default-pool-af71f464-vjr3 30980 \
+                  rbe-tunnel-gateway 8980 \
                   --local-host-port=localhost:8980 \
                   --zone=us-east5-a \
                   --project=rbe-tpu-oss \
