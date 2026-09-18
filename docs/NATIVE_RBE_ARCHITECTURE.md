@@ -146,55 +146,50 @@ virtual machine in zone `us-east5-a`. It runs high-concurrency HAProxy on port
 HAProxy handles connection pooling and high concurrency across parallel Bazel
 connections, preventing connection dropouts and port exhaustion.
 
-### Developer Connectivity (Cloudtop / Local Workstation)
+### Developer Connectivity (Cloudtop / Corporate Workstations)
 
 Developers connect to the Buildbarn frontend through `rbe-tunnel-gateway` on
-port `8980` using either an SSH tunnel or a Cloud IAP TCP tunnel.
-
-#### Option A: SSH Tunnel
-
-Open a background SSH tunnel to forward local port `8980`:
+port `8980` using a background SSH port-forwarding tunnel:
 
 ```bash
 gcloud compute ssh rbe-tunnel-gateway \
   --zone=us-east5-a \
   --project=rbe-tpu-oss \
-  -- -N -L 8980:localhost:8980
+  -- -N -L 8980:127.0.0.1:8980 &
 ```
 
-#### Option B: Cloud IAP TCP Tunnel
+This route connects over Google corporate network CIDRs, which are explicitly
+permitted by the project's hierarchical firewall policy (`163641247602` rules 30
+and 31) on port 22. Once the local forward is listening, Bazel points to
+`grpc://127.0.0.1:8980` as configured in `.bazelrc`.
 
-Open an IAP TCP forwarding tunnel:
+### GCE Virtual Machine Connectivity (In-VPC)
+
+Virtual machines running inside the `rbe-tpu-oss` VPC network bypass tunnels
+entirely. They communicate directly with the Buildbarn frontend over internal IP
+`10.202.0.13:8980`:
 
 ```bash
-gcloud compute start-iap-tunnel \
-  rbe-tunnel-gateway 8980 \
-  --local-host-port=localhost:8980 \
-  --zone=us-east5-a \
-  --project=rbe-tpu-oss
+bazel test --config=rbe_native_tpu \
+  --remote_executor=grpc://10.202.0.13:8980 \
+  --remote_cache=grpc://10.202.0.13:8980 \
+  //tests/pallas:pallas_test
 ```
 
-Once established, Bazel points to `grpc://127.0.0.1:8980` as configured in
-`.bazelrc`.
+### Security & Ingress Policy (Hierarchical Firewall)
 
-### GitHub Actions CI Runner Connectivity
+Project `rbe-tpu-oss` enforces an organization-level hierarchical firewall
+policy (`163641247602`):
+- **Rules 30 & 31**: Permit ingress exclusively from Google corporate network
+  CIDRs on ports 22, 443, and 3389.
+- **Rule 28**: Permits ingress from designated cluster egress IPs on port 22.
+- **Rule 32**: Denies all other external ingress traffic (`0.0.0.0/0`).
 
-CI runners in GitHub Actions access the private GKE cluster via Cloud IAP.
-Before executing Bazel tests, the CI workflow
-(`.github/workflows/test_rbe_opt_in.yml`) opens a background IAP tunnel to
-`rbe-tunnel-gateway`:
-
-```bash
-gcloud compute start-iap-tunnel \
-  rbe-tunnel-gateway 8980 \
-  --local-host-port=localhost:8980 \
-  --zone=us-east5-a \
-  --project=rbe-tpu-oss \
-  --iap-tunnel-disable-connection-check
-```
-
-The workflow tests the TCP port until reachable on `127.0.0.1:8980`, runs Bazel,
-and terminates the tunnel process on job exit.
+Because hierarchical firewall rules evaluate before project-level VPC rules,
+traffic from unwhitelisted external ranges (including Cloud IAP proxy CIDR
+`35.235.240.0/20` and external GitHub runner NATs) is dropped at the edge.
+All external developer access must originate from corporate networks via SSH
+forwarding.
 
 ### Fleet Distribution & Latency
 
