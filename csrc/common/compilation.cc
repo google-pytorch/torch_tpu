@@ -107,7 +107,9 @@ absl::StatusOr<ContextedModule> ContextedModule::Make(
 absl::StatusOr<SharedLoadedExecutableWithMetadata>
 LoadedExecutableWithMetadata::MakeShared(
     absl_nonnull std::unique_ptr<xla::PjRtLoadedExecutable> executable,
-    Indices argument_indices) {
+    Indices argument_indices,
+    std::optional<UnboundedDynamicExecutionMetadata>
+        dynamic_execution_metadata) {
   TT_RET_CHECK(executable, error::kInternal)
       << "cannot create SharedLoadedExecutableWithMetadata from null "
          "executable.";
@@ -129,8 +131,9 @@ LoadedExecutableWithMetadata::MakeShared(
   }
 
   return std::shared_ptr<const LoadedExecutableWithMetadata>(
-      new LoadedExecutableWithMetadata(std::move(executable),
-                                       std::move(output_shapes)));
+      new LoadedExecutableWithMetadata(
+          std::move(executable), std::move(output_shapes),
+          std::move(argument_indices), std::move(dynamic_execution_metadata)));
 }
 
 absl::StatusOr<SharedLoadedExecutableWithMetadata> Compile(

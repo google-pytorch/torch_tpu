@@ -118,6 +118,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:env_vars",
         "//csrc/common:error_utils",
+        "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/eager:device_buffer",
         "//csrc/eager:events_queue",
@@ -127,6 +128,7 @@ torch_tpu_cc_library(
         "//shims/torch/c10/util:base_headers",
         "//shims/torch/torch/headeronly:torch_headeronly",
         "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
@@ -153,6 +155,32 @@ torch_tpu_cc_library(
         "@xla//xla/pjrt/c:pjrt_c_api_status_utils",
         "@xla//xla/pjrt/c_api_client:pjrt_c_api_client",
         "@xla//xla/service:collective_ops_utils",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "pjrt_utils_test",
+    srcs = ["pjrt_utils_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":pjrt_state",
+        ":pjrt_utils",
+        "//csrc/common:compilation",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:shape",
+        "//csrc/common:status_test_utils",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//:attr_type_builder_util",
+        "@xla//xla:literal",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/builder:xla_builder",
+        "@xla//xla/hlo/builder:xla_computation",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
     ],
 )
 
