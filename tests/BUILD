@@ -1776,6 +1776,7 @@ torch_tpu_py_test(
         # Spawning 8 PyTorch processes in *san exceeds Forge's 28GB container
         # memory limit; this is an infra constraint rather than a code defect.
         "noasan",  # See comment above.
+        "nomsan",  # See comment above.
         "notsan",  # See comment above.
         "requires-tpu-v5lite:8",
     ],
