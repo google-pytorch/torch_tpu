@@ -1401,10 +1401,9 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=2):
       mesh = pallas.get_default_pallas_mesh()
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.devices.flat[0].id, 0)
       self.assertEqual(mesh.devices.flat[1].id, 1)
-      self.assertEqual(mesh.ranks, (0, 1))
       self.assertEqual(mesh.axis_names, ("rank",))
 
   def test_get_pallas_mesh_1d_model_mesh(self):
@@ -1412,7 +1411,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=4):
       mesh = pallas.get_pallas_mesh(axis_names=("model",))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("model",))
       self.assertEqual(mesh.devices.shape, (4,))
       self.assertEqual(len(mesh.devices.flat), 4)
@@ -1422,7 +1421,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
         dist, "is_initialized", return_value=True
     ), mock.patch.object(dist, "get_world_size", return_value=8):
       mesh = pallas.get_pallas_mesh(axis_names=("dp", "tp"), mesh_shape=(1, 8))
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("dp", "tp"))
       self.assertEqual(mesh.devices.shape, (1, 8))
       self.assertEqual(len(mesh.devices.flat), 8)
@@ -1434,7 +1433,7 @@ class TestPallasMesh(seed_test_utils.RepeatableTest):
       mesh = pallas.get_pallas_mesh(
           axis_names=("data", "attn_dp", "model"), mesh_shape=(2, 2, 2)
       )
-      self.assertIsInstance(mesh, pallas.PallasMesh)
+      self.assertIsInstance(mesh, jax.sharding.Mesh)
       self.assertEqual(mesh.axis_names, ("data", "attn_dp", "model"))
       self.assertEqual(mesh.devices.shape, (2, 2, 2))
       self.assertEqual(len(mesh.devices.flat), 8)

@@ -106,29 +106,9 @@ TORCH_TO_JAX_DTYPE_MAP = frozendict.frozendict({
 JAX_TO_TORCH_DTYPE_MAP = {v: k for k, v in TORCH_TO_JAX_DTYPE_MAP.items()}
 
 
-class PallasMesh(jax.sharding.Mesh):
-  """A JAX Mesh whose devices are ordered strictly by PyTorch rank."""
-
-  @staticmethod
-  def _create(flat_devices_tuple, device_shape, axis_names, axis_types, size):
-    devices = np.array(flat_devices_tuple).reshape(device_shape)
-    devices.flags.writeable = False
-    obj = object.__new__(PallasMesh)
-    object.__setattr__(obj, "devices", devices)
-    object.__setattr__(obj, "axis_names", axis_names)
-    object.__setattr__(obj, "axis_types", axis_types)
-    object.__setattr__(obj, "size", size)
-    return obj
-
-  @property
-  def ranks(self) -> tuple[int, ...]:
-    return tuple(range(self.size))
-
-
 # PEP 8 requires this to be a list of strings, not a tuple or a list of objects.
 __all__ = [
     # go/keep-sorted start
-    "PallasMesh",
     "custom_jax_kernel",
     "get_default_pallas_mesh",
     "get_pallas_mesh",
@@ -1048,7 +1028,7 @@ def jax_op(
 def get_pallas_mesh(
     axis_names: Sequence[str] | str,
     mesh_shape: Sequence[int] | None = None,
-) -> PallasMesh:
+) -> jax.sharding.Mesh:
   """Constructs a rank-aligned JAX Mesh using TPU runtime device metadata."""
   if not dist.is_initialized():
     raise RuntimeError(
@@ -1086,9 +1066,9 @@ def get_pallas_mesh(
   else:
     mesh_devices = np.array(devices)
 
-  return PallasMesh(mesh_devices, axis_names=axis_names)
+  return jax.sharding.Mesh(mesh_devices, axis_names=axis_names)
 
 
-def get_default_pallas_mesh() -> PallasMesh:
+def get_default_pallas_mesh() -> jax.sharding.Mesh:
   """Constructs default 1D world rank-aligned JAX Mesh with axis ('rank',)."""
   return get_pallas_mesh(axis_names=("rank",), mesh_shape=None)

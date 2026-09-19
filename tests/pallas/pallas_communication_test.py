@@ -184,7 +184,7 @@ def _run_1d_logical(do_compile):
 
 
 def jax_1d_mesh_kernel(
-    global_input: jax.Array, mesh: pallas.PallasMesh
+    global_input: jax.Array, mesh: jax.sharding.Mesh
 ) -> jax.Array:
   """1D kernel using DeviceIdType.MESH addressing along 'rank' axis."""
 
@@ -260,7 +260,7 @@ def _run_1d_mesh(do_compile):
 
   num_per_rank = 8
   mesh = pallas.get_default_pallas_mesh()
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
@@ -302,7 +302,7 @@ def _run_1d_mesh(do_compile):
 
 
 def jax_2d_rank_dp_mesh_kernel(
-    global_input: jax.Array, mesh: pallas.PallasMesh
+    global_input: jax.Array, mesh: jax.sharding.Mesh
 ) -> jax.Array:
   """2D kernel using DeviceIdType.MESH addressing along 'dp' axis in ('rank', 'dp') mesh."""
 
@@ -384,7 +384,7 @@ def _run_2d_rank_dp_mesh(do_compile):
 
   # Create 2D mesh: ('rank', 'dp') with shape (2, 4), spanning world_size 8.
   mesh = pallas.get_pallas_mesh(axis_names=("rank", "dp"), mesh_shape=(2, 4))
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
@@ -441,7 +441,7 @@ def _run_combined_collective_and_pallas(do_compile: bool = True):
 
   # Create rank-aligned Mesh directly from the default world group.
   mesh = pallas.get_default_pallas_mesh()
-  assert isinstance(mesh, pallas.PallasMesh)
+  assert isinstance(mesh, jax.sharding.Mesh)
 
   def generate_input(r, num_per_rank):
     return torch.tensor(
