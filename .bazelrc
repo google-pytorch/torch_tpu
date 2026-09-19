@@ -185,6 +185,10 @@ common:tsan_cc --copt=-DTHREAD_SANITIZER
 # speed up execution without aggressively inlining and destroying the call stack
 # structure.
 common:tsan_cc --copt=-O1
+# Disable tcmalloc linking/preloading under TSan so TSan's allocator interceptor
+# operates without conflict, even if LD_PRELOAD is set in the container environment.
+build:tsan_cc --//:_tsan_build=True
+common:tsan_cc --test_env=LD_PRELOAD=
 
 # TSan config for Python tests.
 # Explicitly uses dynamic linking (-shared-libsan) so the PyTorch C++ extension

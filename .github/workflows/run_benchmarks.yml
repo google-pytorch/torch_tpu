@@ -15,6 +15,7 @@
 name: Run Benchmarks
 
 on:
+  pull_request:
   # Allow manual runs from the Actions tab for testing
   workflow_dispatch:
     inputs:
@@ -76,13 +77,11 @@ jobs:
     steps:
       - name: Checkout TorchTPU
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ github.ref_name }}
       - name: Build and upload wheel
         id: build
         uses: ./.github/actions/build-wheel
         with:
-          python_version: ${{ inputs.python_version }}
+          python_version: ${{ inputs.python_version || '3.12' }}
   run_benchmarks:
     name: Run TorchTPU benchmarks
     needs: [build_wheel]
@@ -95,9 +94,13 @@ jobs:
       registry_file: "examples/benchmarks/e2e/harness/benchmark_registry.pbtxt"
       bap_ref: "ff212b97420bf479bd492d64e4b549534c22cd91"
       runner: "linux-x86-n4-16"
-      benchmark_filter: ${{ inputs.benchmark_filter }}
-      environment_filter: ${{ inputs.environment_filter }}
-      custom_metadata: ${{ inputs.custom_metadata }}
+      benchmark_filter: ${{ inputs.benchmark_filter || 'layer_benchmarks_.*' }}
+      environment_filter: ${{ inputs.environment_filter || 'tpu-v7' }}
+      publish_metrics: true
+      pub_sub_gcp_project_id: "ml-oss-benchmarking-production"
+      pub_sub_gcp_topic_id: "private-torch-tpu-prod"
+      custom_metadata: >-
+        ${{ inputs.custom_metadata || format('{{"pr_number": "{0}", "sha": "{1}", "mlcompass_execution_mode": "cbuild"}}', github.event.pull_request.number, github.sha) }}
       custom_env_vars: |
         TORCH_TPU_WHEEL=${{ inputs.torch_tpu_wheel || needs.build_wheel.outputs.gcs_wheel_path }}
-        TORCH_TPU_PYTHON_VERSION=${{ inputs.python_version }}
+        TORCH_TPU_PYTHON_VERSION=${{ inputs.python_version || '3.12' }}

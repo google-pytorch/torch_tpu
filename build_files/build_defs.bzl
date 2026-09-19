@@ -788,6 +788,12 @@ def torch_tpu_cc_test(
             tags = result.build_test_tags,
         )
 
+    if is_oss() and "malloc" not in kwargs:
+        kwargs["malloc"] = select({
+            "//:tsan_build": "@bazel_tools//tools/cpp:malloc",
+            "//conditions:default": "@com_google_tcmalloc//tcmalloc",
+        })
+
     # Define the C++ test target (handles compilation, compilation options, and static linking)
     cc_test(
         # ALLOW_CC_TARGETS=Definition of torch_tpu_cc_test
@@ -990,6 +996,8 @@ def torch_tpu_py_test(
             data.append(":torch_tpu_wheel")
     if is_oss():
         data.append("@bazel_tools//tools/bash/runfiles")
+        if not is_wheel_test and "//:libtcmalloc.so" not in data:
+            data.append("//:libtcmalloc.so")
     kwargs["data"] = data
 
     # Remove internal-only attributes
@@ -1004,7 +1012,7 @@ def torch_tpu_py_test(
     # For wheel-only tests (is_wheel_test = True), skip enforcing
     # //src/torch_tpu dependency and automatic environment setup.
     if is_wheel_test:
-        test_env = existing_env or {}
+        test_env = existing_env
     else:
         existing_env = existing_env or {}
         if "exclusive" in tags:
@@ -1027,6 +1035,7 @@ def torch_tpu_py_test(
         # Standard paths for stable PyPI/wheel mode
         _default_py_version_nodot = DEFAULT_PYTHON_VERSION.replace(".", "")
         std_ld = [
+            ".",
             "../pypi_torch/site-packages/torch/lib",
             "../rules_python++pip+torch_tpu_pypi_{}_torch/site-packages/torch/lib".format(_default_py_version_nodot),
             "../pypi_libtpu/site-packages/libtpu",
@@ -1073,6 +1082,10 @@ def torch_tpu_py_test(
         asan_opts.append("new_delete_type_mismatch=0")
         base_env["ASAN_OPTIONS"] = ":".join([opt for opt in asan_opts if opt])
 
+        # Preload hermetic Bazel-built tcmalloc into Python test and benchmark runs.
+        if is_oss():
+            _prepend_to_env(base_env, "LD_PRELOAD", "$(location //:libtcmalloc.so)")
+
         # Prepend standard library paths to base env (required for mp.spawn support)
         _prepend_to_env(base_env, "LD_LIBRARY_PATH", ":".join(std_ld))
 
@@ -1082,6 +1095,7 @@ def torch_tpu_py_test(
         for v in SUPPORTED_PYTHON_VERSIONS:
             env_v = dict(env_wheel)
             std_ld_v = [
+                ".",
                 "../pypi_torch_{}/site-packages/torch/lib".format(v.replace(".", "")),
                 "../rules_python++pip+torch_tpu_pypi_{}_torch/site-packages/torch/lib".format(v.replace(".", "")),
                 "../pypi_libtpu_{}/site-packages/libtpu".format(v.replace(".", "")),

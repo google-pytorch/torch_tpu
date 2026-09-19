@@ -14,6 +14,7 @@
 
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
 load("@pypi//:requirements.bzl", "all_requirements", "requirement")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@xla//third_party/py:py_import.bzl", "py_import")
 load("//:visibility.bzl", "PACKAGE_DEFAULT_VISIBILITY")
 load(
@@ -85,6 +86,34 @@ config_setting(
 bool_flag(
     name = "allow_unoptimized_wheel",
     build_setting_default = False,
+)
+
+# True only when building with ThreadSanitizer (--config=tsan_cc), where TSan's
+# runtime intercepts malloc/free directly and cannot coexist with tcmalloc.
+bool_flag(
+    name = "_tsan_build",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "tsan_build",
+    flag_values = {":_tsan_build": "True"},
+    visibility = ["//visibility:public"],
+)
+
+# Hermetic TCMalloc shared library built from @com_google_tcmalloc//tcmalloc
+# for preloading into Python test and benchmark processes via LD_PRELOAD.
+# Under TSan (:tsan_build), builds an empty stub library so
+# $(location //:libtcmalloc.so) remains valid without overriding TSan's malloc.
+cc_binary(
+    name = "libtcmalloc.so",
+    linkshared = True,
+    visibility = ["//visibility:public"],
+    deps = select({
+        ":tsan_build": [],
+        "//conditions:default": ["@com_google_tcmalloc//tcmalloc"],
+    }),
 )
 
 # The PyTorch version a C++ extension is compiled/linked against. The pybind

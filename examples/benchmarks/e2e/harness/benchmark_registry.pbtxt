@@ -609,3 +609,482 @@ benchmarks {
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
 }
 
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_00_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 00 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=0,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_01_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 01 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=1,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_02_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 02 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=2,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_03_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 03 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=3,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_04_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 04 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=4,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_05_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 05 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=5,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_06_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 06 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=6,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_tcmalloc_shard_07_of_08"
+  description: "Layer performance benchmarks (tcmalloc) shard 07 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=7,USE_TCMALLOC=1" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_00_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 00 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=0,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_01_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 01 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=1,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_02_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 02 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=2,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_03_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 03 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=3,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_04_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 04 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=4,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_05_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 05 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=5,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_06_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 06 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=6,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
+
+benchmarks {
+  name: "layer_benchmarks_no_tcmalloc_shard_07_of_08"
+  description: "Layer performance benchmarks (no_tcmalloc) shard 07 of 08"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/layer_performance_benchmarks.py" }
+    action_inputs { key: "runtime_flags" value: "--enable_tensorboard_logging" }
+    action_inputs { key: "env_vars" value: "TEST_TOTAL_SHARDS=8,TEST_SHARD_INDEX=7,USE_TCMALLOC=0" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_1x1x1" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}
