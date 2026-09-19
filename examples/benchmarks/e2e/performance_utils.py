@@ -244,36 +244,30 @@ _TENSORBOARD_EXPORTED = False
 def _export_to_tensorboard(
     result: metrics_lib.MetricsInterface,
     tblog_dir: str,
+    test_name: str | None = None,
+    succeeded: bool = True,
 ) -> None:
   """Exports benchmark results to TensorBoard.
 
   Args:
     result: The benchmark result to export.
     tblog_dir: The directory to write the TensorBoard logs to.
-
-  Raises:
-    RuntimeError: If an export has already happened in this process.
+    test_name: Optional test name prefix for metric keys.
+    succeeded: Whether the benchmark run succeeded.
   """
-  global _TENSORBOARD_EXPORTED
-  if _TENSORBOARD_EXPORTED:
-    raise RuntimeError(
-        "TensorBoard export already happened in this process. "
-        "Each run is expected to export only once."
-    )
-
   try:
     os.makedirs(tblog_dir, exist_ok=True)
     tb_writer = writer.SummaryWriter(log_dir=tblog_dir)
+    prefix = f"{test_name}/" if test_name else ""
 
     for metric_name, value in result.metric_map().items():
       # Skip metrics that are None (e.g. peak_host_compilation_memory on non-TPU platforms).
       if value is not None:
-        tb_writer.add_scalar(metric_name, value, global_step=0)
+        tb_writer.add_scalar(f"{prefix}{metric_name}", value, global_step=0)
+    tb_writer.add_scalar(f"{prefix}succeeded", int(succeeded), global_step=0)
     tb_writer.close()
   except (OSError, IOError):
     logging.exception("Error writing TensorBoard logs")
-  finally:
-    _TENSORBOARD_EXPORTED = True
 
 
 # Not using keyword arguments here because the google version of torchrun
@@ -461,7 +455,17 @@ def run_single_process_benchmark(
   ):
     tblog_dir = os.environ.get(benchmark_utils.TENSORBOARD_OUTPUT_ENV_VAR.value)
     if tblog_dir:
-      _export_to_tensorboard(result, tblog_dir)
+      tb_test_name = mlcompass_utils.get_mlcompass_test_name(
+          platform, test_method_name, benchmark_name
+      )
+      if microbenchmark_name:
+        tb_test_name = f"{tb_test_name}/{microbenchmark_name}"
+      _export_to_tensorboard(
+          result,
+          tblog_dir,
+          test_name=tb_test_name,
+          succeeded=benchmark_succeeded,
+      )
 
   if torch.distributed.is_initialized():
     logging.info("Process %s reaching final barrier...", rank)

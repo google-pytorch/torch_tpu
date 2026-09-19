@@ -26,8 +26,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -50,8 +53,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -82,8 +88,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -113,8 +122,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -137,8 +149,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -168,8 +183,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -199,8 +217,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -223,8 +244,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -254,8 +278,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -285,8 +312,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -309,8 +339,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -342,8 +375,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -366,8 +402,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -397,8 +436,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -428,8 +470,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -452,8 +497,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -484,8 +532,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -515,8 +566,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -539,8 +593,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -571,8 +628,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -603,8 +663,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -628,8 +691,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }
@@ -660,8 +726,11 @@ benchmarks {
   }
 
   metrics { name: "post_warmup_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "post_warmup_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "first_step_time_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "first_step_time_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "warmup_overhead_seconds" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { name: "warmup_overhead_ms" unit: "ms" stats { stat: LAST_VALUE } }
   metrics { name: "peak_device_memory_mb" unit: "MB" stats { stat: LAST_VALUE } }
   metrics { name: "num_warmup_steps" unit: "count" stats { stat: LAST_VALUE } }
 }

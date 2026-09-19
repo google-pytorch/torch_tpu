@@ -352,6 +352,18 @@ runs:
         # Installed packages (torch_tpu) resolve from the virtual environment.
         export PYTHONPATH="$BENCHMARK_REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
+        if [[ "${USE_TCMALLOC:-0}" == "1" ]]; then
+          if [[ ! -f /usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ]]; then
+            apt-get update && apt-get install -y --no-install-recommends libgoogle-perftools4
+          fi
+          export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4${LD_PRELOAD:+:$LD_PRELOAD}"
+          echo "TCMalloc ENABLED: LD_PRELOAD=$LD_PRELOAD"
+        else
+          unset LD_PRELOAD
+          export TORCH_TPU_DISABLE_TCMALLOC=1
+          echo "TCMalloc DISABLED: using default system allocator (glibc ptmalloc2)"
+        fi
+
         echo "----------------------------------------------------------------"
         echo "SCRIPT: $SCRIPT"
         echo "ARGS:   $ARGS"
