@@ -519,14 +519,20 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _is_in_bad_fork(cls) -> bool:
-    """Returns whether we are in a bad fork.
+    """Returns whether we are in an unsafe forked child process.
 
-    This is a CUDA specific concept, related to how the CUDA context and runtime
-    interacts with multiprocesses. An implementation is required to support
-    torch.manual_seed(), as it is called in _seed_custom_device() in
-    py/torch/random.py.
+    A bad fork occurs when a child process is forked after PJRT/TPU runtime
+    initialization in the parent process.
+
+    Returns:
+      True if the current process is a forked child process created after the
+      TPU runtime was initialized in the parent process; False if the TPU
+      runtime is uninitialized or running in the original process where it was
+      initialized.
     """
-    # TODO(b/456545545): unda - revisit this.
+    is_in_bad_fork = getattr(_device_ops_backend, "_is_in_bad_fork", None)
+    if is_in_bad_fork is not None:
+      return is_in_bad_fork()
     return False
 
   @classmethod

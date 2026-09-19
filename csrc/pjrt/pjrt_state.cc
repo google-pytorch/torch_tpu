@@ -16,6 +16,9 @@
 
 #include "csrc/pjrt/pjrt_state.h"
 
+#include <unistd.h>
+
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -45,7 +48,7 @@
 #include "csrc/pjrt/pjrt_client.h"
 #include "tsl/profiler/lib/profiler_factory.h"
 #include "tsl/profiler/lib/profiler_interface.h"
-#include "xla/backends/profiler/plugin/plugin_tracer.h"
+#include "xla/backends/profiler/plugin/plugin_tracer.h"  // IWYU pragma: keep for xla::profiler::PluginTracer
 #include "xla/backends/profiler/plugin/profiler_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
@@ -192,6 +195,9 @@ absl::Status PjrtBackend::EnsureInitialized() {
   // errors instead of low-level crashes.
   init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
   init_attempted_ = true;
+  if (init_status_.ok()) {
+    init_pid_.store(getpid(), std::memory_order_relaxed);
+  }
   return init_status_;
 }
 
@@ -293,6 +299,11 @@ bool PjrtBackend::IsInitialized() const {
   return client_ != nullptr;
 }
 
+bool PjrtBackend::IsInBadFork() const {
+  const pid_t init_pid = init_pid_.load(std::memory_order_relaxed);
+  return init_pid != 0 && getpid() != init_pid;
+}
+
 xla::PjRtClient* absl_nullable PjrtBackend::GetClient() {
   if (const absl::Status s = EnsureInitialized(); !s.ok()) {
     ABSL_LOG(ERROR) << "PjrtBackend::GetClient failed to initialize: " << s;
@@ -390,6 +401,9 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
 }
 
 void PjrtBackend::Shutdown() {
+  // Reset the initialization PID so that subsequent forks from this process (or
+  // re-initialization of the runtime) are not falsely identified as bad forks.
+  init_pid_.store(0, std::memory_order_relaxed);
   absl::MutexLock lock(mutex_);
   world_rank_to_device_id_ = std::nullopt;
   if (!init_attempted_) {
