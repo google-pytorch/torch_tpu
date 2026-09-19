@@ -116,7 +116,7 @@ class EventsQueue {
     if (device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
       return;
     }
-    absl::MutexLock lock(data_ptr_mu_);
+    absl::MutexLock lock(mu_);
     if (!device_buffer_ref.is_materialized()) {
       // Insert or increment the count for the DeviceBufferList.
       live_nodes_[device_buffer_ref.device_buffer_list()]++;
@@ -133,7 +133,7 @@ class EventsQueue {
     if (device_buffer_ref.is_placeholder() || device_buffer_ref.is_constant()) {
       return;
     }
-    absl::MutexLock lock(data_ptr_mu_);
+    absl::MutexLock lock(mu_);
     // If the ref is already removed from the map, we do nothing. This can
     // happen if the ref became ready after insertion, or if the queue was
     // cleared.
@@ -152,11 +152,8 @@ class EventsQueue {
   // repeated ops heuristic state.
   void Clear() {
     {
-      absl::MutexLock lock(data_ptr_mu_);
+      absl::MutexLock lock(mu_);
       live_nodes_.clear();
-    }
-    {
-      absl::MutexLock lock(deferred_ops_mu_);
       repetition_hashes_.clear();
       repetition_i_ = 0;
       for (auto& event : deferred_ops_) {
@@ -232,7 +229,7 @@ class EventsQueue {
       const SharedDeviceBufferList& device_buffer_list) {
     if (auto event = DeferredOpEvent::FromDeferredOp(device_buffer_list);
         event.has_value()) {
-      absl::MutexLock lock(deferred_ops_mu_);
+      absl::MutexLock lock(mu_);
       deferred_ops_.push_back(std::move(*event));
     }
   }
@@ -247,7 +244,7 @@ class EventsQueue {
     auto& event = *maybe_event;
     const size_t new_hash = event.deferred_op_hash;
 
-    absl::MutexLock lock(deferred_ops_mu_);
+    absl::MutexLock lock(mu_);
     deferred_ops_.push_back(std::move(event));
 
     // Fast path: assume that the last sequence is still repeating.
@@ -284,16 +281,22 @@ class EventsQueue {
     return GetRepeatedSequenceNodes();
   }
 
+  // The result of TakeAll. Returns the complete set of deferred ops and live
+  // nodes in the queue at the time of the call.
+  // Once this function returns, further DeferredOps or DataPtr creation or
+  // destruction will not affect the result of this sync.
+  struct TakeAllResult {
+    std::deque<DeferredOpEvent> deferred_ops;
+    absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes;
+  };
+
   // Returns all the DeferredOpEvents in the queue and clears the queue.
-  std::vector<DeferredOpEvent> TakeAll() {
-    absl::MutexLock lock(deferred_ops_mu_);
+  TakeAllResult TakeAll() {
+    absl::MutexLock lock(mu_);
     ABSL_VLOG(1) << "[EventsQueue::TakeAll] Returning all "
                  << deferred_ops_.size() << " DeferredOpEvents.";
-    std::vector<DeferredOpEvent> result(
-        std::make_move_iterator(deferred_ops_.begin()),
-        std::make_move_iterator(deferred_ops_.end()));
-    deferred_ops_.clear();
-    return result;
+    return TakeAllResult{.deferred_ops = std::move(deferred_ops_),
+                         .live_nodes = std::move(live_nodes_)};
   }
 
   // Returns the core pinning mode of this events queue.
@@ -304,7 +307,7 @@ class EventsQueue {
   }
 
   void ResetRepeatedOpsHeuristicState() {
-    absl::MutexLock lock(deferred_ops_mu_);
+    absl::MutexLock lock(mu_);
     repetition_hashes_.clear();
     repetition_i_ = 0;
     for (auto& event : deferred_ops_) {
@@ -330,40 +333,40 @@ class EventsQueue {
   // Helper function for RecordDeferredOpAndDetectRepetition.
   // Checks if the new hash is consistent with the last repeated sequence.
   [[nodiscard]] CheckLastRepeatedSequenceResult CheckLastRepeatedSequence(
-      size_t new_hash) ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+      size_t new_hash) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Helper function for RecordDeferredOpAndDetectRepetition.
   // Performs a full scan to try to find a repeated sequence.
   // Returns the length of the sequence if found, or 0 if no sequence is found
   // within the min/max sequence length range.
   [[nodiscard]] int64_t FindRepeatedSequence(size_t new_hash)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Helper function for RecordDeferredOpAndDetectRepetition.
   // Records the repeated hash pattern to repetition_hashes_.
   void RecordRepeatedHashPattern(int64_t repetition_length)
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Helper function for RecordDeferredOpAndDetectRepetition.
   // Returns the individual materialization nodes, in order, to compile the
   // repeated sequence.
   [[nodiscard]] std::vector<SharedDeviceBufferList> GetRepeatedSequenceNodes()
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_);
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  absl::Mutex data_ptr_mu_;
+  absl::Mutex mu_;
+
   // Hold a strong pointer to the DeviceBufferList as the key; as long as there
   // is a live DataPtr, the DeviceBufferList can't be dropped.
   absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes_
-      ABSL_GUARDED_BY(data_ptr_mu_);
+      ABSL_GUARDED_BY(mu_);
 
-  absl::Mutex deferred_ops_mu_;
-  std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(deferred_ops_mu_);
+  std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(mu_);
 
   // If a sequence repeats twice, we anticipate that it may repeat three or
   // more times.
   // We store the hashes of the repeated segment to efficiently identify these
   // 3rd and future repetitions without repeatedly rescanning.
-  std::vector<size_t> repetition_hashes_ ABSL_GUARDED_BY(deferred_ops_mu_);
+  std::vector<size_t> repetition_hashes_ ABSL_GUARDED_BY(mu_);
   // The index of the next hash in repetition_hashes_ to check.
   int64_t repetition_i_ = 0;
 
@@ -372,7 +375,7 @@ class EventsQueue {
 
 EventsQueue::CheckLastRepeatedSequenceResult
 EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   if (repetition_i_ >= repetition_hashes_.size()) {
     // This should only happen when repetition_hashes_ is empty and
     // repetition_i_ is 0, meaning that there is no known repeated sequence to
@@ -408,7 +411,7 @@ EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
 }
 
 int64_t EventsQueue::FindRepeatedSequence(size_t new_hash)
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   // Check for repetitions within the minimum and maximum range.
   if (deferred_ops_.size() <
       kMinRepetitionCount * kMinRepeatedSubsequenceLength) {
@@ -475,7 +478,7 @@ int64_t EventsQueue::FindRepeatedSequence(size_t new_hash)
 }
 
 void EventsQueue::RecordRepeatedHashPattern(int64_t repetition_length)
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   repetition_hashes_.resize(repetition_length);
   auto reverse_it = deferred_ops_.rbegin();
   for (int i = repetition_length - 1; i >= 0; --i) {
@@ -485,7 +488,7 @@ void EventsQueue::RecordRepeatedHashPattern(int64_t repetition_length)
 }
 
 std::vector<SharedDeviceBufferList> EventsQueue::GetRepeatedSequenceNodes()
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(deferred_ops_mu_) {
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
 
   // TODO(bawilson): correctly split out materialization loops
@@ -530,6 +533,7 @@ using DefinedNodeMap = absl::flat_hash_map<const DeviceBufferList*, OpUsage>;
 OpUsage GetOpUsage(
     const DeferredOp& deferred_op,
     const SharedDeviceBufferList& device_buffer_list,
+    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
         nodes_to_materialize_set) {
   // Explicitly materialized nodes are always outputs, even if they normally
@@ -541,9 +545,7 @@ OpUsage GetOpUsage(
     return OpUsage::kOutput;
   }
 
-  if (!device_buffer_list->is_stale()) {
-    // TODO(bawilson): use data pointer events to determine liveness instead
-    // of the live_data_ptr atomic to remove the dispatch/materialize race.
+  if (live_nodes.contains(device_buffer_list.get())) {
     ABSL_VLOG(3) << "[ProcessDeferredOpEvent] Adding live buffer "
                  << device_buffer_list.get() << " as output";
     return OpUsage::kOutput;
@@ -576,6 +578,7 @@ OpUsage GetOpUsage(
 // and updates the defined node map.
 void ProcessDeferredOpEvent(
     SharedDeviceBufferList&& device_buffer_list, const DeferredOp& deferred_op,
+    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
         nodes_to_materialize_set,
     std::vector<SharedDeviceBufferList>& execution_order,
@@ -615,8 +618,8 @@ void ProcessDeferredOpEvent(
     }
   }
 
-  defined_node_map[device_buffer_list.get()] =
-      GetOpUsage(deferred_op, device_buffer_list, nodes_to_materialize_set);
+  defined_node_map[device_buffer_list.get()] = GetOpUsage(
+      deferred_op, device_buffer_list, live_nodes, nodes_to_materialize_set);
 
   execution_order.push_back(std::move(device_buffer_list));
 }
@@ -673,7 +676,8 @@ absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 PrepareTraversals(
-    absl::Span<const EventsQueue::DeferredOpEvent> deferred_op_events,
+    const std::deque<EventsQueue::DeferredOpEvent>& deferred_op_events,
+    const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
         nodes_to_materialize_set,
@@ -719,8 +723,8 @@ PrepareTraversals(
     }
 
     ProcessDeferredOpEvent(std::move(device_buffer_list), *deferred_op,
-                           nodes_to_materialize_set, execution_order,
-                           defined_node_map);
+                           live_nodes, nodes_to_materialize_set,
+                           execution_order, defined_node_map);
 
     if (IsSplitAfter(split_mode)) {
       TT_ASSIGN_OR_RETURN(auto maybe_traversal,
@@ -1042,12 +1046,11 @@ PrepareStreamTraversals(
 #endif
     must_materialize_set.insert(node.get());
   }
-  // Do the partitioning of the deferred ops queue.
+  // Take all the deferred ops and live nodes from the stream state.
   // This is the only part than needs to hold the lock.
-  std::vector<EventsQueue::DeferredOpEvent> deferred_op_events =
-      stream_state->events_queue.TakeAll();
-  return PrepareTraversals(deferred_op_events, must_materialize,
-                           must_materialize_set,
+  auto take_result = stream_state->events_queue.TakeAll();
+  return PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
+                           must_materialize, must_materialize_set,
                            stream_state->events_queue.core_pinning_mode());
 }
 
@@ -1083,7 +1086,7 @@ PrepareDeviceTraversals(
   absl::flat_hash_set<const DeviceBufferList*> must_materialize_node_set;
   for (c10::StreamId stream_id = 0; stream_id < streams.size(); ++stream_id) {
     StreamState* stream = streams[stream_id];
-    auto deferred_op_events = stream->events_queue.TakeAll();
+    auto take_result = stream->events_queue.TakeAll();
     if (auto it = must_materialize_by_stream.find(stream_id);
         it != must_materialize_by_stream.end()) {
       must_materialize_nodes = std::move(it->second.nodes);
@@ -1091,8 +1094,8 @@ PrepareDeviceTraversals(
     }
     TT_ASSIGN_OR_RETURN(
         auto stream_traversals,
-        PrepareTraversals(deferred_op_events, must_materialize_nodes,
-                          must_materialize_node_set,
+        PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
+                          must_materialize_nodes, must_materialize_node_set,
                           stream->events_queue.core_pinning_mode()));
     must_materialize_nodes.clear();
     must_materialize_node_set.clear();
