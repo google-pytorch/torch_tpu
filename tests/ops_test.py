@@ -1467,6 +1467,35 @@ ACCURACY_OVERRIDES_GRAD_VS_GPU: dict[
     copy.deepcopy(ACCURACY_OVERRIDES_VS_GPU),
     {
         # go/keep-sorted start
+        "_foreach_clamp_max": {
+            torch.bfloat16: {"atol": 1.0},
+            torch.float16: {"atol": 1.0},
+        },
+        "_foreach_clamp_min": {
+            torch.bfloat16: {"atol": 1.0},
+            torch.float16: {"atol": 1.0},
+        },
+        "_foreach_erf": {
+            torch.float16: {"rtol": 2.5e-3, "atol": 1e-4},
+        },
+        "_foreach_erfc": {
+            torch.bfloat16: {"atol": 4.7e-3},
+        },
+        "_foreach_log10": {
+            torch.float16: {"rtol": 1.2e-3, "atol": 5.9e-4},
+        },
+        "_foreach_pow": {
+            torch.float16: {"rtol": 1.3e-3},
+        },
+        "_foreach_rsqrt": {
+            torch.float32: {"rtol": 4e-6},
+        },
+        "_foreach_sigmoid": {
+            torch.float16: {"atol": 5.9e-4},
+        },
+        "_foreach_tanh": {
+            torch.float32: {"atol": 7.3e-5},
+        },
         "_native_batch_norm_legit": {
             torch.bfloat16: {"atol": 1.1e-2},
             torch.float16: {"atol": 1.4e-3},

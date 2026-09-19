@@ -384,13 +384,12 @@ _OPS_TEST_ON_V7_TAGS = if_oss(
 )
 
 torch_tpu_py_test(
-    # TODO: switch this to TPU-vs-GPU.
-    name = "foreach_ops_test_grad_vs_cpu",
+    name = "foreach_ops_test_grad",
     timeout = "long",
     srcs = ["ops_test.py"],
     args = [
         "--compute_grad=True",
-        "--test_mode=torch_tpu_vs_cpu",
+        "--test_mode=torch_tpu_vs_gpu",
         "--test_categories=foreach",
     ] + if_oss(
         # Reduce samples to avoid timeouts in OSS.
@@ -398,6 +397,11 @@ torch_tpu_py_test(
         # Forge has more resources, allowing a larger sample size.
         ["--max_samples_per_op_dtype=20"],
     ),
+    data = [
+        "ops_test_gpu_golden_grad0.gz",
+        "ops_test_gpu_golden_grad1.gz",
+        "ops_test_gpu_golden_grad2.gz",
+    ],
     main = "ops_test.py",
     oss_presubmit_tpu_generation = _OPS_TEST_ON_V7_TPU_GENERATION,
     run_on_accelerators = _OPS_TEST_ON_V7_RUN_ON_ACCELERATORS,
