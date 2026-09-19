@@ -187,6 +187,7 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
@@ -291,6 +292,7 @@ torch_tpu_py_test(
     shard_count = 4,
     strict = True,
     tags = [
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x",
@@ -361,6 +363,7 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x",
@@ -415,6 +418,7 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         # Needed for getting xprof links
@@ -452,6 +456,7 @@ torch_tpu_py_test(
     strict = True,
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         "requires-accel-hbm",
         "requires-net:external",
         "requires-tpu-v7x",
@@ -486,6 +491,7 @@ torch_tpu_py_test(
     notest_oss = "Benchmarks have a separate workflow.",
     tags = [
         "cpu:4",
+        "nofastbuild",  # Benchmark.
         # This makes sure that we have enough host RAM to load weights from host to device HBM.
         "requires-accel-hbm",
         "requires-tpu-v7x:4",

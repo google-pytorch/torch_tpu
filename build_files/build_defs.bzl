@@ -478,12 +478,6 @@ def _check_and_adjust_test_tags(
             fail("nopresubmit must be a non-empty string documenting why the test " +
                  "should be skipped in presubmit.")
 
-        # We only have a presubmit build for CUDA tests. Therefore, skipping a CUDA test
-        # in presubmit means it won't run on TAP at all. To make this explicit, we don't
-        # allow nopresubmit for CUDA tests - they must use notap instead.
-        if _is_cuda_test(tags):
-            fail("CUDA tests must use notap instead of nopresubmit, as there's no postsubmit build for CUDA.")
-
         if "nopresubmit" not in tags:
             # This tag causes the test to be skipped in presubmit.
             tags.append("nopresubmit")

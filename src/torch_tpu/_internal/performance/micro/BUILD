@@ -36,12 +36,14 @@ torch_tpu_py_library(
 torch_tpu_py_test(
     name = "qwen3_explore",
     srcs = ["qwen3_explore.py"],
+    nopresubmit = "Benchmark.",
     oss_presubmit_tpu_generation = tpu_gen(
         "v7",
         reason = "Load balancing",
     ),
     shuffle_tests = False,
     tags = [
+        "nofastbuild",  # Benchmark.
         "requires-tpu-v5lite",
     ],
     deps = [

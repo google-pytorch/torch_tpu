@@ -554,6 +554,19 @@ def _test_cuda_build_test(env):
     env.expect.that_bool(result.create_build_test).equals(True)
     env.expect.that_collection(result.build_test_tags).contains_exactly(["cuda-build-test"])
 
+def _test_cuda_nopresubmit(env):
+    """Tests the nopresubmit parameter for CUDA tests."""
+    tags = ["requires-gpu-sm90"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = False,
+        nopresubmit = "reason",
+        tags = tags,
+    )
+
+    expected_tags = ["manual", "nopresubmit", "requires-gpu", "requires-gpu-sm90"] if is_oss() else ["manual", "nopresubmit", "requires-gpu-sm90"]
+    env.expect.that_collection(tags).contains_exactly(expected_tags)
+    env.expect.that_bool(result.create_build_test).equals(False)
+
 def _test_internal_notap_nobuild(env):
     """Tests using both notap and nobuild in internal builds."""
     tags = []
@@ -740,6 +753,7 @@ def build_defs_test_suite(name):
             _test_build_test_excludes_cpu_tags,
             _test_build_test_excludes_tpu_tags,
             _test_cuda_build_test,
+            _test_cuda_nopresubmit,
             _test_get_tpu_version,
             _test_internal_manual_nonightly_oss_tag,
             _test_internal_manual_nopresubmit_oss_tag,

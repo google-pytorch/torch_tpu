@@ -78,9 +78,11 @@ torch_tpu_py_test(
         "BENCHMARK_PLATFORM": "v5e_1x1",
     },
     nolocal = "user requested to run this manually",
+    nopresubmit = "Benchmark.",
     notest_oss = "requires huggingface configs from internal infra",
     shard_count = 50,
     tags = [
+        "nofastbuild",  # Benchmark.
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
         "requires-tpu-v5lite",

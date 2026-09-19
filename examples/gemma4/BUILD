@@ -103,6 +103,7 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "gemma4_hf_example",
     srcs = ["gemma4_hf_example.py"],
+    nopresubmit = "slow example",
     shuffle_tests = False,  # This script doesn't understand --test_randomize_ordering_seed.
     tags = [
         "noasan",  # OOM
