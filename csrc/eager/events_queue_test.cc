@@ -227,87 +227,6 @@ TEST_F(EventsQueueTest, StopsTrackingAfterClearEventsQueue) {
   EXPECT_THAT(traversals2, testing::IsEmpty());
 }
 
-TEST_F(EventsQueueTest, NoTraversalIfNothingToMaterialize) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  // Put three deferred ops in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_a = refs_a[0].device_buffer_list();
-  RecordDeferredOpCreated(list_a);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_b = refs_b[0].device_buffer_list();
-  RecordDeferredOpCreated(list_b);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_c, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_c = refs_c[0].device_buffer_list();
-  RecordDeferredOpCreated(list_c);
-
-  // Ask for a traversal to materialize nothing.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({}));
-
-  // Nothing needs to be executed to materialize nothing.
-  EXPECT_THAT(traversals, testing::IsEmpty());
-}
-
-TEST_F(EventsQueueTest, MissingNodesIgnored) {
-  ClearAllStreams();
-  ScopedPythonContextCapturer capturer(OpName::kEmpty);
-  Shape shape(Dimensions{8}, mlir::ElementType::F32);
-
-  // Put three deferred ops in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_a, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_a = refs_a[0];
-  auto list_a = ref_a.device_buffer_list();
-  RecordDeferredOpCreated(list_a);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_b, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto ref_b = refs_b[0];
-  auto list_b = ref_b.device_buffer_list();
-  RecordDeferredOpCreated(list_b);
-
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_c, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_c = refs_c[0].device_buffer_list();
-  RecordDeferredOpCreated(list_c);
-
-  // Create a fourth node, but don't put it in the queue.
-  TT_ASSERT_OK_AND_ASSIGN(auto refs_d, DeviceBufferList::CreateDeferred(
-                                           OpName::kAdd, DummyBuilder, {},
-                                           OpParamCacheKeys::Empty(), {shape}));
-  auto list_d = refs_d[0].device_buffer_list();
-
-  // Ask for a plan to materialize b and d.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_b, list_d}));
-
-  // a is included because it's not dead code, and is an unused by b; it needs
-  // to be materialized so that it gets executed.
-  // b needs to be materialized as it was an explicit materialization target.
-  // c is after the last known node (b) so it doesn't need to be executed.
-  // d is not in the queue, so it is ignored.
-  ASSERT_EQ(traversals.size(), 1);
-  const Traversal& traversal = *traversals[0];
-  EXPECT_THAT(traversal.arguments(), testing::IsEmpty());
-  EXPECT_THAT(traversal.execution_order(),
-              testing::ElementsAre(list_a, list_b));
-  EXPECT_THAT(traversal.outputs(), testing::ElementsAre(ref_a, ref_b));
-}
-
 TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
   ClearAllStreams();
   ScopedPythonContextCapturer capturer(OpName::kEmpty);
@@ -335,9 +254,11 @@ TEST_F(EventsQueueTest, SingleTraversalIfPossible) {
   auto list_c = ref_c.device_buffer_list();
   RecordDeferredOpCreated(list_c);
 
-  // Ask for a plan to materialize a, b, and c.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals, PrepareMaterializationTraversals(
-                                               {list_a, list_b, list_c}));
+  // Ask for a plan to materialize the stream.
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareStreamTraversals(list_a->device_index(), list_a->stream_id(),
+                              {list_a, list_b, list_c}));
 
   // There are no required split points, so a single traversal is returned
   // with all required nodes as outputs.
@@ -390,8 +311,9 @@ TEST_F(EventsQueueTest, SplitModeRespected) {
   RecordDeferredOpCreated(list_e);
 
   // Ask for a plan to materialize everything.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals(
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareStreamTraversals(list_a->device_index(), list_a->stream_id(),
                               {list_a, list_b, list_c, list_d, list_e}));
 
   // Each op ends up in its own traversal.
@@ -443,8 +365,9 @@ TEST_F(EventsQueueTest, DeadCodeEliminated) {
   auto list_d = ref_d.device_buffer_list();
   RecordDeferredOpCreated(list_d);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_d}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals, PrepareStreamTraversals(list_d->device_index(),
+                                               list_d->stream_id(), {list_d}));
   ASSERT_EQ(traversals.size(), 1);
 
   // The dead ops should be stripped.
@@ -499,8 +422,9 @@ TEST_F(EventsQueueTest, DeadSideEffectsRetained) {
   auto list_d = ref_d.device_buffer_list();
   RecordDeferredOpCreated(list_d);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({list_d}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals, PrepareStreamTraversals(list_d->device_index(),
+                                               list_d->stream_id(), {list_d}));
 
   // We get one traversal, as there were no required split points.
   ASSERT_EQ(traversals.size(), 1);
@@ -543,8 +467,10 @@ TEST_F(EventsQueueTest, MaterializationIgnoresUnusedEmptyOps) {
   RecordDeferredOpCreated(non_empty_list);
   RecordNewDataPtrCreated(non_empty_ref);
 
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals({non_empty_list}));
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareStreamTraversals(non_empty_list->device_index(),
+                              non_empty_list->stream_id(), {non_empty_list}));
 
   // We get one traversal, as there were no required split points.
   ASSERT_EQ(traversals.size(), 1);
@@ -592,8 +518,10 @@ TEST_F(EventsQueueTest, UsedEmptyOpsMaterializedOnFirstUse) {
   RecordNewDataPtrCreated(second_non_empty_ref);
 
   // Prepare traversals for the non-empty tensors only.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals,
-                          PrepareMaterializationTraversals(
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals,
+      PrepareStreamTraversals(first_non_empty_list->device_index(),
+                              first_non_empty_list->stream_id(),
                               {first_non_empty_list, second_non_empty_list}));
 
   // We get one traversal, as there were no required split points.
@@ -635,7 +563,9 @@ TEST_F(EventsQueueTest, MaterializationAppendsExplicitEmptyOps) {
   RecordNewDataPtrCreated(non_empty_ref);
 
   // Explicitly mark the empty tensor as an output.
-  TT_ASSERT_OK_AND_ASSIGN(auto traversals, PrepareMaterializationTraversals(
+  TT_ASSERT_OK_AND_ASSIGN(
+      auto traversals, PrepareStreamTraversals(non_empty_list->device_index(),
+                                               non_empty_list->stream_id(),
                                                {empty_list, non_empty_list}));
 
   // We get one traversal, as there were no required split points.

@@ -6779,7 +6779,7 @@ Supported combinations for non-constant padding:
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""bincount(): materialization failed with: Unexpected dimension of input tensor: [2, 2, 2]""",
+        tpu="""bincount(): unexpected dimension of input tensor: [2, 2, 2]""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
       torch.bincount(t).cpu()
@@ -6795,7 +6795,7 @@ Supported combinations for non-constant padding:
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
+        tpu="""gather(): expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
       # cpu() is needed because the error is triggered inside the op builder.
@@ -6812,7 +6812,7 @@ Supported combinations for non-constant padding:
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input and the index tensor to have the same number of dimensions, got 2D vs 3D""",
+        tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 2D vs 3D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
       # cpu() is needed because the error is triggered inside the op builder.
@@ -6826,7 +6826,7 @@ Supported combinations for non-constant padding:
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the input and the index tensor to have the same number of dimensions, got 0D vs 2D""",
+        tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 0D vs 2D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
       torch.gather(inp, dim, index).cpu()
@@ -6839,7 +6839,7 @@ Supported combinations for non-constant padding:
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""gather(): materialization failed with: expected the index tensor to have size less than or equal to the input tensor at dimension 1, got 4 vs 3""",
+        tpu="""gather(): expected the index tensor to have size less than or equal to the input tensor at dimension 1, got 4 vs 3""",
         gpu="""Size does not match at dimension 1 expected index [2, 4] to be no larger than self [2, 3] apart from dimension 0""",
     ):
       torch.gather(inp, dim, index).cpu()
@@ -7876,7 +7876,7 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""silu(): materialization failed with: expected the input dtype to be floating point, got int16""",
+        tpu="""silu(): expected the input dtype to be floating point, got int16""",
         gpu=""""silu_cuda" not implemented for 'Short'""",
     ):
       out = torch.nn.functional.silu(t)
@@ -8208,7 +8208,7 @@ Device-side assertion tracking was not enabled by user.""",
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
-        tpu="""scatter(): materialization failed with: expected the self tensor of shape [5, 5] to have the same rank as the src tensor of shape [5], got 2 vs. 1""",
+        tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the src tensor of shape [5], got 2 vs. 1""",
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
     ):
       torch.scatter(self_t, 0, index, src, out=out).cpu()
@@ -8224,7 +8224,7 @@ Device-side assertion tracking was not enabled by user.""",
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""scatter(): materialization failed with: expected the self tensor of shape [5, 5] to have the same rank as the index tensor of shape [5], got 2 vs. 1""",
+        tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the index tensor of shape [5], got 2 vs. 1""",
         gpu="""Index tensor must have the same number of dimensions as self tensor""",
     ):
       torch.scatter(self_t, 0, index, src, out=out).cpu()
@@ -8252,7 +8252,7 @@ Device-side assertion tracking was not enabled by user.""",
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""softmax_backward_data(): materialization failed with: expected grad_output and output arguments to have the same shape, got [5, 5] vs. [5]""",
+        tpu="""softmax_backward_data(): expected grad_output and output arguments to have the same shape, got [5, 5] vs. [5]""",
         gpu="""Expected tensor for argument #1 'grad' to have same size as tensor for argument #2 'output'; but [5, 5] does not equal [5] (while checking arguments for softmax_backward)""",
     ):
       torch.ops.aten._softmax_backward_data(
@@ -9300,7 +9300,7 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_c2c(): materialization failed with: expected complex input type, got float32""",
+        tpu="""fft_c2c(): expected complex input type, got float32""",
         gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
     ):
       torch.ops.aten._fft_c2c(t, [0], 0, True)
@@ -9309,7 +9309,7 @@ Device-side assertion tracking was not enabled by user.""",
     t = torch.ones(4, device=et.device(), dtype=torch.float32)
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""fft_c2r(): materialization failed with: expected complex input type, got float32""",
+        tpu="""fft_c2r(): expected complex input type, got float32""",
         gpu="""Expected self.is_complex() to be true, but got false.  (Could this error message be improved?  If so, please report an enhancement request to PyTorch.)""",
     ):
       torch.ops.aten._fft_c2r(t, [0], 0, 4)

@@ -21,12 +21,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <queue>
-#include <string>
 #include <string_view>
 #include <thread>  // NOLINT(build/c++11)
 #include <utility>
@@ -42,11 +40,9 @@
 #include "absl/container/inlined_vector.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
-#include "absl/log/absl_vlog_is_on.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "c10/core/Device.h"
@@ -74,13 +70,6 @@
 namespace torch_tpu {
 namespace {
 
-// A task to materialize a list of nodes.
-// This will materialize all streams that have any of the given nodes, but only
-// up to the last node in the list for each stream.
-struct NodesMaterializationTask {
-  xla::Promise<void> completion_promise;
-};
-
 // A task to materialize a stream.
 // This will check the current state of deferred work on the stream, and start
 // all necessary executions to catch the stream up to a snapshot.
@@ -100,8 +89,7 @@ struct DeviceMaterializationTask {
 };
 
 using MaterializationKind =
-    std::variant<NodesMaterializationTask, StreamMaterializationTask,
-                 DeviceMaterializationTask>;
+    std::variant<StreamMaterializationTask, DeviceMaterializationTask>;
 
 // Common properties for all materialization tasks.
 struct MaterializationTaskCommon {
@@ -146,20 +134,6 @@ struct MaterializationTask {
 // this file.
 
 namespace {
-
-void LogDeferredNodes(absl::Span<const SharedDeviceBufferList> nodes,
-                      const std::string_view msg_prefix) {
-  if (ABSL_VLOG_IS_ON(1)) {
-    for (int64_t i = 0; i < nodes.size(); i++) {
-      const auto& node = nodes[i];
-      const auto deferred_op = node->deferred_op();
-      ABSL_VLOG(1) << msg_prefix << i << ": " << node.get()
-                   << (deferred_op
-                           ? absl::StrCat(" op: ", deferred_op->op_name())
-                           : "<Not Deferred>");
-    }
-  }
-}
 
 // When preparing a list of Traversals into a sequence of ExecutionTasks,
 // some may fail. This struct holds the results, including the first error
@@ -399,34 +373,8 @@ MaterializationStages ApplySplitMode(
 MaterializationStages ProcessMaterializationTask(
     MaterializationTask& task, mlir::MLIRContext& mlir_context) {
   std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
-  if (std::holds_alternative<NodesMaterializationTask>(task.kind)) {
-    ABSL_VLOG(1)
-        << "[MaterializationWorker] Processing NodesMaterializationTask with "
-        << task.common.must_materialize.size() << " nodes";
-    LogDeferredNodes(task.common.must_materialize,
-                     /* msg_prefix= */ "  Input node");
-
-    std::vector<SharedDeviceBufferList> all_nodes =
-        task.common.must_materialize;
-
-    // Filter out non-deferred nodes that may have been materialized by an
-    // earlier materialization task.
-    std::erase_if(all_nodes, [](const SharedDeviceBufferList& node) {
-      return !node->is_deferred();
-    });
-    if (all_nodes.empty()) {
-      // Everything was already materialized, nothing more to do.
-      return MaterializationStages{.execution_tasks = {},
-                                   .first_error = absl::OkStatus()};
-    }
-    auto traversals_or = PrepareMaterializationTraversals(all_nodes);
-    if (!traversals_or.ok()) {
-      return MaterializationStages{.execution_tasks = {},
-                                   .first_error = traversals_or.status()};
-    }
-    traversals = std::move(*traversals_or);
-  } else if (const auto* stream_task =
-                 std::get_if<StreamMaterializationTask>(&task.kind)) {
+  if (const auto* stream_task =
+          std::get_if<StreamMaterializationTask>(&task.kind)) {
     ABSL_VLOG(1)
         << "[MaterializationWorker] Processing MaterializationTask with "
         << "stream " << stream_task->stream_id << " on device "
@@ -527,36 +475,6 @@ class MaterializationWorker {
       }
       FailRemainingExecutionTasks();
     }
-  }
-
-  xla::Future<void> EnqueueNodes(std::vector<SharedDeviceBufferList> nodes,
-                                 MaterializationReason reason,
-                                 MaterializationMode materialization_mode) {
-    ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing " << nodes.size()
-                 << " nodes for materialization";
-    auto [promise, future] = xla::MakePromise<void>();
-    MaterializationTaskCommon common(std::move(nodes), reason,
-                                     materialization_mode);
-
-    absl::MutexLock lock(materialize_mu_);
-    // Check shutdown state after acquiring the lock to avoid a time-of-check/
-    // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) {
-      // State is shutting down, fail the promise immediately.
-      promise.Set(
-          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                       // from Python
-          << "MaterializationWorker is shutting down");
-      return future;
-    }
-    materialize_tasks_.push(MaterializationTask{
-        .kind =
-            NodesMaterializationTask{
-                .completion_promise = std::move(promise),
-            },
-        .common = std::move(common),
-    });
-    return future;
   }
 
   xla::Future<std::shared_ptr<EventSnapshot>> EnqueueStream(
@@ -739,12 +657,8 @@ class MaterializationWorker {
     }
 
     // Set the completion promise for the task.
-    if (auto* nodes_task = std::get_if<NodesMaterializationTask>(&task.kind)) {
-      ABSL_VLOG(2) << "[MaterializationWorker] NodesMaterializationTask "
-                      "processed, setting completion promise";
-      nodes_task->completion_promise.Set(first_error);
-    } else if (auto* stream_task =
-                   std::get_if<StreamMaterializationTask>(&task.kind)) {
+    if (auto* stream_task =
+            std::get_if<StreamMaterializationTask>(&task.kind)) {
       if (first_error.ok()) {
         ABSL_VLOG(2) << "[MaterializationWorker] StreamMaterializationTask "
                         "processed, setting completion promise";
@@ -836,11 +750,8 @@ class MaterializationWorker {
           node->SetAsError(shutdown_status);
         }
         // Mark the tasks' completion promise as failed.
-        if (auto* nodes_task = std::get_if<NodesMaterializationTask>(
+        if (auto* stream_task = std::get_if<StreamMaterializationTask>(
                 &materialization_task->kind)) {
-          nodes_task->completion_promise.Set(shutdown_status);
-        } else if (auto* stream_task = std::get_if<StreamMaterializationTask>(
-                       &materialization_task->kind)) {
           stream_task->completion_promise.Set(shutdown_status);
         } else if (auto* device_task = std::get_if<DeviceMaterializationTask>(
                        &materialization_task->kind)) {
@@ -918,24 +829,6 @@ MaterializationWorker& GetMaterializationWorker() {
   return *worker;
 }
 
-// Common pathway for all Materialize() overloads.
-// Precondition: `nodes_to_materialize` is non-empty, contains no placeholders,
-// and contains only unique deferred nodes.
-absl::Status MaterializeImpl(
-    std::vector<SharedDeviceBufferList>&& nodes_to_materialize,
-    MaterializationReason reason, MaterializationMode materialization_mode) {
-  tsl::profiler::TraceMe t("MaterializeImpl");
-  ABSL_VLOG(1) << "[MaterializeImpl] Materializing "
-               << nodes_to_materialize.size() << " nodes";
-
-  auto future = GetMaterializationWorker().EnqueueNodes(
-      std::move(nodes_to_materialize), reason, materialization_mode);
-  TT_RETURN_IF_ERROR(future.Await()).SetPrepend()
-      << "materialization failed with: ";
-
-  return absl::OkStatus();
-}
-
 inline const SharedDeviceBufferList& GetDeviceBufferList(
     const SharedDeviceBufferList& node) {
   return node;
@@ -947,16 +840,26 @@ inline const SharedDeviceBufferList& GetDeviceBufferList(
 }
 
 // Makes a copy of all SharedDeviceBufferLists in `items` that are deferred and
-// unique.
+// unique and on the specified stream.
 // Returns an error if any item is a placeholder.
 template <typename T>
 absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
-    absl::Span<const T> items) {
-  std::vector<SharedDeviceBufferList> nodes_to_materialize;
+    absl::Span<const T> items, c10::DeviceIndex device_index,
+    std::optional<c10::StreamId> stream_id) {
+  std::vector<SharedDeviceBufferList> nodes_to_materialize;  // return value
+
+  // Depending on the number of items to scan, we either use an inlined vector
+  // or a hash set to deduplicate nodes.
   if (items.size() <= 16) {
     absl::InlinedVector<const DeviceBufferList*, 16> seen;
     for (const T& item : items) {
       const SharedDeviceBufferList& node = GetDeviceBufferList(item);
+      if (node->device_index() != device_index) {
+        continue;
+      }
+      if (stream_id.has_value() && node->stream_id() != *stream_id) {
+        continue;
+      }
       if (ABSL_PREDICT_FALSE(node->is_placeholder())) {
         return TT_ERROR(error::kInternal)
                << "cannot Materialize() a placeholder tensor or a tensor that "
@@ -986,6 +889,12 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
     absl::flat_hash_set<const DeviceBufferList*> seen;
     for (const T& item : items) {
       const SharedDeviceBufferList& node = GetDeviceBufferList(item);
+      if (node->device_index() != device_index) {
+        continue;
+      }
+      if (stream_id.has_value() && node->stream_id() != *stream_id) {
+        continue;
+      }
       if (ABSL_PREDICT_FALSE(node->is_placeholder())) {
         return TT_ERROR(error::kInternal)
                << "cannot Materialize() a placeholder tensor or a tensor that "
@@ -1007,39 +916,12 @@ absl::StatusOr<std::vector<SharedDeviceBufferList>> GetUniqueDeferredNodes(
   return nodes_to_materialize;
 }
 
-// Common implementation for Materialize(Span<SharedDeviceBufferList>) and
-// Materialize(Span<DeviceBufferRef>).
-//
-// Performance Invariants & Rationale:
-//   1. Zero-Allocation Fast Path & Single-Element Specialization:
-//      `Materialize` is frequently invoked on step boundaries or explicit sync
-//      points (e.g., `torch_tpu.sync.synchronize(tensors, wait=False)`) where
-//      some or all tensors may already be materializing or materialized (such
-//      as in DeferNever / Eager Default mode). For `items.size() == 1` (which
-//      covers ~99% of single-tensor synchronize calls), we check
-//      `is_deferred()` directly without any loop or deduplication container.
-//      For multi-element spans, we perform a single pass and return
-//      `absl::OkStatus()` immediately with zero heap allocations if no deferred
-//      nodes are found.
-//   2. Lazy Single-Allocation Reservation (`reserve(items.size())`):
-//      When a deferred node is encountered, reserving `items.size()` lazily on
-//      the first deferred item guarantees at most one heap allocation for
-//      `nodes_to_materialize` while preserving zero allocations when all nodes
-//      are already materialized.
-//   3. Zero-Heap-Allocation Caller-Side Deduplication:
-//      Multiple tensors in `items` frequently share the same underlying
-//      `DeviceBufferList` (e.g., multi-output ops or tensor views/slices passed
-//      to `synchronize`). Deduplicating `DeviceBufferList*` pointers on the
-//      caller thread avoids redundant atomic `std::shared_ptr` reference-count
-//      increments/decrements and avoids enqueuing duplicate pointers. For
-//      typical small spans (`num_deferred <= 16`), we use a stack-allocated
-//      `absl::InlinedVector<const DeviceBufferList*, 16>` (zero heap
-//      allocation, L1-cache-resident linear scan); for larger spans, we use
-//      `absl::flat_hash_set`.
-//   4. Zero-Copy Move into Worker Queue:
-//      `nodes_to_materialize` is moved (`std::move`) directly into
-//      `MaterializeImpl` -> `EnqueueNodes`, avoiding a second vector heap
-//      allocation and `2 * N` atomic `shared_ptr` refcount operations.
+// Dispatches only as many stream materialization tasks as necessary to ensure
+// all deferred nodes in `items` are enqueued for materialization.
+// Note: unlike MaterializeStream (which always enqueues a stream sync, even if
+// all must_materialize are already materialized), this function does not
+// enqueue any stream syncs if all items are already materialized.
+// Returns an error if any item is a placeholder.
 template <typename T>
 absl::Status MaterializeSpan(absl::Span<const T> items,
                              MaterializationReason reason,
@@ -1047,8 +929,17 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
   if (items.empty()) {
     return absl::OkStatus();
   }
-  if (items.size() == 1) {
-    const SharedDeviceBufferList& node = GetDeviceBufferList(items[0]);
+
+  // In the majority of cases, we expect that there will very few distinct
+  // streams, so we use a vector instead of a map.
+  struct DeviceStreamId {
+    c10::DeviceIndex device_index;
+    c10::StreamId stream_id;
+  };
+  absl::InlinedVector<DeviceStreamId, 2> device_stream_ids;
+  for (const T& item : items) {
+    const SharedDeviceBufferList& node = GetDeviceBufferList(item);
+    // Check if this node needs to be materialized.
     if (ABSL_PREDICT_FALSE(node->is_placeholder())) {
       return TT_ERROR(error::kInternal)
              << "cannot Materialize() a placeholder tensor or a tensor that "
@@ -1057,21 +948,40 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
                 "materialize tensors";
     }
     if (!node->is_deferred()) {
-      return absl::OkStatus();
+      continue;
     }
-    std::vector<SharedDeviceBufferList> nodes_to_materialize;
-    nodes_to_materialize.reserve(1);
-    nodes_to_materialize.push_back(node);
-    return MaterializeImpl(std::move(nodes_to_materialize), reason,
-                           materialization_mode);
+
+    // This node needs to be materialized. Check if we already enqueued its
+    // stream for materialization.
+    if (auto it =
+            std::find_if(device_stream_ids.begin(), device_stream_ids.end(),
+                         [&node](const DeviceStreamId& id) {
+                           return id.device_index == node->device_index() &&
+                                  id.stream_id == node->stream_id();
+                         });
+        it != device_stream_ids.end()) {
+      continue;
+    }
+
+    // Found a new stream to enqueue.
+    // Copy out only its unique, deferred nodes to a vector
+    // and push the vector to the worker as a stream materialization task.
+    TT_ASSIGN_OR_RETURN(
+        std::vector<SharedDeviceBufferList> nodes_on_stream,
+        GetUniqueDeferredNodes(items, node->device_index(), node->stream_id()));
+    auto future = GetMaterializationWorker().EnqueueStream(
+        node->device_index(), node->stream_id(), reason, materialization_mode,
+        std::move(nodes_on_stream));
+
+    // Make sure that the stream task was enqueued successfully.
+    // TODO(bawilson): remove this await, it shouldn't be necessary.
+    TT_RETURN_IF_ERROR(future.Await());
+
+    // Record that we enqueued this stream.
+    device_stream_ids.push_back(DeviceStreamId{
+        .device_index = node->device_index(), .stream_id = node->stream_id()});
   }
-  TT_ASSIGN_OR_RETURN(std::vector<SharedDeviceBufferList> nodes_to_materialize,
-                      GetUniqueDeferredNodes(items));
-  if (nodes_to_materialize.empty()) {
-    return absl::OkStatus();
-  }
-  return MaterializeImpl(std::move(nodes_to_materialize), reason,
-                         materialization_mode);
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -1114,8 +1024,9 @@ absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
                   stream_id);
   }
 #endif
-  TT_ASSIGN_OR_RETURN(std::vector<SharedDeviceBufferList> must_materialize_vec,
-                      GetUniqueDeferredNodes(must_materialize));
+  TT_ASSIGN_OR_RETURN(
+      std::vector<SharedDeviceBufferList> must_materialize_vec,
+      GetUniqueDeferredNodes(must_materialize, device_index, stream_id));
   auto future = GetMaterializationWorker().EnqueueStream(
       device_index, stream_id, reason, mode, std::move(must_materialize_vec));
   // We have to await the future here to ensure that more work is not pushed to
@@ -1135,7 +1046,8 @@ absl::StatusOr<std::vector<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
 #endif
 
   TT_ASSIGN_OR_RETURN(std::vector<SharedDeviceBufferList> must_materialize_vec,
-                      GetUniqueDeferredNodes(must_materialize));
+                      GetUniqueDeferredNodes(must_materialize, device_index,
+                                             /*stream_id=*/std::nullopt));
   auto future = GetMaterializationWorker().EnqueueDevice(
       device_index, reason, mode, std::move(must_materialize_vec));
   // We have to await the future here to ensure that more work is not pushed

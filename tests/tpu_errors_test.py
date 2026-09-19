@@ -957,7 +957,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""call_custom_kernel(): materialization failed with: unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
+        tpu="""call_custom_kernel(): unknown custom kernel "not_registered_kernel_name" with key "some_kernel_key"; call torch_tpu._internal.pallas.tpu_torch_pallas.register_custom_kernel() to register the kernel before calling it""",
     ):
       outputs = tpu_torch_pallas.call_custom_kernel(
           name, kernel_key, inputs=inputs, output_shapes=output_shapes
@@ -1951,7 +1951,7 @@ module {
     # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""to_copy(): materialization failed with: expected all dimensions of the bitcast input tensor to be static, got 1 dynamic dimension within shape [dyn, 2]; calling ViewPrimitiveShlo() with input shape=[dyn, 2] and primitive=bitcast(from_type=int32, to_type=int64)""",
+        tpu="""to_copy(): expected all dimensions of the bitcast input tensor to be static, got 1 dynamic dimension within shape [dyn, 2]; calling ViewPrimitiveShlo() with input shape=[dyn, 2] and primitive=bitcast(from_type=int32, to_type=int64)""",
         message_reviewed_by="wan",
     ):
       out = inp.view(torch.int64)
@@ -2802,7 +2802,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_dense_matmul_grad_with_adagrad(): materialization failed with: expected accumulator to be 1D (row-wise) or 2D (standard), got 3D""",
+        tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator to be 1D (row-wise) or 2D (standard), got 3D""",
     ):
       torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
           row_pointers,
@@ -2825,7 +2825,7 @@ module {
     )
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_dense_matmul_grad_with_adagrad(): materialization failed with: expected accumulator dimension 1 to match embedding dimension (8), got 4""",
+        tpu="""sparse_dense_matmul_grad_with_adagrad(): expected accumulator dimension 1 to match embedding dimension (8), got 4""",
     ):
       torch.ops.tpu.sparse_dense_matmul_grad_with_adagrad(
           row_pointers,
@@ -2915,7 +2915,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_dense_matmul_grad_with_adam(): materialization failed with: expected velocity tensor to be 1D or 2D, got rank 3""",
+        tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor to be 1D or 2D, got rank 3""",
         message_reviewed_by="songbaie",
     ):
       torch.ops.tpu.sparse_dense_matmul_grad_with_adam(
@@ -2944,7 +2944,7 @@ module {
 
     with et.assert_raises_message(
         RuntimeError,
-        tpu="""sparse_dense_matmul_grad_with_adam(): materialization failed with: expected velocity tensor dimension 1 to be 8, got 9""",
+        tpu="""sparse_dense_matmul_grad_with_adam(): expected velocity tensor dimension 1 to be 8, got 9""",
         message_reviewed_by="songbaie",
     ):
       torch.ops.tpu.sparse_dense_matmul_grad_with_adam(

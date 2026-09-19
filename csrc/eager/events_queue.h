@@ -65,15 +65,6 @@ void ResetRepeatedOpsHeuristicState();
 void ClearAllStreams();
 
 // Returns a sequence of Traversals that, if compiled and executed, would
-// materialize all live tensors up to and including all nodes_to_materialize
-// (even if any node to materialize is not live).
-//
-// This clears these nodes from the events queue.
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareMaterializationTraversals(
-    absl::Span<const SharedDeviceBufferList> nodes_to_materialize);
-
-// Returns a sequence of Traversals that, if compiled and executed, would
 // materialize all live tensors created on the given device and stream.
 //
 // Any nodes passed in must_materialize will be materialized, even if they are

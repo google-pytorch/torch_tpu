@@ -63,7 +63,7 @@ absl::StatusOr<mlir::MlirOp> BuildBinCount(
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   auto input_shape = input_type.getShape();
   TT_RET_CHECK(input_shape.size() == 1, error::kInvalidArgument)
-      << "Unexpected dimension of input tensor: " << ToString(input_shape);
+      << "unexpected dimension of input tensor: " << ToString(input_shape);
   int64_t num_inputs = input_shape[0];
 
   mlir::Type input_dtype = input_type.getElementType();

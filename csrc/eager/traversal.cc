@@ -559,7 +559,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=temporary
       core_pinning_mode_ == CorePinningMode::kUnpinned,
       error::kPythonNotImplementedError)
-      << "MLIR lowering for core pinning is not yet implemented";
+      << "core pinning MLIR lowering is not yet implemented";
   // Read the traversal's values.
   absl::Span<const DeviceBufferRef> arguments = this->arguments();
   absl::Span<const SharedDeviceBufferList> execution_order =

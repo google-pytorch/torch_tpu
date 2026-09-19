@@ -245,7 +245,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
 
     with self.assertRaisesRegex(
         NotImplementedError,
-        'MLIR lowering for core pinning is not yet implemented',
+        'core pinning MLIR lowering is not yet implemented',
     ):
       with torch.tpu.stream(new_stream):
         torch.ones(1, device='tpu').cpu()
@@ -258,7 +258,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
 
     with self.assertRaisesRegex(
         NotImplementedError,
-        'MLIR lowering for core pinning is not yet implemented',
+        'core pinning MLIR lowering is not yet implemented',
     ):
       with torch.tpu.stream(new_stream):
         torch.ones(1, device='tpu').cpu()
