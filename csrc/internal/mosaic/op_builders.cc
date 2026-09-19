@@ -89,14 +89,16 @@ Value CreateRepeatOp(ImplicitLocOpBuilder& builder, Value input,
 
   ABSL_CHECK_EQ(target_dim_size % input_dim_size, 0);  // CRASH_OK
   int64_t num_repeats = target_dim_size / input_dim_size;
+  if (num_repeats == 1) {
+    return input;
+  }
 
   SmallVector<int64_t> output_shape(input_type.getShape());
   output_shape[dimension] = target_dim_size;
   VectorType output_type =
       VectorType::get(output_shape, input_type.getElementType());
-
-  return tpu::RepeatOp::create(builder, output_type, input, dimension,
-                               num_repeats);
+  SmallVector<Value> operands(num_repeats, input);
+  return tpu::ConcatenateOp::create(builder, output_type, operands, dimension);
 }
 
 Value CreateReciprocal(ImplicitLocOpBuilder& b, Value input) {
