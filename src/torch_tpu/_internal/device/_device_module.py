@@ -832,27 +832,24 @@ class TpuDeviceModule(_DeviceModule):
       cls,
       mesh_shape: tuple[int, ...],
       *,
-      topology: str = "single_slice",
       dcn_mesh_shape: tuple[int, ...] | None = None,
-      process_is_granule: bool = False,
       allow_split_physical_axes: bool = False,
       contiguous_submeshes: bool = False,
   ) -> torch.Tensor:
     """Computes a topology-aware rank layout tensor.
 
-    Returns an int64 tensor of global torch ranks with shape `mesh_shape` (for
-    topology="multi_slice": elementwise `dcn_mesh_shape * mesh_shape`), mapping
-    logically adjacent coordinate positions to physically adjacent TPU devices
-    on the ICI fabric.
+    Returns an int64 tensor of global torch ranks with shape `mesh_shape`,
+    mapping logically adjacent coordinate positions to physically adjacent TPU
+    devices on the ICI fabric. Whether the job spans one slice or several is
+    read off the devices, so the same call covers both.
 
     Args:
-      mesh_shape: Logical mesh shape, ordered by increasing network intensity.
-      topology: "single_slice" (default) arranges a single slice over ICI;
-        "multi_slice" uses create_hybrid_device_mesh for meshes spanning a
-        slower outer network.
-      dcn_mesh_shape: Outer (slower network) mesh shape for "multi_slice".
-      process_is_granule: Treat processes (hosts) rather than slices as the
-        outer-network granule in "multi_slice" mode.
+      mesh_shape: Full logical mesh shape, ordered by increasing network
+        intensity. Its product must equal the world size, on multi-slice jobs
+        too.
+      dcn_mesh_shape: Which logical axes are split across slices. Same rank as
+        `mesh_shape`, product equal to the number of slices, and must divide
+        `mesh_shape` elementwise. Inferred when None.
       allow_split_physical_axes: Permits splitting a physical axis across
         logical axes when required.
       contiguous_submeshes: Forwards to create_device_mesh.
@@ -865,9 +862,7 @@ class TpuDeviceModule(_DeviceModule):
     return device_mesh.topology_aware_mesh(
         cls._device_type,
         mesh_shape,
-        topology=topology,
         dcn_mesh_shape=dcn_mesh_shape,
-        process_is_granule=process_is_granule,
         allow_split_physical_axes=allow_split_physical_axes,
         contiguous_submeshes=contiguous_submeshes,
     )

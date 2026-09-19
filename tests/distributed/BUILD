@@ -803,15 +803,42 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "device_mesh_test",
-    srcs = ["device_mesh_test.py"],
+    name = "device_mesh_errors_test",
+    srcs = ["device_mesh_errors_test.py"],
+    tags = [
+        "nosan",  # *san builds are low-value for error tests.
+    ],
     deps = [
+        ":device_mesh_test_utils",
         "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
         "//src/torch_tpu:_loader",
         "//src/torch_tpu/_internal/distributed:device_mesh",
         "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_test(
+    name = "device_mesh_test",
+    srcs = ["device_mesh_test.py"],
+    deps = [
+        ":device_mesh_test_utils",
+        "//shims/absl_py/testing:absltest",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu:_loader",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
+        "//tests:seed_test_utils",
+    ],
+)
+
+torch_tpu_py_library(
+    name = "device_mesh_test_utils",
+    testonly = True,
+    srcs = ["device_mesh_test_utils.py"],
+    deps = [
+        "//src/torch_tpu/_internal/distributed:device_mesh",
     ],
 )
 

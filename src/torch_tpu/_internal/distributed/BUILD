@@ -77,6 +77,7 @@ torch_tpu_py_library(
     srcs = ["device_mesh.py"],
     deps = [
         ":device_utils",
+        "//shims/absl_py/logging",
         "//shims/torch:pytorch",
         "@pypi//numpy",
     ],
