@@ -16,23 +16,29 @@
 
 import marimo
 
-__generated_with = "0.21.1"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _():
+  import os
   import marimo as mo
 
-  return (mo,)
+  # Enable Fused Eager mode globally before TPU device initialization
+  os.environ["TORCH_TPU_DEFER_AND_FUSE"] = "1"
+
+  import torch
+
+  return mo, os, torch
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    # **Eager Mode and Execution Control**
+    # **TorchTPU Eager Mode and Execution Control**
 
-    This guide provides an overview of TorchTPU's execution modes. TorchTPU supports multiple ways to dispatch operations to the hardware, ranging from standard eager execution to highly optimized fused execution.
+    This guide provides an architectural overview and practical walkthrough of TorchTPU's execution modes. TorchTPU supports multiple dispatch and execution paradigms to balance interactive debugging flexibility with high-throughput hardware utilization on Google Cloud TPUs.
     """)
   return
 
@@ -40,40 +46,44 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## **Execution Modes**
+    ## **1. The Three Eager Execution Modes**
 
-    TorchTPU provides three execution modes. By default, it operates in **Strict Eager** mode, which behaves similarly to standard PyTorch on CUDA.
+    TorchTPU provides three distinct execution modes controlled via environment variables:
 
-    | Mode | Constant | Description |
-    | :--- | :--- | :--- |
-    | **Strict Eager** | `EagerMode.DEFER_NEVER` | **The default mode.** Operations are dispatched one at a time and the execution is asynchronous. This aligns with standard PyTorch Eager mode on GPU. |
-    | **Debug Eager** | `EagerMode.DEFER_NEVER_AND_LAUNCH_BLOCKING` | **Synchronous mode.** Operations are dispatched one at a time but execution is synchronous. This mode can also be enabled with the TORCH_TPU_LAUNCH_BLOCKING="1" environment variable. This execution mode is similar to the CUDA_LAUNCH_BLOCKING environment variable. |
-    | **Fused Eager** | `EagerMode.DEFER_AND_FUSE` | **Optimized mode.** Groups multiple operations together, allowing the XLA compiler to fuse across operation boundaries for high performance. This mode can also be enabled with the TORCH_TPU_DEFER_AND_FUSE="1" environment variable.|
+    | Mode | Environment Variable | Dispatch Behavior | Typical Use Case |
+    | :--- | :--- | :--- | :--- |
+    | **Strict Eager** | *(Default when unset or `"0"`)* | Ops are dispatched immediately and executed asynchronously on the device stream. | Interactive exploration, CPU/GPU drop-in parity. |
+    | **Fused Eager** | `TORCH_TPU_DEFER_AND_FUSE="1"` | Operations are deferred and compiled as fused multi-op XLA clusters prior to materialization. | High-throughput eager training & inference. |
+    | **Debug Eager** | `TORCH_TPU_LAUNCH_BLOCKING="1"` | Ops are dispatched one at a time and the host CPU synchronizes synchronously after each op. | Step-by-step debugging, pinpointing NaNs or runtime crashes. |
 
+    ---
 
-    ### **Switching Modes**
-    You can change the execution mode in two ways:
+    ## **2. Configuring Execution Modes via Environment Variables**
 
-    #### **1. Globally (for the entire session)**
-    Assign the desired mode to the `eager_mode` property:
+    Because TorchTPU initializes its runtime and driver configurations upon first device touch, execution modes must be configured via environment variables **before** initializing TPU operations (either in your shell or before the first TPU tensor is created):
 
-    ```python
-    from torch_tpu._internal import execution_mode as em
+    ### **A. Shell Configuration (Recommended)**
+    ```bash
+    # 1. High-Performance Fused Eager Mode (Recommended for eager workloads)
+    export TORCH_TPU_DEFER_AND_FUSE="1"
 
-    # Switch to Strict Eager globally
-    em.eager_mode = em.EagerMode.DEFER_NEVER
+    # 2. Synchronous Debug Eager Mode (Pinpointing crashes, equivalent to CUDA_LAUNCH_BLOCKING=1)
+    export TORCH_TPU_LAUNCH_BLOCKING="1"
+
+    # 3. Strict Eager Mode (Standard PyTorch eager behavior)
+    unset TORCH_TPU_DEFER_AND_FUSE
+    unset TORCH_TPU_LAUNCH_BLOCKING
     ```
 
-    #### **2. Locally (using a context manager)**
-    Use `set_eager_mode` to temporarily override the mode for a block of code:
-
+    ### **B. Programmatic Configuration (Before Device Initialization)**
     ```python
-    from torch_tpu._internal import execution_mode as em
+    import os
 
-    # Force every operation to execute immediately for this block
-    with em.set_eager_mode(em.EagerMode.DEFER_NEVER):
-        # Now you can pinpoint the exact line where an error occurs
-        output = model(input_data)
+    # Enable Fused Eager mode before importing torch or creating TPU tensors:
+    os.environ["TORCH_TPU_DEFER_AND_FUSE"] = "1"
+
+    import torch
+    device = torch.device("tpu")
     ```
     """)
   return
@@ -82,89 +92,155 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## **Demonstrating the Difference**
+    ## **3. Under the Hood: Graph Fusion & Materialization**
 
-    In **Strict Eager** (default), operations are executed one at a time. In **Fused Eager**, operations are deferred and only executed as larger chunks as necessary.
+    How does **Fused Eager** (`TORCH_TPU_DEFER_AND_FUSE="1"`) work on TPU silicon?
+
+    1. **Deferred Queueing**: When element-wise or arithmetic operations are called, TorchTPU records them in an internal deferred execution buffer rather than launching individual device kernels immediately.
+    2. **Multi-Op Fusion**: When execution is forced by a **materialization trigger** (such as transferring data to CPU via `.cpu()`, inspecting values via `.item()`, or calling `torch.tpu.synchronize()`), XLA compiles the accumulated operations into a single fused hardware cluster.
+    3. **Hardware Efficiency**: Intermediate tensors stay resident in fast on-chip Vector Memory (VMEM) or VPU registers instead of suffering multiple High-Bandwidth Memory (HBM) round-trips.
+
+    We can observe this deferred queueing and materialization behavior directly:
+    """)
+  return
+
+
+@app.cell
+def _(os, torch):
+  import time as _time
+
+  # Verify active environment setting
+  print(
+      "TORCH_TPU_DEFER_AND_FUSE:"
+      f" {os.environ.get('TORCH_TPU_DEFER_AND_FUSE', '0')}"
+  )
+
+  # Initialize TPU tensor
+  _x = torch.randn(2048, 2048, device="tpu", dtype=torch.bfloat16)
+
+  # Queue operations into the deferred execution buffer
+  torch.tpu.synchronize()
+  _t0 = _time.perf_counter()
+  _y = _x + 1.0
+  _z = _y * 2.0 - 0.5
+  _defer_ms = (_time.perf_counter() - _t0) * 1000
+
+  # Materialization via host copy (.cpu()) forces fused compilation and execution
+  _t_mat = _time.perf_counter()
+  _z_cpu = _z.cpu()
+  _materialize_ms = (_time.perf_counter() - _t_mat) * 1000
+
+  # Explicit device synchronization
+  _t_sync = _time.perf_counter()
+  torch.tpu.synchronize()
+  _sync_ms = (_time.perf_counter() - _t_sync) * 1000
+
+  print(
+      f"Deferred Queue Time:              {_defer_ms:.3f} ms (asynchronous op"
+      " recording)"
+  )
+  print(
+      f"Materialization (.cpu()) Time:    {_materialize_ms:.3f} ms (fused"
+      " compile + execute)"
+  )
+  print(f"Explicit Sync (synchronize()):    {_sync_ms:.3f} ms")
+  print(f"Materialized Sample Value:        {_z_cpu[0, 0].item():.4f}")
+  return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+  mo.md(r"""
+    ## **4. Comparing Fused Eager vs. `torch.compile(backend="tpu")`**
+
+    While **Fused Eager** mode fuses adjacent element-wise operations on the fly without changing your eager development workflow, **`torch.compile(..., backend="tpu")`** provides full Ahead-of-Time (AOT) whole-graph optimization across entire models.
+
+    The benchmark below compares step times for a mathematical chain under **Fused Eager** versus **`torch.compile(backend="tpu")`**:
     """)
   return
 
 
 @app.cell
 def _(torch):
-  import torch
+  import time as _time
 
-  # Standard hardware initialization
-  device = torch.device("tpu")
-  import time
-  from torch_tpu._internal import execution_mode as em
+  # Benchmark on TPU Silicon
+  _size = 4096
+  _x = torch.randn(_size, _size, device="tpu", dtype=torch.bfloat16)
 
-  # Use a large tensor to make memory bandwidth the bottleneck
-  size = 5000
-  iterations = 50
-  x = torch.randn(size, size, device="tpu", dtype=torch.bfloat16)
+  def _run_chain(t):
+    _y = t
+    for _ in range(10):
+      _y = (_y + 1.0) * 2.0 - 0.5
+    return _y
 
-  def run_benchmark():
-    y = x
-    for _ in range(iterations):
-      # These operations will be fused in Fused Eager mode
-      y = y + 1.0
-      y = y * 2.0
-      y = y - 1.0
-    # Transferring to CPU triggers the execution of all deferred ops
-    return y.cpu()
+  _compiled_chain = torch.compile(_run_chain, backend="tpu")
 
   # --- Warmup ---
-  # Trigger compilation for Fused Eager before measuring
-  with em.set_eager_mode(em.EagerMode.DEFER_AND_FUSE):
-    _ = run_benchmark()
+  for _ in range(3):
+    _ = _run_chain(_x)
+    torch.tpu.synchronize()
+    _ = _compiled_chain(_x)
+    torch.tpu.synchronize()
 
-  # --- Measure Fused Eager (DEFER_AND_FUSE) ---
-  with em.set_eager_mode(em.EagerMode.DEFER_AND_FUSE):
-    t0 = time.time()
-    _ = run_benchmark()
-    time_fused = time.time() - t0
+  # --- Benchmark ---
+  _num_trials = 20
 
-  # --- Measure Strict Eager (DEFER_NEVER) ---
-  with em.set_eager_mode(em.EagerMode.DEFER_NEVER):
-    # Warmup for strict mode (ensures execution path is ready)
-    _ = run_benchmark()
-    t0 = time.time()
-    _ = run_benchmark()
-    time_strict = time.time() - t0
+  # Fused Eager benchmark
+  torch.tpu.synchronize()
+  _t0 = _time.perf_counter()
+  for _ in range(_num_trials):
+    _ = _run_chain(_x)
+    torch.tpu.synchronize()
+  _time_fused = (_time.perf_counter() - _t0) / _num_trials
 
-  print(f"Fused Eager (DEFER_AND_FUSE) Time: {time_fused:.4f} seconds")
-  print(f"Strict Eager (DEFER_NEVER) Time: {time_strict:.4f} seconds")
-  print(f"Speedup: {time_strict / time_fused:.1f}x")
+  # torch.compile benchmark
+  torch.tpu.synchronize()
+  _t0 = _time.perf_counter()
+  for _ in range(_num_trials):
+    _ = _compiled_chain(_x)
+    torch.tpu.synchronize()
+  _time_compiled = (_time.perf_counter() - _t0) / _num_trials
+
+  print(
+      "Fused Eager (TORCH_TPU_DEFER_AND_FUSE=1) Step Time:"
+      f" {_time_fused * 1000:.3f} ms"
+  )
+  print(
+      "Compiled (torch.compile(backend='tpu')) Step Time: "
+      f" {_time_compiled * 1000:.3f} ms"
+  )
+  if _time_compiled > 0:
+    print(
+        "Relative Performance:                              "
+        f" {_time_fused / _time_compiled:.2f}x of compiled peak"
+    )
   return
 
 
 @app.cell(hide_code=True)
 def _(mo):
   mo.md(r"""
-    ## **Why Use Fused Eager?**
+    ## **5. Materialization Triggers in Fused Eager**
 
-    While **Strict Eager** is the most intuitive for development, **Fused Eager** (`DEFER_AND_FUSE`) provides significant performance advantages for production training:
+    In **Fused Eager** mode, operations remain queued in the deferred buffer until a materialization trigger forces execution:
 
-    1. **Fusion & Optimization:** Grouping operations allows XLA to reduce memory traffic by fusing multiple logical steps (like a `Linear` layer followed by a `ReLU`) into a single hardware kernel.
-    2. **Memory Efficiency:** Intermediate results in a fused block often don't need to be stored in physical TPU memory (HBM), reducing the memory footprint.
-    3. **Reduced Dispatch Overhead:** It minimizes the "chatter" between the CPU and TPU by sending larger, more meaningful chunks of work at once.
+    *   **Host Transfers**: `.cpu()`, `.item()`, `.tolist()`, `.numpy()`.
+    *   **Explicit Synchronization**: `torch.tpu.synchronize()`.
+    *   **Value Inspection / Printing**: `print(tensor)` or `repr(tensor)` forces materializing values to display text.
+    *   **Data-Dependent Control Flow**: Python conditional checks (e.g., `if (tensor > 0).all():`) require host evaluation.
+    *   **Buffer Thresholds**: TorchTPU automatically flushes and compiles when operation queues reach internal memory or node limits.
 
-    > [!TIP]
-    > For the absolute best performance, consider using `torch.compile(model, backend="tpu")`, which uses an even more aggressive Ahead-of-Time (AOT) compilation strategy.
-    """)
-  return
+    ---
 
+    ## **6. Summary & Recommendations**
 
-@app.cell(hide_code=True)
-def _(mo):
-  mo.md(r"""
-    ## **Factory Methods and Materialization**
-
-    Even in **Fused Eager** mode, certain operations trigger immediate execution (materialization):
-
-    *   **`.item()`, `.cpu()`, `.tolist()`:** These force the data to be synchronized with the host CPU.
-    *   **`print(tensor)`:** To display values, the data must be materialized.
-    *   **Data-dependent control flow:** `if (tensor > 0).all():` implicitly materializes the tensor.
+    | Workload / Use Case | Recommended Configuration | Rationale |
+    | :--- | :--- | :--- |
+    | **Interactive Prototyping** | Default (Strict Eager, variables unset) | Standard PyTorch mental model; immediate op execution. |
+    | **Debugging Crashes / NaNs** | `export TORCH_TPU_LAUNCH_BLOCKING="1"` | Synchronous host blocking after every op; exact stack traces. |
+    | **High-Performance Eager Training** | `export TORCH_TPU_DEFER_AND_FUSE="1"` | Multi-op fusion in VMEM without whole-graph compilation. |
+    | **Production Serving & Peak Throughput** | `torch.compile(model, backend="tpu")` | End-to-end whole-graph optimization across forward and backward passes. |
     """)
   return
 
