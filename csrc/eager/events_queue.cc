@@ -104,10 +104,17 @@ SharedDeviceBufferList CreateNoOpDependency(
   return refs_or->at(0).device_buffer_list();
 }
 
-// An ordered queue of "work" events on a stream. This includes:
-//  - Deferred op creation (which represents an on-device execution)
-//  - DataPtr creation and destruction (allocation/deallocation events)
-class EventsQueue {
+void PruneCompletedFutures(std::vector<xla::Future<void>>& futures) {
+  futures.erase(
+      std::remove_if(futures.begin(), futures.end(),
+                     [](const xla::Future<void>& future) {
+                       return !future.IsValid() ||
+                              (future.IsReady() && future.Await().ok());
+                     }),
+      futures.end());
+}
+
+class StreamState {
  public:
   // Records on the events queue that a new c10::DataPtr referencing the given
   // DeviceBufferRef has been created.
@@ -151,15 +158,14 @@ class EventsQueue {
   // Clears all tracked DeviceBufferLists from the events queue, and resets the
   // repeated ops heuristic state.
   void Clear() {
-    {
-      absl::MutexLock lock(mu_);
-      live_nodes_.clear();
-      repetition_hashes_.clear();
-      repetition_i_ = 0;
-      for (auto& event : deferred_ops_) {
-        event.deferred_op_hash = 0;
-      }
+    absl::MutexLock lock(mu_);
+    live_nodes_.clear();
+    repetition_hashes_.clear();
+    repetition_i_ = 0;
+    for (auto& event : deferred_ops_) {
+      event.deferred_op_hash = 0;
     }
+    futures_.clear();
     // Explicitly do NOT clear the deferred ops queue.
     // Deferred ops may have side effects; clearing them could result in
     // deadlocks or errors later on.
@@ -251,14 +257,14 @@ class EventsQueue {
     // For example, if the last six ops were [A, B, C, A, B, C], check if we're
     // part of another [A, B, C] loop.
     switch (CheckLastRepeatedSequence(new_hash)) {
-      case EventsQueue::CheckLastRepeatedSequenceResult::kContinueWaiting:
+      case StreamState::CheckLastRepeatedSequenceResult::kContinueWaiting:
         // We've seen [A, B] and are expecting [A, B, C]; don't materialize yet.
         return {};
-      case EventsQueue::CheckLastRepeatedSequenceResult::kRepetitionComplete:
+      case StreamState::CheckLastRepeatedSequenceResult::kRepetitionComplete:
         // We expected to see [A, B, C] and just completed [A, B, C];
         // materialize C to take advantage of the already compiled loop region.
         return {device_buffer_list};
-      case EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak:
+      case StreamState::CheckLastRepeatedSequenceResult::kPatternBreak:
         // We expected to see [A, B, C] but just saw op D.
         // Reset and scan for a new repeated pattern.
         break;
@@ -293,7 +299,7 @@ class EventsQueue {
   // Returns all the DeferredOpEvents in the queue and clears the queue.
   TakeAllResult TakeAll() {
     absl::MutexLock lock(mu_);
-    ABSL_VLOG(1) << "[EventsQueue::TakeAll] Returning all "
+    ABSL_VLOG(1) << "[StreamState::TakeAll] Returning all "
                  << deferred_ops_.size() << " DeferredOpEvents.";
     return TakeAllResult{.deferred_ops = std::move(deferred_ops_),
                          .live_nodes = std::move(live_nodes_)};
@@ -315,7 +321,37 @@ class EventsQueue {
     }
   }
 
+  void MarkActive(std::vector<xla::Future<void>>&& new_futures) {
+    if (new_futures.empty()) {
+      return;
+    }
+    absl::MutexLock lock(mu_);
+    if (futures_.size() + new_futures.size() > futures_.capacity()) {
+      PruneCompletedFutures(futures_);
+    }
+    futures_.insert(futures_.end(),
+                    std::make_move_iterator(new_futures.begin()),
+                    std::make_move_iterator(new_futures.end()));
+  }
+
+  xla::Future<void> JoinFutures() {
+    absl::MutexLock lock(mu_);
+    if (!futures_.empty()) {
+      PruneCompletedFutures(futures_);
+    }
+    if (futures_.empty()) {
+      return xla::Future<void>(absl::OkStatus());
+    }
+    auto join_future = xla::JoinFutures(futures_);
+    futures_.clear();
+    futures_.push_back(join_future);  // intentional copy
+    return join_future;
+  }
+
  private:
+  absl::Mutex mu_;
+  std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
+
   // Result of CheckLastRepeatedSequence, representing the relationship of the
   // newest op to the prior loop sequence.
   enum class CheckLastRepeatedSequenceResult {
@@ -353,8 +389,6 @@ class EventsQueue {
   [[nodiscard]] std::vector<SharedDeviceBufferList> GetRepeatedSequenceNodes()
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  absl::Mutex mu_;
-
   // Hold a strong pointer to the DeviceBufferList as the key; as long as there
   // is a live DataPtr, the DeviceBufferList can't be dropped.
   absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes_
@@ -372,15 +406,14 @@ class EventsQueue {
 
   std::atomic<CorePinningMode> core_pinning_mode_ = CorePinningMode::kUnpinned;
 };
-
-EventsQueue::CheckLastRepeatedSequenceResult
-EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
+StreamState::CheckLastRepeatedSequenceResult
+StreamState::CheckLastRepeatedSequence(size_t new_hash)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   if (repetition_i_ >= repetition_hashes_.size()) {
     // This should only happen when repetition_hashes_ is empty and
     // repetition_i_ is 0, meaning that there is no known repeated sequence to
     // check.
-    return EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak;
+    return StreamState::CheckLastRepeatedSequenceResult::kPatternBreak;
   }
 
   // There was a previously-identified repetition, check if we're consistent
@@ -392,7 +425,7 @@ EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
     // repeated pattern.
     repetition_i_ = 0;
     repetition_hashes_.clear();
-    return EventsQueue::CheckLastRepeatedSequenceResult::kPatternBreak;
+    return StreamState::CheckLastRepeatedSequenceResult::kPatternBreak;
   }
 
   // Consistent with the repetition so far, see if we've completed it.
@@ -403,14 +436,14 @@ EventsQueue::CheckLastRepeatedSequence(size_t new_hash)
     // Reset the loop counter, we only need to materialize the list
     // we just pushed.
     repetition_i_ = 0;
-    return EventsQueue::CheckLastRepeatedSequenceResult::kRepetitionComplete;
+    return StreamState::CheckLastRepeatedSequenceResult::kRepetitionComplete;
   }
   // Keep waiting for more ops to see if we're still repeating the last-seen
   // loop.
-  return EventsQueue::CheckLastRepeatedSequenceResult::kContinueWaiting;
+  return StreamState::CheckLastRepeatedSequenceResult::kContinueWaiting;
 }
 
-int64_t EventsQueue::FindRepeatedSequence(size_t new_hash)
+int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   // Check for repetitions within the minimum and maximum range.
   if (deferred_ops_.size() <
@@ -477,7 +510,7 @@ int64_t EventsQueue::FindRepeatedSequence(size_t new_hash)
   return 0;
 }
 
-void EventsQueue::RecordRepeatedHashPattern(int64_t repetition_length)
+void StreamState::RecordRepeatedHashPattern(int64_t repetition_length)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   repetition_hashes_.resize(repetition_length);
   auto reverse_it = deferred_ops_.rbegin();
@@ -487,7 +520,7 @@ void EventsQueue::RecordRepeatedHashPattern(int64_t repetition_length)
   }
 }
 
-std::vector<SharedDeviceBufferList> EventsQueue::GetRepeatedSequenceNodes()
+std::vector<SharedDeviceBufferList> StreamState::GetRepeatedSequenceNodes()
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   std::vector<SharedDeviceBufferList> nodes_to_materialize;
 
@@ -676,7 +709,7 @@ absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 PrepareTraversals(
-    const std::deque<EventsQueue::DeferredOpEvent>& deferred_op_events,
+    const std::deque<StreamState::DeferredOpEvent>& deferred_op_events,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
@@ -774,56 +807,6 @@ PrepareTraversals(
                << " nodes.";
   return traversals;
 }
-
-void PruneCompletedFutures(std::vector<xla::Future<void>>& futures) {
-  futures.erase(
-      std::remove_if(futures.begin(), futures.end(),
-                     [](const xla::Future<void>& future) {
-                       return !future.IsValid() ||
-                              (future.IsReady() && future.Await().ok());
-                     }),
-      futures.end());
-}
-
-struct StreamState {
-  void MarkActive(std::vector<xla::Future<void>>&& new_futures) {
-    if (new_futures.empty()) {
-      return;
-    }
-    absl::MutexLock lock(futures_mu);
-    if (futures.size() + new_futures.size() > futures.capacity()) {
-      PruneCompletedFutures(futures);
-    }
-    futures.insert(futures.end(), std::make_move_iterator(new_futures.begin()),
-                   std::make_move_iterator(new_futures.end()));
-  }
-
-  xla::Future<void> JoinFutures() {
-    absl::MutexLock lock(futures_mu);
-    if (!futures.empty()) {
-      PruneCompletedFutures(futures);
-    }
-    if (futures.empty()) {
-      return xla::Future<void>(absl::OkStatus());
-    }
-    auto join_future = xla::JoinFutures(futures);
-    futures.clear();
-    futures.push_back(join_future);  // intentional copy
-    return join_future;
-  }
-
-  void Clear() {
-    events_queue.Clear();
-    absl::MutexLock lock(futures_mu);
-    futures.clear();
-  }
-
-  absl::Mutex futures_mu;
-  std::vector<xla::Future<void>> futures ABSL_GUARDED_BY(futures_mu);
-
-  EventsQueue events_queue;
-};
-
 struct DeviceState {
   StreamState* absl_nonnull GetOrCreateStreamState(int64_t stream_id);
 
@@ -848,10 +831,10 @@ struct DeviceState {
   }
 
   void ResetRepeatedOpsHeuristicState() {
-    default_stream_state.events_queue.ResetRepeatedOpsHeuristicState();
+    default_stream_state.ResetRepeatedOpsHeuristicState();
     absl::MutexLock lock(mutex);
     for (auto& stream_state : stream_states) {
-      stream_state->events_queue.ResetRepeatedOpsHeuristicState();
+      stream_state->ResetRepeatedOpsHeuristicState();
     }
   }
 
@@ -954,8 +937,7 @@ void RecordNewDataPtrCreated(const DeviceBufferRef& device_buffer_ref) {
     // any stream.
     return;
   }
-  GetStreamFor(device_buffer_ref)
-      ->events_queue.RecordNewDataPtrCreated(device_buffer_ref);
+  GetStreamFor(device_buffer_ref)->RecordNewDataPtrCreated(device_buffer_ref);
 }
 
 void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref) {
@@ -964,8 +946,7 @@ void RecordDataPtrDestroyed(const DeviceBufferRef& device_buffer_ref) {
     // any stream.
     return;
   }
-  GetStreamFor(device_buffer_ref)
-      ->events_queue.RecordDataPtrDestroyed(device_buffer_ref);
+  GetStreamFor(device_buffer_ref)->RecordDataPtrDestroyed(device_buffer_ref);
 }
 
 void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
@@ -974,8 +955,7 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
     // any stream.
     return;
   }
-  GetStreamFor(device_buffer_list)
-      ->events_queue.RecordDeferredOpCreated(device_buffer_list);
+  GetStreamFor(device_buffer_list)->RecordDeferredOpCreated(device_buffer_list);
 }
 
 void RecordBackgroundMaterialization(
@@ -1048,10 +1028,10 @@ PrepareStreamTraversals(
   }
   // Take all the deferred ops and live nodes from the stream state.
   // This is the only part than needs to hold the lock.
-  auto take_result = stream_state->events_queue.TakeAll();
+  auto take_result = stream_state->TakeAll();
   return PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
                            must_materialize, must_materialize_set,
-                           stream_state->events_queue.core_pinning_mode());
+                           stream_state->core_pinning_mode());
 }
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
@@ -1086,7 +1066,7 @@ PrepareDeviceTraversals(
   absl::flat_hash_set<const DeviceBufferList*> must_materialize_node_set;
   for (c10::StreamId stream_id = 0; stream_id < streams.size(); ++stream_id) {
     StreamState* stream = streams[stream_id];
-    auto take_result = stream->events_queue.TakeAll();
+    auto take_result = stream->TakeAll();
     if (auto it = must_materialize_by_stream.find(stream_id);
         it != must_materialize_by_stream.end()) {
       must_materialize_nodes = std::move(it->second.nodes);
@@ -1096,7 +1076,7 @@ PrepareDeviceTraversals(
         auto stream_traversals,
         PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
                           must_materialize_nodes, must_materialize_node_set,
-                          stream->events_queue.core_pinning_mode()));
+                          stream->core_pinning_mode()));
     must_materialize_nodes.clear();
     must_materialize_node_set.clear();
     device_traversals.insert(device_traversals.end(),
@@ -1160,8 +1140,7 @@ void ClearAllStreams() {
 
 void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
                         CorePinningMode pinned) {
-  GetOrCreateStreamState(device_index, stream_id)
-      ->events_queue.SetCorePinningMode(pinned);
+  GetOrCreateStreamState(device_index, stream_id)->SetCorePinningMode(pinned);
 }
 
 std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
@@ -1172,7 +1151,7 @@ std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
     return std::vector<SharedDeviceBufferList>();
   }
   return GetStreamFor(device_buffer_list)
-      ->events_queue.RecordDeferredOpAndDetectRepetition(device_buffer_list);
+      ->RecordDeferredOpAndDetectRepetition(device_buffer_list);
 }
 
 void ResetRepeatedOpsHeuristicState() {
