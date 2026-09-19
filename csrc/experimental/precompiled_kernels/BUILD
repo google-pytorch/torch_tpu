@@ -61,14 +61,27 @@ torch_tpu_cc_library(
     ],
 )
 
+torch_tpu_cc_library(
+    name = "nonzero_indices",
+    srcs = ["nonzero_indices.cc"],
+    hdrs = ["nonzero_indices.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@xla//xla/mosaic:tpu_dialect",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],
     notest_oss = "Requires libtpu >= 0.0.48 with operand_to_metadata support",
-    tags = [
-        "ok-to-wait-for-v7x-in-presubmit",
-        "requires-tpu-v7x",
-    ],
+    tags = ["requires-tpu-v5p"],
     deps = [
         ":kernel_test_utils",
         ":mosaic_custom_call",
@@ -85,6 +98,33 @@ torch_tpu_cc_test(
         "@xla//xla:shape_util",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/service:hlo_runner",
+    ],
+)
+
+torch_tpu_cc_test(
+    name = "nonzero_indices_test",
+    srcs = ["nonzero_indices_test.cc"],
+    notest_oss = "Requires libtpu >= 0.0.48 with operand_to_metadata support",
+    tags = ["requires-tpu-v5p"],
+    deps = [
+        ":kernel_test_utils",
+        ":mosaic_custom_call",
+        ":nonzero_indices",
+        "//csrc/common:error_utils",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:status_test_utils",
+        "//csrc/internal/mosaic:op_builders",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//mlir:IR",
+        "@xla//xla:literal",
+        "@xla//xla:literal_util",
+        "@xla//xla:shape_layout",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/service:hlo_runner",
+        "@xla//xla/service:hlo_runner_interface",
     ],
 )
 
