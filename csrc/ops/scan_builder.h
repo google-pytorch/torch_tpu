@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 
+#include "ATen/core/Scalar.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/statusor.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -99,6 +100,14 @@ absl::StatusOr<DynamicMlirOpResults> BuildScanShlo(
     llvm::ArrayRef<mlir::MlirOp> carry_inits,
     llvm::ArrayRef<mlir::MlirOp> output_inits,
     MultiInputScanBodyBuilder body_builder, const ScanOptions& options = {});
+
+// Creates a constant tensor filled with 'value' matching the shape and bounds
+// of 'input' with dimension 'scan_dim' rank-reduced (erased). For static
+// inputs, creates a static constant. For bounded dynamic inputs, slices at
+// index 0, squeezes 'scan_dim', and creates a constant with identical dynamic
+// dimensions and bounds.
+absl::StatusOr<mlir::MlirOp> CreateRankReducedConstantLike(
+    mlir::MlirOp input, int64_t scan_dim, const at::Scalar& value);
 
 }  // namespace torch_tpu
 

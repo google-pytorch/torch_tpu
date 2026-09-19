@@ -56,19 +56,8 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
                       InferComputationDtype(target_element_type));
   TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
 
-  const mlir::Type compute_element_type =
-      getElementType(builder.getContext(), compute_dtype);
-
-  const mlir::RankedTensorType promoted_type = GetTensorTypeOrDie(input);
-  // chlo.ScanOp carries are rank-reduced (the scan dimension is erased).
-  llvm::SmallVector<int64_t> carry_shape(promoted_type.getShape().begin(),
-                                         promoted_type.getShape().end());
-  carry_shape.erase(carry_shape.begin() + normalized_dim);
-
-  const mlir::MlirOp init_value =
-      MakeScalarConstant(builder, 0, compute_element_type);
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
-                      BroadcastIfNeeded(init_value, carry_shape));
+                      CreateRankReducedConstantLike(input, normalized_dim, 0));
 
   MultiInputScanBodyBuilder body_builder =
       [](mlir::OpBuilder& op_builder, mlir::Location loc,
