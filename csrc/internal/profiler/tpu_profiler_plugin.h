@@ -81,6 +81,11 @@ class TpuKinetoProfilerSession : public libkineto::IActivityProfilerSession {
   std::optional<std::string> worker_rank_ ABSL_GUARDED_BY(mutex_);
   uint64_t start_time_ns_ = 0;
   std::vector<libkineto::ResourceInfo> resource_infos_;
+  // Path the complete XSpace was written to by stop(). Referenced by
+  // processTrace() when the Kineto export has to truncate, so the warning can
+  // point at the untruncated trace. Written in stop() and read in
+  // processTrace(), matching the access pattern of xspace_.
+  std::string xplane_output_path_;
 };
 
 // TPU implementation of libkineto::IActivityProfiler.
@@ -144,6 +149,37 @@ absl::Status UpdateProfileOptions(std::string_view custom_config,
 //   value: The raw string metadata value to sanitize and add.
 void AddActivityStringMetadata(libkineto::GenericTraceActivity& activity,
                                const std::string& key, std::string_view value);
+
+// Whether `plane` holds TPU hardware events rather than host/runtime events.
+// processTrace() converts device planes first so that an exhausted event
+// budget drops host detail rather than the TPU execution timeline.
+[[nodiscard]] bool IsDevicePlane(const tensorflow::profiler::XPlane& plane);
+
+// Number of events that would be converted to Kineto activities. Mirrors the
+// has_offset_ps() filter applied during conversion, so a count reported for
+// skipped input matches what a complete conversion would have emitted.
+[[nodiscard]] int64_t CountTimelineEvents(
+    const tensorflow::profiler::XLine& line);
+[[nodiscard]] int64_t CountTimelineEvents(
+    const tensorflow::profiler::XPlane& plane);
+
+// Returns pointers to every plane in `xspace`, device planes first and host
+// planes after, each group keeping its original relative order. processTrace()
+// converts in this order so that an exhausted event budget drops host/runtime
+// detail rather than the TPU execution timeline.
+[[nodiscard]] std::vector<tensorflow::profiler::XPlane*> OrderPlanesDeviceFirst(
+    tensorflow::profiler::XSpace& xspace);
+
+// Returns the leading sentence of the Kineto truncation log message.
+//
+// This wording is a load-bearing log contract, not cosmetic text. Downstream
+// audit tooling detects a truncated Kineto export by matching the literal
+// phrase "Hit maximum event limit ... truncating trace parsing" against this
+// file's log output; rewording it silently disables truncation detection and
+// makes a truncated capture look complete. It is a named function so that the
+// contract is covered by a test and cannot be reworded by accident.
+[[nodiscard]] std::string TraceTruncationLogPrefix(int64_t max_events,
+                                                   int64_t dropped_events);
 
 }  // namespace torch_tpu
 

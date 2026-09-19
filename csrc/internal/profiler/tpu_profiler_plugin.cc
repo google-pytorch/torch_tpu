@@ -544,6 +544,7 @@ void TpuKinetoProfilerSession::stop() {
         ABSL_LOG(ERROR) << "Failed to write XSpace to file: " << output_path
                         << ". Error: " << s;
       } else {
+        xplane_output_path_ = output_path;
         ABSL_LOG(INFO) << "Successfully wrote XPlane to " << output_path;
       }
     }
@@ -595,6 +596,53 @@ void AddActivityStringMetadata(libkineto::GenericTraceActivity& activity,
   activity.addMetadataQuoted(key, SanitizeStatString(value));
 }
 
+bool IsDevicePlane(const tensorflow::profiler::XPlane& plane) {
+  return absl::StartsWith(plane.name(), "/device:") || plane.name() == "TPU";
+}
+
+int64_t CountTimelineEvents(const tensorflow::profiler::XLine& line) {
+  int64_t count = 0;
+  for (const auto& event : line.events()) {
+    if (event.has_offset_ps()) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+int64_t CountTimelineEvents(const tensorflow::profiler::XPlane& plane) {
+  int64_t count = 0;
+  for (const auto& line : plane.lines()) {
+    count += CountTimelineEvents(line);
+  }
+  return count;
+}
+
+std::vector<tensorflow::profiler::XPlane*> OrderPlanesDeviceFirst(
+    tensorflow::profiler::XSpace& xspace) {
+  std::vector<tensorflow::profiler::XPlane*> ordered;
+  ordered.reserve(xspace.planes_size());
+  for (auto& plane : *xspace.mutable_planes()) {
+    if (IsDevicePlane(plane)) {
+      ordered.push_back(&plane);
+    }
+  }
+  for (auto& plane : *xspace.mutable_planes()) {
+    if (!IsDevicePlane(plane)) {
+      ordered.push_back(&plane);
+    }
+  }
+  return ordered;
+}
+
+std::string TraceTruncationLogPrefix(int64_t max_events,
+                                     int64_t dropped_events) {
+  // Do not reword: see the contract note on the declaration in the header.
+  return absl::StrCat("Hit maximum event limit of ", max_events,
+                      ", truncating trace parsing to avoid OOM. ",
+                      dropped_events, " events dropped.");
+}
+
 void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
   auto start_time_ns = GetXProfSessionStartTimeNs(xspace_);
   for (auto& plane : *xspace_.mutable_planes()) {
@@ -607,16 +655,30 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
     }
   }
 
+  // Bounds peak memory while building the Kineto activity list. This only
+  // limits the Kineto/Chrome export; stop() has already attempted to write the
+  // complete, untruncated XSpace to disk, so whenever that write succeeded the
+  // events dropped here are still recoverable from the .xplane.pb.
   constexpr int64_t kMaxEvents = 1000000;
   int64_t processed_events = 0;
+  int64_t dropped_events = 0;
 
-  for (auto& plane : *xspace_.mutable_planes()) {
+  // Convert device planes before host planes. The budget is otherwise spent in
+  // whatever order the planes happen to appear in the proto, which can exhaust
+  // it on host/runtime detail and drop the TPU execution timeline entirely --
+  // the one thing the trace is collected for.
+  std::vector<tensorflow::profiler::XPlane*> ordered_planes =
+      OrderPlanesDeviceFirst(xspace_);
+
+  for (auto* plane_ptr : ordered_planes) {
+    auto& plane = *plane_ptr;
     if (processed_events >= kMaxEvents) {
-      break;
+      dropped_events += CountTimelineEvents(plane);
+      plane.Clear();
+      continue;
     }
 
-    bool is_device =
-        absl::StartsWith(plane.name(), "/device:") || plane.name() == "TPU";
+    bool is_device = IsDevicePlane(plane);
 
     // For device planes, use the XPlane ID as the device ID.
     // For host planes, map them directly to the main process PID so they
@@ -653,7 +715,8 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
 
     for (const auto& line : plane.lines()) {
       if (processed_events >= kMaxEvents) {
-        break;
+        dropped_events += CountTimelineEvents(line);
+        continue;
       }
 
       uint32_t thread_id = static_cast<uint32_t>(
@@ -671,9 +734,8 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
         }
 
         if (processed_events >= kMaxEvents) {
-          ABSL_LOG(WARNING) << "Hit maximum event limit of " << kMaxEvents
-                            << ", truncating trace parsing to avoid OOM.";
-          break;
+          ++dropped_events;
+          continue;
         }
 
         bool is_mirrored_kineto_event = false;
@@ -785,6 +847,36 @@ void TpuKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
       }
     }
     plane.Clear();  // Clear the proto after processing to reclaim memory
+  }
+
+  if (dropped_events > 0) {
+    // TraceTruncationLogPrefix() emits a log contract that downstream audit
+    // tooling matches on; see the note on its declaration before changing how
+    // this message begins.
+    const std::string prefix =
+        TraceTruncationLogPrefix(kMaxEvents, dropped_events);
+    if (xplane_output_path_.empty()) {
+      // stop() failed to write the XSpace (see errors_), so the dropped events
+      // exist in no other artifact. This is real, unrecoverable data loss.
+      ABSL_LOG(ERROR)
+          << prefix
+          << " The complete XSpace trace was NOT written to disk (see the "
+             "profiler error list), so the dropped events are unrecoverable. "
+             "Re-run with a shorter torch.profiler.schedule, "
+             "with_stack=False, or a lower host_tracer_level to reduce the "
+             "event volume.";
+    } else {
+      ABSL_LOG(WARNING)
+          << prefix
+          << " Device planes are converted first, so the TPU execution "
+             "timeline is retained and the dropped events are host/runtime "
+             "detail. The events dropped here are still present in the XSpace "
+             "trace written to "
+          << xplane_output_path_
+          << ". Open it with `xprof server --logdir=<profile_dir>`, or lower "
+             "the event volume with a shorter torch.profiler.schedule, "
+             "with_stack=False, or a lower host_tracer_level.";
+    }
   }
   xspace_.Clear();
 }

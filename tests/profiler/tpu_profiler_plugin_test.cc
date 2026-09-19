@@ -33,6 +33,7 @@
 #include <kineto/IActivityProfiler.h>
 #include "csrc/common/error_utils.h"
 #include "tsl/profiler/protobuf/profiler_options.pb.h"
+#include "tsl/profiler/protobuf/xplane.pb.h"
 // clang-format on
 
 namespace torch_tpu {
@@ -388,6 +389,130 @@ TEST(TpuProfilerPluginTest, AddActivityStringMetadata) {
   AddActivityStringMetadata(activity, "details",
                             "name: \"linear\"\nparams: 1024\r\n");
   EXPECT_EQ(activity.getMetadataValue("details"), "name: 'linear'params: 1024");
+}
+
+TEST(TpuProfilerPluginTest, IsDevicePlane) {
+  tensorflow::profiler::XPlane plane;
+
+  plane.set_name("/device:TPU:0");
+  EXPECT_TRUE(IsDevicePlane(plane));
+
+  plane.set_name("/device:TPU:7");
+  EXPECT_TRUE(IsDevicePlane(plane));
+
+  plane.set_name("TPU");
+  EXPECT_TRUE(IsDevicePlane(plane));
+
+  // Host and runtime planes are the ones that may be dropped under budget.
+  plane.set_name("/host:CPU");
+  EXPECT_FALSE(IsDevicePlane(plane));
+
+  plane.set_name("Python");
+  EXPECT_FALSE(IsDevicePlane(plane));
+
+  plane.set_name("Task Environment");
+  EXPECT_FALSE(IsDevicePlane(plane));
+
+  plane.set_name("");
+  EXPECT_FALSE(IsDevicePlane(plane));
+}
+
+TEST(TpuProfilerPluginTest, CountTimelineEventsMatchesConversionFilter) {
+  tensorflow::profiler::XLine line;
+
+  EXPECT_EQ(CountTimelineEvents(line), 0);
+
+  // Events carrying an offset participate in the timeline and are converted.
+  line.add_events()->set_offset_ps(0);
+  line.add_events()->set_offset_ps(1000);
+  EXPECT_EQ(CountTimelineEvents(line), 2);
+
+  // Stateless/aggregated events have no offset and are skipped by the
+  // converter, so they must not be counted as dropped either.
+  line.add_events()->set_duration_ps(500);
+  EXPECT_EQ(CountTimelineEvents(line), 2);
+}
+
+TEST(TpuProfilerPluginTest, CountTimelineEventsAcrossPlaneLines) {
+  tensorflow::profiler::XPlane plane;
+  EXPECT_EQ(CountTimelineEvents(plane), 0);
+
+  auto* first = plane.add_lines();
+  first->add_events()->set_offset_ps(0);
+  first->add_events()->set_offset_ps(10);
+
+  auto* second = plane.add_lines();
+  second->add_events()->set_offset_ps(20);
+  second->add_events()->set_duration_ps(30);  // no offset, not counted
+
+  plane.add_lines();  // empty line
+
+  EXPECT_EQ(CountTimelineEvents(plane), 3);
+}
+
+TEST(TpuProfilerPluginTest, OrderPlanesDeviceFirstPutsDevicePlanesAhead) {
+  tensorflow::profiler::XSpace xspace;
+  // Interleave so a stable partition is distinguishable from the proto order.
+  xspace.add_planes()->set_name("/host:CPU");
+  xspace.add_planes()->set_name("/device:TPU:0");
+  xspace.add_planes()->set_name("/host:python_tracer");
+  xspace.add_planes()->set_name("TPU");
+  xspace.add_planes()->set_name("/device:TPU:1");
+
+  std::vector<tensorflow::profiler::XPlane*> ordered =
+      OrderPlanesDeviceFirst(xspace);
+
+  ASSERT_EQ(ordered.size(), 5);
+  // Device planes come first, in their original relative order.
+  EXPECT_EQ(ordered[0]->name(), "/device:TPU:0");
+  EXPECT_EQ(ordered[1]->name(), "TPU");
+  EXPECT_EQ(ordered[2]->name(), "/device:TPU:1");
+  // Host planes follow, also order-preserving.
+  EXPECT_EQ(ordered[3]->name(), "/host:CPU");
+  EXPECT_EQ(ordered[4]->name(), "/host:python_tracer");
+
+  // The returned pointers must alias the planes owned by the XSpace, because
+  // processTrace() mutates and clears them through this vector.
+  EXPECT_EQ(ordered[0], &xspace.planes(1));
+}
+
+TEST(TpuProfilerPluginTest, OrderPlanesDeviceFirstHandlesDegenerateInput) {
+  tensorflow::profiler::XSpace empty;
+  EXPECT_TRUE(OrderPlanesDeviceFirst(empty).empty());
+
+  tensorflow::profiler::XSpace hosts_only;
+  hosts_only.add_planes()->set_name("/host:CPU");
+  hosts_only.add_planes()->set_name("/host:other");
+  EXPECT_EQ(OrderPlanesDeviceFirst(hosts_only).size(), 2);
+
+  tensorflow::profiler::XSpace devices_only;
+  devices_only.add_planes()->set_name("/device:TPU:0");
+  EXPECT_EQ(OrderPlanesDeviceFirst(devices_only).size(), 1);
+}
+
+// Guards a cross-component log contract: downstream audit tooling detects a
+// truncated Kineto export by matching "Hit maximum event limit .* truncating
+// trace parsing" against this file's log output. Rewording the message
+// silently disables truncation detection downstream, so a truncated capture
+// would be audited as complete. Do not relax this test; update the consumers
+// first if the wording genuinely must change.
+TEST(TpuProfilerPluginTest, TraceTruncationLogPrefixKeepsDetectablePhrase) {
+  const std::string prefix = TraceTruncationLogPrefix(1000000, 42);
+
+  EXPECT_TRUE(absl::StrContains(prefix, "Hit maximum event limit"));
+  EXPECT_TRUE(absl::StrContains(prefix, "truncating trace parsing"));
+  // The detector is a single regex requiring the limit phrase to precede the
+  // truncation phrase on one line.
+  EXPECT_LT(prefix.find("Hit maximum event limit"),
+            prefix.find("truncating trace parsing"));
+  EXPECT_EQ(prefix.find('\n'), std::string::npos);
+}
+
+TEST(TpuProfilerPluginTest, TraceTruncationLogPrefixReportsCounts) {
+  const std::string prefix = TraceTruncationLogPrefix(1000000, 42);
+
+  EXPECT_TRUE(absl::StrContains(prefix, "1000000"));
+  EXPECT_TRUE(absl::StrContains(prefix, "42 events dropped"));
 }
 
 }  // namespace
