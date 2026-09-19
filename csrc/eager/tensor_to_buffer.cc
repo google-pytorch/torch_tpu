@@ -650,6 +650,7 @@ absl::StatusOr<at::Tensor> MakeEmptyMemoryFormat(
     c10::optional<at::Layout> layout_opt, c10::optional<at::Device> device_opt,
     c10::optional<bool> pin_memory_opt,
     c10::optional<at::MemoryFormat> memory_format_opt) {
+  TT_RETURN_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   TT_RET_CHECK(!dtype_opt.has_value() ||
                    dtype_opt.value() != at::ScalarType::ComplexHalf,
                error::kPythonNotImplementedError)

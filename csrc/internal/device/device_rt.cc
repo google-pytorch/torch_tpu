@@ -235,6 +235,9 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_shutdown_runtime",
       []() {
+        if (PjrtBackend::GetInstance().IsInBadFork()) {
+          return;
+        }
         ShutDownMaterializationState();
         CompilationCache::ShutDown();
         PjrtBackend::GetInstance().Shutdown();
@@ -285,6 +288,7 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_current_device_id",
       []() -> int {
+        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         ABSL_CHECK(client != nullptr)  // CRASH_OK
             << "PjRtClient is null after initialization.";
@@ -307,6 +311,7 @@ TT_PYBIND11_MODULE(_device_ops_backend, m) {
   m.def(
       "_get_device_count",
       []() -> int {
+        TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
         xla::PjRtClient* client = PjrtBackend::GetInstance().GetClient();
         TT_CHECK_THROW(client != nullptr, error::kInternal)
             << "PjRtClient is null after initialization.";

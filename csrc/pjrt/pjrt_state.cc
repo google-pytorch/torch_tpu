@@ -179,6 +179,13 @@ void PjrtBackend::SetPjRtInitializationOptions(
 }
 
 absl::Status PjrtBackend::EnsureInitialized() {
+  if (IsInBadFork()) {
+    return TT_ERROR(error::kFailedPrecondition)
+           << "cannot access or re-initialize TPU in a forked subprocess. "
+           << "To use TPU with multiprocessing, you must use the 'spawn' "
+           << "start method";
+  }
+
   {
     absl::ReaderMutexLock lock(mutex_);
     if (init_attempted_) {
@@ -194,10 +201,10 @@ absl::Status PjrtBackend::EnsureInitialized() {
   // Early check for VFIO collisions during initialization to yield actionable
   // errors instead of low-level crashes.
   init_status_ = AdaptVfioDeviceCollisionError(InitializeInternal());
-  init_attempted_ = true;
   if (init_status_.ok()) {
     init_pid_.store(getpid(), std::memory_order_relaxed);
   }
+  init_attempted_ = true;
   return init_status_;
 }
 
@@ -401,6 +408,9 @@ absl::StatusOr<xla::HostMemoryAllocator*> PjrtBackend::GetHostAllocator() {
 }
 
 void PjrtBackend::Shutdown() {
+  if (IsInBadFork()) {
+    return;
+  }
   // Reset the initialization PID so that subsequent forks from this process (or
   // re-initialization of the runtime) are not falsely identified as bad forks.
   init_pid_.store(0, std::memory_order_relaxed);
