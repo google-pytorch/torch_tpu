@@ -16,7 +16,6 @@
 
 #include "csrc/distributed/alltoall.h"
 
-#include <cstddef>
 #include <cstdint>
 
 #include "absl/log/absl_check.h"
@@ -155,10 +154,15 @@ absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllToAllShlo(
   return results;
 }
 
-namespace {
+absl::StatusOr<mlir::MlirOp> ConcatenateTensorsAlongDim0(
+    absl::Span<mlir::MlirOp> inputs, mlir::ElementType output_dtype,
+    absl::Span<const int64_t> total_input_shape, mlir::MlirBuilder& builder) {
+  if (inputs.empty()) {
+    return BuildFillUninitialized(builder, output_dtype, total_input_shape);
+  }
+  return stablehlo::Concatenate(builder, inputs, /*dimension=*/0);
+}
 
-// Slices a tensor along dimension 0 into individual tensors matching
-// split_sizes.
 mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
     mlir::MlirOp tensor, absl::Span<const int32_t> split_sizes) {
   const auto tensor_type = GetTensorTypeOrDie(tensor);
@@ -170,7 +174,7 @@ mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
   results.reserve(split_sizes.size());
 
   int64_t current_offset = 0;
-  for (int32_t count : split_sizes) {
+  for (const int32_t count : split_sizes) {
     start_indices[0] = current_offset;
     limit_indices[0] = current_offset + count;
     results.push_back(
@@ -178,50 +182,6 @@ mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
     current_offset += count;
   }
   return results;
-}
-
-}  // namespace
-
-absl::StatusOr<mlir::SmallVector<mlir::MlirOp>>
-BuildDistributedAllToAllUnevenSplitsShlo(
-    absl::Span<mlir::MlirOp> inputs, mlir::ElementType output_dtype,
-    absl::Span<const int32_t> input_offsets,
-    absl::Span<const int32_t> send_sizes,
-    absl::Span<const int32_t> output_offsets,
-    absl::Span<const int32_t> recv_sizes,
-    const DeviceGroupList& device_groups) {
-  ABSL_CHECK_GT(inputs.size(), 0)  // CRASH_OK
-      << "[BuildDistributedAllToAllUnevenSplitsShlo] No inputs provided";
-
-  mlir::MlirBuilder& builder = inputs[0].getBuilder();
-
-  // 1. Concatenate the input ops along dim 0.
-  mlir::MlirOp concatenated_input =
-      stablehlo::Concatenate(builder, inputs, /*dimension=*/0);
-
-  // 2. Prepare output shape for the ragged all-to-all custom call.
-  // Trailing dimensions match inputs[0].
-  const mlir::RankedTensorType input_rank_type = GetTensorTypeOrDie(inputs[0]);
-  Dimensions total_output_shape = CopyIntVector(input_rank_type.getShape());
-  int64_t total_recv_elements = 0;
-  for (int32_t sz : recv_sizes) {
-    total_recv_elements += sz;
-  }
-  total_output_shape[0] = total_recv_elements;
-
-  // 3. Create uninitialized buffer for output of ragged all-to-all.
-  mlir::MlirOp output_placeholder =
-      BuildFillUninitialized(builder, output_dtype, total_output_shape);
-
-  // 4. Build ragged all-to-all MLIR operation.
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp ragged_all_to_all_result,
-      BuildDistributedAllToAllBaseUnevenSplitsShlo(
-          concatenated_input, output_placeholder, input_offsets, send_sizes,
-          output_offsets, recv_sizes, device_groups));
-
-  // 5. Slice ragged_all_to_all_result to extract individual output tensors.
-  return SliceTensorsAlongDim0(ragged_all_to_all_result, recv_sizes);
 }
 
 }  // namespace torch_tpu

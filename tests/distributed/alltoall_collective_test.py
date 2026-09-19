@@ -619,6 +619,9 @@ def run_all_to_all(
         preamble=f"Rank {rank} failed for output tensor {i}",
     )
 
+  dist.barrier()
+  dist.destroy_process_group()
+
 
 class AllToAllCollectiveTest(seed_test_utils.MultiProcessRepeatableTest):
 

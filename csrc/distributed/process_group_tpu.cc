@@ -16,6 +16,7 @@
 
 #include "csrc/distributed/process_group_tpu.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>  // NOLINT - needed for PyTorch API
 #include <cstddef>
@@ -53,7 +54,9 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
+#include "c10/util/ArrayRef.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
@@ -1601,7 +1604,27 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
                       TT_MAKE_OP_PARAM_CACHE_KEYS(subgroup_device_ids_));
   TT_RETURN_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
 
-  // 4. Build the MLIR StableHLO custom call with device replica group
+  // 4. Explicitly materialize both input and output before dispatching the
+  // collective.
+  //
+  // Constant/empty tensors (e.g. from `BuildFillUninitialized`,
+  // `torch.empty(..., device="tpu")`, or `torch.zeros(..., device="tpu")`) are
+  // marked `is_constant() == true` in TorchTPU's EventsQueue and are not split
+  // out by `OpSplitMode::kSplitBoth`; instead, `ProcessDeferredOpEvent` inlines
+  // them directly into the `ragged_all_to_all` HLO module. On TPU architectures
+  // with SparseCore (`compute_type = "tpu_embedding"`), XLA hoists
+  // `kSparseCoreBarrierStart` on the SparseCore sequencer while TensorCore
+  // concurrently executes the constant fill into `output` in HBM, racing with
+  // and overwriting incoming peer RDMAs. Materializing both buffers beforehand
+  // ensures the collective HLO module receives pre-allocated HLO parameters
+  // (`%arg0`, `%arg1`) with zero TensorCore constant-fill instructions.
+  TT_ASSIGN_OR_RETURN(std::vector<DeviceBufferRef> input_output_buffers,
+                      GetBuffers(std::array<at::Tensor, 2>{
+                          maybe_materialized_input_tensor, output}));
+  TT_RETURN_IF_ERROR(
+      Materialize(input_output_buffers, MaterializationReason::kDistributedOp));
+
+  // 5. Build the MLIR StableHLO custom call with device replica group
   // attributes and MLIR constant metadata tensors.
   auto op_builder =
       [device_groups = subgroup_device_ids_,
@@ -1615,7 +1638,7 @@ absl::StatusOr<DeviceBufferRef> ProcessGroupTpu::AllToAllBaseUnevenSplits(
   TT_ASSIGN_OR_RETURN(auto output_dtype,
                       ConvertTo<mlir::ElementType>(output.scalar_type()));
 
-  // 5. Dispatch the custom call with input and output buffers.
+  // 6. Dispatch the custom call with input and output buffers.
   return DispatchOp<2>(std::move(op_builder),
                        {maybe_materialized_input_tensor, output},
                        {.out_dtype = output_dtype,
@@ -1670,64 +1693,116 @@ c10::intrusive_ptr<c10d::Work> ProcessGroupTpu::alltoall(
           result_dims_list.push_back(output_tensor.sizes());
         }
 
-        NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder;
+        std::vector<DeviceBufferRef> result_buffers;
 
         if (IsUniformAllToAll(output_tensors, input_tensors)) {
-          op_builder = [device_groups = subgroup_device_ids_](
-                           absl::Span<mlir::MlirOp> inputs,
-                           mlir::MlirBuilder& builder) {
-            return BuildDistributedAllToAllShlo(inputs, device_groups);
-          };
+          NAryMlirOpBuilder<kDynamicSize, kDynamicSize> op_builder =
+              [device_groups = subgroup_device_ids_](
+                  absl::Span<mlir::MlirOp> inputs, mlir::MlirBuilder& builder) {
+                return BuildDistributedAllToAllShlo(inputs, device_groups);
+              };
+
+          TT_ASSIGN_OR_THROW(result_buffers,
+                             (DispatchOp<kDynamicSize, kDynamicSize>(
+                                 std::move(op_builder), input_tensors,
+                                 {.out_dtypes = result_dtypes,
+                                  .out_dims_list = result_dims_list,
+                                  .op_param_cache_keys = std::move(param_keys),
+                                  .split_mode = GetCollectiveSplitMode()})));
         } else {
           // Non-uniform / uneven tensor list shapes across ranks (e.g. for MoE
-          // dynamic token routing). All concatenations along dimension 0,
-          // ragged all-to-all custom call execution, and slicing back into
-          // individual destination tensors are executed directly in MLIR
-          // inside the op builder.
-
-          // 1. Calculate local slice sizes and compute synchronized offsets.
-          int32_t total_input_size = 0;
-          int32_t total_output_size = 0;
-          std::vector<int32_t> send_sizes(group_size);
-          std::vector<int32_t> recv_sizes(group_size);
+          // dynamic token routing).
+          //
+          // We decompose uneven `all_to_all` into three isolated stages:
+          //   1. Pre-collective dimension-0 concatenation
+          //   (`concatenated_input`)
+          //      and uninitialized destination buffer allocation
+          //      (`output_placeholder`).
+          //   2. Isolated `AllToAllBaseUnevenSplits` collective execution on
+          //      the pre-materialized, symmetrically sized buffers.
+          //   3. Post-collective dimension-0 slicing into individual
+          //      destination tensors (`SliceTensorsAlongDim0`).
+          std::vector<int64_t> input_split_sizes(group_size);   // INT_VEC_OK
+          std::vector<int64_t> output_split_sizes(group_size);  // INT_VEC_OK
+          std::vector<int32_t> slice_sizes(group_size);
+          int64_t total_input_size = 0;
+          int64_t total_output_size = 0;
           for (size_t i = 0; i < group_size; ++i) {
-            send_sizes[i] = static_cast<int32_t>(input_tensors[i].size(0));
-            recv_sizes[i] = static_cast<int32_t>(output_tensors[i].size(0));
-            total_input_size += send_sizes[i];
-            total_output_size += recv_sizes[i];
+            input_split_sizes[i] = input_tensors[i].size(0);
+            output_split_sizes[i] = output_tensors[i].size(0);
+            slice_sizes[i] = static_cast<int32_t>(output_split_sizes[i]);
+            total_input_size += input_split_sizes[i];
+            total_output_size += output_split_sizes[i];
           }
 
-          // 2. Synchronize remote destination output offsets across all ranks
-          // via c10d::Store.
-          TT_ASSIGN_OR_THROW(
-              auto offsets,
-              ComputeRaggedAllToAllOffsets(
-                  store_.get(), static_cast<int>(rank),
-                  alltoall_seq_.fetch_add(1), send_sizes, recv_sizes,
-                  total_input_size, total_output_size));
+          Dimensions total_input_shape =
+              CopyIntVector(input_tensors[0].sizes());
+          total_input_shape[0] = total_input_size;
 
-          // 3. Populate kernel parameter cache keys for graph compilation.
-          TT_THROW_IF_ERROR(SetRaggedAllToAllParamKeys(param_keys, offsets));
-
-          // 4. Construct the MLIR op builder lowering to the StableHLO ragged
-          // all-to-all custom call.
-          op_builder = [device_groups = subgroup_device_ids_, output_dtype,
-                        offsets = std::move(offsets)](
-                           absl::Span<mlir::MlirOp> inputs,
-                           mlir::MlirBuilder& builder) {
-            return BuildDistributedAllToAllUnevenSplitsShlo(
-                inputs, output_dtype, offsets.input_offsets, offsets.send_sizes,
-                offsets.output_offsets, offsets.recv_sizes, device_groups);
+          std::vector<at::Tensor> non_empty_inputs;
+          non_empty_inputs.reserve(input_tensors.size());
+          for (const auto& tensor : input_tensors) {
+            if (tensor.size(0) == 0) continue;
+            non_empty_inputs.push_back(tensor);
+          }
+          auto concat_builder = [output_dtype, total_input_shape](
+                                    absl::Span<mlir::MlirOp> inputs,
+                                    mlir::MlirBuilder& builder) {
+            return ConcatenateTensorsAlongDim0(inputs, output_dtype,
+                                               total_input_shape, builder);
           };
-        }
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef concatenated_input_buf,
+              DispatchOp<kDynamicSize>(
+                  std::move(concat_builder), non_empty_inputs,
+                  {.out_dtype = output_dtype,
+                   .out_dims = total_input_shape,
+                   .op_param_cache_keys = std::move(param_keys)}));
 
-        TT_ASSIGN_OR_THROW(std::vector<DeviceBufferRef> result_buffers,
-                           (DispatchOp<kDynamicSize, kDynamicSize>(
-                               std::move(op_builder), input_tensors,
-                               {.out_dtypes = result_dtypes,
-                                .out_dims_list = result_dims_list,
-                                .op_param_cache_keys = std::move(param_keys),
-                                .split_mode = GetCollectiveSplitMode()})));
+          Dimensions total_output_shape =
+              CopyIntVector(output_tensors[0].sizes());
+          total_output_shape[0] = total_output_size;
+
+          auto empty_builder =
+              [output_dtype, total_output_shape](
+                  mlir::MlirBuilder& builder) -> absl::StatusOr<mlir::MlirOp> {
+            return BuildFillUninitialized(builder, output_dtype,
+                                          total_output_shape);
+          };
+          TT_ASSIGN_OR_THROW(DeviceBufferRef output_placeholder_buf,
+                             DispatchOp<0>(std::move(empty_builder), {},
+                                           {.out_dtype = output_dtype,
+                                            .out_dims = total_output_shape,
+                                            .op_param_cache_keys =
+                                                OpParamCacheKeys::Empty()}));
+
+          at::Tensor concatenated_input =
+              MakeTensor(std::move(concatenated_input_buf));
+          at::Tensor output_placeholder =
+              MakeTensor(std::move(output_placeholder_buf));
+
+          TT_ASSIGN_OR_THROW(
+              DeviceBufferRef ragged_output_buf,
+              AllToAllBaseUnevenSplits(output_placeholder, concatenated_input,
+                                       output_split_sizes, input_split_sizes));
+
+          at::Tensor ragged_output = MakeTensor(std::move(ragged_output_buf));
+          TT_ASSIGN_OR_THROW(auto slice_param_keys,
+                             TT_MAKE_OP_PARAM_CACHE_KEYS(slice_sizes));
+          auto slice_builder =
+              [slice_sizes = std::move(slice_sizes)](
+                  mlir::MlirOp input) -> absl::StatusOr<DynamicMlirOpResults> {
+            return SliceTensorsAlongDim0(input, slice_sizes);
+          };
+
+          TT_ASSIGN_OR_THROW(
+              result_buffers,
+              (DispatchOp<1, kDynamicSize>(
+                  std::move(slice_builder), ragged_output,
+                  {.out_dtypes = result_dtypes,
+                   .out_dims_list = result_dims_list,
+                   .op_param_cache_keys = std::move(slice_param_keys)})));
+        }
 
         for (int64_t i = 0; i < result_buffers.size(); ++i) {
           TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buffers[i]),

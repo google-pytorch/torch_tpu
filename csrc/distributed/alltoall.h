@@ -17,10 +17,13 @@
 #ifndef TORCH_TPU_CSRC_DISTRIBUTED_ALLTOALL_H_
 #define TORCH_TPU_CSRC_DISTRIBUTED_ALLTOALL_H_
 
+#include <cstdint>
+
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "csrc/distributed/types.h"
 #include "mlir/Support/LLVM.h"
+#include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 
 namespace torch_tpu {
@@ -63,36 +66,16 @@ absl::StatusOr<mlir::MlirOp> BuildDistributedAllToAllBaseUnevenSplitsShlo(
 absl::StatusOr<mlir::SmallVector<mlir::MlirOp>> BuildDistributedAllToAllShlo(
     absl::Span<mlir::MlirOp> inputs, const DeviceGroupList& device_groups);
 
-// Builds and emits a StableHLO ragged all-to-all custom call for `all_to_all`
-// (list of tensors) with uneven / non-uniform tensor shapes across ranks.
-//
-// The list of input tensors are concatenated along dimension 0 in MLIR,
-// processed by the StableHLO ragged all-to-all custom call, and sliced back
-// into individual result tensors matching recv_sizes.
-//
-// Args:
-//   inputs: The list of input tensors to scatter across peer ranks.
-//   output_dtype: The MLIR element type of the resulting output tensors.
-//   input_offsets: Starting offsets along dimension 0 in the concatenated input
-//     tensor for each outgoing slice.
-//   send_sizes: Number of elements along dimension 0 to send to each peer rank.
-//   output_offsets: Starting offsets along dimension 0 in the destination
-//     rank's output buffer where this rank's sent slice should be placed.
-//   recv_sizes: Number of elements along dimension 0 to receive from each peer
-//     rank (and size of each corresponding output tensor).
-//   device_groups: List of process group device IDs participating in the
-//     collective communication.
-//
-// Returns:
-//   A vector of `mlir::MlirOp`s corresponding to the output tensors, or an
-//   error status on failure.
-absl::StatusOr<mlir::SmallVector<mlir::MlirOp>>
-BuildDistributedAllToAllUnevenSplitsShlo(
+// Concatenates non-empty input tensors along dimension 0, or emits a zero-sized
+// tensor of shape `total_input_shape` if `inputs` is empty.
+absl::StatusOr<mlir::MlirOp> ConcatenateTensorsAlongDim0(
     absl::Span<mlir::MlirOp> inputs, mlir::ElementType output_dtype,
-    absl::Span<const int32_t> input_offsets,
-    absl::Span<const int32_t> send_sizes,
-    absl::Span<const int32_t> output_offsets,
-    absl::Span<const int32_t> recv_sizes, const DeviceGroupList& device_groups);
+    absl::Span<const int64_t> total_input_shape, mlir::MlirBuilder& builder);
+
+// Slices a concatenated tensor along dimension 0 into individual tensors
+// matching `split_sizes`.
+mlir::SmallVector<mlir::MlirOp> SliceTensorsAlongDim0(
+    mlir::MlirOp tensor, absl::Span<const int32_t> split_sizes);
 
 }  // namespace torch_tpu
 
