@@ -45,9 +45,49 @@ def _safe_get(obj: Any, *attr_names: str) -> Any:
   if obj is None:
     return None
   for name in attr_names:
-    val = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    val = None
+    if isinstance(obj, dict):
+      val = obj.get(name)
+    else:
+      try:
+        val = getattr(obj, name, None)
+      except Exception:  # pylint: disable=broad-except
+        val = None
     if val is not None:
       return val
+
+    # If attribute was not found on the root obj, check per_layer_config if present.
+    per_layer_config = None
+    if isinstance(obj, dict):
+      per_layer_config = obj.get("per_layer_config")
+    else:
+      try:
+        per_layer_config = getattr(obj, "per_layer_config", None)
+      except Exception:  # pylint: disable=broad-except
+        per_layer_config = None
+
+    if per_layer_config:
+      try:
+        if isinstance(per_layer_config, dict):
+          first_layer = (
+              per_layer_config.get(0)
+              or per_layer_config.get("0")
+              or next(iter(per_layer_config.values()), None)
+          )
+        elif isinstance(per_layer_config, (list, tuple)) or hasattr(
+            per_layer_config, "__getitem__"
+        ):
+          first_layer = per_layer_config[0]
+        else:
+          first_layer = None
+      except Exception:  # pylint: disable=broad-except
+        first_layer = None
+
+      if first_layer is not None and first_layer is not obj:
+        val = _safe_get(first_layer, name)
+        if val is not None:
+          return val
+
   return None
 
 
@@ -386,7 +426,26 @@ class DecodeStepper(common.BaseStepper):
     self.prompt_len = self.input_ids.shape[1]
 
     model_config = getattr(self._model, "config")  # pytype: disable=attribute-error
+    try:
+      setattr(model_config, "allow_global_per_layer_attribute_access", True)
+    except Exception:  # pylint: disable=broad-except
+      pass
+    if (
+        isinstance(model_config, dict)
+        and "allow_global_per_layer_attribute_access" in model_config
+    ):
+      model_config["allow_global_per_layer_attribute_access"] = True
+
     cfg = _safe_get(model_config, "text_config") or model_config
+    try:
+      setattr(cfg, "allow_global_per_layer_attribute_access", True)
+    except Exception:  # pylint: disable=broad-except
+      pass
+    if (
+        isinstance(cfg, dict)
+        and "allow_global_per_layer_attribute_access" in cfg
+    ):
+      cfg["allow_global_per_layer_attribute_access"] = True
 
     self.vocab_size = _safe_get(cfg, "vocab_size")
     num_attn_heads = (

@@ -600,6 +600,37 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     self.assertIsNone(decode._safe_get(ConfigB(), "nonexistent"))
     self.assertIsNone(decode._safe_get(None, "foo", "bar"))
 
+    # Config with per_layer_config as list
+    class LayerConfig:
+      head_dim = 64
+      num_heads = 4
+
+    class RootWithList:
+      per_layer_config = [LayerConfig()]
+
+    self.assertEqual(decode._safe_get(RootWithList(), "head_dim"), 64)
+    self.assertEqual(decode._safe_get(RootWithList(), "num_heads"), 4)
+
+    # Config with per_layer_config as dict
+    class RootWithDict:
+      per_layer_config = {0: {"head_dim": 128, "num_heads": 8}}
+
+    self.assertEqual(decode._safe_get(RootWithDict(), "head_dim"), 128)
+    self.assertEqual(decode._safe_get(RootWithDict(), "num_heads"), 8)
+
+    # Config where accessing global attribute raises an exception
+    class RaisingConfig:
+
+      @property
+      def head_dim(self):
+        raise RuntimeError(
+            "'head_dim' is a per-layer attribute and may vary across layers."
+        )
+
+      per_layer_config = [{"head_dim": 256}]
+
+    self.assertEqual(decode._safe_get(RaisingConfig(), "head_dim"), 256)
+
   def test_decode_stepper_config_aliases(self):
     ops = self._ops()
 
@@ -1482,6 +1513,48 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     self.assertIs(model.recurrent_states, rec_buf)
     self.assertTrue(torch.equal(model.conv1d_state, prefill_conv))
     self.assertTrue(torch.equal(model.recurrent_states, prefill_rec))
+
+  def test_decode_stepper_heterogeneous_config(self):
+    ops = self._ops()
+
+    config = transformers.LlamaConfig(
+        vocab_size=16,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        max_position_embeddings=128,
+        head_dim=16,
+        per_layer_config={1: {"head_dim": 32, "num_key_value_heads": 2}},
+    )
+    if hasattr(config, "allow_global_per_layer_attribute_access"):
+      self.assertFalse(config.allow_global_per_layer_attribute_access)
+      with self.assertRaises(  # ASSERT_RAISES_OK=Verifying config raises before stepper init.
+          Exception
+      ):
+        _ = config.head_dim
+
+    model = mock.MagicMock(config=config, dtype=torch.bfloat16)
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+
+    # Static decode mode
+    stepper_static = decode.DecodeStepper(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(model, (), {"input_ids": x})
+    self.assertEqual(stepper_static.head_dim, 16)
+    self.assertEqual(stepper_static.num_heads, 4)
+    if hasattr(config, "allow_global_per_layer_attribute_access"):
+      self.assertTrue(config.allow_global_per_layer_attribute_access)
+
+    # Dynamic decode mode
+    if hasattr(config, "allow_global_per_layer_attribute_access"):
+      config.allow_global_per_layer_attribute_access = False
+    stepper_dynamic = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper_dynamic.init_with_benchmark_args(model, (), {"input_ids": x})
+    self.assertEqual(stepper_dynamic.head_dim, 16)
+    self.assertEqual(stepper_dynamic.num_heads, 4)
+    if hasattr(config, "allow_global_per_layer_attribute_access"):
+      self.assertTrue(config.allow_global_per_layer_attribute_access)
 
 
 if __name__ == "__main__":
