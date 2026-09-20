@@ -2662,27 +2662,65 @@ class TransformersProvider(BaseProvider):
       )
     else:
       architectures = getattr(config, "architectures", [])
-      model_cls = transformers.AutoModel
+      model_cls = None
 
       if architectures:
-        try:
-          model_cls = getattr(transformers, architectures[0])
-        except AttributeError:
-          logging.warning(
-              "Could not find architecture %s, falling back to AutoModel.",
-              architectures[0],
-          )
+        arch_name = architectures[0]
+        if hasattr(transformers, arch_name):
+          try:
+            model_cls = getattr(transformers, arch_name)
+          except Exception:  # pylint: disable=broad-except
+            model_cls = None
+        if model_cls is None:
+          # Try case-insensitive matching against transformers exports
+          arch_lower = arch_name.lower()
+          for attr in dir(transformers):
+            if attr.lower() == arch_lower:
+              try:
+                model_cls = getattr(transformers, attr)
+                break
+              except Exception:  # pylint: disable=broad-except
+                continue
+
+      if model_cls is None:
+        if modality == Modality.CAUSAL_LM:
+          model_cls = transformers.AutoModelForCausalLM
+        elif modality == Modality.SEQ2SEQ:
+          if "whisper" in getattr(config, "model_type", ""):
+            model_cls = getattr(
+                transformers,
+                "AutoModelForSpeechSeq2Seq",
+                transformers.AutoModel,
+            )
+          else:
+            model_cls = transformers.AutoModelForSeq2SeqLM
+        else:
+          model_cls = transformers.AutoModel
 
       target_dtype = _extract_target_dtype(config)
 
       def _create_model():
-        m = (
-            model_cls.from_config(config)
-            if hasattr(model_cls, "from_config")
-            else model_cls(config)
-        )
+        m = None
+        if model_cls is not None and hasattr(model_cls, "from_config"):
+          try:
+            m = model_cls.from_config(config)
+          except Exception as exc:  # pylint: disable=broad-except
+            logging.warning(
+                "Failed to instantiate %s with from_config: %s. Falling back to"
+                " AutoModel.",
+                model_cls,
+                exc,
+            )
+        if m is None:
+          try:
+            if callable(model_cls):
+              m = model_cls(config)
+            else:
+              m = transformers.AutoModel.from_config(config)
+          except Exception:
+            m = transformers.AutoModel.from_config(config)
         if target_dtype != torch.float32:
-          m = m.to(dtype=target_dtype)
+          m = m.to(dtype=target_dtype)  # pyrefly: ignore[missing-attribute]
         if getattr(config, "model_type", "") in ("vits", "tapas"):
           # Zero TPU float weights before forward pass to prevent uninitialized
           # parameters (from to_empty) causing NaNs/overflows.
@@ -2691,7 +2729,7 @@ class TransformersProvider(BaseProvider):
               if p.device.type != "meta" and p.dtype.is_floating_point:
                 p.data.zero_()
 
-          m.register_forward_pre_hook(_zero_weights_pre_hook)
+          m.register_forward_pre_hook(_zero_weights_pre_hook)  # pyrefly: ignore[missing-attribute]
         return m
 
       model_fn = _create_model

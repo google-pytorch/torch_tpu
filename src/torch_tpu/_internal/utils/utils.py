@@ -660,6 +660,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
        - `.audio` / "audio"
        - `.sequences` / "sequences"
        - `.prediction_logits` / "prediction_logits"
+       - `.prediction_scores` / "prediction_scores"
+       - `.scores` / "scores"
+       - `.token_logits` / "token_logits"
        - `.output` / "output"
     3. Sequences (tuple/list): Recursively unwraps the first element (out[0]).
     4. Dictionaries (dict):
@@ -684,6 +687,9 @@ def get_primary_tensor_output(out: Any) -> torch.Tensor | None:
       "audio",
       "sequences",
       "prediction_logits",
+      "prediction_scores",
+      "scores",
+      "token_logits",
       "output",
   )
   for k in priority_keys:

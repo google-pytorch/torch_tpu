@@ -267,6 +267,52 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     tokenizer = module_spec.preprocessor_factory()
     self.assertIsNotNone(tokenizer)
 
+  def test_transformers_causal_lm_architecture_casing_resolution(self):
+    def modify_config(config):
+      # Simulate AdaptLLM / ChatQA casing: "LLaMAForCausalLM" instead of "LlamaForCausalLM"
+      config.architectures = ["LLaMAForCausalLM"]
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "meta-llama/Llama-3.2-tiny",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory()
+    model.eval()
+    out = model(**kwargs)
+    self.assertTrue(hasattr(out, "logits"))
+    self.assertIsNotNone(out.logits)
+    self.assertEqual(
+        out.logits.shape,
+        (*kwargs["input_ids"].shape, module_spec.config.vocab_size),
+    )
+
+  def test_transformers_causal_lm_missing_architectures_resolution(self):
+    def modify_config(config):
+      # Simulate TheBloke / AntonV missing architectures field
+      config.architectures = []
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "meta-llama/Llama-3.2-tiny",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    _, kwargs = module_spec.sample_inputs_factory()
+    model.eval()
+    out = model(**kwargs)
+    self.assertTrue(hasattr(out, "logits"))
+    self.assertIsNotNone(out.logits)
+    self.assertEqual(
+        out.logits.shape,
+        (*kwargs["input_ids"].shape, module_spec.config.vocab_size),
+    )
+
   def test_transformers_with_modify_config_hook(self):
     def modify_config(config):
       config.vocab_size = 99999

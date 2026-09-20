@@ -798,6 +798,9 @@ class AllTest(seed_test_utils.RepeatableTest):
         utils.get_primary_tensor_output({"aux_loss": loss_t, "output": t}), t
     )
     self.assertIs(utils.get_primary_tensor_output({"logits": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"prediction_scores": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"scores": t}), t)
+    self.assertIs(utils.get_primary_tensor_output({"token_logits": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"waveform": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"audio": t}), t)
     self.assertIs(utils.get_primary_tensor_output({"sequences": t}), t)
