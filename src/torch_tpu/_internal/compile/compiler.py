@@ -25,6 +25,7 @@ import collections
 from collections.abc import Sequence
 import concurrent.futures
 import dataclasses
+import os
 from typing import Any
 
 import torch
@@ -44,6 +45,7 @@ from torch_tpu._internal.compile import tpu_torch_compile
 from torch_tpu._internal.compile.debug import TpuCompileDebug
 from torch_tpu._internal.compile.fx_passes import detect_causal_mask
 from torch_tpu._internal.compile.fx_passes import fold_gqa
+from torch_tpu._internal.compile.fx_passes import fuse_slice_concat
 from torch_tpu._internal.compile.fx_passes import mark_activation_checkpoints
 from torch_tpu._internal.compile.fx_passes import mark_embedded_constants
 from torch_tpu._internal.compile.fx_passes import reassociate_norm_weights
@@ -293,6 +295,31 @@ def _create_storage_aware_placeholders(
   return placeholders
 
 
+def _should_skip_argument_layout_constraint(
+    val: torch.Tensor, minor_to_major: Sequence[int]
+) -> bool:
+  """Returns whether argument layout should be unconstrained to prevent copy.1746.
+
+  For non-power-of-2 shapes (e.g. [1024, 2304] in Gemma 2), forcing a layout
+  extracted from a materialized buffer with T(8,128) forces XLA
+  MemorySpaceAssignment to split DMAs and insert copy.1746 to convert to
+  T(16,128) expected by GEMMs. Allowing layout assignment flexibility avoids
+  this copy.
+  """
+  enabled_str = os.environ.get(  # PY_ENVIRON_OK=internal pass toggle.
+      "TORCHTPU_UNCONSTRAIN_NON_POWER_OF_TWO_LAYOUTS", "1"
+  )
+  if enabled_str.lower() in ("0", "false", "no"):
+    return False
+  if val.ndim == 0:
+    return False
+  minor_dim = minor_to_major[0] if minor_to_major else -1
+  minor_size = val.shape[minor_dim]
+  has_non_pow2_minor = minor_size > 0 and (minor_size & (minor_size - 1)) != 0
+  has_non_pow2_dim = any(s > 0 and (s & (s - 1)) != 0 for s in val.shape)
+  return has_non_pow2_minor or (val.ndim == 2 and has_non_pow2_dim)
+
+
 class StaticCompiler(Compiler):
   """Compiler for static shapes.
 
@@ -366,7 +393,10 @@ class StaticCompiler(Compiler):
                     val
                 )
                 if layout is not None:
-                  extracted_layouts.append(layout[0])
+                  if _should_skip_argument_layout_constraint(val, layout[0]):
+                    extracted_layouts.append([])
+                  else:
+                    extracted_layouts.append(layout[0])
                 else:
                   extracted_layouts.append([])
               else:
@@ -499,6 +529,9 @@ class StaticCompiler(Compiler):
         graph_module, "decompose_auto_functionalized"
     ).apply_graph_pass(post_grad.decompose_auto_functionalized)
     graph_transform_observer.GraphTransformObserver(
+        graph_module, "fuse_slice_concat"
+    ).apply_graph_pass(fuse_slice_concat.apply)
+    graph_transform_observer.GraphTransformObserver(
         graph_module, "reassociate_norm_weights"
     ).apply_graph_pass(reassociate_norm_weights.apply)
     graph_transform_observer.GraphTransformObserver(
@@ -558,3 +591,5 @@ class StaticCompiler(Compiler):
           donated_inputs,
           module_name,
       )
+
+  compile = __call__
