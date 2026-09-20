@@ -103,6 +103,31 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
+    name = "decode_stepper_coverage_test",
+    srcs = ["decode_stepper_coverage_test.py"],
+    # Resolves model configs from module_registry's weights mirror, which is not
+    # hermetic for TAP.
+    notap = "reads model configs from external storage; run manually",
+    shard_count = 4,
+    tags = [
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        "//examples/benchmarks/e2e/harness:target",
+        "//examples/benchmarks/e2e/harness:torch_device_ops",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//tests:module_registry",
+        "//tests:seed_test_utils",
+        "@pypi//transformers",
+    ],
+)
+
+torch_tpu_py_test(
     name = "target_test",
     srcs = ["target_test.py"],
     deps = [

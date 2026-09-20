@@ -44,6 +44,23 @@ def _mlp(in_dim=4, hidden=8, out_dim=3, seed=0):
   )
 
 
+def _state_tensors(states):
+  """Normalizes a linear-attention state container to a dict of tensors.
+
+  transformers exposes `conv_states`/`recurrent_states` as a single tensor in
+  older releases and as a mapping of state index to tensor in newer ones.
+
+  Args:
+    states: The container read off a cache layer or a snapshot entry.
+
+  Returns:
+    A dict of state index to tensor.
+  """
+  if isinstance(states, torch.Tensor):
+    return {0: states}
+  return {k: v for k, v in states.items() if isinstance(v, torch.Tensor)}
+
+
 discovery_lib.import_submodules(steps)
 
 
@@ -930,6 +947,541 @@ class StepperTypeTest(seed_test_utils.RepeatableTest):
     custom_output_sized = CustomIndexableOutput(already_sized_tensor)
     logits = stepper._unpack_output_and_update_cache(custom_output_sized)
     self.assertTrue(torch.equal(logits, already_sized_tensor))
+
+  def test_prepare_forward_kwargs(self):
+    cache = mock.MagicMock()
+    base_kwargs = {
+        "use_cache": True,
+        "cache_position": torch.tensor([4]),
+    }
+
+    # Model taking (input_ids, past_key_values, cache_position)
+    class ModelWithPastKV(torch.nn.Module):
+
+      def forward(self, input_ids, past_key_values=None, cache_position=None):
+        pass
+
+    m1 = ModelWithPastKV()
+    res1 = decode.DecodeStepper._prepare_forward_kwargs(m1, cache, base_kwargs)
+    self.assertIn("past_key_values", res1)
+    self.assertEqual(res1["past_key_values"], cache)
+    self.assertIn("cache_position", res1)
+
+    # Model taking (input_ids, cache_params) without cache_position
+    class ModelWithCacheParams(torch.nn.Module):
+
+      def forward(self, input_ids, cache_params=None):
+        pass
+
+    m2 = ModelWithCacheParams()
+    res2 = decode.DecodeStepper._prepare_forward_kwargs(m2, cache, base_kwargs)
+    self.assertIn("cache_params", res2)
+    self.assertEqual(res2["cache_params"], cache)
+    self.assertNotIn("cache_position", res2)
+
+    # Model with **kwargs
+    class ModelWithVarKwargs(torch.nn.Module):
+
+      def forward(self, input_ids, **kwargs):
+        pass
+
+    m3 = ModelWithVarKwargs()
+    res3 = decode.DecodeStepper._prepare_forward_kwargs(m3, cache, base_kwargs)
+    self.assertIn("past_key_values", res3)
+    self.assertIn("cache_position", res3)
+
+  def test_decode_stepper_cache_selection_static_vs_dynamic(self):
+    ops = self._ops()
+
+    # Model supporting static cache with dynamism=False -> StaticCache
+    config_static = transformers.GPT2Config(
+        vocab_size=16,
+        n_positions=32,
+        n_embd=16,
+        n_layer=2,
+        n_head=2,
+    )
+    model_static = transformers.GPT2LMHeadModel(config_static).to(ops.device)
+    stepper_static = decode.decode(output_tokens=4, dynamism=False)
+    stepper_static.init_with_benchmark_args(
+        model_static,
+        (),
+        {"input_ids": torch.randint(0, 16, (1, 4), device=ops.device)},
+    )
+    self.assertIsInstance(
+        stepper_static.get_cache(), transformers.cache_utils.StaticCache
+    )
+
+    # Model with dynamism=True -> DynamicCache
+    stepper_dynamic = decode.decode(output_tokens=4, dynamism=True)
+    stepper_dynamic.init_with_benchmark_args(
+        model_static,
+        (),
+        {"input_ids": torch.randint(0, 16, (1, 4), device=ops.device)},
+    )
+    self.assertIsInstance(
+        stepper_dynamic.get_cache(), transformers.cache_utils.DynamicCache
+    )
+
+    # Recurrent/SSM model -> DynamicCache even with dynamism=False.
+    config_mamba = transformers.MambaConfig(
+        vocab_size=16,
+        hidden_size=16,
+        state_size=8,
+        num_hidden_layers=2,
+    )
+    model_mamba = transformers.MambaForCausalLM(config_mamba).to(ops.device)
+    stepper_mamba = decode.decode(output_tokens=4, dynamism=False)
+    stepper_mamba.init_with_benchmark_args(
+        model_mamba,
+        (),
+        {"input_ids": torch.randint(0, 16, (1, 4), device=ops.device)},
+    )
+    self.assertIsInstance(
+        stepper_mamba.get_cache(), transformers.cache_utils.DynamicCache
+    )
+
+  def test_decode_stepper_falcon_multi_query_heads(self):
+    ops = self._ops()
+    config_falcon_mq = transformers.FalconConfig(
+        vocab_size=16,
+        hidden_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        multi_query=True,
+        new_decoder_architecture=False,
+    )
+    model_falcon_mq = transformers.FalconForCausalLM(config_falcon_mq).to(
+        ops.device
+    )
+    stepper_mq = decode.decode(output_tokens=4, dynamism=False)
+    stepper_mq.init_with_benchmark_args(
+        model_falcon_mq,
+        (),
+        {"input_ids": torch.randint(0, 16, (1, 4), device=ops.device)},
+    )
+    self.assertEqual(stepper_mq.num_heads, 1)
+
+  def test_decode_stepper_custom_cache_snapshot_and_rollback(self):
+    class CustomSSMCache:
+
+      def __init__(self, state_val: int = 1):
+        self.state_val = state_val
+
+    class DummySSMModel(torch.nn.Module):
+
+      def __init__(self, vocab_size: int = 16, hidden_size: int = 16):
+        super().__init__()
+        self.config = mock.MagicMock(
+            model_type="custom_ssm",
+            vocab_size=vocab_size,
+            hidden_size=hidden_size,
+            num_attention_heads=2,
+            _supports_static_cache=False,
+        )
+        self.embed = torch.nn.Embedding(vocab_size, hidden_size)
+        self.lm_head = torch.nn.Linear(hidden_size, vocab_size, bias=False)
+
+      def forward(self, input_ids, past_key_values=None, **kwargs):
+        h = self.embed(input_ids)
+        logits = self.lm_head(h)
+        if past_key_values is not None and isinstance(
+            past_key_values, CustomSSMCache
+        ):
+          past_key_values.state_val += 1
+          return logits, past_key_values
+        return logits
+
+    ops = self._ops()
+    model = DummySSMModel().to(ops.device)
+    stepper = decode.decode(output_tokens=4, dynamism=False)
+    stepper.init_with_benchmark_args(
+        model,
+        (),
+        {"input_ids": torch.randint(0, 16, (1, 4), device=ops.device)},
+    )
+    custom_cache = CustomSSMCache(state_val=10)
+    stepper.cache = custom_cache
+
+    stepper.pre_warmup_init()
+    self.assertEqual(stepper.cache.state_val, 11)
+    self.assertIsNotNone(stepper._prefill_cache_snapshot)
+    self.assertEqual(stepper._prefill_cache_snapshot.state_val, 11)
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    self.assertEqual(stepper.cache.state_val, 15)
+
+    stepper.post_warmup_hook()
+    self.assertEqual(stepper.cache.state_val, 11)
+
+  def test_decode_stepper_mamba_warmup_lifecycle(self):
+    ops = self._ops()
+    config = transformers.MambaConfig(
+        vocab_size=16,
+        hidden_size=16,
+        state_size=8,
+        num_hidden_layers=2,
+    )
+    # The harness relies on transformers deriving linear-attention cache layers
+    # from the config; older releases have no `layer_types` on `MambaConfig`.
+    probe = transformers.cache_utils.DynamicCache(config=config)
+    if not isinstance(
+        probe.layers[0], transformers.cache_utils.LinearAttentionCacheLayerMixin
+    ):
+      self.skipTest(
+          "this transformers version does not build linear-attention cache"
+          " layers for Mamba"
+      )
+
+    model = transformers.MambaForCausalLM(config).to(ops.device)
+    model.eval()
+
+    prompt_len = 4
+    x = torch.randint(0, 16, (1, prompt_len), device=ops.device)
+
+    stepper = decode.decode(output_tokens=4, dynamism=False)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+    # Mamba has no attention KV cache, so it must never get a StaticCache.
+    self.assertIsInstance(
+        stepper.get_cache(), transformers.cache_utils.DynamicCache
+    )
+
+    stepper.pre_warmup_init()
+    torch.accelerator.synchronize()
+    self.assertIsNotNone(stepper.next_token)
+    # `crop()` cannot roll back recurrent state, so it must be snapshotted.
+    self.assertIsNotNone(stepper._prefill_linear_states)
+    prefill_states = {
+        layer_idx: {
+            state_idx: tensor.clone()
+            for state_idx, tensor in _state_tensors(
+                entry["recurrent_states"]
+            ).items()
+        }
+        for layer_idx, entry in stepper._prefill_linear_states.items()
+        if "recurrent_states" in entry
+    }
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+    # Guard against a vacuous restore assertion below: warmup decode steps must
+    # actually have advanced the recurrent state.
+    layers = stepper.get_cache().layers
+    self.assertTrue(
+        any(
+            not torch.equal(
+                _state_tensors(layers[layer_idx].recurrent_states)[state_idx],
+                want,
+            )
+            for layer_idx, states in prefill_states.items()
+            for state_idx, want in states.items()
+        ),
+        "warmup decode did not mutate any recurrent state",
+    )
+
+    stepper.post_warmup_hook()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len)
+    self.assertTrue(torch.equal(stepper.next_token, stepper.prefill_next_token))
+    for layer_idx, states in prefill_states.items():
+      actual = _state_tensors(layers[layer_idx].recurrent_states)
+      for state_idx, want in states.items():
+        self.assertTrue(
+            torch.equal(actual[state_idx], want),
+            f"recurrent state (layer {layer_idx}, state {state_idx}) was not"
+            " restored to its post-prefill value",
+        )
+
+    # Decoding must still work after the rollback.
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+
+  def test_linear_attention_states_legacy_tensor_layout(self):
+    # transformers releases before the multi-state rework expose
+    # `conv_states`/`recurrent_states` as a single tensor rather than a dict.
+    class LegacyLinearLayer:
+
+      def __init__(self):
+        self.conv_states = torch.zeros(1, 4, 3)
+        self.recurrent_states = torch.ones(1, 4, 2)
+
+    class FakeCache:
+
+      def __init__(self, layers):
+        self.layers = layers
+
+    layer = LegacyLinearLayer()
+    cache = FakeCache([layer])
+
+    snapshot = decode._snapshot_linear_attention_states(
+        cache, include_conv=True
+    )
+    self.assertIsNotNone(snapshot)
+    self.assertCountEqual(
+        snapshot[0].keys(), ["conv_states", "recurrent_states"]
+    )
+
+    recurrent_buffer = layer.recurrent_states
+    layer.conv_states.fill_(7.0)
+    layer.recurrent_states.fill_(7.0)
+    decode._restore_linear_attention_states(cache, snapshot)
+
+    self.assertTrue(torch.equal(layer.conv_states, torch.zeros(1, 4, 3)))
+    self.assertTrue(torch.equal(layer.recurrent_states, torch.ones(1, 4, 2)))
+    # Restoring must write through the existing buffer so that the static
+    # address the compiled decode step captured stays valid.
+    self.assertIs(layer.recurrent_states, recurrent_buffer)
+
+  def test_supports_early_initialization(self):
+    class ModernLayer:
+      supports_early_init = True
+
+    class LegacyAttentionLayer:
+      pass
+
+    # A linear-attention layer on a release that predates `supports_early_init`
+    # would be handed an attention-shaped tensor by `early_initialization`.
+    class LegacyLinearLayer:
+      pass
+
+    transformers.cache_utils.LinearAttentionCacheLayerMixin.register(
+        LegacyLinearLayer
+    )
+
+    class FakeCache:
+
+      def __init__(self, layers):
+        self.layers = layers
+
+    self.assertTrue(
+        decode._supports_early_initialization(FakeCache([ModernLayer()]))
+    )
+    self.assertTrue(
+        decode._supports_early_initialization(
+            FakeCache([LegacyAttentionLayer()])
+        )
+    )
+    self.assertFalse(
+        decode._supports_early_initialization(
+            FakeCache([LegacyAttentionLayer(), LegacyLinearLayer()])
+        )
+    )
+
+  def test_forward_param_spec_is_memoized(self):
+    class ModelWithPastKV(torch.nn.Module):
+
+      def forward(self, input_ids, past_key_values=None, cache_position=None):
+        pass
+
+    # The decode loop calls this once per generated token, so the underlying
+    # `inspect.signature` call must only happen once per forward signature.
+    decode._inspect_params.cache_clear()
+    first = decode._forward_param_spec(ModelWithPastKV().forward)
+    misses_after_first = decode._inspect_params.cache_info().misses
+    for _ in range(5):
+      self.assertEqual(
+          decode._forward_param_spec(ModelWithPastKV().forward), first
+      )
+    self.assertEqual(
+        decode._inspect_params.cache_info().misses, misses_after_first
+    )
+    self.assertIn("past_key_values", first[0])
+
+  def test_decode_stepper_hybrid_static_cache_warmup_lifecycle(self):
+    if "linear_attention" not in getattr(
+        transformers.cache_utils, "STATIC_LAYER_TYPE_MAPPING", {}
+    ):
+      self.skipTest(
+          "this transformers version predates STATIC_LAYER_TYPE_MAPPING, so"
+          " the static cache layout for hybrid models is not guaranteed"
+      )
+
+    ops = self._ops()
+    config = transformers.JambaConfig(
+        vocab_size=16,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        num_experts=1,
+        num_experts_per_tok=1,
+        mamba_d_state=8,
+        mamba_d_conv=4,
+        mamba_expand=2,
+        attn_layer_offset=1,
+        attn_layer_period=2,
+        use_mamba_kernels=False,
+    )
+    # Jamba reports layer_types = ["linear_attention", "full_attention", ...].
+    # transformers maps both through STATIC_LAYER_TYPE_MAPPING, so a hybrid
+    # model must keep its statically shaped cache when dynamism is off.
+    model = transformers.JambaForCausalLM(config).to(ops.device)
+    model.eval()
+
+    prompt_len = 4
+    x = torch.randint(0, 16, (1, prompt_len), device=ops.device)
+
+    stepper = decode.decode(output_tokens=4, dynamism=False)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+    self.assertIsInstance(
+        stepper.get_cache(), transformers.cache_utils.StaticCache
+    )
+
+    stepper.pre_warmup_init()
+    torch.accelerator.synchronize()
+    # The linear-attention layers mutate conv/recurrent buffers in place, so
+    # they must be snapshotted for a static cache.
+    self.assertIsNotNone(stepper._prefill_linear_states)
+    prefill_states = {
+        layer_idx: {
+            name: {
+                state_idx: tensor.clone()
+                for state_idx, tensor in _state_tensors(states).items()
+            }
+            for name, states in entry.items()
+        }
+        for layer_idx, entry in stepper._prefill_linear_states.items()
+    }
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+
+    stepper.post_warmup_hook()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len)
+    layers = stepper.get_cache().layers
+    for layer_idx, entry in prefill_states.items():
+      for name, states in entry.items():
+        actual = _state_tensors(getattr(layers[layer_idx], name))
+        for state_idx, want in states.items():
+          self.assertTrue(
+              torch.equal(actual[state_idx], want),
+              f"{name}[{state_idx}] on layer {layer_idx} was not restored",
+          )
+
+    # Attention layers must also be rewound, including the python-int counter
+    # that StaticSlidingWindowLayer keeps alongside the tensor one.
+    for layer in layers:
+      if hasattr(layer, "cumulative_length_int"):
+        self.assertEqual(layer.cumulative_length_int, prompt_len)
+
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    self.assertEqual(stepper.current_pos, prompt_len + stepper.output_tokens)
+
+  def test_unpack_output_ignores_scalar_second_element(self):
+    stepper = decode.DecodeStepper(output_tokens=4, dynamism=True)
+    stepper.vocab_size = 32
+    logits = torch.randn(2, 4, 32)
+
+    # A scalar (e.g. a loss) in slot 1 must never be mistaken for a cache; if it
+    # were, the next step would pass it as `past_key_values`.
+    result = stepper._unpack_output_and_update_cache((logits, 0.5))
+    self.assertTrue(torch.equal(result, logits))
+    self.assertIsNone(stepper.cache)
+
+    # A genuine custom (non-Cache, non-scalar) object is still picked up.
+    class CustomCache:
+      pass
+
+    custom = CustomCache()
+    result = stepper._unpack_output_and_update_cache((logits, custom))
+    self.assertTrue(torch.equal(result, logits))
+    self.assertIs(stepper.cache, custom)
+
+  def test_state_param_and_module_recurrent_state_rollback(self):
+    # Exercises both RWKV-style `state` list kwargs/outputs and
+    # RecurrentGemma-style submodule tensor attributes (`conv1d_state`,
+    # `recurrent_states`).
+    class StateListOutput:
+
+      def __init__(self, logits, state):
+        self.logits = logits
+        self.state = state
+
+    class ToyRecurrentModel(nn.Module):
+
+      def __init__(self):
+        super().__init__()
+        self.config = type(
+            "Cfg",
+            (),
+            {
+                "vocab_size": 16,
+                "num_attention_heads": 2,
+                "hidden_size": 8,
+                "model_type": "rwkv",
+            },
+        )()
+        self.embed = nn.Embedding(16, 8)
+        self.head = nn.Linear(8, 16)
+        self.conv1d_state = None
+        self.recurrent_states = None
+
+      def forward(self, input_ids, state=None, use_cache=True, **kwargs):
+        del use_cache, kwargs
+        # A `Cache` instance would fail subscripting; prefill must pass `None`.
+        assert not isinstance(state, transformers.cache_utils.Cache)
+        if state is None:
+          state = [torch.zeros(1, 8, device=input_ids.device)]
+        state = [state[0] + float(input_ids.shape[1])]
+        if self.conv1d_state is None:
+          self.conv1d_state = torch.zeros(1, 8, 3, device=input_ids.device)
+          self.recurrent_states = torch.zeros(1, 8, device=input_ids.device)
+        self.conv1d_state = self.conv1d_state + 1.0
+        self.recurrent_states = self.recurrent_states + 2.0
+        logits = self.head(self.embed(input_ids))
+        return StateListOutput(logits=logits, state=state)
+
+    ops = self._ops()
+    model = ToyRecurrentModel().to(ops.device).eval()
+    x = torch.randint(0, 16, (1, 4), device=ops.device)
+
+    stepper = decode.decode(output_tokens=3, dynamism=False)
+    stepper.init_with_benchmark_args(model, (), {"input_ids": x})
+    stepper.pre_warmup_init()
+    torch.accelerator.synchronize()
+
+    self.assertIsInstance(stepper.get_cache(), list)
+    self.assertTrue(
+        torch.equal(
+            stepper.get_cache()[0], torch.full((1, 8), 4.0, device=ops.device)
+        )
+    )
+    prefill_conv = model.conv1d_state.clone()
+    prefill_rec = model.recurrent_states.clone()
+
+    step_fn = stepper.get_step_fn()
+    _ = step_fn()
+    torch.accelerator.synchronize()
+    conv_buf = model.conv1d_state
+    rec_buf = model.recurrent_states
+    self.assertTrue(
+        torch.equal(
+            stepper.get_cache()[0], torch.full((1, 8), 7.0, device=ops.device)
+        )
+    )
+    self.assertFalse(torch.equal(model.conv1d_state, prefill_conv))
+    self.assertFalse(torch.equal(model.recurrent_states, prefill_rec))
+
+    stepper.post_warmup_hook()
+    torch.accelerator.synchronize()
+    self.assertTrue(
+        torch.equal(
+            stepper.get_cache()[0], torch.full((1, 8), 4.0, device=ops.device)
+        )
+    )
+    self.assertIs(model.conv1d_state, conv_buf)
+    self.assertIs(model.recurrent_states, rec_buf)
+    self.assertTrue(torch.equal(model.conv1d_state, prefill_conv))
+    self.assertTrue(torch.equal(model.recurrent_states, prefill_rec))
 
 
 if __name__ == "__main__":
