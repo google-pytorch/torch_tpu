@@ -992,7 +992,21 @@ def _get_config_attr(config: Any, attr: str, default: Any = None) -> Any:
     return default
   if isinstance(config, dict):
     return config.get(attr, default)
-  return getattr(config, attr, default)
+  try:
+    val = getattr(config, attr, None)
+    if val is not None:
+      return val
+  except Exception:
+    pass
+  if hasattr(config, "allow_global_per_layer_attribute_access"):
+    try:
+      config.allow_global_per_layer_attribute_access = True
+      val = getattr(config, attr, None)
+      if val is not None:
+        return val
+    except Exception:
+      pass
+  return default
 
 
 def _get_max_seq_len(config: Any, default: int = 512) -> int:
@@ -2451,6 +2465,91 @@ def _generate_transformers_inputs(
             batch_size, actual_shape[1], d_model, generator=g
         ).to(device)
 
+    elif any(
+        k in type_str for k in ["gemma4_assistant", "gemma4_unified_assistant"]
+    ):
+      backbone_hidden_size = _safe_int(
+          _get_config_attr(config, "backbone_hidden_size"),
+          default=3840 if "unified" in model_type else 1536,
+          min_val=1,
+      )
+      embed_dim = 2 * backbone_hidden_size
+      seq_len = actual_shape[1]
+      input_kwargs.pop("input_ids", None)
+      input_kwargs["inputs_embeds"] = torch.randn(
+          batch_size, seq_len, embed_dim, generator=g
+      ).to(device)
+      text_cfg = _get_config_attr(config, "text_config", config)
+      layer_types = _get_config_attr(
+          text_cfg, "layer_types", ["sliding_attention", "full_attention"]
+      )
+      all_layer_types = set(layer_types) | {
+          "sliding_attention",
+          "full_attention",
+      }
+      shared_kv_states = {}
+      for layer_key in sorted(all_layer_types):
+        layer_cfg = None
+        if hasattr(text_cfg, "per_layer_config"):
+          try:
+            layer_cfg = text_cfg.per_layer_config[layer_key]
+          except Exception:
+            layer_cfg = None
+        if layer_cfg is None:
+          layer_cfg = text_cfg
+
+        is_global = "full" in layer_key or "global" in layer_key
+        if is_global:
+          h_dim = _safe_int(
+              _get_config_attr(layer_cfg, "global_head_dim")
+              or _get_config_attr(layer_cfg, "head_dim")
+              or (
+                  _get_config_attr(layer_cfg, "hidden_size", 1024)
+                  // _get_config_attr(layer_cfg, "num_attention_heads", 16)
+              ),
+              default=512,
+              min_val=1,
+          )
+          n_kv = _safe_int(
+              _get_config_attr(layer_cfg, "num_global_key_value_heads")
+              or _get_config_attr(layer_cfg, "num_key_value_heads")
+              or _get_config_attr(layer_cfg, "num_attention_heads"),
+              default=8,
+              min_val=1,
+          )
+        else:
+          h_dim = _safe_int(
+              _get_config_attr(layer_cfg, "head_dim")
+              or (
+                  _get_config_attr(layer_cfg, "hidden_size", 1024)
+                  // _get_config_attr(layer_cfg, "num_attention_heads", 16)
+              ),
+              default=256,
+              min_val=1,
+          )
+          n_kv = _safe_int(
+              _get_config_attr(layer_cfg, "num_key_value_heads")
+              or _get_config_attr(layer_cfg, "num_attention_heads"),
+              default=8,
+              min_val=1,
+          )
+        k = torch.randn(
+            batch_size,
+            n_kv,
+            seq_len,
+            h_dim,
+            generator=g,
+        ).to(device)
+        v = torch.randn(
+            batch_size,
+            n_kv,
+            seq_len,
+            h_dim,
+            generator=g,
+        ).to(device)
+        shared_kv_states[layer_key] = (k, v)
+      input_kwargs["shared_kv_states"] = shared_kv_states
+
     if modality == Modality.SEQ2SEQ and _get_config_attr(
         config, "is_encoder_decoder", False
     ):
@@ -2499,9 +2598,19 @@ def _generate_transformers_inputs(
 
   target_dtype = _extract_target_dtype(config)
 
+  def _cast_floating_point(val: Any) -> Any:
+    if isinstance(val, torch.Tensor) and torch.is_floating_point(val):
+      return val.to(dtype=target_dtype)
+    if isinstance(val, dict):
+      return {k: _cast_floating_point(sub_v) for k, sub_v in val.items()}
+    if isinstance(val, tuple):
+      return tuple(_cast_floating_point(item) for item in val)
+    if isinstance(val, list):
+      return [_cast_floating_point(item) for item in val]
+    return val
+
   for k, v in list(input_kwargs.items()):
-    if isinstance(v, torch.Tensor) and torch.is_floating_point(v):
-      input_kwargs[k] = v.to(dtype=target_dtype)
+    input_kwargs[k] = _cast_floating_point(v)
 
   return input_kwargs
 

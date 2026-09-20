@@ -631,6 +631,66 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertEqual(kwargs["token_type_ids"].shape[-1], 7)
     self.assertLen(kwargs["token_type_ids"].shape, 3)
 
+  def test_transformers_gemma4_unified_assistant_get_module_spec(self):
+    def modify_config(config):
+      # Scale down vocab size for fast unit test execution
+      text_cfg = config.text_config
+      text_cfg.vocab_size = 1000
+      config.vocab_size = 1000
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "google/gemma-4-12B-it-assistant",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    self.assertIsNotNone(model)
+    _, kwargs = module_spec.sample_inputs_factory(shape=(1, 16))
+    self.assertIn("inputs_embeds", kwargs)
+    self.assertIn("shared_kv_states", kwargs)
+    self.assertNotIn("input_ids", kwargs)
+    self.assertIn("sliding_attention", kwargs["shared_kv_states"])
+    self.assertIn("full_attention", kwargs["shared_kv_states"])
+    self.assertEqual(
+        kwargs["inputs_embeds"].shape,
+        (1, 16, 2 * module_spec.config.backbone_hidden_size),
+    )
+    model.eval()
+    out = model(**kwargs)
+    self.assertEqual(out.logits.shape, (1, 16, 1000))
+
+  def test_transformers_gemma4_assistant_get_module_spec(self):
+    def modify_config(config):
+      # Scale down vocab size for fast unit test execution
+      text_cfg = config.text_config
+      text_cfg.vocab_size = 1000
+      config.vocab_size = 1000
+      return config
+
+    module_spec = self.module_registry.get_module_spec(
+        "transformers",
+        "google/gemma-4-31B-it-assistant",
+        load_weights=False,
+        modify_config_hook=modify_config,
+    )
+    model = module_spec.module_factory()
+    self.assertIsNotNone(model)
+    _, kwargs = module_spec.sample_inputs_factory(shape=(1, 16))
+    self.assertIn("inputs_embeds", kwargs)
+    self.assertIn("shared_kv_states", kwargs)
+    self.assertNotIn("input_ids", kwargs)
+    self.assertIn("sliding_attention", kwargs["shared_kv_states"])
+    self.assertIn("full_attention", kwargs["shared_kv_states"])
+    self.assertEqual(
+        kwargs["inputs_embeds"].shape,
+        (1, 16, 2 * module_spec.config.backbone_hidden_size),
+    )
+    model.eval()
+    out = model(**kwargs)
+    self.assertEqual(out.logits.shape, (1, 16, 1000))
+
   def test_transformers_model_and_inputs_dtype_alignment(self):
     def modify_config(config):
       config.torch_dtype = "bfloat16"
