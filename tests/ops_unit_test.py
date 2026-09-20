@@ -4034,6 +4034,51 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(fn)
 
+  def test_cat_rope_slice_fusion(self):
+    """Tests RoPE-style slice-and-concat fusion (H-0033)."""
+    batch, heads, seq, head_dim = 2, 4, 8, 16
+    half = head_dim // 2
+
+    # 1. RoPE rotate_half with dim=3 (positive canonical dim)
+    x_f32 = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
+
+    def fn_rotate_half_dim3(device):
+      x = x_f32.to(device)
+      x1 = x[..., :half]
+      x2 = x[..., half:]
+      return torch.cat((-x2, x1), dim=3)
+
+    self.assert_close_tpu_vs_cpu(fn_rotate_half_dim3)
+
+    # 2. RoPE rotate_half with dim=-1
+    x_bf16 = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+
+    def fn_rotate_half_dim_neg1(device):
+      x = x_bf16.to(device)
+      x1 = x[..., :half]
+      x2 = x[..., half:]
+      return torch.cat((-x2, x1), dim=-1)
+
+    self.assert_close_tpu_vs_cpu(fn_rotate_half_dim_neg1)
+
+    # 3. Identity slice-concat with dim=3
+    def fn_identity_slice_concat(device):
+      x = x_f32.to(device)
+      x1 = x[..., :half]
+      x2 = x[..., half:]
+      return torch.cat((x1, x2), dim=3)
+
+    self.assert_close_tpu_vs_cpu(fn_identity_slice_concat)
+
+    # 4. Identity slice-concat with dim=-1
+    def fn_identity_slice_concat_neg1(device):
+      x = x_f32.to(device)
+      x1 = x[..., :half]
+      x2 = x[..., half:]
+      return torch.cat((x1, x2), dim=-1)
+
+    self.assert_close_tpu_vs_cpu(fn_identity_slice_concat_neg1)
+
   def test_cumprod_default_dtype(self):
     """Tests torch.cumprod with default dtype (None)."""
     x = torch.randn(2, 3, dtype=torch.float32)

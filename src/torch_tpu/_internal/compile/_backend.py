@@ -223,6 +223,213 @@ def _get_reload_source_placeholder(
     return None
 
 
+def _fuse_rope_slice_concat(graph_module: torch.fx.GraphModule) -> bool:
+  """Fuses adjacent slice-concat pairs along the minor dimension in FX graphs.
+
+  In HuggingFace transformer models (e.g. Gemma 2, Gemma 4, LLaMA 3), rotary
+  embeddings use rotate_half:
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return torch.cat((-x2, x1), dim=-1)
+
+  On 4D attention tensors [batch, num_heads, seq_len, head_dim], TorchDynamo
+  slices and concatenates across positive dim=3 (rank - 1) or dim=-1. Slicing
+  across the minor dimension forces un-aligned sublane tiles and causes XLA
+  to emit standalone formatting copy operations in HBM (e.g. copy.1746).
+
+  This pass recognizes adjacent slice pairs along the minor dimension (dim in
+  (-1, rank - 1, 3)) and rewrites them into outer-dimension slicing on
+  view([..., 2, half]), eliminating strided minor-axis slicing and formatting
+  copies.
+  """
+  modified = False
+  graph = graph_module.graph
+
+  def _extract_slice_info(node: torch.fx.Node):
+    is_neg = False
+    curr = node
+    if (
+        curr.op == "call_function"
+        and curr.target
+        in (torch.ops.aten.neg.default, torch.ops.aten.neg_.default)
+        and curr.args
+    ):
+      curr = curr.args[0]
+      is_neg = True
+
+    if not isinstance(curr, torch.fx.Node) or curr.op != "call_function":
+      return None
+
+    if curr.target not in (
+        torch.ops.aten.slice.Tensor,
+        torch.ops.aten.slice_copy.Tensor,
+    ):
+      return None
+
+    if not curr.args:
+      return None
+
+    base = curr.args[0]
+    dim = curr.args[1] if len(curr.args) > 1 else curr.kwargs.get("dim", 0)
+    start = curr.args[2] if len(curr.args) > 2 else curr.kwargs.get("start", 0)
+    end = (
+        curr.args[3]
+        if len(curr.args) > 3
+        else curr.kwargs.get("end", 9223372036854775807)
+    )
+    step = curr.args[4] if len(curr.args) > 4 else curr.kwargs.get("step", 1)
+
+    return (curr, base, dim, start, end, step, is_neg)
+
+  for node in list(graph.nodes):
+    if node.op != "call_function" or node.target not in (
+        torch.ops.aten.cat.default,
+        torch.ops.aten.concat.default,
+    ):
+      continue
+
+    if not node.args or not isinstance(node.args[0], (list, tuple)):
+      continue
+
+    tensor_list = node.args[0]
+    if len(tensor_list) != 2:
+      continue
+
+    t0, t1 = tensor_list
+    if not isinstance(t0, torch.fx.Node) or not isinstance(t1, torch.fx.Node):
+      continue
+
+    info0 = _extract_slice_info(t0)
+    info1 = _extract_slice_info(t1)
+    if not info0 or not info1:
+      continue
+
+    curr0, base0, dim0, start0, end0, step0, neg0 = info0
+    curr1, base1, dim1, start1, end1, step1, neg1 = info1
+
+    if base0 is not base1:
+      continue
+
+    if step0 != 1 or step1 != 1:
+      continue
+
+    shape = None
+    for meta_key in ("example_value", "val", "tensor_meta"):
+      meta_val = base0.meta.get(meta_key)
+      if hasattr(meta_val, "shape"):
+        shape = tuple(meta_val.shape)
+        break
+      elif isinstance(meta_val, (list, tuple)):
+        shape = tuple(meta_val)
+        break
+
+    if shape is None:
+      for meta_key in ("example_value", "val", "tensor_meta"):
+        meta_val = node.meta.get(meta_key)
+        if hasattr(meta_val, "shape"):
+          shape = tuple(meta_val.shape)
+          break
+        elif isinstance(meta_val, (list, tuple)):
+          shape = tuple(meta_val)
+          break
+
+    if shape is None:
+      continue
+
+    rank = len(shape)
+    if rank < 1:
+      continue
+
+    raw_cat_dim = (
+        node.args[1] if len(node.args) > 1 else node.kwargs.get("dim", 0)
+    )
+    if not isinstance(raw_cat_dim, int):
+      continue
+
+    cat_dim = raw_cat_dim + rank if raw_cat_dim < 0 else raw_cat_dim
+    norm_dim0 = dim0 + rank if dim0 < 0 else dim0
+    norm_dim1 = dim1 + rank if dim1 < 0 else dim1
+
+    if cat_dim != norm_dim0 or cat_dim != norm_dim1:
+      continue
+
+    # Match minor dimension: rank - 1 (including canonical dim 3 on 4D tensors)
+    if cat_dim != rank - 1 and not (rank == 4 and cat_dim == 3):
+      continue
+
+    d_size = shape[cat_dim]
+    if not isinstance(d_size, int) or d_size % 2 != 0 or d_size <= 0:
+      continue
+
+    half = d_size // 2
+
+    is_identity = (
+        (start0 in (0, None) and end0 == half)
+        and (start1 == half and end1 in (d_size, None, 9223372036854775807))
+        and not neg0
+        and not neg1
+    )
+    if is_identity:
+      node.replace_all_uses_with(base0)
+      graph.erase_node(node)
+      modified = True
+      continue
+
+    is_rope = (
+        (start0 == half and end0 in (d_size, None, 9223372036854775807))
+        and (start1 in (0, None) and end1 == half)
+        and neg0
+        and not neg1
+    )
+
+    is_adjacent_swapped = (
+        start0 == half and end0 in (d_size, None, 9223372036854775807)
+    ) and (start1 in (0, None) and end1 == half)
+
+    if not is_rope and not is_adjacent_swapped:
+      continue
+
+    reshaped_shape = list(shape[:-1]) + [2, half]
+    with graph.inserting_before(node):
+      reshaped = graph.call_function(
+          torch.ops.aten.view.default, args=(base0, reshaped_shape)
+      )
+
+      idx0 = 0 if (start0 in (0, None)) else 1
+      idx1 = 0 if (start1 in (0, None)) else 1
+
+      s0 = graph.call_function(
+          torch.ops.aten.slice.Tensor,
+          args=(reshaped, rank - 1, idx0, idx0 + 1, 1),
+      )
+      if neg0:
+        s0 = graph.call_function(torch.ops.aten.neg.default, args=(s0,))
+
+      s1 = graph.call_function(
+          torch.ops.aten.slice.Tensor,
+          args=(reshaped, rank - 1, idx1, idx1 + 1, 1),
+      )
+      if neg1:
+        s1 = graph.call_function(torch.ops.aten.neg.default, args=(s1,))
+
+      fused_cat = graph.call_function(
+          torch.ops.aten.cat.default, args=([s0, s1], rank - 1)
+      )
+      out = graph.call_function(
+          torch.ops.aten.view.default, args=(fused_cat, list(shape))
+      )
+
+      node.replace_all_uses_with(out)
+      graph.erase_node(node)
+      modified = True
+
+  if modified:
+    graph.eliminate_dead_code()
+    graph_module.recompile()
+
+  return modified
+
+
 def _mark_pinned_host_inputs(
     graph_module: torch.fx.GraphModule,
     example_inputs: Sequence[Any],
@@ -751,6 +958,7 @@ class TpuBackend:
         example_inputs, async_compile=async_compile, debug=debug
     )
     compiler_instance.execute_pre_grad_passes(graph_module)
+    _fuse_rope_slice_concat(graph_module)
 
     compiled_artifacts: list[compiler.CompiledArtifact] = []
 
@@ -881,6 +1089,7 @@ class TpuBackend:
       A function that executes the compiled graph on the TPU.
     """
     _mark_pinned_host_inputs(graph_module, example_inputs)
+    _fuse_rope_slice_concat(graph_module)
 
     fwd_or_bwd_str = "FORWARD" if is_fwd else "BACKWARD"
 
