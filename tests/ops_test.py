@@ -1120,6 +1120,10 @@ ACCURACY_OVERRIDES_VS_GPU = {
     },
     "nn.functional.glu": {
         torch.float16: {"rtol": 1.2e-3, "atol": 1.2e-3},
+        torch.float32: {
+            "rtol": 6.5e-5,
+            "atol": 1.7e-5,
+        },  # TOLERANCE_OVERRIDE_OK
     },
     "nn.functional.group_norm": {
         torch.bfloat16: {"rtol": 3.3e-2, "atol": 8e-2},

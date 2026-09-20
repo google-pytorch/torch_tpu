@@ -68,15 +68,8 @@ absl::StatusOr<mlir::MlirOp> BuildGluShlo(int64_t dim, mlir::MlirOp input) {
   mlir::MlirOp second_half =
       mlir::stablehlo::Slice(input, start_indices, limit_indices, strides);
 
-  mlir::MlirOp neg = mlir::stablehlo::Neg(second_half);
-  mlir::MlirOp exp = mlir::stablehlo::Exp(neg);
-
-  mlir::MlirOp one = MakeConstantLike(second_half, 1.0);
-  mlir::MlirOp add = mlir::stablehlo::Add(one, exp);
-  mlir::MlirOp div = mlir::stablehlo::Div(one, add);
-
-  mlir::MlirOp result = mlir::stablehlo::Mul(first_half, div);
-  return result;
+  mlir::MlirOp sigmoid = mlir::stablehlo::Logistic(second_half);
+  return mlir::stablehlo::Mul(first_half, sigmoid);
 }
 
 absl::Status ValidateIsFloatingPoint(const at::Tensor& tensor,
@@ -139,25 +132,8 @@ absl::StatusOr<mlir::MlirOp> BuildGluBackwardShlo(int64_t dim,
       mlir::stablehlo::Mul(grad_output, first_half);
   mlir::MlirOp dx2 = mlir::stablehlo::Mul(grad_out_first_half, sigmoid_deriv);
 
-  // Assemble dX by padding dX1 and dX2 to the full shape and adding them.
-  Indices interior_padding(rank, 0);
-  Indices low_padding_dx1(rank, 0);
-  Indices high_padding_dx1(rank, 0);
-  high_padding_dx1[dim] = split_index;
-
-  Indices low_padding_dx2(rank, 0);
-  Indices high_padding_dx2(rank, 0);
-  low_padding_dx2[dim] = split_index;
-
-  mlir::MlirOp zero =
-      MakeScalarConstant(builder, 0.0, self_type.getElementType());
-  mlir::MlirOp padded_dx1 = mlir::stablehlo::Pad(
-      dx1, zero, low_padding_dx1, high_padding_dx1, interior_padding);
-  mlir::MlirOp padded_dx2 = mlir::stablehlo::Pad(
-      dx2, zero, low_padding_dx2, high_padding_dx2, interior_padding);
-
-  mlir::MlirOp result = mlir::stablehlo::Add(padded_dx1, padded_dx2);
-  return result;
+  // Assemble dX = [dX1, dX2] along dim.
+  return mlir::stablehlo::Concatenate(builder, {dx1, dx2}, dim);
 }
 
 absl::Status BuildGluBackwardOut(const at::Tensor& grad_output,
