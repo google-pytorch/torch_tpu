@@ -56,7 +56,6 @@
 #include "csrc/common/status_builder.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialization_heuristics.h"
 #include "csrc/eager/materialize_common.h"
@@ -71,53 +70,12 @@ namespace torch_tpu {
 namespace {
 
 // A task to materialize a stream.
-// This will check the current state of deferred work on the stream, and start
-// all necessary executions to catch the stream up to a snapshot.
-struct StreamMaterializationTask {
+// This will check the stream state and enqueue all necessary executions to
+// catch the stream up to the most recent snapshot (created by
+// EventSnapshot::Record or RecordDeviceSnapshots)
+struct MaterializationTask {
   c10::DeviceIndex device_index;
   c10::StreamId stream_id;
-  xla::Promise<std::shared_ptr<EventSnapshot>> completion_promise;
-};
-
-// A task to materialize a device.
-// This will check the current state of deferred work on each stream on the
-// device, and start all necessary executions to catch each stream up to a
-// snapshot.
-struct DeviceMaterializationTask {
-  c10::DeviceIndex device_index;
-  xla::Promise<std::vector<std::shared_ptr<EventSnapshot>>> completion_promise;
-};
-
-using MaterializationKind =
-    std::variant<StreamMaterializationTask, DeviceMaterializationTask>;
-
-// Common properties for all materialization tasks.
-struct MaterializationTaskCommon {
-  std::vector<SharedDeviceBufferList> must_materialize;
-  MaterializationMode materialization_mode;
-  MaterializationReason reason;
-  CompilationMode compilation_mode;
-  CompilationSpec compilation_spec;
-  std::optional<CompilationSpec> fast_runtime_compilation_spec;
-
-  MaterializationTaskCommon(
-      std::vector<SharedDeviceBufferList> must_materialize,
-      MaterializationReason reason, MaterializationMode materialization_mode)
-      : must_materialize(std::move(must_materialize)),
-        materialization_mode(materialization_mode),
-        reason(reason),
-        compilation_mode(GetCompilationMode(GetEagerMode())),
-        compilation_spec(GetCompilationSpec(compilation_mode)) {
-    if (compilation_mode == CompilationMode::kFastCompile) {
-      fast_runtime_compilation_spec =
-          GetCompilationSpec(CompilationMode::kFastRuntime);
-    }
-  }
-};
-
-struct MaterializationTask {
-  MaterializationKind kind;
-  MaterializationTaskCommon common;
 };
 
 }  // namespace
@@ -148,26 +106,27 @@ struct MaterializationStages {
 // Otherwise, if any deferred op in the traversal is an eligible convolution
 // that benefits from O2, we selectively promote it to FastRuntime.
 CompilationSpec GetCompilationSpecForTraversal(
-    const MaterializationTaskCommon& common, const Traversal& traversal) {
-  if (common.compilation_mode == CompilationMode::kFastRuntime) {
-    return common.compilation_spec.Copy();
+    const MaterializationSettings& materialization_settings,
+    const Traversal& traversal) {
+  if (materialization_settings.compilation_mode ==
+          CompilationMode::kFastRuntime ||
+      !materialization_settings.fast_runtime_compilation_spec.has_value()) {
+    // Either we're already using O2, or the O2 spec is not available.
+    return materialization_settings.compilation_spec.Copy();
   }
 
   const auto& execution_order = traversal.execution_order();
-  const bool has_fast_runtime_conv =
-      std::any_of(execution_order.begin(), execution_order.end(),
+
+  if (std::any_of(execution_order.begin(), execution_order.end(),
                   [](const SharedDeviceBufferList& node) {
                     const auto deferred_op = node->deferred_op();
                     return deferred_op != nullptr &&
                            IsFastRuntimeConvolutionCandidate(*deferred_op);
-                  });
-
-  if (has_fast_runtime_conv &&
-      common.fast_runtime_compilation_spec.has_value()) {
-    return common.fast_runtime_compilation_spec->Copy();
+                  })) {
+    return materialization_settings.fast_runtime_compilation_spec->Copy();
   }
 
-  return common.compilation_spec.Copy();
+  return materialization_settings.compilation_spec.Copy();
 }
 
 void SplitSingleTraversal(
@@ -336,12 +295,12 @@ FilterPlaceholderDependentTraversals(
 // one ExecutionTask per traversal (provided all task creations succeed).
 MaterializationStages ApplySplitMode(
     std::vector<absl_nonnull std::unique_ptr<Traversal>>&& traversals,
-    const MaterializationTaskCommon& common, mlir::MLIRContext& mlir_context) {
+    const MaterializationSettings& settings, mlir::MLIRContext& mlir_context) {
   MaterializationStages result;
   traversals = FilterPlaceholderDependentTraversals(std::move(traversals),
                                                     result.first_error);
 
-  if (common.materialization_mode == MaterializationMode::kSplitGraph) {
+  if (settings.materialization_mode == MaterializationMode::kSplitGraph) {
     tsl::profiler::TraceMe t("SplitTraversal");
     std::vector<absl_nonnull std::unique_ptr<Traversal>> post_split_traversals;
     absl::flat_hash_set<const DeviceBufferList*> required_outputs;
@@ -355,10 +314,10 @@ MaterializationStages ApplySplitMode(
   result.execution_tasks.reserve(traversals.size());
   for (auto& split_traversal : traversals) {
     CompilationSpec compilation_spec =
-        GetCompilationSpecForTraversal(common, *split_traversal);
+        GetCompilationSpecForTraversal(settings, *split_traversal);
     auto execution_task_or = ExecutionTask::FromTraversalWithLogging(
         std::move(split_traversal), mlir_context, std::move(compilation_spec),
-        common.reason);
+        settings.reason);
     if (execution_task_or.ok()) {
       result.execution_tasks.push_back(std::move(*execution_task_or));
     } else if (result.first_error.ok()) {
@@ -368,45 +327,75 @@ MaterializationStages ApplySplitMode(
   return result;
 }
 
+// Checks that all must_materialize nodes in the task have started
+// materializing. If any are not materializing, then those nodes are marked
+// as an error and the first error is returned to signal an overall task
+// failure.
+absl::Status VerifyMustMaterialize(
+    absl::Span<const SharedDeviceBufferList> must_materialize) {
+  absl::Status first_missing_node_error = absl::OkStatus();
+  for (const auto& node : must_materialize) {
+    if (!node->is_materializing()) {
+      auto error = TT_ERROR(error::kInternal)
+                   << "materialization failed for node " << node;
+      node->SetAsError(error);
+      if (first_missing_node_error.ok()) {
+        first_missing_node_error = error;
+      }
+    }
+  }
+  return first_missing_node_error;
+}
+
 // Processes a MaterializationTask, converting it into a sequence of
 // ExecutionTasks.
-MaterializationStages ProcessMaterializationTask(
+std::vector<ExecutionTask> ProcessMaterializationTask(
     MaterializationTask& task, mlir::MLIRContext& mlir_context) {
-  std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
-  if (const auto* stream_task =
-          std::get_if<StreamMaterializationTask>(&task.kind)) {
-    ABSL_VLOG(1)
-        << "[MaterializationWorker] Processing MaterializationTask with "
-        << "stream " << stream_task->stream_id << " on device "
-        << stream_task->device_index;
-    auto traversals_or = PrepareStreamTraversals(stream_task->device_index,
-                                                 stream_task->stream_id,
-                                                 task.common.must_materialize);
-    if (!traversals_or.ok()) {
-      return MaterializationStages{.execution_tasks = {},
-                                   .first_error = traversals_or.status()};
+  ABSL_VLOG(1) << "[MaterializationWorker] Processing MaterializationTask with "
+               << "stream " << task.stream_id << " on device "
+               << task.device_index;
+  std::vector<ExecutionTask> flattened_execution_tasks;
+  auto snapshots_to_materialize =
+      PrepareSnapshotMaterializations(task.device_index, task.stream_id);
+  for (auto& snapshot_to_materialize : snapshots_to_materialize) {
+    MaterializationStages stages =
+        ApplySplitMode(std::move(snapshot_to_materialize.traversals),
+                       snapshot_to_materialize.settings, mlir_context);
+
+    if (stages.first_error.ok()) {
+      stages.first_error =
+          VerifyMustMaterialize(snapshot_to_materialize.must_materialize);
     }
-    traversals = std::move(*traversals_or);
-  } else if (const auto* device_task =
-                 std::get_if<DeviceMaterializationTask>(&task.kind)) {
-    ABSL_VLOG(1)
-        << "[MaterializationWorker] Processing MaterializationTask with "
-        << "device " << device_task->device_index;
-    auto traversals_or = PrepareDeviceTraversals(device_task->device_index,
-                                                 task.common.must_materialize);
-    if (!traversals_or.ok()) {
-      return MaterializationStages{.execution_tasks = {},
-                                   .first_error = traversals_or.status()};
+
+    if (!stages.first_error.ok()) {
+      snapshot_to_materialize.snapshot_promise.Set(stages.first_error);
+    } else {
+      for (const auto& execution_task : stages.execution_tasks) {
+        for (const auto& output : execution_task.outputs()) {
+          snapshot_to_materialize.futures.push_back(output.GetReadyFuture());
+        }
+      }
+      snapshot_to_materialize.snapshot_promise.Set(
+          std::make_shared<EventSnapshot>(
+              xla::JoinFutures(snapshot_to_materialize.futures)));
     }
-    traversals = std::move(*traversals_or);
-  } else {
-    return MaterializationStages{
-        .execution_tasks = {},
-        .first_error = TT_ERROR(error::kInternal)
-                       << "Unknown MaterializationTask kind"};
+
+    if (flattened_execution_tasks.empty()) {
+      flattened_execution_tasks = std::move(stages.execution_tasks);
+    } else {
+      flattened_execution_tasks.insert(
+          flattened_execution_tasks.end(),
+          std::make_move_iterator(stages.execution_tasks.begin()),
+          std::make_move_iterator(stages.execution_tasks.end()));
+    }
   }
 
-  return ApplySplitMode(std::move(traversals), task.common, mlir_context);
+  ABSL_VLOG(2) << "[MaterializationWorker] Created "
+               << flattened_execution_tasks.size()
+               << " ExecutionTasks for stream " << task.stream_id
+               << " on device " << task.device_index << " to satisfy "
+               << snapshots_to_materialize.size() << " snapshots";
+  return flattened_execution_tasks;
 }
 
 absl::Status MarkPinnedHostOutputs(
@@ -465,7 +454,6 @@ class MaterializationWorker {
       if (materialize_thread_.joinable()) {
         materialize_thread_.join();
       }
-      FailRemainingMaterializationTasks();
       {
         absl::MutexLock lock(execute_mu_);
         execute_tasks_.push(ShutdownSentinel{});
@@ -477,70 +465,15 @@ class MaterializationWorker {
     }
   }
 
-  xla::Future<std::shared_ptr<EventSnapshot>> EnqueueStream(
-      const c10::DeviceIndex device_index, const c10::StreamId stream_id,
-      MaterializationReason reason, MaterializationMode materialization_mode,
-      std::vector<SharedDeviceBufferList> must_materialize) {
+  void EnqueueStream(const c10::DeviceIndex device_index,
+                     const c10::StreamId stream_id) {
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing stream " << stream_id
                  << " on device " << device_index << " for materialization";
-    auto [promise, future] = xla::MakePromise<std::shared_ptr<EventSnapshot>>();
-    MaterializationTaskCommon common(std::move(must_materialize), reason,
-                                     materialization_mode);
-
     absl::MutexLock lock(materialize_mu_);
     // Check shutdown state after acquiring the lock to avoid a time-of-check/
     // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) {
-      // State is shutting down, fail the promise immediately.
-      promise.Set(
-          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                       // from Python
-          << "MaterializationWorker is shutting down");
-      return future;
-    }
-    materialize_tasks_.push(MaterializationTask{
-        .kind =
-            StreamMaterializationTask{
-                .device_index = device_index,
-                .stream_id = stream_id,
-                .completion_promise = std::move(promise),
-            },
-        .common = std::move(common),
-    });
-    return future;
-  }
-
-  xla::Future<std::vector<std::shared_ptr<EventSnapshot>>> EnqueueDevice(
-      const c10::DeviceIndex device_index, MaterializationReason reason,
-      MaterializationMode materialization_mode,
-      std::vector<SharedDeviceBufferList> must_materialize) {
-    ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing device " << device_index
-                 << " for materialization";
-    auto [promise, future] =
-        xla::MakePromise<std::vector<std::shared_ptr<EventSnapshot>>>();
-    MaterializationTaskCommon common(std::move(must_materialize), reason,
-                                     materialization_mode);
-
-    absl::MutexLock lock(materialize_mu_);
-    // Check shutdown state after acquiring the lock to avoid a time-of-check/
-    // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) {
-      // State is shutting down, fail the promise immediately.
-      promise.Set(
-          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                       // from Python
-          << "MaterializationWorker is shutting down");
-      return future;
-    }
-    materialize_tasks_.push(MaterializationTask{
-        .kind =
-            DeviceMaterializationTask{
-                .device_index = device_index,
-                .completion_promise = std::move(promise),
-            },
-        .common = std::move(common),
-    });
-    return future;
+    if (shutdown_.load()) return;
+    materialize_tasks_.push(MaterializationTask(device_index, stream_id));
   }
 
   absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
@@ -616,71 +549,6 @@ class MaterializationWorker {
   }
 
  private:
-  // Checks that all must_materialize nodes in the task have started
-  // materializing. If any are not materializing, then those nodes are marked
-  // as an error and the first error is returned to signal an overall task
-  // failure.
-  static absl::Status VerifyMustMaterialize(MaterializationTask& task) {
-    absl::Status first_missing_node_error = absl::OkStatus();
-    for (const auto& node : task.common.must_materialize) {
-      if (!node->is_materializing()) {
-        auto error = TT_ERROR(error::kInternal)
-                     << "materialization failed for node " << node;
-        node->SetAsError(error);
-        if (first_missing_node_error.ok()) {
-          first_missing_node_error = error;
-        }
-      }
-    }
-    return first_missing_node_error;
-  }
-
-  static void CompleteMaterializationTask(MaterializationTask& task,
-                                          absl::Status& first_error) {
-    if (!first_error.ok()) {
-      // If PrepareMaterializationTraversals succeeded, then all nodes should
-      // either be in the pending-materialization state or already failed.
-      // But if it failed, we need to fail them here to unblock waiters.
-      for (const auto& node : task.common.must_materialize) {
-        if (!node->is_materializing()) {
-          node->SetAsError(first_error);
-        }
-      }
-    } else if (auto missing_nodes = VerifyMustMaterialize(task);
-               !missing_nodes.ok()) {
-      // If any must_materialize node has not started materializing, something
-      // went wrong, even if there were no reported errors.
-      // This can happen if a required output depends on a placeholder; this
-      // causes the graph computing that node to be pruned; nothing failed to
-      // compute, but a necessary computation was skipped.
-      first_error = missing_nodes;
-    }
-
-    // Set the completion promise for the task.
-    if (auto* stream_task =
-            std::get_if<StreamMaterializationTask>(&task.kind)) {
-      if (first_error.ok()) {
-        ABSL_VLOG(2) << "[MaterializationWorker] StreamMaterializationTask "
-                        "processed, setting completion promise";
-        stream_task->completion_promise.Set(EventSnapshot::Record(
-            stream_task->device_index, stream_task->stream_id));
-      } else {
-        stream_task->completion_promise.Set(first_error);
-      }
-    } else {
-      auto& device_task = std::get<DeviceMaterializationTask>(task.kind);
-
-      ABSL_VLOG(2) << "[MaterializationWorker] DeviceMaterializationTask "
-                      "processed, setting completion promise";
-      if (first_error.ok()) {
-        device_task.completion_promise.Set(
-            RecordDeviceSnapshots(device_task.device_index));
-      } else {
-        device_task.completion_promise.Set(first_error);
-      }
-    }
-  }
-
   // Processes a single materialization task.
   // Returns true if the loop should continue, or false if the worker should
   // shutdown.
@@ -691,24 +559,15 @@ class MaterializationWorker {
     }
     auto& task = std::get<MaterializationTask>(task_or_shutdown);
     ABSL_VLOG(1) << "[MaterializationWorker] Processing MaterializationTask";
-    auto materialization_stages =
-        ProcessMaterializationTask(task, mlir_context);
+    auto execution_tasks = ProcessMaterializationTask(task, mlir_context);
 
     // Enqueue as many execution tasks as were successfully created.
     ABSL_VLOG(1) << "[MaterializationWorker] Enqueuing "
-                 << materialization_stages.execution_tasks.size()
-                 << " ExecutionTasks";
-    {
-      absl::MutexLock lock(execute_mu_);
-      for (auto& execution_task : materialization_stages.execution_tasks) {
-        execute_tasks_.push(std::move(execution_task));
-      }
+                 << execution_tasks.size() << " ExecutionTasks";
+    absl::MutexLock lock(execute_mu_);
+    for (auto& execution_task : execution_tasks) {
+      execute_tasks_.push(std::move(execution_task));
     }
-
-    // Set the completion promise for the task.
-    // If there were any errors, this typically indicates a compilation
-    // failure, rather than an execution failure.
-    CompleteMaterializationTask(task, materialization_stages.first_error);
     return true;
   }
 
@@ -725,40 +584,6 @@ class MaterializationWorker {
     while (MaterializeLoopStep(*mlir_context)) {
       // MaterializeLoopStep will return false when it dequeues a
       // ShutdownSentinel.
-    }
-  }
-
-  void FailRemainingMaterializationTasks() {
-    absl::MutexLock lock(materialize_mu_);
-    if (materialize_tasks_.empty()) return;
-
-    // materialize_tasks_ should be empty, but we clear it to be safe.
-    ABSL_LOG(WARNING) << "[MaterializationWorker::Shutdown] "
-                      << "materialize_tasks_ is not empty after shutdown "
-                         "sentinel. Discarding "
-                      << materialize_tasks_.size() << " tasks";
-    auto shutdown_status =
-        TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                     // from Python
-        << "MaterializationWorker is shutting down";
-    while (!materialize_tasks_.empty()) {
-      auto& task_or_shutdown = materialize_tasks_.front();
-      if (auto* materialization_task =
-              std::get_if<MaterializationTask>(&task_or_shutdown)) {
-        // Fail the remaining nodes.
-        for (const auto& node : materialization_task->common.must_materialize) {
-          node->SetAsError(shutdown_status);
-        }
-        // Mark the tasks' completion promise as failed.
-        if (auto* stream_task = std::get_if<StreamMaterializationTask>(
-                &materialization_task->kind)) {
-          stream_task->completion_promise.Set(shutdown_status);
-        } else if (auto* device_task = std::get_if<DeviceMaterializationTask>(
-                       &materialization_task->kind)) {
-          device_task->completion_promise.Set(shutdown_status);
-        }
-      }
-      materialize_tasks_.pop();
     }
   }
 
@@ -969,9 +794,11 @@ absl::Status MaterializeSpan(absl::Span<const T> items,
     TT_ASSIGN_OR_RETURN(
         std::vector<SharedDeviceBufferList> nodes_on_stream,
         GetUniqueDeferredNodes(items, node->device_index(), node->stream_id()));
-    auto future = GetMaterializationWorker().EnqueueStream(
-        node->device_index(), node->stream_id(), reason, materialization_mode,
-        std::move(nodes_on_stream));
+    auto future = EventSnapshot::Record(node->device_index(), node->stream_id(),
+                                        std::move(nodes_on_stream), reason,
+                                        materialization_mode);
+    GetMaterializationWorker().EnqueueStream(node->device_index(),
+                                             node->stream_id());
 
     // Make sure that the stream task was enqueued successfully.
     // TODO(bawilson): remove this await, it shouldn't be necessary.
@@ -1027,8 +854,9 @@ absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(
   TT_ASSIGN_OR_RETURN(
       std::vector<SharedDeviceBufferList> must_materialize_vec,
       GetUniqueDeferredNodes(must_materialize, device_index, stream_id));
-  auto future = GetMaterializationWorker().EnqueueStream(
-      device_index, stream_id, reason, mode, std::move(must_materialize_vec));
+  auto future = EventSnapshot::Record(
+      device_index, stream_id, std::move(must_materialize_vec), reason, mode);
+  GetMaterializationWorker().EnqueueStream(device_index, stream_id);
   // We have to await the future here to ensure that more work is not pushed to
   // the stream while we are evaluating its current state.
   return future.Await();
@@ -1044,15 +872,26 @@ absl::StatusOr<std::vector<std::shared_ptr<EventSnapshot>>> MaterializeDevice(
                   device_index);
   }
 #endif
-
   TT_ASSIGN_OR_RETURN(std::vector<SharedDeviceBufferList> must_materialize_vec,
                       GetUniqueDeferredNodes(must_materialize, device_index,
                                              /*stream_id=*/std::nullopt));
-  auto future = GetMaterializationWorker().EnqueueDevice(
-      device_index, reason, mode, std::move(must_materialize_vec));
-  // We have to await the future here to ensure that more work is not pushed
-  // to the device while we are evaluating the state of its current streams.
-  return future.Await();
+
+  auto device_snapshot_futures = RecordDeviceSnapshots(
+      device_index, std::move(must_materialize_vec), reason, mode);
+
+  auto& materialization_worker = GetMaterializationWorker();
+  for (const auto& pending_stream : device_snapshot_futures) {
+    materialization_worker.EnqueueStream(pending_stream.device_index,
+                                         pending_stream.stream_id);
+  }
+
+  std::vector<std::shared_ptr<EventSnapshot>> snapshots;
+  snapshots.reserve(device_snapshot_futures.size());
+  for (auto& pending_stream : device_snapshot_futures) {
+    TT_ASSIGN_OR_RETURN(auto snapshot, pending_stream.snapshot_future.Await());
+    snapshots.push_back(std::move(snapshot));
+  }
+  return snapshots;
 }
 
 absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeCurrentStream(

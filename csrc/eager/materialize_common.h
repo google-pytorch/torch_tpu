@@ -26,6 +26,7 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
@@ -89,6 +90,8 @@ class ExecutionTask {
   // Sets all output nodes as having a specified error.
   void SetOutputNodesAsError(absl::Status status);
 
+  absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
+
  private:
   explicit ExecutionTask(std::string name,
                          std::vector<DeviceBufferRef> arguments,
@@ -126,8 +129,6 @@ class ExecutionTask {
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
 };
-
-CompilationMode GetCompilationMode(EagerMode eager_mode);
 
 }  // namespace torch_tpu
 

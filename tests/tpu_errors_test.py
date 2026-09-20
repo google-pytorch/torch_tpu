@@ -1626,7 +1626,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
             re.DOTALL,
         ),
     ):
-      _ = x + 1.0
+      _ = (x + 1.0).cpu()
 
   @et.why_tpu_only(
       "Verifies that attempting to materialize a placeholder tensor directly"
@@ -1660,7 +1660,7 @@ Please use clone() or contiguous() to copy the tensor before writing""",
             re.DOTALL,
         ),
     ):
-      _ = real + x
+      _ = (real + x).cpu()
 
   @et.why_tpu_only("Verifies execute() rejects placeholder arguments.")
   def test_execute_placeholder_argument(self):
@@ -4620,6 +4620,15 @@ module {
     ):
       with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
         torch.rand(1, device="tpu")
+
+  @et.why_tpu_only("TorchTPU specific eager mode")
+  def test_record_event_during_fx_trace(self):
+    with et.assert_raises_message(
+        RuntimeError,
+        tpu="""cannot record EventSnapshot during an FX trace""",
+    ):
+      with execution_mode.set_eager_mode(_EagerMode.INTERNAL_COMPILE_FX_GRAPH):
+        _ = torch.Event(device="tpu").record()
 
 
 class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):

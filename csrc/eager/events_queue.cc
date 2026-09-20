@@ -26,6 +26,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
@@ -35,6 +36,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
@@ -42,12 +44,14 @@
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
+#include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
@@ -162,15 +166,37 @@ class StreamState {
     live_nodes_.clear();
     repetition_hashes_.clear();
     repetition_i_ = 0;
-    for (auto& event : deferred_ops_) {
-      event.deferred_op_hash = 0;
+    for (auto& event : events_queue_) {
+      if (auto* deferred_op_event = std::get_if<DeferredOpEvent>(&event)) {
+        deferred_op_event->deferred_op_hash = 0;
+      }
     }
     futures_.clear();
-    // Explicitly do NOT clear the deferred ops queue.
-    // Deferred ops may have side effects; clearing them could result in
-    // deadlocks or errors later on.
-    // If deferred ops are side-effect free and all Tensors using them are
-    // dropped, they'll be cleaned up as dead code by the weak_ptr mechanism.
+
+    // Drop all unresolved SnapshotEvents and fail their promises.
+    absl::Status cancel_status = TT_ERROR(error::kCancelled)
+                                 << "stream state was cleared";
+    size_t n = events_queue_.size();
+    for (size_t i = 0; i < n; ++i) {
+      auto event = std::move(events_queue_.front());
+      events_queue_.pop_front();
+      if (auto* snapshot_event =
+              std::get_if<std::unique_ptr<EventSnapshotRequest>>(&event)) {
+        (*snapshot_event)->snapshot_promise.Set(cancel_status);
+      } else {
+        events_queue_.push_back(std::move(event));
+      }
+    }
+
+    // At this point, there are no "live nodes" holding onto deferred ops, so
+    // all ops that have no side effects (directly or indirectly) should be
+    // expired.
+    std::erase_if(events_queue_, [](const StreamEvent& event) {
+      const auto* deferred_op_event = std::get_if<DeferredOpEvent>(&event);
+      return deferred_op_event == nullptr ||
+             (deferred_op_event->side_effects == nullptr &&
+              deferred_op_event->no_side_effects.expired());
+    });
   }
 
   // If a deferred op has no side effects, then as soon as all of its DataPtrs
@@ -231,27 +257,50 @@ class StreamState {
     size_t deferred_op_hash = 0;
   };
 
+  // A request to create an EventSnapshot at this point in the stream.
+  struct EventSnapshotRequest {
+    // Futures that must complete before the snapshot is reached.
+    std::vector<xla::Future<void>> futures;
+    // Nodes that explicitly must be materialized by the snapshot.
+    std::vector<SharedDeviceBufferList> must_materialize;
+    // Settings for the materialization. These are frozen when the request is
+    // made, so that context states are only read from the dispatch thread.
+    MaterializationSettings materialization_settings;
+    // Live nodes that must be materialized by the snapshot if deferred.
+    absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes;
+    // The promise which can be used to provide the snapshot once is it
+    // defined.
+    xla::Promise<std::shared_ptr<EventSnapshot>> snapshot_promise;
+  };
+
+  // The stream collects a series of DeferredOpEvents in order, with
+  // requests for device snapshots inserted to create graph breaks and
+  // wait points.
+  using StreamEvent =
+      std::variant<DeferredOpEvent,
+                   absl_nonnull std::unique_ptr<EventSnapshotRequest>>;
+
   void RecordDeferredOpCreated(
       const SharedDeviceBufferList& device_buffer_list) {
     if (auto event = DeferredOpEvent::FromDeferredOp(device_buffer_list);
         event.has_value()) {
       absl::MutexLock lock(mu_);
-      deferred_ops_.push_back(std::move(*event));
+      events_queue_.push_back(std::move(*event));
     }
   }
 
-  std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
+  bool RecordDeferredOpAndDetectRepetition(
       const SharedDeviceBufferList& device_buffer_list) {
     auto maybe_event = DeferredOpEvent::FromDeferredOp(device_buffer_list,
                                                        /*compute_hash=*/true);
     if (!maybe_event.has_value()) {
-      return {};
+      return false;
     }
     auto& event = *maybe_event;
     const size_t new_hash = event.deferred_op_hash;
 
     absl::MutexLock lock(mu_);
-    deferred_ops_.push_back(std::move(event));
+    events_queue_.push_back(std::move(event));
 
     // Fast path: assume that the last sequence is still repeating.
     // For example, if the last six ops were [A, B, C, A, B, C], check if we're
@@ -259,11 +308,11 @@ class StreamState {
     switch (CheckLastRepeatedSequence(new_hash)) {
       case StreamState::CheckLastRepeatedSequenceResult::kContinueWaiting:
         // We've seen [A, B] and are expecting [A, B, C]; don't materialize yet.
-        return {};
+        return false;
       case StreamState::CheckLastRepeatedSequenceResult::kRepetitionComplete:
         // We expected to see [A, B, C] and just completed [A, B, C];
         // materialize C to take advantage of the already compiled loop region.
-        return {device_buffer_list};
+        return true;
       case StreamState::CheckLastRepeatedSequenceResult::kPatternBreak:
         // We expected to see [A, B, C] but just saw op D.
         // Reset and scan for a new repeated pattern.
@@ -284,25 +333,64 @@ class StreamState {
 
     // Get the last node of each loop of the repeated sequence, and the last
     // node in the non-looping prefix (if any).
-    return GetRepeatedSequenceNodes();
+    return true;
   }
 
-  // The result of TakeAll. Returns the complete set of deferred ops and live
-  // nodes in the queue at the time of the call.
-  // Once this function returns, further DeferredOps or DataPtr creation or
-  // destruction will not affect the result of this sync.
-  struct TakeAllResult {
-    std::deque<DeferredOpEvent> deferred_ops;
-    absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes;
-  };
-
-  // Returns all the DeferredOpEvents in the queue and clears the queue.
-  TakeAllResult TakeAll() {
+  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshot(
+      std::vector<SharedDeviceBufferList> must_materialize,
+      MaterializationReason reason, MaterializationMode mode,
+      EagerMode eager_mode) {
     absl::MutexLock lock(mu_);
-    ABSL_VLOG(1) << "[StreamState::TakeAll] Returning all "
-                 << deferred_ops_.size() << " DeferredOpEvents.";
-    return TakeAllResult{.deferred_ops = std::move(deferred_ops_),
-                         .live_nodes = std::move(live_nodes_)};
+    auto [snapshot_promise, snapshot_future] =
+        xla::MakePromise<std::shared_ptr<EventSnapshot>>();
+    // Explanation: synchronizing the last EventSnapshot should also await all
+    // prior EventSnapshots. We achieve this by chaining a promise/future;
+    // each event snapshot will have a future that will be set by the prior
+    // event snapshot.
+    auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
+    snapshot_future.OnReady([chaining_promise = std::move(chaining_promise)](
+                                absl::StatusOr<std::shared_ptr<EventSnapshot>>
+                                    snapshot_or) mutable {
+      if (!snapshot_or.ok()) {
+        chaining_promise.Set(absl::OkStatus());
+      } else {
+        (*snapshot_or)->OkCallback(std::move(chaining_promise));
+      }
+    });
+    events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
+        std::move(futures_), std::move(must_materialize),
+        MaterializationSettings(reason, mode, eager_mode),
+        std::move(live_nodes_), std::move(snapshot_promise)));
+    futures_.push_back(std::move(chaining_future));
+    return snapshot_future;
+  }
+
+  std::deque<StreamEvent> GetSnapshotEvents() {
+    absl::MutexLock lock(mu_);
+    std::deque<StreamEvent> temp;
+    while (!events_queue_.empty() &&
+           !std::holds_alternative<std::unique_ptr<EventSnapshotRequest>>(
+               events_queue_.back())) {
+      temp.push_front(std::move(events_queue_.back()));
+      events_queue_.pop_back();
+    }
+
+    std::swap(temp, events_queue_);
+    if (ABSL_VLOG_IS_ON(1)) {
+      if (events_queue_.empty()) {
+        ABSL_VLOG(1) << "[StreamState::GetSnapshotEvents] Returning all "
+                     << temp.size() << " StreamEvents.";
+      } else if (temp.empty()) {
+        ABSL_VLOG(1) << "[StreamState::GetSnapshotEvents] No SnapshotEvents in "
+                        "a queue of "
+                     << events_queue_.size() << " StreamEvents.";
+      } else {
+        ABSL_VLOG(1) << "[StreamState::GetSnapshotEvents] Returning "
+                     << temp.size() << " StreamEvents and retaining "
+                     << events_queue_.size() << " DeferredOpEvents.";
+      }
+    }
+    return temp;
   }
 
   // Returns the core pinning mode of this events queue.
@@ -316,8 +404,10 @@ class StreamState {
     absl::MutexLock lock(mu_);
     repetition_hashes_.clear();
     repetition_i_ = 0;
-    for (auto& event : deferred_ops_) {
-      event.deferred_op_hash = 0;
+    for (auto& event : events_queue_) {
+      if (auto* deferred_op_event = std::get_if<DeferredOpEvent>(&event)) {
+        deferred_op_event->deferred_op_hash = 0;
+      }
     }
   }
 
@@ -383,18 +473,12 @@ class StreamState {
   void RecordRepeatedHashPattern(int64_t repetition_length)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  // Helper function for RecordDeferredOpAndDetectRepetition.
-  // Returns the individual materialization nodes, in order, to compile the
-  // repeated sequence.
-  [[nodiscard]] std::vector<SharedDeviceBufferList> GetRepeatedSequenceNodes()
-      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-
   // Hold a strong pointer to the DeviceBufferList as the key; as long as there
   // is a live DataPtr, the DeviceBufferList can't be dropped.
   absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes_
       ABSL_GUARDED_BY(mu_);
 
-  std::deque<DeferredOpEvent> deferred_ops_ ABSL_GUARDED_BY(mu_);
+  std::deque<StreamEvent> events_queue_ ABSL_GUARDED_BY(mu_);
 
   // If a sequence repeats twice, we anticipate that it may repeat three or
   // more times.
@@ -445,37 +529,41 @@ StreamState::CheckLastRepeatedSequence(size_t new_hash)
 
 int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-  // Check for repetitions within the minimum and maximum range.
-  if (deferred_ops_.size() <
-      kMinRepetitionCount * kMinRepeatedSubsequenceLength) {
-    // Not enough ops to have the minimum number of repetitions yet.
+  // Initialize our iterator to be kMinRepeatedSubsequenceLength ops from the
+  // end of the queue.
+  auto prior_repetition_end_it = events_queue_.rbegin();
+  while (prior_repetition_end_it != events_queue_.rend() &&
+         !std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
+    ++prior_repetition_end_it;
+  }
+  auto last_deferred_op_it = prior_repetition_end_it;  // intentional copy
+
+  int64_t repetition_length = 0;
+  while (prior_repetition_end_it != events_queue_.rend() &&
+         repetition_length < kMinRepeatedSubsequenceLength) {
+    if (std::holds_alternative<DeferredOpEvent>(*prior_repetition_end_it)) {
+      ++repetition_length;
+    }
+    ++prior_repetition_end_it;
+  }
+  if (prior_repetition_end_it == events_queue_.rend()) {
+    // There are less than kMinRepetitionCount * kMinRepeatedSubsequenceLength
+    // deferred ops in the queue.
     return 0;
   }
 
-  // Initialize our iterator to be kMinRepeatedSubsequenceLength ops from the
-  // end of the queue.
-  auto prior_repetition_end_it = deferred_ops_.rbegin();
-  int64_t repetition_length = 0;
-  while (repetition_length < kMinRepeatedSubsequenceLength) {
-    ++repetition_length;
-    ++prior_repetition_end_it;
-  }
-
-  // To have a repeated sequence of length N repeat kMinRepetitionCount times,
-  // we need at least kMinRepetitionCount * N ops in the queue.
-  // Thus, the maximum sequence length we can check is
-  // floor(size / kMinRepetitionCount), which we also cap at
-  // kMaxRepeatedSubsequenceLength.
-  const int64_t max_repetition_length =
-      std::min<int64_t>(kMaxRepeatedSubsequenceLength,
-                        (int64_t)deferred_ops_.size() / kMinRepetitionCount);
-
   // Incrementally increase the sequence length until we find 2 loops at the
   // end of the deferred ops queue, or we exceed the maximum sequence length.
-  while (prior_repetition_end_it != deferred_ops_.rend() &&
-         repetition_length <= max_repetition_length) {
+  while (prior_repetition_end_it != events_queue_.rend() &&
+         repetition_length <= kMaxRepeatedSubsequenceLength) {
+    const auto* deferred_op_event =
+        std::get_if<DeferredOpEvent>(&*prior_repetition_end_it);
+    if (deferred_op_event == nullptr) {
+      ++prior_repetition_end_it;
+      continue;
+    }
     // Look for points where we pushed the same hash value as new_hash.
-    if (prior_repetition_end_it->deferred_op_hash != new_hash) {
+    if (deferred_op_event->deferred_op_hash != new_hash) {
       ++repetition_length;
       ++prior_repetition_end_it;
       continue;
@@ -483,25 +571,34 @@ int64_t StreamState::FindRepeatedSequence(size_t new_hash)
     // Initialize curr_it at the end of the queue, and prev_it
     // `repetition_length` from the end.
     auto prev_it = prior_repetition_end_it;  // intentional copy
-    auto curr_it = deferred_ops_.rbegin();
+    auto curr_it = last_deferred_op_it;      // intentional copy
 
-    bool valid_repetition = true;
-    for (int i = 1; i < kMinRepetitionCount; ++i) {
-      for (int j = 0; j < repetition_length; ++j) {
-        // Note: prev_it is guaranteed valid because we capped
-        // max_repetition_length at 1 / kMinRepetitionCount.
-        if (prev_it->deferred_op_hash != curr_it->deferred_op_hash) {
-          valid_repetition = false;
-          break;
-        }
+    const int64_t required_matches = kMinRepetitionCount * repetition_length;
+    int64_t matches = 0;
+    while (matches < required_matches && prev_it != events_queue_.rend()) {
+      const auto* prev_deferred_op_event =
+          std::get_if<DeferredOpEvent>(&*prev_it);
+      if (prev_deferred_op_event == nullptr) {
         ++prev_it;
-        ++curr_it;
+        continue;
       }
-      if (!valid_repetition) {
+      const auto* curr_deferred_op_event =
+          std::get_if<DeferredOpEvent>(&*curr_it);
+      if (curr_deferred_op_event == nullptr) {
+        ++curr_it;
+        continue;
+      }
+      if (prev_deferred_op_event->deferred_op_hash !=
+          curr_deferred_op_event->deferred_op_hash) {
         break;
       }
+      if (++matches == required_matches) {
+        break;
+      }
+      ++prev_it;
+      ++curr_it;
     }
-    if (valid_repetition) {
+    if (matches == required_matches) {
       return repetition_length;
     }
     ++repetition_length;
@@ -513,39 +610,16 @@ int64_t StreamState::FindRepeatedSequence(size_t new_hash)
 void StreamState::RecordRepeatedHashPattern(int64_t repetition_length)
     ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   repetition_hashes_.resize(repetition_length);
-  auto reverse_it = deferred_ops_.rbegin();
+  auto reverse_it = events_queue_.rbegin();
   for (int i = repetition_length - 1; i >= 0; --i) {
-    repetition_hashes_[i] = reverse_it->deferred_op_hash;
+    const auto* deferred_op_event = std::get_if<DeferredOpEvent>(&*reverse_it);
+    while (deferred_op_event == nullptr) {
+      ++reverse_it;
+      deferred_op_event = std::get_if<DeferredOpEvent>(&*reverse_it);
+    }
+    repetition_hashes_[i] = deferred_op_event->deferred_op_hash;
     ++reverse_it;
   }
-}
-
-std::vector<SharedDeviceBufferList> StreamState::GetRepeatedSequenceNodes()
-    ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-  std::vector<SharedDeviceBufferList> nodes_to_materialize;
-
-  // TODO(bawilson): correctly split out materialization loops
-  // If the ops queue is like [A, B, C, D, E, C, D, E], optimal compilation
-  // efficiency would be to compile and execute as [A, B] and [C, D, E] x2.
-  // However, we are currently relying on the tensor liveness state at
-  // materialization time. By the time the second iteration happens, we've lost
-  // information about the first iteration.
-  // Suppose there's a cross-loop dependency from D -> C but D0 is stale after
-  // the second loop. Materializing E0 according to the liveness at E1 could
-  // fail to materialize D0, which would break the later materialization of E1
-  // due to an unmaterialized dependency (D0 -> C1 -> E1).
-  // This needs to be addressed by ensuring that we materialize according to
-  // the retroactive state of tensor liveness at *dispatch time*, not at
-  // materialization time. That is, materialize D0 with E0 because D0 was live
-  // when E0 was dispatched. This requires storing a liveness history, not just
-  // a present liveness state.
-  // For now, materializing only the last node will correctly pick up all
-  // live tensors, preventing materialization failures, but may cause additional
-  // inefficient compilations.
-  if (auto last_node = deferred_ops_.back().lock()) {
-    nodes_to_materialize.push_back(std::move(last_node));
-  }
-  return nodes_to_materialize;
 }
 
 // The usage of a node within an execution region.
@@ -709,7 +783,7 @@ absl::StatusOr<absl_nullable std::unique_ptr<Traversal>> FinishTraversal(
 
 absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
 PrepareTraversals(
-    const std::deque<StreamState::DeferredOpEvent>& deferred_op_events,
+    absl::Span<const StreamState::DeferredOpEvent> deferred_op_events,
     const absl::flat_hash_map<SharedDeviceBufferList, int64_t>& live_nodes,
     absl::Span<const SharedDeviceBufferList> nodes_to_materialize,
     const absl::flat_hash_set<const DeviceBufferList* absl_nonnull>&
@@ -827,6 +901,9 @@ struct DeviceState {
 
     // Drop all other stream states.
     absl::MutexLock lock(mutex);
+    for (auto& stream_state : stream_states) {
+      stream_state->Clear();
+    }
     stream_states.clear();
   }
 
@@ -1011,79 +1088,66 @@ void RecordBackgroundMaterialization(
   }
 }
 
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareStreamTraversals(
-    c10::DeviceIndex device_index, c10::StreamId stream_id,
-    absl::Span<const SharedDeviceBufferList> must_materialize) {
+std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
+    c10::DeviceIndex device_index, c10::StreamId stream_id) {
+  std::vector<PendingSnapshotMaterialization> snapshots_to_materialize;
   StreamState* stream_state = GetOrCreateStreamState(device_index, stream_id);
-  absl::flat_hash_set<const DeviceBufferList*> must_materialize_set;
-  for (const auto& node : must_materialize) {
-#ifndef NDEBUG
-    ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
-                  device_index);
-    ABSL_CHECK_EQ(node->stream_id(),  // CRASH_OK=not visible to Python
-                  stream_id);
-#endif
-    must_materialize_set.insert(node.get());
-  }
   // Take all the deferred ops and live nodes from the stream state.
   // This is the only part than needs to hold the lock.
-  auto take_result = stream_state->TakeAll();
-  return PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
-                           must_materialize, must_materialize_set,
-                           stream_state->core_pinning_mode());
-}
-
-absl::StatusOr<std::vector<absl_nonnull std::unique_ptr<Traversal>>>
-PrepareDeviceTraversals(
-    c10::DeviceIndex device_index,
-    absl::Span<const SharedDeviceBufferList> must_materialize) {
-  // Get all the stream states for the device.
-  auto streams = GetDeviceStreamStates(device_index);
-
-  std::vector<absl_nonnull std::unique_ptr<Traversal>> device_traversals;
-
-  struct MustMaterializeNodes {
-    std::vector<SharedDeviceBufferList> nodes;
-    absl::flat_hash_set<const DeviceBufferList*> node_set;
-  };
-  absl::flat_hash_map<c10::StreamId, MustMaterializeNodes>
-      must_materialize_by_stream;
-  for (const auto& node : must_materialize) {
-#ifndef NDEBUG
-    ABSL_CHECK_EQ(node->device_index(),  // CRASH_OK=not visible to Python
-                  device_index);
-#endif
-    auto& stream_nodes = must_materialize_by_stream[node->stream_id()];
-    if (stream_nodes.node_set.insert(node.get()).second) {
-      stream_nodes.nodes.push_back(node);  // intentional copy
-    }
-  }
-
-  // Partition each stream's deferred ops queue into separate traversals, and
-  // concatenate them into a single list.
-  std::vector<SharedDeviceBufferList> must_materialize_nodes;
+  std::deque<StreamState::StreamEvent> stream_events =
+      stream_state->GetSnapshotEvents();
+  std::vector<StreamState::DeferredOpEvent> deferred_ops;
   absl::flat_hash_set<const DeviceBufferList*> must_materialize_node_set;
-  for (c10::StreamId stream_id = 0; stream_id < streams.size(); ++stream_id) {
-    StreamState* stream = streams[stream_id];
-    auto take_result = stream->TakeAll();
-    if (auto it = must_materialize_by_stream.find(stream_id);
-        it != must_materialize_by_stream.end()) {
-      must_materialize_nodes = std::move(it->second.nodes);
-      must_materialize_node_set = std::move(it->second.node_set);
+
+  while (!stream_events.empty()) {
+    auto& event = stream_events.front();
+    if (auto* deferred_op = std::get_if<StreamState::DeferredOpEvent>(&event)) {
+      deferred_ops.push_back(std::move(*deferred_op));
+    } else if (auto* snapshot_event_ptr = std::get_if<
+                   std::unique_ptr<StreamState::EventSnapshotRequest>>(
+                   &event)) {
+      auto& snapshot_event = **snapshot_event_ptr;
+      must_materialize_node_set.clear();
+      for (const auto& node : snapshot_event.must_materialize) {
+        must_materialize_node_set.insert(node.get());
+      }
+
+      auto snapshot_traversals_or = PrepareTraversals(
+          deferred_ops, snapshot_event.live_nodes,
+          snapshot_event.must_materialize, must_materialize_node_set,
+          stream_state->core_pinning_mode());
+
+      if (snapshot_traversals_or.ok()) {
+        PruneCompletedFutures(snapshot_event.futures);
+        snapshots_to_materialize.push_back(
+            {.traversals = std::move(*snapshot_traversals_or),
+             .must_materialize = std::move(snapshot_event.must_materialize),
+             .settings = std::move(snapshot_event.materialization_settings),
+             .futures = std::move(snapshot_event.futures),
+             .snapshot_promise = std::move(snapshot_event.snapshot_promise)});
+      } else {
+        // If one snapshot fails, later snapshots may succeed only if there are
+        // no dependencies on the failed DeferredOpEvents.
+        // Mark all the failed ops as failed so that errors propagate and
+        // unblock any threads waiting on the failed ops.
+        for (const auto& deferred_op_event : deferred_ops) {
+          if (auto node = deferred_op_event.lock();
+              node != nullptr && !node->is_constant()) {
+            node->SetAsError(snapshot_traversals_or.status());
+          }
+        }
+        for (const auto& node : snapshot_event.must_materialize) {
+          if (!node->is_materialized()) {
+            node->SetAsError(snapshot_traversals_or.status());
+          }
+        }
+        snapshot_event.snapshot_promise.Set(snapshot_traversals_or.status());
+      }
+      deferred_ops.clear();
     }
-    TT_ASSIGN_OR_RETURN(
-        auto stream_traversals,
-        PrepareTraversals(take_result.deferred_ops, take_result.live_nodes,
-                          must_materialize_nodes, must_materialize_node_set,
-                          stream->core_pinning_mode()));
-    must_materialize_nodes.clear();
-    must_materialize_node_set.clear();
-    device_traversals.insert(device_traversals.end(),
-                             std::make_move_iterator(stream_traversals.begin()),
-                             std::make_move_iterator(stream_traversals.end()));
+    stream_events.pop_front();
   }
-  return device_traversals;
+  return snapshots_to_materialize;
 }
 
 void RecordAsyncHostToDevice(const DeviceBufferRef& device_buffer_ref) {
@@ -1104,34 +1168,64 @@ void RecordAsyncDeviceToHost(xla::Future<void> to_literal_future) {
   MarkStreamActive(device_index, stream_id, std::move(to_literal_future));
 }
 
-std::vector<std::shared_ptr<EventSnapshot>> RecordDeviceSnapshots(
-    c10::DeviceIndex device_index) {
+std::vector<PendingEventSnapshot> RecordDeviceSnapshots(
+    c10::DeviceIndex device_index,
+    std::vector<SharedDeviceBufferList> must_materialize,
+    MaterializationReason reason, MaterializationMode mode) {
   ABSL_VLOG(1) << "RecordDeviceSnapshots: device="
                << static_cast<int>(device_index);
+  auto eager_mode = GetEagerMode();
+  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
+    return {};
+  }
   auto device_streams = GetDeviceStreamStates(device_index);
-  std::vector<std::shared_ptr<EventSnapshot>> snapshots;
+  std::vector<PendingEventSnapshot> snapshots;
   snapshots.reserve(device_streams.size());
-  for (auto& stream_state : device_streams) {
-    auto stream_future = stream_state->JoinFutures();
-    // Can't use make_shared because the constructor is private.
-    snapshots.push_back(std::shared_ptr<EventSnapshot>(
-        new EventSnapshot(std::move(stream_future))));
+  for (c10::StreamId stream_id = 0; stream_id < device_streams.size();
+       ++stream_id) {
+    auto* stream_state = device_streams[stream_id];
+    std::vector<SharedDeviceBufferList> stream_must_materialize;
+    for (auto& node : must_materialize) {
+      if (node != nullptr && node->device_index() == device_index &&
+          node->stream_id() == stream_id) {
+        stream_must_materialize.push_back(std::move(node));
+      }
+    }
+    snapshots.push_back({
+        .device_index = device_index,
+        .stream_id = stream_id,
+        .snapshot_future = stream_state->RequestEventSnapshot(
+            std::move(stream_must_materialize), reason, mode, eager_mode),
+    });
   }
   return snapshots;
 }
 
-std::shared_ptr<EventSnapshot> EventSnapshot::Record(
-    c10::DeviceIndex device_index, int64_t stream_id) {
-  auto join_future =
-      GetOrCreateStreamState(device_index, stream_id)->JoinFutures();
-  // Can't use make_shared because the constructor is private.
-  return std::shared_ptr<EventSnapshot>(
-      new EventSnapshot(std::move(join_future)));
+xla::Future<std::shared_ptr<EventSnapshot>> EventSnapshot::Record(
+    c10::DeviceIndex device_index, c10::StreamId stream_id,
+    std::vector<SharedDeviceBufferList> must_materialize,
+    MaterializationReason reason, MaterializationMode mode) {
+  auto eager_mode = GetEagerMode();
+  if (eager_mode == EagerMode::kInternalCompileFxGraph) {
+    return xla::Future<std::shared_ptr<EventSnapshot>>(
+        TT_ERROR(error::kInvalidArgument)
+        << "cannot record EventSnapshot during an FX trace");
+  }
+  return GetOrCreateStreamState(device_index, stream_id)
+      ->RequestEventSnapshot(std::move(must_materialize), reason, mode,
+                             eager_mode);
 }
 
 absl::Status EventSnapshot::Synchronize() const { return future_.Await(); }
 
 absl::StatusOr<bool> EventSnapshot::Query() const { return future_.IsReady(); }
+
+void EventSnapshot::OkCallback(xla::Promise<void>&& chain_promise) {
+  future_.OnReady(
+      [chain_promise = std::move(chain_promise)](absl::Status status) mutable {
+        chain_promise.Set(absl::OkStatus());
+      });
+}
 
 void ClearAllStreams() {
   GetStreamStates().Clear();
@@ -1143,12 +1237,12 @@ void SetCorePinningMode(c10::DeviceIndex device_index, c10::StreamId stream_id,
   GetOrCreateStreamState(device_index, stream_id)->SetCorePinningMode(pinned);
 }
 
-std::vector<SharedDeviceBufferList> RecordDeferredOpAndDetectRepetition(
+bool RecordDeferredOpAndDetectRepetition(
     const SharedDeviceBufferList& device_buffer_list) {
   if (GetEagerMode() == EagerMode::kInternalCompileFxGraph) {
     // In FX trace mode, nothing happens on device, so we don't add anything to
-    // any stream.
-    return std::vector<SharedDeviceBufferList>();
+    // any stream and never materialize.
+    return false;
   }
   return GetStreamFor(device_buffer_list)
       ->RecordDeferredOpAndDetectRepetition(device_buffer_list);
@@ -1158,6 +1252,18 @@ void ResetRepeatedOpsHeuristicState() {
   for (auto& device_state : GetStreamStates().device_states) {
     device_state.ResetRepeatedOpsHeuristicState();
   }
+}
+
+CompilationMode GetCompilationMode(EagerMode eager_mode) {
+  switch (eager_mode) {
+    case EagerMode::kInternalDeferAll:
+    case EagerMode::kDeferAndFuse:
+    case EagerMode::kInternalCompileFxGraph:
+      return CompilationMode::kFastRuntime;
+    case EagerMode::kDeferNever:
+    case EagerMode::kDeferNeverAndLaunchBlocking:
+      return CompilationMode::kFastCompile;
+  };
 }
 
 }  // namespace torch_tpu

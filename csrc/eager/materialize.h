@@ -49,8 +49,6 @@
 
 namespace torch_tpu {
 
-enum class MaterializationMode { kFullGraph, kSplitGraph };
-
 // Executes all deferred nodes in the list, and updates them in place.  No-op
 // for nodes that are already materialized.
 // Optional parameter mode can be set to false to avoid splitting the op graph

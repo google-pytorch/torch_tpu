@@ -187,16 +187,11 @@ absl::Status DeferAndFuseDispatch(absl::Span<const DeviceBufferRef> results) {
 
   if (MustApplyRepeatedOpsHeuristic()) {
     // Record the deferred op and detect any repetitions.
-    auto materialization_nodes =
-        RecordDeferredOpAndDetectRepetition(device_buffer_list);
-    // If the repeated ops heuristic detected a loop, we need to materialize
-    // the endpoints of each of the loops (and any prefix before the first one.)
-    // Materialize these one at a time to ensure that we don't fuse across the
-    // loop boundaries.
-    for (const auto& node : materialization_nodes) {
+    // If a repetition is detected, materialize the current stream.
+    if (RecordDeferredOpAndDetectRepetition(device_buffer_list)) {
       TT_RETURN_IF_ERROR(
-          Materialize(node, MaterializationReason::kRepeatedOpDetection,
-                      GetRepeatedOpsMaterializationMode()));
+          MaterializeCurrentStream(MaterializationReason::kRepeatedOpDetection,
+                                   GetRepeatedOpsMaterializationMode()));
     }
   } else {
     RecordDeferredOpCreated(device_buffer_list);

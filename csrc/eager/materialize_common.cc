@@ -45,7 +45,6 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
-#include "csrc/common/context_states.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
@@ -688,18 +687,6 @@ absl::Status ExecutionTask::Run() {
     SetOutputNodesAsError(status);
   }
   return status;
-}
-
-CompilationMode GetCompilationMode(EagerMode eager_mode) {
-  switch (eager_mode) {
-    case EagerMode::kInternalDeferAll:
-    case EagerMode::kDeferAndFuse:
-    case EagerMode::kInternalCompileFxGraph:
-      return CompilationMode::kFastRuntime;
-    case EagerMode::kDeferNever:
-    case EagerMode::kDeferNeverAndLaunchBlocking:
-      return CompilationMode::kFastCompile;
-  };
 }
 
 }  // namespace torch_tpu
