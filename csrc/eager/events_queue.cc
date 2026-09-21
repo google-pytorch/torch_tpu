@@ -491,6 +491,7 @@ class StreamState {
         MaterializationSettings(reason, mode, eager_mode),
         std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
     futures_.push_back(std::move(chaining_future));
+    live_nodes_.clear();
     return snapshot_future;
   }
 
