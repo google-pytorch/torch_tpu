@@ -80,6 +80,9 @@ torch_tpu_cc_library(
 torch_tpu_cc_test(
     name = "mosaic_custom_call_test",
     srcs = ["mosaic_custom_call_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
     notest_oss = "Requires libtpu >= 0.0.48 with operand_to_metadata support",
     tags = ["requires-tpu-v5p"],
     deps = [
@@ -105,6 +108,9 @@ torch_tpu_cc_test(
     name = "nonzero_indices_test_" + gen,
     srcs = ["nonzero_indices_test.cc"],
     data = ["testdata/nonzero_xla_baseline_" + gen + ".csv"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
     nopresubmit = nopresubmit,
     notest_oss = "Requires libtpu >= 0.0.48 with operand_to_metadata support",
     tags = [chip],
