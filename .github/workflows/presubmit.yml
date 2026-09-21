@@ -122,3 +122,38 @@ jobs:
           bazel_config: ${{ matrix.job_info.config }}
           extra_bazel_flags: ${{ matrix.job_info.extra_flags }}
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
+
+  psc_probe:
+    name: "PSC Reachability Probe"
+    runs-on: linux-x86-n4-16
+    container:
+      image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
+      options: --ipc=host
+    steps:
+      - name: Network context
+        run: |
+          echo "=== interfaces ==="
+          ip -o addr show || true
+          echo "=== route to PSC endpoint ==="
+          ip route get 10.202.0.67 || true
+          echo "=== default route ==="
+          ip route show default || true
+
+      - name: TCP probes
+        run: |
+          probe() {
+            h=$1; p=$2; t0=$SECONDS
+            if timeout 12 bash -c "cat < /dev/null > /dev/tcp/$h/$p" 2>/dev/null; then
+              r=OPEN
+            else
+              r=FAIL
+            fi
+            echo "$h:$p -> $r after $((SECONDS - t0))s"
+          }
+          # The endpoint we care about.
+          probe 10.202.0.67 8980
+          # Same host, a port the forwarding rule does not carry. Distinguishes
+          # "host reachable, port closed" from "nothing reachable at all".
+          probe 10.202.0.67 9999
+          # Control: does this container have any TCP egress?
+          probe 8.8.8.8 53
