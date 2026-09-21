@@ -781,7 +781,7 @@ class _HandshakeBackend(abc.ABC):
     server.close()
 
     # Worker rank:
-    client = _HandshakeClient(port=12345)
+    client = _HandshakeClient(port=12345, current_rank=1)
     client.send(request)
     response = client.recv()
     client.close()
@@ -834,7 +834,7 @@ class _ZMQServer:
     )
 
     # Client (synchronous):
-    client = _ZMQClient(port=12345)
+    client = _ZMQClient(port=12345, routing_id=b"rank-1")
     client.send(request)
     response = client.recv()  # CollectiveHandshakeResponse(success=True)
     client.close()
@@ -872,6 +872,9 @@ class _ZMQServer:
     self._port = port
     self._context = zmq.asyncio.Context()
     self._socket = self._context.socket(zmq.ROUTER)
+    # If a new client connects to the server with the same routing ID we route
+    # our responses to the new client.
+    self._socket.setsockopt(zmq.ROUTER_HANDOVER, 1)
     if send_timeout_s is not None:
       if send_timeout_s < 0:
         raise ValueError(
@@ -1250,7 +1253,9 @@ class _ZMQClient:
 
   def __init__(
       self,
+      *,
       port: int,
+      routing_id: bytes,
       send_timeout_s: int | None = None,
       recv_timeout_s: int | None = None,
       master_addr: str | None = None,
@@ -1259,6 +1264,8 @@ class _ZMQClient:
 
     Args:
       port: TCP port number of the coordinator server.
+      routing_id: Explicit routing identity for the DEALER socket, which
+        persists across reconnects when paired with ROUTER_HANDOVER.
       send_timeout_s: Optional maximum duration in seconds for send operations.
         If None, the send timeout is not set on the socket (PyZMQ default is no
         timeout).
@@ -1282,6 +1289,7 @@ class _ZMQClient:
 
     self._context = zmq.Context()  # pyrefly: ignore[missing-attribute]
     self._socket = self._context.socket(zmq.DEALER)
+    self._socket.setsockopt(zmq.ROUTING_ID, routing_id)
     if send_timeout_s is not None:
       if send_timeout_s < 0:
         raise ValueError(
@@ -1350,6 +1358,7 @@ class _HandshakeClient(_HandshakeBackend):
   def __new__(
       cls,
       port: int,
+      current_rank: int,
   ) -> "_HandshakeClient":
     """Creates or returns the singleton _HandshakeClient instance.
 
@@ -1361,6 +1370,8 @@ class _HandshakeClient(_HandshakeBackend):
 
     Args:
       port: TCP port number of the coordinator handshake server.
+      current_rank: Worker rank, used to set a deterministic routing identity
+        across reconnects.
 
     Returns:
       The singleton _HandshakeClient instance for the specified port.
@@ -1369,8 +1380,10 @@ class _HandshakeClient(_HandshakeBackend):
       if cls._instance is None:
         inst = super().__new__(cls)
         timeout_s = _get_handshake_timeout_s()
+        routing_id = f"rank-{current_rank}".encode()
         inst._zmq_client = _ZMQClient(
             port=port,
+            routing_id=routing_id,
             send_timeout_s=timeout_s,
             recv_timeout_s=timeout_s,
         )
@@ -1463,7 +1476,9 @@ class Handshake:
           current_rank=coordinator_rank, port=port, world_size=world_size
       )
     else:
-      self._backend = _HandshakeClient(port=port)
+      self._backend = _HandshakeClient(
+          port=port, current_rank=self._current_rank
+      )
 
   @classmethod
   def _reset_instances(cls) -> None:
