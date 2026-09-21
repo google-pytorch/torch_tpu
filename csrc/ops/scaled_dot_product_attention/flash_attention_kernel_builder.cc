@@ -56,7 +56,6 @@
 #include "csrc/ops/scaled_dot_product_attention/flash_attention_kernel.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
 #include "csrc/ops/scaled_dot_product_attention/util.h"
-#include "csrc/ops/view_decomposition/contiguous_to_view.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -523,22 +522,11 @@ CreateFlashAttentionKernelImpl(const at::Tensor& query, const at::Tensor& key,
                            .out_dims_list = out_dims_list,
                            .op_param_cache_keys = std::move(param_keys)})));
 
-  // We return a view with dense strides that preserves the layout permutation
-  // of the query. This ensures subsequent view operations (e.g., merging heads)
-  // do not crash due to unexpected non-contiguity, while avoiding the memory
-  // bloat and performance cost of matching exact CUDA strides (which may have
-  // gaps if the query was sliced).
-  // Note: This does not preserve the exact strides/offset for explicit
-  // `as_strided` calls, which is considered an acceptable trade-off.
-  // See: https://pytorch.org/docs/stable/generated/torch.as_strided.html
-  Strides dense_strides = DenseStrides(query.strides(), out_dims);
-  TT_ASSIGN_OR_RETURN(at::Tensor strided_result,
-                      ContiguousToView(results[0], dense_strides, 0));
-
   if (return_lse) {
-    return {{strided_result, MakeTensor(std::move(results[1]))}};
+    return {
+        {MakeTensor(std::move(results[0])), MakeTensor(std::move(results[1]))}};
   } else {
-    return {{strided_result,
+    return {{MakeTensor(std::move(results[0])),
              at::empty(lse_dims, query.options().dtype(at::kFloat))}};
   }
 }
@@ -725,17 +713,9 @@ CreateFlashAttentionBackwardKernel(
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_query,
-      ContiguousToView(results[0], query.strides(), query.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_key,
-      ContiguousToView(results[1], key.strides(), key.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_value,
-      ContiguousToView(results[2], value.strides(), value.storage_offset()));
-  return std::make_tuple(strided_grad_query, strided_grad_key,
-                         strided_grad_value);
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])),
+                         MakeTensor(std::move(results[2])));
 }
 
 }  // namespace torch_tpu

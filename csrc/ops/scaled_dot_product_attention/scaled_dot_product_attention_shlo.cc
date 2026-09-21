@@ -39,7 +39,6 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/scaled_dot_product_attention/helpers.h"
-#include "csrc/ops/view_decomposition/contiguous_to_view.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -716,30 +715,8 @@ absl::StatusOr<FusedAttentionResults> ScaledDotProductFusedAttentionShlo(
                            .out_dims_list = {out_dims, lse_dims},
                            .op_param_cache_keys = std::move(param_keys)})));
 
-  // We return a view with dense strides that preserves the layout permutation
-  // of the query. This ensures subsequent view operations (e.g., merging heads)
-  // do not crash due to unexpected non-contiguity, while avoiding the memory
-  // bloat and performance cost of matching exact CUDA strides (which may have
-  // gaps if the query was sliced).
-  // Note: This does not preserve the exact strides/offset for explicit
-  // `as_strided` calls, which is considered an acceptable trade-off.
-  // See: https://pytorch.org/docs/stable/generated/torch.as_strided.html
-  if (query.sizes().back() == value.sizes().back()) {
-    // We can only do this simple when the query and value have the same head
-    // dimension.
-    // TODO(willfroom): Check if we need to handle the general case.
-    Strides dense_strides = DenseStrides(query.strides(), out_dims);
-    TT_ASSIGN_OR_RETURN(at::Tensor view_out,
-                        ContiguousToView(std::move(results[0]), dense_strides,
-                                         /*target_storage_offset=*/0));
-    return FusedAttentionResults{
-        .output = std::move(view_out),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  } else {
-    return FusedAttentionResults{
-        .output = MakeTensor(std::move(results[0])),
-        .logsumexp = MakeTensor(std::move(results[1]))};
-  }
+  return FusedAttentionResults{.output = MakeTensor(std::move(results[0])),
+                               .logsumexp = MakeTensor(std::move(results[1]))};
 }
 
 absl::StatusOr<std::tuple<at::Tensor, at::Tensor, at::Tensor>>
@@ -782,17 +759,9 @@ ScaledDotProductFusedAttentionShloBackward(
            .out_dims_list = {query.sizes(), key.sizes(), value.sizes()},
            .op_param_cache_keys = std::move(param_keys)})));
 
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_query,
-      ContiguousToView(results[0], query.strides(), query.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_key,
-      ContiguousToView(results[1], key.strides(), key.storage_offset()));
-  TT_ASSIGN_OR_RETURN(
-      at::Tensor strided_grad_value,
-      ContiguousToView(results[2], value.strides(), value.storage_offset()));
-  return std::make_tuple(strided_grad_query, strided_grad_key,
-                         strided_grad_value);
+  return std::make_tuple(MakeTensor(std::move(results[0])),
+                         MakeTensor(std::move(results[1])),
+                         MakeTensor(std::move(results[2])));
 }
 
 }  // namespace torch_tpu
