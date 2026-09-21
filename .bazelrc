@@ -401,6 +401,16 @@ common:ci_rbe_presubmit --curses=no
 # same reason: its BES upload has no credentials to authenticate with.
 common:ci_rbe_presubmit --keep_going
 common:ci_rbe_presubmit --remote_download_minimal
+
+# `rbe_native_tpu` blocks result uploads so untrusted local builds cannot write
+# to the shared cache, mirroring the readonly / readwrite split the Google RBE
+# configs above use. CI is trusted, so turn uploads back on here.
+#
+# Without this nothing ever populates Buildbarn's action cache. Build actions
+# run locally under `--spawn_strategy=local`, and a local result that is never
+# uploaded is a result the next run cannot reuse, so every presubmit recompiles
+# the tree from scratch on the runner's 16 cores.
+common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
 test:ci_rbe_presubmit --test_output=errors
