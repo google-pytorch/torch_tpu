@@ -27,6 +27,7 @@ py_binary(
     srcs = ["torch_test_runner.py"],
     deps = [
         "//shims/absl_py:app",
+        "//shims/absl_py/testing:absltest",
         "//shims/torch:pytorch",
         "//shims/torch:testing_internal",
         "//src/torch_tpu",
