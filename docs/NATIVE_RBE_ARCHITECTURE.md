@@ -32,8 +32,8 @@ Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 ```mermaid
 flowchart TD
     subgraph CIRunner ["CI Runner (ml-velocity-actions-production)"]
-        BazelCI["Bazel Client<br/>bazel test --config=ci_tpu_v5_rbe"]
-        PSCEndpoint["PSC Endpoint (dualstack-network)<br/>rbe.torchtpu.internal:8980"]
+        BazelCI["Bazel Client<br/>bazel test --config=ci_rbe_presubmit"]
+        PSCEndpoint["PSC Endpoint (default network)<br/>10.202.0.67:8980"]
         BazelCI --> PSCEndpoint
     end
 
@@ -46,8 +46,8 @@ flowchart TD
     subgraph ProducerVPC ["RBE Producer Network (rbe-tpu-oss / us-east5)"]
         PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment"]
         ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb:8980"]
-        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>HAProxy TCP Load Balancer"]
-        
+        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>socat TCP Forwarder"]
+
         PSCEndpoint -->|"Google Backbone"| PSCSA
         PSCSA --> ILB
         ILB --> GW
@@ -151,27 +151,37 @@ and test target do not change, subsequent invocations hit the cache:
 ### Tunnel Gateway (`rbe-tunnel-gateway`)
 
 The `rbe-tunnel-gateway` instance (`10.202.0.13`) is a dedicated Debian 12 GCE
-virtual machine in zone `us-east5-a`. It runs high-concurrency HAProxy on port
-`8980` and forwards incoming TCP connections to the GKE NodePort `30980`
+virtual machine in zone `us-east5-a`. A `socat` unit listens on port `8980` and
+forwards incoming TCP connections to the GKE NodePort `30980`
 (`10.202.0.3:30980`) serving the Buildbarn frontend (`bb-frontend`).
 
-HAProxy handles connection pooling and high concurrency across parallel Bazel
-connections, preventing connection dropouts and port exhaustion.
+A second `socat` unit listens on `8443` and forwards to the same backend. It
+exists only so the load balancer health check has a port it can reach: the
+hierarchical firewall policy permits the health check ranges on 80, 443, 8080,
+8443, 9230 and 10402, and a probe to 8980 hits the deny-all rule instead.
 
 ### CI Runner Connectivity (Private Service Connect)
 
 GitHub Actions runners in `ml-velocity-actions-production` reach the Buildbarn
 frontend through Private Service Connect (PSC).
 
-1.  A consumer forwarding rule in `ml-velocity-actions-production` publishes an
-    internal IP mapped to `rbe.torchtpu.internal:8980` inside the runner's VPC
-    (`dualstack-network`).
+1.  A consumer forwarding rule in `ml-velocity-actions-production` publishes the
+    reserved internal address `10.202.0.67:8980` on the runner's VPC (`default`,
+    subnet `10.202.0.0/20` in `us-east5`). No DNS zone is registered, so
+    `.bazelrc` dials the address directly.
 2.  Traffic routes across Google's private datacenter backbone into the producer
-    service attachment (`rbe-tpu-service-attachment`) in `us-east5`.
+    service attachment (`rbe-tpu-service-attachment`) in `us-east5`. PSC
+    rewrites the source to the attachment's NAT subnet (`10.0.100.0/24`), which
+    is what the producer firewall rules actually see.
 3.  The service attachment hands off to an internal TCP load balancer
     (`rbe-internal-ilb:8980`), which forwards packets to `rbe-tunnel-gateway`.
-4.  HAProxy on the gateway terminates the connection and proxies to the
-    Buildbarn frontend (`bb-frontend`) on GKE NodePort `30980`.
+4.  `socat` on the gateway forwards the connection to the Buildbarn frontend
+    (`bb-frontend`) on GKE NodePort `30980`.
+
+Both sides number their subnets out of `10.202.0.0/20`, so the producer ILB
+(`10.202.0.15`), the gateway (`10.202.0.13`) and the consumer endpoint
+(`10.202.0.67`) all look like neighbours. They are not. They sit in separate
+VPCs in separate projects and only the PSC attachment joins them.
 
 Because packets stay on Google's private backbone, PSC traffic never touches the
 public internet and bypasses edge ingress firewall restrictions.
@@ -268,15 +278,15 @@ common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/presubmit.yml
-common:ci_tpu_v5_rbe --config=rbe_native_tpu
-common:ci_tpu_v5_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_rbe --build_tests_only
-common:ci_tpu_v5_rbe --color=yes
-common:ci_tpu_v5_rbe --curses=no
-common:ci_tpu_v5_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
-common:ci_tpu_v5_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
-test:ci_tpu_v5_rbe --test_output=errors
+common:ci_rbe_presubmit --config=rbe_native_tpu
+common:ci_rbe_presubmit --remote_executor=grpc://10.202.0.67:8980
+common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
+common:ci_rbe_presubmit --build_tests_only
+common:ci_rbe_presubmit --color=yes
+common:ci_rbe_presubmit --curses=no
+common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
+common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
+test:ci_rbe_presubmit --test_output=errors
 ```
 
 ### Running Tests Locally via Bazel
@@ -287,8 +297,12 @@ With the tunnel running on `localhost:8980`, execute tests directly with Bazel:
 # Run an individual test target on a remote Cloud TPU:
 bazel test --config=rbe_native_tpu //tests/pallas:pallas_test
 
-# Run an entire test suite matching CI filters:
-bazel test --config=ci_tpu_v5_rbe //tests:ops_test_tpu-v5lite
+# Run an entire test suite matching CI filters. Use rbe_native_tpu, not
+# ci_rbe_presubmit: the CI config points at the PSC endpoint, which is only
+# routable from inside the CI VPC.
+bazel test --config=rbe_native_tpu \
+  --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild \
+  //tests:ops_test_tpu-v5lite
 ```
 
 To run multiple tests in parallel across the standing TPU fleet, increase test
@@ -300,14 +314,22 @@ bazel test --config=rbe_native_tpu --jobs=28 //tests/...
 
 ### GitHub Actions Presubmit (`.github/workflows/presubmit.yml`)
 
-Pull requests trigger native RBE presubmit jobs when labeled with
+Pull requests trigger the native RBE presubmit job when labeled with
 `ci:replace-tpu-v5` or `ci:relay-tpu-v5` (or when dispatched manually).
 
-The `Presubmit on RBE` job runs `bazel test --config=ci_tpu_v5_rbe` directly
-against `rbe.torchtpu.internal:8980` over Private Service Connect using
-`bazel-diff`. Because PSC provides a direct internal IP path across VPCs, the
-runner needs no background tunnels, gcloud commands, or custom proxy daemons.
-Test results post directly back to the pull request checks.
+The `Presubmit on RBE` job runs `bazel test --config=ci_rbe_presubmit` directly
+against `10.202.0.67:8980` over Private Service Connect using `bazel-diff`.
+Because PSC provides a direct internal IP path across VPCs, the runner needs no
+background tunnels, gcloud commands, or custom proxy daemons. Test results post
+directly back to the pull request checks.
+
+There is one job, not a matrix per accelerator. The runner is a plain CPU
+machine and every test action is dispatched to a TPU worker by Buildbarn, so
+hardware coverage is a property of the worker pool rather than of the workflow.
+The pool is v5e only today, so `ci_rbe_presubmit` filters out
+`requires-tpu-v5p`, `requires-tpu-v6e` and `requires-tpu-v7x`. Adding a
+generation means editing those two filter lines and growing the pool; the
+workflow does not change.
 
 --------------------------------------------------------------------------------
 

@@ -136,11 +136,19 @@ jobs:
 
   rbe_presubmit:
     name: "Presubmit on RBE"
+    # Runs when the PR carries an opt-in label. The first clause drops re-runs
+    # triggered by adding some unrelated label to an already opted-in PR.
     if: >-
-      github.event_name == 'workflow_dispatch'
-      || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
-      || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
-      || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+      (
+        github.event_name != 'pull_request'
+        || github.event.action != 'labeled'
+        || contains(fromJSON('["ci:replace-tpu-v5", "ci:relay-tpu-v5", "run-rbe"]'), github.event.label.name)
+      ) && (
+        github.event_name == 'workflow_dispatch'
+        || contains(github.event.pull_request.labels.*.name, 'ci:replace-tpu-v5')
+        || contains(github.event.pull_request.labels.*.name, 'ci:relay-tpu-v5')
+        || contains(github.event.pull_request.labels.*.name, 'run-rbe')
+      )
     runs-on: linux-x86-n4-16
     container:
       image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:480f397c57207671315a27173ccec790ea9c66ef030af96cbe6ac9b4a6613996"
@@ -163,7 +171,6 @@ jobs:
         with:
           base_sha: ${{ inputs.override_base_sha }}
           current_sha: ${{ inputs.override_current_sha || github.sha }}
-          bazel_config: "ci_tpu_v5_rbe"
-          extra_bazel_flags: "--test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild"
+          bazel_config: "ci_rbe_presubmit"
           test_all: ${{ contains(github.event.pull_request.labels.*.name, 'ci:disable-bazel-diff') }}
 

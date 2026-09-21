@@ -377,20 +377,24 @@ common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
 common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/presubmit.yml
-# Connects to Buildbarn across projects via Private Service Connect (PSC)
-common:ci_tpu_v5_rbe --config=rbe_native_tpu
-common:ci_tpu_v5_rbe --remote_executor=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_rbe --remote_cache=grpc://rbe.torchtpu.internal:8980
-common:ci_tpu_v5_rbe --build_tests_only
-common:ci_tpu_v5_rbe --color=yes
-common:ci_tpu_v5_rbe --curses=no
-common:ci_tpu_v5_rbe --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8,requires-tpu-v5p,requires-tpu-v5p:4,requires-tpu-v6e,requires-tpu-v7x,requires-tpu-v7x:4
-common:ci_tpu_v5_rbe --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild
-test:ci_tpu_v5_rbe --test_output=errors
-
-# Backward-compatibility alias
-common:ci_tpu_v5_full_rbe --config=ci_tpu_v5_rbe
-test:ci_tpu_v5_full_rbe --config=ci_tpu_v5_rbe
+# Connects to Buildbarn across projects via Private Service Connect (PSC).
+#
+# The Buildbarn pool is v5e only, so both filters drop v5p, v6e and v7x. When
+# other generations join the pool, widen these two lines - the job, the config
+# name and the workflow stay as they are.
+common:ci_rbe_presubmit --config=rbe_native_tpu
+# 10.202.0.67 is the PSC endpoint in the runner's VPC, a reserved static
+# internal address. It is an IP and not a name on purpose: the forwarding rule
+# registers no DNS zone, so there is nothing to resolve. If the address ever
+# changes, these two lines are the only place it appears.
+common:ci_rbe_presubmit --remote_executor=grpc://10.202.0.67:8980
+common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
+common:ci_rbe_presubmit --build_tests_only
+common:ci_rbe_presubmit --color=yes
+common:ci_rbe_presubmit --curses=no
+common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
+common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
+test:ci_rbe_presubmit --test_output=errors
 
 # Runs on linux-x86-ct6e-180-8tpu.
 common:ci_tpu_v6 --config=ci_tpu_base
