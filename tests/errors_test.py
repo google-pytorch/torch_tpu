@@ -1073,6 +1073,12 @@ class TpuVsGpuErrorTest(et.ErrorTestBase):
           tpu_dtype="int32",
           gpu_dtype="Int",
       ),
+      dict(
+          testcase_name="int64",
+          dtype=torch.int64,
+          tpu_dtype="int64",
+          gpu_dtype="Long",
+      ),
   )
   def test_mm_unsupported_dtypes(
       self, dtype: torch.dtype, tpu_dtype: str, gpu_dtype: str
