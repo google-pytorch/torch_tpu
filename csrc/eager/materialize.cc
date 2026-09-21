@@ -51,6 +51,7 @@
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_manager.h"
+#include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_builder.h"
@@ -63,6 +64,7 @@
 #include "csrc/eager/split_traversal.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
+#include "csrc/ops/op_names.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
 #include "xla/future.h"
@@ -310,6 +312,19 @@ MaterializationStages ApplySplitMode(
                            post_split_traversals, result.first_error);
     }
     std::swap(traversals, post_split_traversals);
+  }
+
+  if (torch_tpu::GetBooleanEnvOnce<kTorchTpuInternalSkinnyScOffloadEnvVar>()
+          .value_or(false)) {
+    for (auto& traversal : traversals) {
+      if (traversal->core_pinning_mode() == CorePinningMode::kUnpinned &&
+          traversal->execution_order().size() == 1) {
+        auto deferred_op = traversal->execution_order()[0]->deferred_op();
+        if (deferred_op != nullptr && IsDistributedOp(deferred_op->op_name())) {
+          traversal->SetCorePinningMode(CorePinningMode::kSparseCore);
+        }
+      }
+    }
   }
 
   result.execution_tasks.reserve(traversals.size());

@@ -153,6 +153,12 @@ inline constexpr char kTorchTpuInternalHandshakeTimeoutSEnvVar[] =
 // not expected. Default is "true".
 inline constexpr char kTorchTpuInternalMaterializeCollectiveTensorsEnvVar[] =
     "TORCH_TPU_INTERNAL_MATERIALIZE_COLLECTIVE_TENSORS";
+// If set to "1", all traversals which contain exactly one distributed operation
+// (a "skinny collective") will be automatically pinned to the SparseCore.
+// This will not override manually specified stream pinning.
+// Default is "0", meaning that skinny collectives are not automatically pinned.
+inline constexpr char kTorchTpuInternalSkinnyScOffloadEnvVar[] =
+    "TORCH_TPU_INTERNAL_SKINNY_SC_OFFLOAD";
 // If set to "1", forces the RNG state update to be isolated into a separate
 // compilation unit.
 // This may degrade performance, but improves error recovery due to failed
@@ -317,6 +323,7 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuInternalHandshakeTimeoutSEnvVar, std::nullopt},
         {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
          SymbolStage::InternalApi()},
+        {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalSplitRngStateUpdate, SymbolStage::InternalApi()},
         {kTorchTpuInternalTier3CompilationCacheLocalBackupTaskEnvVar,
          SymbolStage::InternalApi()},
