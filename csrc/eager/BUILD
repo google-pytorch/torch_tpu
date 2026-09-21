@@ -940,6 +940,7 @@ torch_tpu_cc_library(
         "@tsl//tsl/platform:path",
         "@tsl//tsl/profiler/lib:traceme",
         "@xla//xla:shape_util",
+        "@xla//xla:side_effect_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/client:executable_build_options",
         "@xla//xla/service:device_assignment",

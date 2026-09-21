@@ -62,6 +62,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -85,6 +86,7 @@
 #include "xla/service/device_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/side_effect_util.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {
@@ -556,10 +558,6 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
     mlir::MLIRContext& mlir_context, bool use_stablehlo_bounds,
     absl::Span<const int64_t> donated_inputs,
     std::optional<std::string_view> module_name) const {
-  TT_RET_CHECK(  // ERROR_COV_INFEASIBLE=temporary
-      core_pinning_mode_ == CorePinningMode::kUnpinned,
-      error::kPythonNotImplementedError)
-      << "core pinning MLIR lowering is not yet implemented";
   // Read the traversal's values.
   absl::Span<const DeviceBufferRef> arguments = this->arguments();
   absl::Span<const SharedDeviceBufferList> execution_order =
@@ -681,8 +679,21 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> Traversal::BuildMlirModule(
   if (!donated_arguments.empty()) {
     AnnotateBufferDonations(module.get(), donated_arguments);
   }
-
   AnnotateMlirPlacements(module.get(), outputs, arguments);
+  if (core_pinning_mode_ != CorePinningMode::kUnpinned) {
+    auto op_builder = mlir::OpBuilder(module.get());
+    std::vector<mlir::NamedAttribute> frontend_attrs;
+    frontend_attrs.reserve(1);
+    auto string_attr = op_builder.getStringAttr(
+        core_pinning_mode_ == CorePinningMode::kSparseCore
+            ? xla::kXlaComputeTypeSparseOffload
+            : xla::kXlaComputeTypeDense);
+    frontend_attrs.push_back(
+        op_builder.getNamedAttr(xla::kXlaComputeTypeAttr, string_attr));
+
+    module.get()->setAttr("mhlo.frontend_attributes",
+                          op_builder.getDictionaryAttr(frontend_attrs));
+  }
   return module;
 }
 

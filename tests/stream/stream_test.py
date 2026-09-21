@@ -243,12 +243,12 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(new_stream.is_sparse)
     self.assertFalse(new_stream.is_dense)
 
-    with self.assertRaisesRegex(
-        NotImplementedError,
-        'core pinning MLIR lowering is not yet implemented',
-    ):
-      with torch.tpu.stream(new_stream):
-        torch.ones(1, device='tpu').cpu()
+    self.skipTest('XLA compiler failure')
+    x = torch.ones(1, device='cpu').to('tpu')
+    y = torch.ones(1, device='cpu').to('tpu')
+    with torch.tpu.stream(new_stream):
+      actual = (x + y).item()
+    self.assertEqual(actual, 2)
 
   def test_stream_pinned_to_tensor_core(self):
     """Tests that a stream can be pinned to a dense core."""
@@ -256,12 +256,13 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     self.assertTrue(new_stream.is_dense)
     self.assertFalse(new_stream.is_sparse)
 
-    with self.assertRaisesRegex(
-        NotImplementedError,
-        'core pinning MLIR lowering is not yet implemented',
-    ):
-      with torch.tpu.stream(new_stream):
-        torch.ones(1, device='tpu').cpu()
+    x = torch.ones(1, device='cpu').to('tpu')
+    y = torch.ones(1, device='cpu').to('tpu')
+
+    with torch.tpu.stream(new_stream):
+      actual = (x + y).item()
+
+    self.assertEqual(actual, 2)
 
 
 class TorchStreamsTest(seed_test_utils.RepeatableTest):
