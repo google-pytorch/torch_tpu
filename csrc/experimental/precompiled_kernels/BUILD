@@ -101,31 +101,49 @@ torch_tpu_cc_test(
     ],
 )
 
-torch_tpu_cc_test(
-    name = "nonzero_indices_test",
+[torch_tpu_cc_test(
+    name = "nonzero_indices_test_" + gen,
     srcs = ["nonzero_indices_test.cc"],
+    data = ["testdata/nonzero_xla_baseline_" + gen + ".csv"],
+    nopresubmit = nopresubmit,
     notest_oss = "Requires libtpu >= 0.0.48 with operand_to_metadata support",
-    tags = ["requires-tpu-v5p"],
+    tags = [chip],
     deps = [
         ":kernel_test_utils",
         ":mosaic_custom_call",
         ":nonzero_indices",
+        "//csrc/common:compilation",
         "//csrc/common:error_utils",
         "//csrc/common:oss_test_main",
         "//csrc/common:status_test_utils",
         "//csrc/internal/mosaic:op_builders",
+        "//csrc/ops/nonzero",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/time",
+        "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
+        "@stablehlo//:mlir_builder",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_layout",
         "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/service:computation_layout",
         "@xla//xla/service:hlo_runner",
         "@xla//xla/service:hlo_runner_interface",
     ],
-)
+) for gen, chip, nopresubmit in [
+    ("v5", "requires-tpu-v5p", None),
+    ("v6", "requires-tpu-v6e", "Avoid long Forge queue."),
+    ("v7", "requires-tpu-v7x", "Avoid long Forge queue."),
+]]
 
 torch_tpu_package_end()
