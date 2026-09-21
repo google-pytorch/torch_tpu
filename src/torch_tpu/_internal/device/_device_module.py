@@ -514,13 +514,8 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _lazy_init(cls) -> None:
-    """Initialization method to satisfy PyTorch's PrivateUse1 requirements."""
-    if cls._is_in_bad_fork():
-      raise RuntimeError(
-          "cannot access or re-initialize TPU in a forked subprocess. "
-          "To use TPU with multiprocessing, you must use the 'spawn' start"
-          " method"
-      )
+    """No-op initialization method to satisfy PyTorch's PrivateUse1 requirements."""
+    pass
 
   @classmethod
   def _is_in_bad_fork(cls) -> bool:
@@ -597,12 +592,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       cls,
   ):
     """Initializes the TPU runtime options."""
-    if cls._is_in_bad_fork():
-      raise RuntimeError(
-          "cannot access or re-initialize TPU in a forked subprocess. "
-          "To use TPU with multiprocessing, you must use the 'spawn' start"
-          " method"
-      )
     if not cls.is_initialized():
       _device_ops_backend._init_runtime_options(cls._device_type)  # pylint: disable=protected-access
       if not hasattr(cls, "_atexit_registered"):
@@ -771,8 +760,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
 
   @classmethod
   def _shutdown_runtime(cls):
-    if cls._is_in_bad_fork():
-      return
     if cls.is_initialized():
       if torch.distributed.is_available():
         if torch.distributed.is_initialized():

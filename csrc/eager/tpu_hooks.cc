@@ -134,7 +134,6 @@ c10::DeviceType TpuDeviceGuardImpl::type() const {
 }
 
 void TpuDeviceGuardImpl::ValidateDevice(c10::Device d) const {
-  TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
   // This error message should not be hit; if the device is not tpu, then it
   // should fail before calling this DeviceGuardImpl (such as in the
   // torch.accelerator submodule).
@@ -286,9 +285,7 @@ struct TORCH_API TpuHooksInterface : public at::PrivateUse1HooksInterface {
     return GetDefaultDeviceGenerator(device_index);
   }
 
-  void init() const override {
-    TT_THROW_IF_ERROR(PjrtBackend::GetInstance().EnsureInitialized());
-  }
+  void init() const override {}
 
   at::Generator getNewGenerator(c10::DeviceIndex device_index) const override {
     return MakeDeviceGenerator(device_index);

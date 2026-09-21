@@ -14,7 +14,6 @@
 
 """Tests error handling on TPU only."""
 
-import multiprocessing
 import re
 from typing import Any, TypeAlias
 from unittest import mock
@@ -4715,30 +4714,6 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
         ):
           with self.assertRaises(type(exc)):
             pallas.get_default_pallas_mesh()
-
-
-class ForkErrorsTest(et.TpuOnlyErrorTestBase):
-
-  @et.why_tpu_only("Testing bad fork fail-fast RuntimeError on TPU.")
-  def test_bad_fork_lazy_init_error(self):
-    # Ensure TPU runtime is initialized in parent.
-    _ = torch.zeros(1, device="tpu")
-    ctx = multiprocessing.get_context("fork")
-
-    def worker():
-      msg = (
-          "cannot access or re-initialize TPU in a forked subprocess. To use"
-          " TPU with multiprocessing, you must use the 'spawn' start method"
-      )
-      with et.assert_raises_message(RuntimeError, tpu=msg):
-        torch.tpu._lazy_init()
-      with et.assert_raises_message(RuntimeError, tpu=f"empty(): {msg}"):
-        torch.zeros(1, device="tpu")
-
-    proc = ctx.Process(target=worker)
-    proc.start()
-    proc.join(timeout=30)
-    self.assertEqual(proc.exitcode, 0)
 
 
 if __name__ == "__main__":
