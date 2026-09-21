@@ -19,12 +19,14 @@ import asyncio
 import collections.abc
 from collections.abc import Collection
 import concurrent.futures
+import contextlib
 import dataclasses
 import functools
 import json
 import queue
 import struct
 import threading
+import time
 from typing import Any, Coroutine, Final, TypeVar, cast
 
 from absl import logging
@@ -38,7 +40,6 @@ from zmq import error
 import zmq.asyncio
 
 ZMQError = error.ZMQError
-Again = error.Again
 
 unset_fake_temporarily = fake_tensor.unset_fake_temporarily
 _T = TypeVar("_T")
@@ -821,6 +822,25 @@ def _validate_port_number(port: int) -> None:
     ) from e
 
 
+@contextlib.contextmanager
+def _log_zmq_duration_if_exception(
+    op_name: str, timeout_s: float | None
+) -> collections.abc.Iterator[None]:
+  """Logs the duration of a ZMQ operation if it raises a ZMQError."""
+  start_time = time.monotonic()
+  try:
+    yield
+  except ZMQError:
+    elapsed_s = time.monotonic() - start_time
+    logging.exception(
+        "%s failed after %.3fs (timeout_s=%s)",
+        op_name,
+        elapsed_s,
+        timeout_s,
+    )
+    raise
+
+
 class _ZMQServer:
   """Handles PyZMQ ROUTER socket network communication for _HandshakeServer.
 
@@ -870,6 +890,8 @@ class _ZMQServer:
     """
     _validate_port_number(port)
     self._port = port
+    self._send_timeout_s = send_timeout_s
+    self._recv_timeout_s = recv_timeout_s
     self._context = zmq.asyncio.Context()
     self._socket = self._context.socket(zmq.ROUTER)
     # If a new client connects to the server with the same routing ID we route
@@ -892,7 +914,10 @@ class _ZMQServer:
 
   async def recv_request(self) -> _CollectiveHandshakeRequestZMQEnvelope | None:
     """Receives a raw PyZMQ request and returns a _CollectiveHandshakeRequestZMQEnvelope."""
-    frames = await self._socket.recv_multipart()
+    with _log_zmq_duration_if_exception(
+        "ZMQServer.recv_request", self._recv_timeout_s
+    ):
+      frames = await self._socket.recv_multipart()
     if len(frames) != 2:
       logging.warning(
           "ZMQServer expected 2 frames [client_id, payload], got %d frames."
@@ -912,7 +937,10 @@ class _ZMQServer:
       self, client_id: bytes, response: CollectiveHandshakeResponse
   ) -> None:
     """Sends a PyZMQ multipart reply [client_id, serialized_response] to a client rank."""
-    await self._socket.send_multipart([client_id, response.to_bytes()])
+    with _log_zmq_duration_if_exception(
+        "ZMQServer.send_reply", self._send_timeout_s
+    ):
+      await self._socket.send_multipart([client_id, response.to_bytes()])
 
   def close(self) -> None:
     """Closes the server socket and terminates the ZMQ context.
@@ -1035,7 +1063,6 @@ class _HandshakeServer(_HandshakeBackend):
     """Continuously receives requests and passes them to the consensus queues.
 
     Raises:
-      Again: If socket receive times out while server is active.
       ZMQError: If socket encounters an error while server is active.
     """
     while True:
@@ -1049,11 +1076,6 @@ class _HandshakeServer(_HandshakeBackend):
       except asyncio.CancelledError:
         logging.info("_HandshakeServer _listen_loop cancelled.")
         raise
-      except Again as e:
-        logging.exception(
-            "Socket error in _HandshakeServer _listen_loop: %s", e
-        )
-        raise e
 
   def _check_loop_task_errors(self) -> None:
     """Checks if any background loop task failed and raises the exception.
@@ -1203,11 +1225,6 @@ class _HandshakeServer(_HandshakeBackend):
       except asyncio.CancelledError:
         logging.info("_HandshakeServer _consensus_loop cancelled.")
         raise
-      except Again as e:
-        logging.debug(
-            "Timeout expired in _HandshakeServer _consensus_loop: %s", e
-        )
-        raise e
 
   def close(self) -> None:
     """Closes server sockets, background tasks, and event loop thread.
@@ -1281,6 +1298,8 @@ class _ZMQClient:
     """
     _validate_port_number(port)
     self._port = port
+    self._send_timeout_s = send_timeout_s
+    self._recv_timeout_s = recv_timeout_s
     self._master_addr = (
         master_addr
         if master_addr is not None
@@ -1315,11 +1334,14 @@ class _ZMQClient:
 
   def send(self, request: CollectiveHandshakeRequest) -> None:
     """Sends serialized request synchronously to the server via PyZMQ socket."""
-    self._socket.send(request.to_bytes())
+    with _log_zmq_duration_if_exception("ZMQClient.send", self._send_timeout_s):
+      self._socket.send(request.to_bytes())
 
   def recv(self) -> CollectiveHandshakeResponse:
     """Receives response synchronously from the server via PyZMQ socket."""
-    return CollectiveHandshakeResponse.from_bytes(self._socket.recv())
+    with _log_zmq_duration_if_exception("ZMQClient.recv", self._recv_timeout_s):
+      payload = self._socket.recv()
+    return CollectiveHandshakeResponse.from_bytes(payload)
 
   def close(self) -> None:
     """Closes the client socket and terminates the ZMQ context.
