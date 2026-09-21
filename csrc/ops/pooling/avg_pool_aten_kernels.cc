@@ -93,12 +93,16 @@ absl::StatusOr<mlir::MlirOp> ScaleAvgPoolOutput(
     return scale_by_constant_divisor(divisor_override.value());
   }
 
-  // Case B: Count includes padding, so divisor is the product of window
-  // dimensions, EXCEPT when ceil_mode adds implicit padding.
-  if (count_include_pad) {
-    auto padding_attr = reduce_window_attributes.padding.getValues<int64_t>();
-    llvm::SmallVector<int64_t> padding_vals(padding_attr.begin(),
-                                            padding_attr.end());
+  // Case B: Count includes padding (or there is zero padding everywhere), so
+  // divisor is the product of window dimensions, EXCEPT when ceil_mode adds
+  // implicit padding.
+  auto padding_attr = reduce_window_attributes.padding.getValues<int64_t>();
+  llvm::SmallVector<int64_t> padding_vals(padding_attr.begin(),
+                                          padding_attr.end());
+  const bool all_zero_padding =
+      std::all_of(padding_vals.begin(), padding_vals.end(),
+                  [](int64_t p) { return p == 0; });
+  if (count_include_pad || all_zero_padding) {
     bool has_extra_padding = false;
 
     // Check for asymmetric padding (extra padding on the right added by
@@ -202,6 +206,31 @@ absl::StatusOr<mlir::MlirOp> ScaleAvgPoolOutput(
   return mlir::stablehlo::Div(dividend, divisor);
 }
 
+// Helper to check if average pooling covers the full spatial domain with zero
+// padding, resulting in an output spatial size of 1.
+bool IsGlobalPooling(const mlir::RankedTensorType& input_type,
+                     int64_t spatial_dim_count,
+                     const Dimensions& kernel_size_attr,
+                     const Dimensions& stride_attr,
+                     const Dimensions& padding_attr) {
+  if (spatial_dim_count <= 0) {
+    return false;
+  }
+  const int64_t num_dims = input_type.getRank();
+  for (int64_t i = 0; i < spatial_dim_count; ++i) {
+    if (padding_attr[i] != 0) {
+      return false;
+    }
+    const int64_t in_spatial =
+        input_type.getShape()[num_dims - spatial_dim_count + i];
+    if (in_spatial <= 0 || kernel_size_attr[i] != in_spatial ||
+        stride_attr[i] < in_spatial) {
+      return false;
+    }
+  }
+  return true;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
     mlir::MlirOp input, int64_t spatial_dim_count, Dimensions kernel_size,
     Dimensions stride, Dimensions padding, bool ceil_mode,
@@ -248,7 +277,7 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
       builder, kernel_size_attr, stride_attr, dilation_attr, ceil_padding_pairs,
       spatial_dim_count, num_dims);
 
-  // 5. Compute the avg_pool using a single ReduceWindow.
+  // 5. Compute the avg_pool using a single ReduceWindow or direct Reduce.
   mlir::MlirOp init_value = MakeScalarConstant(builder, 0, element_type);
 
   auto add_reduce_builder = [element_type](mlir::RegionBuilder& rb) {
@@ -256,15 +285,31 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
         element_type, rb.getRegion(), rb.getOpBuilder());
   };
 
-  mlir::MlirOp sum_output = mlir::stablehlo::ReduceWindow(
-      builder,
-      /*inputs=*/{batch_input},
-      /*init_values=*/{init_value},
-      /*body=*/add_reduce_builder, reduce_window_attributes.window_dimensions,
-      reduce_window_attributes.window_strides,
-      reduce_window_attributes.base_dilations,
-      reduce_window_attributes.window_dilations,
-      reduce_window_attributes.padding)[0];
+  mlir::MlirOp sum_output;
+  if (IsGlobalPooling(input_type, spatial_dim_count, kernel_size_attr,
+                      stride_attr, padding_attr)) {
+    Dimensions spatial_dims;
+    for (int i = num_dims - spatial_dim_count; i < num_dims; ++i) {
+      spatial_dims.push_back(i);
+    }
+    sum_output = mlir::stablehlo::Reduce(builder, {batch_input}, {init_value},
+                                         add_reduce_builder, spatial_dims)[0];
+    Dimensions kept_shape = CopyIntVector(input_type.getShape());
+    for (int d : spatial_dims) {
+      kept_shape[d] = 1;
+    }
+    sum_output = mlir::stablehlo::Reshape(sum_output, kept_shape);
+  } else {
+    sum_output = mlir::stablehlo::ReduceWindow(
+        builder,
+        /*inputs=*/{batch_input},
+        /*init_values=*/{init_value},
+        /*body=*/add_reduce_builder, reduce_window_attributes.window_dimensions,
+        reduce_window_attributes.window_strides,
+        reduce_window_attributes.base_dilations,
+        reduce_window_attributes.window_dilations,
+        reduce_window_attributes.padding)[0];
+  }
 
   TT_ASSIGN_OR_RETURN(
       auto final_output,
@@ -364,6 +409,19 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
                       ScaleAvgPoolOutput(batch_grad_output, input_type,
                                          reduce_window_attributes,
                                          count_include_pad, divisor_override));
+
+  // If global pooling covering the full spatial domain with zero padding,
+  // bypass the transposed convolution simulation and directly broadcast
+  // normalized_grad_output to input_type.
+  if (IsGlobalPooling(input_type, spatial_dim_count, kernel_size_attr,
+                      stride_attr, padding_attr)) {
+    Dimensions bcast_dims(num_dims);
+    std::iota(bcast_dims.begin(), bcast_dims.end(), 0);
+    auto bcast_op = mlir::stablehlo::BroadcastInDim(
+        input_type, normalized_grad_output, bcast_dims);
+    return RemoveTrivialBatch(bcast_op, batch_input_info.original_dim_size,
+                              spatial_dim_count);
+  }
 
   // 6. Perform transposed convolution with interior/edge padding
   auto bw_window_dimensions = reduce_window_attributes.window_dimensions;

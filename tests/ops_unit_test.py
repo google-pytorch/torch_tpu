@@ -10633,6 +10633,109 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute, allow_failure=allow_failure)
 
+  def test_global_avg_pool2d(self):
+    """Tests global avg_pool2d forward and backward across configurations:
+
+    - Multiple batch sizes (unbatched, 1, 2, 4)
+    - Multiple channels (1, 3, 16)
+    - Multiple spatial sizes (7x7, 14x14, 8x12)
+    - Multiple dtypes (torch.float32, torch.bfloat16)
+    - Various stride combinations (None, equal to spatial, larger than spatial)
+    - count_include_pad (True, False)
+    - divisor_override (None, explicit divisor)
+    Checks both forward outputs and autograd backward gradients against CPU
+    reference using torch.allclose.
+    """
+    torch.manual_seed(42)
+
+    test_configs = [
+        # (shape, kernel_size, stride, count_include_pad, divisor_override)
+        # Batched 7x7
+        ((2, 3, 7, 7), (7, 7), None, True, None),
+        ((1, 16, 7, 7), (7, 7), (7, 7), False, None),
+        ((4, 1, 7, 7), (7, 7), (8, 8), True, None),
+        ((2, 3, 7, 7), (7, 7), None, True, 10),
+        # Batched 14x14
+        ((2, 16, 14, 14), (14, 14), None, True, None),
+        ((1, 3, 14, 14), (14, 14), (14, 14), False, None),
+        ((2, 1, 14, 14), (14, 14), (15, 16), False, 15),
+        # Rectangular spatial size
+        ((2, 4, 8, 12), (8, 12), None, True, None),
+        ((1, 3, 8, 12), (8, 12), (10, 15), False, None),
+        # Unbatched (C, H, W)
+        ((3, 7, 7), (7, 7), None, True, None),
+        ((16, 14, 14), (14, 14), (14, 14), True, None),
+        ((1, 8, 12), (8, 12), (8, 12), False, 5),
+    ]
+
+    for dtype in [torch.float32, torch.bfloat16]:
+      atol = 1e-2 if dtype == torch.bfloat16 else 1e-5
+      rtol = 1e-2 if dtype == torch.bfloat16 else 1e-5
+
+      for (
+          shape,
+          kernel_size,
+          stride,
+          count_include_pad,
+          divisor_override,
+      ) in test_configs:
+        x_val = torch.randn(shape, dtype=dtype)
+        out_shape = shape[:-2] + (1, 1)
+        grad_out_val = torch.randn(out_shape, dtype=dtype)
+
+        # 1. CPU reference execution
+        x_cpu = x_val.detach().clone().to("cpu").requires_grad_(True)
+        kwargs = {
+            "kernel_size": kernel_size,
+            "padding": 0,
+            "count_include_pad": count_include_pad,
+        }
+        if stride is not None:
+          kwargs["stride"] = stride
+        if divisor_override is not None:
+          kwargs["divisor_override"] = divisor_override
+
+        out_cpu = torch.nn.functional.avg_pool2d(x_cpu, **kwargs)
+        out_cpu.backward(grad_out_val.to("cpu"))
+
+        # 2. TPU execution
+        x_tpu = x_val.detach().clone().to("tpu").requires_grad_(True)
+        out_tpu = torch.nn.functional.avg_pool2d(x_tpu, **kwargs)
+        out_tpu.backward(grad_out_val.to("tpu"))
+
+        # 3. Compare forward and backward using torch.allclose
+        self.assertTrue(
+            torch.allclose(out_tpu.cpu(), out_cpu, atol=atol, rtol=rtol),
+            f"Forward mismatch for shape={shape}, dtype={dtype}, "
+            f"kernel_size={kernel_size}, stride={stride}, "
+            f"count_include_pad={count_include_pad}, "
+            f"divisor_override={divisor_override}",
+        )
+        self.assertTrue(
+            torch.allclose(x_tpu.grad.cpu(), x_cpu.grad, atol=atol, rtol=rtol),
+            f"Backward gradient mismatch for shape={shape}, dtype={dtype}, "
+            f"kernel_size={kernel_size}, stride={stride}, "
+            f"count_include_pad={count_include_pad}, "
+            f"divisor_override={divisor_override}",
+        )
+
+        # Also explicitly verify that adaptive_avg_pool2d((1, 1)) produces
+        # identical results via delegation
+        if stride is None and count_include_pad and divisor_override is None:
+          x_tpu_ad = x_val.detach().clone().to("tpu").requires_grad_(True)
+          out_tpu_ad = torch.nn.functional.adaptive_avg_pool2d(x_tpu_ad, (1, 1))
+          out_tpu_ad.backward(grad_out_val.to("tpu"))
+          self.assertTrue(
+              torch.allclose(out_tpu_ad.cpu(), out_cpu, atol=atol, rtol=rtol),
+              f"Adaptive forward mismatch for shape={shape}, dtype={dtype}",
+          )
+          self.assertTrue(
+              torch.allclose(
+                  x_tpu_ad.grad.cpu(), x_cpu.grad, atol=atol, rtol=rtol
+              ),
+              f"Adaptive backward mismatch for shape={shape}, dtype={dtype}",
+          )
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""
