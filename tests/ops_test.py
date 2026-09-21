@@ -2240,14 +2240,13 @@ class TestOps(op_testing.OpInfoTestBase):
   def test_avg_pool3d(self):
     self.do_test_op(
         "nn.functional.avg_pool3d",
-        # TODO: GPU does not support integral, complex,
-        # `bfloat16` and `float16` dtypes.
+        # TODO: GPU does not support integral, complex, and `float16` dtypes.
         exclude_dtypes={
             "cpu": (torch.int64,),
             "gpu": (
                 (torch.uint8, torch.int8, torch.int16)
                 + COMPLEX_DTYPES
-                + (torch.bfloat16, torch.float16)
+                + (torch.float16,)
             ),
         },
     )

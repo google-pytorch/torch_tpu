@@ -22,6 +22,7 @@
 #include <numeric>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
@@ -56,6 +57,12 @@
 
 namespace torch_tpu {
 namespace {
+
+// Number of spatial dimensions (D, H, W) for 3D average pooling.
+// For 3D average pooling, reduced-precision floating-point inputs (e.g.,
+// bfloat16) are promoted to f32 during window reduction and division to match
+// CUDA's float accumulator precision (`acc_type<scalar_t, true>`).
+constexpr int64_t k3dSpatialDimCount = 3;
 
 // Scales the output of the pooling reduction (sum) by the divisor.
 //
@@ -206,6 +213,12 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
     mlir::MlirOp input, int64_t spatial_dim_count, Dimensions kernel_size,
     Dimensions stride, Dimensions padding, bool ceil_mode,
     bool count_include_pad, std::optional<int64_t> divisor_override) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(input);
+  if (spatial_dim_count == k3dSpatialDimCount) {
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(orig_dtype));
+    TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+  }
   auto& builder = input.getBuilder();
 
   // 1. Create a batch input by normalizing the input tensor
@@ -271,7 +284,12 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
       ScaleAvgPoolOutput(sum_output, input_type, reduce_window_attributes,
                          count_include_pad, divisor_override));
 
-  return RemoveTrivialBatch(final_output, original_dim_size, spatial_dim_count);
+  auto result =
+      RemoveTrivialBatch(final_output, original_dim_size, spatial_dim_count);
+  if (spatial_dim_count == k3dSpatialDimCount) {
+    return CastIfNeeded(result, orig_dtype);
+  }
+  return result;
 }
 
 // Mathematically, average pooling is a linear transformation that can be
@@ -315,11 +333,63 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolShlo(
 //    padded input. We must slice this result to remove the regions
 //    corresponding to the forward padding, returning a tensor matching
 //    the original input shape.
+mlir::MlirOp SliceBackwardResult(
+    mlir::MlirOp full_conv_result, mlir::MlirOp init_value,
+    const mlir::RankedTensorType& input_type,
+    const std::vector<PaddingParams>& ceil_padding_pairs, int64_t num_dims,
+    int64_t spatial_dim_count) {
+  Dimensions start_indices(num_dims, 0);
+  Dimensions limit_indices(num_dims, 0);
+  Dimensions slice_strides(num_dims, 1);
+
+  const auto conv_shape = GetTensorTypeOrDie(full_conv_result).getShape();
+  Dimensions result_pad_high(num_dims, 0);
+  bool needs_padding = false;
+
+  for (int i = 0; i < num_dims; ++i) {
+    if (i < num_dims - spatial_dim_count) {  // Batch/Channel dims
+      start_indices[i] = 0;
+      limit_indices[i] = input_type.getShape()[i];
+    } else {  // Spatial dims
+      const int spatial_idx = i - (num_dims - spatial_dim_count);
+      const int64_t fwd_pad_low = ceil_padding_pairs[spatial_idx].left;
+      start_indices[i] = fwd_pad_low;
+      limit_indices[i] = fwd_pad_low + input_type.getShape()[i];
+
+      // If the limit is out of bounds, we need to pad the result.
+      if (limit_indices[i] > conv_shape[i]) {
+        result_pad_high[i] = limit_indices[i] - conv_shape[i];
+        needs_padding = true;
+      }
+    }
+  }
+
+  mlir::MlirOp slicable_result = full_conv_result;
+  if (needs_padding) {
+    // Pad the high dimension to accommodate the slice limit
+    slicable_result =
+        mlir::stablehlo::Pad(full_conv_result, init_value,
+                             /*low=*/Dimensions(num_dims, 0),
+                             /*high=*/result_pad_high,
+                             /*interior=*/Dimensions(num_dims, 0));
+  }
+
+  return mlir::stablehlo::Slice(slicable_result, start_indices, limit_indices,
+                                slice_strides);
+}
+
 absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp input, int64_t spatial_dim_count,
     const Dimensions& kernel_size, const Dimensions& stride,
     const Dimensions& padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override) {
+  const mlir::ElementType orig_dtype = GetElementTypeOrDie(grad_output);
+  if (spatial_dim_count == k3dSpatialDimCount) {
+    TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
+                        InferComputationDtype(orig_dtype));
+    TT_ASSIGN_OR_RETURN(grad_output, CastIfNeeded(grad_output, compute_dtype));
+    TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+  }
   auto& builder = grad_output.getBuilder();
 
   // 1. Create batch inputs for both input and grad_output
@@ -412,51 +482,16 @@ absl::StatusOr<mlir::MlirOp> BuildAvgPoolBackwardShlo(
           bw_padding_flat))[0];
 
   // 7. Slice out the region corresponding to the original input shape
-  // The 'full_conv_result' represents the reconstructed gradients.
-  // Due to stride > 1 or ceil_mode, its size might be smaller than the required
-  // range [pad_low, pad_low + input_size). We must check dimensions and PAD the
-  // result if necessary before slicing.
-  Dimensions start_indices(num_dims, 0);
-  Dimensions limit_indices(num_dims, 0);
-  Dimensions slice_strides(num_dims, 1);
+  auto sliced_grad =
+      SliceBackwardResult(full_conv_result, init_value, input_type,
+                          ceil_padding_pairs, num_dims, spatial_dim_count);
 
-  const auto conv_shape = GetTensorTypeOrDie(full_conv_result).getShape();
-  Dimensions result_pad_high(num_dims, 0);
-  bool needs_padding = false;
-
-  for (int i = 0; i < num_dims; ++i) {
-    if (i < num_dims - spatial_dim_count) {  // Batch/Channel dims
-      start_indices[i] = 0;
-      limit_indices[i] = input_type.getShape()[i];
-    } else {  // Spatial dims
-      int spatial_idx = i - (num_dims - spatial_dim_count);
-      int64_t fwd_pad_low = ceil_padding_pairs[spatial_idx].left;
-      start_indices[i] = fwd_pad_low;
-      limit_indices[i] = fwd_pad_low + input_type.getShape()[i];
-
-      // If the limit is out of bounds, we need to pad the result.
-      if (limit_indices[i] > conv_shape[i]) {
-        result_pad_high[i] = limit_indices[i] - conv_shape[i];
-        needs_padding = true;
-      }
-    }
+  auto result = RemoveTrivialBatch(
+      sliced_grad, batch_input_info.original_dim_size, spatial_dim_count);
+  if (spatial_dim_count == k3dSpatialDimCount) {
+    return CastIfNeeded(result, orig_dtype);
   }
-
-  mlir::MlirOp slicable_result = full_conv_result;
-  if (needs_padding) {
-    // Pad the high dimension to accommodate the slice limit
-    slicable_result =
-        mlir::stablehlo::Pad(full_conv_result, init_value,
-                             /*low=*/Dimensions(num_dims, 0),
-                             /*high=*/result_pad_high,
-                             /*interior=*/Dimensions(num_dims, 0));
-  }
-
-  auto sliced_grad = mlir::stablehlo::Slice(slicable_result, start_indices,
-                                            limit_indices, slice_strides);
-
-  return RemoveTrivialBatch(sliced_grad, batch_input_info.original_dim_size,
-                            spatial_dim_count);
+  return result;
 }
 
 auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
@@ -647,7 +682,6 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
                            self.scalar_type() != at::ScalarType::Short &&
                            self.scalar_type() != at::ScalarType::Int &&
                            self.scalar_type() != at::ScalarType::ComplexFloat &&
-                           self.scalar_type() != at::ScalarType::BFloat16 &&
                            self.scalar_type() != at::ScalarType::Half,
                        error::kInvalidArgument)
             << "expected input dtype to be none of (bool, uint8, int8, "
@@ -658,7 +692,7 @@ at::Tensor& AtenAvgPool3dOut(const at::Tensor& self,
             auto result,
             BuildAvgPoolOutNd(self, kernel_size, stride, padding, ceil_mode,
                               count_include_pad, divisor_override, out,
-                              /*spatial_dim_count=*/3, std::move(param_keys)));
+                              k3dSpatialDimCount, std::move(param_keys)));
         return out;
       });
 }
@@ -688,18 +722,17 @@ at::Tensor& AtenAvgPool3dBackwardGradInput(
     at::IntArrayRef kernel_size, at::IntArrayRef stride,
     at::IntArrayRef padding, bool ceil_mode, bool count_include_pad,
     std::optional<int64_t> divisor_override, at::Tensor& grad_input) {
-  TT_KERNEL(
-      OpName::kAvgPool3dBackwardGradInput, param_keys,
-      (grad_output, self, kernel_size, stride, padding, ceil_mode,
-       count_include_pad, divisor_override, grad_input),
-      {
-        TT_ASSIGN_OR_THROW(
-            auto result,
-            BuildAvgPoolBackwardGradInputNd(
-                grad_output, self, kernel_size, stride, padding, ceil_mode,
-                count_include_pad, divisor_override, grad_input,
-                /*spatial_dim_count=*/3, std::move(param_keys)));
-        return grad_input;
-      });
+  TT_KERNEL(OpName::kAvgPool3dBackwardGradInput, param_keys,
+            (grad_output, self, kernel_size, stride, padding, ceil_mode,
+             count_include_pad, divisor_override, grad_input),
+            {
+              TT_ASSIGN_OR_THROW(
+                  auto result,
+                  BuildAvgPoolBackwardGradInputNd(
+                      grad_output, self, kernel_size, stride, padding,
+                      ceil_mode, count_include_pad, divisor_override,
+                      grad_input, k3dSpatialDimCount, std::move(param_keys)));
+              return grad_input;
+            });
 }
 }  // namespace torch_tpu

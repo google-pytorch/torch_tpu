@@ -3814,13 +3814,10 @@ Device-side assertion tracking was not enabled by user.""",
   def test_avg_pool3d_unsupported_dtypes(self):
     if et.is_on_gpu():
       # On TPU, avg_pool3d raises RuntimeError for unsupported dtypes
-      # (bool, bfloat16, float16). On GPU, CUDA natively supports 3D
+      # (bool, float16). On GPU, CUDA natively supports 3D
       # average pooling for float16 and bfloat16 without error.
       self.skipTest("GPU behavior difference")
     t_bool = torch.zeros((1, 1, 4, 4, 4), device=et.device(), dtype=torch.bool)
-    t_bf16 = torch.zeros(
-        (1, 1, 4, 4, 4), device=et.device(), dtype=torch.bfloat16
-    )
     t_f16 = torch.zeros(
         (1, 1, 4, 4, 4), device=et.device(), dtype=torch.float16
     )
@@ -3844,13 +3841,6 @@ Device-side assertion tracking was not enabled by user.""",
         gpu=""""avg_pool3d_out_cuda" not implemented for 'Bool'""",
     ):
       torch.nn.functional.avg_pool3d(t_bool, kernel_size=3)
-
-    with et.assert_raises_message(
-        RuntimeError,
-        tpu="""avg_pool3d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got bfloat16""",
-        gpu=""""avg_pool3d_out_cuda" not implemented for 'BFloat16'""",
-    ):
-      torch.nn.functional.avg_pool3d(t_bf16, kernel_size=3)
 
     with et.assert_raises_message(
         RuntimeError,
