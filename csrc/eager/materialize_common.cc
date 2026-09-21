@@ -49,6 +49,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/dynamism_utils.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/op_correlation.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
@@ -367,14 +368,41 @@ std::vector<Shape> GetShapesFromDeviceBuffers(
 
 }  // namespace
 
+std::vector<CorrelationId> ExecutionTask::ExtractCorrelationIds(
+    const Traversal& traversal) {
+  std::vector<CorrelationId> pt_correlation_ids;
+  absl::flat_hash_set<CorrelationId> seen;
+  for (const SharedDeviceBufferList& buffer_list :
+       traversal.execution_order()) {
+    const std::shared_ptr<DeferredOp> deferred_op = buffer_list->deferred_op();
+    if (deferred_op == nullptr) {
+      continue;
+    }
+    const CorrelationId correlation_id = deferred_op->pt_correlation_id();
+    if (correlation_id != kNoCorrelationId &&
+        seen.insert(correlation_id).second) {
+      pt_correlation_ids.push_back(correlation_id);
+    }
+  }
+  return pt_correlation_ids;
+}
+
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     absl_nonnull std::unique_ptr<Traversal> traversal,
     mlir::MLIRContext& mlir_context, CompilationSpec compilation_spec,
     std::string* absl_nullable out_mlir_text) {
-  auto compiled_traversal_or = VerifyAndCompileTraversal(
-      *traversal, mlir_context, std::move(compilation_spec), out_mlir_text);
+  // Collect the correlation IDs *first*, before anything below consumes the
+  // DeferredOps: SetAsPendingMaterialization() transitions the buffer lists and
+  // IntoParts() moves the traversal apart. Reading them afterwards silently
+  // yields an empty set, which would look exactly like "not profiling".
+  std::vector<CorrelationId> pt_correlation_ids =
+      ExtractCorrelationIds(*traversal);
+
+  absl::StatusOr<CompiledTraversal> compiled_traversal_or =
+      VerifyAndCompileTraversal(*traversal, mlir_context,
+                                std::move(compilation_spec), out_mlir_text);
   if (!compiled_traversal_or.ok()) {
-    for (const auto& output : traversal->outputs()) {
+    for (const DeviceBufferRef& output : traversal->outputs()) {
       output.device_buffer_list()->SetAsError(compiled_traversal_or.status());
     }
     return compiled_traversal_or.status();
@@ -383,7 +411,7 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   // Mark all outputs of the split as scheduled/materialized.
   ABSL_VLOG(1) << "[ExecutionTask] Setting " << traversal->outputs().size()
                << " output buffers as pending materialization";
-  for (const auto& output : traversal->outputs()) {
+  for (const DeviceBufferRef& output : traversal->outputs()) {
     TT_RETURN_IF_ERROR(
         output.device_buffer_list()->SetAsPendingMaterialization());
   }
@@ -396,14 +424,15 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
   return ExecutionTask(std::move(task_name),
                        std::move(traversal_parts.arguments),
                        std::move(traversal_parts.outputs),
-                       std::move(compiled_traversal_or->compiled_kernel));
+                       std::move(compiled_traversal_or->compiled_kernel),
+                       std::move(pt_correlation_ids));
 }
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
     SharedLoadedExecutableWithMetadata executable,
     std::vector<DeviceBufferRef> arguments,
     std::vector<DeviceBufferRef> outputs, std::string_view task_name) {
-  for (const auto& argument : arguments) {
+  for (const DeviceBufferRef& argument : arguments) {
     if (!argument.is_materializing()) {
       if (argument.is_placeholder()) {
         return TT_ERROR(error::kInternal)
@@ -411,7 +440,8 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
                   "tensor. This should never happen.\nkPlaceholder tensors "
                   "should only appear at compile time, not at execution time.\n"
                << argument.DebugString();
-      } else if (const auto deferred_op = argument.deferred_op()) {
+      } else if (const std::shared_ptr<DeferredOp> deferred_op =
+                     argument.deferred_op()) {
         return TT_ERROR(error::kInternal)
                << "argument to task " << task_name << " has deferred input op"
                << ToString(deferred_op->op_name());
@@ -433,8 +463,36 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromExecutable(
   CompiledKernel compiled_kernel{.fixed_shape_kernel = promise.get_future()};
   promise.set_value(std::move(executable));
 
+  // This path has no DeferredOps to read correlation IDs from, but that does
+  // *not* mean there is nothing to correlate: it is the path torch.compile
+  // takes, and it is invoked synchronously on the thread that is executing the
+  // compiled function. The innermost correlation ID on this thread is
+  // therefore the `Torch-Compiled Region` RecordFunction, which is the correct
+  // attribution target for compile mode -- Dynamo has already traced the
+  // individual ATen ops away, so the region is the finest-grained host identity
+  // that still exists.
+  std::vector<CorrelationId> pt_correlation_ids;
+  if (const CorrelationId correlation_id = GetCurrentOpCorrelationId();
+      correlation_id != kNoCorrelationId) {
+    pt_correlation_ids.push_back(correlation_id);
+  }
   return ExecutionTask(std::string(task_name), std::move(arguments),
-                       std::move(outputs), std::move(compiled_kernel));
+                       std::move(outputs), std::move(compiled_kernel),
+                       std::move(pt_correlation_ids));
+}
+
+ExecutionTask ExecutionTask::FromExecutableForTesting(
+    std::string_view task_name) {
+  LoadedExecutablePromise promise;
+  CompiledKernel compiled_kernel{.fixed_shape_kernel = promise.get_future()};
+  std::vector<CorrelationId> pt_correlation_ids;
+  if (const CorrelationId correlation_id = GetCurrentOpCorrelationId();
+      correlation_id != kNoCorrelationId) {
+    pt_correlation_ids.push_back(correlation_id);
+  }
+  return ExecutionTask(std::string(task_name), {}, {},
+                       std::move(compiled_kernel),
+                       std::move(pt_correlation_ids));
 }
 
 absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
@@ -465,7 +523,7 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversalWithLogging(
 }
 
 void ExecutionTask::SetOutputNodesAsError(absl::Status status) {
-  for (const auto& output : outputs_) {
+  for (const DeviceBufferRef& output : outputs_) {
     output.device_buffer_list()->SetAsError(status);
   }
 }
@@ -639,6 +697,11 @@ absl::Status ExecutionTask::SetOutputNodesAsMaterialized(
 
 absl::Status ExecutionTask::RunInternal() {
   tsl::profiler::TraceMe trace("ExecutionTask::Run");
+  // Publish this task's correlation IDs for the duration of the run. Everything
+  // below -- including the Execute() TraceMe in pjrt_utils -- runs on this
+  // thread, which is not the thread the ATen ops dispatched on, so this scope
+  // is the only way the enqueue side can learn which ops it is executing.
+  ScopedLaunchCorrelation launch_correlation(pt_correlation_ids_);
   std::string_view task_name = "anonymous";
   if (!name_.empty()) {
     task_name = name_;

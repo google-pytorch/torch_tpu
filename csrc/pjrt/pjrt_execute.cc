@@ -36,16 +36,19 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/env_vars.h"
 #include "csrc/common/error_utils.h"
+#include "csrc/common/op_correlation.h"
 #include "csrc/common/shape.h"
 #include "csrc/pjrt/pjrt_state.h"
 #include "llvm/ADT/STLExtras.h"
 #include "tsl/profiler/lib/traceme.h"
+#include "tsl/profiler/lib/traceme_encode.h"
 #include "xla/future.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -223,11 +226,53 @@ bool HloModuleContainsCollective(const xla::HloModule* hlo_module) {
 
 }  // namespace
 
+std::string FormatExecuteTraceMe() {
+  const absl::Span<const CorrelationId> correlation_ids =
+      GetCurrentLaunchCorrelationIds();
+  if (correlation_ids.empty()) {
+    return std::string("Execute");
+  }
+  // Named `pt_launch_*` rather than `pt_correlation_id` on purpose. The
+  // profiler treats a host event carrying `pt_correlation_id` as a Kineto
+  // event that xprof_callback_handler already mirrored, and skips it to avoid
+  // duplicates. Reusing that name here would silently drop the very Execute
+  // event the join depends on.
+  //
+  // `pt_launch_correlation_id` is the one we link.
+  // `pt_launch_correlation_ids` carries the whole set so that a launch fusing
+  // several ATen ops does not silently lose the others; we deliberately link
+  // only one, because attributing the same device time to every op in the
+  // fusion would inflate totals.
+  //
+  // We link `back()`, not `front()`. These IDs are not a dispatch nest:
+  // `ExecutionTask::ExtractCorrelationIds` builds the vector by walking
+  // `Traversal::execution_order()`, so it runs earliest-executed to
+  // latest-executed. `front()` is therefore the topologically first op in the
+  // fused graph, which is usually whatever allocated or materialised an
+  // input, and `back()` is the op that produces the graph's result -- the one
+  // the compiled module is named after and the one a user would call "the
+  // op".
+  //
+  // The brackets around the joined list are load-bearing, not decoration.
+  // TraceMe metadata is a comma-delimited `key=value` list, and XPlane
+  // recovers it with `ParseAnnotation`, whose `SplitPairs` breaks on every
+  // bare comma. `SplitPairs` maintains a bracket stack and ignores commas
+  // inside `[]`, so the bracketed form survives intact.
+  return tsl::profiler::TraceMeEncode(
+      "Execute", {{kLaunchCorrelationIdStat, correlation_ids.back()},
+                  {kLaunchCorrelationIdsStat,
+                   absl::StrCat("[", absl::StrJoin(correlation_ids, ","), "]")},
+                  {kLaunchOpCountStat, correlation_ids.size()}});
+}
+
 absl::StatusOr<PjRtBufferPointers> Execute(
     const SharedLoadedExecutableWithMetadata& executable,
     std::vector<xla::PjRtBuffer* absl_nullable> argument_buffers,
     absl::Span<const Shape> logical_output_shapes) {
-  tsl::profiler::TraceMe trace("Execute");
+  // Stamp the correlation IDs of the ATen ops this launch is executing onto the
+  // trace. The lambda form is deliberate -- nothing here is evaluated unless
+  // tracing is actually enabled.
+  tsl::profiler::TraceMe trace([] { return FormatExecuteTraceMe(); });
   xla::ExecuteOptions execute_options{.strict_shape_checking = true};
 
   // Ephemeral buffers created for dynamic execution (pre-allocated donated

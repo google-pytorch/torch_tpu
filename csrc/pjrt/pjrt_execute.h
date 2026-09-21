@@ -18,6 +18,7 @@
 #define TORCH_TPU_CSRC_PJRT_PJRT_EXECUTE_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "absl/base/nullability.h"
@@ -34,6 +35,11 @@ namespace torch_tpu {
 // PjRtBuffers.
 using PjRtBufferPointers =
     std::vector<absl_nonnull std::unique_ptr<xla::PjRtBuffer>>;
+
+// Formats the TraceMe annotation for a PJRT Execute() launch from the calling
+// thread's active ScopedLaunchCorrelation. Returns plain "Execute" when no
+// launch correlation IDs are active on the current thread.
+[[nodiscard]] std::string FormatExecuteTraceMe();
 
 // Launches the executable. This is a synchronous call, and will block
 // until the execution is fully enqueued (but not completed). Calls for D2H

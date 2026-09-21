@@ -17,6 +17,7 @@
 #include "csrc/pjrt/pjrt_execute.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -24,6 +25,7 @@
 
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
+#include "csrc/common/op_correlation.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/status_test_utils.h"
 #include "csrc/pjrt/pjrt_state.h"
@@ -44,6 +46,43 @@ namespace torch_tpu {
 namespace {
 
 using testing::ElementsAre;
+
+TEST(PjrtExecuteTraceMeTest, ReturnsPlainExecuteWhenNoCorrelationScopeActive) {
+  EXPECT_EQ(FormatExecuteTraceMe(), "Execute");
+}
+
+TEST(PjrtExecuteTraceMeTest, EncodesSingleLaunchCorrelationId) {
+  ScopedLaunchCorrelation launch({42});
+  EXPECT_EQ(
+      FormatExecuteTraceMe(),
+      "Execute#pt_launch_correlation_id=42,pt_launch_correlation_ids=[42],"
+      "pt_launch_op_count=1,"
+      "_src=third_party/py/torch_tpu/csrc/pjrt/pjrt_execute.cc#");
+}
+
+TEST(PjrtExecuteTraceMeTest,
+     SelectsBackCorrelationIdAndBracketsFullListForFusedOps) {
+  // In a fused traversal (e.g., empty -> mm -> relu), `back()` is the
+  // output-producing op (303) and the comma-joined list must be bracketed so
+  // XPlane's ParseAnnotation/SplitPairs does not split on inner commas.
+  ScopedLaunchCorrelation launch({101, 202, 303});
+  EXPECT_EQ(FormatExecuteTraceMe(),
+            "Execute#pt_launch_correlation_id=303,"
+            "pt_launch_correlation_ids=[101,202,303],"
+            "pt_launch_op_count=3,"
+            "_src=third_party/py/torch_tpu/csrc/pjrt/pjrt_execute.cc#");
+}
+
+TEST(PjrtExecuteTraceMeTest, EncodesNarrowedNegativeIdAboveInt32Max) {
+  const CorrelationId narrowed_id = NarrowCorrelationId(
+      static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) + 1ULL);
+  ScopedLaunchCorrelation launch({narrowed_id});
+  EXPECT_EQ(FormatExecuteTraceMe(),
+            "Execute#pt_launch_correlation_id=-2147483648,"
+            "pt_launch_correlation_ids=[-2147483648],"
+            "pt_launch_op_count=1,"
+            "_src=third_party/py/torch_tpu/csrc/pjrt/pjrt_execute.cc#");
+}
 
 class PjrtExecuteTest : public testing::Test {
  protected:
@@ -146,6 +185,7 @@ TEST_F(PjrtExecuteTest,
           /*device_layout=*/nullptr));
 
   const Shape logical_shape({2, 3}, mlir::ElementType::F32);
+  ScopedLaunchCorrelation launch_correlation({777, 888});
   TT_ASSERT_OK_AND_ASSIGN(PjRtBufferPointers outputs,
                           Execute(executable, {input_buf.get()},
                                   /*logical_output_shapes=*/{logical_shape}));
