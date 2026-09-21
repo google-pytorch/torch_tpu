@@ -161,6 +161,7 @@ struct DynamicKernelAdapter {
 // fixed_shape_kernel future will be set. For bounded dynamic kernels, both the
 // fixed_shape_kernel and dynamic_kernel_adapter will be set.
 struct CompiledKernel {
+  // TODO(b/563604764): Rename this field as it can also hold dynamic kernels.
   SharedLoadedExecutableWithMetadataFuture fixed_shape_kernel;
   std::optional<DynamicKernelAdapter> dynamic_kernel_adapter;
 };

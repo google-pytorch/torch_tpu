@@ -27,10 +27,13 @@
 #include "absl/base/nullability.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
@@ -117,6 +120,15 @@ struct BoundedDynamicCacheEntry {
   // The shape dynamism metadata required to generate the adapters around the
   // middle executable.
   ShapeDynamismMetadata shape_dynamism_metadata;
+};
+
+using CompatibilityFunc =
+    absl::AnyInvocable<bool(absl::Span<const Shape>) const>;
+struct UnboundedDynamicCacheEntry {
+  // The function to check if a shape is compatible with the cache entry.
+  CompatibilityFunc is_compatible;
+
+  CacheEntry cache_entry;
 };
 
 // Aggregated statistics for the compilation cache.
@@ -284,6 +296,12 @@ class CompilationCache {
   // executables in HBM.
   std::string HbmUsageSummary() const ABSL_LOCKS_EXCLUDED(cache_mutex_);
 
+  // Adds a pre-compiled executable entry with an associated compatibility
+  // predicate to the unbounded dynamic cache for the given shapeless key.
+  absl::Status AddUnboundedDynamicCacheEntry(
+      ShapelessKey key, SharedLoadedExecutableWithMetadata executable,
+      CompatibilityFunc is_compatible) ABSL_LOCKS_EXCLUDED(cache_mutex_);
+
  private:
   friend class CompilationCacheTestHelper;
 
@@ -341,10 +359,19 @@ class CompilationCache {
   using BoundedDynamicCache =
       absl::flat_hash_map<ShapelessKey, std::vector<BoundedDynamicCacheEntry>,
                           ShapelessKey::Hash>;
-  // Retrieves the bounded dynamic cache entries that match  this key. If the
+  using UnboundedDynamicCache =
+      absl::flat_hash_map<ShapelessKey, std::vector<UnboundedDynamicCacheEntry>,
+                          ShapelessKey::Hash>;
+  // Retrieves the bounded dynamic cache entries that match this key. If the
   // key is not found in the bounded dynamic cache, returns nullopt.
   std::optional<BoundedDynamicCache::iterator> GetBoundedDynamicCacheEntries(
       ShapelessKey shapeless_key) ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
+
+  // Retrieves a cache entry from the unbounded dynamic cache that is compatible
+  // with `shapes`. If no compatible entry is found, returns nullopt.
+  std::optional<CacheLookupInternal> GetUnboundedDynamicCacheEntry(
+      ShapelessKey key, absl::Span<const Shape> shapes) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(cache_mutex_);
 
   // Creates a cache entry in the static cache. If the key is already in the
   // static cache, it will crash.
@@ -490,6 +517,10 @@ class CompilationCache {
   // The cache of successfully compiled and in flight executables with bounded
   // dynamic shapes.
   BoundedDynamicCache bounded_dynamic_cache_ ABSL_GUARDED_BY(cache_mutex_);
+
+  // The cache of successfully compiled executables with unbounded dynamic
+  // shapes.
+  UnboundedDynamicCache unbounded_dynamic_cache_ ABSL_GUARDED_BY(cache_mutex_);
 
   // Cache statistics.
   mutable PerfStats perf_stats_ ABSL_GUARDED_BY(cache_mutex_);

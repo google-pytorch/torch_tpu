@@ -331,10 +331,11 @@ void CompilationCache::EvictAll() {
     // Release the lock here to give in-flight compilations a chance to
     // complete and update the cache.
   }
-  // Clear bounded dynamic cache entries.
+  // Clear bounded and unbounded dynamic cache entries.
   {
     absl::MutexLock lock(cache_mutex_);
     bounded_dynamic_cache_.clear();
+    unbounded_dynamic_cache_.clear();
   }
 
   ABSL_LOG(INFO) << "Compilation cache evicted.";
@@ -434,6 +435,34 @@ CompilationCache::GetBoundedDynamicCacheEntries(ShapelessKey shapeless_key) {
   return std::nullopt;
 }
 
+std::optional<CompilationCache::CacheLookupInternal>
+CompilationCache::GetUnboundedDynamicCacheEntry(
+    const ShapelessKey key, absl::Span<const Shape> shapes) const {
+  const auto it = unbounded_dynamic_cache_.find(key);
+
+  if (it == unbounded_dynamic_cache_.end()) {
+    return std::nullopt;
+  }
+
+  for (const auto& entry : it->second) {
+    if (entry.is_compatible(shapes)) {
+      perf_stats_.num_cache_hits++;
+      entry.cache_entry.stats().read_count++;
+      entry.cache_entry.stats().last_read = absl::Now();
+      ABSL_VLOG(2) << "Compilation cache UNBOUNDED DYNAMIC HIT for key: "
+                   << key;
+      const CacheEntry& cache_entry = entry.cache_entry;
+      return CacheLookupInternal{
+          .executable_promise = cache_entry.executable_promise(),
+          .executable_future = cache_entry.executable_future(),
+          .needs_compilation = false,
+          .dump_on_cache_miss = false,
+      };
+    }
+  }
+  return std::nullopt;
+}
+
 CompilationCache::CacheLookupInternal CompilationCache::AddStaticCacheEntry(
     CompilationCacheKey key) {
   const auto [entry, inserted] = executable_cache_.insert({key, CacheEntry()});
@@ -480,6 +509,19 @@ CompilationCache::AddBoundedDynamicCacheEntry(
   return cache_lookup;
 }
 
+absl::Status CompilationCache::AddUnboundedDynamicCacheEntry(
+    const ShapelessKey key, SharedLoadedExecutableWithMetadata executable,
+    CompatibilityFunc is_compatible) {
+  absl::MutexLock lock(cache_mutex_);
+  auto& entries = unbounded_dynamic_cache_[key];
+  auto& new_entry = entries.emplace_back(UnboundedDynamicCacheEntry{
+      .is_compatible = std::move(is_compatible),
+  });
+
+  new_entry.cache_entry.executable_promise()->set_value(std::move(executable));
+  return absl::OkStatus();
+}
+
 absl::StatusOr<CompilationCache::CacheLookupInternal>
 CompilationCache::GetOrCreateCacheEntry(
     CompilationCacheKey key, const std::vector<Shape>& input_shapes,
@@ -504,8 +546,15 @@ CompilationCache::GetOrCreateCacheEntry(
   ABSL_VLOG(2) << "Compilation cache STATIC MISS #"
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
-  // 2. Try to find a dynamic cache entry. We hold on to the iterator to avoid
-  // having to lookup the shapeless key again later.
+  // 2. Try to find an unbounded dynamic cache entry.
+  if (const auto cache_lookup_or = GetUnboundedDynamicCacheEntry(
+          key.graph_key().shapeless_key(), input_shapes);
+      cache_lookup_or.has_value()) {
+    return *cache_lookup_or;
+  }
+
+  // 3. Try to find a bounded dynamic cache entry. We hold on to the iterator to
+  // avoid having to look up the shapeless key again later.
   std::optional<BoundedDynamicCache::iterator> dynamic_it =
       skip_dynamic_lookup_and_compilation
           ? std::nullopt
@@ -535,7 +584,7 @@ CompilationCache::GetOrCreateCacheEntry(
          "compilation is needed for key: "
       << key;
 
-  // 3. We didn't find a compatible entry, so we need to create a new one.
+  // 4. We didn't find a compatible entry, so we need to create a new one.
   ABSL_VLOG(2) << "[TtPerf] Compilation cache MISS #"
                << perf_stats_.num_cache_misses() << " for key: " << key;
 
@@ -554,7 +603,7 @@ CompilationCache::GetOrCreateCacheEntry(
   }
 
   ABSL_VLOG(2) << "Creating a static cache entry for key: " << key;
-  // 4. Lastly, we create a static cache entry.
+  // 5. Lastly, we create a static cache entry.
   return AddStaticCacheEntry(key);
 }
 
@@ -1160,6 +1209,25 @@ std::string CompilationCache::HbmUsageSummary() const {
     }
     total_size_bytes += memory_stats->generated_code_size_in_bytes;
     num_executables++;
+  }
+  for (const auto& [key, unbounded_caches] : unbounded_dynamic_cache_) {
+    for (const UnboundedDynamicCacheEntry& entry : unbounded_caches) {
+      // No need for future readiness check as unbounded caches are always
+      // ready.
+      const auto& executable = entry.cache_entry.executable_future().get();
+      if (!executable.ok() || *executable == nullptr) {
+        continue;
+      }
+      const auto memory_stats =
+          (*executable)->GetLoadedExecutable()->GetCompiledMemoryStats();
+      if (!memory_stats.ok()) {
+        ABSL_LOG(WARNING) << "Failed to get memory stats for key: " << std::hex
+                          << key << " with status: " << memory_stats.status();
+        continue;
+      }
+      total_size_bytes += memory_stats->generated_code_size_in_bytes;
+      num_executables++;
+    }
   }
   return absl::StrCat("CompilationCache HBM usage: ",
                       tsl::strings::HumanReadableNumBytes(total_size_bytes),
