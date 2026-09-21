@@ -127,6 +127,33 @@ torch_tpu_cc_test(
 )
 
 torch_tpu_cc_test(
+    name = "op_correlation_eager_test",
+    srcs = ["op_correlation_eager_test.cc"],
+    exec_properties = {
+        "cpp_link.mem": "16g",  # Needed for asan.
+    },
+    requires_libtpu = True,
+    deps = [
+        ":device_buffer",
+        ":materialize_common",
+        ":traversal",
+        "//csrc/common:cache_key",
+        "//csrc/common:dimension_types",
+        "//csrc/common:op_correlation",
+        "//csrc/common:oss_test_main",
+        "//csrc/common:shape",
+        "//csrc/common:status_test_utils",
+        "//csrc/ops:op_builder_utils",
+        "//csrc/ops:op_names",
+        "//csrc/ops:python_context",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@stablehlo//:attr_type_builder_util",
+        "@stablehlo//:mlir_builder",
+    ],
+)
+
+torch_tpu_cc_test(
     name = "materialization_heuristics_test",
     srcs = ["materialization_heuristics_test.cc"],
     exec_properties = {
@@ -199,6 +226,7 @@ torch_tpu_cc_library(
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
         "//csrc/common:fingerprint_utils",
+        "//csrc/common:op_correlation",
         "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/common:utils",
@@ -320,10 +348,12 @@ torch_tpu_cc_library(
         "//csrc/common:cache_key",
         "//csrc/common:compilation",
         "//csrc/common:compilation_spec",
+        "//csrc/common:context_states",
         "//csrc/common:dimension_types",
         "//csrc/common:dtype",
         "//csrc/common:dynamism_utils",
         "//csrc/common:error_utils",
+        "//csrc/common:op_correlation",
         "//csrc/common:shape",
         "//csrc/common:to_string",
         "//csrc/ops:op_names",

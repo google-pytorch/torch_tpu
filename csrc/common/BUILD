@@ -1104,6 +1104,29 @@ torch_tpu_cc_library(
     ],
 )
 
+# Correlation ID thread-local tracking library connecting PyTorch profiler
+# dispatch scopes with TPU deferred execution and PJRT launches.
+torch_tpu_cc_library(
+    name = "op_correlation",
+    srcs = ["op_correlation.cc"],
+    hdrs = ["op_correlation.h"],
+    deps = [
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+# Unit test verifying bit-identical narrowing, dispatch stacks, launch scopes,
+# and thread isolation for op_correlation.
+torch_tpu_cc_test(
+    name = "op_correlation_test",
+    srcs = ["op_correlation_test.cc"],
+    deps = [
+        ":op_correlation",
+        "//csrc/common:oss_test_main",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
 torch_tpu_cc_test(
     name = "cache_key_test",
     srcs = ["cache_key_test.cc"],

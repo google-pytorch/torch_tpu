@@ -29,6 +29,8 @@
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
+#include "csrc/common/context_states.h"
+#include "csrc/common/op_correlation.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
@@ -63,6 +65,8 @@ class ExecutionTask {
   // This will:
   //   * Propagate bounded dynamism annotations if needed. This requires a
   //     non-null mlir_context for a bounded dynamic traversal.
+  //   * Capture active PyTorch correlation IDs from deferred ops before
+  //     nodes are transitioned or consumed.
   //   * Mark all nodes in the traversal as having been executed
   //   * Begin compiling the traversal into a kernel (or kernels)
   //   * Set all outputs to the "pending materialization" state
@@ -72,11 +76,21 @@ class ExecutionTask {
       std::string* absl_nullable out_mlir_text = nullptr);
 
   // Creates an execution task from a pre-compiled executable.
-  // This will set all outputs to the "pending materialization" state.
+  // This will set all outputs to the "pending materialization" state and
+  // capture any active correlation ID from the calling thread (for
+  // torch.compile mode).
   static absl::StatusOr<ExecutionTask> FromExecutable(
       SharedLoadedExecutableWithMetadata executable,
       std::vector<DeviceBufferRef> arguments,
       std::vector<DeviceBufferRef> outputs, std::string_view task_name = "");
+
+  // Creates an ExecutionTask for testing correlation ID extraction and
+  // propagation without requiring a live LoadedExecutable.
+  //
+  // The returned task carries only correlation state: its compiled-kernel
+  // future is deliberately left unsatisfied, so Run() must not be called on it.
+  static ExecutionTask FromExecutableForTesting(
+      std::string_view task_name = "");
 
   // Runs the execution task. This will:
   //   * Wait for all arguments to be materialized
@@ -86,20 +100,36 @@ class ExecutionTask {
   // Any failures will be set as errors on the output buffers.
   absl::Status Run();
 
+  // Extracts unique correlation IDs from the deferred ops in a traversal's
+  // execution order, deduplicating repeated IDs while preserving first-seen
+  // order, and skipping nodes without deferred ops or with kNoCorrelationId.
+  static std::vector<CorrelationId> ExtractCorrelationIds(
+      const Traversal& traversal);
+
+  // Returns the PyTorch profiler correlation IDs captured for this task.
+  [[nodiscard]] absl::Span<const CorrelationId> pt_correlation_ids() const {
+    return pt_correlation_ids_;
+  }
+
   // Sets all output nodes as having a specified error.
   void SetOutputNodesAsError(absl::Status status);
 
   absl::Span<const DeviceBufferRef> outputs() const { return outputs_; }
 
  private:
+  // Constructs an ExecutionTask. `pt_correlation_ids` stores the PyTorch
+  // profiler correlation IDs captured at task creation time from DeferredOps
+  // (eager mode) or the active RecordFunction (torch.compile mode).
   explicit ExecutionTask(std::string name,
                          std::vector<DeviceBufferRef> arguments,
                          std::vector<DeviceBufferRef> outputs,
-                         CompiledKernel compiled_kernel)
+                         CompiledKernel compiled_kernel,
+                         std::vector<CorrelationId> pt_correlation_ids)
       : name_(std::move(name)),
         arguments_(std::move(arguments)),
         outputs_(std::move(outputs)),
-        compiled_kernel_(std::move(compiled_kernel)) {}
+        compiled_kernel_(std::move(compiled_kernel)),
+        pt_correlation_ids_(std::move(pt_correlation_ids)) {}
 
   // Runs the execution task and early-returns if there is any failure.
   absl::Status RunInternal();
@@ -127,6 +157,16 @@ class ExecutionTask {
   // The compiled kernel; or, more precisely, the futures for the compiled
   // kernel and any dynamic adapters.
   CompiledKernel compiled_kernel_;
+  // PyTorch profiler correlation IDs of the ATen ops whose work this task
+  // executes, in `Traversal::execution_order()` order -- earliest-executed
+  // first, so `back()` is the op that produces the result. This is *not* a
+  // dispatch stack; see GetCurrentLaunchCorrelationIds() in op_correlation.h.
+  // Empty when not profiling.
+  //
+  // These must be captured when the task is *created*, not when it runs: the
+  // DeferredOps that carry them are consumed during task construction, and the
+  // thread that runs the task is not the thread that dispatched the ops.
+  std::vector<CorrelationId> pt_correlation_ids_;
 };
 
 }  // namespace torch_tpu

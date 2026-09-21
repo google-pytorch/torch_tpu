@@ -43,6 +43,7 @@
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
+#include "csrc/common/op_correlation.h"
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
@@ -397,6 +398,9 @@ class DeferredOp {
         output_shapes_(std::move(output_shapes)),
         op_param_cache_keys_(std::move(op_param_cache_keys)),
         op_context_(ScopedPythonContextCapturer::GetContext()),
+        // Sample the innermost correlation ID on this dispatch thread while the
+        // active RecordFunction scope is still on the stack.
+        pt_correlation_id_(GetCurrentOpCorrelationId()),
         split_mode_(split_mode) {}
 
   // DeferredOps are copyable and movable. Per "rule of five"
@@ -445,6 +449,17 @@ class DeferredOp {
     return device_assignment_;
   }
 
+  // The PyTorch profiler correlation ID of the ATen op that created this
+  // DeferredOp, or 0 if no profiling session was active at that moment.
+  //
+  // This is the value that libkineto's `cpuActivity()` lookup is keyed on, and
+  // is the only identity that survives the gap between dispatch (which happens
+  // on the caller's thread) and execution (which happens later, on another
+  // thread).
+  [[nodiscard]] CorrelationId pt_correlation_id() const {
+    return pt_correlation_id_;
+  }
+
  private:
   // The name of the deferred op.
   OpName op_name_;
@@ -478,6 +493,9 @@ class DeferredOp {
   // When computing the cache key, use op_name_ to ensure that the key is
   // unique.
   PythonContext op_context_;
+
+  // Correlation ID of the dispatching ATen op; see pt_correlation_id().
+  CorrelationId pt_correlation_id_ = kNoCorrelationId;
 
   // The split mode of the DeferredOp, which determines how the op is split into
   // subgraphs for compilation.
