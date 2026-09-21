@@ -326,9 +326,7 @@ absl::StatusOr<at::Tensor> TpuMemcpyDtoH(const DeviceBufferRef& buffer_ref,
     return cpu_tensor_receiver;
   }
 
-  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer(),
-                      _ << "device buffer ref has nonzero size, "
-                           "but does not have a PjRtBuffer to copy from");
+  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer());
 
   ABSL_VLOG(1) << "[TpuMemcpyDtoH] PjRtBuffer Details - OnDeviceSizeInBytes: "
                << buffer->GetOnDeviceSizeInBytes()
@@ -370,9 +368,7 @@ absl::Status TpuMemcpyDtoHDirect(const DeviceBufferRef& buffer_ref,
     return absl::OkStatus();
   }
 
-  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer(),
-                      _ << "device buffer ref has nonzero size, "
-                           "but does not have a PjRtBuffer to copy from");
+  TT_ASSIGN_OR_RETURN(auto* buffer, buffer_ref.AwaitBuffer());
 
   absl::Span<const int64_t> buffer_expected_dims = buffer_ref.dimensions();
   xla::Shape xla_shape = xla::ShapeUtil::MakeShapeWithDescendingLayout(
