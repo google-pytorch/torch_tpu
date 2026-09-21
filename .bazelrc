@@ -392,6 +392,15 @@ common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
 common:ci_rbe_presubmit --build_tests_only
 common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
+
+# Cherry-picked from `ci` rather than inherited. Taking `--config=ci` wholesale
+# would drag in `remote_execution_readwrite`, which repoints `--remote_executor`
+# at Google RBE and adds `--google_default_credentials`. Bazel refuses to attach
+# those credentials to the plaintext `grpc://` channel Buildbarn listens on, so
+# the build would fail outright. `--config=resultstore_base` is excluded for the
+# same reason: its BES upload has no credentials to authenticate with.
+common:ci_rbe_presubmit --keep_going
+common:ci_rbe_presubmit --remote_download_minimal
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
 test:ci_rbe_presubmit --test_output=errors

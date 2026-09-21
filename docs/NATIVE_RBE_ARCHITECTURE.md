@@ -46,7 +46,7 @@ flowchart TD
     subgraph ProducerVPC ["RBE Producer Network (rbe-tpu-oss / us-east5)"]
         PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment"]
         ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb:8980"]
-        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>socat TCP Forwarder"]
+        GW["rbe-tunnel-gateway (10.202.0.13:8980)<br/>HAProxy TCP Forwarder"]
 
         PSCEndpoint -->|"Google Backbone"| PSCSA
         PSCSA --> ILB
@@ -151,14 +151,17 @@ and test target do not change, subsequent invocations hit the cache:
 ### Tunnel Gateway (`rbe-tunnel-gateway`)
 
 The `rbe-tunnel-gateway` instance (`10.202.0.13`) is a dedicated Debian 12 GCE
-virtual machine in zone `us-east5-a`. A `socat` unit listens on port `8980` and
+virtual machine in zone `us-east5-a`. HAProxy listens on port `8980` and
 forwards incoming TCP connections to the GKE NodePort `30980`
-(`10.202.0.3:30980`) serving the Buildbarn frontend (`bb-frontend`).
+(`10.202.0.3:30980`) serving the Buildbarn frontend (`bb-frontend`). It runs in
+TCP mode with a one hour idle timeout on each side, so a Bazel gRPC stream stays
+up for the length of a build. `option tcplog` only writes its line when a
+session closes, so an in-flight build produces no access log entries at all.
 
-A second `socat` unit listens on `8443` and forwards to the same backend. It
-exists only so the load balancer health check has a port it can reach: the
-hierarchical firewall policy permits the health check ranges on 80, 443, 8080,
-8443, 9230 and 10402, and a probe to 8980 hits the deny-all rule instead.
+A `socat` unit listens on `8443` and forwards to the same backend. It exists
+only so the load balancer health check has a port it can reach: the hierarchical
+firewall policy permits the health check ranges on 80, 443, 8080, 8443, 9230 and
+10402, and a probe to 8980 hits the deny-all rule instead.
 
 ### CI Runner Connectivity (Private Service Connect)
 
@@ -175,7 +178,7 @@ frontend through Private Service Connect (PSC).
     is what the producer firewall rules actually see.
 3.  The service attachment hands off to an internal TCP load balancer
     (`rbe-internal-ilb:8980`), which forwards packets to `rbe-tunnel-gateway`.
-4.  `socat` on the gateway forwards the connection to the Buildbarn frontend
+4.  HAProxy on the gateway forwards the connection to the Buildbarn frontend
     (`bb-frontend`) on GKE NodePort `30980`.
 
 Both sides number their subnets out of `10.202.0.0/20`, so the producer ILB
