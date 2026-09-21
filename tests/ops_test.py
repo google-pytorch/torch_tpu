@@ -3341,7 +3341,7 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "linalg.solve_triangular",
         exclude_dtypes={
-            "cpu": (torch.bool,),
+            "cpu": INTEGRAL_DTYPES,
         },
     )
 
