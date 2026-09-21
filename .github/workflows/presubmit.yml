@@ -139,21 +139,39 @@ jobs:
           echo "=== default route ==="
           ip route show default || true
 
-      - name: TCP probes
+      - name: Identify what answers on the endpoint
         run: |
-          probe() {
-            h=$1; p=$2; t0=$SECONDS
-            if timeout 12 bash -c "cat < /dev/null > /dev/tcp/$h/$p" 2>/dev/null; then
-              r=OPEN
-            else
-              r=FAIL
-            fi
-            echo "$h:$p -> $r after $((SECONDS - t0))s"
-          }
-          # The endpoint we care about.
-          probe 10.202.0.67 8980
-          # Same host, a port the forwarding rule does not carry. Distinguishes
-          # "host reachable, port closed" from "nothing reachable at all".
-          probe 10.202.0.67 9999
-          # Control: does this container have any TCP egress?
-          probe 8.8.8.8 53
+          cat > /tmp/probe.py <<'PY'
+          import socket, time
+
+          def probe(host, port, send_preface=True):
+              s = socket.socket(); s.settimeout(8); t0 = time.time()
+              try:
+                  s.connect((host, port))
+              except Exception as e:
+                  print(f"{host}:{port:<5} CONNECT-FAIL {type(e).__name__} ({time.time()-t0:.2f}s)")
+                  return
+              print(f"{host}:{port:<5} CONNECTED   {time.time()-t0:.3f}s  local={s.getsockname()} peer={s.getpeername()}")
+              if send_preface:
+                  try:
+                      s.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+                      d = s.recv(256)
+                      print(f"        recv {len(d)} bytes: {d[:64].hex()}")
+                  except Exception as e:
+                      print(f"        recv-fail {type(e).__name__}: {e}")
+              s.close()
+
+          print("local hostname/ip:", socket.gethostname(), socket.gethostbyname(socket.gethostname()))
+          probe("10.202.0.67", 8980)   # the PSC endpoint
+          probe("10.202.0.67", 8443)   # gateway health port; PSC should NOT carry it
+          probe("10.202.0.67", 22)     # should be nothing
+          probe("10.202.0.250", 8980)  # unallocated address in the same /20
+          PY
+          python3 /tmp/probe.py
+
+      - name: Routing table
+        run: |
+          echo "=== /proc/net/route ==="
+          cat /proc/net/route || true
+          echo "=== /etc/resolv.conf ==="
+          cat /etc/resolv.conf || true
