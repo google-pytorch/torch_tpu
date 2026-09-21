@@ -15,7 +15,9 @@
 name: On PR Ready
 
 on:
-  pull_request:
+  # Unlike `pull_request`, this grants a write token on fork PRs so the job can
+  # comment on them. It is safe because the job never checks out PR code.
+  pull_request_target:
     types: [opened, ready_for_review]
 
 permissions: {}
@@ -27,8 +29,7 @@ jobs:
     # Filter out Copybara-generated and draft PRs.
     if: >-
       !github.event.pull_request.draft &&
-      github.event.pull_request.user.login != 'copybara-service[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.user.login != 'copybara-service[bot]'
     permissions:
       pull-requests: write  # Comment on the PR.
     steps:
