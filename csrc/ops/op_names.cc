@@ -419,10 +419,26 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_fft_c2r";
     case OpName::kFftC2rOut:
       return "_fft_c2r.out";
+    case OpName::kFftFft:
+      return "fft_fft";
+    case OpName::kFftFftOut:
+      return "fft_fft.out";
+    case OpName::kFftIfft:
+      return "fft_ifft";
+    case OpName::kFftIfftOut:
+      return "fft_ifft.out";
+    case OpName::kFftIrfft:
+      return "fft_irfft";
+    case OpName::kFftIrfftOut:
+      return "fft_irfft.out";
     case OpName::kFftR2c:
       return "_fft_r2c";
     case OpName::kFftR2cOut:
       return "_fft_r2c.out";
+    case OpName::kFftRfft:
+      return "fft_rfft";
+    case OpName::kFftRfftOut:
+      return "fft_rfft.out";
     case OpName::kFill_Scalar:
       return "fill_.Scalar";
     case OpName::kFill_Tensor:

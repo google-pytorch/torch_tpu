@@ -454,6 +454,18 @@ REGISTRATION_OVERRIDES = frozenset([
     'embedding.out',
     'embedding_backward',
     'embedding_sparse_backward',
+    # TODO: b/518595804 - PyTorch's promote_type_fft omits
+    # device.is_privateuseone() from maybe_support_half.
+    # Register FFT ops to allow manually casting BF16 to F32, so that
+    # NotImplementedError is not thrown.
+    'fft_fft',
+    'fft_fft.out',
+    'fft_ifft',
+    'fft_ifft.out',
+    'fft_irfft',
+    'fft_irfft.out',
+    'fft_rfft',
+    'fft_rfft.out',
     'gather',
     # Gelu is registered to handle type promotion for integer and boolean
     # inputs to match PyTorch GPU behavior for functional calls.

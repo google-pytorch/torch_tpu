@@ -18,9 +18,11 @@
 #define TORCH_TPU_CSRC_OPS_FFT_FFT_ATEN_KERNELS_H_
 
 #include <cstdint>
+#include <optional>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "c10/util/string_view.h"
 
 namespace torch_tpu {
 
@@ -39,6 +41,31 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
 at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
                           int64_t normalization, int64_t last_dim_size,
                           at::Tensor& out);
+
+at::Tensor AtenFftFft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                      int64_t dim, std::optional<c10::string_view> norm);
+at::Tensor& AtenFftFftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                          int64_t dim, std::optional<c10::string_view> norm,
+                          at::Tensor& out);
+
+at::Tensor AtenFftIfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                       int64_t dim, std::optional<c10::string_view> norm);
+at::Tensor& AtenFftIfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                           int64_t dim, std::optional<c10::string_view> norm,
+                           at::Tensor& out);
+
+at::Tensor AtenFftRfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                       int64_t dim, std::optional<c10::string_view> norm);
+at::Tensor& AtenFftRfftOut(const at::Tensor& self, std::optional<c10::SymInt> n,
+                           int64_t dim, std::optional<c10::string_view> norm,
+                           at::Tensor& out);
+
+at::Tensor AtenFftIrfft(const at::Tensor& self, std::optional<c10::SymInt> n,
+                        int64_t dim, std::optional<c10::string_view> norm);
+at::Tensor& AtenFftIrfftOut(const at::Tensor& self,
+                            std::optional<c10::SymInt> n, int64_t dim,
+                            std::optional<c10::string_view> norm,
+                            at::Tensor& out);
 
 }  // namespace torch_tpu
 

@@ -506,8 +506,16 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kFftC2cOut>(m, AtenFftC2cOut);
   ImplStable<OpName::kFftC2r>(m, AtenFftC2r);
   ImplStable<OpName::kFftC2rOut>(m, AtenFftC2rOut);
+  ImplStable<OpName::kFftFft>(m, AtenFftFft);
+  ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
+  ImplStable<OpName::kFftIfft>(m, AtenFftIfft);
+  ImplStable<OpName::kFftIfftOut>(m, AtenFftIfftOut);
+  ImplStable<OpName::kFftIrfft>(m, AtenFftIrfft);
+  ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
   ImplStable<OpName::kFftR2c>(m, AtenFftR2c);
   ImplStable<OpName::kFftR2cOut>(m, AtenFftR2cOut);
+  ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
+  ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kFill_Scalar>(m, AtenFillScalar_);
   ImplStable<OpName::kFill_Tensor>(m, AtenFillTensor_);
   ImplStable<OpName::kFlip>(m, AtenFlip);
@@ -1179,6 +1187,14 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
   // ctc_loss to our custom forward/backward autograd implementation.
   ImplStable<OpName::kCtcLossPublic>(m, AtenCtcLossPublicAutograd);
   ImplStable<OpName::kCtcLossPublicTensor>(m, AtenCtcLossPublicTensorAutograd);
+  ImplStable<OpName::kFftFft>(m, AtenFftFft);
+  ImplStable<OpName::kFftFftOut>(m, AtenFftFftOut);
+  ImplStable<OpName::kFftIfft>(m, AtenFftIfft);
+  ImplStable<OpName::kFftIfftOut>(m, AtenFftIfftOut);
+  ImplStable<OpName::kFftIrfft>(m, AtenFftIrfft);
+  ImplStable<OpName::kFftIrfftOut>(m, AtenFftIrfftOut);
+  ImplStable<OpName::kFftRfft>(m, AtenFftRfft);
+  ImplStable<OpName::kFftRfftOut>(m, AtenFftRfftOut);
   ImplStable<OpName::kRepeatInterleaveSelfInt>(
       m, AtenRepeatInterleaveSelfIntAutograd);
   ImplStable<OpName::kRepeatInterleaveSelfTensor>(m,

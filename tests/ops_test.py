@@ -2619,7 +2619,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2636,7 +2635,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2653,7 +2651,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
@@ -2670,7 +2667,6 @@ class TestOps(op_testing.OpInfoTestBase):
             "gpu": (
                 torch.float64,
                 torch.float16,
-                torch.bfloat16,
                 torch.int4,
             ),
         },
