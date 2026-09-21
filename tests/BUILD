@@ -1182,6 +1182,7 @@ torch_tpu_py_test(
     main = "ops_unit_test.py",
     shard_count = 30,
     tags = [
+        "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
@@ -1221,6 +1222,7 @@ torch_tpu_py_test(
     main = "ops_unit_test.py",
     shard_count = 30,
     tags = [
+        "fails-on-tpu-v7",  # Numeric divergence in scaled_mm on TPU v7.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
         "requires-tpu-v5lite",
