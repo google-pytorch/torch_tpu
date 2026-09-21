@@ -28,6 +28,7 @@
 #include "c10/core/DispatchKey.h"
 #include "c10/core/GradMode.h"
 #include "c10/core/SymInt.h"
+#include "c10/core/SymIntArrayRef.h"
 #include "c10/core/impl/LocalDispatchKeySet.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -413,17 +414,30 @@ RepeatInterleaveSelfIntValidation ValidateRepeatInterleaveSelfInt(
 at::Tensor DecomposeRepeatInterleaveSelfInt(
     const at::Tensor& self, c10::SymInt repeats, std::optional<int64_t> dim,
     std::optional<c10::SymInt> output_size) {
-  const auto [repeats_val, resolved_dim_opt, resolved_output_size] =
-      ValidateRepeatInterleaveSelfInt(self, repeats, dim, output_size);
-  at::Tensor input = dim.has_value() ? self : self.flatten();
-  const int64_t resolved_dim = resolved_dim_opt.value_or(0);
-  Dimensions expand_shape = CopyIntVector(input.sizes());
-  expand_shape.insert(expand_shape.begin() + resolved_dim + 1, repeats_val);
-  Dimensions out_shape = CopyIntVector(input.sizes());
+  int64_t resolved_dim = 0;
+  at::Tensor input;
+  if (dim.has_value()) {
+    TT_ASSIGN_OR_THROW(resolved_dim, SafeWrapDim(*dim, self.dim()));
+    input = self;
+  } else {
+    input = self.flatten();
+    resolved_dim = 0;
+  }
+
+  const c10::SymIntArrayRef in_sym_sizes = input.sym_sizes();
+  std::vector<c10::SymInt> expand_shape(in_sym_sizes.begin(),
+                                        in_sym_sizes.end());
+  expand_shape.insert(expand_shape.begin() + resolved_dim + 1, repeats);
+
+  const c10::SymInt resolved_output_size =
+      output_size.has_value() ? *output_size
+                              : (in_sym_sizes[resolved_dim] * repeats);
+  std::vector<c10::SymInt> out_shape(in_sym_sizes.begin(), in_sym_sizes.end());
   out_shape[resolved_dim] = resolved_output_size;
+
   return input.unsqueeze(resolved_dim + 1)
-      .expand(expand_shape)
-      .reshape(out_shape);
+      .expand_symint(expand_shape)
+      .reshape_symint(out_shape);
 }
 
 // Returns true if `tensor` is a `FakeTensor`, `Meta` tensor, or wrapped inside
