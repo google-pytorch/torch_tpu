@@ -6782,13 +6782,12 @@ Supported combinations for non-constant padding:
   def test_bincount_rank_too_high(self):
     t = torch.ones(2, 2, 2, device=et.device(), dtype=torch.int32)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""bincount(): unexpected dimension of input tensor: [2, 2, 2]""",
         gpu="""bincount only supports 1-d non-negative integral inputs.""",
     ):
-      torch.bincount(t).cpu()
+      torch.bincount(t)
 
   def test_gather_2d_input_on_scalar_index(self):
     inp = torch.ones(2, 2, device=et.device())
@@ -6798,14 +6797,12 @@ Supported combinations for non-constant padding:
     # Call the out overload.
     out = torch.empty(1, 1, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""gather(): expected the input to be a 1D tensor with size at most 1 when index is 0D, got 2D with shape {2}""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      # cpu() is needed because the error is triggered inside the op builder.
-      torch.gather(inp, dim, index, out=out).cpu()
+      torch.gather(inp, dim, index, out=out)
 
   def test_gather_rank_mismatch(self):
     inp = torch.ones(2, 2, device=et.device())
@@ -6815,40 +6812,36 @@ Supported combinations for non-constant padding:
     # Call the out overload.
     out = torch.empty(1, 1, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 2D vs 3D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      # cpu() is needed because the error is triggered inside the op builder.
-      torch.gather(inp, dim, index, out=out).cpu()
+      torch.gather(inp, dim, index, out=out)
 
   def test_gather_0d_input_on_2d_index(self):
     inp = torch.tensor(1.0, device=et.device())
     dim = 0
     index = torch.ones(2, 2, device=et.device(), dtype=torch.int64)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""gather(): expected the input and the index tensor to have the same number of dimensions, got 0D vs 2D""",
         gpu="""Index tensor must have the same number of dimensions as input tensor""",
     ):
-      torch.gather(inp, dim, index).cpu()
+      torch.gather(inp, dim, index)
 
   def test_gather_size_mismatch(self):
     inp = torch.ones(2, 3, device=et.device())
     dim = 0
     index = torch.ones(2, 4, device=et.device(), dtype=torch.int64)
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""gather(): expected the index tensor to have size less than or equal to the input tensor at dimension 1, got 4 vs 3""",
         gpu="""Size does not match at dimension 1 expected index [2, 4] to be no larger than self [2, 3] apart from dimension 0""",
     ):
-      torch.gather(inp, dim, index).cpu()
+      torch.gather(inp, dim, index)
 
   def test_lerp_int(self):
     t = torch.tensor([1, 2], device=et.device(), dtype=torch.int32)
@@ -7668,7 +7661,7 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""max_pool2d_with_indices(): expected non-empty 3D or 4D (batch mode) tensor for input, got 2D tensor""",
         gpu="""non-empty 3D or 4D (batch mode) tensor expected for input""",
     ):
-      out, indices = torch.ops.aten.max_pool2d_with_indices.out(
+      torch.ops.aten.max_pool2d_with_indices.out(
           inp,
           kernel_size,
           stride,
@@ -7678,9 +7671,6 @@ Device-side assertion tracking was not enabled by user.""",
           out=out,
           indices=indices,
       )
-
-      out.cpu()
-      indices.cpu()
 
   def test_pooling_create_batch_input_invalid_rank(self):
 
@@ -7710,8 +7700,6 @@ Device-side assertion tracking was not enabled by user.""",
           divisor_override,
           out=out,
       )
-
-      out.cpu()
 
   def test_reflection_pad2d_backward_shape_mismatch(self):
     inp = torch.randn(1, 1, 4, 4, device=et.device())
@@ -7876,8 +7864,6 @@ Device-side assertion tracking was not enabled by user.""",
       torch.nn.functional.silu(t)
 
   def test_silu_unsupported_dtype_int16(self):
-    # int16 is not rejected up front, so the error comes from the lowering
-    # when the result is materialized.
     t = torch.ones(5, device=et.device(), dtype=torch.int16)
 
     with et.assert_raises_message(
@@ -7885,8 +7871,7 @@ Device-side assertion tracking was not enabled by user.""",
         tpu="""silu(): expected the input dtype to be floating point, got int16""",
         gpu=""""silu_cuda" not implemented for 'Short'""",
     ):
-      out = torch.nn.functional.silu(t)
-      out.cpu()
+      torch.nn.functional.silu(t)
 
   def test_acos_out_dtype_mismatch(self):
     t = torch.ones(5, device=et.device())
@@ -8210,14 +8195,13 @@ Device-side assertion tracking was not enabled by user.""",
     # Call the out overload.
     out = torch.empty(5, 5, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     err_type = RuntimeError if et.is_on_tpu() else IndexError
     with et.assert_raises_message(
         err_type,
         tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the src tensor of shape [5], got 2 vs. 1""",
         gpu="""Dimension out of range (expected to be in range of [-1, 0], but got 1)""",
     ):
-      torch.scatter(self_t, 0, index, src, out=out).cpu()
+      torch.scatter(self_t, 0, index, src, out=out)
 
   def test_scatter_index_rank_mismatch(self):
     self_t = torch.ones(5, 5, device=et.device())
@@ -8227,13 +8211,12 @@ Device-side assertion tracking was not enabled by user.""",
     # Call the out overload.
     out = torch.empty(5, 5, device=et.device())
 
-    # TODO: Error eagerly, i.e. without having to call the op builder.
     with et.assert_raises_message(
         RuntimeError,
         tpu="""scatter(): expected the self tensor of shape [5, 5] to have the same rank as the index tensor of shape [5], got 2 vs. 1""",
         gpu="""Index tensor must have the same number of dimensions as self tensor""",
     ):
-      torch.scatter(self_t, 0, index, src, out=out).cpu()
+      torch.scatter(self_t, 0, index, src, out=out)
 
   def test_scatter_rank2_self_scalar_src_tensor(self):
     self_t = torch.zeros(5, 5, device=et.device())
@@ -8247,7 +8230,7 @@ Device-side assertion tracking was not enabled by user.""",
         RuntimeError,
         tpu="""Index tensor must have the same number of dimensions as src tensor""",
     ):
-      torch.scatter(self_t, 0, index, src).cpu()
+      torch.scatter(self_t, 0, index, src)
 
   def test_softmax_backward_data_shape_mismatch(self):
     grad_output = torch.ones(5, 5, device=et.device())
@@ -8263,7 +8246,7 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.ops.aten._softmax_backward_data(
           grad_output, output, 0, torch.float32, grad_input=grad_input
-      ).cpu()
+      )
 
   def test_as_strided_negative_offset(self):
     t = torch.empty(5, device=et.device())

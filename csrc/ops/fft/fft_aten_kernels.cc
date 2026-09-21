@@ -509,7 +509,8 @@ at::Tensor AtenFftC2c(const at::Tensor& self, at::IntArrayRef dim,
 
     TT_ASSIGN_OR_THROW(const auto output_dtype,
                        ConvertTo<mlir::ElementType>(self.scalar_type()));
-
+    TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
+        << "expected complex input type, got " << ToString(self.scalar_type());
     auto op_builder = [normalized_dims, norm_enum, forward](
                           mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
       return BuildFftC2cShlo(input, normalized_dims, norm_enum, forward);
@@ -547,6 +548,11 @@ at::Tensor& AtenFftC2cOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2c_out
+                         // does not exist
+            self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
 
         auto op_builder =
             [normalized_dims, norm_enum,
@@ -587,7 +593,9 @@ at::Tensor AtenFftC2r(const at::Tensor& self, at::IntArrayRef dim,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(
                                c10::toRealValueType(self.scalar_type())));
-
+        TT_CHECK_THROW(self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](
                 mlir::MlirOp input) -> absl::StatusOr<mlir::MlirOp> {
@@ -636,6 +644,11 @@ at::Tensor& AtenFftC2rOut(const at::Tensor& self, at::IntArrayRef dim,
 
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
+        TT_CHECK_THROW(  // ERROR_COV_INFEASIBLE=torch.aten.ops._fft_c2r_out
+                         // does not exist
+            self.is_complex(), error::kInvalidArgument)
+            << "expected complex input type, got "
+            << ToString(self.scalar_type());
 
         auto op_builder =
             [normalized_dims, norm_enum, last_dim_size](

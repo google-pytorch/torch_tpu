@@ -23,12 +23,12 @@
 #include "ATen/core/TensorBody.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/utils.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/op_dispatcher.h"
@@ -50,7 +50,6 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
                                        OpParamCacheKeys&& param_keys) {
   TT_RET_CHECK(sparse_grad == false, error::kPythonNotImplementedError)
       << "sparse_grad is not yet supported";
-
   TT_ASSIGN_OR_RETURN(dim, SafeWrapDim(dim, self.dim()));
   TT_ASSIGN_OR_RETURN(const auto output_dtype,
                       ConvertTo<mlir::ElementType>(self.scalar_type()));
@@ -60,6 +59,9 @@ absl::StatusOr<DeviceBufferRef> Gather(const at::Tensor& self, int64_t dim,
     // Gathering with 0 indexes results in a zero-sized tensor.
     return CreateZeroSizeDeviceBufferRef(output_dims, output_dtype);
   }
+
+  TT_RETURN_IF_ERROR(
+      ValidateGatherInputs(self.sizes(), dim, index.sizes(), sparse_grad));
 
   auto gather_op_builder =
       [dim, sparse_grad, output_dtype](FixedSizeSpan<mlir::MlirOp, 2> inputs) {

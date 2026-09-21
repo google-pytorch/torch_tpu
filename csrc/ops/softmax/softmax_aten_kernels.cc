@@ -109,6 +109,13 @@ absl::Status SoftmaxBackwardDataInternalOut(
   TT_ASSIGN_OR_RETURN(  // ERROR_COV_INFEASIBLE=all dtypes are supported.
       const auto input_mlir_type, ConvertTo<mlir::ElementType>(input_dtype));
 
+  TT_RET_CHECK(output.sizes() == grad_output.sizes(), error::kInvalidArgument)
+      << "expected grad_output and output arguments to have the same shape, "
+         "got "
+      << ToString(grad_output.sizes()) << " vs. " << ToString(output.sizes());
+  // Verify that SafeWrapDim will succeed when called during the op builder.
+  TT_RETURN_IF_ERROR(SafeWrapDim(dim, output.dim()));
+
   DispatchOpOptions<1> options = {
       .out_dtype = input_mlir_type,
       .out_dims = output.sizes(),

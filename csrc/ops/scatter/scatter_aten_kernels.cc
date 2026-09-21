@@ -33,6 +33,7 @@
 #include "csrc/common/dtype.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/common/fixed_size_span.h"
+#include "csrc/common/to_string.h"
 #include "csrc/common/utils.h"
 #include "csrc/eager/op_dispatcher.h"
 #include "csrc/ops/macros/kernel.h"
@@ -56,6 +57,25 @@ absl::Status Scatter(const at::Tensor& self, int64_t dim,
   TT_ASSIGN_OR_RETURN(const auto promoted_dtype,
                       ConvertTo<mlir::ElementType>(at::result_type(self, src)));
   Dimensions output_dims = CopyIntVector(self.sizes());
+
+  // 0-dimensional self and index arguments will be cast to 1-dimensional.
+  const auto self_rank = self.dim() == 0 ? 1 : self.dim();
+  const auto index_rank = index.dim() == 0 ? 1 : index.dim();
+
+  // 0-dimensional src arguments will be broadcast to match the rank of `index`.
+  const auto src_rank = (src.dim() == 0) ? index_rank : src.dim();
+
+  TT_RET_CHECK(self_rank == src_rank, error::kInvalidArgument)
+      << "expected the self tensor of shape " << ToString(self.sizes())
+      << " to have the same rank as the src tensor of shape "
+      << ToString(src.sizes()) << ", got " << self.dim() << " vs. "
+      << src.dim();
+  TT_RET_CHECK(self_rank == index_rank, error::kInvalidArgument)
+      << "expected the self tensor of shape " << ToString(self.sizes())
+      << " to have the same rank as the index tensor of shape "
+      << ToString(index.sizes()) << ", got " << self.dim() << " vs. "
+      << index.dim();
+
   auto scatter_op_builder = [dim, reduction_op, promoted_dtype, include_self](
                                 FixedSizeSpan<mlir::MlirOp, 3> inputs) {
     auto& [self, index, src] = inputs;

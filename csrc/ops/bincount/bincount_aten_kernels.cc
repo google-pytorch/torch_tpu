@@ -24,6 +24,7 @@
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/ops/zeros.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -62,7 +63,7 @@ absl::StatusOr<mlir::MlirOp> BuildBinCount(
 
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
   auto input_shape = input_type.getShape();
-  TT_RET_CHECK(input_shape.size() == 1, error::kInvalidArgument)
+  ABSL_CHECK_EQ(input_shape.size(), 1)  // CRASH_OK=checked in AtenBinCount
       << "unexpected dimension of input tensor: " << ToString(input_shape);
   int64_t num_inputs = input_shape[0];
 
@@ -123,6 +124,10 @@ at::Tensor AtenBinCount(const at::Tensor& self,
       {
         auto weights_ = SanitizeOptionalTensor(weights);
         int64_t minlength_val = minlength.guard_int(__FILE__, __LINE__);
+
+        TT_CHECK_THROW(self.dim() == 1, error::kInvalidArgument)
+            << "unexpected dimension of input tensor: "
+            << ToString(self.sizes());
 
         // Shortcut optimization for empty input tensors.
         if (self.defined() && self.numel() == 0) {

@@ -405,6 +405,9 @@ at::Tensor& AtenSiluOut(const at::Tensor& self, at::Tensor& out) {
                        self.scalar_type() != at::kLong,
                    error::kPythonNotImplementedError)
         << "not implemented for " << ToString(self.scalar_type());
+    TT_CHECK_THROW(self.is_floating_point(), error::kInvalidArgument)
+        << "expected the input dtype to be floating point, got "
+        << ToString(self.scalar_type());
     TT_THROW_IF_ERROR(
         UnaryOpOut(self, out, BuildSiluShlo,
                    {.op_param_cache_keys = OpParamCacheKeys::Empty(),
