@@ -114,14 +114,15 @@ bazel test --config=rbe_native_tpu //tests/pallas:pallas_test
 
 Bazel evaluates `.bazelrc`:
 
--   `--spawn_strategy=local`: C++ compilations, code generation, and test
-    binaries build locally on the client (or pull from local cache).
--   `--strategy=TestRunner=remote`: Only the test execution step dispatches
-    remotely over REAPI v2.
--   `--remote_default_exec_properties=Accelerator=tpu-v5e`: Tells the scheduler
-    to dispatch this action only to workers with a TPU v5e attached.
--   `--noremote_upload_local_results`: Prevents Bazel from uploading thousands
-    of intermediate compiler objects to the CAS over the WAN.
+-   `--extra_execution_platforms=//bazel/platforms:buildbarn_native_tpu_platform`:
+    Every action goes to Buildbarn. The platform carries `OSFamily=Linux` for
+    the default execution group and `test.Accelerator=tpu-v5e` for Bazel's
+    built-in `test` group, so compiles, links and genrules land on the x86 CPU
+    pool while test runner actions land on TPU v5e hardware.
+-   `--jobs=200`: Sized for the CPU pool rather than for the client's core
+    count, which would otherwise leave most of the pool idle.
+-   `--noremote_upload_local_results`: Keeps untrusted local builds from writing
+    to the shared cache. CI overrides this in `ci_rbe_presubmit`.
 
 ### Step 3: Action Execution on Hardware
 
@@ -273,12 +274,10 @@ GB. To avoid downloading 2.6 GB over cross-region links on every test:
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
 common:rbe_native_tpu --remote_executor=grpc://127.0.0.1:8980
 common:rbe_native_tpu --remote_cache=grpc://127.0.0.1:8980
-common:rbe_native_tpu --remote_timeout=600s
 common:rbe_native_tpu --noremote_upload_local_results
-common:rbe_native_tpu --spawn_strategy=local
-common:rbe_native_tpu --strategy=TestRunner=remote
-common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
-common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
+common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
+common:rbe_native_tpu --jobs=200
+common:rbe_native_tpu --remote_timeout=3600s
 
 # CI config matching .github/workflows/presubmit.yml
 common:ci_rbe_presubmit --config=rbe_native_tpu
@@ -287,6 +286,9 @@ common:ci_rbe_presubmit --remote_cache=grpc://10.202.0.67:8980
 common:ci_rbe_presubmit --build_tests_only
 common:ci_rbe_presubmit --color=yes
 common:ci_rbe_presubmit --curses=no
+common:ci_rbe_presubmit --keep_going
+common:ci_rbe_presubmit --remote_download_minimal
+common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
 test:ci_rbe_presubmit --test_output=errors
@@ -326,8 +328,8 @@ Because PSC provides a direct internal IP path across VPCs, the runner needs no
 background tunnels, gcloud commands, or custom proxy daemons. Test results post
 directly back to the pull request checks.
 
-There is one job, not a matrix per accelerator. The runner is a plain CPU
-machine and every test action is dispatched to a TPU worker by Buildbarn, so
+There is one job, not a matrix per accelerator. The runner compiles nothing
+itself: build actions go to the CPU pool and test actions to a TPU worker, so
 hardware coverage is a property of the worker pool rather than of the workflow.
 The pool is v5e only today, so `ci_rbe_presubmit` filters out
 `requires-tpu-v5p`, `requires-tpu-v6e` and `requires-tpu-v7x`. Adding a

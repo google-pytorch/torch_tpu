@@ -364,17 +364,29 @@ common:ci_tpu_v5_presubmit --test_tag_filters=-notest,-nobuild,-nopresubmit,-fai
 # Native Remote Build Execution on Cloud TPU v5e hardware via Buildbarn (REAPI v2)
 common:rbe_native_tpu --remote_executor=grpc://127.0.0.1:8980
 common:rbe_native_tpu --remote_cache=grpc://127.0.0.1:8980
-common:rbe_native_tpu --remote_timeout=600s
 common:rbe_native_tpu --noremote_upload_local_results
-common:rbe_native_tpu --spawn_strategy=local
-common:rbe_native_tpu --genrule_strategy=local
-common:rbe_native_tpu --strategy=Genrule=local
-common:rbe_native_tpu --strategy=TestRunner=remote
+
+# Compiles, links and genrules run on Buildbarn's x86 CPU pool; test runner
+# actions run on the TPU v5e pool. The split lives in the platform's
+# exec_properties because there is no per-action-type form of
+# --remote_default_exec_properties, and that flag is ignored outright once the
+# execution platform declares properties of its own.
+common:rbe_native_tpu --extra_execution_platforms="//bazel/platforms:buildbarn_native_tpu_platform"
+
+# The CPU pool is 7 nodes x 32 slots. Left at the default, Bazel would size the
+# action graph to the 16 cores of whatever machine invoked it and leave most of
+# the pool idle. Matches the value remote_execution_readonly uses.
+common:rbe_native_tpu --jobs=200
+
+# Per-RPC deadline, not the action's own timeout (the scheduler applies that,
+# defaulting to 1800s). Raised from 600s along with --jobs: 200 concurrent
+# actions pushing inputs through one gRPC channel makes a slow individual call
+# much likelier, and a tripped deadline fails the build outright.
+common:rbe_native_tpu --remote_timeout=3600s
+
 common:rbe_native_tpu --grpc_keepalive_time=15s
 common:rbe_native_tpu --grpc_keepalive_timeout=15s
 common:rbe_native_tpu --experimental_remote_execution_keepalive=true
-common:rbe_native_tpu --remote_default_exec_properties=Accelerator=tpu-v5e
-common:rbe_native_tpu --remote_default_exec_properties=OSFamily=Linux
 
 # CI config matching .github/workflows/presubmit.yml
 # Connects to Buildbarn across projects via Private Service Connect (PSC).
@@ -406,10 +418,10 @@ common:ci_rbe_presubmit --remote_download_minimal
 # to the shared cache, mirroring the readonly / readwrite split the Google RBE
 # configs above use. CI is trusted, so turn uploads back on here.
 #
-# Without this nothing ever populates Buildbarn's action cache. Build actions
-# run locally under `--spawn_strategy=local`, and a local result that is never
-# uploaded is a result the next run cannot reuse, so every presubmit recompiles
-# the tree from scratch on the runner's 16 cores.
+# Remotely executed actions are cached by the executor regardless of this flag.
+# What it covers is the remainder that Bazel still runs on the runner: targets
+# tagged `local`, and anything the strategy picker keeps at home. Without it
+# those results are recomputed on every presubmit.
 common:ci_rbe_presubmit --remote_upload_local_results=true
 common:ci_rbe_presubmit --build_tag_filters=-nobuild,requires-tpu-v5lite,requires-tpu-v5lite:8
 common:ci_rbe_presubmit --test_tag_filters=presubmit-v5,-fails-on-tpu-v5,-nopresubmit,-notest,-nobuild,-requires-tpu-v5p,-requires-tpu-v6e,-requires-tpu-v7x
