@@ -1,4 +1,4 @@
-# TorchTPU
+<h1>TorchTPU <img src="docs/images/logo.png" alt="TorchTPU Logo" height="65"></h1>
 
 ## Description
 
