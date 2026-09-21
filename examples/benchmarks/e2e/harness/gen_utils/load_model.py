@@ -38,11 +38,20 @@ def default_load_model(
     batch_size = 1
     seq_len = 2048
 
-  registry = module_registry.ModuleRegistry()
+  registry = module_registry.ModuleRegistry(base_path="")
 
   def modify_config_hook(config):
     if ctx.run_scope == context_lib.RunScope.PRESUBMIT:
-      config.num_hidden_layers = 2
+      if hasattr(config, "num_hidden_layers"):
+        config.num_hidden_layers = 2
+      if hasattr(config, "text_config") and config.text_config is not None:
+        if hasattr(config.text_config, "num_hidden_layers"):
+          config.text_config.num_hidden_layers = 2
+      if hasattr(config, "vision_config") and config.vision_config is not None:
+        if hasattr(config.vision_config, "num_hidden_layers"):
+          config.vision_config.num_hidden_layers = 2
+        if hasattr(config.vision_config, "depth"):
+          config.vision_config.depth = 2
     return config
 
   module_spec = registry.get_module_spec(
@@ -69,15 +78,38 @@ def default_load_model(
   # mask fallback, avoiding control-flow tracing errors.
   inputs.pop("attention_mask", None)
 
-  if is_training:
-    vocab_size = getattr(model.config, "vocab_size", 128256)
-    inputs["labels"] = torch.randint(
-        0,
-        vocab_size,
-        (batch_size, seq_len),
-        device=device_str,
-        dtype=torch.long,
-        requires_grad=False,
-    )
+  if is_training and "labels" not in inputs:
+    num_labels = getattr(model.config, "num_labels", None)
+    if num_labels is not None and type(model).__name__.endswith(
+        "ForSequenceClassification"
+    ):
+      inputs["labels"] = torch.randint(
+          0,
+          num_labels,
+          (batch_size,),
+          device=device_str,
+          dtype=torch.long,
+          requires_grad=False,
+      )
+    else:
+      text_cfg = getattr(model.config, "text_config", None)
+      vocab_size = (
+          getattr(model.config, "vocab_size", None)
+          or (getattr(text_cfg, "vocab_size", None) if text_cfg else None)
+          or 32000
+      )
+      labels_shape = (
+          inputs["input_ids"].shape
+          if "input_ids" in inputs
+          else (batch_size, seq_len)
+      )
+      inputs["labels"] = torch.randint(
+          0,
+          vocab_size,
+          labels_shape,
+          device=device_str,
+          dtype=torch.long,
+          requires_grad=False,
+      )
 
   return model, inputs

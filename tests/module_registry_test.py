@@ -608,6 +608,89 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     self.assertLen(kwargs["aspect_ratio_ids"].shape, 2)
     self.assertLen(kwargs["aspect_ratio_mask"].shape, 3)
 
+  def test_transformers_glm_ocr_get_module_spec(self):
+    spec = self.module_registry.get_module_spec(
+        "transformers", "zai-org/GLM-OCR"
+    )
+    self.assertEqual(spec.modality, module_registry.Modality.MULTIMODAL)
+    _, kwargs = spec.sample_inputs_factory((1, 2048), "cpu")
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_grid_thw", kwargs)
+    self.assertIn("mm_token_type_ids", kwargs)
+
+  def test_transformers_kosmos2_get_module_spec(self):
+    spec = self.module_registry.get_module_spec(
+        "transformers", "microsoft/kosmos-2-patch14-224"
+    )
+    self.assertEqual(spec.modality, module_registry.Modality.MULTIMODAL)
+    _, kwargs = spec.sample_inputs_factory((1, 2048), "cpu")
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_embeds_position_mask", kwargs)
+
+  def test_transformers_glm_ocr_generate_inputs(self):
+    config = mock.MagicMock(
+        model_type="glm_ocr",
+        architectures=["GlmOcrForConditionalGeneration"],
+        vision_config=mock.MagicMock(
+            patch_size=14, temporal_patch_size=2, spatial_merge_size=2
+        ),
+        image_size=336,
+        vocab_size=59281,
+        max_position_embeddings=8192,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config,
+        module_registry.Modality.MULTIMODAL,
+        shape=(1, 2048),
+        device="cpu",
+    )
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_grid_thw", kwargs)
+    self.assertIn("mm_token_type_ids", kwargs)
+    self.assertEqual(kwargs["image_grid_thw"].shape, (1, 3))
+    self.assertEqual(kwargs["pixel_values"].dim(), 2)
+    self.assertEqual(kwargs["input_ids"][0, 0].item(), 59256)
+    self.assertEqual(kwargs["input_ids"][0, 145].item(), 59257)
+    self.assertEqual(kwargs["mm_token_type_ids"][0, 1].item(), 1)
+
+  def test_transformers_kosmos2_generate_inputs(self):
+    config = mock.MagicMock(
+        model_type="kosmos-2",
+        architectures=["Kosmos2ForConditionalGeneration"],
+        vision_config=mock.MagicMock(patch_size=14),
+        image_size=224,
+        latent_query_num=64,
+        vocab_size=64007,
+        max_position_embeddings=2048,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config,
+        module_registry.Modality.MULTIMODAL,
+        shape=(1, 2048),
+        device="cpu",
+    )
+    self.assertIn("input_ids", kwargs)
+    self.assertIn("pixel_values", kwargs)
+    self.assertIn("image_embeds_position_mask", kwargs)
+    self.assertEqual(
+        kwargs["image_embeds_position_mask"][:, 1:65].sum().item(), 64
+    )
+
+  def test_transformers_sequence_length_clamping(self):
+    config = mock.MagicMock(
+        model_type="electra",
+        architectures=["ElectraForPreTraining"],
+        max_position_embeddings=512,
+        vocab_size=30522,
+    )
+    kwargs = module_registry._generate_transformers_inputs(
+        config, module_registry.Modality.TEXT, shape=(1, 2048), device="cpu"
+    )
+    self.assertEqual(kwargs["input_ids"].shape, (1, 512))
+
   def test_transformers_segformer_get_module_spec(self):
     module_spec = self.module_registry.get_module_spec(
         "transformers", "nvidia/segformer-b2-finetuned-ade-512-512"
@@ -1376,7 +1459,7 @@ class ModuleRegistryTest(seed_test_utils.RepeatableTest):
     cfg_neg = mock.MagicMock(max_position_embeddings=-1)
     self.assertEqual(module_registry._get_max_seq_len(cfg_neg), 512)
 
-    cfg_oversized = mock.MagicMock(max_position_embeddings=100000)
+    cfg_oversized = mock.MagicMock(max_position_embeddings=1000000)
     self.assertEqual(module_registry._get_max_seq_len(cfg_oversized), 512)
 
     cfg_empty = mock.MagicMock(spec=[])

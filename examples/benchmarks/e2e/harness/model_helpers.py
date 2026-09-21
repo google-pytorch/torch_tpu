@@ -96,10 +96,15 @@ def load_hf_llm(
 
   if is_training:
     vocab_size = get_vocab_size(model.config)
+    labels_shape = (
+        inputs["input_ids"].shape
+        if "input_ids" in inputs
+        else (batch_size, seq_len)
+    )
     inputs["labels"] = torch.randint(
         0,
         vocab_size,
-        (batch_size, seq_len),
+        labels_shape,
         device=device_str,
         dtype=torch.long,
         requires_grad=False,

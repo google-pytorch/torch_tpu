@@ -436,6 +436,8 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "flava",
     "florence2",
     "git",
+    "glm4v",
+    "glm_ocr",
     "got_ocr2",
     "grounding-dino",
     "grounding_dino",
@@ -454,6 +456,8 @@ _VISION_LANGUAGE_MODEL_TYPES = (
     "lighton_ocr",
     "llav",
     "llava",
+    "llava_next",
+    "llava_next_video",
     "llmdet",
     "llmdet-swin",
     "llmdet_swin",
@@ -494,7 +498,7 @@ _ALL_SUPPORTED_TRANSFORMERS_MODEL_TYPES = (
     + _MULTIMODAL_MODEL_TYPES
     + _TEXT_MODEL_TYPES
 )
-_MAX_SEQ_LEN_HEURISTIC_CAP = 100_000
+_MAX_SEQ_LEN_HEURISTIC_CAP = 1_000_000
 
 _WEIGHTS_BASE_PATH = flags.DEFINE_string(
     "weights_base_path",
@@ -1467,8 +1471,15 @@ def _generate_transformers_inputs(
   type_str = f"{model_type} {arch_name}"
 
   if modality == Modality.MULTIMODAL:
-    safe_seq_len = min(_get_max_seq_len(config), 512)
-    actual_shape = shape if shape is not None else (1, safe_seq_len)
+    max_pos = _get_max_seq_len(config)
+    safe_seq_len = min(max_pos, 512)
+    if shape is not None:
+      actual_shape = (
+          shape[0],
+          min(shape[1], max_pos) if len(shape) > 1 else safe_seq_len,
+      )
+    else:
+      actual_shape = (1, safe_seq_len)
     vocab_size = _safe_int(
         _get_config_attr(config, "vocab_size")
         or _get_config_attr(
@@ -1548,6 +1559,17 @@ def _generate_transformers_inputs(
             and "pix2struct" not in model_type
             and "instructblip" not in model_type
             and "git" not in model_type
+            and not any(
+                k in model_type
+                for k in [
+                    "qwen2_5_vl",
+                    "qwen_vl",
+                    "qwenvl",
+                    "colqwen",
+                    "glm_ocr",
+                    "glm4v",
+                ]
+            )
         ):
           num_image_tokens = _safe_int(
               _get_config_attr(config, "image_seq_length"),
@@ -1562,31 +1584,32 @@ def _generate_transformers_inputs(
             )
             num_image_tokens = (image_size // patch_size) ** 2
 
-          image_token_id = _safe_int(
-              _get_config_attr(config, "image_token_id")
-              or _get_config_attr(config, "image_token_index"),
-              default=32000,
-          )
+          image_token_id = _get_config_attr(
+              config, "image_token_id"
+          ) or _get_config_attr(config, "image_token_index")
+          if image_token_id is not None:
+            image_token_id = _safe_int(image_token_id, default=None)
 
-          seq_len = input_kwargs["input_ids"].shape[1]
-          if seq_len < num_image_tokens:
-            max_allowed = _get_max_seq_len(config)
-            new_seq_len = min(num_image_tokens + 16, max_allowed)
-            input_kwargs["input_ids"] = torch.randint(
-                0,
-                vocab_size,
-                (batch_size, new_seq_len),
-                generator=g,
-                dtype=torch.long,
-            ).to(device)
-            input_kwargs["attention_mask"] = torch.ones(
-                (batch_size, new_seq_len), device=device, dtype=torch.long
+          if image_token_id is not None:
+            seq_len = input_kwargs["input_ids"].shape[1]
+            if seq_len < num_image_tokens:
+              max_allowed = _get_max_seq_len(config)
+              new_seq_len = min(num_image_tokens + 16, max_allowed)
+              input_kwargs["input_ids"] = torch.randint(
+                  0,
+                  vocab_size,
+                  (batch_size, new_seq_len),
+                  generator=g,
+                  dtype=torch.long,
+              ).to(device)
+              input_kwargs["attention_mask"] = torch.ones(
+                  (batch_size, new_seq_len), device=device, dtype=torch.long
+              )
+
+            inject_tokens = min(
+                num_image_tokens, input_kwargs["input_ids"].shape[1]
             )
-
-          inject_tokens = min(
-              num_image_tokens, input_kwargs["input_ids"].shape[1]
-          )
-          input_kwargs["input_ids"][:, :inject_tokens] = image_token_id
+            input_kwargs["input_ids"][:, :inject_tokens] = image_token_id
 
         if any(k in model_type for k in ["idefics", "smolvlm"]):
           num_images = 1
@@ -1723,13 +1746,191 @@ def _generate_transformers_inputs(
 
         if any(
             k in model_type
-            for k in ["qwen2_vl", "qwen3_vl", "holo", "qwen2_5_vl"]
+            for k in [
+                "qwen2_vl",
+                "qwen3_vl",
+                "holo",
+                "qwen2_5_vl",
+                "qwen_vl",
+                "qwenvl",
+                "colqwen2",
+                "colqwen",
+            ]
         ):
-          grid_h = image_size // 14
-          grid_w = image_size // 14
-          input_kwargs["image_grid_thw"] = torch.tensor(
-              [[1, grid_h, grid_w]], device=device, dtype=torch.long
+          patch_size = _safe_int(
+              _get_config_attr(vision_config, "patch_size"),
+              default=14,
+              min_val=1,
           )
+          temporal_patch_size = _safe_int(
+              _get_config_attr(vision_config, "temporal_patch_size"),
+              default=2,
+              min_val=1,
+          )
+          spatial_merge_size = _safe_int(
+              _get_config_attr(vision_config, "spatial_merge_size"),
+              default=2,
+              min_val=1,
+          )
+          patches_per_side = image_size // patch_size
+          num_img_tokens = (patches_per_side // spatial_merge_size) ** 2
+
+          input_kwargs["pixel_values"] = torch.randn(
+              batch_size * patches_per_side * patches_per_side,
+              num_channels * patch_size * patch_size * temporal_patch_size,
+              generator=g,
+          ).to(device)
+          input_kwargs["image_grid_thw"] = torch.tensor(
+              [[1, patches_per_side, patches_per_side]] * batch_size,
+              device=device,
+              dtype=torch.long,
+          )
+
+          img_token_id = _safe_int(
+              _get_config_attr(config, "image_token_id"), default=151652
+          )
+          needed_len = num_img_tokens + 4
+          cur_seq_len = input_kwargs["input_ids"].shape[1]
+          if cur_seq_len < needed_len:
+            max_allowed = _get_max_seq_len(config)
+            new_seq_len = min(needed_len, max_allowed)
+            input_kwargs["input_ids"] = torch.randint(
+                0,
+                min(vocab_size, 50000),
+                (batch_size, new_seq_len),
+                generator=g,
+                dtype=torch.long,
+            ).to(device)
+            input_kwargs["attention_mask"] = torch.ones(
+                (batch_size, new_seq_len), device=device, dtype=torch.long
+            )
+            cur_seq_len = new_seq_len
+
+          valid_tokens = min(num_img_tokens, max(0, cur_seq_len - 1))
+          if valid_tokens > 0:
+            input_kwargs["input_ids"][:, 1 : 1 + valid_tokens] = img_token_id
+            mm_types = torch.zeros_like(
+                input_kwargs["input_ids"], dtype=torch.int
+            )
+            mm_types[:, 1 : 1 + valid_tokens] = 1
+            input_kwargs["mm_token_type_ids"] = mm_types
+
+        if any(k in model_type for k in ["glm_ocr", "glm4v"]):
+          patch_size = _safe_int(
+              _get_config_attr(vision_config, "patch_size"),
+              default=14,
+              min_val=1,
+          )
+          temporal_patch_size = _safe_int(
+              _get_config_attr(vision_config, "temporal_patch_size"),
+              default=2,
+              min_val=1,
+          )
+          spatial_merge_size = _safe_int(
+              _get_config_attr(vision_config, "spatial_merge_size"),
+              default=2,
+              min_val=1,
+          )
+          patches_per_side = image_size // patch_size
+          num_img_tokens = (patches_per_side // spatial_merge_size) ** 2
+
+          input_kwargs["pixel_values"] = torch.randn(
+              batch_size * patches_per_side * patches_per_side,
+              num_channels * patch_size * patch_size * temporal_patch_size,
+              generator=g,
+          ).to(device)
+          input_kwargs["image_grid_thw"] = torch.tensor(
+              [[1, patches_per_side, patches_per_side]] * batch_size,
+              device=device,
+              dtype=torch.long,
+          )
+
+          img_start_id = _safe_int(
+              _get_config_attr(config, "image_start_token_id"), default=59256
+          )
+          img_token_id = _safe_int(
+              _get_config_attr(config, "image_token_id"), default=59280
+          )
+          img_end_id = _safe_int(
+              _get_config_attr(config, "image_end_token_id"), default=59257
+          )
+
+          needed_len = num_img_tokens + 4
+          cur_seq_len = input_kwargs["input_ids"].shape[1]
+          if cur_seq_len < needed_len:
+            max_allowed = _get_max_seq_len(config)
+            new_seq_len = min(needed_len, max_allowed)
+            input_kwargs["input_ids"] = torch.randint(
+                0,
+                min(vocab_size, 50000),
+                (batch_size, new_seq_len),
+                generator=g,
+                dtype=torch.long,
+            ).to(device)
+            input_kwargs["attention_mask"] = torch.ones(
+                (batch_size, new_seq_len), device=device, dtype=torch.long
+            )
+            cur_seq_len = new_seq_len
+
+          valid_tokens = min(num_img_tokens, max(0, cur_seq_len - 2))
+          if cur_seq_len > 0:
+            input_kwargs["input_ids"][:, 0] = img_start_id
+          if valid_tokens > 0:
+            input_kwargs["input_ids"][:, 1 : 1 + valid_tokens] = img_token_id
+          if 1 + valid_tokens < cur_seq_len:
+            input_kwargs["input_ids"][:, 1 + valid_tokens] = img_end_id
+
+          mm_types = torch.zeros_like(
+              input_kwargs["input_ids"], dtype=torch.int
+          )
+          if valid_tokens > 0:
+            mm_types[:, 1 : 1 + valid_tokens] = 1
+          input_kwargs["mm_token_type_ids"] = mm_types
+
+        if "kosmos" in model_type:
+          latent_query_num = _safe_int(
+              _get_config_attr(config, "latent_query_num"),
+              default=64,
+              min_val=1,
+          )
+          cur_seq_len = input_kwargs["input_ids"].shape[1]
+          if cur_seq_len < latent_query_num + 2:
+            max_allowed = _get_max_seq_len(config)
+            new_seq_len = min(latent_query_num + 16, max_allowed)
+            input_kwargs["input_ids"] = torch.randint(
+                0,
+                vocab_size,
+                (batch_size, new_seq_len),
+                generator=g,
+                dtype=torch.long,
+            ).to(device)
+            input_kwargs["attention_mask"] = torch.ones(
+                (batch_size, new_seq_len), device=device, dtype=torch.long
+            )
+            cur_seq_len = new_seq_len
+
+          pos_mask = torch.zeros(
+              (batch_size, cur_seq_len), device=device, dtype=torch.long
+          )
+          pos_mask[:, 1 : 1 + latent_query_num] = 1
+          input_kwargs["image_embeds_position_mask"] = pos_mask
+
+          if "kosmos-2.5" in model_type or "kosmos_2_5" in model_type:
+            patch_size = _safe_int(
+                _get_config_attr(vision_config, "patch_size"),
+                default=16,
+                min_val=1,
+            )
+            num_patches = (image_size // patch_size) ** 2
+            patch_dim = patch_size * patch_size * num_channels + 2
+            input_kwargs["flattened_patches"] = torch.randn(
+                batch_size,
+                num_patches + 1,
+                patch_dim,
+                generator=g,
+                device=device,
+            )
+            input_kwargs.pop("pixel_values", None)
 
         if "xclip" in model_type:
           num_frames = _safe_int(
@@ -2264,8 +2465,15 @@ def _generate_transformers_inputs(
       ).to(device)
 
   else:  # text_default, causal_lm, seq2seq
-    safe_seq_len = min(_get_max_seq_len(config), 512)
-    actual_shape = shape if shape is not None else (1, safe_seq_len)
+    max_pos = _get_max_seq_len(config)
+    safe_seq_len = min(max_pos, 512)
+    if shape is not None:
+      actual_shape = (
+          shape[0],
+          min(shape[1], max_pos) if len(shape) > 1 else safe_seq_len,
+      )
+    else:
+      actual_shape = (1, safe_seq_len)
     batch_size = actual_shape[0]
     text_cfg = _get_config_attr(config, "text_config")
     vocab_size = _safe_int(
