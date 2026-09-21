@@ -259,6 +259,7 @@ _BUILD_TEST_EXCLUDED_TAGS = (
     "nopresubmit",
     "notest",
     "nonightly",
+    "ops-test",
 )
 
 def _sort_inplace(a_list):
@@ -441,7 +442,7 @@ def _check_and_adjust_test_tags(
     create_build_test = False
     build_test_tags = []
     if is_oss:
-        create_build_test = ("notest" in tags or "nonightly" in tags or "nopresubmit" in tags) and "nobuild" not in tags
+        create_build_test = ("notest" in tags or "nonightly" in tags or "nopresubmit" in tags or "ops-test" in tags) and "nobuild" not in tags
     else:
         create_build_test = "notap" in tags and "nobuild" not in tags  # NOTAP_OK=for implementing notap logic
     if create_build_test:

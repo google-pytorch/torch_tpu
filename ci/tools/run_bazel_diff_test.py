@@ -23,7 +23,7 @@ from ci.tools import run_bazel_diff
 
 
 class RunBazelDiffTest(unittest.TestCase):
-  """Tests argument parsing and file classification in run_bazel_diff.py."""
+  """Tests argument parsing, file classification, and ops-test filtering."""
 
   def test_parse_args_named_flags(self):
     opts = run_bazel_diff.parse_args([
@@ -174,6 +174,60 @@ class RunBazelDiffTest(unittest.TestCase):
           ValueError, "Workspace directory does not exist"
       ):
         run_bazel_diff.main([f"--workspace-dir={missing_dir}"])
+
+  def test_should_run_ops_tests(self):
+    opted_in_files = [
+        "csrc/ops/add.cc",
+        "csrc/ops/experimental/foo.h",
+        "src/torch_tpu/ops/custom_op.py",
+        "tests/op_testing.py",
+        "tests/ops_test.py",
+        "tests/ops_test_data.py",
+        "tests/dynamism_test_utils.py",
+        "tests/ops_test_gpu_golden_v1.json.gz",
+    ]
+    for opted_in_file in opted_in_files:
+      with self.subTest(opted_in=opted_in_file):
+        self.assertTrue(
+            run_bazel_diff.should_run_ops_tests(["README.md", opted_in_file])
+        )
+
+    opted_out_files = [
+        "csrc/eager/runtime.cc",
+        "src/torch_tpu/compiler/pass.py",
+        "tests/eager_test.py",
+        # The patterns match whole paths, so these near-misses stay opted out.
+        "tests/other_dynamism_test_utils.py",
+        "tests/ops_test.py.orig",
+        "csrc/ops_fusion/fuse.cc",
+    ]
+    with self.subTest(opted_out=opted_out_files):
+      self.assertFalse(run_bazel_diff.should_run_ops_tests(opted_out_files))
+
+  def test_filter_ops_test_targets(self):
+    impacted = [
+        "@@//tests:eager_test_tpu-v5lite",
+        "@@//tests:ops_test_tpu-v5lite",
+        "@@//tests:ops_test_tpu-v5lite_build_test",
+        "//tests:foreach_ops_test_tpu-v7x",
+        "@@//csrc/eager:traversal_test",
+    ]
+    ops_targets = [
+        "//tests:ops_test_tpu-v5lite",
+        "//tests:foreach_ops_test_tpu-v7x",
+        "//tests:searchsorted_ops_test_tpu-v5lite",
+    ]
+    filtered = list(
+        run_bazel_diff.filter_ops_test_targets(impacted, ops_targets)
+    )
+    self.assertEqual(
+        filtered,
+        [
+            "@@//tests:eager_test_tpu-v5lite",
+            "@@//tests:ops_test_tpu-v5lite_build_test",
+            "@@//csrc/eager:traversal_test",
+        ],
+    )
 
 
 if __name__ == "__main__":

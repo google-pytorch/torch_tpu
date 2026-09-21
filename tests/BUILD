@@ -410,6 +410,7 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OPS_TEST_ON_V7_TAGS,
     deps = [
         ":dynamism_test_utils",
@@ -451,6 +452,7 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OPS_TEST_ON_V7_TAGS,
     deps = [
         ":dynamism_test_utils",
@@ -492,6 +494,7 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the test timing out in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OPS_TEST_ON_V7_TAGS,
     deps = [
         ":dynamism_test_utils",
@@ -533,6 +536,7 @@ torch_tpu_py_test(
         "noasan",  # TODO: fix the timeout of test_grid_sampler in asan mode.
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the timeout of test_grid_sampler in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -574,6 +578,7 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -618,6 +623,7 @@ torch_tpu_py_test(
     tags = [
         "nosan",  # Rely on ops_test_grad for *san coverage.
         "ok-to-wait-for-v6e-in-presubmit",
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -659,6 +665,7 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ] + _OPS_TEST_ON_V7_TAGS,
     deps = [
         ":dynamism_test_utils",
@@ -698,6 +705,7 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.  # This test times out in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -741,6 +749,7 @@ torch_tpu_py_test(
         "noasan",  # This test times out in asan mode.
         "nomsan",  # This test times out in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -824,6 +833,7 @@ torch_tpu_py_test(
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",
@@ -859,6 +869,7 @@ torch_tpu_py_test(
     tags = [
         "nomsan",  # TODO: fix the test in msan mode.
         "notsan",  # TODO: fix the test in tsan mode.
+        "ops-test",  # Heavy ops test: see run_bazel_diff.py for details.
     ],
     deps = [
         ":dynamism_test_utils",

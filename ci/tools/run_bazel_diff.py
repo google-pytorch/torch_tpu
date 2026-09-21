@@ -77,6 +77,27 @@ _DOC_OR_METADATA_REGEX: Final[re.Pattern[str]] = re.compile(
     r"^(" + "|".join(DOC_OR_METADATA_PATTERNS) + r")$"
 )
 
+# The OpInfo matrix tests (tagged as "ops-test") are by far the most expensive
+# tests in CI: they sweep the whole op_db across dtypes and TPU generations.
+# They also depend on the monolithic pywrap_torch_tpu library, so bazel-diff
+# marks them impacted by almost any change. Run them only for changes to the
+# operator lowerings and the harness they actually exercise.
+# One regex per entry.
+OPS_TEST_PATHS: Final[Sequence[str]] = (
+    # go/keep-sorted start
+    r"csrc/ops/.*",
+    r"src/torch_tpu/ops/.*",
+    r"tests/dynamism_test_utils\.py",
+    r"tests/op_testing\.py",
+    r"tests/ops_test\.py",
+    r"tests/ops_test_data\.py",
+    r"tests/ops_test_gpu_golden.*",
+    # go/keep-sorted end
+)
+_OPS_TEST_PATHS_REGEX: Final[re.Pattern[str]] = re.compile(
+    r"^(" + "|".join(OPS_TEST_PATHS) + r")$"
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class BazelDiffOptions:
@@ -151,6 +172,23 @@ def is_doc_or_metadata_file(path: str) -> bool:
 def are_all_files_doc_or_metadata(changed_files: Sequence[str]) -> bool:
   """Returns True if all paths in changed_files are doc/metadata."""
   return all(is_doc_or_metadata_file(f) for f in changed_files)
+
+
+def should_run_ops_tests(changed_files: Sequence[str]) -> bool:
+  """Returns True if any changed file matches OPS_TEST_PATHS."""
+  return any(_OPS_TEST_PATHS_REGEX.search(f) for f in changed_files)
+
+
+def filter_ops_test_targets(
+    impacted_targets: Sequence[str],
+    ops_test_targets: Sequence[str],
+) -> Sequence[str]:
+  """Subtracts ops-test targets from impacted_targets, preserving order."""
+  # bazel-diff under Bzlmod outputs canonical labels prefixed with "@@//"
+  # (e.g. "@@//tests:ops_test"), whereas `bazel query` outputs apparent labels
+  # starting with "//" (e.g. "//tests:ops_test"). Normalize both before matching.
+  ops_set = {t.removeprefix("@@") for t in ops_test_targets}
+  return [t for t in impacted_targets if t.removeprefix("@@") not in ops_set]
 
 
 def read_targets_file(path: pathlib.Path) -> Sequence[str]:
@@ -268,6 +306,7 @@ def main(argv: Sequence[str]) -> int:
   base_sha = resolve_base_sha(workspace_dir, opts.current_sha, opts.base_sha)
   current_sha = opts.current_sha
   test_all = opts.test_all
+  run_ops_tests = True
 
   # Check if global Bazel configurations were modified. If so, bypass bazel-diff
   # to guarantee a full build validation.
@@ -294,6 +333,10 @@ def main(argv: Sequence[str]) -> int:
           "No test targets impacted by these changes. Skipping Bazel entirely!"
       )
       return 0
+
+    run_ops_tests = should_run_ops_tests(changed_files)
+    if run_ops_tests:
+      print("Operator lowering or OpInfo harness modified; keeping ops-test.")
 
   # If BASE_SHA is empty (e.g., workflow_dispatch, postsubmit, nightly on main)
   # or label "ci:disable-bazel-diff" is applied, diff-based testing is invalid.
@@ -374,11 +417,39 @@ def main(argv: Sequence[str]) -> int:
   )
 
   impacted_targets = read_targets_file(impacted_targets_file)
+
+  # When no files under OPS_TEST_PATHS were modified, query Bazel for all
+  # targets tagged "ops-test" and subtract them from the impacted target list.
+  # Their generated *_build_test targets remain in impacted_targets.txt so the
+  # test binaries are still compiled on every PR.
+  if not run_ops_tests and impacted_targets:
+    print(
+        "No operator lowering or OpInfo harness changes; dropping ops-test"
+        " targets."
+    )
+    query_res = subprocess.run(
+        ["bazel", "query", r'attr(tags, "\bops-test\b", //tests/...)'],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ops_test_targets = list(
+        filter(None, map(str.strip, query_res.stdout.splitlines()))
+    )
+    if ops_test_targets:
+      impacted_targets = filter_ops_test_targets(
+          impacted_targets, ops_test_targets
+      )
+      impacted_targets_file.write_text(
+          "\n".join(impacted_targets) + ("\n" if impacted_targets else ""),
+          encoding="utf-8",
+      )
+
   print("--- Running Impacted Bazel Tests ---")
   if impacted_targets:
     print(f"Found {len(impacted_targets)} impacted target(s).")
     print("--- Impacted Targets List ---")
-    for target in impacted_targets:
+    for target in sorted(impacted_targets):
       print(target)
     print("-----------------------------")
 

@@ -540,6 +540,17 @@ def _test_build_test_excludes_tpu_tags(env):
     env.expect.that_bool(result.create_build_test).equals(True)
     env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
 
+def _test_ops_test_build_test(env):
+    """Tests that ops-test generates a build_test in OSS with ops-test and TPU tags excluded."""
+    tags = ["custom_tag", "ops-test", "requires-tpu-v5lite"]
+    result = check_and_adjust_test_tags_for_testing(
+        is_oss = True,
+        tags = tags,
+    )
+
+    env.expect.that_bool(result.create_build_test).equals(True)
+    env.expect.that_collection(result.build_test_tags).contains_exactly(["custom_tag"])
+
 def _test_cuda_build_test(env):
     """Tests the notap parameter for CUDA tests."""
     tags = ["requires-gpu-sm90"]
@@ -767,6 +778,7 @@ def build_defs_test_suite(name):
             _test_nolocal,
             _test_nopresubmit,
             _test_notap,
+            _test_ops_test_build_test,
             _test_oss_manual_nonightly_oss_tag,
             _test_oss_manual_nopresubmit_oss_tag,
             _test_oss_nobuild_oss,
