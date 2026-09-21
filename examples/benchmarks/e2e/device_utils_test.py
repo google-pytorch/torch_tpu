@@ -40,7 +40,7 @@ class DeviceUtilsTest(seed_test_utils.RepeatableTest):
 
     # Run it to trigger compilation
     _ = compiled_model(x)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     peak_mem = device_utils.get_peak_host_compilation_memory_mb('tpu')
     self.assertIsNotNone(peak_mem)

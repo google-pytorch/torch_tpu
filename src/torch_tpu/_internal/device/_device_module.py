@@ -196,8 +196,15 @@ def _get_device_index(
   )
 
 
+@experimental(
+    "device() context manager is experimental and subject to change without"
+    " notice."
+)
 class _DeviceContext:
   r"""Context-manager that changes the selected device.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   Args:
     device: device index to select. It's a no-op if this argument is a negative
@@ -216,8 +223,15 @@ class _DeviceContext:
     return False
 
 
+@experimental(
+    "device_of() context manager is experimental and subject to change without"
+    " notice."
+)
 class _DeviceOfContext(_DeviceContext):
   r"""Context-manager that changes the current device to that of given object.
+
+  .. warning::
+      This API is experimental and subject to change in future releases.
 
   You can use both tensors and storages as arguments. If a given object is
   not allocated on a TPU, this is a no-op.
@@ -402,10 +416,16 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls.default_generators[idx]
 
   @classmethod
+  @experimental(
+      "set_device() is experimental and subject to change without notice."
+  )
   def set_device(
       cls, device: int | str | torch.device
   ) -> None:  # This is in torch/cuda/__init__.py.
     """Sets the current device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
 
     For TPUs, this method primarily validates that the given device index
     matches the device index assigned to the current process. Unlike CUDA,
@@ -468,8 +488,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
   maybe_exchange_device = _maybe_exchange_device
 
   @classmethod
+  @experimental(
+      "is_available() is experimental and subject to change without notice."
+  )
   def is_available(cls) -> bool:  # This is in torch/cuda/__init__.py.
-    """Returns if the TPU backend is currently available."""
+    """Returns if the TPU backend is currently available.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._device_type == "tpu":
       return cls.device_count() > 0
     if cls._device_type == "xla_cpu":
@@ -606,8 +633,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
         cls._atexit_registered = True
 
   @classmethod
+  @experimental(
+      "synchronize() is experimental and subject to change without notice."
+  )
   def synchronize(cls, device: int | None = None) -> None:
-    """Waits for all kernels in all streams on a TPU device to complete."""
+    """Waits for all kernels in all streams on a TPU device to complete.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     streams.synchronize(device)
 
   @classmethod
@@ -633,8 +667,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return cls._device_count
 
   @classmethod
+  @experimental(
+      "stream() is experimental and subject to change without notice."
+  )
   def stream(cls, stream: streams.TpuStream | None) -> "TpuStreamContext":
-    """Wrapper for a context manager that selects a given TPUStream."""
+    """Wrapper for a context manager that selects a given TPUStream.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     return TpuStreamContext(stream)
 
   @classmethod
@@ -673,8 +714,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     )
 
   @classmethod
+  @experimental(
+      "set_stream() is experimental and subject to change without notice."
+  )
   def set_stream(cls, stream: streams.TpuStream) -> None:
-    """Sets the current stream."""
+    """Sets the current stream.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     # pylint: disable=protected-access
     _device_ops_backend._set_current_stream_id(stream.stream_id)
 

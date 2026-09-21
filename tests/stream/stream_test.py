@@ -51,6 +51,43 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     z = y + y
     z.to('cpu')
 
+  def test_stream_context_manager_and_set_stream(self):
+    """Verifies stream context manager and set_stream behavior."""
+    default_stream = torch.tpu.default_stream()
+    new_stream = torch.tpu.Stream()
+
+    # Initial state: default stream is active
+    self.assertEqual(
+        torch.tpu.current_stream().stream_id, default_stream.stream_id
+    )
+
+    # 1. set_stream updates current_stream
+    torch.tpu.set_stream(new_stream)
+    self.assertEqual(torch.tpu.current_stream().stream_id, new_stream.stream_id)
+
+    torch.tpu.set_stream(default_stream)
+    self.assertEqual(
+        torch.tpu.current_stream().stream_id, default_stream.stream_id
+    )
+
+    # 2. with stream(s): changes current_stream and restores it upon exit
+    with torch.tpu.stream(new_stream):
+      self.assertEqual(
+          torch.tpu.current_stream().stream_id, new_stream.stream_id
+      )
+    self.assertEqual(
+        torch.tpu.current_stream().stream_id, default_stream.stream_id
+    )
+
+    # 3. with stream(None): is a no-op
+    with torch.tpu.stream(None):
+      self.assertEqual(
+          torch.tpu.current_stream().stream_id, default_stream.stream_id
+      )
+    self.assertEqual(
+        torch.tpu.current_stream().stream_id, default_stream.stream_id
+    )
+
   def test_stream_unimplemented_method(self):
 
     expected_msg = (
@@ -86,7 +123,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     t_cpu.copy_(t_tpu, non_blocking=True)
 
     # Calling synchronize without arguments should sync the current device
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Verify data integrity
     utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
@@ -102,7 +139,7 @@ class TpuStreamsTest(seed_test_utils.RepeatableTest):
     t_cpu.copy_(t_tpu, non_blocking=True)
 
     def sync_and_check():
-      torch.tpu.synchronize()
+      torch.accelerator.synchronize()
       # Verify data integrity
       utils.assert_close(t_cpu, torch.ones(size, dtype=torch.float32))
 

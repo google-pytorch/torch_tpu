@@ -35,7 +35,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     cpu_dst = torch.empty_like(c, device='cpu', pin_memory=True)
     # Warm up the compilation.
     cpu_dst.copy_(c, non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # 2. Main test: measure immediate return of a TPU computation copy.
     a2_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
@@ -50,7 +50,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
     cpu_dst.copy_(c2, non_blocking=True)
     async_duration = time.time() - t0
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # 3. Measure blocking return of the same size
     a3_cpu = torch.randint(1, 10, (size, size), dtype=torch.int32)
@@ -218,7 +218,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
 
     # Warmup
     _ = cpu_tensor.to('tpu', non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # Reset host tensor to 1s
     cpu_tensor.fill_(1.0)
@@ -228,7 +228,7 @@ class AsyncTransferTest(seed_test_utils.RepeatableTest):
 
     # 3. Synchronize
     # (Should wait for the H2D future registered via RecordAsyncHostToDevice)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     # 4. Modify the host tensor immediately after synchronize
     cpu_tensor.fill_(2.0)

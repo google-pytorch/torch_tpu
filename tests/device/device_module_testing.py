@@ -231,12 +231,21 @@ class DeviceModuleBase(
       _device_module._rng_validate_device_index(1, 0)
 
   def test_set_device_valid(self):
-    with self.patch_current_device():
-      # Test valid int
+    with self.patch_current_device(device_id=0):
+      # Test valid integer index
       self.device_module.set_device(0)
+      self.assertEqual(self.device_module.current_device(), 0)
 
-      # Test valid string
-      self.device_module.set_device("tpu")
+      # Test valid string and torch.device
+      if self.device_module._device_type == "tpu":
+        self.device_module.set_device("tpu")
+        self.assertEqual(self.device_module.current_device(), 0)
+
+        self.device_module.set_device(torch.device("tpu"))
+        self.assertEqual(self.device_module.current_device(), 0)
+
+        self.device_module.set_device(torch.device("tpu:0"))
+        self.assertEqual(self.device_module.current_device(), 0)
 
   def test_set_device_invalid_index(self):
     with self.patch_current_device():
@@ -261,22 +270,34 @@ class DeviceModuleBase(
         self.device_module.set_device(1.0)
 
   def test_device_context_manager(self):
-    with self.patch_current_device():
-      # Valid int
-      with self.device_module.device(0):
-        pass
+    with self.patch_current_device(device_id=0):
+      # Valid int: verifies device selection and context restoration
+      ctx = self.device_module.device(0)
+      self.assertEqual(ctx.idx, 0)
+      with ctx:
+        self.assertEqual(ctx.prev_idx, 0)
+      self.assertEqual(ctx.idx, 0)
+
       # Valid string and torch.device if registered
       if self.device_module._device_type == "tpu":
         with self.device_module.device("tpu"):
-          pass
+          self.assertEqual(self.device_module.current_device(), 0)
+
         with self.device_module.device(torch.device("tpu:0")):
-          pass
-      # None is a no-op / current device
-      with self.device_module.device(None):
-        pass
+          self.assertEqual(self.device_module.current_device(), 0)
+
+      # None resolves to current device (0), keeping the active device context
+      none_ctx = self.device_module.device(None)
+      self.assertEqual(none_ctx.idx, 0)
+      with none_ctx:
+        self.assertEqual(none_ctx.prev_idx, 0)
+
       # Negative int is a no-op
-      with self.device_module.device(-1):
-        pass
+      neg_ctx = self.device_module.device(-1)
+      self.assertEqual(neg_ctx.idx, -1)
+      with neg_ctx:
+        self.assertEqual(neg_ctx.prev_idx, -1)
+
       # Invalid device index raises ValueError
       with self.assertRaisesRegex(
           ValueError, "Cannot set TPU device to index 1"
@@ -285,15 +306,36 @@ class DeviceModuleBase(
           pass
 
   def test_device_of_context_manager(self):
-    with self.patch_current_device():
-      tpu_tensor = torch.zeros(
-          1, device=torch.accelerator.current_accelerator()
-      )
-      with self.device_module.device_of(tpu_tensor):
-        pass
+    with self.patch_current_device(device_id=0):
+      # If device backend is TPU, TPU tensor extracts device index 0
+      if self.device_module._device_type == "tpu":
+        tpu_tensor = torch.zeros(1, device="tpu")
+        tpu_ctx = self.device_module.device_of(tpu_tensor)
+        self.assertEqual(tpu_ctx.idx, 0)
+        with tpu_ctx:
+          self.assertEqual(tpu_ctx.prev_idx, 0)
+
+      # CPU tensor is not on TPU, so it acts as a no-op (idx = -1)
       cpu_tensor = torch.zeros(1, device="cpu")
-      with self.device_module.device_of(cpu_tensor):
-        pass
+      cpu_ctx = self.device_module.device_of(cpu_tensor)
+      self.assertEqual(cpu_ctx.idx, -1)
+      with cpu_ctx:
+        self.assertEqual(cpu_ctx.prev_idx, -1)
+
+  def test_is_available(self):
+    """Verifies that is_available returns a boolean."""
+    is_avail = self.device_module.is_available()
+    self.assertIsInstance(is_avail, bool)
+    if self.device_module._device_type == "tpu":
+      self.assertEqual(is_avail, self.device_module.device_count() > 0)
+    elif self.device_module._device_type == "xla_cpu":
+      self.assertTrue(is_avail)
+
+  def test_synchronize(self):
+    """Verifies that device_module.synchronize executes cleanly."""
+    self.device_module.synchronize()
+    self.device_module.synchronize(0)
+    self.device_module.synchronize(None)
 
   def test_exchange_device(self):
     with self.patch_current_device(device_id=0):

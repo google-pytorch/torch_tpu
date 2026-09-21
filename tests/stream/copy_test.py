@@ -29,7 +29,7 @@ class CopyTest(seed_test_utils.RepeatableTest):
 
     # This should use the direct copy loop in tpu_to_cpu.cc
     t_cpu.copy_(t_tpu, non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     utils.assert_close(t_cpu, t_tpu.to('cpu'))
 
@@ -43,7 +43,7 @@ class CopyTest(seed_test_utils.RepeatableTest):
 
     # This should use the fallback (copy through intermediate)
     t_cpu.copy_(t_tpu, non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     utils.assert_close(t_cpu, t_tpu.to('cpu'))
 
@@ -57,7 +57,7 @@ class CopyTest(seed_test_utils.RepeatableTest):
 
     # This should use the fallback (copy through intermediate or ATen copy)
     t_cpu.copy_(t_tpu, non_blocking=True)
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
     utils.assert_close(t_cpu, t_tpu.to('cpu').to(torch.float64))
 

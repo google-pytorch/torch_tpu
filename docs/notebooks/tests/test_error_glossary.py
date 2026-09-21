@@ -103,7 +103,7 @@ def test_optracer_diagnostic(device):
       .to(device)
       .to(torch.bfloat16)
   )
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
 
   tracer = utils.OpTracer()
   x_diag = torch.randn(4, 32, device=device, dtype=torch.bfloat16)

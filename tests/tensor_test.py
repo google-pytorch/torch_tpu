@@ -300,7 +300,7 @@ def materialize(*tensors: Tuple[torch.Tensor, ...]) -> None:
   Args:
     *tensors: Tensors to materialize.
   """
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   del tensors
 
 

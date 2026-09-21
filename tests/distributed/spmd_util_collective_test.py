@@ -65,7 +65,7 @@ def run_spmd_safe_decorator_test(compile_test: bool = False):
   else:
     with execution_mode.set_eager_mode(EagerMode.DEFER_AND_FUSE):
       res = eager_fused_all_reduce(x)
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
   del res
 
 
@@ -81,7 +81,7 @@ def run_spmd_safe_decorator_backward_test():
   res = compiled_fn(x)
   loss = res.sum()
   loss.backward()
-  torch.tpu.synchronize()
+  torch.accelerator.synchronize()
 
 
 def run_uncoordinated_op_stream_test():
@@ -103,7 +103,7 @@ def run_uncoordinated_op_stream_test():
 
       x = foo(x)
 
-    torch.tpu.synchronize()
+    torch.accelerator.synchronize()
 
 
 def run_spmd_safe_dtensor_compile_test():
