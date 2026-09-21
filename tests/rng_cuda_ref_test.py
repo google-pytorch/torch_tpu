@@ -1259,16 +1259,6 @@ class MultiThreadRngTest(_BaseRngTest):
   @torch._inductor.config.patch(compile_threads=1)
   def test_concurrent_compile_tracing_and_eager_rng(self):
     """Verifies concurrent eager RNG operations during torch.compile tracing."""
-    if self.backend == "tpu":
-      # b/556256460: The race condition between concurrent eager RNG operations
-      # and compilation tracing causes a fatal C++ CHECK failure (SIGABRT) in
-      # the runtime, terminating the test process. Because _fail_on_tpu only
-      # catches Python exceptions, this test must be skipped on TPU until a fix
-      # lands.
-      self.skipTest(
-          "b/556256460: Concurrent eager RNG execution during compilation"
-          " tracing hits unmaterialized placeholder state."
-      )
     # Force single-threaded compilation: the env var prevents subprocess
     # spawning in hermetic test runners, while compile_threads=1 enforces
     # single-threaded compilation in this thread's ContextVar scope.
