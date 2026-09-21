@@ -34,7 +34,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "torch/headeronly/core/ScalarType.h"
 #include "tsl/profiler/lib/traceme.h"

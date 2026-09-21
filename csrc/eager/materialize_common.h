@@ -29,11 +29,10 @@
 #include "absl/types/span.h"
 #include "csrc/common/compilation.h"
 #include "csrc/common/compilation_spec.h"
-#include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_execute.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/pjrt/pjrt_client.h"
 

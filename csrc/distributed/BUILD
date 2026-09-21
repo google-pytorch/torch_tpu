@@ -30,7 +30,7 @@ torch_tpu_cc_library(
         "//csrc/eager:device_buffer",
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
-        "//csrc/pjrt:pjrt_utils",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",
         "//shims/torch/c10/util:base_headers",

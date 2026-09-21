@@ -25,7 +25,6 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "c10/core/Device.h"
 #include "c10/core/Stream.h"
 #include "csrc/common/cache_key.h"
@@ -33,6 +32,7 @@
 #include "csrc/common/compilation_spec.h"
 #include "csrc/common/context_states.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/materialize_common.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "xla/future.h"
@@ -69,9 +69,10 @@ void ResetRepeatedOpsHeuristicState();
 // prior stream futures, and resets to only a single default stream per device.
 void ClearAllStreams();
 
-// Tracks that a background materialization has been started for the given
-// outputs on the current stream.
-void RecordBackgroundMaterialization(absl::Span<const DeviceBufferRef> outputs);
+// Tracks that a compiled mode execution task has been created.
+void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
+                                 c10::DeviceIndex device_index,
+                                 c10::StreamId stream_id, EagerMode eager_mode);
 
 // Tracks that an async host-to-device copy has been started that will populate
 // the given DeviceBufferRef.
@@ -158,7 +159,12 @@ struct MaterializationSettings {
 // A snapshot to be materialized.
 struct PendingSnapshotMaterialization {
   // The traversals that must be executed to materialize the snapshot.
+  // This may be empty if there has been no eager mode work since the last
+  // snapshot.
   std::vector<absl_nonnull std::unique_ptr<Traversal>> traversals;
+  // If the snapshot includes a compiled mode execution task, it will be stored
+  // here.
+  std::optional<ExecutionTask> execution_task;
   // The nodes that were expected to be materialized by the traversals.
   std::vector<SharedDeviceBufferList> must_materialize;
   // Settings for the materialization.

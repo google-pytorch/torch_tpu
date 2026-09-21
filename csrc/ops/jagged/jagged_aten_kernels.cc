@@ -45,7 +45,7 @@
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Builders.h"

@@ -38,7 +38,7 @@
 #include "csrc/eager/tensor_to_buffer.h"
 #include "csrc/ops/macros/kernel.h"
 #include "csrc/ops/op_names.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 
 namespace torch_tpu {
 namespace {

@@ -51,6 +51,7 @@
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/eager_mode.h"
+#include "csrc/eager/materialize_common.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_builder_utils.h"
@@ -268,6 +269,9 @@ class StreamState {
     MaterializationSettings materialization_settings;
     // Live nodes that must be materialized by the snapshot if deferred.
     absl::flat_hash_map<SharedDeviceBufferList, int64_t> live_nodes;
+    // If the snapshot includes a compiled mode execution task, it will be
+    // stored here. This is always the last task in the snapshot.
+    std::optional<ExecutionTask> execution_task;
     // The promise which can be used to provide the snapshot once is it
     // defined.
     xla::Promise<std::shared_ptr<EventSnapshot>> snapshot_promise;
@@ -341,28 +345,8 @@ class StreamState {
       MaterializationReason reason, MaterializationMode mode,
       EagerMode eager_mode) {
     absl::MutexLock lock(mu_);
-    auto [snapshot_promise, snapshot_future] =
-        xla::MakePromise<std::shared_ptr<EventSnapshot>>();
-    // Explanation: synchronizing the last EventSnapshot should also await all
-    // prior EventSnapshots. We achieve this by chaining a promise/future;
-    // each event snapshot will have a future that will be set by the prior
-    // event snapshot.
-    auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
-    snapshot_future.OnReady([chaining_promise = std::move(chaining_promise)](
-                                absl::StatusOr<std::shared_ptr<EventSnapshot>>
-                                    snapshot_or) mutable {
-      if (!snapshot_or.ok()) {
-        chaining_promise.Set(absl::OkStatus());
-      } else {
-        (*snapshot_or)->OkCallback(std::move(chaining_promise));
-      }
-    });
-    events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
-        std::move(futures_), std::move(must_materialize),
-        MaterializationSettings(reason, mode, eager_mode),
-        std::move(live_nodes_), std::move(snapshot_promise)));
-    futures_.push_back(std::move(chaining_future));
-    return snapshot_future;
+    return RequestEventSnapshotLocked(std::move(must_materialize), reason, mode,
+                                      eager_mode);
   }
 
   std::deque<StreamEvent> GetSnapshotEvents() {
@@ -424,6 +408,17 @@ class StreamState {
                     std::make_move_iterator(new_futures.end()));
   }
 
+  void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
+                                   EagerMode eager_mode) {
+    absl::MutexLock lock(mu_);
+    RequestEventSnapshotLocked(
+        /*must_materialize=*/{}, MaterializationReason::kCompileModeExecution,
+        MaterializationMode::kSplitGraph, eager_mode);
+    EventSnapshotRequest& request =
+        *std::get<std::unique_ptr<EventSnapshotRequest>>(events_queue_.back());
+    request.execution_task = std::move(execution_task);
+  }
+
   xla::Future<void> JoinFutures() {
     absl::MutexLock lock(mu_);
     if (!futures_.empty()) {
@@ -439,9 +434,6 @@ class StreamState {
   }
 
  private:
-  absl::Mutex mu_;
-  std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
-
   // Result of CheckLastRepeatedSequence, representing the relationship of the
   // newest op to the prior loop sequence.
   enum class CheckLastRepeatedSequenceResult {
@@ -472,6 +464,38 @@ class StreamState {
   // Records the repeated hash pattern to repetition_hashes_.
   void RecordRepeatedHashPattern(int64_t repetition_length)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  // Common helper for RequestEventSnapshot and RecordCompiledExecutionTask.
+  xla::Future<std::shared_ptr<EventSnapshot>> RequestEventSnapshotLocked(
+      std::vector<SharedDeviceBufferList> must_materialize,
+      MaterializationReason reason, MaterializationMode mode,
+      EagerMode eager_mode) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    auto [snapshot_promise, snapshot_future] =
+        xla::MakePromise<std::shared_ptr<EventSnapshot>>();
+    // Explanation: synchronizing the last EventSnapshot should also await all
+    // prior EventSnapshots. We achieve this by chaining a promise/future;
+    // each event snapshot will have a future that will be set by the prior
+    // event snapshot.
+    auto [chaining_promise, chaining_future] = xla::MakePromise<void>();
+    snapshot_future.OnReady([chaining_promise = std::move(chaining_promise)](
+                                absl::StatusOr<std::shared_ptr<EventSnapshot>>
+                                    snapshot_or) mutable {
+      if (!snapshot_or.ok()) {
+        chaining_promise.Set(absl::OkStatus());
+      } else {
+        (*snapshot_or)->OkCallback(std::move(chaining_promise));
+      }
+    });
+    events_queue_.push_back(std::make_unique<EventSnapshotRequest>(
+        std::move(futures_), std::move(must_materialize),
+        MaterializationSettings(reason, mode, eager_mode),
+        std::move(live_nodes_), std::nullopt, std::move(snapshot_promise)));
+    futures_.push_back(std::move(chaining_future));
+    return snapshot_future;
+  }
+
+  absl::Mutex mu_;
+  std::vector<xla::Future<void>> futures_ ABSL_GUARDED_BY(mu_);
 
   // Hold a strong pointer to the DeviceBufferList as the key; as long as there
   // is a live DataPtr, the DeviceBufferList can't be dropped.
@@ -1035,57 +1059,14 @@ void RecordDeferredOpCreated(const SharedDeviceBufferList& device_buffer_list) {
   GetStreamFor(device_buffer_list)->RecordDeferredOpCreated(device_buffer_list);
 }
 
-void RecordBackgroundMaterialization(
-    absl::Span<const DeviceBufferRef> outputs) {
-  if (outputs.empty()) return;
-
-  const auto first_device_index = outputs[0].device_index();
-  const auto first_stream_id = outputs[0].stream_id();
-  if (outputs.size() == 1 ||
-      std::all_of(
-          outputs.begin(), outputs.end(),
-          [first_device_index, first_stream_id](const DeviceBufferRef& output) {
-            return output.device_index() == first_device_index &&
-                   output.stream_id() == first_stream_id;
-          })) {
-    // All outputs are on the same stream, only need to mark this one stream
-    // active.
-    std::vector<xla::Future<void>> new_futures;
-    new_futures.reserve(outputs.size());
-    for (const auto& output : outputs) {
-      new_futures.push_back(output.GetReadyFuture());
-    }
-    MarkStreamActive(first_device_index, first_stream_id,
-                     std::move(new_futures));
-    return;
-  }
-
-  // Create a list of futures for each stream.
-  struct NewStreamFutures {
-    c10::DeviceIndex device_index;
-    int64_t stream_id;
-    std::vector<xla::Future<void>> futures;
-  };
-  std::vector<NewStreamFutures> new_stream_futures;
-  for (const auto& output : outputs) {
-    auto it = std::find_if(new_stream_futures.begin(), new_stream_futures.end(),
-                           [&output](const NewStreamFutures& new_futures) {
-                             return new_futures.device_index ==
-                                        output.device_index() &&
-                                    new_futures.stream_id == output.stream_id();
-                           });
-    if (it == new_stream_futures.end()) {
-      new_stream_futures.push_back({output.device_index(),
-                                    output.stream_id(),
-                                    {output.GetReadyFuture()}});
-    } else {
-      it->futures.push_back(output.GetReadyFuture());
-    }
-  }
-  for (auto& stream : new_stream_futures) {
-    MarkStreamActive(stream.device_index, stream.stream_id,
-                     std::move(stream.futures));
-  }
+void RecordCompiledExecutionTask(ExecutionTask&& execution_task,
+                                 c10::DeviceIndex device_index,
+                                 c10::StreamId stream_id,
+                                 const EagerMode eager_mode) {
+  ABSL_CHECK_NE(  // CRASH_OK=Must exit trace before executing
+      eager_mode, EagerMode::kInternalCompileFxGraph);
+  GetOrCreateStreamState(device_index, stream_id)
+      ->RecordCompiledExecutionTask(std::move(execution_task), eager_mode);
 }
 
 std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
@@ -1121,6 +1102,7 @@ std::vector<PendingSnapshotMaterialization> PrepareSnapshotMaterializations(
         PruneCompletedFutures(snapshot_event.futures);
         snapshots_to_materialize.push_back(
             {.traversals = std::move(*snapshot_traversals_or),
+             .execution_task = std::move(snapshot_event.execution_task),
              .must_materialize = std::move(snapshot_event.must_materialize),
              .settings = std::move(snapshot_event.materialization_settings),
              .futures = std::move(snapshot_event.futures),

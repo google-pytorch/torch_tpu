@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_execute.h"
 
 #include <cstdint>
 #include <memory>
@@ -45,7 +45,7 @@ namespace {
 
 using testing::ElementsAre;
 
-class PjrtUtilsTest : public testing::Test {
+class PjrtExecuteTest : public testing::Test {
  protected:
   void SetUp() override {
     PjrtBackend::GetInstance().SetPjRtInitializationOptions(
@@ -64,7 +64,7 @@ class PjrtUtilsTest : public testing::Test {
   xla::PjRtMemorySpace* memory_space_ = nullptr;
 };
 
-TEST_F(PjrtUtilsTest,
+TEST_F(PjrtExecuteTest,
        Execute_WithDynamicExecutionMetadata_RoutesInputsOutputsAndMetadata) {
   // Build a 4-parameter XLA computation with 1 logical input (N = 1) and
   // 1 logical output (M = 1):

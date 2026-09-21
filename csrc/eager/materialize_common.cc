@@ -52,12 +52,11 @@
 #include "csrc/common/shape.h"
 #include "csrc/common/to_string.h"
 #include "csrc/eager/device_buffer.h"
-#include "csrc/eager/events_queue.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/traversal.h"
 #include "csrc/ops/op_names.h"
+#include "csrc/pjrt/pjrt_execute.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "csrc/pjrt/pjrt_utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -388,7 +387,6 @@ absl::StatusOr<ExecutionTask> ExecutionTask::FromTraversal(
     TT_RETURN_IF_ERROR(
         output.device_buffer_list()->SetAsPendingMaterialization());
   }
-  RecordBackgroundMaterialization(traversal->outputs());
 
   std::string task_name;
   if (ABSL_VLOG_IS_ON(1)) {

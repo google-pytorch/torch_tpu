@@ -56,6 +56,7 @@
 #include "csrc/common/status_builder.h"
 #include "csrc/eager/current_stream.h"
 #include "csrc/eager/device_buffer.h"
+#include "csrc/eager/eager_mode.h"
 #include "csrc/eager/events_queue.h"
 #include "csrc/eager/materialization_heuristics.h"
 #include "csrc/eager/materialize_common.h"
@@ -375,6 +376,14 @@ std::vector<ExecutionTask> ProcessMaterializationTask(
           snapshot_to_materialize.futures.push_back(output.GetReadyFuture());
         }
       }
+      if (snapshot_to_materialize.execution_task.has_value()) {
+        for (const auto& output :
+             snapshot_to_materialize.execution_task->outputs()) {
+          snapshot_to_materialize.futures.push_back(output.GetReadyFuture());
+        }
+        stages.execution_tasks.push_back(
+            std::move(*snapshot_to_materialize.execution_task));
+      }
       snapshot_to_materialize.snapshot_promise.Set(
           std::make_shared<EventSnapshot>(
               xla::JoinFutures(snapshot_to_materialize.futures)));
@@ -474,49 +483,6 @@ class MaterializationWorker {
     // time-of-use error relative to Shutdown().
     if (shutdown_.load()) return;
     materialize_tasks_.push(MaterializationTask(device_index, stream_id));
-  }
-
-  absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
-      SharedLoadedExecutableWithMetadata executable,
-      std::vector<DeviceBufferRef> arguments,
-      absl::Span<const Shape> output_shapes, std::string_view task_name,
-      c10::DeviceIndex device_index, c10::StreamId stream_id) {
-    // Create a set of output DeviceBufferRefs to hold the materialized results.
-    std::vector<DeviceBufferRef> outputs;
-    outputs.reserve(output_shapes.size());
-    for (const auto& shape : output_shapes) {
-      // Create pending buffer lists to hold the results.
-      TT_ASSIGN_OR_RETURN(
-          DeviceBufferRef output_ref,
-          DeviceBufferList::CreatePending(shape, device_index, stream_id));
-      outputs.push_back(std::move(output_ref));
-    }
-
-    TT_RETURN_IF_ERROR(MarkPinnedHostOutputs(outputs, executable));
-    RecordBackgroundMaterialization(outputs);
-
-    // Intentional copy on outputs; we need to both include them in the task
-    // and return them to the caller.
-    TT_ASSIGN_OR_RETURN(
-        ExecutionTask task,
-        ExecutionTask::FromExecutable(
-            std::move(executable), std::move(arguments), outputs, task_name));
-
-    absl::MutexLock lock(execute_mu_);
-    // Check shutdown state after acquiring the lock to avoid a time-of-check/
-    // time-of-use error relative to Shutdown().
-    if (shutdown_.load()) {
-      // State is shutting down, fail the task and do not enqueue.
-      absl::Status shutdown_status =
-          TT_ERROR(error::kCancelled)  // ERROR_COV_INFEASIBLE=unreachable
-                                       // from Python
-          << "MaterializationWorker is shutting down";
-      task.SetOutputNodesAsError(shutdown_status);
-      return shutdown_status;
-    }
-    execute_tasks_.push(std::move(task));
-
-    return outputs;
   }
 
   // Dequeues a materialization task or a shutdown signal.
@@ -834,9 +800,39 @@ absl::StatusOr<std::vector<DeviceBufferRef>> EnqueueExecutable(
   // Get the stream from the calling thread, not from the execution worker
   // thread.
   const auto [device_index, stream_id] = GetCurrentDeviceStreamId();
-  return GetMaterializationWorker().EnqueueExecutable(
-      std::move(executable), std::move(arguments), output_shapes, task_name,
-      device_index, stream_id);
+  const auto eager_mode = GetEagerMode();
+  // Create a set of output DeviceBufferRefs to hold the materialized results.
+  std::vector<DeviceBufferRef> outputs;
+  outputs.reserve(output_shapes.size());
+  for (const auto& shape : output_shapes) {
+    // Create pending buffer lists to hold the results.
+    TT_ASSIGN_OR_RETURN(
+        DeviceBufferRef output_ref,
+        DeviceBufferList::CreatePending(shape, device_index, stream_id));
+    outputs.push_back(std::move(output_ref));
+  }
+
+  TT_RETURN_IF_ERROR(MarkPinnedHostOutputs(outputs, executable));
+
+  // FromExecutable will check to make sure all arguments are materializing
+  // and error if they are not.
+  // Intentional copy on outputs; we need to both include them in the task
+  // and return them to the caller.
+  TT_ASSIGN_OR_RETURN(
+      ExecutionTask task,
+      ExecutionTask::FromExecutable(std::move(executable), std::move(arguments),
+                                    outputs, task_name));
+
+  // Insert the task into the stream's event queue with a snapshot. This ensures
+  // that anything which refers to the output of this task will be enqueued
+  // after it.
+  RecordCompiledExecutionTask(std::move(task), device_index, stream_id,
+                              eager_mode);
+
+  // Notify the materialization worker that there is work to do on this stream.
+  GetMaterializationWorker().EnqueueStream(device_index, stream_id);
+
+  return outputs;
 }
 
 absl::StatusOr<std::shared_ptr<EventSnapshot>> MaterializeStream(

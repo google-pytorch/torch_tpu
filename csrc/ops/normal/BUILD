@@ -46,6 +46,7 @@ torch_tpu_cc_library(
         "//csrc/ops/resize:resize_aten_kernels",
         "//csrc/ops/uniform",
         "//csrc/ops/view:view_aten_kernels",
+        "//csrc/pjrt:pjrt_transfer",
         "//csrc/pjrt:pjrt_utils",
         "//shims/torch:aten_headers",
         "//shims/torch:torch_headers",

@@ -110,6 +110,70 @@ torch_tpu_cc_library(
     ],
     deps = [
         ":pjrt_state",
+        "//csrc/common:error_utils",
+        "//shims/torch:torch_headers",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@tsl//tsl/platform:path",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "pjrt_execute",
+    srcs = [
+        "pjrt_execute.cc",
+    ],
+    hdrs = [
+        "pjrt_execute.h",
+    ],
+    deps = [
+        ":pjrt_state",
+        "//csrc/common:compilation",
+        "//csrc/common:dimension_types",
+        "//csrc/common:dtype",
+        "//csrc/common:env_vars",
+        "//csrc/common:error_utils",
+        "//csrc/common:shape",
+        "//shims/torch:torch_headers",
+        "@com_google_absl//absl/base:nullability",
+        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/log:absl_vlog_is_on",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@tsl//tsl/platform:path",
+        "@tsl//tsl/profiler/lib:traceme",
+        "@xla//xla:future",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/service:collective_ops_utils",
+    ],
+)
+
+torch_tpu_cc_library(
+    name = "pjrt_transfer",
+    srcs = [
+        "pjrt_transfer.cc",
+    ],
+    hdrs = [
+        "pjrt_transfer.h",
+    ],
+    deps = [
+        ":pjrt_state",
+        ":pjrt_utils",
         "//csrc/common:compilation",
         "//csrc/common:context_manager",
         "//csrc/common:context_states",
@@ -159,15 +223,15 @@ torch_tpu_cc_library(
 )
 
 torch_tpu_cc_test(
-    name = "pjrt_utils_test",
-    srcs = ["pjrt_utils_test.cc"],
+    name = "pjrt_execute_test",
+    srcs = ["pjrt_execute_test.cc"],
     exec_properties = {
         "cpp_link.mem": "16g",  # Needed for asan.
     },
     requires_libtpu = True,
     deps = [
+        ":pjrt_execute",
         ":pjrt_state",
-        ":pjrt_utils",
         "//csrc/common:compilation",
         "//csrc/common:oss_test_main",
         "//csrc/common:shape",

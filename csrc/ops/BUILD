@@ -379,7 +379,7 @@ torch_tpu_cc_library(
         "//csrc/eager:structured_log_buffer",
         "//csrc/eager:tensor_to_buffer",
         "//csrc/ops/macros:kernel",
-        "//csrc/pjrt:pjrt_utils",
+        "//csrc/pjrt:pjrt_transfer",
         "//shims/torch:aten_headers",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",

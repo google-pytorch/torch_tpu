@@ -39,7 +39,7 @@
 #include "csrc/ops/op_names.h"
 #include "csrc/ops/python_context.h"
 #include "csrc/pjrt/pjrt_state.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"

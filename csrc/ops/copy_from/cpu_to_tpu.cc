@@ -30,7 +30,7 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/device_buffer_utils.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/pjrt/pjrt_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "xla/xla_data.pb.h"
 
 namespace torch_tpu {

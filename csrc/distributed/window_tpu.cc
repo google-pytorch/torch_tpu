@@ -29,6 +29,7 @@
 #include "ATen/core/TensorBody.h"
 #include "c10/util/intrusive_ptr.h"
 #include "csrc/common/macro_utils.h"
+#include "csrc/pjrt/pjrt_transfer.h"
 #include "torch/csrc/distributed/c10d/Backend.hpp"
 #include "torch/csrc/distributed/c10d/Types.hpp"
 #if TT_TORCH_VERSION_GE(2, 14)
@@ -39,8 +40,8 @@
 #include "csrc/eager/device_buffer.h"
 #include "csrc/eager/structured_log_buffer.h"
 #include "csrc/eager/tensor_to_buffer.h"
-#include "csrc/pjrt/pjrt_utils.h"
 #include "torch/csrc/distributed/c10d/Work.hpp"
+
 namespace torch_tpu {
 
 static std::atomic<int> g_window_num_stripes{4};
