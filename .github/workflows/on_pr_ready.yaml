@@ -15,9 +15,13 @@
 name: On PR Ready
 
 on:
-  # Unlike `pull_request`, this grants a write token on fork PRs so the job can
-  # comment on them. It is safe because the job never checks out PR code.
-  pull_request_target:
+  # `pull_request_target` is helpful for automation that responds to
+  # pull requests from forks, such as posting comments. Although it grants
+  # a write token, it is safe because the job never checks out PR code.
+  #
+  # See https://docs.github.com/en/enterprise-cloud@latest/actions/reference/security/securely-using-pull_request_target#deciding-whether-to-use-pull_request_target
+  # for more details.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
     types: [opened, ready_for_review]
 
 permissions: {}
