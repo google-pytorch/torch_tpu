@@ -274,8 +274,14 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kLocalRankEnvVar, SymbolStage::Stable()},
-        {kMasterAddrEnvVar, std::nullopt},
-        {kMasterPortEnvVar, std::nullopt},
+        // Marked as Stable because it is an established distributed launcher
+        // environment variable widely used by production workloads. The
+        // TorchTPU team is committed to honor this env var.
+        {kMasterAddrEnvVar, SymbolStage::Stable()},
+        // Marked as Stable because it is an established distributed launcher
+        // environment variable widely used by production workloads. The
+        // TorchTPU team is committed to honor this env var.
+        {kMasterPortEnvVar, SymbolStage::Stable()},
         {kNnodesEnvVar, std::nullopt},
         {kNodeRankEnvVar, std::nullopt},
         // Marked as Internal because it is an internal build/test runner
@@ -283,7 +289,10 @@ inline constexpr auto kEnvVarToStage =
         // controlling TorchTPU internal behavior rather than serving as a
         // public API contract.
         {kNprocEnvVar, SymbolStage::InternalApi()},
-        {kRankEnvVar, std::nullopt},
+        // Marked as Stable because it is an established distributed launcher
+        // environment variable widely used by production workloads. The
+        // TorchTPU team is committed to honor this env var.
+        {kRankEnvVar, SymbolStage::Stable()},
         {kSplashBlockDkvEnvVar, std::nullopt},
         {kSplashBlockKvEnvVar, std::nullopt},
         {kSplashBlockQEnvVar, std::nullopt},
