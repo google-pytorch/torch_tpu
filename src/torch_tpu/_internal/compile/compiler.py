@@ -327,7 +327,7 @@ class StaticCompiler(Compiler):
       example_inputs: Sequence[InputType],
       is_fwd: bool = True,
       bounds: Sequence[Any] | None = None,
-      argument_layouts: Sequence[Sequence[int]] | None = None,
+      argument_layouts: Sequence[Any] | None = None,
       dynamic_outputs: Sequence[bool] | None = None,
       donated_inputs: Sequence[int] | None = None,
       module_name: str | None = None,

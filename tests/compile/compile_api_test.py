@@ -234,6 +234,36 @@ class CompileApiTest(seed_test_utils.RepeatableTest):
     minor_to_major, _, _ = param_layouts[0]
     self.assertEqual(minor_to_major, [0, 1])
 
+  def test_compile_with_tiled_argument_layouts(self):
+    """Verifies compilation and layout extraction with user-specified tiled argument layouts."""
+
+    def fn(x):
+      return x * 2.0
+
+    x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    gm = make_fx(fn)(x)
+    compiler_instance = compiler.StaticCompiler()
+    executable = compiler_instance(
+        gm, [x], argument_layouts=[([1, 0], [[8, 128]])]
+    )
+
+    param_layouts = executable.parameter_layouts
+    self.assertLen(param_layouts, 1)
+    self.assertIsNotNone(param_layouts[0])
+    minor_to_major, tiles, _ = param_layouts[0]
+    self.assertEqual(minor_to_major, [1, 0])
+    self.assertEqual(tiles, [[8, 128]])
+
+    res = executable(x)
+    utils.assert_close(res.cpu(), x.cpu() * 2.0)
+
+    # Verify execution with matching tiled layout on device as well
+    layout = annotations.TpuLayout(minor_to_major=[1, 0], tiles=[[8, 128]])
+    with annotations.LayoutContext(layout):
+      tiled_x = torch.ones(16, 128, device='cpu').to(device=torch.device('tpu'))
+    res_tiled = executable(tiled_x)
+    utils.assert_close(res_tiled.cpu(), tiled_x.cpu() * 2.0)
+
   def test_build_mlir(self):
     with eager_mode_compile_fx_graph():
       x = torch.ones(10, device='cpu').to(device=torch.device('tpu'))

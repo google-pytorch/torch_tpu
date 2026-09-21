@@ -535,13 +535,12 @@ CompileResult PyTraverseAndCompile(
     const std::vector<at::Tensor>& result_tensors,
     const std::vector<at::Tensor>& argument_tensors, bool fast_compile,
     bool build_mlir_module, bool use_stablehlo_bounds,
-    std::optional<std::vector<std::vector<int64_t>>>  // INT_VEC_OK
-        argument_layouts_opt = std::nullopt,
+    std::optional<std::vector<py::object>> argument_layouts_opt = std::nullopt,
     const std::vector<int64_t>& donated_inputs = {},  // INT_VEC_OK
     const std::optional<std::string>& module_name = std::nullopt) {
-  const std::vector<std::vector<int64_t>> argument_layouts =  // INT_VEC_OK
-      std::move(argument_layouts_opt)
-          .value_or(std::vector<std::vector<int64_t>>{});  // INT_VEC_OK
+  const std::vector<py::object> argument_layouts =
+      std::move(argument_layouts_opt).value_or(std::vector<py::object>{});
+  std::vector<CustomLayout> converted_layouts;
   if (!argument_layouts.empty()) {
     TT_CHECK_THROW(argument_layouts.size() == argument_tensors.size(),
                    error::kInvalidArgument)
@@ -550,22 +549,45 @@ CompileResult PyTraverseAndCompile(
         << argument_layouts.size() << " and number of argument_tensors "
         << argument_tensors.size();
 
+    converted_layouts.reserve(argument_layouts.size());
     for (size_t i = 0; i < argument_layouts.size(); ++i) {
-      const std::vector<int64_t>& layout = argument_layouts[i];  // INT_VEC_OK
-      if (!layout.empty()) {
-        int64_t rank = argument_tensors[i].dim();
-        TT_CHECK_THROW(IsValidLayout(layout, rank), error::kInvalidArgument)
-            << "expected valid layout for argument " << i << ", got layout "
-            << ToString(layout) << " for shape "
-            << ToString(argument_tensors[i].sizes());
+      const py::object& obj = argument_layouts[i];
+      CustomLayout cl;
+      std::vector<int64_t> minor_to_major;  // INT_VEC_OK
+      // Layouts from Python can be specified as:
+      // 1. A tuple: (minor_to_major, tiles, [element_size_in_bits])
+      // 2. A legacy list: [minor_to_major]
+      if (py::isinstance<py::tuple>(obj)) {
+        py::tuple t = obj.cast<py::tuple>();
+        if (!t.empty() && !t[0].is_none()) {
+          minor_to_major = t[0].cast<std::vector<int64_t>>();  // INT_VEC_OK
+        }
+        if (t.size() >= 2 && !t[1].is_none()) {
+          std::vector<std::vector<int64_t>> tiles =            // INT_VEC_OK
+              t[1].cast<std::vector<std::vector<int64_t>>>();  // INT_VEC_OK
+          for (const auto& tile : tiles) {
+            cl.tiles.push_back(Indices(tile.begin(), tile.end()));
+          }
+        }
+        if (t.size() >= 3 && !t[2].is_none()) {
+          cl.element_size_in_bits = t[2].cast<int64_t>();
+        }
+      } else if (py::isinstance<py::list>(obj)) {
+        minor_to_major = obj.cast<std::vector<int64_t>>();  // INT_VEC_OK
       }
+
+      if (!minor_to_major.empty()) {
+        int64_t rank = argument_tensors[i].dim();
+        TT_CHECK_THROW(IsValidLayout(minor_to_major, rank),
+                       error::kInvalidArgument)
+            << "expected valid layout for argument " << i << ", got layout "
+            << ToString(minor_to_major) << " for shape "
+            << ToString(argument_tensors[i].sizes());
+        cl.minor_to_major =
+            Indices(minor_to_major.begin(), minor_to_major.end());
+      }
+      converted_layouts.push_back(std::move(cl));
     }
-  }
-  std::vector<CustomLayout> converted_layouts;
-  converted_layouts.reserve(argument_layouts.size());
-  for (const std::vector<int64_t>& layout : argument_layouts) {  // INT_VEC_OK
-    converted_layouts.push_back(
-        CustomLayout{.minor_to_major = Indices(layout.begin(), layout.end())});
   }
 
   TT_ASSIGN_OR_THROW(
