@@ -4561,7 +4561,7 @@ class TestOps(op_testing.OpInfoTestBase):
         exclude_dtypes={
             "gpu": (
                 (torch.uint8, torch.int8, torch.int16)
-                + FLOAT_DTYPES
+                + (torch.float64, torch.float16, torch.bfloat16)
                 + COMPLEX_DTYPES
             ),
         },
