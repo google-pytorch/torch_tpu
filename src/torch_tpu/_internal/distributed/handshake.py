@@ -16,6 +16,7 @@
 
 import abc
 import asyncio
+import atexit
 import collections.abc
 from collections.abc import Collection
 import concurrent.futures
@@ -950,7 +951,9 @@ class _ZMQServer:
     `close` will raise a `zmq.ZMQError` because the underlying socket is closed.
     """
     if not self._socket.closed:
-      self._socket.close(linger=0)
+      # We linger until all replies have been sent out to avoid clients not
+      # receiving responses.
+      self._socket.close()
     if not self._context.closed:
       self._context.term()
 
@@ -1549,3 +1552,7 @@ class Handshake:
     if hasattr(self, "_backend") and self._backend is not None:
       if hasattr(self._backend, "close"):
         self._backend.close()
+
+
+# Ensure server/client instances are cleanly closed on process exit.
+atexit.register(Handshake._reset_instances)  # pylint: disable=protected-access

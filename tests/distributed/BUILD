@@ -889,7 +889,6 @@ torch_tpu_py_test(
 torch_tpu_py_test(
     name = "handshake_test",
     srcs = ["handshake_test.py"],
-    notest_oss = "TODO(b/560244886): re-enable the test once deflaked in OSS.",
     shard_count = 8,
     tags = [
         "requires-mem:28g",
