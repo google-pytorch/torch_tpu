@@ -26,6 +26,9 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
                              const at::Scalar& threshold,
                              const at::Scalar& value, at::Tensor& out);
 
+at::Tensor& AtenThreshold_(at::Tensor& self, const at::Scalar& threshold,
+                           const at::Scalar& value);
+
 at::Tensor& AtenThresholdBackwardGradInput(const at::Tensor& grad_output,
                                            const at::Tensor& self,
                                            const at::Scalar& threshold,

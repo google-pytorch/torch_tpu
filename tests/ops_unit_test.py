@@ -10633,6 +10633,77 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
 
     self.assert_close_tpu_vs_cpu(compute, allow_failure=allow_failure)
 
+  def test_threshold_fastpath_relu(self):
+    """Tests threshold op with threshold == value == 0 (ReLU fastpath)."""
+    x = torch.randn(4, 8, dtype=torch.float32)
+
+    def compute(device):
+      return torch.threshold(to(x, device), 0.0, 0.0)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_threshold_fastpath_equal(self):
+    """Tests threshold op with threshold == value != 0 (Max fastpath)."""
+    x = torch.randn(4, 8, dtype=torch.float32)
+
+    def compute(device):
+      return torch.threshold(to(x, device), 1.5, 1.5)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_threshold_standard(self):
+    """Tests threshold op with threshold != value."""
+    x = torch.randn(4, 8, dtype=torch.float32)
+
+    def compute(device):
+      return torch.threshold(to(x, device), 0.5, -2.0)
+
+    self.assert_close_tpu_vs_cpu(compute)
+
+  def test_threshold_inplace(self):
+    """Tests in-place threshold_ op."""
+    x = torch.randn(4, 8, dtype=torch.float32)
+
+    def compute_relu(device):
+      t = to(x, device).clone()
+      torch.ops.aten.threshold_(t, 0.0, 0.0)
+      return t
+
+    self.assert_close_tpu_vs_cpu(compute_relu)
+
+    def compute_max(device):
+      t = to(x, device).clone()
+      torch.ops.aten.threshold_(t, 2.0, 2.0)
+      return t
+
+    self.assert_close_tpu_vs_cpu(compute_max)
+
+    def compute_standard(device):
+      t = to(x, device).clone()
+      torch.ops.aten.threshold_(t, 0.5, -1.0)
+      return t
+
+    self.assert_close_tpu_vs_cpu(compute_standard)
+
+  def test_threshold_backward(self):
+    """Tests threshold_backward op with threshold == 0 and threshold != 0."""
+    grad = torch.randn(4, 8, dtype=torch.float32)
+    x = torch.randn(4, 8, dtype=torch.float32)
+
+    def compute_zero(device):
+      return torch.ops.aten.threshold_backward(
+          to(grad, device), to(x, device), 0.0
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_zero)
+
+    def compute_nonzero(device):
+      return torch.ops.aten.threshold_backward(
+          to(grad, device), to(x, device), 1.5
+      )
+
+    self.assert_close_tpu_vs_cpu(compute_nonzero)
+
 
 class OpsCustomOpUnitTest(TorchTpuVsCpuTestBase):
   """Tests for custom ops."""

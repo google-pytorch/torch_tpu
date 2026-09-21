@@ -41,9 +41,40 @@
 namespace torch_tpu {
 namespace {
 
+inline absl::StatusOr<mlir::MlirOp> BuildMaxShlo(mlir::MlirOp input,
+                                                 mlir::MlirOp threshold) {
+  return BuildMaximumShlo(input, threshold);
+}
+
+bool CheckMlirValuesEqual(mlir::MlirOp op1, mlir::MlirOp op2) {
+  return op1.getValue() == op2.getValue();
+}
+
+bool ScalarsEqual(const at::Scalar& a, const at::Scalar& b) {
+  if (a.equal(0) && b.equal(0)) {
+    return true;
+  }
+  if (a.isFloatingPoint() || b.isFloatingPoint()) {
+    return a.toDouble() == b.toDouble();
+  }
+  if (a.isIntegral(/*includeBool=*/false) &&
+      b.isIntegral(/*includeBool=*/false)) {
+    return a.toLong() == b.toLong();
+  }
+  if (a.isBoolean() && b.isBoolean()) {
+    return a.toBool() == b.toBool();
+  }
+  return false;
+}
+
 absl::StatusOr<mlir::MlirOp> BuildThresholdShlo(mlir::MlirOp input,
                                                 mlir::MlirOp threshold,
-                                                mlir::MlirOp value) {
+                                                mlir::MlirOp value,
+                                                const bool is_equal = false) {
+  if (is_equal || CheckMlirValuesEqual(threshold, value)) {
+    TT_ASSIGN_OR_RETURN(auto max_op, BuildMaxShlo(input, threshold));
+    return max_op;
+  }
   TT_ASSIGN_OR_RETURN(auto condition, BuildLeShlo(input, threshold));
   TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(input));
   return BuildWhereShlo(condition, value, input, out_dtype);
@@ -53,7 +84,7 @@ absl::StatusOr<mlir::MlirOp> BuildThresholdBackwardShlo(
     mlir::MlirOp grad_output, mlir::MlirOp self, mlir::MlirOp threshold) {
   TT_ASSIGN_OR_RETURN(auto condition, BuildGtShlo(self, threshold));
   TT_ASSIGN_OR_RETURN(auto out_dtype, GetElementType(grad_output));
-  auto zero = MakeConstantLike(grad_output, 0.0, out_dtype);
+  auto zero = MakeScalarConstant(grad_output.getBuilder(), 0.0, out_dtype);
   return BuildWhereShlo(condition, grad_output, zero, out_dtype);
 }
 
@@ -85,8 +116,12 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
         TT_ASSIGN_OR_THROW(const auto output_dtype,
                            ConvertTo<mlir::ElementType>(out.scalar_type()));
 
-        auto op_builder = [](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
-          return BuildThresholdShlo(inputs[0], inputs[1], inputs[2]);
+        const bool is_equal = (threshold.equal(0) && value.equal(0)) ||
+                              ScalarsEqual(threshold, value);
+        TT_THROW_IF_ERROR(param_keys.SetParam("is_equal", is_equal));
+
+        auto op_builder = [is_equal](FixedSizeSpan<mlir::MlirOp, 3> inputs) {
+          return BuildThresholdShlo(inputs[0], inputs[1], inputs[2], is_equal);
         };
 
         TT_THROW_IF_ERROR(DispatchOpOut<3>(
@@ -96,6 +131,11 @@ at::Tensor& AtenThresholdOut(const at::Tensor& self,
              .op_param_cache_keys = std::move(param_keys)}));
         return out;
       });
+}
+
+at::Tensor& AtenThreshold_(at::Tensor& self, const at::Scalar& threshold,
+                           const at::Scalar& value) {
+  return AtenThresholdOut(self, threshold, value, self);
 }
 
 at::Tensor& AtenThresholdBackwardGradInput(const at::Tensor& grad_output,
