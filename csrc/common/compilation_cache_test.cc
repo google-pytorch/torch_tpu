@@ -129,6 +129,9 @@ TEST(CacheEntryStatsPrinterTest, Works) {
 class CompilationCacheTest : public testing::Test {
  protected:
   CompilationCacheTest() {
+    PjrtBackend::GetInstance().SetPjRtInitializationOptions(
+        {.device_type = "xla_cpu"});
+    ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
     CompilationCacheTestHelper::RestartCompilationCache();
   }
 };
@@ -143,11 +146,6 @@ TEST_F(CompilationCacheTest, DumpOnMissMode) {
 }
 
 TEST_F(CompilationCacheTest, GetOrCompileLogsOnMiss) {
-  // Use xla_cpu for unit testing as it doesn't require real hardware.
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
-  ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
-
   CompilationCache& cache = CompilationCache::GetInstance();
   bool initial_mode = cache.GetDumpOnCacheMissMode();
   cache.SetDumpOnCacheMissMode(true);
@@ -182,10 +180,6 @@ class CompilationCacheInitTest : public CompilationCacheTest {};
 
 TEST_F(CompilationCacheInitTest, LazyInitialization) {
   CompilationCache::Restart();
-  // Ensure we use xla_cpu for testing to avoid hardware requirements.
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
-
   EXPECT_FALSE(CompilationCache::GetInstance().IsInitialized());
 
   CompilationCache::GetInstance().SetOptions({.cache_only = true});
@@ -214,9 +208,6 @@ TEST_F(CompilationCacheInitTest, LazyInitialization) {
 
 TEST_F(CompilationCacheInitTest, OptionsApplied) {
   CompilationCache::Restart();
-  // Ensure we use xla_cpu for testing to avoid hardware requirements.
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
 
   CompilationCache::GetInstance().SetOptions({.cache_only = true});
   CompilationCache& cache = CompilationCache::GetInstance();
@@ -239,11 +230,6 @@ TEST_F(CompilationCacheInitTest, OptionsApplied) {
 }
 
 TEST_F(CompilationCacheTest, AllowCacheModeDisabled) {
-  // Use xla_cpu for unit testing as it doesn't require real hardware.
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
-  ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
-
   CompilationCache& cache = CompilationCache::GetInstance();
   cache.SetAllowCacheMode(false);
 
@@ -314,11 +300,6 @@ static const bool kSetFlagDone = [] {
 }();
 
 TEST_F(CompilationCacheTest, PeakMemoryReported) {
-  // Use xla_cpu for unit testing as it doesn't require real hardware.
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
-  ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
-
   ASSERT_TRUE(
       (GetFlagOnce<bool,
                    &FLAGS_torch_tpu_internal_enable_compilation_container>()));
@@ -382,10 +363,6 @@ TEST_F(CompilationCacheTest, PeakMemoryReported) {
 }
 
 TEST_F(CompilationCacheTest, DynamicCacheLayoutMismatch) {
-  PjrtBackend::GetInstance().SetPjRtInitializationOptions(
-      {.device_type = "xla_cpu"});
-  ABSL_CHECK_OK(PjrtBackend::GetInstance().EnsureInitialized());
-
   CompilationCache& cache = CompilationCache::GetInstance();
 
   mlir::MLIRContext context;
