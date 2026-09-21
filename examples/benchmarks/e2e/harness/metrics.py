@@ -19,6 +19,13 @@ import dataclasses
 from typing import Mapping
 
 
+def _seconds_to_ms(value: float) -> float:
+  """Converts a non-negative duration in seconds to milliseconds."""
+  if value >= 0:
+    return float(value) * 1000.0
+  return value
+
+
 @dataclasses.dataclass
 class WarmupRunResult:
   """Result of the warmup run.
@@ -116,9 +123,17 @@ class PerformanceMetrics(MetricsInterface):
     res = {
         "num_warmup_steps": float(self.num_warmup_steps),
         "first_step_time_seconds": self.first_step_time_seconds,
+        "first_step_time_ms": _seconds_to_ms(self.first_step_time_seconds),
         "warmup_overhead_seconds": self.warmup_overhead_seconds,
+        "warmup_overhead_ms": _seconds_to_ms(self.warmup_overhead_seconds),
         "post_warmup_step_time_seconds": self.post_warmup_step_time_seconds,
+        "post_warmup_step_time_ms": _seconds_to_ms(
+            self.post_warmup_step_time_seconds
+        ),
         "average_post_warmup_device_time_seconds": (
+            self.average_post_warmup_device_time_seconds
+        ),
+        "average_post_warmup_device_time_ms": _seconds_to_ms(
             self.average_post_warmup_device_time_seconds
         ),
         "peak_host_compilation_memory_mb": self.peak_host_compilation_memory_mb,

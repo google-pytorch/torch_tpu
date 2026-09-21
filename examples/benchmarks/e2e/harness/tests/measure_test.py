@@ -302,6 +302,36 @@ class MeasureMetricsTest(seed_test_utils.RepeatableTest):
     # overhead = (10.0 + 2.0 + 2.0) - (2.0 * 3) = 8.0
     self.assertEqual(m.warmup_overhead_seconds, 8.0)
 
+  def test_timing_metrics_emit_milliseconds(self):
+    perf_metrics = metrics_lib.PerformanceMetrics(
+        e2e_wall_time_seconds=12.123456789,
+        first_step_time_seconds=1.123456789,
+        warmup_overhead_seconds=0.987654321,
+        post_warmup_step_time_seconds=0.001234567,
+        average_post_warmup_device_time_seconds=0.000987654,
+    )
+    metric_map = perf_metrics.metric_map()
+    self.assertAlmostEqual(
+        metric_map["first_step_time_ms"], 1123.456789, places=6
+    )
+    self.assertAlmostEqual(
+        metric_map["warmup_overhead_ms"], 987.654321, places=6
+    )
+    self.assertAlmostEqual(
+        metric_map["post_warmup_step_time_ms"], 1.234567, places=6
+    )
+    self.assertAlmostEqual(
+        metric_map["average_post_warmup_device_time_ms"], 0.987654, places=6
+    )
+
+    default_perf_metrics = metrics_lib.PerformanceMetrics(
+        post_warmup_step_time_seconds=0.001234567
+    )
+    self.assertEqual(
+        default_perf_metrics.metric_map()["average_post_warmup_device_time_ms"],
+        -1.0,
+    )
+
 
 class XprofContextTest(seed_test_utils.RepeatableTest):
 
