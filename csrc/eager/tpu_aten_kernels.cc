@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1409,6 +1410,29 @@ TORCH_LIBRARY(tpu, m) {
       "dense_args, str body_mlir, Tensor[] dummy_outputs, int "
       "max_non_zeroes_per_row, int pad_value, int max_pad_per_row, float "
       "wait_threshold, int result_row_pointer_op_index) -> Tensor[]");
+}
+
+// Registers missing Meta implementations for upstream `aten::` namespace ops
+// (`torch.ops.aten.*`). Note: this targets the `aten` library namespace, unlike
+// `TORCH_LIBRARY_IMPL(tpu, Meta, m)` below which targets custom `tpu::` ops.
+TORCH_LIBRARY_IMPL(aten, Meta, m) {
+  ImplStable<OpName::kFusedAdamTensorLr>(m, MetaFusedAdamTensorLr);
+  ImplStable<OpName::kFusedAdamFunctionalTensorLr>(
+      m, MetaFusedAdamFunctionalTensorLr);
+  ImplStable<OpName::kFusedAdamwTensorLr>(m, MetaFusedAdamTensorLr);
+  ImplStable<OpName::kFusedAdamwFunctional>(m, MetaFusedAdamFunctional);
+  ImplStable<OpName::kFusedAdamwFunctionalTensorLr>(
+      m, MetaFusedAdamFunctionalTensorLr);
+  ImplStable<OpName::kFusedSgd>(m, MetaFusedSgd);
+  ImplStable<OpName::kFusedSgdTensorLr>(m, MetaFusedSgdTensorLr);
+  ImplStable<OpName::kFusedSgdFunctional>(m, MetaFusedSgdFunctional);
+  ImplStable<OpName::kFusedSgdFunctionalTensorLr>(
+      m, MetaFusedSgdFunctionalTensorLr);
+  ImplStable<OpName::kFusedAdagrad>(m, MetaFusedAdagrad);
+  ImplStable<OpName::kFusedAdagradTensorLr>(m, MetaFusedAdagradTensorLr);
+  ImplStable<OpName::kFusedAdagradFunctional>(m, MetaFusedAdagradFunctional);
+  ImplStable<OpName::kFusedAdagradFunctionalTensorLr>(
+      m, MetaFusedAdagradFunctionalTensorLr);
 }
 
 // Registers meta implementations for torch.ops.tpu ops.

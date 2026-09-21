@@ -19,11 +19,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty_like.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -717,6 +719,75 @@ void AtenFusedSgdTensorLr(at::TensorList self, at::TensorList grads,
             is_first_step ? IsFirstStepMode::kTrue : IsFirstStepMode::kFalse,
             grad_scale, found_inf, std::move(param_keys));
       });
+}
+
+// Meta kernel for in-place `aten::_fused_sgd_` (scalar `double lr` overload,
+// schema `-> ()`). No-op because Meta kernels only propagate tensor shape/dtype
+// metadata for `FakeTensor` / `torch.compile`, and in-place optimizer updates
+// return `void` without changing input tensor shapes, strides, or dtypes.
+void MetaFusedSgd(at::TensorList /*self*/, at::TensorList /*grads*/,
+                  at::TensorList /*momentum_buffer_list*/,
+                  double /*weight_decay*/, double /*momentum*/, double /*lr*/,
+                  double /*dampening*/, bool /*nesterov*/, bool /*maximize*/,
+                  bool /*is_first_step*/,
+                  const std::optional<at::Tensor>& /*grad_scale*/,
+                  const std::optional<at::Tensor>& /*found_inf*/) {}
+
+// Meta kernel for in-place `aten::_fused_sgd_.tensor_lr` (`const at::Tensor&
+// lr` overload, used when `lr` is a Tensor so `torch.compile` does not
+// recompile on LR schedule steps). Like `MetaFusedSgd`, this is a no-op
+// because the in-place op returns `void` and preserves all input tensor
+// shapes/dtypes.
+void MetaFusedSgdTensorLr(at::TensorList /*self*/, at::TensorList /*grads*/,
+                          at::TensorList /*momentum_buffer_list*/,
+                          double /*weight_decay*/, double /*momentum*/,
+                          const at::Tensor& /*lr*/, double /*dampening*/,
+                          bool /*nesterov*/, bool /*maximize*/,
+                          bool /*is_first_step*/,
+                          const std::optional<at::Tensor>& /*grad_scale*/,
+                          const std::optional<at::Tensor>& /*found_inf*/) {}
+
+// Meta kernel for out-of-place functional `aten::_fused_sgd` (scalar `double
+// lr` overload). AOTAutograd functionalizes in-place optimizer ops into
+// functional calls during `torch.compile`, so this returns newly allocated
+// `empty_like` Meta tensors matching `(self, grads, momentum_buffer_list)`.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>>
+MetaFusedSgdFunctional(at::TensorList self, at::TensorList grads,
+                       at::TensorList momentum_buffer_list,
+                       double /*weight_decay*/, double /*momentum*/,
+                       double /*lr*/, double /*dampening*/, bool /*nesterov*/,
+                       bool /*maximize*/, bool /*is_first_step*/,
+                       const std::optional<at::Tensor>& /*grad_scale*/,
+                       const std::optional<at::Tensor>& /*found_inf*/) {
+  auto empty_like_list = [](at::TensorList tensors) {
+    std::vector<at::Tensor> outs;
+    outs.reserve(tensors.size());
+    for (const at::Tensor& t : tensors) {
+      outs.push_back(at::empty_like(t));
+    }
+    return outs;
+  };
+  return std::make_tuple(empty_like_list(self), empty_like_list(grads),
+                         empty_like_list(momentum_buffer_list));
+}
+
+// Meta kernel for out-of-place functional `aten::_fused_sgd.tensor_lr` (`const
+// at::Tensor& lr` overload). Returns newly allocated `empty_like` Meta tensors
+// matching `(self, grads, momentum_buffer_list)`.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>>
+MetaFusedSgdFunctionalTensorLr(at::TensorList self, at::TensorList grads,
+                               at::TensorList momentum_buffer_list,
+                               double /*weight_decay*/, double /*momentum*/,
+                               const at::Tensor& /*lr*/, double /*dampening*/,
+                               bool /*nesterov*/, bool /*maximize*/,
+                               bool /*is_first_step*/,
+                               const std::optional<at::Tensor>& /*grad_scale*/,
+                               const std::optional<at::Tensor>& /*found_inf*/) {
+  return MetaFusedSgdFunctional(self, grads, momentum_buffer_list, 0.0, 0.0,
+                                0.0, 0.0, false, false, false, std::nullopt,
+                                std::nullopt);
 }
 
 }  // namespace torch_tpu

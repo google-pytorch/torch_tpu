@@ -3090,7 +3090,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adagrad_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3099,7 +3101,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adagrad_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3108,7 +3112,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adam_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3117,7 +3123,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adam_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3126,7 +3134,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adamw_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3135,7 +3145,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_adamw_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3144,7 +3156,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_sgd_",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )
@@ -3153,7 +3167,9 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "_fused_sgd_.tensor_lr",
         exclude_dtypes=COMPLEX_DTYPES + INTEGRAL_DTYPES,
-        # Parameter shapes are static and optimizer steps are non-differentiable.
+        # Intentional overrides (desired by design, not a bug): optimizer steps
+        # update fixed-shape model parameters/states in place and are
+        # non-differentiable.
         check_dynamism=False,
         check_grad=False,
     )

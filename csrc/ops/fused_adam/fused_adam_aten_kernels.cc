@@ -19,11 +19,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "ATen/ops/empty_like.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "c10/core/ScalarType.h"
@@ -781,6 +783,80 @@ void AtenFusedAdamTensorLr(at::TensorList self, at::TensorList grads,
                      : AdamObjectiveMode::kMinimize,
             grad_scale, found_inf, std::move(param_keys));
       });
+}
+
+namespace {
+std::vector<at::Tensor> EmptyLikeTensorList(at::TensorList tensors) {
+  std::vector<at::Tensor> outs;
+  outs.reserve(tensors.size());
+  for (const at::Tensor& t : tensors) {
+    outs.push_back(at::empty_like(t));
+  }
+  return outs;
+}
+}  // namespace
+
+// Meta kernel for in-place `aten::_fused_adam_.tensor_lr` and
+// `aten::_fused_adamw_.tensor_lr` (`const at::Tensor& lr` overload, used when
+// `lr` is a Tensor so `torch.compile` does not recompile on LR schedule steps;
+// note that scalar `double lr` in-place `_fused_adam_` / `_fused_adamw_`
+// already have Meta kernels in upstream `torch/_meta_registrations.py`).
+// This is a no-op (`{}`) because Meta kernels only propagate tensor shape/dtype
+// metadata for `FakeTensor` / `torch.compile`, and in-place optimizer updates
+// return `void` (`-> ()`) without changing input tensor shapes, strides, or
+// dtypes.
+void MetaFusedAdamTensorLr(at::TensorList /*self*/, at::TensorList /*grads*/,
+                           at::TensorList /*exp_avgs*/,
+                           at::TensorList /*exp_avg_sqs*/,
+                           at::TensorList /*max_exp_avg_sqs*/,
+                           at::TensorList /*state_steps*/,
+                           const at::Tensor& /*lr*/, double /*beta1*/,
+                           double /*beta2*/, double /*weight_decay*/,
+                           double /*eps*/, bool /*amsgrad*/, bool /*maximize*/,
+                           const std::optional<at::Tensor>& /*grad_scale*/,
+                           const std::optional<at::Tensor>& /*found_inf*/) {}
+
+// Meta kernel for out-of-place functional `aten::_fused_adamw` (scalar `double
+// lr` overload). AOTAutograd functionalizes in-place optimizer ops into
+// functional calls during `torch.compile`, so this returns newly allocated
+// `empty_like` Meta tensors matching `(self, grads, exp_avgs, exp_avg_sqs,
+// max_exp_avg_sqs)`.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>>
+MetaFusedAdamFunctional(at::TensorList self, at::TensorList grads,
+                        at::TensorList exp_avgs, at::TensorList exp_avg_sqs,
+                        at::TensorList max_exp_avg_sqs,
+                        at::TensorList /*state_steps*/, double /*lr*/,
+                        double /*beta1*/, double /*beta2*/,
+                        double /*weight_decay*/, double /*eps*/,
+                        bool /*amsgrad*/, bool /*maximize*/,
+                        const std::optional<at::Tensor>& /*grad_scale*/,
+                        const std::optional<at::Tensor>& /*found_inf*/) {
+  return std::make_tuple(EmptyLikeTensorList(self), EmptyLikeTensorList(grads),
+                         EmptyLikeTensorList(exp_avgs),
+                         EmptyLikeTensorList(exp_avg_sqs),
+                         EmptyLikeTensorList(max_exp_avg_sqs));
+}
+
+// Meta kernel for out-of-place functional `aten::_fused_adam.tensor_lr` and
+// `aten::_fused_adamw.tensor_lr` (`const at::Tensor& lr` overload). Returns
+// newly allocated `empty_like` Meta tensors matching `(self, grads, exp_avgs,
+// exp_avg_sqs, max_exp_avg_sqs)`.
+std::tuple<std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>, std::vector<at::Tensor>,
+           std::vector<at::Tensor>>
+MetaFusedAdamFunctionalTensorLr(
+    at::TensorList self, at::TensorList grads, at::TensorList exp_avgs,
+    at::TensorList exp_avg_sqs, at::TensorList max_exp_avg_sqs,
+    at::TensorList /*state_steps*/, const at::Tensor& /*lr*/, double /*beta1*/,
+    double /*beta2*/, double /*weight_decay*/, double /*eps*/, bool /*amsgrad*/,
+    bool /*maximize*/, const std::optional<at::Tensor>& /*grad_scale*/,
+    const std::optional<at::Tensor>& /*found_inf*/) {
+  return std::make_tuple(EmptyLikeTensorList(self), EmptyLikeTensorList(grads),
+                         EmptyLikeTensorList(exp_avgs),
+                         EmptyLikeTensorList(exp_avg_sqs),
+                         EmptyLikeTensorList(max_exp_avg_sqs));
 }
 
 }  // namespace torch_tpu

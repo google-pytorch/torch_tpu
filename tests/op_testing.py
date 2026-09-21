@@ -1411,6 +1411,7 @@ def _make_fused_opt_tensors(
     device: str | torch.device,
     param_dtype: torch.dtype,
     state_dtype: torch.dtype | None = None,
+    shapes: Sequence[Sequence[int]] = ((4,), (2, 2)),
 ) -> tuple[
     list[torch.Tensor],
     list[torch.Tensor],
@@ -1422,42 +1423,71 @@ def _make_fused_opt_tensors(
   """Constructs deterministic multi-tensor inputs for fused optimizers (no randn)."""
   if state_dtype is None:
     state_dtype = param_dtype
-  p0 = torch.tensor([1.0, -0.5, 2.0, -1.5], dtype=param_dtype, device=device)
-  p1 = torch.tensor(
-      [[0.25, -0.75], [1.25, 0.5]], dtype=param_dtype, device=device
+  compute_dtype = (
+      torch.float64 if param_dtype == torch.float64 else torch.float32
   )
-  g0 = torch.tensor([0.1, -0.2, 0.3, -0.4], dtype=param_dtype, device=device)
-  g1 = torch.tensor(
-      [[-0.05, 0.15], [0.25, -0.35]], dtype=param_dtype, device=device
-  )
-  m0 = torch.tensor(
-      [0.01, -0.02, 0.03, -0.04], dtype=state_dtype, device=device
-  )
-  m1 = torch.tensor(
-      [[0.02, -0.01], [0.04, 0.01]], dtype=state_dtype, device=device
-  )
-  # Strictly positive second-moment / sum accumulators (> 0) to prevent 1/sqrt(0).
-  v0 = torch.tensor([0.01, 0.04, 0.09, 0.16], dtype=state_dtype, device=device)
-  v1 = torch.tensor(
-      [[0.04, 0.09], [0.16, 0.25]], dtype=state_dtype, device=device
-  )
-  max_v0 = torch.tensor(
-      [0.02, 0.05, 0.10, 0.20], dtype=state_dtype, device=device
-  )
-  max_v1 = torch.tensor(
-      [[0.05, 0.10], [0.20, 0.30]], dtype=state_dtype, device=device
-  )
-  # Auxiliary step counters must always be float32 on device for CUDA kernels.
-  step0 = torch.tensor(1.0, dtype=torch.float32, device=device)
-  step1 = torch.tensor(2.0, dtype=torch.float32, device=device)
-  return (
-      [p0, p1],
-      [g0, g1],
-      [m0, m1],
-      [v0, v1],
-      [max_v0, max_v1],
-      [step0, step1],
-  )
+  ps, gs, ms, vs, max_vs, steps = [], [], [], [], [], []
+  for i, shape in enumerate(shapes):
+    numel = torch.Size(shape).numel()
+    ps.append(
+        torch.linspace(
+            -1.5 + 0.25 * i,
+            2.0 - 0.15 * i,
+            steps=numel,
+            dtype=compute_dtype,
+            device=device,
+        )
+        .reshape(shape)
+        .to(param_dtype)
+    )
+    gs.append(
+        torch.linspace(
+            -0.4 + 0.05 * i,
+            0.35 - 0.05 * i,
+            steps=numel,
+            dtype=compute_dtype,
+            device=device,
+        )
+        .reshape(shape)
+        .to(param_dtype)
+    )
+    ms.append(
+        torch.linspace(
+            -0.04 + 0.01 * i,
+            0.05 - 0.01 * i,
+            steps=numel,
+            dtype=compute_dtype,
+            device=device,
+        )
+        .reshape(shape)
+        .to(state_dtype)
+    )
+    # Strictly positive second-moment / sum accumulators (> 0) to prevent 1/sqrt(0).
+    vs.append(
+        torch.linspace(
+            0.02 + 0.01 * i,
+            0.25 + 0.05 * i,
+            steps=numel,
+            dtype=compute_dtype,
+            device=device,
+        )
+        .reshape(shape)
+        .to(state_dtype)
+    )
+    max_vs.append(
+        torch.linspace(
+            0.05 + 0.01 * i,
+            0.35 + 0.05 * i,
+            steps=numel,
+            dtype=compute_dtype,
+            device=device,
+        )
+        .reshape(shape)
+        .to(state_dtype)
+    )
+    # Auxiliary step counters must always be float32 on device for CUDA kernels.
+    steps.append(torch.tensor(float(i + 1), dtype=torch.float32, device=device))
+  return ps, gs, ms, vs, max_vs, steps
 
 
 def _make_dummy_unsupported_tensors(
@@ -1520,6 +1550,7 @@ def _sample_inputs_fused_adam(
     )
     return
 
+  # 1. Basic step with default hyperparameters.
   ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1536,6 +1567,7 @@ def _sample_inputs_fused_adam(
       name="basic_step",
   )
 
+  # 2. amsgrad=True, non-zero weight_decay=0.01, maximize=True.
   ps, gs, ms, vs, max_vs, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1552,6 +1584,7 @@ def _sample_inputs_fused_adam(
       name="amsgrad_wd_maximize",
   )
 
+  # 3. grad_scale + found_inf=0.0 (scaled gradient step).
   ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1570,20 +1603,78 @@ def _sample_inputs_fused_adam(
       name="grad_scale_step",
   )
 
+  # 4. grad_scale + found_inf=1.0 (verifying no-op when inf is found).
+  ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(device, dtype)
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms, vs, [], steps),
+      kwargs={
+          "lr": lr_val,
+          "beta1": 0.9,
+          "beta2": 0.999,
+          "weight_decay": 0.01,
+          "eps": 1e-8,
+          "amsgrad": False,
+          "maximize": False,
+          "grad_scale": torch.tensor(2.0, dtype=torch.float32, device=device),
+          "found_inf": torch.tensor(1.0, dtype=torch.float32, device=device),
+      },
+      name="grad_scale_found_inf",
+  )
+
+  # 5. Multi-rank/multi-size tensor list (1D, 2D, 3D, 4D).
+  ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(
+      device, dtype, shapes=[(7,), (3, 5), (2, 3, 4), (2, 2, 2, 2)]
+  )
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms, vs, [], steps),
+      kwargs={
+          "lr": lr_val,
+          "beta1": 0.9,
+          "beta2": 0.999,
+          "weight_decay": 0.01,
+          "eps": 1e-8,
+          "amsgrad": False,
+          "maximize": False,
+      },
+      name="multi_rank_shapes",
+  )
+
+  # 6. Single-tensor parameter list (len(params) == 1).
+  ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(
+      device, dtype, shapes=[(3, 5)]
+  )
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms, vs, [], steps),
+      kwargs={
+          "lr": lr_val,
+          "beta1": 0.9,
+          "beta2": 0.999,
+          "weight_decay": 0.0,
+          "eps": 1e-8,
+          "amsgrad": False,
+          "maximize": False,
+      },
+      name="single_tensor",
+  )
+
+  # 7. Mixed-precision (float32 params/grads with bfloat16 state tensors).
   if dtype == torch.float32 and str(device) != "cpu":
-    ps, gs, ms, vs, _, steps = _make_fused_opt_tensors(
+    ps, gs, ms, vs, max_vs, steps = _make_fused_opt_tensors(
         device, param_dtype=torch.float32, state_dtype=torch.bfloat16
     )
     yield core.SampleInput(
         ps,
-        args=(gs, ms, vs, [], steps),
+        args=(gs, ms, vs, max_vs, steps),
         kwargs={
             "lr": lr_val,
             "beta1": 0.9,
             "beta2": 0.999,
             "weight_decay": 0.01,
             "eps": 1e-8,
-            "amsgrad": False,
+            "amsgrad": True,
             "maximize": False,
         },
         name="mixed_precision_bf16_state",
@@ -1624,12 +1715,30 @@ def _sample_inputs_fused_sgd(
     )
     return
 
+  # 1. Basic momentum step (is_first_step=False).
+  ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype)
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms),
+      kwargs={
+          "weight_decay": 0.0,
+          "momentum": 0.9,
+          "lr": lr_val,
+          "dampening": 0.0,
+          "nesterov": False,
+          "maximize": False,
+          "is_first_step": False,
+      },
+      name="basic_momentum_step",
+  )
+
+  # 2. Vanilla SGD (momentum=0.0, momentum_buffer_list=[], weight_decay=0.01).
   ps, gs, _, _, _, _ = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
       args=(gs, []),
       kwargs={
-          "weight_decay": 0.0,
+          "weight_decay": 0.01,
           "momentum": 0.0,
           "lr": lr_val,
           "dampening": 0.0,
@@ -1637,9 +1746,27 @@ def _sample_inputs_fused_sgd(
           "maximize": False,
           "is_first_step": False,
       },
-      name="no_momentum",
+      name="vanilla_sgd_wd",
   )
 
+  # 3a. Nesterov momentum (nesterov=True, dampening=0.0) with is_first_step=True.
+  ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype)
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms),
+      kwargs={
+          "weight_decay": 0.01,
+          "momentum": 0.9,
+          "lr": lr_val,
+          "dampening": 0.0,
+          "nesterov": True,
+          "maximize": False,
+          "is_first_step": True,
+      },
+      name="nesterov_first_step",
+  )
+
+  # 3b. Nesterov momentum (nesterov=True, dampening=0.0) with is_first_step=False.
   ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1653,9 +1780,10 @@ def _sample_inputs_fused_sgd(
           "maximize": False,
           "is_first_step": False,
       },
-      name="momentum_nesterov_wd",
+      name="nesterov_subsequent_step",
   )
 
+  # 4. grad_scale + found_inf=0.0 (is_first_step=True).
   ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1672,6 +1800,61 @@ def _sample_inputs_fused_sgd(
           "found_inf": torch.tensor(0.0, dtype=torch.float32, device=device),
       },
       name="grad_scale_first_step",
+  )
+
+  # 5. grad_scale + found_inf=1.0 (verifying no-op when inf is found).
+  ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype)
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms),
+      kwargs={
+          "weight_decay": 0.01,
+          "momentum": 0.9,
+          "lr": lr_val,
+          "dampening": 0.1,
+          "nesterov": False,
+          "maximize": False,
+          "is_first_step": False,
+          "grad_scale": torch.tensor(2.0, dtype=torch.float32, device=device),
+          "found_inf": torch.tensor(1.0, dtype=torch.float32, device=device),
+      },
+      name="grad_scale_found_inf",
+  )
+
+  # 6. Multi-rank/multi-size tensor list (1D, 2D, 3D, 4D).
+  ps, gs, ms, _, _, _ = _make_fused_opt_tensors(
+      device, dtype, shapes=[(7,), (3, 5), (2, 3, 4), (2, 2, 2, 2)]
+  )
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms),
+      kwargs={
+          "weight_decay": 0.01,
+          "momentum": 0.9,
+          "lr": lr_val,
+          "dampening": 0.0,
+          "nesterov": False,
+          "maximize": False,
+          "is_first_step": False,
+      },
+      name="multi_rank_shapes",
+  )
+
+  # 7. Single-tensor parameter list (len(params) == 1).
+  ps, gs, ms, _, _, _ = _make_fused_opt_tensors(device, dtype, shapes=[(3, 5)])
+  yield core.SampleInput(
+      ps,
+      args=(gs, ms),
+      kwargs={
+          "weight_decay": 0.0,
+          "momentum": 0.9,
+          "lr": lr_val,
+          "dampening": 0.0,
+          "nesterov": False,
+          "maximize": False,
+          "is_first_step": False,
+      },
+      name="single_tensor",
   )
 
 
@@ -1707,6 +1890,7 @@ def _sample_inputs_fused_adagrad(
     )
     return
 
+  # 1. Basic step.
   ps, gs, _, vs, _, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1721,6 +1905,7 @@ def _sample_inputs_fused_adagrad(
       name="basic_step",
   )
 
+  # 2. Non-zero lr_decay=0.01, weight_decay=0.01, maximize=True.
   ps, gs, _, vs, _, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1735,6 +1920,7 @@ def _sample_inputs_fused_adagrad(
       name="lr_decay_wd_maximize",
   )
 
+  # 3. grad_scale + found_inf=0.0.
   ps, gs, _, vs, _, steps = _make_fused_opt_tensors(device, dtype)
   yield core.SampleInput(
       ps,
@@ -1749,6 +1935,57 @@ def _sample_inputs_fused_adagrad(
           "found_inf": torch.tensor(0.0, dtype=torch.float32, device=device),
       },
       name="grad_scale_step",
+  )
+
+  # 4. grad_scale + found_inf=1.0 (verifying no-op when inf is found).
+  ps, gs, _, vs, _, steps = _make_fused_opt_tensors(device, dtype)
+  yield core.SampleInput(
+      ps,
+      args=(gs, vs, steps),
+      kwargs={
+          "lr": lr_val,
+          "lr_decay": 0.01,
+          "weight_decay": 0.01,
+          "eps": 1e-10,
+          "maximize": False,
+          "grad_scale": torch.tensor(2.0, dtype=torch.float32, device=device),
+          "found_inf": torch.tensor(1.0, dtype=torch.float32, device=device),
+      },
+      name="grad_scale_found_inf",
+  )
+
+  # 5. Multi-rank/multi-size tensor list (1D, 2D, 3D, 4D).
+  ps, gs, _, vs, _, steps = _make_fused_opt_tensors(
+      device, dtype, shapes=[(7,), (3, 5), (2, 3, 4), (2, 2, 2, 2)]
+  )
+  yield core.SampleInput(
+      ps,
+      args=(gs, vs, steps),
+      kwargs={
+          "lr": lr_val,
+          "lr_decay": 0.01,
+          "weight_decay": 0.01,
+          "eps": 1e-10,
+          "maximize": False,
+      },
+      name="multi_rank_shapes",
+  )
+
+  # 6. Single-tensor parameter list (len(params) == 1).
+  ps, gs, _, vs, _, steps = _make_fused_opt_tensors(
+      device, dtype, shapes=[(3, 5)]
+  )
+  yield core.SampleInput(
+      ps,
+      args=(gs, vs, steps),
+      kwargs={
+          "lr": lr_val,
+          "lr_decay": 0.0,
+          "weight_decay": 0.0,
+          "eps": 1e-10,
+          "maximize": False,
+      },
+      name="single_tensor",
   )
 
 

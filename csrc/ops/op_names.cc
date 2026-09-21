@@ -765,14 +765,24 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_foreach_zero_";
     case OpName::kFusedAdagrad:
       return "_fused_adagrad_";
+    case OpName::kFusedAdagradFunctional:
+      return "_fused_adagrad";
+    case OpName::kFusedAdagradFunctionalTensorLr:
+      return "_fused_adagrad.tensor_lr";
     case OpName::kFusedAdagradTensorLr:
       return "_fused_adagrad_.tensor_lr";
     case OpName::kFusedAdam:
       return "_fused_adam_";
+    case OpName::kFusedAdamFunctionalTensorLr:
+      return "_fused_adam.tensor_lr";
     case OpName::kFusedAdamTensorLr:
       return "_fused_adam_.tensor_lr";
     case OpName::kFusedAdamw:
       return "_fused_adamw_";
+    case OpName::kFusedAdamwFunctional:
+      return "_fused_adamw";
+    case OpName::kFusedAdamwFunctionalTensorLr:
+      return "_fused_adamw.tensor_lr";
     case OpName::kFusedAdamwTensorLr:
       return "_fused_adamw_.tensor_lr";
     case OpName::kFusedDropout:
@@ -787,6 +797,10 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "_fused_sdp_choice";
     case OpName::kFusedSgd:
       return "_fused_sgd_";
+    case OpName::kFusedSgdFunctional:
+      return "_fused_sgd";
+    case OpName::kFusedSgdFunctionalTensorLr:
+      return "_fused_sgd.tensor_lr";
     case OpName::kFusedSgdTensorLr:
       return "_fused_sgd_.tensor_lr";
     case OpName::kGather:
