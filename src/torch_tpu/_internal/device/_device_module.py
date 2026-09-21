@@ -369,8 +369,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       raise TypeError(f"Class '{cls.__name__}' must define _device_type")
 
   @classmethod
+  @experimental(
+      "current_device() is experimental and subject to change without notice."
+  )
   def current_device(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the index of the currently selected device."""
+    """Returns the index of the currently selected device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._current_device is None:
       cls._current_device = _device_ops_backend._get_current_device_id()  # pylint: disable=protected-access
 
@@ -604,8 +611,15 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     streams.synchronize(device)
 
   @classmethod
+  @experimental(
+      "device_count() is experimental and subject to change without notice."
+  )
   def device_count(cls) -> int:  # This is in torch/cuda/__init__.py.
-    """Returns the count of devices. This is implemented for *local* devices."""
+    """Returns the count of devices. This is implemented for *local* devices.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if cls._device_count is None:
       if cls.is_initialized():
         cls._device_count = _device_ops_backend._get_device_count()  # pylint: disable=protected-access
@@ -665,10 +679,17 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     _device_ops_backend._set_current_stream_id(stream.stream_id)
 
   @classmethod
+  @experimental(
+      "current_stream() is experimental and subject to change without notice."
+  )
   def current_stream(
       cls, device: torch.device | None = None
   ) -> streams.TpuStream:
-    """Returns the active stream for a given device."""
+    """Returns the active stream for a given device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if device is None:
       device = torch.device("tpu")
     # pylint: disable=protected-access
@@ -676,10 +697,17 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
     return streams.TpuStream(device=device, stream_id=stream_id)
 
   @classmethod
+  @experimental(
+      "default_stream() is experimental and subject to change without notice."
+  )
   def default_stream(
       cls, device: torch.device | None = None
   ) -> streams.TpuStream:
-    """Returns the default stream for a given device."""
+    """Returns the default stream for a given device.
+
+    .. warning::
+        This API is experimental and subject to change in future releases.
+    """
     if device is None:
       device = torch.device("tpu")
     return streams.TpuStream(device=device, stream_id=0)
