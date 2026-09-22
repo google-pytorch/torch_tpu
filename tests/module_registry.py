@@ -3598,3 +3598,49 @@ class ModuleRegistry:
         modify_config_hook=modify_config_hook,
         **kwargs,
     )
+
+
+_SUPPORTED_PROVIDERS = (
+    "transformers",
+    "diffusers",
+    "timm",
+    "torchvision",
+    "sentence-transformers",
+)
+
+
+def has_pytorch_support(
+    provider: str | None = None,
+    tags: Sequence[str] | None = None,
+    model_id: str | None = None,
+    config: Any | None = None,
+) -> bool:
+  """Checks if the model supports PyTorch or standard framework providers."""
+  tags = tags or []
+  model_id_lower = (model_id or "").lower()
+
+  # Reject non-PyTorch model formats (GGUF / MLX)
+  if "gguf" in model_id_lower or "mlx" in model_id_lower:
+    return False
+  if any("gguf" in str(t).lower() or "mlx" in str(t).lower() for t in tags):
+    return False
+  if config:
+    quant_config = (
+        config.get("quantization_config", {})
+        if isinstance(config, dict)
+        else getattr(config, "quantization_config", {})
+    )
+    if isinstance(quant_config, dict):
+      quant_method = str(quant_config.get("quant_method", "")).lower()
+    else:
+      quant_method = str(getattr(quant_config, "quant_method", "")).lower()
+    if "gguf" in quant_method or "mlx" in quant_method:
+      return False
+
+  if provider in _SUPPORTED_PROVIDERS:
+    return True
+  if any(t.lower() in _SUPPORTED_PROVIDERS + ("pytorch",) for t in tags):
+    return True
+  if provider is None or provider == "unknown":
+    return True
+  return False
