@@ -79,6 +79,7 @@ torch_tpu_py_library(
         "//shims/jax:pallas_tpu",  # build_cleaner: keep
         "//shims/torch:pytorch",
         "//src/torch_tpu/_internal/device:_device_ops_backend",
+        "//src/torch_tpu/_internal/distributed:device_mesh",
         "//src/torch_tpu/_internal/utils:annotations",
         "@pypi//frozendict",
         "@pypi//jax",

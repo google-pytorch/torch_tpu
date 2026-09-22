@@ -829,6 +829,27 @@ bool Traversal::HasSparseCoreOp() const {
   return false;
 }
 
+absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+Traversal::ResolveDeviceAssignment() const {
+  std::vector<int64_t> resolved_da;  // INT_VEC_OK
+  for (const SharedDeviceBufferList& node : execution_order_) {
+    const auto& op = node->deferred_op();
+    if (!op || op->device_assignment().empty()) continue;
+    if (resolved_da.empty()) {
+      resolved_da = op->device_assignment();
+    } else if (resolved_da != op->device_assignment()) {
+      return TT_ERROR(error::kInvalidArgument)
+             << "Disjoint or conflicting device assignments detected in the "
+                "same "
+                "compiled module. Operations belonging to different process "
+                "groups or conflicting Pallas meshes cannot be compiled "
+                "together "
+                "into a single XLA executable";
+    }
+  }
+  return resolved_da;
+}
+
 absl::StatusOr<CompiledKernel> Traversal::Compile(
     CompilationSpec spec, std::string* absl_nullable out_mlir_text,
     bool use_stablehlo_bounds, absl::Span<const CustomLayout> argument_layouts,
@@ -854,6 +875,22 @@ absl::StatusOr<CompiledKernel> Traversal::Compile(
       spec.compile_options_key =
           MakeCompileOptionsKey(*spec.xla_compile_options);
     }
+  }
+
+  TT_ASSIGN_OR_RETURN(const std::vector<int64_t> resolved_da,  // INT_VEC_OK
+                      ResolveDeviceAssignment());
+  if (!resolved_da.empty()) {
+    const int num_partitions = resolved_da.size();
+    xla::ExecutableBuildOptions& exec_options =
+        spec.xla_compile_options->executable_build_options;
+    exec_options.set_num_replicas(1);
+    exec_options.set_num_partitions(num_partitions);
+    xla::DeviceAssignment da(1, num_partitions);
+    for (int p = 0; p < num_partitions; ++p) {
+      da(0, p) = resolved_da[p];
+    }
+    exec_options.set_device_assignment(da);
+    spec.compile_options_key = MakeCompileOptionsKey(*spec.xla_compile_options);
   }
 
   if (!argument_layouts.empty()) {

@@ -212,6 +212,11 @@ class Traversal {
       absl::Span<const int64_t> donated_inputs = {},
       std::optional<std::string_view> module_name = std::nullopt) const;
 
+  // Resolves the device assignment for this graph from deferred ops.
+  // Returns an error if conflicting device assignments are found.
+  absl::StatusOr<std::vector<int64_t>>  // INT_VEC_OK
+  ResolveDeviceAssignment() const;
+
   // Returns true if any argument to the traversal has bounded dynamic
   // dimensions marked.
   [[nodiscard]] bool IsBoundedDynamic() const;

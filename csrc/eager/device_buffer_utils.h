@@ -58,6 +58,8 @@ struct DeferredOpParams {
   // The indices of the donated inputs. This is primarily used by custom ops
   // (such as Pallas ops).
   Indices donated_indices = {};
+  // Device assignment for the operation (e.g. rank-to-device mapping).
+  std::vector<int64_t> device_assignment = {};  // INT_VEC_OK
 };
 
 // Don't use this directly when defining ops. Use DispatchOp<kNumInputs,

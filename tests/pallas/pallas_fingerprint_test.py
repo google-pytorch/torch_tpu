@@ -109,6 +109,7 @@ class PallasFingerprintTest(seed_test_utils.RepeatableTest):
           inputs=mock.ANY,
           output_shapes=mock.ANY,
           donate_argnums=mock.ANY,
+          device_assignment=mock.ANY,
       )
 
 

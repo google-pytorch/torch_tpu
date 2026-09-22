@@ -248,6 +248,62 @@ def run_all_gather_tensor_stack() -> None:
   utils.assert_close(output_cpu, expected)
 
 
+def run_all_gather_rank_order() -> None:
+  """Tests all_gather_into_tensor and all_to_all rank ordering across TPU cores.
+
+  Verifies that collectives preserve logical rank ordering [0, 1, ...,
+  world_size-1]
+  and are not permuted by physical PJRT/ICI chip topology [0, 1, 4, 5, 6, 7, 2,
+  3]
+  on multi-core TPU hosts (e.g. TPU v5e 2x4 cores), covering both default
+  process group (group=None) and explicit full-world subgroup (dist.new_group).
+  """
+  rank = int(os.environ["RANK"])
+  world_size = int(os.environ["WORLD_SIZE"])
+  device = torch.device("tpu", torch.tpu.current_device())
+  expected = torch.arange(world_size, dtype=torch.float32)
+
+  # 1. all_reduce (permutation invariant check matching reproducer)
+  summed = torch.full((8,), float(rank), dtype=torch.float32, device=device)
+  torch.distributed.all_reduce(summed, group=None)
+  expected_sum = world_size * (world_size - 1) / 2.0
+  utils.assert_close(
+      summed.cpu(), torch.full((8,), expected_sum, dtype=torch.float32)
+  )
+
+  # 2. all_gather_into_tensor on default process group (group=None)
+  gathered_default = torch.empty(world_size, dtype=torch.float32, device=device)
+  inp = torch.full((1,), float(rank), dtype=torch.float32, device=device)
+  torch.distributed.all_gather_into_tensor(gathered_default, inp, group=None)
+  utils.assert_close(gathered_default.cpu(), expected)
+
+  # 3. all_gather_into_tensor on explicit world group (dist.new_group)
+  all_ranks = list(range(world_size))
+  explicit_world_pg = torch.distributed.new_group(ranks=all_ranks)
+  gathered_new_group = torch.empty(
+      world_size, dtype=torch.float32, device=device
+  )
+  torch.distributed.all_gather_into_tensor(
+      gathered_new_group, inp, group=explicit_world_pg
+  )
+  utils.assert_close(gathered_new_group.cpu(), expected)
+
+  # 4. all_to_all_single on default process group (group=None)
+  send = torch.full(
+      (world_size,), float(rank), dtype=torch.float32, device=device
+  )
+  recv = torch.empty(world_size, dtype=torch.float32, device=device)
+  torch.distributed.all_to_all_single(recv, send, group=None)
+  utils.assert_close(recv.cpu(), expected)
+
+  # 5. all_to_all_single on explicit world group
+  recv_new_group = torch.empty(world_size, dtype=torch.float32, device=device)
+  torch.distributed.all_to_all_single(
+      recv_new_group, send, group=explicit_world_pg
+  )
+  utils.assert_close(recv_new_group.cpu(), expected)
+
+
 def run_gather_scalar() -> None:
   """Tests gather on scalar input."""
   rank = int(os.environ["RANK"])
@@ -849,6 +905,15 @@ class CollectiveOpsTest(seed_test_utils.MultiProcessRepeatableTest):
             _test_wrapper, world_size=self._world_size
         ),
         test_fn=run_all_gather_tensor_stack,
+    )
+
+  def test_all_gather_rank_order(self):
+    distributed_utils.dist_run(
+        nproc_per_node=self._world_size,
+        fn=singlehost_wrapper.tpu_env_wrapper(
+            _test_wrapper, world_size=self._world_size
+        ),
+        test_fn=run_all_gather_rank_order,
     )
 
   def test_gather_scalar(self):

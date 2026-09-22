@@ -33,6 +33,7 @@ from torch._library.custom_ops import CustomOpDef
 import torch.distributed as dist
 import torch.library
 from torch_tpu._internal.device import _device_ops_backend
+from torch_tpu._internal.distributed import device_mesh
 from torch_tpu._internal.pallas import _compat
 from torch_tpu._internal.pallas import tpu_torch_pallas
 from torch_tpu._internal.pallas._mock_device import _PallasDevice
@@ -732,12 +733,17 @@ class JaxCallable:
         if arg is not None and i not in self.static_argnums
     ]
 
+    device_assignment: list[int] = []
+    if self.mesh is not None:
+      device_assignment = [int(d.id) for d in self.mesh.devices.flat]
+
     results = tpu_torch_pallas.call_custom_kernel(
         self.name,
         mlir_fingerprint,
         inputs=tensor_args,
         output_shapes=output_shapes,
         donate_argnums=self.donate_argnums,
+        device_assignment=device_assignment,
     )
 
     for in_idx, out_idx in self.input_output_aliases.items():
@@ -1028,6 +1034,7 @@ def jax_op(
 def get_pallas_mesh(
     axis_names: Sequence[str] | str,
     mesh_shape: Sequence[int] | None = None,
+    process_group: dist.ProcessGroup | None = None,
 ) -> jax.sharding.Mesh:
   """Constructs a rank-aligned JAX Mesh using TPU runtime device metadata."""
   if not dist.is_initialized():
@@ -1035,7 +1042,7 @@ def get_pallas_mesh(
         "torch.distributed is not initialized. dist.init_process_group()"
     )
 
-  world_size = dist.get_world_size()
+  world_size = dist.get_world_size(process_group)
 
   if mesh_shape is not None:
     if math.prod(mesh_shape) != world_size:
@@ -1056,8 +1063,14 @@ def get_pallas_mesh(
   attrs = _device_ops_backend._get_local_device_attributes()
   dev_name = attrs.get("device_kind")
 
+  pg_devs = device_mesh.get_device_assignment(process_group)
+
   devices = [
-      _PallasDevice(id=i, process_index=i, device_kind=dev_name)
+      _PallasDevice(
+          id=pg_devs[i] if (pg_devs and i < len(pg_devs)) else i,
+          process_index=i,
+          device_kind=dev_name,
+      )
       for i in range(world_size)
   ]
 
@@ -1069,6 +1082,10 @@ def get_pallas_mesh(
   return jax.sharding.Mesh(mesh_devices, axis_names=axis_names)
 
 
-def get_default_pallas_mesh() -> jax.sharding.Mesh:
+def get_default_pallas_mesh(
+    process_group: dist.ProcessGroup | None = None,
+) -> jax.sharding.Mesh:
   """Constructs default 1D world rank-aligned JAX Mesh with axis ('rank',)."""
-  return get_pallas_mesh(axis_names=("rank",), mesh_shape=None)
+  return get_pallas_mesh(
+      axis_names=("rank",), mesh_shape=None, process_group=process_group
+  )
