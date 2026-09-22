@@ -26,8 +26,8 @@
 
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "csrc/common/aten_utils.h"
 #include "csrc/common/cache_key.h"
 #include "csrc/common/dimension_types.h"
 #include "csrc/common/dtype.h"
@@ -510,6 +510,23 @@ auto GetAvgPoolOpBuilder(at::IntArrayRef kernel_size, at::IntArrayRef stride,
       };
 }
 
+absl::Status ValidateAvgPool1dDtype(const at::Tensor& self) {
+  TT_RET_CHECK(self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
+               error::kPythonNotImplementedError)
+      << "not implemented for " << torch_tpu::ToString(self.scalar_type());
+  TT_RET_CHECK(self.scalar_type() != at::ScalarType::Short &&
+                   self.scalar_type() != at::ScalarType::Int &&
+                   self.scalar_type() != at::ScalarType::Char &&
+                   self.scalar_type() != at::ScalarType::Byte &&
+                   self.scalar_type() != at::ScalarType::ComplexFloat &&
+                   self.scalar_type() != at::ScalarType::Bool,
+               error::kInvalidArgument)
+      << "expected input dtype to be none of (bool, uint8, int8, "
+         "int16, int32, complex64), got "
+      << torch_tpu::ToString(self.scalar_type());
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 // Helper function to build and dispatch N-dimensional average pooling
@@ -592,21 +609,7 @@ at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
   TT_KERNEL(
       OpName::kAvgPool1d, param_keys,
       (self, kernel_size, stride, padding, ceil_mode, count_include_pad), {
-        TT_CHECK_THROW(
-            self.numel() == 0 || self.scalar_type() != at::ScalarType::Long,
-            error::kPythonNotImplementedError)
-            << "not implemented for "
-            << torch_tpu::ToString(self.scalar_type());
-        TT_CHECK_THROW(self.scalar_type() != at::ScalarType::Short &&
-                           self.scalar_type() != at::ScalarType::Int &&
-                           self.scalar_type() != at::ScalarType::Char &&
-                           self.scalar_type() != at::ScalarType::Byte &&
-                           self.scalar_type() != at::ScalarType::ComplexFloat &&
-                           self.scalar_type() != at::ScalarType::Bool,
-                       error::kInvalidArgument)
-            << "expected input dtype to be none of (bool, uint8, int8, "
-               "int16, int32, complex64), got "
-            << torch_tpu::ToString(self.scalar_type());
+        TT_THROW_IF_ERROR(ValidateAvgPool1dDtype(self));
 
         TT_ASSIGN_OR_THROW(
             const Dimensions output_size,
@@ -623,6 +626,26 @@ at::Tensor AtenAvgPool1d(const at::Tensor& self, at::IntArrayRef kernel_size,
                            output_size, /*spatial_dim_count=*/1,
                            std::move(param_keys)));
         return MakeTensor(std::move(result_buf));
+      });
+}
+
+at::Tensor& AtenAvgPool1dOut(const at::Tensor& self,
+                             at::IntArrayRef kernel_size,
+                             at::IntArrayRef stride, at::IntArrayRef padding,
+                             bool ceil_mode, bool count_include_pad,
+                             at::Tensor& out) {
+  TT_KERNEL(
+      OpName::kAvgPool1dOut, param_keys,
+      (self, kernel_size, stride, padding, ceil_mode, count_include_pad, out), {
+        TT_THROW_IF_ERROR(ValidateAvgPool1dDtype(self));
+
+        TT_ASSIGN_OR_THROW(
+            auto result,
+            BuildAvgPoolOutNd(self, kernel_size, stride, padding, ceil_mode,
+                              count_include_pad,
+                              /*divisor_override=*/std::nullopt, out,
+                              /*spatial_dim_count=*/1, std::move(param_keys)));
+        return out;
       });
 }
 

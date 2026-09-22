@@ -392,6 +392,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   ImplStable<OpName::kAtanOut>(m, AtenAtanOut);
   ImplStable<OpName::kAtanhOut>(m, AtenAtanhOut);
   ImplStable<OpName::kAvgPool1d>(m, AtenAvgPool1d);
+  ImplStable<OpName::kAvgPool1dOut>(m, AtenAvgPool1dOut);
   ImplStable<OpName::kAvgPool2dBackwardGradInput>(
       m, AtenAvgPool2dBackwardGradInput);
   ImplStable<OpName::kAvgPool2dOut>(m, AtenAvgPool2dOut);

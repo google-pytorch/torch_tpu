@@ -4715,6 +4715,27 @@ class PyBindErrorUtilsErrorsTest(et.TpuOnlyErrorTestBase):
           with self.assertRaises(type(exc)):
             pallas.get_default_pallas_mesh()
 
+  @et.why_tpu_only(
+      "GPU raises NotImplementedError from avg_pool2d_out_cuda_frame instead of"
+      " RuntimeError."
+  )
+  def test_avg_pool1d_out_unsupported_dtypes(self):
+    for dtype, dtype_str in [
+        (torch.bool, "bool"),
+        (torch.complex64, "complex64"),
+        (torch.uint8, "uint8"),
+        (torch.int8, "int8"),
+        (torch.int16, "int16"),
+        (torch.int32, "int32"),
+    ]:
+      t = torch.zeros((1, 1, 4), device=et.device(), dtype=dtype)
+      out = torch.empty((1, 1, 2), device=et.device(), dtype=dtype)
+      with et.assert_raises_message(
+          RuntimeError,
+          tpu=f"""avg_pool1d(): expected input dtype to be none of (bool, uint8, int8, int16, int32, complex64), got {dtype_str}""",
+      ):
+        torch.ops.aten.avg_pool1d.out(t, [3], out=out)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -427,9 +427,10 @@ REGISTRATION_OVERRIDES = frozenset([
     '_thnn_fused_gru_cell.out',
     '_thnn_fused_lstm_cell.out',
     '_to_copy',
-    # avg_pool1d is registered to provide a direct 1D pooling lowering on TPU,
-    # overriding the default PyTorch decomposition.
+    # avg_pool1d and avg_pool1d.out are registered to provide a direct 1D
+    # pooling lowering on TPU, overriding the default PyTorch decomposition.
     'avg_pool1d',
+    'avg_pool1d.out',
     # constant_pad_nd is registered to lower directly to StableHLO Concatenate
     # instead of empty + fill_ + slice.copy_ (DynamicUpdateSlice).
     'constant_pad_nd',

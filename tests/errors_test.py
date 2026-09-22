@@ -3785,6 +3785,15 @@ Device-side assertion tracking was not enabled by user.""",
           gpu_op_name="avg_pool2d_out_cuda_frame",
       ),
       dict(
+          testcase_name="avg_pool1d_out",
+          op=lambda t, kernel_size: torch.ops.aten.avg_pool1d.out(
+              t, [kernel_size], out=torch.empty_like(t)
+          ),
+          shape=(1, 1, 4),
+          op_name="avg_pool1d",
+          gpu_op_name="avg_pool2d_out_cuda_frame",
+      ),
+      dict(
           testcase_name="avg_pool2d",
           op=torch.nn.functional.avg_pool2d,
           shape=(1, 1, 4, 4),

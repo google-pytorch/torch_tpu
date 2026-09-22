@@ -13738,6 +13738,46 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
     atol = 5e-3 if dtype == torch.bfloat16 else None
     self.assert_close_tpu_vs_cpu(compute, atol=atol)
 
+  @parameterized.product(
+      shape=[(2, 3, 16), (3, 20)],
+      kernel_size=[2, 3],
+      stride=[[], [1], [2]],
+      padding=[[0], [1]],
+      ceil_mode=[False, True],
+      count_include_pad=[False, True],
+      dtype=[torch.float32, torch.bfloat16],
+  )
+  def test_avg_pool1d_out(
+      self,
+      shape,
+      kernel_size,
+      stride,
+      padding,
+      ceil_mode,
+      count_include_pad,
+      dtype,
+  ):
+    torch.manual_seed(42)
+    input_val = torch.randn(shape, dtype=dtype)
+
+    def compute(device):
+      x = input_val.to(device)
+      out = torch.empty(0, dtype=dtype, device=device)
+      res = torch.ops.aten.avg_pool1d.out(
+          x,
+          [kernel_size],
+          stride,
+          padding,
+          ceil_mode,
+          count_include_pad,
+          out=out,
+      )
+      self.assertIs(res, out)
+      return out
+
+    atol = 5e-3 if dtype == torch.bfloat16 else None
+    self.assert_close_tpu_vs_cpu(compute, atol=atol)
+
   def test_avg_pool_corner_cases(self):
     """Tests corner cases for avg_pool1d, avg_pool2d, and avg_pool3d:
 

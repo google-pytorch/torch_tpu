@@ -143,6 +143,8 @@ std::string_view ToString(OpName op_name) {  // NOLINT(readability/fn_size)
       return "atanh.out";
     case OpName::kAvgPool1d:
       return "avg_pool1d";
+    case OpName::kAvgPool1dOut:
+      return "avg_pool1d.out";
     case OpName::kAvgPool2dBackwardGradInput:
       return "avg_pool2d_backward.grad_input";
     case OpName::kAvgPool2dOut:
