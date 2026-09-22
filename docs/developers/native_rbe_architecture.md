@@ -31,34 +31,42 @@ Buildbarn. Bazel communicates directly with Buildbarn over gRPC.
 
 ```mermaid
 flowchart TD
-    subgraph CIRunner ["CI Runner (ml-velocity-actions-production)"]
-        BazelCI["Bazel Client (linux-x86-n4-16 / ml-build)<br/>bazel test --config=ci_rbe_presubmit<br/>(ci_base + rbe_native_tpu)"]
-        PSCEndpoint["PSC Endpoint (default network)<br/>10.202.0.67:8980 (Executor & Cache)"]
+    classDef external fill:#e8f0fe,stroke:#1a73e8,stroke-width:2px,color:#0d47a1
+    classDef gcpManaged fill:#e6f4ea,stroke:#1e8e3e,stroke-width:2px,color:#0d652d
+    classDef ownedGKE fill:#fef7e0,stroke:#f29900,stroke-width:2px,color:#b06000
+    classDef ownedVM fill:#fce8e6,stroke:#d93025,stroke-width:2px,color:#a50e0e
+    classDef devLocal fill:#f3e8fd,stroke:#9334e6,stroke-width:2px,color:#681da8
+
+    subgraph CIRunner ["1. CI Runner & Consumer VPC (project: ml-velocity-actions-production)<br/>OWNERSHIP: ML Velocity Infra Team (Already Exists / Autoscaled — We Just Utilize)"]
+        BazelCI["GitHub Actions CPU Runner (linux-x86-n4-16 / ml-build)<br/>Spins up automatically per PR job<br/>bazel test --config=ci_rbe_presubmit"]:::external
+        PSCEndpoint["Consumer PSC Endpoint (10.202.0.67:8980)<br/>Managed via ML Velocity Terraform (psc_endpoints.tf)"]:::external
         BazelCI --> PSCEndpoint
     end
 
-    subgraph DevClient ["Developer Workstation (Cloudtop)"]
-        BazelDev["Bazel Client<br/>bazel test --config=rbe_native_tpu"]
-        SSHTunnel["SSH Port Forward<br/>127.0.0.1:8980 -> port 22"]
+    subgraph DevClient ["2. Developer Workstation (Cloudtop)<br/>OWNERSHIP: Ephemeral Per-Developer (On-Demand Only)"]
+        BazelDev["Local Bazel Client<br/>bazel test --config=rbe_native_tpu"]:::devLocal
+        SSHTunnel["Background SSH Port Forward<br/>127.0.0.1:8980 -> port 22"]:::devLocal
         BazelDev --> SSHTunnel
     end
 
-    subgraph ProducerVPC ["RBE Producer Network (rbe-tpu-oss / us-east5)"]
-        PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment (NAT 10.0.100.0/24)"]
-        ILB["Internal TCP Load Balancer<br/>rbe-internal-ilb (10.202.0.15:8980)"]
-        GW["rbe-tunnel-gateway<br/>Primary IP: 10.202.0.13 | VPC Alias IP: 10.202.0.3/32<br/>HAProxy (:8980, :30980, :30983) + socat (:8443 HC)"]
-
+    subgraph ProducerNet ["3. Producer Cloud Networking (project: rbe-tpu-oss / us-east5)<br/>OWNERSHIP: Managed GCP Networking Primitives (Already Provisioned — Zero Daemon Maintenance)"]
+        PSCSA["PSC Service Attachment<br/>rbe-tpu-service-attachment (NAT 10.0.100.0/24)"]:::gcpManaged
+        ILB["Managed Internal TCP Load Balancer<br/>rbe-internal-ilb (10.202.0.15:8980)"]:::gcpManaged
         PSCEndpoint -->|"Google Backbone"| PSCSA
         PSCSA --> ILB
+    end
+
+    subgraph OwnedGateway ["4. Producer Gateway VM (project: rbe-tpu-oss / us-east5-a)<br/>OWNERSHIP: TorchTPU Team (Already Stood Up — Static GCE VM + systemd)"]
+        GW["rbe-tunnel-gateway (Debian 12 GCE VM)<br/>Primary IP: 10.202.0.13 | VPC Alias IP: 10.202.0.3/32<br/>haproxy.service (:8980, :30980, :30983) + socat (:8443 HC)"]:::ownedVM
         ILB -->|":8980 data / :8443 HC"| GW
         SSHTunnel -->|"Corp SSH (port 22)"| GW
     end
 
-    subgraph ControlPlane ["GKE Control Plane & CPU Workers (rbe-tpu-oss-east5-cluster)"]
-        FE["bb-frontend (NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]
-        SCHED["bb-scheduler (NodePort 30983)<br/>Queue & Platform Matcher"]
-        STOR["bb-storage (ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]
-        CPUWorkers["224-CPU Worker Pool (7 Nodes x 32 Slots)<br/>ml-build Image | Standard, 16 GB, 20 GB Queues"]
+    subgraph ControlPlane ["5. Buildbarn Control Plane & CPU Pool (GKE: rbe-tpu-oss-east5-cluster)<br/>OWNERSHIP: TorchTPU Team (Already Deployed — Self-Healing K8s Pods in namespace: buildbarn)"]
+        FE["bb-frontend (3 Pods, NodePort 30980)<br/>REAPI v2 Surface & CAS/AC Router"]:::ownedGKE
+        SCHED["bb-scheduler (1 Pod, NodePort 30983)<br/>Queue & Platform Matcher"]:::ownedGKE
+        STOR["bb-storage (2 StatefulSet Pods, ClusterIP 8981)<br/>CAS (32 GB) & Action Cache (1 GB)"]:::ownedGKE
+        CPUWorkers["worker-cpu (7 Pods on 7 x 32-vCPU GKE Nodes = 224 Slots)<br/>Uses ML Velocity ml-build Image | Standard, 16 GB, 20 GB Queues"]:::ownedGKE
 
         GW -->|":8980 / :30980 -> NodePort 30980<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| FE
         GW -->|":30983 -> NodePort 30983<br/>(10.202.0.16 + 10.202.0.6..17 failover)"| SCHED
@@ -67,11 +75,11 @@ flowchart TD
         SCHED --> CPUWorkers
     end
 
-    subgraph Fleet ["Standing Cloud TPU v5e Fleet (28 Single-Chip Nodes Across 4 Zones)"]
+    subgraph Fleet ["6. Standing Cloud TPU v5e Fleet (project: rbe-tpu-oss across 4 Zones)<br/>OWNERSHIP: TorchTPU Team (Already Deployed — 28 Spot TPU VMs + systemd)"]
         subgraph Node ["Cloud TPU VM (spot-tpu-v5e-*)"]
-            Worker["bb_worker daemon<br/>(concurrency: 1, maxCache: 20 GB)"]
-            Runner["bb_runner daemon<br/>(unix:///tmp/torch_tpu_rbe/runner.sock)"]
-            Hardware["Physical TPU v5e Chip<br/>(/dev/vfio/0)"]
+            Worker["bb_worker.service<br/>(concurrency: 1, maxCache: 20 GB)"]:::ownedVM
+            Runner["bb_runner.service<br/>(unix:///tmp/torch_tpu_rbe/runner.sock)"]:::ownedVM
+            Hardware["Physical TPU v5e Chip<br/>(/dev/vfio/0)"]:::ownedVM
 
             Worker -->|"Outbound gRPC long-poll<br/>10.202.0.3:30983"| GW
             Worker -->|"Fetch inputs / upload results<br/>10.202.0.3:30980"| GW
@@ -80,6 +88,21 @@ flowchart TD
         end
     end
 ```
+
+### Component Ownership & Operational Lifecycle
+
+Every component in the diagram above is **already deployed and live**. No
+additional services need to be stood up to merge or run this workflow.
+
+| Diagram Layer | Component | Owner | Current State & Lifecycle | What We Maintain |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Blue** *(External / Utilized)* | **GitHub Actions Runner (`linux-x86-n4-16`) & `ml-build` Image** | **ML Velocity Infra** (`ml-velocity-actions-production`) | **Automatic / Ephemeral**: Spins up on demand per PR workflow run and tears down automatically when the job finishes. | **Nothing.** We only reference `runs-on: linux-x86-n4-16` and the `ml-build` image in `presubmit.yml`. |
+| **1. Blue** *(External / Utilized)* | **Consumer PSC Endpoint (`10.202.0.67:8980`)** | **ML Velocity Infra** (`psc_endpoints.tf`) | **Already Provisioned**: Static forwarding rule (`rbe-tpu-buildbarn-psc-endpoint`) managed by ML Velocity's `terraform_ci` pipeline (`status: ACCEPTED`). | **Nothing.** We only point `--remote_executor=grpc://10.202.0.67:8980` at it in `.bazelrc`. |
+| **2. Purple** *(Ephemeral Client)* | **Developer SSH Tunnel (`127.0.0.1:8980`)** | **Individual Developer** (Cloudtop) | **On-Demand**: Started by an engineer only when running remote TPU tests locally from a workstation. Never used by CI. | **Nothing.** |
+| **3. Green** *(Managed GCP Networking)* | **PSC Service Attachment (`rbe-tpu-service-attachment`) & Internal LB (`rbe-internal-ilb`)** | **TorchTPU Team** (`rbe-tpu-oss`), **Managed by GCP** | **Already Provisioned**: Cloud-native VPC networking objects in `us-east5`. No VMs or processes behind them. | **Zero ongoing maintenance.** Only touched if adding another consumer GCP project to `consumerAcceptLists`. |
+| **4. Red** *(TorchTPU VM Infra)* | **`rbe-tunnel-gateway` (`10.202.0.13` / alias `10.202.0.3/32`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Stood Up**: Single Debian 12 GCE VM in `us-east5-a` running `haproxy.service` and `rbe-gateway-hc.service` (`socat`). `systemd` auto-starts both on boot. | **Owned by us.** HAProxy automatically fails over across all 8 GKE nodes (`10.202.0.16` + `10.202.0.6..17`). Only needs updates if the GKE node IP range changes. |
+| **5. Amber** *(TorchTPU K8s Infra)* | **Buildbarn Control Plane (`bb-frontend`, `bb-scheduler`, `bb-storage`) & 224-Slot CPU Pool (`worker-cpu`)** | **TorchTPU Team** (`rbe-tpu-oss-east5-cluster`) | **Already Deployed**: Self-healing Kubernetes Deployments/StatefulSets in namespace `buildbarn`. GKE automatically restarts crashed pods. | **Owned by us.** Configured via ConfigMaps `buildbarn-config-d94cdd4g96` and `bb-worker-cpu-config`. |
+| **6. Red** *(TorchTPU TPU Fleet)* | **28 Standing Cloud TPU v5e Workers (`spot-tpu-v5e-*`)** | **TorchTPU Team** (`rbe-tpu-oss`) | **Already Deployed**: 28 single-chip Spot TPU VMs across 4 zones running `bb_worker.service` and `bb_runner.service` (`Restart=always`). | **Owned by us.** Because these are Spot TPU VMs, if GCE preempts a node, the capacity drops from 28 to `28 - N` until the preempted Spot VM is restarted/recreated. |
 
 --------------------------------------------------------------------------------
 
