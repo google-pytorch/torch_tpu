@@ -15,7 +15,6 @@
 """Simple trainer library for compiling and running PyTorch training steps on TPU."""
 
 import dataclasses
-import functools
 import inspect
 import typing
 from typing import Any, Callable, Sequence
@@ -24,19 +23,22 @@ import torch
 import torch.func as func
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.utils import _pytree
-from examples.tracing import optimizers
+from torch_tpu.extras.optimizers import adamw
+from torch_tpu.extras.optimizers import muon
+from torch_tpu.extras.optimizers import optim
+from torch_tpu.extras.optimizers import sgd
 
 # Re-export optimizer classes for simple_trainer
-Optimizer = optimizers.Optimizer
-AdamW = optimizers.AdamW
-SGD = optimizers.SGD
-ReferenceAdamw = optimizers.ReferenceAdamw
-TorchAdamw = optimizers.TorchAdamw
-ReferenceSgd = optimizers.ReferenceSgd
-TorchSgd = optimizers.TorchSgd
-Muon = optimizers.Muon
-ReferenceMuon = optimizers.ReferenceMuon
-TorchMuon = optimizers.TorchMuon
+Optimizer = optim.Optimizer
+AdamW = adamw.AdamW
+SGD = sgd.SGD
+ReferenceAdamw = adamw.ReferenceAdamw
+TorchAdamw = adamw.TorchAdamw
+ReferenceSgd = sgd.ReferenceSgd
+TorchSgd = sgd.TorchSgd
+Muon = muon.Muon
+ReferenceMuon = muon.ReferenceMuon
+TorchMuon = muon.TorchMuon
 
 
 def _compute_loss(

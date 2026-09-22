@@ -16,9 +16,10 @@
 
 from absl.testing import absltest
 import torch
-import torch_tpu
-from examples.tracing import optimizers
-from examples.tracing import single_trace_trainer
+import torch_tpu  # pylint: disable=unused-import  # noqa: F401
+from torch_tpu.extras.optimizers import adamw
+from torch_tpu.extras.optimizers import sgd
+from torch_tpu.extras.optimizers import single_trace_trainer
 from tests import seed_test_utils
 
 
@@ -44,7 +45,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = ToyLinearModule().to(device=self.device)
     trainer = single_trace_trainer.SingleTraceTrainer(
         model=model,
-        optimizer=optimizers.ReferenceAdamw(use_bfloat16_moments=False),
+        optimizer=adamw.ReferenceAdamw(use_bfloat16_moments=False),
         compile_fn=torch.compile,
     )
 
@@ -61,7 +62,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = ToyLinearModule().to(device=self.device)
     trainer = single_trace_trainer.SingleTraceTrainer(
         model=model,
-        optimizer=optimizers.ReferenceSgd(lr=1e-2, momentum=0.9),
+        optimizer=sgd.ReferenceSgd(lr=1e-2, momentum=0.9),
     )
 
     x = torch.randn((16, 128), device=self.device)
@@ -80,7 +81,7 @@ class SingleTraceTrainerStandaloneSanityTest(seed_test_utils.RepeatableTest):
     model = ToyLinearModule().to(device=self.device)
     trainer = single_trace_trainer.SingleTraceTrainer(
         model=model,
-        optimizer=optimizers.ReferenceAdamw(),
+        optimizer=adamw.ReferenceAdamw(),
         compile_fn=torch.compile,
     )
 

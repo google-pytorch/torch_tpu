@@ -22,7 +22,7 @@ from typing import Any, Callable
 import torch
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e import single_trace_trainer_adapter
-from examples.tracing import optimizers
+from torch_tpu.extras.optimizers import adamw
 
 
 @contextlib.contextmanager
@@ -381,9 +381,7 @@ def get_train_factory(
     # Layer benchmarks (simple_train_factory) evaluate pure FWD + BWD without
     # an optimizer, while model benchmarks use ReferenceAdamw.
     optim = (
-        None
-        if eager_fact == simple_train_factory
-        else optimizers.ReferenceAdamw()
+        None if eager_fact == simple_train_factory else adamw.ReferenceAdamw()
     )
     return functools.partial(
         functional_train_factory,
