@@ -296,9 +296,14 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     self.assertEqual(mock_barrier.call_count, 1)
 
   @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x2"})
+  @mock.patch.object(
+      distributed_runner.singlehost_wrapper, "prepare_tpu_environment"
+  )
   @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
   @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
-  def test_main_successful_dispatch(self, mock_resolve_targets, mock_dist_run):
+  def test_main_successful_dispatch(
+      self, mock_resolve_targets, mock_dist_run, mock_prepare_tpu_env
+  ):
     dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
     dummy_spec.name = "dummy"
     mock_resolve_targets.return_value = [
@@ -310,12 +315,42 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
     ):
       distributed_runner.main(["distributed_runner"])
 
+    mock_prepare_tpu_env.assert_not_called()
     mock_dist_run.assert_called_once_with(
         8,  # V7_2X2X2 has 8 procs per node
         distributed_runner._run_single_target_task,
         "dummy",
         "eager_default",
         "v7_2x2x2",
+    )
+
+  @mock.patch.dict(os.environ, {"BENCHMARK_PLATFORM": "v7_2x2x1"})
+  @mock.patch.object(
+      distributed_runner.singlehost_wrapper, "prepare_tpu_environment"
+  )
+  @mock.patch.object(distributed_runner.distributed_utils, "dist_run")
+  @mock.patch.object(distributed_runner, "resolve_benchmark_targets")
+  def test_main_singlehost_tpu_prepares_environment(
+      self, mock_resolve_targets, mock_dist_run, mock_prepare_tpu_env
+  ):
+    dummy_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    dummy_spec.name = "dummy"
+    mock_resolve_targets.return_value = [
+        (dummy_spec, common.RunMode.EAGER_DEFAULT)
+    ]
+
+    with mock.patch.dict(
+        os.environ, {"TESTBRIDGE_TEST_ONLY": "dummy_eager_default"}
+    ):
+      distributed_runner.main(["distributed_runner"])
+
+    mock_prepare_tpu_env.assert_called_once_with(8)
+    mock_dist_run.assert_called_once_with(
+        8,
+        distributed_runner._run_single_target_task,
+        "dummy",
+        "eager_default",
+        "v7_2x2x1",
     )
 
   @mock.patch.object(torch.distributed, "barrier")

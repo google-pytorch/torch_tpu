@@ -339,6 +339,7 @@ torch_tpu_py_library(
         "//src/torch_tpu",
         "//src/torch_tpu/_internal:testing",
         "//src/torch_tpu/_internal/distributed:multiprocessing",
+        "//src/torch_tpu/_internal/distributed/launchers:singlehost_wrapper",
         "//tests/distributed:distributed_utils",
         "@pypi//fairscale",
     ],

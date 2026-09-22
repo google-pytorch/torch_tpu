@@ -657,3 +657,42 @@ benchmarks {
   metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
 }
 
+benchmarks {
+  name: "torch_distributed_benchmarks"
+  description: "Torch distributed multi-device benchmarks"
+  owner: "TorchTPU"
+
+  workload {
+    action: "./user_repo/.github/actions/run-benchmark"
+    action_inputs { key: "script" value: "examples/benchmarks/e2e/harness/distributed_runner.py" }
+    action_inputs { key: "runtime_flags" value: "--run_scope=full" }
+  }
+
+  environment_configs {
+    id: "tpu-v7"
+    runner_label: "linux-x86-tpu7x-224-4tpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build:latest@sha256:43c523372c4b7f7ce649a1ff204b908727bd338353303c0444af34cb305e5832"
+    workload_action_inputs { key: "torch_index" value: "https://download.pytorch.org/whl/cpu" }
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "libtpu_spec" value: "libtpu==0.0.47" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=v7_2x2x1" }
+  }
+
+  environment_configs {
+    id: "gpu-b200"
+    runner_label: "linux-x86-a4-224-b200-8gpu"
+    container_image: "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build-cuda13.2-cudnn9.15:latest"
+    workload_action_inputs { key: "torch_spec" value: "torch==2.13.0" }
+    workload_action_inputs { key: "env_vars_hw" value: "BENCHMARK_PLATFORM=b200_8,TORCH_DEVICE_BACKEND_AUTOLOAD=0" }
+  }
+
+  metrics { pattern: ".*/post_warmup_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/post_warmup_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/first_step_time_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_seconds$" unit: "s" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/warmup_overhead_ms$" unit: "ms" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/peak_device_memory_mb$" unit: "MB" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/num_warmup_steps$" unit: "count" stats { stat: LAST_VALUE } }
+  metrics { pattern: ".*/succeeded$" unit: "bool" stats { stat: LAST_VALUE } }
+}

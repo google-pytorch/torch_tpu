@@ -31,6 +31,7 @@ from fairscale.nn.model_parallel import initialize as fairscale_init
 import torch
 import torch.multiprocessing as mp
 from torch_tpu._internal import testing as tt_testing
+from torch_tpu._internal.distributed.launchers import singlehost_wrapper
 from examples.benchmarks.e2e import common
 from examples.benchmarks.e2e.harness import compile as compile_lib
 from examples.benchmarks.e2e.harness import context as context_lib
@@ -173,6 +174,9 @@ def _run_single_target_task(
     platform_name: str,
 ) -> None:
   """Worker task executed on each rank/host for a single benchmark target."""
+  # Required for OSS/GCP: Subprocesses spawned via torch.multiprocessing.spawn
+  # bypass app.run() and start with unparsed absl flags.
+  multiprocessing.parse_absl_flags()
   rank = int(os.environ.get("RANK", "0"))
   exception_raised = False
 
@@ -351,6 +355,12 @@ def main(argv: Sequence[str]) -> None:
     logging.warning(
         "Running on a single-node single-process platform: %s", platform
     )
+
+  if target.device_kind == target_lib.DeviceKind.TPU and nnodes == 1:
+    # Populate TORCH_TPU_SLICEBUILDER_ADDRESSES and TORCH_TPU_TOPOLOGY when
+    # running standalone single-host TPU benchmarks (e.g., on GCP or GitHub
+    # Actions runners). This is a no-op if already set in os.environ.
+    singlehost_wrapper.prepare_tpu_environment(local_nproc)
 
   test_filter = os.environ.get("TESTBRIDGE_TEST_ONLY")
   targets_to_run = resolve_benchmark_targets(test_filter)
