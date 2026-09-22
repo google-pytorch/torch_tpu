@@ -32,6 +32,7 @@ from torch_tpu._internal.utils import test_utils
 from tests import dynamism_test_utils
 from tests import op_testing
 from tests import oss_utils
+from tests import quantize_utils
 
 _TEST_CATEGORIES = flags.DEFINE_list(
     "test_categories",
@@ -4242,9 +4243,20 @@ class TestOps(op_testing.OpInfoTestBase):
     self.do_test_op(
         "torch._scaled_mm_v2",
         exclude_dtypes={
-            "cpu": ALL_NUMERIC_DTYPES,
-            "gpu": UNQUANTIZED_NUMERIC_DTYPES,
+            "cpu": (
+                *ALL_NUMERIC_DTYPES,
+                *quantize_utils.ROCM_ONLY_FLOAT8_DTYPES,
+            ),
+            "gpu": (
+                *UNQUANTIZED_NUMERIC_DTYPES,
+                # cuBLASLt does not support e5m2 x e5m2 multiplication on CUDA
+                torch.float8_e5m2,
+                *quantize_utils.ROCM_ONLY_FLOAT8_DTYPES,
+            ),
         },
+        check_out_variant=False,
+        # Override _OSS_SAMPLE_LIMIT to cover all 8 scaled_mm_v2 test samples.
+        max_samples_per_op_dtype=8,
     )
 
   def test_scatter(self):

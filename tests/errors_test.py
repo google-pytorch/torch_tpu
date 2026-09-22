@@ -8967,6 +8967,41 @@ Device-side assertion tracking was not enabled by user.""",
           None,
       )
 
+  def test_scaled_mm_v2_invalid_swizzled_scale_buffer_size(self):
+    m, n, k = 128, 128, 128
+    dev = et.device()
+    mat1 = (
+        torch.randn(m, k, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    mat2 = (
+        torch.randn(k, n, dtype=torch.float32).to(torch.float8_e4m3fn).to(dev)
+    )
+    wrong_scale = [torch.zeros(1, dtype=torch.float8_e8m0fnu, device=dev)]
+    scale_b = [torch.zeros(512, dtype=torch.float8_e8m0fnu, device=dev)]
+    err_type = RuntimeError if et.is_on_tpu() else Exception
+    with et.assert_raises_message(
+        err_type,
+        tpu="""scaled_mm_v2(): expected scale buffer to have 512 elements for outer=128 and k_logical=4, got 1 ([1])""",
+        gpu=re.compile(
+            r".*For Blockwise scaling with SWIZZLE_32_4_4 scale_a should have"
+            r" 512 elements, got: 1.*",
+            re.DOTALL,
+        ),
+        message_reviewed_by="wan",
+    ):
+      torch._scaled_mm_v2(
+          mat1,
+          mat2,
+          wrong_scale,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          scale_b,
+          [3],  # BlockWise1x32
+          [1],  # SWIZZLE_32_4_4
+          None,
+          None,
+      )
+
   def test_scaled_mm_v2_invalid_scale_b_size(self):
     (
         self_tpu,

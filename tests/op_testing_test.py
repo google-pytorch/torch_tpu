@@ -20,6 +20,7 @@ import pathlib
 import plistlib
 import tempfile
 from typing import Any
+import unittest
 from unittest import mock
 
 from absl.testing import absltest
@@ -122,6 +123,18 @@ class OpTestingTest(op_testing.OpInfoTestBase):
     else:
       test_utils.assert_close(restored, dense)
 
+  def test_plistlib_float8_e8m0fnu_serialization(self):
+    if not hasattr(torch, "float8_e8m0fnu"):
+      # For pytorch < 2.12
+      self.skipTest("float8_e8m0fnu is not supported")
+    t = torch.ones((4, 4), dtype=torch.float8_e8m0fnu)
+    encoded = op_testing._to_plistlib_compatible(t)
+    restored = op_testing._from_plistlib_compatible(encoded)
+    self.assertEqual(restored.dtype, torch.float8_e8m0fnu)
+    self.assertTrue(
+        torch.equal(restored.view(torch.uint8), t.view(torch.uint8))
+    )
+
   def test_supports_out(self):
     add_op = next(op for op in op_db if op.name == "add")
     self.assertTrue(op_testing._supports_out(add_op))
@@ -222,6 +235,56 @@ class OpTestingTest(op_testing.OpInfoTestBase):
         self.assertIn(str(test_srcdir / "_main" / "tests"), error_msg)
         self.assertIn(str(test_srcdir / "torch_tpu" / "tests"), error_msg)
         self.assertNotIn("google3", error_msg)
+
+  def test_do_test_op_skips_when_all_dtypes_excluded(self):
+    op = op_testing._get_op("abs")
+    all_dtypes = tuple(
+        dict.fromkeys((*op_testing.ALL_NUMERIC_DTYPES, *op.dtypes))
+    )
+    with self.assertRaises(  # ASSERT_RAISES_OK=Testing framework skip error.
+        unittest.case.SkipTest
+    ) as cm:
+      self.do_test_op(
+          "abs",
+          exclude_dtypes=all_dtypes,
+      )
+    self.assertIn("All dtypes excluded for abs", str(cm.exception))
+
+  def test_do_test_op_fails_when_zero_subtests_executed(self):
+    with mock.patch.object(
+        self, "_get_golden_input_output_pairs", return_value=[]
+    ):
+      with self.assertRaises(  # ASSERT_RAISES_OK=Testing zero subtest failure.
+          self.failureException
+      ) as cm:
+        self.do_test_op("abs")
+      self.assertIn("executed 0 subtests for golden_device", str(cm.exception))
+
+  @parameterized.parameters(
+      (256, 8),  # Aligned: M=256, K_log=8 (K=256)
+      (64, 4),  # Unaligned M < 128
+      (1, 4),  # Edge case: M=1
+      (128, 2),  # Unaligned K_log < 4
+      (32, 2),  # Both unaligned
+  )
+  def test_swizzle_unswizzle_scale_roundtrip(self, m, k_logical):
+    # LHS scale: [M, K_logical]
+    lhs_scale = torch.randn(m, k_logical, dtype=torch.float32)
+    lhs_swizzled = op_testing._swizzle_lhs_scale(lhs_scale)
+    m_blocks = (m + 127) // 128
+    k_blocks = (k_logical + 3) // 4
+    self.assertEqual(lhs_swizzled.numel(), m_blocks * 128 * k_blocks * 4)
+    lhs_restored = op_testing._unswizzle_lhs_scale(lhs_swizzled, m, k_logical)
+    test_utils.assert_close(lhs_restored, lhs_scale)
+
+    # RHS scale: [K_logical, N]
+    n = m
+    rhs_scale = torch.randn(k_logical, n, dtype=torch.float32)
+    rhs_swizzled = op_testing._swizzle_rhs_scale(rhs_scale)
+    n_blocks = (n + 127) // 128
+    self.assertEqual(rhs_swizzled.numel(), n_blocks * 128 * k_blocks * 4)
+    rhs_restored = op_testing._unswizzle_rhs_scale(rhs_swizzled, k_logical, n)
+    test_utils.assert_close(rhs_restored, rhs_scale)
 
 
 if __name__ == "__main__":

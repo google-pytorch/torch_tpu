@@ -48,6 +48,7 @@ import torch
 from torch.testing._internal import autograd_function_db
 from torch.testing._internal import common_dtype
 from torch.testing._internal import common_methods_invocations
+from torch.testing._internal import common_quantized
 from torch.testing._internal import common_utils
 from torch.testing._internal import custom_op_db
 from torch.testing._internal import hop_db
@@ -1026,42 +1027,80 @@ def _ref_thnn_fused_gru_cell(
 
 
 def _swizzle_lhs_scale(logical_scale):
-  """Swizzles an LHS scale tensor from logical shape to TPU SWIZZLE_32_4_4 layout."""
+  """Converts an (M, K // 32) LHS scale tensor to the SWIZZLE_32_4_4 layout.
+
+  SWIZZLE_32_4_4 is NVIDIA's blocked scale-factor layout. Divides the matrix
+  into 128x4 tiles and rearranges internal 32-row chunks:
+    1. Pad to ceil_div multiples of (128, 4) if needed.
+    2. .view(M_blocks, 128, K_blocks, 4) # (M_tiles, 128, K_tiles, 4)
+    3. .transpose(1, 2) # (M_tiles, K_tiles, 128, 4)
+    4. .reshape(-1, 4, 32, 4) # (num_tiles, 4_chunks, 32_rows, 4_cols)
+    5. .transpose(1, 2) # (num_tiles, 32_rows, 4_chunks, 4_cols)
+    6. .reshape(-1) # Flat (padded_m * padded_k,)
+
+  Args:
+    logical_scale: Scale tensor of shape (M, K // 32).
+
+  Returns:
+    A flat tensor of padded elements.
+  """
   m, k_logical = logical_scale.shape
-  m_blocks = m // 128
-  k_blocks = k_logical // 4
-  x = logical_scale.view(m_blocks, 128, k_blocks, 4)
-  x = x.transpose(1, 2)
-  x = x.view(m_blocks, k_blocks, 4, 32, 4)
-  x = x.transpose(2, 3)
-  x = x.reshape(m_blocks, k_blocks, 32, 16)
-  x = x.transpose(1, 2)
-  return x.reshape(m_blocks * 32, k_blocks * 16)
+  m_blocks = common_quantized.ceil_div(m, 128)
+  k_blocks = common_quantized.ceil_div(k_logical, 4)
+  padded_m = m_blocks * 128
+  padded_k = k_blocks * 4
+  if (m, k_logical) != (padded_m, padded_k):
+    padded = torch.zeros(
+        (padded_m, padded_k),
+        dtype=logical_scale.dtype,
+        device=logical_scale.device,
+    )
+    padded[:m, :k_logical] = logical_scale
+  else:
+    padded = logical_scale
+  tiles = padded.view(m_blocks, 128, k_blocks, 4).transpose(1, 2)
+  return tiles.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1)
 
 
-def _unswizzle_lhs_scale(swizzled_scale):
-  """Unswizzles an LHS scale tensor from TPU SWIZZLE_32_4_4 layout to logical shape."""
-  h, w = swizzled_scale.shape
-  m_blocks = h // 32
-  k_blocks = w // 16
-  op1 = swizzled_scale.view(m_blocks, 32, k_blocks, 16)
-  op2 = op1.transpose(1, 2)
-  op3 = op2.view(m_blocks, k_blocks, 32, 4, 4)
-  op4 = op3.transpose(2, 3)
-  op5 = op4.reshape(m_blocks, k_blocks, 128, 4)
-  op6 = op5.transpose(1, 2)
-  unswizzled = op6.reshape(m_blocks * 128, k_blocks * 4)
-  return unswizzled
+def _unswizzle_lhs_scale(swizzled_scale, m, k_logical):
+  """Inverts `_swizzle_lhs_scale`.
+
+  Undoes the tile rearrangement in reverse order:
+    1. .reshape(M_blocks, K_blocks, 32, 4, 4) # tiles of (32_rows, 4_chunks, 4)
+    2. .transpose(2, 3) # tiles of (4_chunks, 32_rows, 4_cols)
+    3. .reshape(M_blocks, K_blocks, 128, 4) # (M_tiles, K_tiles, 128, 4)
+    4. .transpose(1, 2) # (M_tiles, 128, K_tiles, 4)
+    5. .reshape(padded_m, padded_k) # (padded_m, padded_k)
+    6. Slice to [:m, :k_logical]
+
+  Args:
+    swizzled_scale: Flat blocked scale buffer.
+    m: Logical row count, i.e. the M of the matmul.
+    k_logical: Logical column count, i.e. `K // 32`.
+
+  Returns:
+    A tensor of shape (M, K // 32).
+  """
+  m_blocks = common_quantized.ceil_div(m, 128)
+  k_blocks = common_quantized.ceil_div(k_logical, 4)
+  tiles = swizzled_scale.reshape(m_blocks, k_blocks, 32, 4, 4).transpose(2, 3)
+  tiles = tiles.reshape(m_blocks, k_blocks, 128, 4).transpose(1, 2)
+  return tiles.reshape(m_blocks * 128, k_blocks * 4)[:m, :k_logical]
 
 
 def _swizzle_rhs_scale(logical_scale):
-  """Swizzles an RHS scale tensor from logical shape to TPU SWIZZLE_32_4_4 layout."""
-  return _swizzle_lhs_scale(logical_scale.t()).t()
+  """Converts a (K // 32, N) RHS scale tensor to the SWIZZLE_32_4_4 layout.
+
+  SWIZZLE_32_4_4 always tiles the non-contraction dimension by 128, which is N
+  for the RHS, so the *logical* matrix is transposed before being blocked. The
+  blocked buffer itself is then laid out exactly as it is for the LHS.
+  """
+  return _swizzle_lhs_scale(logical_scale.t().contiguous())
 
 
-def _unswizzle_rhs_scale(swizzled_scale):
-  """Unswizzles an RHS scale tensor from TPU SWIZZLE_32_4_4 layout to logical shape."""
-  return _unswizzle_lhs_scale(swizzled_scale.t()).t()
+def _unswizzle_rhs_scale(swizzled_scale, k_logical, n):
+  """Inverts `_swizzle_rhs_scale`, returning a (K // 32, N) tensor."""
+  return _unswizzle_lhs_scale(swizzled_scale, n, k_logical).t()
 
 
 def _get_scaled_mm_v2_default_inputs(device="tpu"):
@@ -1118,11 +1157,11 @@ def _ref_scaled_mm_v2(
   if rec_a == 0 or rec_a == 1:
     s_scaled = s_f32 * sa_raw
   elif rec_a == 3:
+    m, k = self_mat.shape
     if swiz_a == 1:
-      sa_logical = _unswizzle_lhs_scale(sa_raw)
+      sa_logical = _unswizzle_lhs_scale(sa_raw, m, k // 32)
     else:
       sa_logical = sa_raw
-    m, k = self_mat.shape
     sa_expanded = sa_logical.unsqueeze(-1).expand(m, k // 32, 32).reshape(m, k)
     s_scaled = s_f32 * sa_expanded
   else:
@@ -1131,11 +1170,11 @@ def _ref_scaled_mm_v2(
   if rec_b == 0 or rec_b == 1:
     m_scaled = m_f32 * sb_raw
   elif rec_b == 3:
+    k, n = mat2.shape
     if swiz_b == 1:
-      sb_logical = _unswizzle_rhs_scale(sb_raw)
+      sb_logical = _unswizzle_rhs_scale(sb_raw, k // 32, n)
     else:
       sb_logical = sb_raw
-    k, n = mat2.shape
     sb_expanded = sb_logical.unsqueeze(1).expand(k // 32, 32, n).reshape(k, n)
     m_scaled = m_f32 * sb_expanded
   else:
@@ -1166,7 +1205,7 @@ def _sample_inputs_scaled_mm_v2(
   # 1. TensorWise scaling (recipe=0, swizzle=0)
   m, n, k = 16, 16, 16
   mat1 = make_mat((m, k))
-  mat2 = make_mat((k, n))
+  mat2 = make_mat((k, n)).t().contiguous().t()
   scale1 = [make_scale((1,))]
   scale2 = [make_scale((1,))]
   yield core.SampleInput(
@@ -1195,29 +1234,15 @@ def _sample_inputs_scaled_mm_v2(
       [1],
       [0],
       None,
-      None,
+      torch.bfloat16,
   )
 
-  # 3. BlockWise1x32 scaling (recipe=3, swizzle=0)
+  # 3. BlockWise1x32 scaling with SWIZZLE_32_4_4 (recipe=3, swizzle=1)
   m2, n2, k2 = 128, 128, 128
   mat1_bw = make_mat((m2, k2))
-  mat2_bw = make_mat((k2, n2))
-  scale1_bw = [make_scale((m2, k2 // 32))]
-  scale2_bw = [make_scale((k2 // 32, n2))]
-  yield core.SampleInput(
-      mat1_bw,
-      mat2_bw,
-      scale1_bw,
-      [3],
-      [0],
-      scale2_bw,
-      [3],
-      [0],
-      None,
-      None,
-  )
-
-  # 4. BlockWise1x32 scaling with SWIZZLE_32_4_4 (recipe=3, swizzle=1)
+  mat2_bw = make_mat((k2, n2)).t().contiguous().t()
+  scale1_bw = [make_scale((m2, k2 // 32)).to(torch.float8_e8m0fnu)]
+  scale2_bw = [make_scale((k2 // 32, n2)).to(torch.float8_e8m0fnu)]
   scale1_swiz = [_swizzle_lhs_scale(scale1_bw[0])]
   scale2_swiz = [_swizzle_rhs_scale(scale2_bw[0])]
   yield core.SampleInput(
@@ -1230,11 +1255,26 @@ def _sample_inputs_scaled_mm_v2(
       [3],
       [1],
       None,
-      None,
+      torch.bfloat16,
+  )
+
+  # 4. BlockWise1x32 scaling with SWIZZLE_32_4_4 and bias (recipe=3, swizzle=1)
+  bias_bw = torch.randn(n2, dtype=torch.bfloat16, device=device)
+  yield core.SampleInput(
+      mat1_bw,
+      mat2_bw,
+      scale1_swiz,
+      [3],
+      [1],
+      scale2_swiz,
+      [3],
+      [1],
+      bias_bw,
+      torch.bfloat16,
   )
 
   # 5. TensorWise with bias and out_dtype
-  bias = torch.randn(16, dtype=torch.float32, device=device)
+  bias = torch.randn(16, dtype=torch.bfloat16, device=device)
   yield core.SampleInput(
       mat1,
       mat2,
@@ -1245,6 +1285,63 @@ def _sample_inputs_scaled_mm_v2(
       [0],
       [0],
       bias,
+      torch.bfloat16,
+  )
+
+  # 6. BlockWise1x32 with SWIZZLE_32_4_4 where M needs padding (M < 128)
+  m3, n3, k3 = 32, 128, 128
+  mat1_m_pad = make_mat((m3, k3))
+  mat2_m_pad = make_mat((k3, n3)).t().contiguous().t()
+  scale1_m_pad = [make_scale((m3, k3 // 32)).to(torch.float8_e8m0fnu)]
+  scale2_m_pad = [make_scale((k3 // 32, n3)).to(torch.float8_e8m0fnu)]
+  yield core.SampleInput(
+      mat1_m_pad,
+      mat2_m_pad,
+      [_swizzle_lhs_scale(scale1_m_pad[0])],
+      [3],
+      [1],
+      [_swizzle_rhs_scale(scale2_m_pad[0])],
+      [3],
+      [1],
+      None,
+      torch.bfloat16,
+  )
+
+  # 7. BlockWise1x32 with SWIZZLE_32_4_4 where K needs padding (K // 32 < 4)
+  m4, n4, k4 = 128, 128, 64
+  mat1_k_pad = make_mat((m4, k4))
+  mat2_k_pad = make_mat((k4, n4)).t().contiguous().t()
+  scale1_k_pad = [make_scale((m4, k4 // 32)).to(torch.float8_e8m0fnu)]
+  scale2_k_pad = [make_scale((k4 // 32, n4)).to(torch.float8_e8m0fnu)]
+  yield core.SampleInput(
+      mat1_k_pad,
+      mat2_k_pad,
+      [_swizzle_lhs_scale(scale1_k_pad[0])],
+      [3],
+      [1],
+      [_swizzle_rhs_scale(scale2_k_pad[0])],
+      [3],
+      [1],
+      None,
+      torch.bfloat16,
+  )
+
+  # 8. BlockWise1x32 with SWIZZLE_32_4_4 where both M and K need padding
+  m5, n5, k5 = 32, 64, 64
+  mat1_mk_pad = make_mat((m5, k5))
+  mat2_mk_pad = make_mat((k5, n5)).t().contiguous().t()
+  scale1_mk_pad = [make_scale((m5, k5 // 32)).to(torch.float8_e8m0fnu)]
+  scale2_mk_pad = [make_scale((k5 // 32, n5)).to(torch.float8_e8m0fnu)]
+  yield core.SampleInput(
+      mat1_mk_pad,
+      mat2_mk_pad,
+      [_swizzle_lhs_scale(scale1_mk_pad[0])],
+      [3],
+      [1],
+      [_swizzle_rhs_scale(scale2_mk_pad[0])],
+      [3],
+      [1],
+      None,
       torch.bfloat16,
   )
 
@@ -3449,9 +3546,10 @@ def _to_plistlib_compatible(ptree: _pytree.PyTree) -> _pytree.PyTree:
       # lossless and compact. Since st.save() takes a dict from str to tensor,
       # we need to provide a dummy str key.
       #
-      # st.save() doesn't handle sub-byte dtypes, so serialize the raw bytes
-      # as uint8 and record the original dtype in the key after a "b:" prefix.
-      if x.dtype in quantize_utils.SUB_BYTE_DTYPES:
+      # st.save() doesn't handle sub-byte dtypes or float8_e8m0fnu, so serialize
+      # the raw bytes as uint8 and record the original dtype in the key after a
+      # "b:" prefix.
+      if x.dtype in quantize_utils.RAW_BYTE_DTYPES:
         return st.save({
             f"b:{_format_dtype(x.dtype)}":
             # Densify the uint8 view rather than the tensor itself because
@@ -4084,6 +4182,7 @@ class TorchTpuTestBase(seed_test_utils.RepeatableTest, common_utils.TestCase):
     super().setUp()
     # Make sure we call `do_test_op()` method only once.
     self._do_test_op_called = False
+    self._subtests_run = 0
     tt_testing.reset_eager_state()
     # Show long diffs in assertEqual.
     self.maxDiff = None  # pylint: disable=invalid-name
@@ -5211,6 +5310,7 @@ class OpInfoTestBase(
 
         for perf_run_idx in range(_NUM_RUNS_PER_SUBTEST.value):
           run_index = acc_run_idx * _NUM_RUNS_PER_SUBTEST.value + perf_run_idx
+          self._subtests_run += 1
           with self.subTest(subtest_name=subtest_name, run_index=run_index):
             _run_and_print_exception(
                 functools.partial(
@@ -5328,6 +5428,7 @@ class OpInfoTestBase(
           "Each test method must call do_test_op() at most once."
       )
     self._do_test_op_called = True
+    self._subtests_run = 0
 
     if _dump_dtype_exclusions_mode():
       _record_gpu_dtype_exclusions(
@@ -5361,14 +5462,33 @@ class OpInfoTestBase(
 
       Currently only the out variant can be disabled (via check_out_variant).
       """
-      dtypes_to_test = list(UNQUANTIZED_NUMERIC_DTYPES)
-      if self.golden_device_type == "gpu" and _gen_gpu_golden_mode():
-        # Include quantized numeric dtypes during GPU golden data generation.
-        # CPU kernel coverage for them is too sparse to serve as a golden device.
-        dtypes_to_test.extend(quantize_utils.QUANTIZED_NUMERIC_DTYPES)
-      dtypes_to_test = list(dict.fromkeys(dtypes_to_test))
-
       op = _get_op(op_name, variant_test_name=variant_test_name)
+      dtypes_to_test = list(UNQUANTIZED_NUMERIC_DTYPES)
+      if self.golden_device_type == "gpu":
+        if _gen_gpu_golden_mode():
+          # Include quantized numeric dtypes during GPU golden data generation.
+          # CPU kernel coverage for them is too sparse to serve as a golden device.
+          dtypes_to_test.extend(quantize_utils.QUANTIZED_NUMERIC_DTYPES)
+        elif _torch_tpu_vs_gpu_mode():
+          # In GPU golden comparison mode, include quantized numeric dtypes if the
+          # op explicitly declares support for them in its OpInfo.
+          dtypes_to_test.extend([
+              d
+              for d in getattr(op, "dtypes", ())
+              if d in quantize_utils.QUANTIZED_NUMERIC_DTYPES
+          ])
+      dtypes_to_test = list(dict.fromkeys(dtypes_to_test))
+      applicable_dtypes = [
+          d
+          for d in dtypes_to_test
+          if not _should_skip_dtype(d, exclude_dtypes=exclude_dtypes)
+      ]
+      # Applicable_dtypes empty means dtypes explicitly excluded everything. That is intentional, so skipping is expected.
+      if not applicable_dtypes:
+        self.skipTest(
+            f"All dtypes excluded for {op_name} on {self.golden_device_type}: "
+            f"exclude_dtypes={exclude_dtypes}"
+        )
 
       # Test the base variant.
       print(f"Testing {op_name}().", flush=True)
@@ -5514,6 +5634,17 @@ class OpInfoTestBase(
         )
 
     _run_and_print_exception(_test_op_variants)
+
+    # We have available dtypes to check and not intentionally excluded, but every sample disappeared, which is not expected.
+    if (
+        _torch_tpu_vs_gpu_mode() or _torch_tpu_vs_cpu_mode()
+    ) and not is_compiled_mode():
+      if self._subtests_run == 0:
+        self.fail(
+            f"do_test_op({op_name!r}) executed 0 subtests for "
+            f"golden_device={self.golden_device_type!r}. "
+            f"Check exclude_dtypes ({exclude_dtypes}) vs candidate dtypes."
+        )
 
 
 class TorchTpuVsCpuTestBase(TorchTpuTestBase):

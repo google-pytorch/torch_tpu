@@ -31,11 +31,19 @@ exports_files([
     "cpp_style_test_data.cc",
 ])
 
-# Certain ops like torch._scaled_mm_v2 require CUDA devices with
-# compute capability 8.9 or >= 9.0.
-# Both golden generation and GPU error tests must stay in sync with the same GPU
-# architecture tag.
-_REQUIRES_GPU_FOR_OPS_TEST = "requires-gpu-sm90"
+# ops_test records its GPU goldens on Blackwell (B200). The MXFP8 BlockWise1x32
+# scaling recipes of torch._scaled_mm_v2 need compute capability >= 10.0; on
+# sm90 cuBLAS rejects them with CUBLAS_STATUS_NOT_SUPPORTED.
+#
+# Per go/forge-for-ml, Blackwell and later are requested with a platform rather
+# than a requires-gpu-* tag. These GPUs are hosted on both x86 and Arm, and only
+# a platform also tells blaze which architecture to build the test for. The
+# partitioned (1/7 MiG) variant suffices, as golden generation uses one GPU.
+_GPU_GOLDEN_PLATFORM = "//buildenv/platforms/forge/gpu/b200"
+
+# Hopper is the default Forge GPU pool, so they request it by tag and stay off
+# scarce Blackwell capacity.
+_REQUIRES_GPU_FOR_NON_OPS_TEST = "requires-gpu-sm90"
 
 # TODO: change this back to 16 after the OSS v5 worker pool is back to normal.
 _OSS_SAMPLE_LIMIT = "--max_samples_per_op_dtype=5"
@@ -416,6 +424,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -458,6 +467,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -500,6 +510,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -542,6 +553,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -584,6 +596,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -629,6 +642,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -671,6 +685,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -711,6 +726,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -755,6 +771,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -804,6 +821,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -839,6 +857,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -875,6 +894,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -894,6 +914,7 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
     # Each shard generates one golden file that contains one slice of the
     # golden data. Therefore the smaller the count, the bigger each file
     # will be.
@@ -906,13 +927,11 @@ torch_tpu_py_test(
     # If we adjust this, we must also adjust the data attribute in the
     # ops_test_vs_gpu target.
     shard_count = 3,
-    tags = [
-        _REQUIRES_GPU_FOR_OPS_TEST,
-    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -935,14 +954,13 @@ torch_tpu_py_test(
     ],
     main = "ops_test.py",
     nolocal = "slow test",
+    platform = _GPU_GOLDEN_PLATFORM,
     shard_count = 3,
-    tags = [
-        _REQUIRES_GPU_FOR_OPS_TEST,
-    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -964,6 +982,7 @@ torch_tpu_py_test(
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -998,14 +1017,13 @@ torch_tpu_py_test(
     main = "ops_test.py",
     nolocal = "slow test",
     notap = "slow test - only need to run on demand for updating goldens",
+    platform = _GPU_GOLDEN_PLATFORM,
     shard_count = 3,
-    tags = [
-        _REQUIRES_GPU_FOR_OPS_TEST,
-    ],
     deps = [
         ":dynamism_test_utils",
         ":op_testing",
         ":oss_utils",
+        ":quantize_utils",
         "//csrc/eager:tpu_aten_kernels",
         "//shims/absl_py/flags",
         "//shims/absl_py/testing:absltest",
@@ -1597,7 +1615,7 @@ torch_tpu_py_test(
     tags = [
         "nosan",  # *san builds are low-value for error tests.
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_FOR_OPS_TEST,
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
         "wheel_test_excluded",
     ],
     deps = [
@@ -2094,7 +2112,7 @@ torch_tpu_py_test(
     },
     main = "autoload_gpu_test.py",
     tags = [
-        _REQUIRES_GPU_FOR_OPS_TEST,
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
     ],
     deps = [
         "//shims/absl_py/testing:absltest",
@@ -2142,7 +2160,7 @@ torch_tpu_py_test(
     main = "autoload_disabled_backend_test.py",
     tags = [
         "nozapfhahn",  # Requires --config=cuda; excluded from Zapfhahn coverage.
-        _REQUIRES_GPU_FOR_OPS_TEST,
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
     ],
     deps = [
         ":seed_test_utils",
@@ -2260,7 +2278,7 @@ torch_tpu_py_test(
     },
     main = "tracing_test.py",
     tags = [
-        _REQUIRES_GPU_FOR_OPS_TEST,
+        _REQUIRES_GPU_FOR_NON_OPS_TEST,
     ],
     deps = [
         ":seed_test_utils",

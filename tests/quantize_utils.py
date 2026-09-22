@@ -33,6 +33,28 @@ QUANTIZED_NUMERIC_DTYPES: Final[Sequence[torch.dtype]] = (
     *SUB_BYTE_DTYPES,
 )
 
+# torch.float8_e8m0fnu was added in PyTorch 2.12, and oss/pyproject.toml
+# declares `torch>=2.11.0`, so the attribute can legitimately be absent when
+# torch_tpu is built against the oldest supported release.
+_E8M0_DTYPES: Final[Sequence[torch.dtype]] = (
+    (torch.float8_e8m0fnu,) if hasattr(torch, "float8_e8m0fnu") else ()
+)
+
+# Dtypes that safetensors cannot serialize directly. Callers store the raw
+# bytes as uint8 and record the original dtype alongside them. Sub-byte dtypes
+# have no safetensors encoding at all, and e8m0 is missing from its dtype map.
+RAW_BYTE_DTYPES: Final[Sequence[torch.dtype]] = (
+    *SUB_BYTE_DTYPES,
+    *_E8M0_DTYPES,
+)
+
+# FP8 encodings that only ROCm produces. Neither TPU nor CUDA implements them,
+# so ops exclude them wholesale rather than per-kernel.
+ROCM_ONLY_FLOAT8_DTYPES: Final[Sequence[torch.dtype]] = (
+    torch.float8_e4m3fnuz,
+    torch.float8_e5m2fnuz,
+)
+
 # The FP4 (E2M1) value denoted by each 4-bit encoding (bit 3 is the sign).
 # Stored as float32 so that decoded values can be numerically compared.
 _FP4_E2M1_VALUES: torch.Tensor = torch.tensor(

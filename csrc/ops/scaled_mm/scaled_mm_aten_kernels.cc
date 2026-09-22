@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ATen/BlasBackend.h"
+#include "ATen/ceil_div.h"
 #include "ATen/core/ATen_fwd.h"
 #include "ATen/core/TensorBody.h"
 #include "absl/status/status.h"
@@ -308,72 +309,100 @@ absl::Status ValidateScaledMmV2Inputs(
   return absl::OkStatus();
 }
 
-// Unswizzles a scale tensor that was swizzled for TPU execution back to its
-// logical shape. The swizzling pattern (SWIZZLE_32_4_4) reorganizes the scale
-// blocks to match the TPU hardware layout.
-// For LHS, it transforms shape [M_blocks * 32, K_blocks * 16] back to [M,
-// K_logical]. For RHS, it transposes, unswizzles as LHS, and transposes back.
-absl::StatusOr<mlir::MlirOp> BuildUnswizzle(mlir::MlirOp scale,
-                                            Operand operand) {
-  mlir::MlirOp scale_to_unswizzle = scale;
-  if (operand == Operand::kRhs) {
-    // RHS is swizzled as transposed LHS, so transpose it first to use LHS
-    // logic.
-    Dimensions perm = {1, 0};
-    scale_to_unswizzle = mlir::stablehlo::Transpose(scale, perm);
-  }
+// Unswizzles a SWIZZLE_32_4_4 block-scale buffer back to its logical shape.
+//
+// SWIZZLE_32_4_4 is NVIDIA's blocked scale-factor layout. The logical [outer,
+// K_logical] scale matrix is cut into 128x4 tiles visited in row-block-major
+// order, and each tile is flattened to 512 contiguous elements by dealing its
+// 128 rows into 32 groups of 4, like dealing cards: group 0 takes rows 0, 32,
+// 64, 96; group 1 takes rows 1, 33, 65, 97; and so on up to group 31. Every row
+// brings its 4 column values, so a group occupies 16 contiguous elements:
+//
+//   group 0   elem   0  1  2  3 | 4  5  6  7 | 8  9 10 11 | 12 13 14 15
+//             row    0  0  0  0 |32 32 32 32 |64 64 64 64 | 96 96 96 96
+//             col    0  1  2  3 | 0  1  2  3 | 0  1  2  3 |  0  1  2  3
+//
+// Reading the whole tile end to end, its 128 rows therefore come out in this
+// order, and we want them back in plain order:
+//
+//   stored order:  0, 32, 64, 96, 1, 33, 65, 97, 2, 34, 66, 98, ... 31, 63, ...
+//   wanted order:  0,  1,  2,  3, 4,  5,  6,  7, 8,  9, 10, 11, ...
+//
+// A row's 4 column values stay glued together throughout, so this is a
+// permutation of 128 four-element chunks.
+//
+// `outer` is the non-contraction extent the 128-tiling
+// applies to: M for the LHS (with shape [M, K]), N for the RHS (with shape
+// [N, K]). The RHS result is transposed back to the [K_logical, N] orientation
+// that BuildDequantizeBlockWise32 expects.
+absl::StatusOr<mlir::MlirOp> BuildUnswizzle(mlir::MlirOp scale, Operand operand,
+                                            int64_t outer, int64_t k_logical) {
+  // PyTorch to_blocked pads non-multiples to ceil_div multiples of (128, 4).
+  const int64_t outer_blocks = at::ceil_div(outer, int64_t{128});
+  const int64_t k_blocks = at::ceil_div(k_logical, int64_t{4});
+  const int64_t padded_outer = outer_blocks * 128;
+  const int64_t padded_k = k_blocks * 4;
+  const auto scale_type = GetTensorTypeOrDie(scale);
 
-  const auto type_to_unswizzle = GetTensorTypeOrDie(scale_to_unswizzle);
-  const int64_t h = type_to_unswizzle.getShape()[0];
-  const int64_t w = type_to_unswizzle.getShape()[1];
+  // SWIZZLE_32_4_4 requires fixed 128x4 hardware tiles (interleaving
+  // 4 groups of 32 rows). Callers (e.g. PyTorch `to_blocked`) pad unaligned
+  // shapes up to full tiles, so the swizzled buffer has padded dimensions.
+  TT_RET_CHECK(scale_type.getNumElements() == padded_outer * padded_k,
+               error::kInvalidArgument)
+      << "expected scale buffer to have " << padded_outer * padded_k
+      << " elements for outer=" << outer << " and k_logical=" << k_logical
+      << ", got " << scale_type.getNumElements() << " ("
+      << ToString(scale_type.getShape()) << ")";
 
-  const int64_t m_blocks = h / 32;
-  const int64_t k_blocks = w / 16;
+  // Worked example: outer = 256, K_logical = 8, i.e. a 256x8 logical scale
+  // matrix stored as a 2x2 grid of 128x4 swizzled tiles, arriving flat.
 
-  // 1. Reshape [M_blocks * 32, K_blocks * 16] -> [M_blocks, 32, K_blocks, 16]
-  const Dimensions shape1 = {m_blocks, 32, k_blocks, 16};
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp op1,
-                      ReshapeFromStaticDimensions(
-                          scale_to_unswizzle,
-                          Dimensions(type_to_unswizzle.getShape().begin(),
-                                     type_to_unswizzle.getShape().end()),
-                          shape1));
+  // 1. Reshape the flat scale from [padded_outer * padded_k] to
+  //    [outer_blocks, k_blocks, 32, 4, 4], isolating the 32x4x4 swizzled tiles,
+  //    each identified by [row_block, col_block]:
+  //    [row_block, col_block, group, position, column]
+  const Dimensions shape1 = {outer_blocks, k_blocks, 32, 4, 4};
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp op1,
+      ReshapeFromStaticDimensions(scale,
+                                  Dimensions(scale_type.getShape().begin(),
+                                             scale_type.getShape().end()),
+                                  shape1));
 
-  // 2. Transpose [M_blocks, 32, K_blocks, 16] -> [M_blocks, K_blocks, 32, 16]
-  const Dimensions perm1 = {0, 2, 1, 3};
+  // 2. Transpose each [32, 4, 4] tile to [4, 32, 4], which undoes the deal:
+  //    its rows now read 0, 1, 2, ... 127 instead of 0, 32, 64, 96, 1, 33, ...
+  const Dimensions perm1 = {0, 1, 3, 2, 4};
   mlir::MlirOp op2 = mlir::stablehlo::Transpose(op1, perm1);
 
-  // 3. Reshape [M_blocks, K_blocks, 32, 16] -> [M_blocks, K_blocks, 32, 4, 4]
-  const Dimensions shape2 = {m_blocks, k_blocks, 32, 4, 4};
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp op3,
-      ReshapeFromStaticDimensions(op2, {m_blocks, k_blocks, 32, 16}, shape2));
+  // 3. Reshape to [outer_blocks, k_blocks, 128, 4], collapsing each tile into a
+  //    plain row-major 128x4 block.
+  const Dimensions shape2 = {outer_blocks, k_blocks, 128, 4};
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp op3,
+                      ReshapeFromStaticDimensions(
+                          op2, {outer_blocks, k_blocks, 4, 32, 4}, shape2));
 
-  // 4. Transpose [M_blocks, K_blocks, 32, 4, 4] -> [M_blocks, K_blocks, 4, 32,
-  // 4]
-  const Dimensions perm2 = {0, 1, 3, 2, 4};
+  // 4. Transpose to [outer_blocks, 128, k_blocks, 4], i.e.
+  //    [row_block, row, col_block, col], putting each grid index next to the
+  //    extent it indexes so the two row axes and the two column axes pair up.
+  const Dimensions perm2 = {0, 2, 1, 3};
   mlir::MlirOp op4 = mlir::stablehlo::Transpose(op3, perm2);
 
-  // 5. Reshape [M_blocks, K_blocks, 4, 32, 4] -> [M_blocks, K_blocks, 128, 4]
-  const Dimensions shape3 = {m_blocks, k_blocks, 128, 4};
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp op5,
-      ReshapeFromStaticDimensions(op4, {m_blocks, k_blocks, 4, 32, 4}, shape3));
+  // 5. Reshape to [padded_outer, padded_k], the padded logical scale matrix.
+  const Dimensions shape3 = {padded_outer, padded_k};
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp unswizzled,
+                      ReshapeFromStaticDimensions(
+                          op4, {outer_blocks, 128, k_blocks, 4}, shape3));
 
-  // 6. Transpose [M_blocks, K_blocks, 128, 4] -> [M_blocks, 128, K_blocks, 4]
-  const Dimensions perm3 = {0, 2, 1, 3};
-  mlir::MlirOp op6 = mlir::stablehlo::Transpose(op5, perm3);
+  // 6. Slice to [outer, k_logical] if the input buffer was padded.
+  if (padded_outer != outer || padded_k != k_logical) {
+    unswizzled =
+        mlir::stablehlo::Slice(unswizzled, {0, 0}, {outer, k_logical}, {1, 1});
+  }
 
-  // 7. Reshape [M_blocks, 128, K_blocks, 4] -> [M_blocks * 128, K_blocks * 4]
-  // (which is [M, K_logical])
-  const Dimensions shape4 = {m_blocks * 128, k_blocks * 4};
-  TT_ASSIGN_OR_RETURN(
-      mlir::MlirOp unswizzled,
-      ReshapeFromStaticDimensions(op6, {m_blocks, 128, k_blocks, 4}, shape4));
-
+  // The RHS is blocked over [N, K_logical]; flip it to the [K_logical, N]
+  // orientation the dequantize step expects.
   if (operand == Operand::kRhs) {
-    // Transpose back for RHS to restore original orientation.
-    Dimensions perm = {1, 0};
+    const Dimensions perm = {1, 0};
     unswizzled = mlir::stablehlo::Transpose(unswizzled, perm);
   }
 
@@ -482,11 +511,19 @@ absl::StatusOr<mlir::MlirOp> BuildScaledMmV2Shlo(
     std::optional<mlir::Type> out_dtype, mlir::stablehlo::Precision precision,
     at::blas::ScalingType scaling_a, at::blas::ScalingType scaling_b,
     at::blas::SwizzleType swiz_a, at::blas::SwizzleType swiz_b) {
+  // The blocked scale buffer carries no shape of its own, so its logical
+  // extents come from the operand it scales: [M, K / 32] and [K / 32, N].
+  const auto lhs_shape = GetTensorTypeOrDie(lhs).getShape();
+  const auto rhs_shape = GetTensorTypeOrDie(rhs).getShape();
   if (swiz_a == at::blas::SwizzleType::SWIZZLE_32_4_4) {
-    TT_ASSIGN_OR_RETURN(scale_a, BuildUnswizzle(scale_a, Operand::kLhs));
+    TT_ASSIGN_OR_RETURN(scale_a,
+                        BuildUnswizzle(scale_a, Operand::kLhs, lhs_shape[0],
+                                       lhs_shape[1] / 32));
   }
   if (swiz_b == at::blas::SwizzleType::SWIZZLE_32_4_4) {
-    TT_ASSIGN_OR_RETURN(scale_b, BuildUnswizzle(scale_b, Operand::kRhs));
+    TT_ASSIGN_OR_RETURN(scale_b,
+                        BuildUnswizzle(scale_b, Operand::kRhs, rhs_shape[1],
+                                       rhs_shape[0] / 32));
   }
 
   mlir::MlirOp lhs_deq = lhs;

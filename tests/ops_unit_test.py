@@ -2558,7 +2558,7 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
   @parameterized.product(
       m=[32, 128],
       n=[32, 128],
-      k=[128],
+      k=[128, 256],
       fp8_dtype=[torch.float8_e4m3fn, torch.float8_e5m2],
       swizzle_a=[0, 1],
       swizzle_b=[0, 1],
@@ -2689,17 +2689,37 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     self.assertEqual(out.shape, (16, 16))
 
   def test_swizzle_math(self):
-    # Test LHS
-    logical_lhs = torch.randn(128, 8)
+    # More than one tile in each direction, so that the ordering of the tile
+    # grid is exercised and not just the layout within a single tile.
+    logical_lhs = torch.randn(256, 8)
     swizzled_lhs = op_testing._swizzle_lhs_scale(logical_lhs)
-    unswizzled_lhs = op_testing._unswizzle_lhs_scale(swizzled_lhs)
+    unswizzled_lhs = op_testing._unswizzle_lhs_scale(swizzled_lhs, 256, 8)
     self.assertTrue(torch.equal(logical_lhs, unswizzled_lhs))
 
-    # Test RHS
-    logical_rhs = torch.randn(8, 128)
+    logical_rhs = torch.randn(8, 256)
     swizzled_rhs = op_testing._swizzle_rhs_scale(logical_rhs)
-    unswizzled_rhs = op_testing._unswizzle_rhs_scale(swizzled_rhs)
+    unswizzled_rhs = op_testing._unswizzle_rhs_scale(swizzled_rhs, 8, 256)
     self.assertTrue(torch.equal(logical_rhs, unswizzled_rhs))
+
+  def test_swizzle_matches_cublas_layout(self):
+    # 2 row-blocks of 128 and 2 col-blocks of 4 -> 4 tiles of [128,4].
+    rows, cols = 256, 8
+    logical = torch.arange(rows * cols, dtype=torch.float32).reshape(rows, cols)
+    swizzled = op_testing._swizzle_lhs_scale(logical)
+    self.assertEqual(swizzled.shape, (rows * cols,))
+
+    row = torch.arange(rows).unsqueeze(1).expand(rows, cols)
+    col = torch.arange(cols).unsqueeze(0).expand(rows, cols)
+    outer = row % 128  # row within the 128x4 tile
+    # Compute the indices that would recover "swizzled"
+    offsets = (
+        512 * ((row // 128) * (cols // 4) + col // 4)  # 128x4 tile base index
+        + (outer % 32) * 16  # row offset mod 32 (16-elem packet)
+        + (outer // 32) * 4  # 32-row chunk index (4 cols each)
+        + col % 4  # column offset within chunk
+    )
+    # Fancy-indexing with offsets should reconstruct the logical 2D tensor.
+    self.assertTrue(torch.equal(swizzled[offsets], logical))
 
   @parameterized.product(
       m=[16, 32],
