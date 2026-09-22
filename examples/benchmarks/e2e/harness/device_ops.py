@@ -64,6 +64,10 @@ class DeviceOps(Protocol):
     """
     ...
 
+  def get_device_time(self, session_id: str | None = None) -> float:
+    """Total active device time in seconds across profiling steps, or -1.0 if unsupported."""
+    ...
+
   def compile_count(self) -> int:
     """Monotonic count of compilations performed so far in this process.
 

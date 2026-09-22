@@ -74,6 +74,9 @@ class RecordingOps:
   def peak_memory_mb(self):
     return self.peak_mb
 
+  def get_device_time(self, session_id=None):
+    return -1.0
+
   def compile_count(self):
     return self._recompiles
 
@@ -484,8 +487,35 @@ class MeasurePostWarmupXprofTest(seed_test_utils.RepeatableTest):
           result.post_warmup_run_session_xprof_url,
           "http://xprof/?session_id=post_warmup_sess_id",
       )
+      self.assertEqual(result.average_post_warmup_device_time_seconds, -1.0)
       # 3 non-profiling steps + 2 profiling steps = 5 steps total
       self.assertEqual(step.calls, 5)
+
+  def test_post_warmup_with_xprof_device_time_calculated(self):
+    class DeviceTimeOps(RecordingOps):
+
+      def get_device_time(self, session_id=None):
+        if session_id == "post_warmup_sess_id":
+          return 0.04
+        return -1.0
+
+    step, ops = CountingStep(), DeviceTimeOps()
+    with mock.patch.object(
+        measure_lib.xprof_adapter, "XprofSession"
+    ) as mock_session_cls:
+      mock_session = mock_session_cls.return_value
+      mock_session.end_session_and_get_session_id.return_value = (
+          "post_warmup_sess_id"
+      )
+
+      with flagsaver.flagsaver(post_warmup_steps=3, xprof_steps=2):
+        result = measure_lib._post_warmup_run(
+            step, ops, name="test_post_warmup", enable_xprof=True
+        )
+
+      self.assertAlmostEqual(
+          result.average_post_warmup_device_time_seconds, 0.02
+      )
 
   def test_post_warmup_with_xprof_disabled_does_not_run_profiling_steps(self):
     step, ops = CountingStep(), RecordingOps()

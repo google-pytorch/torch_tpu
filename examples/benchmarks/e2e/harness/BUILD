@@ -140,8 +140,10 @@ torch_tpu_py_library(
     srcs = ["torch_device_ops.py"],
     deps = [
         ":target",
+        "//examples/benchmarks/e2e:device_utils",
         "//shims/torch:pytorch",
         "//src/torch_tpu",
+        "//src/torch_tpu/_internal/benchmarks:xprof_adapter",
     ],
 )
 
@@ -206,6 +208,63 @@ torch_tpu_py_test(
     shard_count = 50,
     tags = [
         "nofastbuild",  # Benchmark.
+        "nosan",  # *san tests provide no benefit for benchmarks.
+        "requires-net:external",
+        "requires-tpu-v5lite",
+    ],
+    deps = [
+        ":base_test",
+        ":cases",
+        ":compile",
+        ":context",
+        ":discovery",
+        ":flags",
+        ":measure",
+        ":metrics",
+        ":mode",
+        ":registry",
+        ":step_lib",
+        ":target",
+        ":torch_device_ops",
+        "//examples/benchmarks/e2e:common",
+        "//examples/benchmarks/e2e/harness/models",
+        "//examples/benchmarks/e2e/harness/steps",
+        "//shims/absl_py/logging",
+        "//shims/absl_py/testing:absltest",
+        "//shims/absl_py/testing:parameterized",
+        "//shims/torch:pytorch",
+        "//src/torch_tpu",
+        "//src/torch_tpu/_internal/distributed:multiprocessing",
+    ],
+)
+
+# Benchmark target intended for manually running for dev or experimental purposes
+# instead of CI. Sets all the flags for expected use.
+torch_tpu_py_test(
+    name = "dev_benchmarks",
+    timeout = "eternal",
+    srcs = ["torch_benchmark_test.py"],
+    args = [
+        "--run_scope=full",
+        "--min_warmup_steps=3",
+        "--max_warmup_steps=10",
+        "--post_warmup_steps=10",
+        "--xprof_steps=2",
+        "--enable_xprof=true",
+    ],
+    data = [
+        "//examples/benchmarks/huggingface_transformers:model_configs_data",
+    ],
+    env = {
+        "BENCHMARK_PLATFORM": "v5e_1x1",
+    },
+    main = "torch_benchmark_test.py",
+    nolocal = "user requested to run this manually",
+    notap = "Development benchmark target; run manually on demand.",
+    notest_oss = "requires huggingface configs from internal infra",
+    shard_count = 50,
+    tags = [
+        "nofastbuild",
         "nosan",  # *san tests provide no benefit for benchmarks.
         "requires-net:external",
         "requires-tpu-v5lite",

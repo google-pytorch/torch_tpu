@@ -119,6 +119,21 @@ class XprofContext:
       )
 
 
+def _calculate_avg_device_time(
+    device_ops: device_ops_lib.DeviceOps,
+    session_id: str | None,
+    xprof_steps: int,
+) -> float:
+  """Calculates the average device time in seconds across profiling steps."""
+  if not session_id or xprof_steps <= 0:
+    return -1.0
+  if hasattr(device_ops, "get_device_time"):
+    total_device_time = device_ops.get_device_time(session_id)
+    if total_device_time != -1.0:
+      return total_device_time / xprof_steps
+  return -1.0
+
+
 class PostWarmupRecompileError(AssertionError):
   """Raised when a recompilation happens during the post warmup loop."""
 
@@ -306,6 +321,7 @@ def _post_warmup_run(
       timings[step] = _run_single_step(compile_count_before)
 
   post_warmup_run_session_xprof_url = None
+  session_id = None
   if enable_xprof and XPROF_STEPS.value > 0:
     with gc_disabled(), XprofContext(
         name="post_warmup_run",
@@ -316,11 +332,15 @@ def _post_warmup_run(
         xprof_timings[xprof_step] = _run_single_step(compile_count_before)
 
     if xprof_context.session_id:
+      session_id = xprof_context.session_id
       post_warmup_run_session_xprof_url = (
-          f"http://xprof/?session_id={xprof_context.session_id}"
+          f"http://xprof/?session_id={session_id}"
       )
 
   memory_usage = device_ops.peak_memory_mb()
+  avg_device_time = _calculate_avg_device_time(
+      device_ops, session_id, XPROF_STEPS.value
+  )
 
   logging.info("Post Warmup Timings for %s: %s", name, timings)
   logging.info("Post Warmup Xprof Timings for %s: %s", name, xprof_timings)
@@ -329,6 +349,7 @@ def _post_warmup_run(
       post_warmup_step_time_seconds=float(np.mean(timings)),
       peak_device_memory_mb=memory_usage,
       post_warmup_run_session_xprof_url=post_warmup_run_session_xprof_url,
+      average_post_warmup_device_time_seconds=avg_device_time,
   )
 
 
