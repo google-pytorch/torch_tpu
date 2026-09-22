@@ -23,3 +23,7 @@ Instructions related to Bazel repositories:
     being used.
 *   Only define a repository in WORKSPACE if it doesn't exist, or errors
     indicate a newer version must be used.
+
+When writing documentation:
+
+* Use the docs-review skill when writing, editing, or reviewing documentation.
