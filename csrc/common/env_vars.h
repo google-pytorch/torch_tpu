@@ -271,7 +271,7 @@ inline constexpr auto kEnvVarToStage =
         {kAcceleratorTypeEnvVar, SymbolStage::InternalImplementation()},
         {kAllowMultipleLibtpuLoadEnvVar, SymbolStage::InternalImplementation()},
         {kCloudTpuTaskIdEnvVar, SymbolStage::InternalImplementation()},
-        {kJobCompletionIndexEnvVar, std::nullopt},
+        {kJobCompletionIndexEnvVar, SymbolStage::InternalApi()},
         // Marked as Stable because it is an established XLA/PJRT runtime
         // configuration knob widely used by production workloads. The TorchTPU
         // team is committed to honor this env var.
@@ -288,8 +288,14 @@ inline constexpr auto kEnvVarToStage =
         // environment variable widely used by production workloads. The
         // TorchTPU team is committed to honor this env var.
         {kMasterPortEnvVar, SymbolStage::Stable()},
-        {kNnodesEnvVar, std::nullopt},
-        {kNodeRankEnvVar, std::nullopt},
+        // Marked as Stable because it is an established distributed launcher
+        // environment variable widely used by production workloads. The
+        // TorchTPU team is committed to honor this env var.
+        {kNnodesEnvVar, SymbolStage::Stable()},
+        // Marked as Stable because it is an established distributed launcher
+        // environment variable widely used by production workloads. The
+        // TorchTPU team is committed to honor this env var.
+        {kNodeRankEnvVar, SymbolStage::Stable()},
         // Marked as Internal because it is an internal build/test runner
         // environment variable used to adjust compilation thread concurrency,
         // controlling TorchTPU internal behavior rather than serving as a
@@ -312,15 +318,15 @@ inline constexpr auto kEnvVarToStage =
         {kTorchTpuDevicesPerHostEnvVar, std::nullopt},
         {kTorchTpuEnableDebugChecksEnvVar, SymbolStage::Experimental()},
         {kTorchTpuHandshakePortEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalAllowXlaBackendEnvVar, std::nullopt},
+        {kTorchTpuInternalAllowXlaBackendEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDetectRepeatedOpsEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalDisableInplaceBufferDonationEnvVar,
          SymbolStage::InternalApi()},
-        {kTorchTpuInternalEnableDebugChecksEnvVar, std::nullopt},
+        {kTorchTpuInternalEnableDebugChecksEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalEnableReassociateNormWeightsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalHandshakeStageEnvVar, SymbolStage::InternalApi()},
-        {kTorchTpuInternalHandshakeTimeoutSEnvVar, std::nullopt},
+        {kTorchTpuInternalHandshakeTimeoutSEnvVar, SymbolStage::InternalApi()},
         {kTorchTpuInternalMaterializeCollectiveTensorsEnvVar,
          SymbolStage::InternalApi()},
         {kTorchTpuInternalSkinnyScOffloadEnvVar, SymbolStage::InternalApi()},
@@ -358,7 +364,7 @@ inline constexpr auto kEnvVarToStage =
         // CUDA_VISIBLE_DEVICES that external production consumers and infra
         // rely on. The TorchTPU team is committed to honor this env var.
         {kTpuVisibleDevicesEnvVar, SymbolStage::Stable()},
-        {kTpuWorkerHostnamesEnvVar, std::nullopt},
+        {kTpuWorkerHostnamesEnvVar, SymbolStage::InternalApi()},
         {kWorldSizeEnvVar, SymbolStage::Stable()},
         {kXlaFlagsEnvVar, SymbolStage::Experimental()},
         // go/keep-sorted end
