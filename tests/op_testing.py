@@ -364,8 +364,6 @@ _OUT_DTYPE_CAST_KNOWN_FAILURES: Final[set[str]] = {
     "bernoulli",
     "bitwise_not",
     "bucketize",
-    "cumprod",
-    "cumsum",
     "fft.fft",
     "fft.ifft",
     "fft.irfft",

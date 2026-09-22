@@ -43,18 +43,19 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
     const int64_t normalized_dim,
     const std::optional<mlir::ElementType> out_dtype, mlir::MlirOp input) {
   const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
-  mlir::ElementType target_element_type = GetElementTypeOrDie(input);
+  // PyTorch default promotion: when out_dtype is omitted, integral types
+  // default to int64 (i64) to prevent overflow; float/complex preserve their
+  // input dtype.
+  mlir::ElementType target_element_type = out_dtype.value_or(
+      input_type.getElementType().isInteger() ? mlir::ElementType::I64
+                                              : GetElementTypeOrDie(input));
 
   mlir::MlirBuilder& builder = input.getBuilder();
-  if (out_dtype.has_value()) {
-    target_element_type = out_dtype.value();
-  } else if (input_type.getElementType().isInteger()) {
-    target_element_type = mlir::ElementType::I64;
-  }
-
   TT_ASSIGN_OR_RETURN(const mlir::ElementType compute_dtype,
                       InferComputationDtype(target_element_type));
-  TT_ASSIGN_OR_RETURN(input, CastIfNeeded(input, compute_dtype));
+  if (GetElementTypeOrDie(input) != compute_dtype) {
+    input = mlir::stablehlo::ConvertElementType(input, compute_dtype);
+  }
 
   TT_ASSIGN_OR_RETURN(const mlir::MlirOp carry_init,
                       CreateRankReducedConstantLike(input, normalized_dim, 0));
@@ -80,7 +81,11 @@ absl::StatusOr<mlir::MlirOp> BuildCumsumShlo(
           /*carry_inits=*/{carry_init}, /*output_inits=*/{input},
           std::move(body_builder),
           ScanOptions{.should_squeeze = true, .is_associative = true}));
-  return CastIfNeeded(results[/*num_carries=*/1], target_element_type);
+  if (GetElementTypeOrDie(results[/*num_carries=*/1]) != target_element_type) {
+    return mlir::stablehlo::ConvertElementType(results[/*num_carries=*/1],
+                                               target_element_type);
+  }
+  return results[/*num_carries=*/1];
 }
 
 }  // namespace torch_tpu

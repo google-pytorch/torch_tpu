@@ -27,6 +27,7 @@ torch_tpu_cc_library(
         "cumsum",
         "//csrc/common:dtype",
         "//csrc/common:error_utils",
+        "//csrc/common:to_string",
         "//csrc/ops:op_names",
         "//csrc/ops:unary_aten_kernels",
         "//csrc/ops/macros:kernel",

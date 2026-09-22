@@ -1563,6 +1563,132 @@ class OpsUnitTest(TorchTpuVsCpuTestBase):
     )
     utils.assert_close(out_resized.cpu(), expected_matrix)
 
+  def test_cumsum_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device=device)
+    out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+    torch.cumsum(x, dim=0, out=out_f32)
+    utils.assert_close(
+        out_f32,
+        torch.tensor([1.0, 3.0, 6.0, 10.0], dtype=torch.float32, device=device),
+    )
+
+    # Complex to float out casting
+    xc = torch.tensor(
+        [1.0 + 2.0j, 3.0 + 4.0j], dtype=torch.complex64, device=device
+    )
+    out_f64 = torch.empty(2, dtype=torch.float64, device=device)
+    torch.cumsum(xc, dim=0, out=out_f64)
+    utils.assert_close(
+        out_f64,
+        torch.tensor([1.0, 4.0], dtype=torch.float64, device=device),
+    )
+
+    # 0-D scalar tensor test (including boolean scalar parity with ATen)
+    x0 = torch.tensor(5, dtype=torch.int32, device=device)
+    out0 = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumsum(x0, dim=0, out=out0)
+    utils.assert_close(
+        out0, torch.tensor(5.0, dtype=torch.float32, device=device)
+    )
+    x0_bool = torch.tensor(True, dtype=torch.bool, device=device)
+    out0_bool = torch.empty((), dtype=torch.bool, device=device)
+    torch.cumsum(x0_bool, dim=0, out=out0_bool)
+    self.assertTrue(out0_bool.item())
+
+    # Empty tensor test
+    xe = torch.empty(0, 4, dtype=torch.int32, device=device)
+    oute = torch.empty(0, 4, dtype=torch.float32, device=device)
+    torch.cumsum(xe, dim=1, out=oute)
+    self.assertEqual(oute.shape, (0, 4))
+    self.assertEqual(oute.dtype, torch.float32)
+
+    # Integer default promotion to int64 (functional and out-variant)
+    for int_dtype in [torch.int8, torch.int16, torch.int32]:
+      xi_cpu = torch.tensor([1, 2, 3], dtype=int_dtype, device="cpu")
+      xi_tpu = torch.tensor([1, 2, 3], dtype=int_dtype, device=device)
+
+      # Functional variant
+      res_cpu = torch.cumsum(xi_cpu, dim=0)
+      res_tpu = torch.cumsum(xi_tpu, dim=0)
+      self.assertEqual(res_cpu.dtype, torch.int64)
+      self.assertEqual(res_tpu.dtype, torch.int64)
+      utils.assert_close(res_tpu.cpu(), res_cpu)
+
+      # Out-variant without dtype
+      out_tpu = torch.empty(3, dtype=torch.int64, device=device)
+      out_cpu = torch.empty(3, dtype=torch.int64, device="cpu")
+      torch.cumsum(xi_tpu, dim=0, out=out_tpu)
+      torch.cumsum(xi_cpu, dim=0, out=out_cpu)
+      self.assertEqual(out_tpu.dtype, torch.int64)
+      utils.assert_close(out_tpu.cpu(), out_cpu)
+
+  def test_cumprod_out_dtype(self):
+    device = torch.device("tpu")
+    x = torch.tensor([1, 2, 3, 4], dtype=torch.int32, device=device)
+    out_f32 = torch.empty(4, dtype=torch.float32, device=device)
+    torch.cumprod(x, dim=0, out=out_f32)
+    utils.assert_close(
+        out_f32,
+        torch.tensor([1.0, 2.0, 6.0, 24.0], dtype=torch.float32, device=device),
+    )
+
+    # Complex to float out casting
+    xc = torch.tensor(
+        [2.0 + 3.0j, 4.0 + 5.0j], dtype=torch.complex64, device=device
+    )
+    out_f64 = torch.empty(2, dtype=torch.float64, device=device)
+    torch.cumprod(xc, dim=0, out=out_f64)
+    utils.assert_close(
+        out_f64,
+        torch.tensor([2.0, 8.0], dtype=torch.float64, device=device),
+    )
+
+    # 0-D scalar tensor test (including boolean scalar parity with ATen)
+    x0 = torch.tensor(7, dtype=torch.int32, device=device)
+    out0 = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumprod(x0, dim=0, out=out0)
+    utils.assert_close(
+        out0, torch.tensor(7.0, dtype=torch.float32, device=device)
+    )
+    x0_bool = torch.tensor(False, dtype=torch.bool, device=device)
+    out0_bool = torch.empty((), dtype=torch.bool, device=device)
+    torch.cumprod(x0_bool, dim=0, out=out0_bool)
+    self.assertFalse(out0_bool.item())
+
+    # 0-D complex to float test
+    x0_c = torch.tensor(3.0 + 4.0j, dtype=torch.complex64, device=device)
+    out0_f = torch.empty((), dtype=torch.float32, device=device)
+    torch.cumprod(x0_c, dim=0, out=out0_f)
+    self.assertEqual(out0_f.item(), 3.0)
+
+    # Empty tensor test
+    xe = torch.empty(0, 4, dtype=torch.int32, device=device)
+    oute = torch.empty(0, 4, dtype=torch.float32, device=device)
+    torch.cumprod(xe, dim=1, out=oute)
+    self.assertEqual(oute.shape, (0, 4))
+    self.assertEqual(oute.dtype, torch.float32)
+
+    # Integer default promotion to int64 (functional and out-variant)
+    for int_dtype in [torch.int8, torch.int16, torch.int32]:
+      xi_cpu = torch.tensor([1, 2, 3], dtype=int_dtype, device="cpu")
+      xi_tpu = torch.tensor([1, 2, 3], dtype=int_dtype, device=device)
+
+      # Functional variant
+      res_cpu = torch.cumprod(xi_cpu, dim=0)
+      res_tpu = torch.cumprod(xi_tpu, dim=0)
+      self.assertEqual(res_cpu.dtype, torch.int64)
+      self.assertEqual(res_tpu.dtype, torch.int64)
+      utils.assert_close(res_tpu.cpu(), res_cpu)
+
+      # Out-variant without dtype
+      out_tpu = torch.empty(3, dtype=torch.int64, device=device)
+      out_cpu = torch.empty(3, dtype=torch.int64, device="cpu")
+      torch.cumprod(xi_tpu, dim=0, out=out_tpu)
+      torch.cumprod(xi_cpu, dim=0, out=out_cpu)
+      self.assertEqual(out_tpu.dtype, torch.int64)
+      utils.assert_close(out_tpu.cpu(), out_cpu)
+
   def test_binary_arithmetic_out_upcast(self):
     device = torch.device("tpu")
     a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device=device)
