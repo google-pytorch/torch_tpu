@@ -11671,6 +11671,10 @@ Device-side assertion tracking was not enabled by user.""",
       padding_mode = 3
       torch.grid_sampler_3d(inp, grid, 0, padding_mode, False)
 
+  @et.skip_if(
+      et.is_on_gpu,
+      "GPU supports 3D bicubic interpolation in PyTorch >= 2.15.",
+  )
   def test_grid_sampler_3d_invalid_interpolation_mode(self):
     inp = torch.ones(1, 1, 2, 2, 2, device=et.device())
     grid = torch.zeros(1, 2, 2, 2, 3, device=et.device())
@@ -11684,6 +11688,10 @@ Device-side assertion tracking was not enabled by user.""",
       interpolation_mode = 2
       torch.grid_sampler(inp, grid, interpolation_mode, 0, False)
 
+  @et.skip_if(
+      et.is_on_gpu,
+      "GPU supports 3D bicubic interpolation in PyTorch >= 2.15.",
+  )
   def test_grid_sampler_3d_backward_invalid_interpolation_mode(self):
     grad_output = torch.randn(
         2, 3, 5, 5, 5, device=et.device(), dtype=torch.float32
@@ -12097,7 +12105,10 @@ Device-side assertion tracking was not enabled by user.""",
     with et.assert_raises_message(
         err_type,
         tpu="""scaled_mm_v2(): expected contraction_dim list to contain exactly 2 elements, got 1""",
-        gpu="""contraction_dim must have exactly 2 elements""",
+        gpu=re.compile(
+            r"(contraction_dim must have exactly 2 elements|"
+            r"torch\._scaled_mm_v2 only supports contraction_dim=\(1, 0\))"
+        ),
     ):
       torch._scaled_mm_v2(
           self_tpu,
