@@ -80,6 +80,11 @@ def default_load_model(
 
   if is_training and "labels" not in inputs:
     num_labels = getattr(model.config, "num_labels", None)
+    labels_shape = (
+        inputs["input_ids"].shape
+        if "input_ids" in inputs
+        else (batch_size, seq_len)
+    )
     if num_labels is not None and type(model).__name__.endswith(
         "ForSequenceClassification"
     ):
@@ -91,17 +96,34 @@ def default_load_model(
           dtype=torch.long,
           requires_grad=False,
       )
+    elif num_labels is not None and type(model).__name__.endswith(
+        "ForTokenClassification"
+    ):
+      # Token classification models (such as `LayoutLMForTokenClassification` /
+      # `microsoft/layoutlm-base-uncased`) compute token-level CrossEntropyLoss
+      # over `num_labels` classes (typically 2) with per-token targets of shape
+      # `(batch_size, seq_len)`. Without this branch, labels would be sampled
+      # in `[0, vocab_size)` (30522) and trigger a CUDA device-side assertion
+      # (`t >= 0 && t < n_classes`) in `nll_loss_forward_reduce_cuda_kernel_2d`.
+      inputs["labels"] = torch.randint(
+          0,
+          num_labels,
+          labels_shape,
+          device=device_str,
+          dtype=torch.long,
+          requires_grad=False,
+      )
     else:
       text_cfg = getattr(model.config, "text_config", None)
+      # Check `src_vocab_size` before `vocab_size` for asymmetric seq2seq
+      # models such as `FSMTForConditionalGeneration` (`facebook/wmt19-ru-en`),
+      # where `config.vocab_size` aliases `tgt_vocab_size` (31640) while the
+      # source embedding table only has `src_vocab_size` (31232) entries.
       vocab_size = (
-          getattr(model.config, "vocab_size", None)
+          getattr(model.config, "src_vocab_size", None)
+          or getattr(model.config, "vocab_size", None)
           or (getattr(text_cfg, "vocab_size", None) if text_cfg else None)
           or 32000
-      )
-      labels_shape = (
-          inputs["input_ids"].shape
-          if "input_ids" in inputs
-          else (batch_size, seq_len)
       )
       inputs["labels"] = torch.randint(
           0,

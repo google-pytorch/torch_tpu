@@ -1045,6 +1045,26 @@ def _get_max_seq_len(config: Any, default: int = 512) -> int:
       raw_val = _get_config_attr(cfg, attr)
       val = _safe_int(raw_val, default=0, min_val=1)
       if 0 < val < _MAX_SEQ_LEN_HEURISTIC_CAP:
+        # Several HuggingFace encoder and seq2seq models offset their learned
+        # positional embedding indices by `pad_token_id + 1` (computing
+        # `position_ids = pad_token_id + 1 + arange(seq_len)` so indices
+        # `0..pad_token_id` remain reserved for padding). This includes RoBERTa
+        # (`FacebookAI/roberta-base`, `roberta-large`), XLM-RoBERTa
+        # (`FacebookAI/xlm-roberta-base`, `xlm-roberta-large`), CamemBERT
+        # (`almanach/camembert-base`), MPNet (`microsoft/mpnet-base`),
+        # Longformer (`allenai/longformer-base-4096`), Data2VecText
+        # (`facebook/data2vec-text-base`), and FSMT (`facebook/wmt19-ru-en`,
+        # which uses `max_target_positions`). When `pad_token_id > 0` (typically
+        # `1`), a sequence of length `val` produces a maximum position ID of
+        # `val + pad_token_id`, which exceeds `nn.Embedding(val, hidden_size)`
+        # and triggers a CUDA device-side out-of-bounds assertion. Subtracting
+        # `pad_token_id + 1` keeps all generated position IDs within `[0, val)`.
+        if attr in ("max_position_embeddings", "max_target_positions"):
+          pad_id = _safe_int(
+              _get_config_attr(cfg, "pad_token_id"), default=0, min_val=0
+          )
+          if pad_id > 0 and val > pad_id + 1:
+            val -= pad_id + 1
         return val
 
   # Fallback for relative position models (T5, etc.) or missing data.
@@ -1480,8 +1500,16 @@ def _generate_transformers_inputs(
       )
     else:
       actual_shape = (1, safe_seq_len)
+    # Check `src_vocab_size` before `vocab_size` for encoder-decoder models
+    # with asymmetric source and target vocabularies such as FSMT
+    # (`facebook/wmt19-ru-en`), where `FSMTConfig.attribute_map` aliases
+    # `config.vocab_size` to `config.tgt_vocab_size` (31640) while the encoder
+    # embedding table (`FSMTEncoder.embed_tokens`) has size `src_vocab_size`
+    # (31232). Sampling `input_ids` up to `vocab_size` would otherwise produce
+    # out-of-bounds token IDs in `[31232, 31640)` for the encoder on CUDA.
     vocab_size = _safe_int(
-        _get_config_attr(config, "vocab_size")
+        _get_config_attr(config, "src_vocab_size")
+        or _get_config_attr(config, "vocab_size")
         or _get_config_attr(
             _get_config_attr(config, "text_config"), "vocab_size"
         ),
@@ -2476,8 +2504,13 @@ def _generate_transformers_inputs(
       actual_shape = (1, safe_seq_len)
     batch_size = actual_shape[0]
     text_cfg = _get_config_attr(config, "text_config")
+    # Prefer `src_vocab_size` over `vocab_size` for asymmetric encoder-decoder
+    # models such as FSMT (`facebook/wmt19-ru-en`), where `config.vocab_size`
+    # aliases `tgt_vocab_size` (31640) via `FSMTConfig.attribute_map` while
+    # `FSMTEncoder.embed_tokens` only has `src_vocab_size` (31232) rows.
     vocab_size = _safe_int(
-        _get_config_attr(config, "vocab_size")
+        _get_config_attr(config, "src_vocab_size")
+        or _get_config_attr(config, "vocab_size")
         or _get_config_attr(text_cfg, "vocab_size"),
         default=32000,
         min_val=1,

@@ -215,6 +215,33 @@ class DistributedRunnerTest(seed_test_utils.RepeatableTest):
 
   @mock.patch.dict(registry_lib.REGISTRY, {})
   @mock.patch.object(target_lib, "make_target")
+  @mock.patch.object(torch.distributed, "init_process_group")
+  def test_run_single_target_task_skips_unsupported_mode_on_cuda(
+      self,
+      mock_init_group,
+      mock_make_target,
+  ):
+    fake_spec = mock.MagicMock(spec=registry_lib.BenchmarkSpec)
+    fake_spec.name = "dummy_gpu"
+    fake_spec.dtype = target_lib.DType.BF16
+    fake_spec.skipped_run_modes = set()
+    registry_lib.REGISTRY["dummy_gpu"] = fake_spec
+
+    fake_target = mock.MagicMock(spec=target_lib.Target)
+    fake_target.device_kind = target_lib.DeviceKind.CUDA
+    fake_target.platform = target_lib.Platform.B200_8
+    fake_target.dtype = target_lib.DType.BF16
+    mock_make_target.return_value = fake_target
+
+    distributed_runner._run_single_target_task(
+        spec_name="dummy_gpu",
+        mode_value="eager_optimized",
+        platform_name="b200_8",
+    )
+    mock_init_group.assert_not_called()
+
+  @mock.patch.dict(registry_lib.REGISTRY, {})
+  @mock.patch.object(target_lib, "make_target")
   @mock.patch.object(torch_device_ops, "TorchDeviceOps")
   @mock.patch.object(
       measure_lib, "measure", side_effect=RuntimeError("Model OOM")

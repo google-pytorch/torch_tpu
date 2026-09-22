@@ -43,8 +43,6 @@ torch_tpu_py_library(
         "//examples/benchmarks/e2e/harness/gen_utils",
         "//shims/absl_py/flags",
         "//shims/torch:pytorch",
-        "@pypi//fairscale",
-        "@pypi//llama_models",
     ],
 )
 

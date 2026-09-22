@@ -37,6 +37,10 @@ _SUPPORTED_PLATFORMS: frozenset[target_lib.Platform] = frozenset({
     target_lib.Platform.V7_2X2X2,
     target_lib.Platform.V7_2X2X4,
     target_lib.Platform.V7_2X4X4,
+    # 8x B200 GPUs (178 GiB HBM3e per GPU) run 8-way tensor-parallel
+    # Qwen3.5-397B-A17B (~97 GiB per GPU) using the `F.grouped_mm` fallback in
+    # `RaggedMoeQwen35`.
+    target_lib.Platform.B200_8,
 })
 
 
@@ -274,8 +278,13 @@ def get_qwen3_5_397b_a17b_model(
       _replace_moe_layers_with_ragged_dot_moe(model, config, world_size)
 
     if world_size > 1:
-      # FairScale library setup for distributed model parallelism.
-      initialize.initialize_model_parallel(world_size)
+      # FairScale library setup for distributed model parallelism. Guard with
+      # `model_parallel_is_initialized()` because `distributed_runner.py` may
+      # execute multiple distributed benchmarks sequentially in the same worker
+      # process (e.g. `meta_llama_8b_forward` followed by `qwen3_5_397b_a17b`),
+      # and FairScale raises an AssertionError if initialized more than once.
+      if not initialize.model_parallel_is_initialized():
+        initialize.initialize_model_parallel(world_size)
 
       _warn_if_attn_dimensions_not_divisible(config, world_size, rank)
       _apply_tensor_parallel_plan(

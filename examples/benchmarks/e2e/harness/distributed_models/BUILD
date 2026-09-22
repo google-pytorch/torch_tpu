@@ -43,9 +43,25 @@ torch_tpu_py_library(
 )
 
 torch_tpu_py_library(
+    name = "llama",
+    srcs = ["llama.py"],
+    deps = [
+        "//examples/benchmarks/e2e/harness:context",
+        "//examples/benchmarks/e2e/harness:registry",
+        "//examples/benchmarks/e2e/harness:step_lib",
+        "//examples/benchmarks/e2e/harness:target",
+        "//examples/benchmarks/e2e/harness:torch_device_ops",
+        "//shims/torch:pytorch",
+        "@pypi//fairscale",
+        "@pypi//llama_models",
+    ],
+)
+
+torch_tpu_py_library(
     name = "distributed_models",
     srcs = ["__init__.py"],
     deps = [
+        ":llama",  # buildcleaner: keep
         ":qwen",  # buildcleaner: keep
     ],
 )
