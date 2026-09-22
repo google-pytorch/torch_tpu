@@ -3406,6 +3406,21 @@ Device-side assertion tracking was not enabled by user.""",
     ):
       torch.masked_scatter(t, mask, source)
 
+  def test_masked_scatter_mask_not_broadcastable_to_self(self):
+    # In place, so `self` keeps its shape and the mask has to fit it. The out
+    # of place overload broadcasts the two together and cannot reach this.
+    device = et.device()
+    t = torch.randn(2, 3, device=device, dtype=torch.float32)
+    mask = torch.ones(4, 3, device=device, dtype=torch.bool)
+    source = torch.randn(12, device=device, dtype=torch.float32)
+
+    with et.assert_raises_message(
+        RuntimeError,
+        gpu="""The expanded size of the tensor (2) must match the existing size (4) at non-singleton dimension 0.  Target sizes: [2, 3].  Tensor sizes: [4, 3]""",
+        tpu="""masked_scatter_(): expected mask to be broadcastable to self shape, got [4, 3] vs [2, 3]""",
+    ):
+      t.masked_scatter_(mask, source)
+
   def test_arange_zero_step(self):
     with et.assert_raises_message(
         RuntimeError,

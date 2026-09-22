@@ -15,81 +15,162 @@
 #include "csrc/ops/masked_scatter/masked_scatter.h"
 
 #include <cstdint>
-#include <optional>
 
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "csrc/common/dimension_types.h"
 #include "csrc/common/error_utils.h"
 #include "csrc/ops/cumsum/cumsum.h"
 #include "csrc/ops/index_select/index_select.h"
 #include "csrc/ops/op_builder_utils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Support/LLVM.h"
 #include "stablehlo/integrations/cpp/builder/AttrTypeBuilderUtil.h"
 #include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
 #include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 namespace torch_tpu {
+namespace {
+
+// A helper struct describing how a mask in the masked_scatter operation
+// should partition the input tensor into rows for more efficient
+// implementation.
+struct RowPartition {
+  // Number of trailing dimensions folded into one row.
+  int64_t num_folded_trailing_dims;
+  // Number of elements per row, i.e. the product of the folded dimensions.
+  int64_t row_size;
+  // Number of rows, the number of elements divided by `row_size`.
+  int64_t num_rows;
+};
+
+// Calculates the RowPartitions of a tensor of shape `input_shape` into the
+// rows that a mask of shape `mask_shape` selects.
+RowPartition ComputeRowPartition(const mlir::ArrayRef<int64_t> input_shape,
+                                 const mlir::ArrayRef<int64_t> mask_shape) {
+  const int64_t rank = input_shape.size();
+  const int64_t mask_rank = mask_shape.size();
+  int64_t num_folded_trailing_dims = 0;
+  int64_t row_size = 1;
+  for (int64_t i = 0; i < rank; ++i) {
+    const int64_t mask_dim = i < mask_rank ? mask_shape[mask_rank - 1 - i] : 1;
+    if (mask_dim != 1) {
+      break;
+    }
+    row_size *= input_shape[rank - 1 - i];
+    ++num_folded_trailing_dims;
+  }
+  int64_t numel = 1;
+  for (const int64_t dim : input_shape) {
+    numel *= dim;
+  }
+  return RowPartition{.num_folded_trailing_dims = num_folded_trailing_dims,
+                      .row_size = row_size,
+                      .num_rows = numel / row_size};
+}
+
+}  // namespace
 
 absl::StatusOr<mlir::MlirOp> BuildMaskedScatterShlo(mlir::MlirOp input,
                                                     mlir::MlirOp mask,
                                                     mlir::MlirOp source) {
-  auto& builder = input.getBuilder();
-  const auto input_type = GetTensorTypeOrDie(input);
-  const auto mask_type = GetTensorTypeOrDie(mask);
-  const auto source_type = GetTensorTypeOrDie(source);
+  mlir::MlirBuilder& builder = input.getBuilder();
+  const mlir::RankedTensorType input_type = GetTensorTypeOrDie(input);
+  const mlir::RankedTensorType mask_type = GetTensorTypeOrDie(mask);
+  const mlir::RankedTensorType source_type = GetTensorTypeOrDie(source);
 
-  int64_t numel = input_type.getNumElements();
-  mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  const int64_t rank = input_type.getRank();
+  const int64_t numel = input_type.getNumElements();
+  if (numel == 0) {
+    return input;
+  }
 
-  // 1. Flatten all input tensors to 1D
-  mlir::MlirOp flat_input = mlir::stablehlo::Reshape(
-      mlir::makeTensorType(builder.getContext(), {numel},
+  // 1. Partition `input` and `source` into rows of the same size.
+  const mlir::ArrayRef<int64_t> input_shape = input_type.getShape();
+  const RowPartition input_partition =
+      ComputeRowPartition(input_shape, mask_type.getShape());
+  const int64_t source_numel = source_type.getNumElements();
+  const int64_t num_source_rows = source_numel / input_partition.row_size;
+  if (num_source_rows == 0) {
+    // `source` holds less than a row, so selecting any row would already
+    // overrun it, and the gather below needs a non-empty operand.
+    return input;
+  }
+
+  // 2. Reshape the input into rows and the mask into one element per row,
+  // broadcasting the mask only along the dimensions that are not folded.
+  Dimensions row_mask_shape(input_shape.begin(), input_shape.end());
+  for (int64_t i = rank - input_partition.num_folded_trailing_dims; i < rank;
+       ++i) {
+    row_mask_shape[i] = 1;
+  }
+  TT_ASSIGN_OR_RETURN(
+      mlir::MlirOp broadcast_mask,
+      BroadcastIfNeeded(mask, absl::MakeConstSpan(row_mask_shape)));
+
+  mlir::MlirOp input_rows = mlir::stablehlo::Reshape(
+      mlir::makeTensorType(builder.getContext(),
+                           {input_partition.num_rows, input_partition.row_size},
                            input_type.getElementType()),
       input);
-  mlir::MlirOp flat_mask = mlir::stablehlo::Reshape(
-      mlir::makeTensorType(builder.getContext(), {numel},
+  mlir::MlirOp row_mask = mlir::stablehlo::Reshape(
+      mlir::makeTensorType(builder.getContext(), {input_partition.num_rows},
                            mask_type.getElementType()),
-      mask);
-  mlir::MlirOp flat_source = mlir::stablehlo::Reshape(
-      mlir::makeTensorType(builder.getContext(), {source_type.getNumElements()},
+      broadcast_mask);
+
+  // 3. Reshape the source into rows, dropping a partial trailing one. Rows of
+  // `source` are consumed in order, one per selected row, so a legal call never
+  // reads past its last whole row.
+  mlir::MlirOp source_rows = source;
+  if (num_source_rows * input_partition.row_size != source_numel) {
+    mlir::MlirOp flat_source = mlir::stablehlo::Reshape(
+        mlir::makeTensorType(builder.getContext(), {source_numel},
+                             source_type.getElementType()),
+        source_rows);
+    source_rows = mlir::stablehlo::Slice(
+        flat_source, Dimensions{0},
+        Dimensions{num_source_rows * input_partition.row_size}, Dimensions{1});
+  }
+  source_rows = mlir::stablehlo::Reshape(
+      mlir::makeTensorType(builder.getContext(),
+                           {num_source_rows, input_partition.row_size},
                            source_type.getElementType()),
-      source);
+      source_rows);
 
-  // 2. Convert flat_mask from bool to i32. Keep the source offsets in i32:
-  // TPU vector registers cannot materialize the i64 values with
+  // 4. Convert the row mask from bool to i32 and prefix sum it. Keep the source
+  // offsets in i32: TPU vector registers cannot materialize the i64 values with
   // `Unsupported conversion from vmreg/vreg to U64`.
-  mlir::MlirOp mask_i32 =
-      mlir::stablehlo::ConvertElementType(flat_mask, i32_type);
+  const mlir::Type i32_type = builder.getOpBuilder().getI32Type();
+  mlir::MlirOp row_mask_i32 =
+      mlir::stablehlo::ConvertElementType(row_mask, i32_type);
+  TT_ASSIGN_OR_RETURN(mlir::MlirOp selected_row_count,
+                      BuildCumsumShlo(0, mlir::ElementType::I32, row_mask_i32));
 
-  // 3. Compute prefix sum (cumsum) of mask values on device
-  TT_ASSIGN_OR_RETURN(mlir::MlirOp prefix_sum,
-                      BuildCumsumShlo(0, mlir::ElementType::I32, mask_i32));
+  // 5. Subtract one to make the source row indices zero based. Unselected rows
+  // keep the index consumed before them, or -1 before the first selected row;
+  // `stablehlo.gather` clamps that and the select below discards the row.
+  mlir::MlirOp ones =
+      MakeConstantLike(selected_row_count, static_cast<int32_t>(1));
+  mlir::MlirOp source_row_indices =
+      mlir::stablehlo::Subtract(selected_row_count, ones);
 
-  // 4. Compute indices for gather: gather_indices = prefix_sum - 1
-  mlir::MlirOp constant_1 =
-      MakeScalarConstant(builder, static_cast<int32_t>(1), i32_type);
-  // Broadcast constant_1 to match prefix_sum rank/size: broadcast to shape
-  // {numel}
-  mlir::MlirOp broadcasted_1 =
-      mlir::stablehlo::Broadcast(constant_1, llvm::ArrayRef<int64_t>{numel});
-  mlir::MlirOp gather_indices =
-      mlir::stablehlo::Subtract(prefix_sum, broadcasted_1);
+  // 6. Gather one source row per row of the input.
+  mlir::MlirOp gathered_rows =
+      BuildIndexSelectShlo(source_rows, 0, source_row_indices);
 
-  // 5. Perform dynamic gather from source using BuildIndexSelectShlo helper
-  // along dim 0 (returns raw MlirOp!)
-  mlir::MlirOp gathered_source =
-      BuildIndexSelectShlo(flat_source, 0, gather_indices);
+  // 7. Take the gathered rows where the mask is true, and reshape back.
+  mlir::MlirOp row_mask_2d = mlir::stablehlo::BroadcastInDim(
+      mlir::makeTensorType(builder.getContext(),
+                           {input_partition.num_rows, input_partition.row_size},
+                           mask_type.getElementType()),
+      row_mask, llvm::ArrayRef<int64_t>{0});
+  mlir::MlirOp output_rows =
+      mlir::stablehlo::Select(row_mask_2d, gathered_rows, input_rows);
 
-  // 6. Elementwise selection: if mask is True, take gathered_source, else keep
-  // flat_input
-  mlir::MlirOp flat_output =
-      mlir::stablehlo::Select(flat_mask, gathered_source, flat_input);
-
-  // 7. Reshape flat_output back to the original ranked shape of input
-  return mlir::stablehlo::Reshape(input_type, flat_output);
+  return mlir::stablehlo::Reshape(input_type, output_rows);
 }
 
 }  // namespace torch_tpu

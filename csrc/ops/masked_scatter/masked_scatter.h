@@ -20,6 +20,14 @@
 
 namespace torch_tpu {
 
+// Replaces the elements of `input` that `mask` selects by the leading elements
+// of `source`, taken in row-major order.
+//
+// `mask` is right-aligned against `input`, so its rank must not exceed the rank
+// of `input`. Trailing dimensions that `mask` is uniform over are moved as
+// whole rows, so a caller holding a mask already expanded to the shape of
+// `input` should narrow those dimensions back to size one to avoid a much
+// slower scalar gather.
 absl::StatusOr<mlir::MlirOp> BuildMaskedScatterShlo(mlir::MlirOp input,
                                                     mlir::MlirOp mask,
                                                     mlir::MlirOp source);

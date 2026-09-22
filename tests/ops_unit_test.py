@@ -14668,6 +14668,113 @@ class OpsGradUnitTest(TorchTpuVsCpuTestBase):
           ),
       )
 
+  def test_masked_scatter_broadcast_mask(self):
+    # The mask is broadcast along the trailing dimensions of the input, so
+    # every mask element selects a whole contiguous row.
+    for input_shape, mask_shape, source_numel in [
+        # Mask broadcast along the last dimension.
+        ((2, 3), (2, 1), 6),
+        # Mask with fewer dimensions than the input.
+        ((2, 3, 4), (3, 1), 16),
+        # Mask broadcast along several trailing dimensions.
+        ((2, 3, 4), (2, 1, 1), 24),
+        # Fully broadcast mask.
+        ((2, 3), (1, 1), 6),
+        # Source that is not a multiple of the row size.
+        ((2, 4), (2, 1), 7),
+        # Source that is larger than the number of masked elements.
+        ((4, 5), (4, 1), 40),
+        # Mask broadcast along a middle dimension only, so there is no row to
+        # fold.
+        ((2, 3, 4), (2, 1, 4), 24),
+        # Source with a partial trailing row, which is dropped.
+        ((2, 3, 4), (2, 1, 1), 16),
+        # Trailing dimension of size one in the input, so the mask is not
+        # broadcast at all.
+        ((2, 3, 1), (2, 3, 1), 6),
+        # Scalar mask: every dimension folds into a single row.
+        ((2, 3, 4), (), 24),
+        # Lower rank mask of all ones.
+        ((2, 3, 4), (1,), 24),
+        # Empty input.
+        ((0, 4), (0, 1), 0),
+    ]:
+      input_tensor = torch.arange(
+          math.prod(input_shape), dtype=torch.float32
+      ).reshape(input_shape)
+      mask = torch.arange(math.prod(mask_shape)).reshape(mask_shape) % 2 == 0
+      source = torch.arange(source_numel, dtype=torch.float32) + 100.0
+      self.assert_close_tpu_vs_cpu(
+          lambda device, input_tensor=input_tensor, mask=mask, source=source: torch.masked_scatter(
+              input=to(input_tensor, device=device),
+              mask=to(mask, device=device),
+              source=to(source, device=device),
+          ),
+      )
+
+    # A mask without any set element leaves the input untouched, even when the
+    # source is empty.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(torch.ones(2, 3), device=device),
+            mask=to(torch.zeros(2, 1, dtype=torch.bool), device=device),
+            source=to(torch.zeros(0), device=device),
+        ),
+    )
+
+    # The same, with a source that holds less than one whole row.
+    self.assert_close_tpu_vs_cpu(
+        lambda device: torch.masked_scatter(
+            input=to(torch.ones(2, 4), device=device),
+            mask=to(torch.zeros(2, 1, dtype=torch.bool), device=device),
+            source=to(torch.arange(3, dtype=torch.float32), device=device),
+        ),
+    )
+
+  def test_masked_scatter_broadcast_mask_lowers_to_row_gather(self):
+    """A mask broadcast over the trailing dimension lowers to a row gather.
+
+    The numerics tests above pass whether or not the row lowering fires, so
+    this guards the lowering itself: a `{1, 2048, 1}` mask over a
+    `{1, 2048, 64}` input must gather 2048 rows of 64 elements rather than
+    131072 individual elements.
+    """
+    mask = (torch.arange(2048).reshape(1, 2048, 1) % 2 == 0).to("tpu")
+    source = torch.ones(1024, 64, device="tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      base = torch.zeros(1, 2048, 64, device="tpu")
+      result = torch.masked_scatter(base, mask, source)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([result], [mask, source])
+    )
+    self.assertIn("stablehlo.gather", mlir_text)
+    self.assertIn("tensor<2048x64xf32>", mlir_text)
+    self.assertNotIn("tensor<131072x1xf32>", mlir_text)
+
+  def test_masked_scatter_elementwise_mask_lowers_to_element_gather(self):
+    """A mask with no broadcast trailing dimension stays element-wise.
+
+    The counterpart to the row gather test above. A fully materialized
+    `{1, 2048, 64}` mask has no row structure to exploit, so the lowering falls
+    back to the `{131072, 1}` element grid. Asserting this keeps the row
+    detection from widening to masks it must not fold.
+    """
+    mask = (torch.arange(2048 * 64).reshape(1, 2048, 64) % 2 == 0).to("tpu")
+    source = torch.ones(65536, device="tpu")
+    with execution_mode.set_eager_mode(
+        execution_mode._EagerMode.INTERNAL_COMPILE_FX_GRAPH
+    ):
+      base = torch.zeros(1, 2048, 64, device="tpu")
+      result = torch.masked_scatter(base, mask, source)
+    mlir_text = tpu_torch_compile.serialize_mlir_text(
+        tpu_torch_compile.build_mlir([result], [mask, source])
+    )
+    self.assertIn("stablehlo.gather", mlir_text)
+    self.assertIn("tensor<131072x1xf32>", mlir_text)
+    self.assertNotIn("tensor<2048x64xf32>", mlir_text)
+
   def test_polygamma_n_0(self):
     # n = 0 is digamma.
     self.assert_close_tpu_vs_cpu(
