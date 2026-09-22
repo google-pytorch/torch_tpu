@@ -223,9 +223,6 @@ absl::Status PjrtBackend::InitializeInternal() {
       TT_RETURN_IF_ERROR(InitializeDistributedEnvironment(config)).SetPrepend()
           << "InitializeDistributedEnvironment failed: ";
     }
-  } else if (options_.device_type == "xla_cuda") {
-    plugin_name = kGpuPjrtName;
-    device_type = PjRtDeviceType::kCuda;
   } else if (options_.device_type == "xla_cpu") {
     plugin_name = kCpuPjrtName;
     device_type = PjRtDeviceType::kCpu;

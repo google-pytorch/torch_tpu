@@ -51,26 +51,6 @@ torch_tpu_py_test(
 )
 
 torch_tpu_py_test(
-    name = "device_module_test_gpu",
-    srcs = ["device_module_gpu_test.py"],
-    env = {
-        "TORCH_TPU_INTERNAL_ALLOW_XLA_BACKEND": "1",
-    },
-    main = "device_module_gpu_test.py",
-    tags = [
-        "requires-gpu-sm90",
-    ],
-    deps = [
-        ":device_module_testing",
-        "//shims/absl_py/testing:absltest",
-        "//shims/torch:pytorch",
-        "//src/torch_tpu",
-        "@xla//xla/pjrt/plugin/xla_gpu:gpu_static_registration",
-        "@xla//xla/stream_executor:cuda_platform",
-    ],
-)
-
-torch_tpu_py_test(
     name = "device_module_test_cpu",
     srcs = ["device_module_cpu_test.py"],
     env = {
@@ -90,7 +70,6 @@ test_suite(
     name = "device_module_tests",
     tests = [
         "device_module_test_cpu",
-        "device_module_test_gpu",
         "device_module_test_tpu",
     ],
 )

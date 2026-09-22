@@ -501,8 +501,6 @@ class _DeviceModule(abc.ABC, metaclass=_DeviceModuleMeta):
       return cls.device_count() > 0
     if cls._device_type == "xla_cpu":
       return True
-    if cls._device_type == "xla_cuda":
-      return hardware.has_nvidia_gpu()
     return False
 
   @classmethod
@@ -950,17 +948,12 @@ class TpuDeviceModule(_DeviceModule):
     )
 
 
-class XlaCudaDeviceModule(_DeviceModule):
-  _device_type: Final[str] = "xla_cuda"  # pyrefly: ignore[bad-override]
-
-
 class XlaCpuDeviceModule(_DeviceModule):
   _device_type: Final[str] = "xla_cpu"  # pyrefly: ignore[bad-override]
 
 
 _DEVICE_MODULE_MAPPING: Final[Mapping[str, type[_DeviceModule]]] = {
     "tpu": TpuDeviceModule,
-    "xla_cuda": XlaCudaDeviceModule,
     "xla_cpu": XlaCpuDeviceModule,
 }
 
@@ -969,7 +962,7 @@ def get_device_module(device_type: str) -> type[_DeviceModule]:
   """Retrieves the _DeviceModule module for the specified device.
 
   Args:
-    device_type: A valid device type, one of: {tpu, xla_cuda, xla_cpu}
+    device_type: A valid device type, one of: {tpu, xla_cpu}
 
   Returns:
     A module that can be passed to torch._register_device_module.
